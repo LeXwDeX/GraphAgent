@@ -84,7 +84,10 @@ test("abort after a move invalidates the old Stop callback without masking the n
           )
           yield* inA(
             settings
-              .trigger({ event: "Stop", stopHookActive: false }, { sessionID: session.id, transcriptPath: "" })
+              .trigger(
+                { event: "Stop", stopHookActive: false },
+                { sessionID: session.id, transcript: () => Effect.succeed("") },
+              )
               .pipe(Effect.provideService(HookRewake.Service, rewake)),
           )
           yield* pollWithTimeout(
@@ -125,7 +128,10 @@ test("abort after a move invalidates the old Stop callback without masking the n
           )
           yield* inA(
             settings
-              .trigger({ event: "Stop", stopHookActive: false }, { sessionID: session.id, transcriptPath: "" })
+              .trigger(
+                { event: "Stop", stopHookActive: false },
+                { sessionID: session.id, transcript: () => Effect.succeed("") },
+              )
               .pipe(Effect.provideService(HookRewake.Service, rewake)),
           )
           yield* awaitWithTimeout(Deferred.await(woke), "new Stop callback was masked", "10 seconds")

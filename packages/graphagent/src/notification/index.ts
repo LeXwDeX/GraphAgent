@@ -42,9 +42,7 @@ export const layer = Layer.effect(
               title: input.title,
               notificationType: input.notificationType,
             },
-            input.sessionID
-              ? yield* consumerContext(input.sessionID).pipe(Effect.orDie)
-              : { sessionID: "", transcriptPath: "" },
+            input.sessionID ? yield* consumerContext(input.sessionID).pipe(Effect.orDie) : { sessionID: "" },
           )
           .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
         void nResult // Notification output cannot alter the conversation.

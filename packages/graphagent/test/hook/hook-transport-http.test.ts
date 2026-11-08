@@ -44,7 +44,7 @@ describe("hook HTTP transport", () => {
           })
           const allowed = yield* hook.trigger(
             { event: "PreToolUse", toolName: "Bash", toolInput: { command: "pwd" } },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(allowed.blocked).toBeUndefined()
           expect(seen).toHaveLength(1)
@@ -53,7 +53,7 @@ describe("hook HTTP transport", () => {
           yield* store.add(sessionID, { event: "UserPromptSubmit", hooks: [{ type: "http", url, onFailure: "block" }] })
           const denied = yield* hook.trigger(
             { event: "UserPromptSubmit", prompt: "hello" },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(denied.blocked?.reason).toContain("500")
         }),

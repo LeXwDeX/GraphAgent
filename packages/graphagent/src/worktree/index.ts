@@ -415,7 +415,7 @@ export const layer: Layer.Layer<
         // A configured creation hook owns the operation. Failure never falls back to git.
         const result = yield* settingsHook.trigger(
           { event: "WorktreeCreate", name: info.name, path: info.directory, branch: info.name },
-          { sessionID: "", transcriptPath: "" },
+          { sessionID: "" },
         )
         const output = result.worktreePath?.trim()
         if (result.blocked || !output)
@@ -668,10 +668,7 @@ export const layer: Layer.Layer<
         owned && settingsHook && (yield* settingsHook.list()).some((hook) => hook.event === "WorktreeRemove")
       if (removeHook && settingsHook) {
         yield* FiberMap.remove(bootFibers, directory)
-        const result = yield* settingsHook.trigger(
-          { event: "WorktreeRemove", path: directory },
-          { sessionID: "", transcriptPath: "" },
-        )
+        const result = yield* settingsHook.trigger({ event: "WorktreeRemove", path: directory }, { sessionID: "" })
         if (result.worktreeRemoveFailed && (yield* fs.exists(directory).pipe(Effect.orDie)))
           return yield* new RemoveFailedError({
             message: result.blocked?.reason ?? "WorktreeRemove hook failed while the directory still exists",

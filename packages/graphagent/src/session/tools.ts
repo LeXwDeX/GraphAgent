@@ -8,8 +8,6 @@ import { Truncate } from "@/tool/truncate"
 import { ToolPipeline, toRecord } from "@/tool/pipeline"
 import type { DirectToolContext, ToolEntry, WrapInput } from "@/tool/pipeline"
 import { SettingsHook } from "@/hook"
-import { HookTranscript } from "@/hook/transcript"
-import { promptIdentity } from "@/hook/prompt-identity"
 import { ToolInputUpdated } from "@/permission/hook-control"
 import { type Tool as AITool, type ToolExecutionOptions, asSchema } from "ai"
 import { Effect } from "effect"
@@ -84,28 +82,17 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     const source = entriesByID.get(toolName)?.source
     return source?.kind === "mcp" && source.requiresUserInteraction
   }
-  // The prompt runtime injects a wrapped settings service that materializes the transcript before
-  // each configured event and overrides this context. Callers that reach `resolve` directly have
-  // no such wrapper, so they would send `transcript_path: ""`; give them a real snapshot instead.
+  // Tool identity for hook matching. The engine derives transcript,
+  // environment and prompt identity lazily from the session, so the pipeline
+  // only supplies the executing session and the tool/MCP binding.
   const hookContext = Effect.fn("SessionTools.hookContext")(function* (toolName?: string) {
     const policy = "hookPolicy" in permission ? yield* permission.hookPolicy(input.session.id) : undefined
     const mode = policy?.mode ?? (input.agent.name === "plan" ? "plan" : "default")
     const binding = hookIdentity(toolName)
-    // Tool events fire inside a prompt, so name that prompt and its effort in the
-    // envelope. When the prompt runtime injected its wrapper the same values are
-    // recomputed there; an explicitly supplied value always wins.
-    const prompt = promptIdentity(input.messages as readonly HookTranscript.Message[])
-    const transcriptPath = input.hooks
-      ? ""
-      : yield* HookTranscript.materialize({
-          sessionID: input.session.id,
-          directory: input.session.directory,
-          messages: input.messages as readonly HookTranscript.Message[],
-        }).pipe(Effect.orDie)
     // A tool executed under a child session is that subagent's own call: CC
     // names the child session and the executing agent in agent_id / agent_type.
     const subagent = input.session.parentID ? { agentID: input.session.id, agentType: input.agent.name } : undefined
-    return { permissionMode: mode === "manual" ? "default" : mode, ...prompt, ...binding, ...subagent, transcriptPath }
+    return { permissionMode: mode === "manual" ? "default" : mode, ...binding, ...subagent }
   })
 
   // Cancellation has already invalidated the normal hook wrapper. Give failure hooks
@@ -113,7 +100,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
   const reportInterrupt = (toolName: string, args: unknown, toolUseID: string) =>
     Effect.gen(function* () {
       if (!hooks) return
-      yield* hooks.trigger(
+      yield* ToolPipeline.callHook(
+        hooks,
         {
           event: "PostToolUseFailure",
           toolName,

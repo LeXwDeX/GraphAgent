@@ -40,7 +40,7 @@ const trigger = (hooks: HookCommand[], options: { payload?: HookPayload; matcher
       ...(options.matcher ? { matcher: options.matcher } : {}),
       hooks,
     })
-    const result = yield* hook.trigger(payload, { sessionID, transcriptPath: "" })
+    const result = yield* hook.trigger(payload, { sessionID, transcript: () => Effect.succeed("") })
     return { result, sessionID }
   })
 

@@ -50,7 +50,7 @@ describe("command hook Claude input naming", () => {
           matcher: "Grep|Glob|Read",
           hooks: [{ type: "command", command: claudeHookCommand }],
         })
-        const raw = yield* hooks.trigger(payload, { sessionID: rawID, transcriptPath: "" })
+        const raw = yield* hooks.trigger(payload, { sessionID: rawID, transcript: () => Effect.succeed("") })
         const rawWorks = toolName === "Grep" || toolName === "Glob" || (toolName === "Read" && "file_path" in toolInput)
         expect(raw.additionalContexts).toHaveLength(rawWorks ? 1 : 0)
 
@@ -60,7 +60,7 @@ describe("command hook Claude input naming", () => {
           matcher: "Grep|Glob|Read",
           hooks: [{ type: "command", command: claudeHookCommand, inputFormat: "claude-code" }],
         })
-        const result = yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "" })
+        const result = yield* hooks.trigger(payload, { sessionID: id, transcript: () => Effect.succeed("") })
         expect(result.additionalContexts).toHaveLength(1)
         const stdin = JSON.parse(result.additionalContexts[0].slice("CLAUDE_CONTEXT:".length))
         const name = toolName.toLowerCase()
@@ -105,7 +105,7 @@ describe("command hook Claude input naming", () => {
               : event === "PermissionDenied"
                 ? { ...base, event, reason: "denied" }
                 : { ...base, event }
-        const result = yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "" })
+        const result = yield* hooks.trigger(payload, { sessionID: id, transcript: () => Effect.succeed("") })
         if (event === "PermissionRequest" || event === "PermissionDenied") {
           // These events do not deliver additionalContext to the model.
           expect(result.additionalContexts).toEqual([])
@@ -145,7 +145,7 @@ describe("command hook Claude input naming", () => {
         })
         const result = yield* hooks.trigger(
           { event: "PreToolUse", toolName, toolInput },
-          { sessionID: id, transcriptPath: "" },
+          { sessionID: id, transcript: () => Effect.succeed("") },
         )
         const stdin = JSON.parse(result.additionalContexts[0].slice("CLAUDE_CONTEXT:".length))
         expect(stdin.tool_input).toMatchObject(expected)
@@ -183,7 +183,7 @@ describe("command hook Claude input naming", () => {
         })
         const result = yield* hooks.trigger(
           { event: "PreToolUse", toolName, toolInput: {} },
-          { sessionID: id, transcriptPath: "" },
+          { sessionID: id, transcript: () => Effect.succeed("") },
         )
         expect(result.updatedInput).toEqual(expected)
       }),
@@ -211,7 +211,7 @@ describe("command hook Claude input naming", () => {
       })
       const result = yield* hooks.trigger(
         { event: "PreToolUse", toolName: "mcp__CBM__Read", toolInput: {} },
-        { sessionID: id, transcriptPath: "" },
+        { sessionID: id, transcript: () => Effect.succeed("") },
       )
       // Unknown tools get no naming translation in either direction — the
       // rewrite passes through untouched, claude-style key included.
@@ -240,7 +240,7 @@ describe("command hook Claude input naming", () => {
       })
       const result = yield* hooks.trigger(
         { event: "PostToolUse", toolName: "read", toolInput: { filePath: "file.ts" }, toolResponse: "response" },
-        { sessionID: id, transcriptPath: "" },
+        { sessionID: id, transcript: () => Effect.succeed("") },
       )
       // updatedInput controls PreToolUse only; a post-tool rewrite cannot
       // retroactively change the input of an already completed tool.
@@ -262,7 +262,7 @@ describe("command hook Claude input naming", () => {
           event: payload.event,
           hooks: [{ type: "command", command: nativeHookCommand, inputFormat: "claude-code" }],
         })
-        const result = yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "" })
+        const result = yield* hooks.trigger(payload, { sessionID: id, transcript: () => Effect.succeed("") })
         expect(result.additionalContexts).toHaveLength(1)
         const stdin = JSON.parse(result.additionalContexts[0].slice("NATIVE_CONTEXT:".length))
         if (payload.event === "PreToolUse") {
@@ -281,7 +281,7 @@ describe("command hook Claude input naming", () => {
         const instance = yield* TestInstance
         const result = yield* hooks.trigger(
           { event: "PostToolUse", toolName: "read", toolInput: { filePath: "file.ts" }, toolResponse: "response" },
-          { sessionID: SessionID.descending(), transcriptPath: "" },
+          { sessionID: SessionID.descending(), transcript: () => Effect.succeed("") },
         )
         const stdin = JSON.parse(result.additionalContexts[0].slice("CLAUDE_CONTEXT:".length))
         expect(stdin.tool_name).toBe("Read")
@@ -343,7 +343,7 @@ for (const toolName of ["apply_patch", "patch", "multiedit"]) {
               }
         const result = yield* hooks.trigger(
           { event: "PostToolUse", toolName, toolInput, toolResponse: {} },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(result.additionalContexts).toHaveLength(1)
         const stdin = JSON.parse(result.additionalContexts[0].slice("NATIVE_CONTEXT:".length))
@@ -383,7 +383,7 @@ for (const toolName of ["bash", "read", "edit", "write"]) {
           toolResponse: metadata,
           toolOutput: { title: "test", output: "full output", metadata },
         },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       const [claude, native] = result.additionalContexts.map((item) => JSON.parse(item.slice("NATIVE_CONTEXT:".length)))
       expect(native.tool_response).toEqual(metadata)
@@ -423,7 +423,10 @@ for (const toolName of ["read", "write", "edit"]) {
           event,
           hooks: [{ type: "command", inputFormat: "claude-code", command: process.execPath, args: ["-e", script] }],
         })
-        const result = yield* hooks.trigger({ event, toolName, toolInput: input }, { sessionID, transcriptPath: "" })
+        const result = yield* hooks.trigger(
+          { event, toolName, toolInput: input },
+          { sessionID, transcript: () => Effect.succeed("") },
+        )
         const updated = event === "PreToolUse" ? result.updatedInput : result.permissionRequestDecision?.updatedInput
         expect(updated).toEqual({ ...input, path: "changed.txt" })
         expect(result.hookErrors).toBeUndefined()

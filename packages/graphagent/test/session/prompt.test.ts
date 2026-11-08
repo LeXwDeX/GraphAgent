@@ -8369,6 +8369,14 @@ let controlledOrganizer: LLM.Interface["organizer"] = () => Effect.die("organize
 const distillationIt = testEffect(makeHttp({ organizer: (input) => Effect.suspend(() => controlledOrganizer(input)) }))
 
 const longThought = (label: string) => `${label} `.repeat(60).trim()
+// Organizer work is directory-owned and intentionally not joined on the request
+// path: it may still be scheduled when the loop returns. Tests that inspect its
+// effects wait for the call count instead of assuming it already ran.
+const awaitOrganizerCalls = (calls: () => number, expected: number) =>
+  pollWithTimeout(
+    Effect.sync(() => (calls() === expected ? (true as const) : undefined)),
+    `organizer calls never reached ${expected}`,
+  )
 const organizedAs =
   (calls: string[]): LLM.Interface["organizer"] =>
   () =>
@@ -8531,6 +8539,7 @@ distillationIt.instance("organizes reasoning in place when the request continues
     // content instead of being cut and replaced by a continuation.
     yield* llm.push(reply().reason(longThought("sync-thinking")).text("phase-one-content").stop())
     yield* prompt.loop({ sessionID: chat.id })
+    yield* awaitOrganizerCalls(() => organizerCalls, 1)
     expect(organizerCalls).toBe(1)
     const hits = (yield* llm.hits).filter(
       (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
@@ -8578,6 +8587,7 @@ distillationIt.instance("ends a reasoning-only stop without injecting a continua
     })
     yield* llm.push(reply().reason(longThought("sync-thinking")).stop(), reply().text("final-answer").stop())
     yield* prompt.loop({ sessionID: chat.id })
+    yield* awaitOrganizerCalls(() => organizerCalls, 1)
     expect(organizerCalls).toBe(1)
     const hits = (yield* llm.hits).filter(
       (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
@@ -8799,6 +8809,7 @@ distillationIt.instance("keeps the original reasoning when background organizati
     })
     yield* llm.push(reply().reason(longThought("fallback-thinking")).text("fallback-answer").stop())
     yield* prompt.loop({ sessionID: chat.id })
+    yield* awaitOrganizerCalls(() => organizerCalls, 1)
     expect(organizerCalls).toBe(1)
     const hits = (yield* llm.hits).filter(
       (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
@@ -8882,6 +8893,7 @@ distillationIt.instance("finished background rewrites appear in later steps and 
       reply().reason(longThought("final-thinking")).text("answer").stop(),
     )
     yield* prompt.loop({ sessionID: chat.id })
+    yield* awaitOrganizerCalls(() => calls.length, 2)
     // The tool step's reasoning is first resent by the second step, which already carries the rewrite.
     const hits = yield* llm.hits
     const second = JSON.stringify(hits.at(-1)?.body)
@@ -9180,6 +9192,7 @@ distillationIt.instance("organizes reasoning in place after visible text has sta
     // The reasoning part ends after visible text, so this request cannot split; it must be organized in place.
     yield* llm.push(reply().text("phase-one").reason(longThought("late-thinking")).stop())
     yield* prompt.loop({ sessionID: chat.id })
+    yield* awaitOrganizerCalls(() => organizerCalls, 1)
     expect(organizerCalls).toBe(1)
     const hits = (yield* llm.hits).filter(
       (hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation"),
@@ -9870,12 +9883,14 @@ wrapperUnix("SessionPrompt wrapper materializes parent context for child-scoped 
     })
     expect(yield* hooks.hasEvent("SubagentStop", parent.id)).toBe(false)
     expect(yield* hooks.hasEvent("SubagentStop", child.id)).toBe(true)
-    wrapperLookups.length = 0
+    const beforeTriggers = wrapperTriggers.length
     yield* llm.text("SCOPED_CHILD_DONE")
     yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "Finish the child" }] })
     const result = decodeRecord(JSON.parse(yield* Effect.promise(() => Bun.file(audit).text())))
     expect(result.agent_id).toBe(child.id)
-    expect(wrapperLookups).toContainEqual({ event: "SubagentStop", sessionID: child.id })
+    // The prompt layer forwards the event to the engine; the engine resolves the
+    // child-scoped handler and derives both transcripts itself.
+    expect(wrapperTriggers.slice(beforeTriggers)).toContain("SubagentStop")
     expect(decodeString(result.transcript_path).length).toBeGreaterThan(0)
     expect(yield* Effect.promise(() => Bun.file(decodeString(result.transcript_path)).exists())).toBe(true)
     const rows = (yield* Effect.promise(() => Bun.file(decodeString(result.agent_transcript_path)).text()))
@@ -9918,30 +9933,35 @@ wrapperUnix(
     }),
 )
 
-unix("SessionPrompt wrapper keeps transcript compatibility when a legacy hook service has no hasEvent", () =>
-  Effect.gen(function* () {
-    yield* useServerConfig(providerCfg)
-    const hooks = yield* SettingsHook.Service
-    const sessions = yield* Session.Service
-    const prompt = yield* SessionPrompt.Service
-    expect(hooks.hasEvent).toBeUndefined()
-    const chat = yield* sessions.create({ title: "legacy hook interface" })
-    const before = hookRecorded.length
-    yield* prompt.prompt({
-      sessionID: chat.id,
-      agent: "build",
-      noReply: true,
-      parts: [{ type: "text", text: "Legacy hook adapter" }],
-    })
-    expect(hookRecorded.slice(before).some((payload) => payload.event === "UserPromptSubmit")).toBe(true)
-    const snapshot = path.join(
-      Global.Path.data,
-      "hooks",
-      "transcripts",
-      createHash("sha256").update(chat.id).digest("hex") + ".jsonl",
-    )
-    expect(yield* Effect.promise(() => Bun.file(snapshot).exists())).toBe(true)
-  }),
+unix(
+  "SessionPrompt forwards triggers to a hook service without hasEvent and never materializes transcripts itself",
+  () =>
+    Effect.gen(function* () {
+      yield* useServerConfig(providerCfg)
+      const hooks = yield* SettingsHook.Service
+      const sessions = yield* Session.Service
+      const prompt = yield* SessionPrompt.Service
+      expect(hooks.hasEvent).toBeUndefined()
+      const chat = yield* sessions.create({ title: "legacy hook interface" })
+      const before = hookRecorded.length
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "Legacy hook adapter" }],
+      })
+      expect(hookRecorded.slice(before).some((payload) => payload.event === "UserPromptSubmit")).toBe(true)
+      // D1 PR2: the prompt layer no longer snapshots history for hooks. The
+      // engine materializes a transcript only after a handler matches, and this
+      // bare service has no engine behind it.
+      const snapshot = path.join(
+        Global.Path.data,
+        "hooks",
+        "transcripts",
+        createHash("sha256").update(chat.id).digest("hex") + ".jsonl",
+      )
+      expect(yield* Effect.promise(() => Bun.file(snapshot).exists())).toBe(false)
+    }),
 )
 
 for (const scenario of ["available", "user-disabled", "last-step", "non-cli", "disabled-next-turn"] as const) {

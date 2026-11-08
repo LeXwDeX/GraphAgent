@@ -1,5 +1,3 @@
-import { HookTranscript } from "@/hook/transcript"
-import { InstanceState } from "@/effect/instance-state"
 import { Tool } from "./tool"
 import DESCRIPTION from "./task.txt"
 import { ToolJsonSchema } from "./json-schema"
@@ -18,7 +16,6 @@ import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@graphagent/core/database/database"
-import { promptIdentity } from "@/hook/prompt-identity"
 import { SettingsHook, type TriggerResult } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { TaskSubagents } from "@/hook/task-subagents"
@@ -230,11 +227,7 @@ export const TaskTool = Tool.define(
           ),
         )
       }
-      if (
-        params.description === undefined ||
-        params.prompt === undefined ||
-        params.subagent_type === undefined
-      ) {
+      if (params.description === undefined || params.prompt === undefined || params.subagent_type === undefined) {
         return yield* Effect.fail(
           new Error("description, prompt and subagent_type are required unless action is cancel"),
         )
@@ -306,20 +299,6 @@ export const TaskTool = Tool.define(
       const scopedOrigin = scopedAgent.hookOrigin ? `agent:${scopedAgent.hookOrigin}` : `agent-config:${next.name}`
       let retainScopedAgent = runInBackground
 
-      const transcript = Effect.fn("TaskTool.hookTranscript")(function* (sessionID: SessionID) {
-        return yield* HookTranscript.materialize({
-          sessionID,
-          directory: yield* InstanceState.directory,
-          messages: yield* sessions.messages({ sessionID }).pipe(Effect.orDie),
-        }).pipe(Effect.orDie)
-      })
-      // This tool resolves the raw SettingsHook service, bypassing the
-      // prompt-runtime wrapper that derives prompt-scoped fields. Derive the
-      // same parent-prompt identity here for SubagentStart/SubagentStop.
-      const hookIdentity = Effect.fn("TaskTool.hookIdentity")(function* () {
-        const messages = yield* sessions.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)
-        return promptIdentity(messages as unknown as readonly HookTranscript.Message[])
-      })
       let stopToolCount = 0
       const countTools = (messages: readonly SessionV1.WithParts[]) =>
         messages.reduce((count, message) => count + message.parts.filter((part) => part.type === "tool").length, 0)
@@ -332,7 +311,6 @@ export const TaskTool = Tool.define(
           stopHookActive: active,
           agentID: nextSession.id,
           agentType: next.name,
-          agentTranscriptPath: yield* transcript(nextSession.id),
           lastAssistantMessage: last?.parts
             .filter((part) => part.type === "text")
             .map((part) => part.text)
@@ -382,11 +360,7 @@ export const TaskTool = Tool.define(
           const result = yield* settingsHook
             .trigger(
               { event: "SubagentStart", agentID: nextSession.id, agentType: next.name },
-              {
-                sessionID: ctx.sessionID,
-                transcriptPath: yield* transcript(ctx.sessionID),
-                ...(yield* hookIdentity()),
-              },
+              { sessionID: ctx.sessionID },
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
           yield* SettingsHook.landSystemMessages(result, { sessionID: nextSession.id })
@@ -647,11 +621,7 @@ export const TaskTool = Tool.define(
         // task now runs in the background).
         if (settingsHook && promoted && subagent && (yield* subagent.stopDelegated)) {
           const stopResult = yield* settingsHook
-            .trigger(yield* stopPayload(false), {
-              sessionID: ctx.sessionID,
-              transcriptPath: yield* transcript(ctx.sessionID),
-              ...(yield* hookIdentity()),
-            })
+            .trigger(yield* stopPayload(false), { sessionID: ctx.sessionID })
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
           yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
           // A `continue:false` stopReason is user-visible, like the V1 Stop path.
@@ -675,11 +645,7 @@ export const TaskTool = Tool.define(
           const stopHookContinuationCap = SettingsHook.stopHookBlockCap()
           for (let i = 0; i < stopHookContinuationCap; i++) {
             const stopResult = yield* settingsHook
-              .trigger(yield* stopPayload(subagentStopBlocked), {
-                sessionID: ctx.sessionID,
-                transcriptPath: yield* transcript(ctx.sessionID),
-                ...(yield* hookIdentity()),
-              })
+              .trigger(yield* stopPayload(subagentStopBlocked), { sessionID: ctx.sessionID })
               .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
             // Land any hook systemMessages so they're never silently dropped.
             yield* SettingsHook.landSystemMessages(stopResult, { sessionID: ctx.sessionID })
@@ -780,9 +746,11 @@ export const TaskTool = Tool.define(
     })
 
     return {
-      description: [DESCRIPTION, ...(flags.experimentalBackgroundSubagents ? [BACKGROUND_DESCRIPTION] : []), CANCEL_DESCRIPTION].join(
-        "\n\n",
-      ),
+      description: [
+        DESCRIPTION,
+        ...(flags.experimentalBackgroundSubagents ? [BACKGROUND_DESCRIPTION] : []),
+        CANCEL_DESCRIPTION,
+      ].join("\n\n"),
       effects: "unknown",
       parameters: Parameters,
       repairArguments: repairBackgroundArgument,

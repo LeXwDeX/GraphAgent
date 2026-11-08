@@ -67,7 +67,10 @@ describe("SettingsHook http handler", () => {
                 },
               ],
             })
-            yield* hook.trigger({ event: "UserPromptSubmit", prompt: "hello" }, { sessionID: id, transcriptPath: "" })
+            yield* hook.trigger(
+              { event: "UserPromptSubmit", prompt: "hello" },
+              { sessionID: id, transcript: () => Effect.succeed("") },
+            )
             expect(seen?.get("x-allowed")).toBe("Bearer fixture-value")
             expect(seen?.get("x-bare")).toBe("fixture-value")
             expect(seen?.get("x-denied")).toBe("value:")
@@ -101,7 +104,7 @@ describe("SettingsHook http handler", () => {
             })
             const r = yield* hook.trigger(
               { event: "UserPromptSubmit", prompt: "hi" },
-              { sessionID, transcriptPath: "" },
+              { sessionID, transcript: () => Effect.succeed("") },
             )
             expect(r.blocked).toBeUndefined()
             expect(seen).toBeDefined()
@@ -127,7 +130,7 @@ describe("SettingsHook http handler", () => {
             })
             const r = yield* hook.trigger(
               { event: "UserPromptSubmit", prompt: "hi" },
-              { sessionID, transcriptPath: "" },
+              { sessionID, transcript: () => Effect.succeed("") },
             )
             expect(r.blocked).toBeUndefined()
             yield* sessionHooks.add(sessionID, {
@@ -136,7 +139,7 @@ describe("SettingsHook http handler", () => {
             })
             const blocked = yield* hook.trigger(
               { event: "UserPromptSubmit", prompt: "hi" },
-              { sessionID, transcriptPath: "" },
+              { sessionID, transcript: () => Effect.succeed("") },
             )
             expect(blocked.blocked?.reason).toContain("500")
           }),
@@ -164,7 +167,7 @@ it.instance("Claude HTTP input adapts tool names, output and returned input with
           })
           const pre = yield* hooks.trigger(
             { event: "PreToolUse", toolName: "read", toolInput: { filePath: "a.ts" } },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(seen[0].tool_name).toBe("Read")
           expect(seen[0].tool_input.file_path).toBe("a.ts")
@@ -184,7 +187,7 @@ it.instance("Claude HTTP input adapts tool names, output and returned input with
               toolResponse: { exit: 0 },
               toolOutput: { title: "echo", output: "hi", metadata: { exit: 0 } },
             },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(seen.find((item) => item.tool_name === "Bash").tool_response.stdout).toBe("hi")
           expect(seen.find((item) => item.tool_name === "bash").tool_response).toEqual({ exit: 0 })

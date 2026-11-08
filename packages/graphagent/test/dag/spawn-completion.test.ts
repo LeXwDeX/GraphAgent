@@ -277,7 +277,10 @@ describe("spawnNode completion bridge", () => {
         ),
       ).toEqual([])
     } finally {
-      await $`git worktree remove --force ${workspace}`.cwd(tmp.path).quiet().catch(() => undefined)
+      await $`git worktree remove --force ${workspace}`
+        .cwd(tmp.path)
+        .quiet()
+        .catch(() => undefined)
     }
   })
 
@@ -307,7 +310,9 @@ describe("spawnNode completion bridge", () => {
         messages: () => Effect.succeed([]),
       })
       const prompt = makePromptLayer(reply("done"))
-      const instanceStore = instanceStoreWith(<A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect)
+      const instanceStore = instanceStoreWith(
+        <A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect,
+      )
 
       await Effect.runPromise(
         Effect.scoped(
@@ -331,7 +336,10 @@ describe("spawnNode completion bridge", () => {
       expect(Permission.evaluate("external_directory", path.join(workspace, "file"), rules).action).toBe("deny")
       expect(rules.filter((rule) => rule.permission === "external_directory" && rule.action === "allow")).toEqual([])
     } finally {
-      await $`git worktree remove --force ${workspace}`.cwd(tmp.path).quiet().catch(() => undefined)
+      await $`git worktree remove --force ${workspace}`
+        .cwd(tmp.path)
+        .quiet()
+        .catch(() => undefined)
     }
   })
 
@@ -373,7 +381,9 @@ describe("spawnNode completion bridge", () => {
         messages: () => Effect.succeed([]),
       })
       const prompt = makePromptLayer(reply("done"))
-      const instanceStore = instanceStoreWith(<A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect)
+      const instanceStore = instanceStoreWith(
+        <A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect,
+      )
 
       await Effect.runPromise(
         Effect.scoped(
@@ -413,7 +423,10 @@ describe("spawnNode completion bridge", () => {
       )
       expect(Permission.evaluate("external_directory", target, rules).action).toBe("allow")
     } finally {
-      await $`git worktree remove --force ${workspace}`.cwd(tmp.path).quiet().catch(() => undefined)
+      await $`git worktree remove --force ${workspace}`
+        .cwd(tmp.path)
+        .quiet()
+        .catch(() => undefined)
       await fs.rm(path.dirname(target), { recursive: true, force: true })
     }
   })
@@ -437,7 +450,9 @@ describe("spawnNode completion bridge", () => {
       messages: () => Effect.succeed([]),
     })
     const prompt = makePromptLayer(reply("done"))
-    const instanceStore = instanceStoreWith(<A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect)
+    const instanceStore = instanceStoreWith(
+      <A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect,
+    )
     const fullLayer: Layer.Layer<Dag.Service | Agent.Service | Session.Service | SessionPrompt.Service> =
       Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)
 
@@ -451,11 +466,7 @@ describe("spawnNode completion bridge", () => {
           })
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(
-        Effect.provide(fullLayer),
-        Effect.provideService(InstanceStore.Service, instanceStore),
-        Effect.orDie,
-      ),
+      ).pipe(Effect.provide(fullLayer), Effect.provideService(InstanceStore.Service, instanceStore), Effect.orDie),
     )
 
     expect(created).toBe(0)
@@ -814,7 +825,9 @@ describe("spawnNode completion bridge", () => {
                 // Completion/failure must already be durable before Stop can observe it.
                 expect(events.filter((event) => ["nodeCompleted", "nodeFailed"].includes(event.type))).toHaveLength(1)
                 expect(payload.agentID).toBe("ses_child")
-                expect(payload.agentTranscriptPath).toBeString()
+                // D1 PR2: the hook engine derives the child transcript from
+                // agentID; producers no longer materialize it eagerly.
+                expect(payload.agentTranscriptPath).toBeUndefined()
                 expect(payload.stopHookActive).toBe(false)
                 expect(payload.backgroundTasks).toEqual([])
                 return {
@@ -944,17 +957,13 @@ describe("boundedCancel", () => {
     const entered = Deferred.makeUnsafe<void>()
     const fiber = Effect.runFork(
       boundedCancel(
-        Effect.uninterruptible(
-          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
-        ),
+        Effect.uninterruptible(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
         "uninterruptible-test",
         20,
       ),
     )
     const result = await Effect.runPromise(
-      Deferred.await(entered).pipe(
-        Effect.andThen(Fiber.await(fiber).pipe(Effect.timeoutOption("100 millis"))),
-      ),
+      Deferred.await(entered).pipe(Effect.andThen(Fiber.await(fiber).pipe(Effect.timeoutOption("100 millis")))),
     )
 
     expect(Option.isNone(result)).toBe(true)

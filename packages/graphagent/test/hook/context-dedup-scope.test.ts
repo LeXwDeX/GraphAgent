@@ -55,8 +55,14 @@ describe("additionalContext dedup scope", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const r1 = yield* hook.trigger(post("call-1"), { sessionID: "ses_context_dedup", transcriptPath: "" })
-        const r2 = yield* hook.trigger(post("call-2"), { sessionID: "ses_context_dedup", transcriptPath: "" })
+        const r1 = yield* hook.trigger(post("call-1"), {
+          sessionID: "ses_context_dedup",
+          transcript: () => Effect.succeed(""),
+        })
+        const r2 = yield* hook.trigger(post("call-2"), {
+          sessionID: "ses_context_dedup",
+          transcript: () => Effect.succeed(""),
+        })
         expect(r1.additionalContexts).toEqual([FEEDBACK])
         // Second edit reintroduces the same lint error; the hook reports it again.
         expect(r2.additionalContexts).toEqual([FEEDBACK])
@@ -69,7 +75,10 @@ describe("additionalContext dedup scope", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const r = yield* hook.trigger(post("call-3"), { sessionID: "ses_context_dedup_2", transcriptPath: "" })
+        const r = yield* hook.trigger(post("call-3"), {
+          sessionID: "ses_context_dedup_2",
+          transcript: () => Effect.succeed(""),
+        })
         expect(r.additionalContexts).toEqual([FEEDBACK])
       }),
     {
@@ -101,7 +110,7 @@ describe("additionalContext dedup scope", () => {
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
         const stop = { event: "Stop", stopHookActive: false } as const
-        const ctx = { sessionID: "ses_context_dedup_stop", transcriptPath: "" }
+        const ctx = { sessionID: "ses_context_dedup_stop", transcript: () => Effect.succeed("") }
         expect((yield* hook.trigger(stop, ctx)).additionalContexts).toEqual(["stop-feedback"])
         expect((yield* hook.trigger(stop, ctx)).additionalContexts).toEqual(["stop-feedback"])
       }),

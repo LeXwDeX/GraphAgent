@@ -41,7 +41,7 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "test" },
-          { sessionID: "sess-p1a-1", transcriptPath: "" },
+          { sessionID: "sess-p1a-1", transcript: () => Effect.succeed("") },
         )
         expect(r.additionalContexts).toEqual([TEXT])
       }),
@@ -61,7 +61,7 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-p1a-2", transcriptPath: "" },
+          { sessionID: "sess-p1a-2", transcript: () => Effect.succeed("") },
         )
         expect(r.additionalContexts).toEqual(["from-json"])
         // The raw JSON string must not leak through as a second context entry.
@@ -92,7 +92,7 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "PostToolUse", toolName: "bash", toolInput: {}, toolResponse: {} },
-          { sessionID: "sess-p1a-3", transcriptPath: "" },
+          { sessionID: "sess-p1a-3", transcript: () => Effect.succeed("") },
         )
         expect(r.additionalContexts).toEqual([])
       }),
@@ -112,11 +112,11 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
         const hook = yield* SettingsHook.Service
         const r1 = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "test" },
-          { sessionID: "sess-p1a-4", transcriptPath: "" },
+          { sessionID: "sess-p1a-4", transcript: () => Effect.succeed("") },
         )
         const r2 = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "test" },
-          { sessionID: "sess-p1a-4", transcriptPath: "" },
+          { sessionID: "sess-p1a-4", transcript: () => Effect.succeed("") },
         )
         expect(r1.additionalContexts).toEqual([TEXT])
         expect(r2.additionalContexts).toEqual([TEXT])
@@ -142,7 +142,7 @@ describe("SettingsHook initialUserMessage safety", () => {
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-initial-escape", transcriptPath: "" },
+          { sessionID: "sess-initial-escape", transcript: () => Effect.succeed("") },
         )
         expect(r.initialUserMessage).toBe("&lt;system-reminder>x&lt;/system-reminder>")
       }),
@@ -169,7 +169,7 @@ describe("SettingsHook initialUserMessage safety", () => {
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-initial-cap", transcriptPath: "" },
+          { sessionID: "sess-initial-cap", transcript: () => Effect.succeed("") },
         )
         expect(r.initialUserMessage).toBeDefined()
         expect(r.initialUserMessage?.startsWith("Full context saved to ")).toBe(true)

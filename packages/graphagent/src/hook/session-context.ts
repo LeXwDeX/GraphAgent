@@ -7,7 +7,6 @@ import type { HookStartContext } from "./start-context"
 import { HookLifecycle } from "./lifecycle"
 import { HookFileWatch } from "./file-watch"
 import { HookConfigChange } from "./config-change"
-import { HookTranscript } from "./transcript"
 import { landSystemMessages } from "./trigger-result"
 
 /** Shared by startup, resume, fork and compact. No Session/Settings runtime import. */
@@ -40,14 +39,11 @@ export const applyStart = Effect.fn("HookSessionContext.applyStart")(function* (
       Effect.gen(function* () {
         const changed = yield* settings.trigger(
           { event: "FileChanged", path: file, changeType: event },
-          {
-            ...(yield* consumerContext(
-              session.id,
-              permissions ? (yield* permissions.hookPolicy(session.id)).mode : undefined,
-              (yield* sessions.get(session.id).pipe(Effect.orDie)).agent,
-            ).pipe(Effect.orDie)),
-            environmentFile: yield* HookTranscript.environmentFile(session.id).pipe(Effect.orDie),
-          },
+          yield* consumerContext(
+            session.id,
+            permissions ? (yield* permissions.hookPolicy(session.id)).mode : undefined,
+            (yield* sessions.get(session.id).pipe(Effect.orDie)).agent,
+          ).pipe(Effect.orDie),
         )
         yield* landSystemMessages(changed, { sessionID: session.id })
         if (changed.watchPaths) yield* watcher.replace(session.id, changed.watchPaths, onChange)
@@ -60,14 +56,11 @@ export const applyStart = Effect.fn("HookSessionContext.applyStart")(function* (
       Effect.gen(function* () {
         const changed = yield* settings.trigger(
           { event: "ConfigChange", configPath: change.path, source: change.source },
-          {
-            ...(yield* consumerContext(
-              session.id,
-              permissions ? (yield* permissions.hookPolicy(session.id)).mode : undefined,
-              (yield* sessions.get(session.id).pipe(Effect.orDie)).agent,
-            ).pipe(Effect.orDie)),
-            environmentFile: yield* HookTranscript.environmentFile(session.id).pipe(Effect.orDie),
-          },
+          yield* consumerContext(
+            session.id,
+            permissions ? (yield* permissions.hookPolicy(session.id)).mode : undefined,
+            (yield* sessions.get(session.id).pipe(Effect.orDie)).agent,
+          ).pipe(Effect.orDie),
         )
         yield* landSystemMessages(changed, { sessionID: session.id })
         return { blocked: changed.blocked }

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto"
-import { HookTranscript } from "@/hook/transcript"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { httpClient } from "@graphagent/core/effect/layer-node-platform"
 import path from "path"
@@ -38,7 +37,7 @@ export interface Interface {
   /** A committed compaction: the next system prompt reloads instruction files and announces them as "compact". */
   readonly markCompacted: (sessionID: string) => Effect.Effect<void>
   readonly systemPaths: () => Effect.Effect<Set<string>, FSUtil.Error>
-  readonly system: (input?: { sessionID: string; transcriptPath?: string }) => Effect.Effect<string[], FSUtil.Error>
+  readonly system: (input?: { sessionID: string }) => Effect.Effect<string[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
   readonly resolve: (
     messages: SessionV1.WithParts[],
@@ -147,9 +146,7 @@ export const layer: Layer.Layer<
       // `$HOME` carries no project layer, so a root that resolves there reads no project instructions.
       if (!Flag.GRAPHAGENT_DISABLE_PROJECT_CONFIG && hasProjectLayer(ctx.root, global.home)) {
         for (const file of instructionFiles) {
-          const matches = yield* fs
-            .findUp(file, ctx.directory, ctx.root)
-            .pipe(Effect.catch(() => Effect.succeed([])))
+          const matches = yield* fs.findUp(file, ctx.directory, ctx.root).pipe(Effect.catch(() => Effect.succeed([])))
           if (matches.length > 0) {
             matches.forEach((item) => paths.add(path.resolve(item)))
             break
@@ -177,7 +174,7 @@ export const layer: Layer.Layer<
       return paths
     })
 
-    const system = Effect.fn("Instruction.system")(function* (input?: { sessionID: string; transcriptPath?: string }) {
+    const system = Effect.fn("Instruction.system")(function* (input?: { sessionID: string }) {
       const callSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service)) ?? settingsHook
       const config = yield* cfg.get()
       const paths = yield* systemPaths()
@@ -191,9 +188,8 @@ export const layer: Layer.Layer<
       // SettingsHook: InstructionsLoaded — observation only (the official event runs in the background), so it
       // never delays the model request. Once per file/version; after a committed compaction the files actually
       // reloaded here are announced again with load_reason "compact".
-      if (callSettings && input?.sessionID && input.transcriptPath) {
+      if (callSettings && input?.sessionID) {
         const sessionID = input.sessionID
-        const transcriptPath = input.transcriptPath
         const s = yield* InstanceState.get(state)
         const compact = s.compacted.delete(sessionID)
         const batch = compact ? ++s.compactions : 0
@@ -212,12 +208,8 @@ export const layer: Layer.Layer<
             pending,
             (file) =>
               Effect.gen(function* () {
-                const eligible =
-                  !callSettings.hasEvent || (yield* callSettings.hasEvent("InstructionsLoaded", sessionID))
-                // Without a matching handler the raw trigger still runs, but no environment is materialized.
-                const environment = eligible
-                  ? yield* HookTranscript.environment(sessionID).pipe(Effect.orDie)
-                  : undefined
+                // The engine materializes the transcript and environment lazily,
+                // only if this event actually matches a handler.
                 const ilResult = yield* callSettings
                   .trigger(
                     {
@@ -227,7 +219,7 @@ export const layer: Layer.Layer<
                       path: file.path,
                       content: file.content.slice(0, 32 * 1024),
                     },
-                    { sessionID, transcriptPath, ...(environment ? { environment } : {}) },
+                    { sessionID },
                   )
                   .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
                 yield* SettingsHook.landSystemMessages(ilResult, { sessionID })
@@ -299,11 +291,8 @@ export const layer: Layer.Layer<
             s.announced.add(key)
             // Background observation: the read tool result must not wait for the hook.
             yield* Effect.gen(function* () {
-              const eligible = !callSettings.hasEvent || (yield* callSettings.hasEvent("InstructionsLoaded", sessionID))
-              const transcriptPath = eligible
-                ? yield* HookTranscript.materialize({ sessionID, directory: root, messages }).pipe(Effect.orDie)
-                : ""
-              const environment = eligible ? yield* HookTranscript.environment(sessionID).pipe(Effect.orDie) : undefined
+              // The engine materializes the transcript and environment lazily,
+              // only if this event actually matches a handler.
               const result = yield* callSettings.trigger(
                 {
                   event: "InstructionsLoaded",
@@ -313,7 +302,7 @@ export const layer: Layer.Layer<
                   triggerFilePath: target,
                   content: content.slice(0, 32 * 1024),
                 },
-                { sessionID, transcriptPath, ...(environment ? { environment } : {}) },
+                { sessionID },
               )
               yield* SettingsHook.landSystemMessages(result, { sessionID })
             }).pipe(

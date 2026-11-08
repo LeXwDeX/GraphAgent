@@ -1,5 +1,6 @@
 import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
+import { HookRewakeLive } from "@/hook/rewake-live"
 import { HookFileWatch } from "@/hook/file-watch"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { expect, spyOn } from "bun:test"
@@ -83,6 +84,7 @@ const lsp = Layer.succeed(
 const root = LayerNode.group([
   SessionPrompt.node,
   SettingsHook.node,
+  HookRewakeLive.node,
   HookLifecycle.node,
   SessionHooks.node,
   HookFileWatch.node,
@@ -95,10 +97,7 @@ const root = LayerNode.group([
 ])
 const it = testEffect(
   LayerNode.buildLayer(root, {
-    replacements: [
-      LayerNode.replace(MCP.node, mcp),
-      LayerNode.replace(LSP.node, lsp),
-    ],
+    replacements: [LayerNode.replace(MCP.node, mcp), LayerNode.replace(LSP.node, lsp)],
   }),
 )
 
@@ -181,7 +180,12 @@ it.live("resume does not wait on cancellation while holding the admission commit
       yield* Effect.addFinalizer(() => Effect.promise(() => fs.writeFile(release, "go").catch(() => undefined)))
       const resumed = yield* prompt.resume({ sessionID: session.id, hookMode: "noninteractive" }).pipe(Effect.forkChild)
       yield* pollWithTimeout(
-        Effect.promise(() => fs.access(entered).then(() => true as const, () => undefined)),
+        Effect.promise(() =>
+          fs.access(entered).then(
+            () => true as const,
+            () => undefined,
+          ),
+        ),
         "resume did not reach admission",
       )
       const abort = SessionCancellation.begin(session.id)
@@ -201,21 +205,23 @@ it.live("resume does not wait on cancellation while holding the admission commit
 )
 
 const goalIt = testEffect(
-  LayerNode.buildLayer(LayerNode.group([
-    root,
-    GoalLoop.node,
-    Goal.node,
-    SessionStatus.node,
-    SessionAutomationLease.node,
-    SessionRunState.node,
-  ]), {
-    replacements: [
-      LayerNode.replace(MCP.node, mcp),
-      LayerNode.replace(LSP.node, lsp),
-    ],
-  }).pipe(
+  LayerNode.buildLayer(
+    LayerNode.group([
+      root,
+      GoalLoop.node,
+      Goal.node,
+      SessionStatus.node,
+      SessionAutomationLease.node,
+      SessionRunState.node,
+    ]),
+    {
+      replacements: [LayerNode.replace(MCP.node, mcp), LayerNode.replace(LSP.node, lsp)],
+    },
+  ).pipe(
     Layer.provideMerge(
-      Layer.succeed(GoalLoopJudgeLLM, { call: () => Effect.succeed(JSON.stringify({ verdict: "done", reason: "finished" })) }),
+      Layer.succeed(GoalLoopJudgeLLM, {
+        call: () => Effect.succeed(JSON.stringify({ verdict: "done", reason: "finished" })),
+      }),
     ),
   ),
 )
@@ -277,13 +283,18 @@ goalIt.live("goal handoff abandons a start invalidated while holding the automat
         const session = yield* sessions.create({ title: "goal handoff cancellation" })
         const active = yield* goal.set(session.id, "finish work", 5)
         yield* goal.markTurnDriven(session.id)
-        const token = Option.getOrThrow(yield* lease.claim(session.id, { kind: "goal", id: active.goal_id ?? "legacy" }))
+        const token = Option.getOrThrow(
+          yield* lease.claim(session.id, { kind: "goal", id: active.goal_id ?? "legacy" }),
+        )
         const entered = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
         const unregistering = yield* Deferred.make<void>()
         const start = runs.startIfIdle
         const startSpy = spyOn(runs, "startIfIdle").mockImplementation((...args) =>
-          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(start(...args))),
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(start(...args)),
+          ),
         )
         const unregister = lease.unregister
         const unregisterSpy = spyOn(lease, "unregister").mockImplementation((id, owner) =>
@@ -304,7 +315,9 @@ goalIt.live("goal handoff abandons a start invalidated while holding the automat
         const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
         yield* awaitWithTimeout(Deferred.await(unregistering), "goal pause did not reach lease release")
         yield* Deferred.succeed(release, undefined)
-        expect(Option.isNone(yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff did not settle"))).toBe(true)
+        expect(Option.isNone(yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff did not settle"))).toBe(
+          true,
+        )
         yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancel deadlocked on the handoff")
         expect((yield* goal.load(session.id))?.status).toBe("paused")
         expect(yield* llm.calls).toBe(0)
@@ -324,7 +337,9 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
         const session = yield* sessions.create({ title: "goal handoff blocked admission" })
         const active = yield* goal.set(session.id, "finish work", 5)
         yield* goal.markTurnDriven(session.id)
-        const token = Option.getOrThrow(yield* lease.claim(session.id, { kind: "goal", id: active.goal_id ?? "legacy" }))
+        const token = Option.getOrThrow(
+          yield* lease.claim(session.id, { kind: "goal", id: active.goal_id ?? "legacy" }),
+        )
         const preparing = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
         const unregistering = yield* Deferred.make<void>()
@@ -338,7 +353,10 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
         })
         const prepare = prompt.prepareIfIdle
         const prepareSpy = spyOn(prompt, "prepareIfIdle").mockImplementation((...args) =>
-          Deferred.succeed(preparing, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(prepare(...args))),
+          Deferred.succeed(preparing, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(prepare(...args)),
+          ),
         )
         const unregister = lease.unregister
         const unregisterSpy = spyOn(lease, "unregister").mockImplementation((id, owner) =>
@@ -370,11 +388,16 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
         yield* awaitWithTimeout(Deferred.await(unregistering), "goal pause did not reach lease release")
         yield* llm.text("later response")
         observingLater = true
-        const later = yield* prompt.prompt({
-          sessionID: session.id,
-          agent: "build",
-          parts: [{ type: "text", text: "LATER_PROMPT_971" }],
-        }, { skipHookStart: true }).pipe(Effect.forkChild)
+        const later = yield* prompt
+          .prompt(
+            {
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "LATER_PROMPT_971" }],
+            },
+            { skipHookStart: true },
+          )
+          .pipe(Effect.forkChild)
         yield* awaitWithTimeout(Deferred.await(laterRequested), "later prompt did not reach cancellation admission")
         expect(yield* llm.calls).toBe(0)
         yield* Deferred.succeed(release, undefined)
@@ -386,11 +409,17 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
         expect(firstInput).toContain("LATER_PROMPT_971")
         expect(firstInput).not.toContain("CANCELLED_GOAL_HANDOFF_971")
         yield* llm.text("subsequent response")
-        yield* awaitWithTimeout(prompt.prompt({
-          sessionID: session.id,
-          agent: "build",
-          parts: [{ type: "text", text: "subsequent prompt" }],
-        }, { skipHookStart: true }), "subsequent prompt did not complete")
+        yield* awaitWithTimeout(
+          prompt.prompt(
+            {
+              sessionID: session.id,
+              agent: "build",
+              parts: [{ type: "text", text: "subsequent prompt" }],
+            },
+            { skipHookStart: true },
+          ),
+          "subsequent prompt did not complete",
+        )
         expect(yield* llm.calls).toBe(2)
       }),
     { git: true, config: providerCfg },
@@ -439,11 +468,14 @@ goalIt.live("cancel during real goal command startup retains the goal until paus
                   yield* set(id, info)
                   yield* Deferred.succeed(idle, undefined)
                 })
-            : set(id, info),
+              : set(id, info),
         )
         const pause = goal.pauseForUserCancel
         const pauseSpy = spyOn(goal, "pauseForUserCancel").mockImplementation((id, reason) =>
-          Deferred.succeed(deciding, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.andThen(pause(id, reason))),
+          Deferred.succeed(deciding, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(pause(id, reason)),
+          ),
         )
         const wait = SessionCancellation.waitForGoalCancels
         const waitSpy = spyOn(SessionCancellation, "waitForGoalCancels").mockImplementation((id) =>
@@ -459,19 +491,24 @@ goalIt.live("cancel during real goal command startup retains the goal until paus
             yield* Deferred.succeed(unlock, undefined)
           }),
         )
-        const command = yield* prompt.command({
-          sessionID: session.id,
-          command: "goal",
-          arguments: "finish work",
-          agent: "build",
-        }).pipe(Effect.forkChild)
+        const command = yield* prompt
+          .command({
+            sessionID: session.id,
+            command: "goal",
+            arguments: "finish work",
+            agent: "build",
+          })
+          .pipe(Effect.forkChild)
         yield* awaitWithTimeout(Deferred.await(starting), "goal command did not reach runner startup")
-        const lock = yield* SessionCancellation.publication.withLock(session.id)(
-          Deferred.succeed(locked, undefined).pipe(Effect.andThen(Deferred.await(unlock))),
-        ).pipe(Effect.forkChild({ startImmediately: true }))
+        const lock = yield* SessionCancellation.publication
+          .withLock(session.id)(Deferred.succeed(locked, undefined).pipe(Effect.andThen(Deferred.await(unlock))))
+          .pipe(Effect.forkChild({ startImmediately: true }))
         yield* awaitWithTimeout(Deferred.await(locked), "publication lock was not acquired")
         const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
-        yield* awaitWithTimeout(Deferred.await(deciding), "goal cancellation did not reach pause while publication was locked")
+        yield* awaitWithTimeout(
+          Deferred.await(deciding),
+          "goal cancellation did not reach pause while publication was locked",
+        )
         expect(SessionCancellation.goalCancelPending(session.id)).toBe(true)
         yield* Deferred.succeed(unlock, undefined)
         yield* Fiber.join(lock)
@@ -576,13 +613,19 @@ goalIt.live("cancel during model switch notice landing drops remaining notices a
         const trigger = settings.trigger
         const triggerSpy = spyOn(settings, "trigger").mockImplementation((payload, context) =>
           payload.event === "PostModelSwitch" && context.sessionID === session.id
-            ? Effect.succeed({ additionalContexts: ["STALE_MODEL_CONTEXT"], systemMessages: ["FIRST_NOTICE", "STALE_NOTICE"] })
+            ? Effect.succeed({
+                additionalContexts: ["STALE_MODEL_CONTEXT"],
+                systemMessages: ["FIRST_NOTICE", "STALE_NOTICE"],
+              })
             : trigger(payload, context),
         )
         const message = HookNotification.message
         const noticeSpy = spyOn(HookNotification, "message").mockImplementation((id, text) =>
           id === session.id && text === "FIRST_NOTICE"
-            ? message(id, text).pipe(Effect.andThen(Deferred.succeed(landed, undefined)), Effect.andThen(Deferred.await(release)))
+            ? message(id, text).pipe(
+                Effect.andThen(Deferred.succeed(landed, undefined)),
+                Effect.andThen(Deferred.await(release)),
+              )
             : message(id, text),
         )
         yield* Effect.addFinalizer(() =>
@@ -593,12 +636,16 @@ goalIt.live("cancel during model switch notice landing drops remaining notices a
           }),
         )
         yield* prompt.restoreModelContext(session.id)
-        const consumer = yield* prompt.takeModelSwitchContext({ sessionID: session.id, apiModelID: "test-model" }).pipe(Effect.forkChild)
+        const consumer = yield* prompt
+          .takeModelSwitchContext({ sessionID: session.id, apiModelID: "test-model" })
+          .pipe(Effect.forkChild)
         yield* awaitWithTimeout(Deferred.await(landed), "first model switch notice did not land")
         yield* awaitWithTimeout(prompt.cancel(session.id), "model switch cancellation did not finish")
         yield* Deferred.succeed(release, undefined)
         expect(yield* awaitWithTimeout(Fiber.join(consumer), "model switch consumer did not settle")).toEqual([])
-        expect(noticeSpy.mock.calls.filter(([id]) => id === session.id).map(([, text]) => text)).toEqual(["FIRST_NOTICE"])
+        expect(noticeSpy.mock.calls.filter(([id]) => id === session.id).map(([, text]) => text)).toEqual([
+          "FIRST_NOTICE",
+        ])
       }),
     { git: true, config: providerCfg },
   ),
@@ -627,17 +674,19 @@ for (const outcome of ["pause", "done"] as const) {
         yield* goal.set(session.id, "finish the work", 5)
         yield* status.set(session.id, { type: "idle" })
         const notice = yield* pollWithTimeout(
-          sessions.messages({ sessionID: session.id }).pipe(
-            Effect.map((messages) =>
-              messages.find((message) =>
-                message.parts.some(
-                  (part) =>
-                    part.type === "text" &&
-                    (outcome === "pause" ? part.text.includes("目标已暂停") : part.text.includes("finished")),
+          sessions
+            .messages({ sessionID: session.id })
+            .pipe(
+              Effect.map((messages) =>
+                messages.find((message) =>
+                  message.parts.some(
+                    (part) =>
+                      part.type === "text" &&
+                      (outcome === "pause" ? part.text.includes("目标已暂停") : part.text.includes("finished")),
+                  ),
                 ),
               ),
             ),
-          ),
           `Goal ${outcome} notice was not persisted`,
           "8 seconds",
         )
@@ -719,11 +768,13 @@ it.live("async hooks re-enter the real session after their caller has completed"
         "async hook did not invoke the model again",
       )
       const messages = yield* pollWithTimeout(
-        sessions.messages({ sessionID: session.id }).pipe(
-          Effect.map((messages) =>
-            messages.filter((message) => message.info.role === "assistant").length >= 2 ? messages : undefined,
+        sessions
+          .messages({ sessionID: session.id })
+          .pipe(
+            Effect.map((messages) =>
+              messages.filter((message) => message.info.role === "assistant").length >= 2 ? messages : undefined,
+            ),
           ),
-        ),
         "async rewake assistant was not persisted",
       )
       expect(
@@ -1215,7 +1266,7 @@ it.live("native write, edit and multi-file patch emit actual FileChanged paths",
         settings
           .trigger(
             { event: "FileChanged", path: file, changeType: event },
-            { sessionID: session.id, transcriptPath: "" },
+            { sessionID: session.id, transcript: () => Effect.succeed("") },
           )
           .pipe(Effect.asVoid),
       )
@@ -1517,9 +1568,7 @@ it.live("a blocked command expansion records [Hook stopped] without changing the
       })
       expect(result.info.role).toBe("user")
       if (result.info.role === "user") expect(result.info.model.variant).toBe("high")
-      expect(
-        result.parts.some((part) => part.type === "text" && part.text.includes("[Hook stopped]")),
-      ).toBe(true)
+      expect(result.parts.some((part) => part.type === "text" && part.text.includes("[Hook stopped]"))).toBe(true)
       expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
     }),
     {
@@ -1569,16 +1618,25 @@ it.live("a command expanded before a later variant write cannot restore its old 
         })
         .pipe(Effect.forkChild)
       yield* pollWithTimeout(
-        Effect.promise(() => fs.access(entered).then(() => true as const, () => undefined)),
+        Effect.promise(() =>
+          fs.access(entered).then(
+            () => true as const,
+            () => undefined,
+          ),
+        ),
         "command expansion hook never started",
       )
-      yield* awaitWithTimeout(prompt.setModel({
-        sessionID: session.id,
-        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
-        variant: "high",
-        source: "picker",
-        hookMode: "interactive",
-      }), "later model write did not finish", "10 seconds")
+      yield* awaitWithTimeout(
+        prompt.setModel({
+          sessionID: session.id,
+          model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+          variant: "high",
+          source: "picker",
+          hookMode: "interactive",
+        }),
+        "later model write did not finish",
+        "10 seconds",
+      )
       expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
       yield* Effect.promise(() => fs.writeFile(release, "go"))
       const result = yield* awaitWithTimeout(Fiber.join(running), "expanded command did not finish", "10 seconds")
@@ -1641,7 +1699,12 @@ it.live("successive commands use the model selection current when each one start
         })
         .pipe(Effect.forkChild)
       yield* pollWithTimeout(
-        Effect.promise(() => fs.access(enteredA).then(() => true as const, () => undefined)),
+        Effect.promise(() =>
+          fs.access(enteredA).then(
+            () => true as const,
+            () => undefined,
+          ),
+        ),
         "command A expansion hook never started",
       )
       yield* prompt.setModel({
@@ -1668,7 +1731,12 @@ it.live("successive commands use the model selection current when each one start
         })
         .pipe(Effect.forkChild)
       yield* pollWithTimeout(
-        Effect.promise(() => fs.access(enteredB).then(() => true as const, () => undefined)),
+        Effect.promise(() =>
+          fs.access(enteredB).then(
+            () => true as const,
+            () => undefined,
+          ),
+        ),
         "command B expansion hook never started",
       )
       yield* Effect.promise(() => fs.writeFile(releaseB, "go"))
@@ -1695,10 +1763,7 @@ it.live("a no-op model write appends no ModelSwitched event and uses the version
       const { db } = yield* Database.Service
       const session = yield* sessions.create({ title: "No-op model switch", permission: [] })
       const types = () =>
-        db
-          .select({ type: EventTable.type })
-          .from(EventTable)
-          .where(eq(EventTable.aggregate_id, session.id))
+        db.select({ type: EventTable.type }).from(EventTable).where(eq(EventTable.aggregate_id, session.id))
       yield* prompt.setModel({
         sessionID: session.id,
         model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
@@ -1763,7 +1828,12 @@ for (const scenario of ["no-op", "aba"] as const) {
           })
           .pipe(Effect.forkChild)
         yield* pollWithTimeout(
-          Effect.promise(() => fs.access(entered).then(() => true as const, () => undefined)),
+          Effect.promise(() =>
+            fs.access(entered).then(
+              () => true as const,
+              () => undefined,
+            ),
+          ),
           "command expansion hook never started",
         )
         if (scenario === "aba") {

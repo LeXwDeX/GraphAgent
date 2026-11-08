@@ -29,8 +29,7 @@ const CONTEXT_V2 = "ctx-hot-reload-v2"
 // A SessionStart command hook whose stdout JSON carries a fixed additionalContext
 // marker. `printf '%s' '<json>'` single-quotes the JSON so its inner double
 // quotes reach the shell literally; parseStdout then JSON.parses the output.
-const hookJson = (ctx: string) =>
-  JSON.stringify({ hookSpecificOutput: { additionalContext: ctx } })
+const hookJson = (ctx: string) => JSON.stringify({ hookSpecificOutput: { additionalContext: ctx } })
 
 const settingsFor = (ctx: string) => ({
   // hooks.json uses top-level event keys (D1 canonical format).
@@ -76,7 +75,7 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
         // Baseline: trigger runs loadChain (v1) and starts the watcher.
         const r1 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f3-base", transcriptPath: "" },
+          { sessionID: "sess-f3-base", transcript: () => Effect.succeed("") },
         )
         expect(r1.additionalContexts).toEqual([CONTEXT_V1])
 
@@ -94,7 +93,7 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
             n += 1
             const r = yield* hook.trigger(
               { event: "SessionStart", source: "startup" },
-              { sessionID: `sess-f3-poll-${n}`, transcriptPath: "" },
+              { sessionID: `sess-f3-poll-${n}`, transcript: () => Effect.succeed("") },
             )
             return r.additionalContexts.includes(CONTEXT_V2) ? true : undefined
           }),
@@ -105,7 +104,7 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
         // Final confirmation with a clean session.
         const r2 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f3-final", transcriptPath: "" },
+          { sessionID: "sess-f3-final", transcript: () => Effect.succeed("") },
         )
         expect(r2.additionalContexts).toEqual([CONTEXT_V2])
       }),

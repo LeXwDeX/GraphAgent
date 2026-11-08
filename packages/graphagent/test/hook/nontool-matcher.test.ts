@@ -62,7 +62,7 @@ describe("matchers on non-tool events", () => {
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "ses_matcher_1", transcriptPath: "" },
+          { sessionID: "ses_matcher_1", transcript: () => Effect.succeed("") },
         )
         expect(r.additionalContexts).toEqual(["session-start-startup"])
       }),
@@ -76,12 +76,12 @@ describe("matchers on non-tool events", () => {
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "PreCompact", trigger: "auto" },
-          { sessionID: "ses_matcher_2", transcriptPath: "" },
+          { sessionID: "ses_matcher_2", transcript: () => Effect.succeed("") },
         )
         expect(r.blocked?.reason).toBe("precompact-auto")
         const manual = yield* hook.trigger(
           { event: "PreCompact", trigger: "manual" },
-          { sessionID: "ses_matcher_2b", transcriptPath: "" },
+          { sessionID: "ses_matcher_2b", transcript: () => Effect.succeed("") },
         )
         expect(manual.blocked).toBeUndefined()
       }),
@@ -95,11 +95,11 @@ describe("matchers on non-tool events", () => {
         const hook = yield* SettingsHook.Service
         const hit = yield* hook.trigger(
           { event: "SubagentStop", stopHookActive: false, agentType: "explore" },
-          { sessionID: "ses_matcher_3", transcriptPath: "" },
+          { sessionID: "ses_matcher_3", transcript: () => Effect.succeed("") },
         )
         const miss = yield* hook.trigger(
           { event: "SubagentStop", stopHookActive: false, agentType: "general" },
-          { sessionID: "ses_matcher_3", transcriptPath: "" },
+          { sessionID: "ses_matcher_3", transcript: () => Effect.succeed("") },
         )
         expect(hit.additionalContexts).toEqual(["subagent-explore"])
         expect(miss.additionalContexts).toEqual([])
@@ -114,7 +114,7 @@ describe("matchers on non-tool events", () => {
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "hi" },
-          { sessionID: "ses_matcher_4", transcriptPath: "" },
+          { sessionID: "ses_matcher_4", transcript: () => Effect.succeed("") },
         )
         expect(r.additionalContexts).toEqual(["prompt-always"])
       }),
@@ -165,7 +165,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "ConfigChange", source: "user_settings", configPath: "/tmp/hooks.json" },
           {
             sessionID: "ses_matcher_config_miss",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "config-change")).toBe(false)
@@ -173,7 +173,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "ConfigChange", source: "project_settings", configPath: "/tmp/hooks.json" },
           {
             sessionID: "ses_matcher_config_hit",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "config-change")).toBe(true)
@@ -191,7 +191,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "StopFailure", stopHookActive: false, error: "server_error" },
           {
             sessionID: "ses_matcher_stopfail_miss",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "stop-failure")).toBe(false)
@@ -199,7 +199,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "StopFailure", stopHookActive: false, error: "overloaded" },
           {
             sessionID: "ses_matcher_stopfail_hit",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "stop-failure")).toBe(true)
@@ -217,7 +217,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "InstructionsLoaded", path: "/tmp/AGENTS.md", loadReason: "compact" },
           {
             sessionID: "ses_matcher_instructions_miss",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "instructions-loaded")).toBe(false)
@@ -225,7 +225,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "InstructionsLoaded", path: "/tmp/AGENTS.md", loadReason: "session_start" },
           {
             sessionID: "ses_matcher_instructions_hit",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "instructions-loaded")).toBe(true)
@@ -243,7 +243,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "Elicitation", serverName: "other", message: "hi" },
           {
             sessionID: "ses_matcher_elicitation_miss",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "elicitation")).toBe(false)
@@ -251,7 +251,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "Elicitation", serverName: "fixture", message: "hi" },
           {
             sessionID: "ses_matcher_elicitation_hit",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "elicitation")).toBe(true)
@@ -269,7 +269,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "ElicitationResult", serverName: "other", action: "accept" },
           {
             sessionID: "ses_matcher_elicitation_result_miss",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "elicitation-result")).toBe(false)
@@ -277,7 +277,7 @@ describe("matcher targets on lifecycle and elicitation events", () => {
           { event: "ElicitationResult", serverName: "fixture", action: "accept" },
           {
             sessionID: "ses_matcher_elicitation_result_hit",
-            transcriptPath: "",
+            transcript: () => Effect.succeed(""),
           },
         )
         expect(yield* markerExists(directory, "elicitation-result")).toBe(true)
@@ -324,7 +324,7 @@ describe("model switch matchers use the canonical model name", () => {
         const pre = (toModel: string, id: string) =>
           hook.trigger(
             { event: "PreModelSwitch", fromModel: "claude-sonnet-3-7", toModel },
-            { sessionID: id, transcriptPath: "" },
+            { sessionID: id, transcript: () => Effect.succeed("") },
           )
         for (const [toModel, id] of [
           ["claude-sonnet-4-20250514", "ses_model_dated"],
@@ -338,7 +338,7 @@ describe("model switch matchers use the canonical model name", () => {
         const post = (toModel: string, id: string) =>
           hook.trigger(
             { event: "PostModelSwitch", fromModel: "claude-sonnet-4", toModel },
-            { sessionID: id, transcriptPath: "" },
+            { sessionID: id, transcript: () => Effect.succeed("") },
           )
         expect((yield* post("claude-opus-4.0", "ses_model_opus_alias")).additionalContexts).toEqual(["post-canonical"])
         expect((yield* post("claude-haiku-4-5-20250929", "ses_model_haiku_dated")).additionalContexts).toEqual([

@@ -741,17 +741,9 @@ export const RunCommand = effectCmd({
         if (!interactive) {
           if (args.init || args.maintenance || args["init-only"]) {
             if (!settingsHook) return die("Setup hooks are unavailable in this run")
-            const { HookTranscript } = await import("@/hook/transcript")
-            const transcriptPath = await Effect.runPromise(
-              HookTranscript.materialize({ sessionID, directory: cwd, messages: [] }),
-            )
-            const environmentFile = await Effect.runPromise(HookTranscript.environmentFile(sessionID))
             await Effect.runPromise(
               settingsHook
-                .trigger(
-                  { event: "Setup", trigger: args.maintenance ? "maintenance" : "init" },
-                  { sessionID, transcriptPath, environmentFile },
-                )
+                .trigger({ event: "Setup", trigger: args.maintenance ? "maintenance" : "init" }, { sessionID })
                 .pipe(Effect.provideService(InstanceRef, localInstance), Effect.ignore),
             )
           }

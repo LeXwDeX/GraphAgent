@@ -63,7 +63,7 @@ describe("official MCP tool hook transport", () => {
       const result = yield* hook
         .trigger(
           { event: "PreToolUse", toolName: "read", toolInput: { filePath: "/tmp/fixture.txt" } },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         .pipe(Effect.provide(mcp))
       expect(input).toEqual({ path: "/tmp/fixture.txt" })
@@ -94,7 +94,10 @@ describe("official MCP tool hook transport", () => {
         hooks: [{ type: "mcp_tool", server: "audit", tool: "check" }],
       })
       const result = yield* hook
-        .trigger({ event: "PreToolUse", toolName: "Read", toolInput: {} }, { sessionID, transcriptPath: "" })
+        .trigger(
+          { event: "PreToolUse", toolName: "Read", toolInput: {} },
+          { sessionID, transcript: () => Effect.succeed("") },
+        )
         .pipe(Effect.provide(mcp))
       expect(result.blocked).toBeUndefined()
     }),

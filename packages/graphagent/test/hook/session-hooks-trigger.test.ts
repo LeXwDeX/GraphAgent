@@ -36,7 +36,7 @@ describe("SessionHooks → SettingsHook.trigger integration (D2)", () => {
       })
       const r = yield* hook.trigger(
         { event: "UserPromptSubmit", prompt: "hi" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(r.additionalContexts).toContain(CTX)
     }),
@@ -55,7 +55,7 @@ describe("SessionHooks → SettingsHook.trigger integration (D2)", () => {
 
       const r1 = yield* hook.trigger(
         { event: "UserPromptSubmit", prompt: "first" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(r1.additionalContexts).toContain(CTX)
       // Auto-removed after its first execution (trigger's once-cleanup path).
@@ -63,7 +63,7 @@ describe("SessionHooks → SettingsHook.trigger integration (D2)", () => {
 
       const r2 = yield* hook.trigger(
         { event: "UserPromptSubmit", prompt: "second" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(r2.additionalContexts).not.toContain(CTX)
     }),
@@ -80,7 +80,10 @@ describe("SessionHooks → SettingsHook.trigger integration (D2)", () => {
       })
       expect((yield* sessionHooks.listAll(sessionID)).length).toBe(1)
 
-      yield* hook.trigger({ event: "SessionEnd", reason: "delete" }, { sessionID, transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "SessionEnd", reason: "delete" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
 
       expect((yield* sessionHooks.listAll(sessionID)).length).toBe(0)
     }),

@@ -40,7 +40,7 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const ctx = { sessionID: "ses_parent_subagents", transcriptPath: "" }
+        const ctx = { sessionID: "ses_parent_subagents", transcript: () => Effect.succeed("") }
         const a = yield* hook.trigger({ event: "SubagentStart", agentID: "child_a", agentType: "explore" }, ctx)
         const b = yield* hook.trigger({ event: "SubagentStart", agentID: "child_b", agentType: "explore" }, ctx)
         expect(a.additionalContexts).toEqual([FIXED])
@@ -54,7 +54,7 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const ctx = { sessionID: "ses_parent_start", transcriptPath: "" }
+        const ctx = { sessionID: "ses_parent_start", transcript: () => Effect.succeed("") }
         const start = yield* hook.trigger({ event: "SessionStart", source: "startup" }, ctx)
         const child = yield* hook.trigger({ event: "SubagentStart", agentID: "child_c", agentType: "explore" }, ctx)
         expect(start.additionalContexts).toEqual([FIXED])
@@ -68,7 +68,7 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const ctx = { sessionID: "ses_compact", transcriptPath: "" }
+        const ctx = { sessionID: "ses_compact", transcript: () => Effect.succeed("") }
         const startup = yield* hook.trigger({ event: "SessionStart", source: "startup" }, ctx)
         const compact = yield* hook.trigger({ event: "SessionStart", source: "compact" }, ctx)
         expect(startup.additionalContexts).toEqual([FIXED])
@@ -88,8 +88,8 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const a = { sessionID: "ses_compact_a", transcriptPath: "" }
-        const b = { sessionID: "ses_compact_b", transcriptPath: "" }
+        const a = { sessionID: "ses_compact_a", transcript: () => Effect.succeed("") }
+        const b = { sessionID: "ses_compact_b", transcript: () => Effect.succeed("") }
         const first = yield* hook.trigger({ event: "SessionStart", source: "resume" }, b)
         const second = yield* hook.trigger({ event: "SessionStart", source: "resume" }, b)
         yield* hook.trigger({ event: "SessionStart", source: "compact" }, a)
@@ -109,7 +109,7 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const ctx = { sessionID: "ses_compact_no_start_hook", transcriptPath: "" }
+        const ctx = { sessionID: "ses_compact_no_start_hook", transcript: () => Effect.succeed("") }
         const before = yield* hook.trigger({ event: "PostModelSwitch", fromModel: "a", toModel: "b" }, ctx)
         const deduped = yield* hook.trigger({ event: "PostModelSwitch", fromModel: "a", toModel: "b" }, ctx)
         yield* hook.trigger({ event: "SessionStart", source: "compact" }, ctx)
@@ -126,7 +126,7 @@ describe("SessionStart / SubagentStart additionalContext dedup", () => {
     () =>
       Effect.gen(function* () {
         const hook = yield* SettingsHook.Service
-        const ctx = { sessionID: "ses_resume", transcriptPath: "" }
+        const ctx = { sessionID: "ses_resume", transcript: () => Effect.succeed("") }
         const first = yield* hook.trigger({ event: "SessionStart", source: "resume" }, ctx)
         const second = yield* hook.trigger({ event: "SessionStart", source: "resume" }, ctx)
         expect(first.additionalContexts).toEqual([FIXED])

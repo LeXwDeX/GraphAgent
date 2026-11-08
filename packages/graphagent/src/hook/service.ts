@@ -15,7 +15,7 @@ import { SessionID } from "@/session/schema"
 import { SessionHooks, type ScopedHooksInput } from "./session-hooks"
 import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
-import type { HookEvent, HookPayload, HookSummary, TriggerContext } from "./types"
+import type { HookEvent, HookPayload, HookSummary, ToolHookContext, TriggerContext } from "./types"
 import type { TriggerResult } from "./trigger-result"
 import { makeEngine } from "./engine/run"
 
@@ -23,6 +23,14 @@ import { makeEngine } from "./engine/run"
 
 export interface Interface {
   readonly trigger: (payload: HookPayload, ctx: TriggerContext) => Effect.Effect<TriggerResult>
+  /**
+   * Narrow entry for tool-lifecycle hooks. Callers provide only the real
+   * session and tool/MCP identity; the engine fills the transcript,
+   * environment, prompt identity and permission mode lazily through the single
+   * trigger pipeline. Optional so partial test mocks stay valid; when absent,
+   * callers fall back to `trigger` with the same narrow context.
+   */
+  readonly hookCall?: (payload: HookPayload, ctx: ToolHookContext) => Effect.Effect<TriggerResult>
   /** Deliver completed background command output on the next turn only. */
   readonly drainAsync?: (sessionID: SessionID | string) => Effect.Effect<TriggerResult>
   /** Drop pending output and interrupt background commands owned by this session. */

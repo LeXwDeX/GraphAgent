@@ -118,7 +118,7 @@ describe("InstructionsLoaded trigger on instruction file load", () => {
     () =>
       Effect.gen(function* () {
         const instruction = yield* Instruction.Service
-        yield* instruction.system({ sessionID: "ses_instructions", transcriptPath: "/tmp/instruction-fixture.jsonl" })
+        yield* instruction.system({ sessionID: "ses_instructions" })
         // InstructionsLoaded is background observation: system() returns before the hook has run.
         const events = yield* pollWithTimeout(
           Effect.sync(() => {
@@ -135,7 +135,7 @@ describe("InstructionsLoaded trigger on instruction file load", () => {
         expect(events[0].content).toHaveLength(32 * 1024)
 
         // Second load must not re-announce (once per instance)
-        yield* instruction.system({ sessionID: "ses_instructions", transcriptPath: "/tmp/instruction-fixture.jsonl" })
+        yield* instruction.system({ sessionID: "ses_instructions" })
         yield* Effect.sleep("200 millis")
         const again = instructionRecorder.recorded.filter(
           (p) => p.event === "InstructionsLoaded" && (p as { path?: string }).path?.endsWith("AGENTS.md"),
@@ -274,7 +274,7 @@ describe("ConfigChange trigger on hooks hot-reload", () => {
         // First trigger constructs state and starts the watcher (v1 on disk).
         yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess_wiring_test", transcriptPath: "" },
+          { sessionID: "sess_wiring_test", transcript: () => Effect.succeed("") },
         )
 
         // Modify the watched hooks.json → hot-reload → ConfigChange fires →

@@ -86,7 +86,7 @@ describe("hook-async-rewake", () => {
 
         const r = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-4-1", transcriptPath: "" },
+          { sessionID: "sess-4-1", transcript: () => Effect.succeed("") },
         )
 
         expect(r.additionalContexts).toEqual([])
@@ -130,7 +130,7 @@ describe("hook-async-rewake", () => {
 
         const r = yield* hook.trigger(
           { event: "PreToolUse", toolName: "Write", toolInput: {} },
-          { sessionID: "sess-4-2", transcriptPath: "" },
+          { sessionID: "sess-4-2", transcript: () => Effect.succeed("") },
         )
 
         expect(r.blocked).toBeUndefined()
@@ -158,7 +158,7 @@ describe("hook-async-rewake", () => {
 
         const r = yield* hook.trigger(
           { event: "PostToolUse", toolName: "Write", toolInput: {}, toolResponse: {} },
-          { sessionID: "sess-4-3", transcriptPath: "" },
+          { sessionID: "sess-4-3", transcript: () => Effect.succeed("") },
         )
 
         expect(r.blocked).toBeUndefined()
@@ -205,7 +205,10 @@ describe("hook-async-rewake", () => {
         const hook = yield* SettingsHook.Service
         yield* Effect.promise(() => fs.rm(marker44a, { force: true }))
 
-        yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: "sess-4-4a", transcriptPath: "" })
+        yield* hook.trigger(
+          { event: "Stop", stopHookActive: false },
+          { sessionID: "sess-4-4a", transcript: () => Effect.succeed("") },
+        )
 
         yield* pollWithTimeout(
           Effect.promise(() =>
@@ -248,7 +251,10 @@ describe("hook-async-rewake", () => {
         const hook = yield* SettingsHook.Service
         yield* Effect.promise(() => fs.rm(marker44b, { force: true }))
 
-        yield* hook.trigger({ event: "SessionEnd", reason: "other" }, { sessionID: "sess-4-4b", transcriptPath: "" })
+        yield* hook.trigger(
+          { event: "SessionEnd", reason: "other" },
+          { sessionID: "sess-4-4b", transcript: () => Effect.succeed("") },
+        )
 
         // A live local service may still let the background side effect settle;
         // the ended session must never receive a rewake or model turn.
@@ -292,7 +298,10 @@ describe("hook-async-rewake", () => {
         const hook = yield* SettingsHook.Service
         yield* Effect.promise(() => fs.rm(marker44c, { force: true }))
 
-        yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: "", transcriptPath: "" })
+        yield* hook.trigger(
+          { event: "Stop", stopHookActive: false },
+          { sessionID: "", transcript: () => Effect.succeed("") },
+        )
 
         yield* pollWithTimeout(
           Effect.promise(() =>
@@ -334,7 +343,7 @@ describe("hook-async-rewake", () => {
 
         const result = yield* hook.trigger(
           { event: "Stop", stopHookActive: false },
-          { sessionID: "sess-4-5", transcriptPath: "" },
+          { sessionID: "sess-4-5", transcript: () => Effect.succeed("") },
         )
         expect(result.blocked).toBeUndefined()
         expect(rewakeCalls.length).toBe(0)
@@ -384,7 +393,7 @@ describe("hook-async-rewake", () => {
           },
         ],
       })
-      yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+      yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcript: () => Effect.succeed("") })
 
       const drained = yield* pollWithTimeout(
         hook.drainAsync!(sessionID).pipe(
@@ -440,12 +449,15 @@ describe("hook-async-rewake", () => {
       })
 
       // First trigger starts the hook and reserves the once entry.
-      yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: "sess-4-7", transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "Stop", stopHookActive: false },
+        { sessionID: "sess-4-7", transcript: () => Effect.succeed("") },
+      )
 
       // Second trigger while the first is running cannot claim the entry.
       const r2 = yield* hook.trigger(
         { event: "Stop", stopHookActive: false },
-        { sessionID: "sess-4-7", transcriptPath: "" },
+        { sessionID: "sess-4-7", transcript: () => Effect.succeed("") },
       )
       expect(r2.additionalContexts).toEqual([])
 
@@ -470,7 +482,10 @@ describe("hook-async-rewake", () => {
       )
 
       expect(yield* Effect.promise(() => fs.readFile(count47, "utf8"))).toBe("run\n")
-      yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: "sess-4-7", transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "Stop", stopHookActive: false },
+        { sessionID: "sess-4-7", transcript: () => Effect.succeed("") },
+      )
       expect(yield* Effect.promise(() => fs.readFile(count47, "utf8"))).toBe("run\n")
     }),
   )
@@ -504,7 +519,10 @@ describe("hook-async-rewake", () => {
           ],
         })
         for (const count of [1, 2]) {
-          yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+          yield* hook.trigger(
+            { event: "Stop", stopHookActive: false },
+            { sessionID, transcript: () => Effect.succeed("") },
+          )
           yield* pollWithTimeout(
             Effect.promise(() =>
               fs
@@ -558,7 +576,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
           event === "StopFailure"
             ? { event, stopHookActive: false, error: "provider failure" }
             : { event, stopHookActive: false },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         if (boundary === "InstanceDispose") {
           const store = yield* InstanceStore.Service
@@ -568,7 +586,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
             boundary === "SessionEnd"
               ? { event: "SessionEnd", reason: "other" }
               : { event: "UserPromptSubmit", prompt: "new input" },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
         }
         yield* Effect.promise(() => fs.writeFile(release, "go"))
@@ -631,7 +649,7 @@ for (const event of ["Stop", "StopFailure"] as const) {
         event === "StopFailure"
           ? { event, stopHookActive: false, error: "provider failure" }
           : { event, stopHookActive: false },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       if (hook.invalidateStopRewakeChain) yield* hook.invalidateStopRewakeChain(sessionID)
       yield* Effect.promise(() => fs.writeFile(release, "go"))
@@ -678,7 +696,10 @@ it.instance("session cancel invalidation is per-session — other pending callba
           },
         ],
       })
-      yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID: sid, transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "Stop", stopHookActive: false },
+        { sessionID: sid, transcript: () => Effect.succeed("") },
+      )
     }
     // Cancel session A only: B's pending chain must stay valid.
     if (hook.invalidateStopRewakeChain) yield* hook.invalidateStopRewakeChain(a)
@@ -741,7 +762,7 @@ it.instance("a fresh Stop trigger after cancel establishes a new valid chain", (
         },
       ],
     })
-    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcript: () => Effect.succeed("") })
     if (hook.invalidateStopRewakeChain) yield* hook.invalidateStopRewakeChain(sessionID)
     // Second trigger after the cancel: a NEW chain — its callback must rewake.
     yield* hooks.add(sessionID, {
@@ -759,7 +780,7 @@ it.instance("a fresh Stop trigger after cancel establishes a new valid chain", (
         },
       ],
     })
-    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcript: () => Effect.succeed("") })
     yield* Effect.promise(() => fs.writeFile(releaseOld, "go"))
     yield* pollWithTimeout(
       Effect.promise(() =>
@@ -811,7 +832,7 @@ it.instance("stop-chain token validation: fresh chain validates, old tokens neve
         hooks: [{ type: "command", async: true, asyncRewake: true, command: cmd(release, marker) }],
       })
     yield* addStopHook(releaseOld, `${releaseOld}.completed`)
-    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcript: () => Effect.succeed("") })
     if (hook.validateStopRewakeChain) {
       // A token that was never issued cannot match the live chain.
       expect(yield* hook.validateStopRewakeChain(sessionID, { stale: true })).toBe(false)
@@ -819,7 +840,7 @@ it.instance("stop-chain token validation: fresh chain validates, old tokens neve
     if (hook.invalidateStopRewakeChain) yield* hook.invalidateStopRewakeChain(sessionID)
     // A fresh Stop trigger issues a NEW chain; its callback carries that token.
     yield* addStopHook(releaseNew, `${releaseNew}.completed`)
-    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+    yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcript: () => Effect.succeed("") })
     yield* Effect.promise(() => fs.writeFile(releaseNew, "go"))
     yield* pollWithTimeout(
       Effect.promise(async () => (rewakeCalls.length === 1 ? true : undefined)),
@@ -868,7 +889,11 @@ it.instance("concurrent SubagentStop callbacks share the continuation budget", (
     const total = SettingsHook.MAX_STOP_CONTINUATIONS + 3
     yield* Effect.forEach(
       Array.from({ length: total }),
-      () => hook.trigger({ event: "SubagentStop", stopHookActive: false }, { sessionID, transcriptPath: "" }),
+      () =>
+        hook.trigger(
+          { event: "SubagentStop", stopHookActive: false },
+          { sessionID, transcript: () => Effect.succeed("") },
+        ),
       { concurrency: "unbounded" },
     )
     yield* pollWithTimeout(

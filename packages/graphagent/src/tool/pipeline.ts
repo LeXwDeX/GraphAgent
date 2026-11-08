@@ -84,22 +84,43 @@ export function toRecord(value: unknown) {
 // still persist that output through completeToolCall.
 export function withHookCancellation(hooks: SettingsHook.Interface | undefined, signal: AbortSignal | undefined) {
   if (!hooks || !signal) return hooks
+  const bounded = (effect: Effect.Effect<TriggerResult>): Effect.Effect<TriggerResult> => {
+    const empty = Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })
+    if (signal.aborted) return empty
+    return Effect.raceFirst(
+      effect,
+      Effect.callback<TriggerResult>((resume) => {
+        const abort = () => resume(empty)
+        signal.addEventListener("abort", abort, { once: true })
+        if (signal.aborted) abort()
+        return Effect.sync(() => signal.removeEventListener("abort", abort))
+      }),
+    )
+  }
   return {
     ...hooks,
-    trigger: (payload: SettingsHook.HookPayload, ctx: SettingsHook.TriggerContext) => {
-      const empty = Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })
-      if (signal.aborted) return empty
-      return Effect.raceFirst(
-        hooks.trigger(payload, ctx),
-        Effect.callback<TriggerResult>((resume) => {
-          const abort = () => resume(empty)
-          signal.addEventListener("abort", abort, { once: true })
-          if (signal.aborted) abort()
-          return Effect.sync(() => signal.removeEventListener("abort", abort))
-        }),
-      )
-    },
+    trigger: (payload: SettingsHook.HookPayload, ctx: SettingsHook.TriggerContext) =>
+      bounded(hooks.trigger(payload, ctx)),
+    ...(hooks.hookCall
+      ? {
+          hookCall: (payload: SettingsHook.HookPayload, ctx: SettingsHook.ToolHookContext) =>
+            bounded(hooks.hookCall!(payload, ctx)),
+        }
+      : {}),
   } satisfies SettingsHook.Interface
+}
+
+/**
+ * Single entry for tool-lifecycle hooks. Prefer the engine's narrow `hookCall`
+ * (session plus tool/MCP identity; transcript and environment stay lazy) and
+ * fall back to `trigger` for partial test mocks that only implement it.
+ */
+export function callHook(
+  hooks: SettingsHook.Interface,
+  payload: SettingsHook.HookPayload,
+  ctx: SettingsHook.ToolHookContext,
+): Effect.Effect<TriggerResult> {
+  return hooks.hookCall ? hooks.hookCall(payload, ctx) : hooks.trigger(payload, ctx)
 }
 
 export type DirectToolContext = Omit<Tool.Context, "ask"> & {
@@ -148,7 +169,7 @@ export interface Deps {
   hooks: SettingsHook.Interface | undefined
   agentService: Agent.Interface | undefined
   questionHookAnswers: WeakMap<ToolExecutionOptions, ReadonlyArray<ReadonlyArray<string>>>
-  hookContext: (toolName?: string) => Effect.Effect<Omit<SettingsHook.TriggerContext, "sessionID">>
+  hookContext: (toolName?: string) => Effect.Effect<Omit<SettingsHook.ToolHookContext, "sessionID">>
   reportInterrupt: (toolName: string, args: unknown, toolUseID: string) => Effect.Effect<void>
   recordSettlement: (entry: ToolEntry, callID: string) => Effect.Effect<void>
   recordInput: (callID: string, args: Record<string, unknown>) => Effect.Effect<void>
@@ -225,14 +246,13 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
               // SettingsHook PreToolUse
               let dynamicInstructions = false
               if (settingsHook) {
-                let preResult = yield* settingsHook
-                  .trigger(
-                    { event: "PreToolUse", toolName: item.id, toolInput: toRecord(args), toolUseID: ctx.callID },
-                    { ...(yield* hookContext()), sessionID: ctx.sessionID },
-                  )
-                  .pipe(
-                    Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
-                  )
+                let preResult = yield* callHook(
+                  settingsHook,
+                  { event: "PreToolUse", toolName: item.id, toolInput: toRecord(args), toolUseID: ctx.callID },
+                  { ...(yield* hookContext()), sessionID: ctx.sessionID },
+                ).pipe(
+                  Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
+                )
                 yield* SettingsHook.landSystemMessages(preResult, { sessionID: ctx.sessionID })
                 if (
                   preResult.permissionDecision === "defer" &&
@@ -393,31 +413,30 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
               // keeping the same model-facing result and feedback handling.
               if (settingsHook) {
                 const hookFailure = output.hookFailure
-                const postResult = yield* settingsHook
-                  .trigger(
-                    hookFailure === undefined
-                      ? {
-                          event: "PostToolUse",
-                          toolName: item.id,
-                          toolInput: toRecord(args),
-                          // V2 passes the tool's structured output; the model-facing
-                          // text lives in the transcript, not in tool_response.
-                          toolResponse: output.metadata,
-                          toolOutput: output,
-                          toolUseID: ctx.callID,
-                        }
-                      : {
-                          event: "PostToolUseFailure",
-                          toolName: item.id,
-                          toolInput: toRecord(args),
-                          error: hookFailure,
-                          toolUseID: ctx.callID,
-                        },
-                    { ...(yield* hookContext()), sessionID: ctx.sessionID },
-                  )
-                  .pipe(
-                    Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
-                  )
+                const postResult = yield* callHook(
+                  settingsHook,
+                  hookFailure === undefined
+                    ? {
+                        event: "PostToolUse",
+                        toolName: item.id,
+                        toolInput: toRecord(args),
+                        // V2 passes the tool's structured output; the model-facing
+                        // text lives in the transcript, not in tool_response.
+                        toolResponse: output.metadata,
+                        toolOutput: output,
+                        toolUseID: ctx.callID,
+                      }
+                    : {
+                        event: "PostToolUseFailure",
+                        toolName: item.id,
+                        toolInput: toRecord(args),
+                        error: hookFailure,
+                        toolUseID: ctx.callID,
+                      },
+                  { ...(yield* hookContext()), sessionID: ctx.sessionID },
+                ).pipe(
+                  Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
+                )
                 yield* SettingsHook.landSystemMessages(postResult, { sessionID: ctx.sessionID })
                 dynamicInstructions ||= hookAddsInstructions(postResult)
                 const replacement = toolOutputReplacement(postResult)
@@ -484,22 +503,21 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   if (!executionPending) return yield* Effect.failCause(cause)
                   // SettingsHook PostToolUseFailure
                   if (settingsHook) {
-                    const failResult = yield* settingsHook
-                      .trigger(
-                        {
-                          event: "PostToolUseFailure",
-                          toolName: item.id,
-                          toolInput: toRecord(args),
-                          error: String(error),
-                          toolUseID: options.toolCallId,
-                        },
-                        { ...(yield* hookContext()), sessionID: input.session.id },
-                      )
-                      .pipe(
-                        Effect.catch(() =>
-                          Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult),
-                        ),
-                      )
+                    const failResult = yield* callHook(
+                      settingsHook,
+                      {
+                        event: "PostToolUseFailure",
+                        toolName: item.id,
+                        toolInput: toRecord(args),
+                        error: String(error),
+                        toolUseID: options.toolCallId,
+                      },
+                      { ...(yield* hookContext()), sessionID: input.session.id },
+                    ).pipe(
+                      Effect.catch(() =>
+                        Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult),
+                      ),
+                    )
                     yield* SettingsHook.landSystemMessages(failResult, { sessionID: input.session.id })
                     const failure = withHookFailure(error, failResult, preContexts)
                     if (failure !== error)
@@ -838,15 +856,14 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
           let allowed = false
           let pre: TriggerResult = { additionalContexts: [], systemMessages: [] }
           if (settingsHook) {
-            pre = yield* settingsHook
-              .trigger(
-                { event: "PreToolUse", toolName: name, toolInput: args, toolUseID: opts.toolCallId },
-                {
-                  ...(yield* hookContext()),
-                  sessionID: input.session.id,
-                },
-              )
-              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+            pre = yield* callHook(
+              settingsHook,
+              { event: "PreToolUse", toolName: name, toolInput: args, toolUseID: opts.toolCallId },
+              {
+                ...(yield* hookContext()),
+                sessionID: input.session.id,
+              },
+            ).pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             if (
               pre.permissionDecision === "defer" &&
               !pre.preventContinuation &&
@@ -944,19 +961,18 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
           args = result.input
           const preLines = pre.additionalContexts
           if (settingsHook) {
-            const post = yield* settingsHook
-              .trigger(
-                {
-                  event: "PostToolUse",
-                  toolName: name,
-                  toolInput: args,
-                  toolUseID: opts.toolCallId,
-                  toolResponse: output.metadata,
-                  toolOutput: output,
-                },
-                { ...(yield* hookContext()), sessionID: input.session.id },
-              )
-              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+            const post = yield* callHook(
+              settingsHook,
+              {
+                event: "PostToolUse",
+                toolName: name,
+                toolInput: args,
+                toolUseID: opts.toolCallId,
+                toolResponse: output.metadata,
+                toolOutput: output,
+              },
+              { ...(yield* hookContext()), sessionID: input.session.id },
+            ).pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(post, { sessionID: input.session.id })
             const replacement = toolOutputReplacement(post)
             const rewritten = replacement.present ? builtinToolOutput(replacement.value) : undefined
@@ -996,20 +1012,19 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
               if (!executionPending) return yield* Effect.failCause(cause)
               const settingsHook = withHookCancellation(hooks, options.abortSignal)
               if (settingsHook) {
-                const failure = yield* settingsHook
-                  .trigger(
-                    {
-                      event: "PostToolUseFailure",
-                      toolName: name,
-                      toolInput: args,
-                      toolUseID: options.toolCallId,
-                      error: String(error),
-                    },
-                    { ...(yield* hookContext()), sessionID: input.session.id },
-                  )
-                  .pipe(
-                    Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
-                  )
+                const failure = yield* callHook(
+                  settingsHook,
+                  {
+                    event: "PostToolUseFailure",
+                    toolName: name,
+                    toolInput: args,
+                    toolUseID: options.toolCallId,
+                    error: String(error),
+                  },
+                  { ...(yield* hookContext()), sessionID: input.session.id },
+                ).pipe(
+                  Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
+                )
                 yield* SettingsHook.landSystemMessages(failure, { sessionID: input.session.id })
                 const withFeedback = withHookFailure(error, failure, failureContexts)
                 if (withFeedback !== error)
@@ -1052,12 +1067,11 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
           let ctx = context(args, opts, false, originalArgs, key)
           // SettingsHook PreToolUse
           if (settingsHook) {
-            let preResult = yield* settingsHook
-              .trigger(
-                { event: "PreToolUse", toolName: key, toolInput: toRecord(args), toolUseID: opts.toolCallId },
-                { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
-              )
-              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+            let preResult = yield* callHook(
+              settingsHook,
+              { event: "PreToolUse", toolName: key, toolInput: toRecord(args), toolUseID: opts.toolCallId },
+              { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
+            ).pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(preResult, { sessionID: ctx.sessionID })
             if (
               preResult.permissionDecision === "defer" &&
@@ -1198,18 +1212,17 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
           if (opts.abortSignal?.aborted) yield* reportInterrupt(key, args, opts.toolCallId).pipe(Effect.uninterruptible)
           let postResult: TriggerResult | undefined
           if (settingsHook) {
-            postResult = yield* settingsHook
-              .trigger(
-                {
-                  event: "PostToolUse",
-                  toolName: key,
-                  toolInput: toRecord(args),
-                  toolResponse: result,
-                  toolUseID: opts.toolCallId,
-                },
-                { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
-              )
-              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+            postResult = yield* callHook(
+              settingsHook,
+              {
+                event: "PostToolUse",
+                toolName: key,
+                toolInput: toRecord(args),
+                toolResponse: result,
+                toolUseID: opts.toolCallId,
+              },
+              { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
+            ).pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(postResult, { sessionID: ctx.sessionID })
             const replacement = toolOutputReplacement(postResult, true)
             if (replacement.present) result = mcpToolOutput(replacement.value)
@@ -1313,20 +1326,19 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
                 }
               if (!executionPending) return yield* Effect.failCause(cause)
               if (settingsHook) {
-                const failResult = yield* settingsHook
-                  .trigger(
-                    {
-                      event: "PostToolUseFailure",
-                      toolName: key,
-                      toolInput: toRecord(args),
-                      error: String(error),
-                      toolUseID: opts.toolCallId,
-                    },
-                    { ...(yield* hookContext(key)), sessionID: input.session.id },
-                  )
-                  .pipe(
-                    Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
-                  )
+                const failResult = yield* callHook(
+                  settingsHook,
+                  {
+                    event: "PostToolUseFailure",
+                    toolName: key,
+                    toolInput: toRecord(args),
+                    error: String(error),
+                    toolUseID: opts.toolCallId,
+                  },
+                  { ...(yield* hookContext(key)), sessionID: input.session.id },
+                ).pipe(
+                  Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
+                )
                 yield* SettingsHook.landSystemMessages(failResult, { sessionID: input.session.id })
                 const failure = withHookFailure(error, failResult, preContexts)
                 if (failure !== error) return yield* Cause.hasDies(cause) ? Effect.die(failure) : Effect.fail(failure)

@@ -28,7 +28,7 @@ const runHook = (hook: HookCommand) =>
     yield* store.add(id, { event: "PreToolUse", hooks: [hook] })
     return yield* settings.trigger(
       { event: "PreToolUse", toolName: "bash", toolInput: { command: "echo safe" } },
-      { sessionID: id, transcriptPath: "" },
+      { sessionID: id, transcript: () => Effect.succeed("") },
     )
   })
 
@@ -67,7 +67,7 @@ describe("hooks audit - actual runtime boundary", () => {
       const settings = yield* SettingsHook.Service
       const result = yield* settings.trigger(
         { event: "PreToolUse", toolName: "write", toolInput: {} },
-        { sessionID: SessionID.descending(), transcriptPath: "" },
+        { sessionID: SessionID.descending(), transcript: () => Effect.succeed("") },
       )
       expect(result.permissionDecision).toBe("deny")
       expect(result.permissionDecisionReason).toBe("valid sibling")
@@ -85,7 +85,7 @@ describe("hooks audit - actual runtime boundary", () => {
       })
       const result = yield* settings.trigger(
         { event: "UserPromptSubmit", prompt: "hello" },
-        { sessionID: id, transcriptPath: "" },
+        { sessionID: id, transcript: () => Effect.succeed("") },
       )
       expect(result.additionalContexts).toEqual([])
     }),
@@ -175,7 +175,7 @@ describe("hooks audit - actual runtime boundary", () => {
       const trigger = (value: string) =>
         settings.trigger(
           { event: "PreToolUse", toolName: "bash", toolInput: { command: value } },
-          { sessionID: id, transcriptPath: "" },
+          { sessionID: id, transcript: () => Effect.succeed("") },
         )
       yield* trigger("unmatched")
       expect(yield* store.listAll(id)).toHaveLength(1)
@@ -203,7 +203,7 @@ describe("hooks audit - actual runtime boundary", () => {
         const trigger = () =>
           settings.trigger(
             { event: "PreToolUse", toolName: "bash", toolInput: {} },
-            { sessionID: id, transcriptPath: "" },
+            { sessionID: id, transcript: () => Effect.succeed("") },
           )
         yield* Effect.all([trigger(), trigger(), trigger()], { concurrency: "unbounded" })
         const content = yield* pollWithTimeout(
@@ -274,7 +274,7 @@ describe("hooks audit - actual runtime boundary", () => {
       const exit = yield* settings
         .trigger(
           { event: "PreToolUse", toolName: "bash", toolInput: {} },
-          { sessionID: SessionID.descending(), transcriptPath: "" },
+          { sessionID: SessionID.descending(), transcript: () => Effect.succeed("") },
         )
         .pipe(Effect.exit)
       expect(exit._tag).toBe("Success")
@@ -297,7 +297,7 @@ describe("hooks audit - actual runtime boundary", () => {
         [1, 2].map(() =>
           settings.trigger(
             { event: "PreToolUse", toolName: "bash", toolInput: {} },
-            { sessionID: id, transcriptPath: "" },
+            { sessionID: id, transcript: () => Effect.succeed("") },
           ),
         ),
         { concurrency: "unbounded" },

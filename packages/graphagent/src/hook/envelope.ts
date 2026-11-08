@@ -72,13 +72,24 @@ const EFFORT_EVENTS: ReadonlySet<HookEvent> = new Set<HookEvent>([
   "SubagentStop",
 ])
 
-export function buildStdinEnvelope(payload: HookPayload, ctx: TriggerContext, cwd: string): HookEnvelope {
+/**
+ * A trigger context whose lazy transcript has already been resolved by the
+ * engine. `transcriptPath` stays internal to envelope construction: the public
+ * context never carries an eagerly materialized path.
+ */
+export type EnvelopeContext = TriggerContext & { transcriptPath?: string }
+
+export function buildStdinEnvelope(payload: HookPayload, ctx: EnvelopeContext, cwd: string): HookEnvelope {
   // Provider/MCP auth notifications can occur before a user session exists.
   // An empty sentinel in the internal context is not a session identity.
   const sessionlessNotification = payload.event === "Notification" && !ctx.sessionID
   const base: HookEnvelope = {
     hook_event_name: payload.event,
-    ...(!sessionlessNotification ? { session_id: ctx.sessionID, transcript_path: ctx.transcriptPath } : {}),
+    // A sessionless trigger has no transcript to name. `transcript_path` is
+    // omitted rather than sent as an empty string: "absent" is part of CC's
+    // contract for events that do not run inside a session.
+    ...(!sessionlessNotification ? { session_id: ctx.sessionID } : {}),
+    ...(!sessionlessNotification && ctx.transcriptPath !== undefined ? { transcript_path: ctx.transcriptPath } : {}),
     cwd: envelopeCwd(payload, cwd),
   }
   // `prompt_id` and `scratchpad_dir` are session/prompt-scoped, so the same
