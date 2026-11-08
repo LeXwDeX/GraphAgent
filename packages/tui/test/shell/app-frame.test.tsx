@@ -1,11 +1,15 @@
 /** @jsxImportSource @opentui/solid */
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { setLanguage } from "../../src/i18n"
 import { AppFrame, type AppFrameProps } from "../../src/shell/app-frame"
 import type { FooterHint } from "../../src/shell/footer"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 import { ShellContexts, shellState } from "./contexts"
+
+beforeEach(() => {
+  setLanguage("zh-CN")
+})
 
 afterEach(() => {
   setLanguage("zh-CN")
@@ -48,8 +52,13 @@ async function renderFrame(
     { width: options.width, height: options.height },
   )
   await settled
-  await app.renderOnce()
-  await app.renderOnce()
+  // KVReady resolves before the reactive switch from its blank fallback to the
+  // frame children has painted; render until the first non-empty frame instead
+  // of assuming a fixed number of frames.
+  for (let attempt = 0; attempt < 50; attempt++) {
+    await app.renderOnce()
+    if (app.captureCharFrame().trim().length > 0) break
+  }
   return app
 }
 
