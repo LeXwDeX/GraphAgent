@@ -371,7 +371,7 @@ describe("DAG workspace failure terminalization (#948)", () => {
           const continuation = yield* continueRecoveredMessageNode(
             dagID,
             "n1",
-            { result_protocol: "submit_result", nodes: [{ id: "n1" }] },
+            { nodes: [{ id: "n1" }] },
             directory,
           ).pipe(Effect.forkScoped)
           yield* Effect.promise(() => snapshotEntered)

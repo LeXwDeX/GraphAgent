@@ -26,7 +26,7 @@ import { Dag, isStaleMessageInput, type NodeExecutionAttempt } from "../dag"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { SessionPrompt } from "@/session/prompt"
-import type { NodeConfig, ResultProtocol } from "../dag"
+import type { NodeConfig } from "../dag"
 import { Session } from "@/session/session"
 import { SessionID, MessageID } from "@/session/schema"
 import type { SessionV1 } from "@graphagent/core/v1/session"
@@ -42,8 +42,6 @@ import {
   settlePlainTextOutput,
   registerCaptureSlot,
   clearCaptureSlot,
-  registerFinalResponseSession,
-  clearFinalResponseSession,
 } from "./capture"
 import type { CapturedSettlement } from "./capture"
 import { captureFinalResponse, finalAssistantText, type FinalCaptureResult } from "./final-response"
@@ -56,7 +54,6 @@ export function reconcileWorkflow(
   cancelSession?: (sessionID: string) => Effect.Effect<void, Error>,
   workflowConfig?: {
     nodes: Pick<NodeConfig, "id" | "output_schema" | "review" | "input_mapping" | "workspace">[]
-    result_protocol?: ResultProtocol
   } | null,
   lastAssistantText?: (childSessionID: string) => Effect.Effect<string | undefined, Error>,
   /** #943/#947: effective workflow execution directory. The workflow owner
@@ -279,25 +276,44 @@ export function reconcileWorkflow(
           }
           continue
         }
-        if (nodeConfig?.output_schema && workflowConfig?.result_protocol === "final_response") {
+        if (nodeConfig?.output_schema) {
           const message = lastAssistantMessage ? yield* lastAssistantMessage(node.childSessionId) : undefined
+          const final = message ? finalAssistantText(message) : undefined
           const frozen =
             Option.isSome(messages) && caller && message
               ? yield* messages.value.snapshotForTurn(caller, message.info.id)
               : undefined
           const snapshotID = frozen?.ok ? frozen.value?.id : undefined
+          const receiptMatchesTurn = !!final?.ok && !!snapshotID && node.capturedSnapshotID === snapshotID
+          if (
+            (node.capturedOutputPresent && (!message || !final?.ok || receiptMatchesTurn)) ||
+            (!message && Option.isNone(messages))
+          ) {
+            // A durable, guarded receipt is the surviving record when the
+            // transcript no longer exposes the matching final turn (pruned
+            // history) or recovery has no mailbox to re-validate against.
+            // Settlement still passes the review contract, and a receipt that
+            // belongs to an older input snapshot is rejected when the node
+            // settles.
+            const settlement = recoveredSettlement(nodeConfig, nodes, node.capturedOutput, node.capturedOutputPresent)
+            const completed = yield* settle(
+              node.id,
+              settlement.kind === "complete"
+                ? completeNode(node, nodeConfig, settlement.output, {
+                    ...attempt,
+                    inputSnapshotID: node.capturedSnapshotID ?? undefined,
+                  })
+                : failNode(node, settlement.reason, "verdict_fail", attempt),
+            )
+            if (completed) reconciled++
+            continue
+          }
           if (message && Option.isSome(messages) && caller && !snapshotID) {
             continuations.add(node.id)
             continue
           }
           let captured: FinalCaptureResult
-          if (
-            message &&
-            finalAssistantText(message).ok &&
-            snapshotID &&
-            node.capturedOutputPresent &&
-            node.capturedSnapshotID === snapshotID
-          ) {
+          if (receiptMatchesTurn) {
             // The guarded, validated receipt belongs to this exact final
             // model turn. A crash after capture but before NodeCompleted can
             // settle it without starting another validation worker.
@@ -339,24 +355,11 @@ export function reconcileWorkflow(
                 }),
           )
           if (completed) reconciled++
-        } else if (nodeConfig?.output_schema) {
-          // Same settlement decision as spawn's completion gate — recovery
-          // must not become a bypass of the review-result contract again (B1).
-          const settlement = recoveredSettlement(nodeConfig, nodes, node.capturedOutput, node.capturedOutputPresent)
-          const settled = yield* settle(
-            node.id,
-            settlement.kind === "complete"
-              ? completeNode(node, nodeConfig, settlement.output, attempt)
-              : failNode(node, settlement.reason, "verdict_fail", attempt),
-          )
-          if (settled) reconciled++
         } else {
-          const finalMessage =
-            workflowConfig?.result_protocol === "final_response" && lastAssistantMessage
-              ? yield* lastAssistantMessage(node.childSessionId)
-              : undefined
-          const final =
-            workflowConfig?.result_protocol === "final_response" ? finalAssistantText(finalMessage) : undefined
+          const finalMessage = lastAssistantMessage
+            ? yield* lastAssistantMessage(node.childSessionId)
+            : undefined
+          const final = finalAssistantText(finalMessage)
           const frozen =
             Option.isSome(messages) && caller && finalMessage
               ? yield* messages.value.snapshotForTurn(caller, finalMessage.info.id)
@@ -396,7 +399,7 @@ export function reconcileWorkflow(
             return !!snapshotID && snapshotID === node.capturedSnapshotID
           })
           const previousRefValid = yield* Effect.gen(function* () {
-            if (workflowConfig?.result_protocol === "final_response" && !restorableFinalRef) return
+            if (!restorableFinalRef && Option.isSome(messages)) return
             if (isManagedOutputFileRef(node.capturedOutput) && authorize)
               yield* authorize(node.childSessionId!, node.capturedOutput.source_path, node.workerType)
             yield* verifyOutputFileRef(node.capturedOutput)
@@ -416,7 +419,7 @@ export function reconcileWorkflow(
           if (!previousRefValid) continue
           if (
             isManagedOutputFileRef(node.capturedOutput) &&
-            (workflowConfig?.result_protocol !== "final_response" || restorableFinalRef)
+            (restorableFinalRef || Option.isNone(messages))
           ) {
             const ref = node.capturedOutput
             const restored = yield* Effect.gen(function* () {
@@ -442,13 +445,7 @@ export function reconcileWorkflow(
             continue
           }
           const settlement = settlePlainTextOutput(
-            final
-              ? final.ok
-                ? final.text
-                : undefined
-              : lastAssistantText
-                ? yield* lastAssistantText(node.childSessionId)
-                : undefined,
+            final.ok ? final.text : lastAssistantText ? yield* lastAssistantText(node.childSessionId) : undefined,
           )
           if (settlement.kind === "fail") {
             if (
@@ -456,7 +453,7 @@ export function reconcileWorkflow(
                 node.id,
                 failNode(node, settlement.reason, "verdict_fail", {
                   ...attempt,
-                  ...(workflowConfig?.result_protocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+                  inputSnapshotID: snapshotID,
                 }),
               )
             )
@@ -478,7 +475,6 @@ export function reconcileWorkflow(
                   : undefined,
               )
               if (
-                workflowConfig?.result_protocol === "final_response" &&
                 !restorableFinalRef &&
                 !fileRef &&
                 isManagedOutputFileRef(node.capturedOutput) &&
@@ -489,7 +485,7 @@ export function reconcileWorkflow(
                 )
               if (fileRef) {
                 const receipt = dag.store.setCapturedOutput(node.childSessionId!, fileRef, snapshotID)
-                if (workflowConfig?.result_protocol === "final_response" && Option.isSome(messages) && caller) {
+                if (Option.isSome(messages) && caller) {
                   const guarded = yield* messages.value.guard(
                     caller,
                     {
@@ -613,7 +609,6 @@ export function continueRecoveredMessageNode(
   config:
     | {
         nodes: Pick<NodeConfig, "id" | "output_schema" | "review" | "input_mapping" | "workspace">[]
-        result_protocol?: ResultProtocol
       }
     | null
     | undefined,
@@ -834,7 +829,6 @@ export function continueRecoveredMessageNode(
           }
         })
         if (!(yield* admit)) return
-        if (config?.result_protocol === "final_response") registerFinalResponseSession(childSessionID)
         if (nodeConfig?.output_schema) registerCaptureSlot(childSessionID, nodeConfig.output_schema)
         // Recovery owns the full historical attempt, not each resumed model turn.
         // Do not replay its historical Start/Stop hooks in a new process.
@@ -869,7 +863,7 @@ export function continueRecoveredMessageNode(
           const frozen = yield* messages.value.snapshotForTurn(caller, result.info.id)
           const snapshotID = frozen.ok ? frozen.value?.id : undefined
           const settled = yield* Effect.gen(function* () {
-            if (nodeConfig?.output_schema && config?.result_protocol === "final_response") {
+            if (nodeConfig?.output_schema) {
               if (!snapshotID) yield* new Dag.StaleMessageInputError({ dagID, nodeID, reason: "unassociated" })
               const captured = yield* captureFinalResponse({
                 store: dag.store,
@@ -905,27 +899,12 @@ export function continueRecoveredMessageNode(
                 inputSnapshotID: snapshotID,
               })
             }
-            if (nodeConfig?.output_schema) {
-              const all = yield* dag.store.getNodes(dagID)
-              const settlement = recoveredSettlement(
-                nodeConfig,
-                all,
-                current.capturedOutput,
-                current.capturedOutputPresent,
-              )
-              if (settlement.kind === "fail")
-                return yield* failNode(current, settlement.reason, "verdict_fail", attempt)
-              return yield* completeNode(current, settlement.output, {
-                ...attempt,
-                inputSnapshotID: current.capturedSnapshotID ?? undefined,
-              })
-            }
             const final = finalAssistantText(result, true)
             const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
             if (settlement.kind === "fail")
               return yield* failNode(current, settlement.reason, "verdict_fail", {
                 ...attempt,
-                ...(config?.result_protocol === "final_response" ? { inputSnapshotID: snapshotID } : {}),
+                inputSnapshotID: snapshotID,
               })
             const ref = yield* commitOutputFileRef(
               settlement.output,
@@ -978,49 +957,9 @@ export function continueRecoveredMessageNode(
             )
             return
           }
-          const inbox = yield* messages.value.revisions(caller)
           if (!(yield* admit)) return
           if (!(yield* dispatchable())) return
-          let nudge = !!(
-            nodeConfig?.output_schema &&
-            config?.result_protocol !== "final_response" &&
-            inbox.ok &&
-            inbox.value.queued === 0
-          )
-          if (nudge && inbox.ok) {
-            const claim = yield* messages.value.claimResultNudge(caller, inbox.value.accepted)
-            if (!claim.ok && claim.reason === "stale_input") nudge = false
-            else if (!claim.ok || !claim.value) {
-              const failed = yield* failNode(
-                current,
-                `unchanged agent input cannot retry structured result: ${claim.ok ? "resubmission already requested" : claim.reason}`,
-                "exec_failed",
-                { ...attempt, ...(claim.ok ? { expectedAcceptedRevision: inbox.value.accepted } : {}) },
-              ).pipe(
-                Effect.as(true),
-                Effect.catchIf(isStaleMessageInput, () => Effect.succeed(false)),
-              )
-              if (failed) return
-              nudge = false
-            }
-          }
-          result = nudge
-            ? yield* prompt.prompt(
-                {
-                  sessionID: SessionID.make(childSessionID),
-                  messageID: MessageID.ascending(),
-                  agent: result.info.agent,
-                  model: { modelID: result.info.modelID, providerID: result.info.providerID },
-                  parts: [
-                    {
-                      type: "text",
-                      text: "Runtime continuation: incorporate the recorded agent messages and submit an updated result. Keep completed tool evidence; do not repeat completed writes.",
-                    },
-                  ],
-                },
-                { internalDelegation: true },
-              )
-            : yield* prompt.loop({ sessionID: SessionID.make(childSessionID) })
+          result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) })
         }
       }).pipe(
         Effect.catchCause((cause) =>
@@ -1033,7 +972,6 @@ export function continueRecoveredMessageNode(
         Effect.ensuring(
           Effect.sync(() => {
             clearCaptureSlot(childSessionID)
-            clearFinalResponseSession(childSessionID)
           }),
         ),
       ),

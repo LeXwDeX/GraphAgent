@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { Worker } from "node:worker_threads"
-import { Effect, Exit, Fiber, Layer } from "effect"
 import {
   clearCaptureSlot,
   isCaptureValidationCurrent,
@@ -9,34 +7,11 @@ import {
   settleCapturedOutput,
 } from "@/dag/runtime/capture"
 import { validateInWorker } from "@/dag/runtime/schema-validation"
-import { SubmitResultTool } from "@/tool/submit_result"
-import { DagStore } from "@graphagent/core/dag/store"
-import { Agent } from "@/agent/agent"
-import { Truncate } from "@/tool/truncate"
-import { MessageID, SessionID } from "@/session/schema"
-import type { Tool } from "@/tool/tool"
 
 const session = "ses_schema_budget"
 const pathological = "a".repeat(99_999) + "!"
 const slow = { type: "string", pattern: "^(a|a?)+$" }
 afterEach(() => clearCaptureSlot(session))
-
-/** Observe admission without starting a competing validation or adding a runtime API. */
-function observeWorkerPost() {
-  const original = Object.getOwnPropertyDescriptor(Worker.prototype, "postMessage")
-  if (!original || typeof original.value !== "function") throw new Error("Worker postMessage is unavailable")
-  const posted = Promise.withResolvers<void>()
-  Worker.prototype.postMessage = function (...args: Parameters<Worker["postMessage"]>) {
-    original.value.apply(this, args)
-    posted.resolve()
-  }
-  return {
-    ready: Effect.promise(() => posted.promise).pipe(Effect.timeout("2 seconds")),
-    restore: () => {
-      Object.defineProperty(Worker.prototype, "postMessage", original)
-    },
-  }
-}
 
 describe("bounded schema validation", () => {
   async function pathologicalFixture(startupDelay = 0) {
@@ -222,101 +197,3 @@ describe("bounded schema validation", () => {
   })
 })
 
-const context = (abort: AbortSignal): Tool.Context => ({
-  sessionID: SessionID.make(session),
-  messageID: MessageID.ascending(),
-  agent: "build",
-  abort,
-  messages: [],
-  ask: () => Effect.void,
-  metadata: () => Effect.void,
-})
-describe("submit_result worker persistence", () => {
-  function layers(captured: unknown[]) {
-    return Layer.mergeAll(
-      Layer.mock(DagStore.Service, {
-        setCapturedOutput: (_sessionID, payload) =>
-          Effect.sync(() => {
-            captured.push(payload)
-          }),
-      }),
-      Layer.mock(Agent.Service, {
-        get: () => Effect.succeed({ name: "build", mode: "all", permission: [], options: {} }),
-      }),
-      Layer.mock(Truncate.Service, { output: (content: string) => Effect.succeed({ content, truncated: false }) }),
-    )
-  }
-  test("only successful validation persists, including null", async () => {
-    const captured: unknown[] = []
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const tool = yield* SubmitResultTool
-        const definition = yield* tool.init()
-        registerCaptureSlot(session, slow)
-        const timed = yield* definition.execute({ payload: pathological }, context(new AbortController().signal))
-        expect(timed.output).toContain("host resource budget")
-        expect(captured).toEqual([])
-        registerCaptureSlot(session, { type: "null" })
-        const valid = yield* definition.execute({ payload: null }, context(new AbortController().signal))
-        expect(valid.metadata.captured).toBe(true)
-        expect(captured).toEqual([null])
-      }).pipe(Effect.provide(layers(captured))),
-    )
-  })
-  test("Effect interruption terminates validation without persistence", async () => {
-    const captured: unknown[] = []
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const tool = yield* SubmitResultTool
-        const definition = yield* tool.init()
-        registerCaptureSlot(session, slow)
-        const started = observeWorkerPost()
-        try {
-          const fiber = yield* definition
-            .execute({ payload: pathological }, context(new AbortController().signal))
-            .pipe(Effect.forkChild)
-          yield* started.ready
-          yield* Fiber.interrupt(fiber)
-          const exit = yield* Fiber.await(fiber)
-          expect(Exit.isFailure(exit)).toBe(true)
-          expect(captured).toEqual([])
-          expect(
-            (yield* Effect.promise(() => validatePayloadAsync(session, "a", new AbortController().signal))).ok,
-          ).toBe(true)
-        } finally {
-          started.restore()
-        }
-      }).pipe(Effect.provide(layers(captured))),
-    )
-  })
-  test("tool cancellation and same-schema slot replacement prevent capture", async () => {
-    const captured: unknown[] = []
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const tool = yield* SubmitResultTool
-        const definition = yield* tool.init()
-        for (const cancel of [true, false]) {
-          registerCaptureSlot(session, slow)
-          const abort = new AbortController()
-          const started = observeWorkerPost()
-          try {
-            const fiber = yield* definition
-              .execute({ payload: pathological }, context(abort.signal))
-              .pipe(Effect.forkChild)
-            yield* started.ready
-            if (cancel) abort.abort()
-            else {
-              clearCaptureSlot(session)
-              registerCaptureSlot(session, slow)
-            }
-            const result = yield* Fiber.join(fiber)
-            expect(result.metadata.captured).not.toBe(true)
-            expect(captured).toEqual([])
-          } finally {
-            started.restore()
-          }
-        }
-      }).pipe(Effect.provide(layers(captured))),
-    )
-  })
-})

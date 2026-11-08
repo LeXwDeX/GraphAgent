@@ -351,4 +351,21 @@ describe("spawnNode pause fence (#379)", () => {
       ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
     )
   })
+
+  it("fails a node whose queue budget already elapsed before admission", async () => {
+    const harness = makeHarness(
+      () => "running",
+      () => true,
+    )
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(Semaphore.makeUnsafe(1), { ...makeSpawnInput(), timeoutMs: 0 })
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
+    )
+    expect(harness.createCalls()).toBe(0)
+    expect(harness.events).toEqual([{ type: "nodeFailed", nodeID: "node-1" }])
+  })
 })

@@ -124,7 +124,7 @@ export const WorkflowNodeTable = sqliteTable(
     output: text({ mode: "json" }).$type<unknown>(),
     error_reason: text(),
     error_class: text(), // dag.node.failed trigger (timeout/exec_failed/verdict_fail/push_exhausted) for failure triage
-    captured_output: text({ mode: "json" }).$type<unknown>(), // durable payload from submit_result, or a Train B file-ref record ({content_ref, size, sha256, summary}); survives a process crash, reset to null on a replan-restart via NodeStarted
+    captured_output: text({ mode: "json" }).$type<unknown>(), // durable final-response payload, or a Train B file-ref record ({content_ref, size, sha256, summary}); survives a process crash, reset to null on a replan-restart via NodeStarted
     captured_output_present: integer({ mode: "boolean" }).notNull().default(false),
     captured_snapshot_id: text(),
     deadline_ms: integer(), // absolute deadline (spawnedAt + timeout_ms) for D0 termination boundary

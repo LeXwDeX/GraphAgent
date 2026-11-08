@@ -158,7 +158,6 @@ import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Memory } from "@/memory/memory"
 import { SessionAutomationLease } from "./automation-lease"
 import { DagMessages } from "@graphagent/core/dag/messages"
-import { setCaptureSnapshot } from "@/dag/runtime/capture"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 
 export type PromptModelSelection = {
@@ -3614,9 +3613,6 @@ export const layer = Layer.effect(
               }
               const associated = yield* agentMessages.associate(identity, agentSnapshot.id)
               if (!associated.ok) throw new Error(`Agent input association rejected: ${associated.reason}`)
-              const endpoint = yield* agentMessages.revisions(identity)
-              if (endpoint.ok && endpoint.value.endpoint.kind === "node")
-                setCaptureSnapshot(sessionID, agentSnapshot.id)
             }
             runtimeEvents.push(...(yield* modelSwitchContext(sessionID, model.api.id)))
             // Async hooks contribute at the next model boundary without manufacturing a user turn.

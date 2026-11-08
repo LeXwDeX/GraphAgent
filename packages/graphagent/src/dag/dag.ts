@@ -171,16 +171,8 @@ interface NormalizedNodeConfig extends NodeConfig {
   required: boolean
 }
 
-export type ResultProtocol = "final_response" | "submit_result"
-
-/** Missing on historical persisted workflows means the original tool protocol. */
-export function resultProtocol(config: Pick<WorkflowConfig, "result_protocol"> | undefined): ResultProtocol {
-  return config?.result_protocol ?? "submit_result"
-}
-
 export interface WorkflowConfig {
   name: string
-  result_protocol?: ResultProtocol
   delivery_node?: string
   mode?: ExecutionMode
   admission?: AdmissionRecord
@@ -415,7 +407,6 @@ function normalizeWorkflowConfig(config: WorkflowConfig): WorkflowConfig & { nod
   const defaults = normalizeNodeDefaults(config.node_defaults)
   return {
     ...config,
-    result_protocol: config.result_protocol ?? "final_response",
     mode: config.mode ?? "standard",
     max_concurrency: config.max_concurrency ?? DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
     max_node_replan_attempts: config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
@@ -523,12 +514,6 @@ export function parseWorkflowConfig(raw: string): WorkflowConfig | undefined {
   if (Option.isNone(parsed)) return undefined
   const candidate: unknown = parsed.value
   if (!isRecord(candidate)) return undefined
-  if (
-    candidate.result_protocol !== undefined &&
-    candidate.result_protocol !== "final_response" &&
-    candidate.result_protocol !== "submit_result"
-  )
-    return undefined
   if (candidate.delivery_node !== undefined && typeof candidate.delivery_node !== "string") return undefined
   // Guard the invariants every caller relies on (config.nodes.map, node.id,
   // depends_on iteration) instead of trusting the persisted row blindly. Kept
@@ -2032,10 +2017,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
           attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
           failureReason: trigger,
           snapshotID: attempt?.inputSnapshotID,
-          requireCurrentInput:
-            trigger === "verdict_fail" &&
-            (attempt?.inputSnapshotID !== undefined ||
-              parseWorkflowConfig(workflow.config)?.result_protocol === "final_response"),
+          requireCurrentInput: trigger === "verdict_fail",
           expectedAcceptedRevision: attempt?.expectedAcceptedRevision,
         },
         commit,

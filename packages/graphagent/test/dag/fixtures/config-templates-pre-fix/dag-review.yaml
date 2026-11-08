@@ -26,7 +26,7 @@ config:
       prompt_template:
         id: code-explore
         input:
-          target: "packages/graphagent/src/dag/runtime execution engine: loop.ts (scheduling loop, layer computation, concurrency control), spawn.ts (child session creation), recovery.ts (crash recovery, reconciliation), eval.ts (condition evaluation, input mapping), capture.ts (output schema validation, submit_result), summary-publisher.ts (event emission). Map the scheduling algorithm, session lifecycle, error propagation, and recovery invariants."
+          target: "packages/graphagent/src/dag/runtime execution engine: loop.ts (scheduling loop, layer computation, concurrency control), spawn.ts (child session creation), recovery.ts (crash recovery, reconciliation), eval.ts (condition evaluation, input mapping), capture.ts (final-output schema validation), summary-publisher.ts (event emission). Map the scheduling algorithm, session lifecycle, error propagation, and recovery invariants."
 
     - id: explore-templates
       name: explore-templates

@@ -50,7 +50,6 @@ function seed(status: "pending" | "running" = "running") {
       )
     const config = JSON.stringify({
       name: "freshness",
-      result_protocol: "final_response",
       nodes: [
         {
           id: "n",
@@ -141,7 +140,7 @@ describe("final-response failure freshness", () => {
             return "boolean"
           },
         }
-        const config = { result_protocol: "final_response" as const, nodes: [{ id: "n", output_schema: schema }] }
+        const config = { nodes: [{ id: "n", output_schema: schema }] }
         let prompts = 0
         let loops = 0
         const modelTurn = (text: string) =>
@@ -190,7 +189,6 @@ describe("final-response failure freshness", () => {
             node,
             parentSessionID: parent.sessionID,
             promptParts: [{ type: "text", text: "work" }],
-            resultProtocol: "final_response",
             outputSchema: schema,
           }).pipe(Effect.provide(Layer.mergeAll(agent, sessions, prompt)))
           expect(Exit.isSuccess(yield* Fiber.await(spawned.fiber))).toBe(true)
@@ -331,7 +329,7 @@ describe("final-response failure freshness", () => {
               }),
             ),
         }
-        const config = { result_protocol: "final_response" as const, nodes: [{ id: "n" }] }
+        const config = { nodes: [{ id: "n" }] }
         const result = yield* reconcileWorkflow(
           workflowID,
           () => Effect.succeed("completed"),

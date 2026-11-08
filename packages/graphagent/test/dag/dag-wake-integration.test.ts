@@ -264,17 +264,7 @@ function runWakeTest<A>(
       }).run().pipe(Effect.orDie)
       if (beforeInit) yield* beforeInit({ database })
       yield* loop.init()
-      // This suite exercises the original parent wake contract. Its mocked
-      // sessions do not persist direct final-response receipts, so keep the
-      // workflow protocol explicit while preserving any case override.
-      const legacyDag: Dag.Interface = {
-        ...dag,
-        create: (input) => dag.create({
-          ...input,
-          config: { ...input.config, result_protocol: input.config.result_protocol ?? "submit_result" },
-        }),
-      }
-      return yield* test({ dag: legacyDag, loop, store, status, childPrompts, parentPrompts, parentSettled, workflow })
+      return yield* test({ dag, loop, store, status, childPrompts, parentPrompts, parentSettled, workflow })
     }).pipe(
       Effect.provide(wakeLayer({ childPrompts, parentPrompts, parentSettled, agentPermissions })),
       Effect.provideService(InstanceRef, {
@@ -1330,7 +1320,6 @@ describe("DagLoop atomic wake integration", () => {
             title: "Schema failure",
             config: {
               name: "schema-failure",
-              result_protocol: "final_response",
               nodes: [
                 {
                   ...node("review"),
@@ -1397,7 +1386,7 @@ describe("DagLoop atomic wake integration", () => {
     )
   })
 
-  it("batches parallel results and the terminal workflow into one deterministic prompt", async () => {
+  it("delivers coalesced parallel checkpoints before the terminal workflow prompt", async () => {
     await Effect.runPromise(
       runWakeTest(({ dag, childPrompts, parentPrompts }) =>
         Effect.gen(function* () {
@@ -1422,18 +1411,29 @@ describe("DagLoop atomic wake integration", () => {
             "aggregate scheduling waited for an intermediate parent wake",
           )
           expect(aggregate.title).toBe("aggregate")
-          expect(Option.isNone(yield* Queue.poll(parentPrompts))).toBe(true)
+
+          // Single-path final-response semantics: report_to_parent nodes are
+          // progress checkpoints delivered while downstream work continues, so
+          // the two parallel completions coalesce into one intermediate wake.
+          const checkpoint = yield* takeWithin(parentPrompts, "parallel checkpoints did not wake the parent")
+          const checkpointText = promptText(checkpoint.input)
+          expect(checkpointText).toContain('Node "a" completed: A')
+          expect(checkpointText).toContain('Node "b" completed: B')
+          expect(checkpointText).not.toContain('Node "aggregate"')
+          expect(checkpointText).not.toContain("has reached terminal status")
+          expect(checkpointText.indexOf('Node "a"')).toBeLessThan(checkpointText.indexOf('Node "b"'))
+          yield* Deferred.succeed(checkpoint.release, "success")
+
           yield* Deferred.succeed(aggregate.release, "AB")
 
           const parent = yield* takeWithin(parentPrompts, "terminal batch did not wake the parent")
           const text = promptText(parent.input)
-          expect(text).toContain('Node "a" completed: A')
-          expect(text).toContain('Node "b" completed: B')
           expect(text).toContain('Node "aggregate" completed: AB')
           expect(text).toContain('Workflow "Parallel batch" has reached terminal status')
           expect(text).not.toContain("Act on these workflows")
-          expect(text.indexOf('Node "a"')).toBeLessThan(text.indexOf('Node "b"'))
-          expect(text.indexOf('Node "b"')).toBeLessThan(text.indexOf('Node "aggregate"'))
+          // Already-reported checkpoints must not be repeated in the terminal batch.
+          expect(text).not.toContain('Node "a" completed')
+          expect(text).not.toContain('Node "b" completed')
           yield* Deferred.succeed(parent.release, "success")
         }),
       ),
@@ -1710,7 +1710,7 @@ describe("DagLoop atomic wake integration", () => {
                 projectID: "project-1",
                 sessionID: "ses_parent",
                 title: "Restart wake",
-                config: { name: "restart-wake", result_protocol: "submit_result", nodes: [node("restart-node")] },
+                config: { name: "restart-wake", nodes: [node("restart-node")] },
               })
               const child = yield* takeWithin(q1.childPrompts, "restart node did not start")
               yield* Deferred.succeed(child.release, "done")
@@ -2311,7 +2311,7 @@ describe("DagLoop atomic wake integration", () => {
             projectID: "project-1",
             sessionID: "ses_parent",
             title: "Review route verify failure",
-            config: { name: "review-route-verify-failure", result_protocol: "submit_result", nodes },
+            config: { name: "review-route-verify-failure", nodes },
           })
 
           const impl = yield* takeWithin(childPrompts, "impl did not start")

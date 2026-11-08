@@ -26,7 +26,6 @@ import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
-import { registerCaptureSlot, validatePayload } from "@/dag/runtime/capture"
 import {
   captureOutputFileRef,
   commitOutputFileRef,
@@ -353,15 +352,7 @@ describe("output_schema dual track (Train B, B-p2 pin)", () => {
     const { events, dagLayer } = makeEventTracker()
     const schema = { type: "object" as const, required: ["report"] }
     const payload = { report: reportPath }
-    const promptLayer = Layer.mock(SessionPrompt.Service, {
-      prompt: () =>
-        Effect.gen(function* () {
-          registerCaptureSlot("ses_child", schema)
-          const result = validatePayload("ses_child", payload)
-          if (result.ok) capturedStore.set("node-1", payload)
-          return reply("ignored text")
-        }),
-    })
+    const promptLayer = makePromptLayer(reply(JSON.stringify(payload)))
     await runSpawn(dagLayer, promptLayer, schema)
     const completed = events.find((event) => event.type === "nodeCompleted")
     expect(completed).toBeDefined()

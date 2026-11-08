@@ -293,7 +293,6 @@ describe("final-response answer receipt polling", () => {
   const finalResponseConfigJson = () =>
     JSON.stringify({
       name: "cli-final-response",
-      result_protocol: "final_response",
       delivery_node: "final",
       max_concurrency: 1,
       nodes: finalResponseNodes,
@@ -382,14 +381,13 @@ describe("final-response answer receipt polling", () => {
     expect(reads).toEqual([identity(completed("same", 10)).messageID, identity(row).messageID])
   })
 
-  test("missing, mismatched, and failed receipt reads remain pending while legacy rows stay quiescent", async () => {
+  test("missing, mismatched, and failed receipt reads remain pending while non-completed rows stay quiescent", async () => {
     const row = completed("needs-answer", 12)
-    const legacy = { ...completed("legacy", 1), config: "{}" }
     const paused = { ...completed("paused", 2), status: "paused" }
     let mode: "throw" | "wrong-kind" | "valid" = "throw"
     let reads = 0
     const client = {
-      dag: { bySession: async () => ({ data: [row, legacy, paused] }) },
+      dag: { bySession: async () => ({ data: [row, paused] }) },
       session: {
         message: async () => {
           reads++
@@ -401,7 +399,7 @@ describe("final-response answer receipt polling", () => {
       },
     } as unknown as OpencodeClient
     const poll = DagHold.makeDagWorkflowPoll(client, "parent")
-    expect((await poll())?.map((item) => item.awaitingReport)).toEqual([true, undefined, undefined])
+    expect((await poll())?.map((item) => item.awaitingReport)).toEqual([true, undefined])
     mode = "wrong-kind"
     expect((await poll())?.[0]?.awaitingReport).toBe(true)
     mode = "valid"
@@ -409,16 +407,13 @@ describe("final-response answer receipt polling", () => {
     expect(reads).toBe(3)
   })
 
-  test("malformed and non-final_response configs are legacy rows that never wait for receipts", async () => {
+  test("every completed workflow waits for a receipt regardless of its persisted config", async () => {
     const rows = [
       "not json at all",
-      JSON.stringify({ result_protocol: "final_response" }), // no nodes
-      JSON.stringify({ result_protocol: "final_response", nodes: "nope" }), // invalid nodes
-      JSON.stringify({ result_protocol: "final_response", delivery_node: 7, nodes: finalResponseNodes }), // invalid delivery_node
-      JSON.stringify({ result_protocol: "bogus", nodes: finalResponseNodes }), // invalid protocol
-      JSON.stringify({ result_protocol: "submit_result", nodes: finalResponseNodes }), // submit_result stays legacy
-      JSON.stringify({ nodes: finalResponseNodes }), // missing protocol stays legacy
-    ].map((config, index) => ({ ...completed(`legacy-${index}`, index + 1), config }))
+      JSON.stringify({ nodes: "nope" }), // invalid nodes
+      JSON.stringify({ delivery_node: 7, nodes: finalResponseNodes }), // invalid delivery_node
+      JSON.stringify({ nodes: finalResponseNodes }),
+    ].map((config, index) => ({ ...completed(`config-${index}`, index + 1), config }))
     let reads = 0
     const client = {
       dag: { bySession: async () => ({ data: rows }) },
@@ -430,8 +425,8 @@ describe("final-response answer receipt polling", () => {
       },
     } as unknown as OpencodeClient
     const poll = DagHold.makeDagWorkflowPoll(client, "parent")
-    expect((await poll())?.every((row) => row.awaitingReport === undefined)).toBe(true)
-    expect(reads).toBe(0)
+    expect((await poll())?.every((row) => row.awaitingReport === true)).toBe(true)
+    expect(reads).toBe(4)
   })
 
   test("startup retries a failed workflow list before freezing the receipt baseline", async () => {

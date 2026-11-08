@@ -197,7 +197,7 @@ export function deliverReport(input: {
   return Effect.gen(function* () {
     const { workflow, store, sessions } = input
     const config = parseWorkflowConfig(workflow.config)
-    if (workflow.status !== "completed" || config?.result_protocol !== "final_response") return false
+    if (workflow.status !== "completed" || !config) return false
     const acknowledge = input.acknowledge ?? true
     const completionBatch = { nodes: [], workflows: input.batch.workflows } satisfies DagStore.WakeBatch
     const identity = reportIdentity(workflow)

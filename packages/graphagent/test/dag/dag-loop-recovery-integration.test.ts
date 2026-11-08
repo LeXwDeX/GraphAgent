@@ -64,13 +64,10 @@ function recoveryLayer(input: {
     messages: Effect.fn("test.Session.messages")((value: { sessionID: string }) => {
       const status = input.childStatuses.get(value.sessionID) ?? "unknown"
       if (status === "unknown") return Effect.succeed([])
-      if (status === "active") {
-        return Effect.succeed([{ info: { role: "assistant", finish: undefined } }] as never)
-      }
-      if (status === "failed") {
-        return Effect.succeed([{ info: { role: "assistant", error: { name: "failed" } } }] as never)
-      }
-      return Effect.succeed([{ info: { role: "assistant", finish: "stop" } }] as never)
+      const message = (info: Record<string, unknown>) => [{ info: { ...info, id: "msg_recovered" }, parts: [] }] as never
+      if (status === "active") return Effect.succeed(message({ role: "assistant", finish: undefined }))
+      if (status === "failed") return Effect.succeed(message({ role: "assistant", error: { name: "failed" } }))
+      return Effect.succeed(message({ role: "assistant", finish: "stop" }))
     }),
   })
   const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
@@ -279,7 +276,7 @@ describe("DagLoop crash recovery integration", () => {
         Effect.gen(function* () {
           const dagID = yield* createRunningNode(dag, database, [
             node({ output_schema: { type: "object" } }),
-          ], undefined, undefined, { result_protocol: "submit_result" })
+          ], undefined, undefined, {})
           yield* store.setCapturedOutput("ses_child1", { summary: "done" })
 
           yield* loop.init()

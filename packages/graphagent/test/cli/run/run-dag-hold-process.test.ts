@@ -54,13 +54,17 @@ function bodyIncludes(marker: string) {
 
 const wakeCompleted = bodyIncludes("[DAG Workflow completed]")
 
+/** The durable workflow id is random per run; compare stdout modulo that id. */
+function normalizeWorkflowIDs(stdout: string) {
+  return stdout.replace(/dag_[a-z0-9]+/gi, "dag_TEST")
+}
+
 // Two-node chain, the last node reporting to the parent: the s4 shape —
 // workflow started in turn one, children complete, the workflow terminalizes
 // and wakes the parent.
 const chainSpec = `title: cli-hold-chain
 config:
   name: cli-hold-chain
-  result_protocol: submit_result
   nodes:
     - id: first
       name: first
@@ -81,7 +85,6 @@ config:
 const singleSpec = `title: cli-hold-single
 config:
   name: cli-hold-single
-  result_protocol: submit_result
   nodes:
     - id: only
       name: only
@@ -99,7 +102,6 @@ const parentPlanText = "The implementation plan is ready."
 const finalResponseSpec = `title: cli-final-response
 config:
   name: cli-final-response
-  result_protocol: final_response
   delivery_node: final
   max_concurrency: 1
   nodes:
@@ -126,7 +128,6 @@ const policyGuideMarker = "blocks: compose explore/plan/prototype/debug/coding/v
 const mixedFinalSpec = `title: cli-mixed-final-report
 config:
   name: cli-mixed-final-report
-  result_protocol: final_response
   delivery_node: final
   max_concurrency: 1
   nodes:
@@ -141,7 +142,6 @@ config:
 const mixedDecisionSpec = `title: cli-mixed-decision
 config:
   name: cli-mixed-decision
-  result_protocol: submit_result
   nodes:
     - id: gate
       name: gate
@@ -171,7 +171,6 @@ function finalResponseSpecFor(name: string, marker: string) {
   return `title: cli-multi-final-${name}
 config:
   name: cli-multi-final-${name}
-  result_protocol: final_response
   delivery_node: final
   max_concurrency: 1
   nodes:
@@ -204,7 +203,7 @@ function emittedText(
 }
 
 // Required node declaring an output_schema the child never satisfies (the
-// auto-reply never calls submit_result): deterministic verdict_fail bound.
+// auto-reply is not valid JSON): deterministic verdict_fail bound.
 const failSpec = `title: cli-hold-failure
 config:
   name: cli-hold-failure
@@ -232,7 +231,6 @@ config:
 const checkpointSpec = `title: cli-hold-checkpoint
 config:
   name: cli-hold-checkpoint
-  result_protocol: submit_result
   nodes:
     - id: gate
       name: gate
@@ -412,7 +410,8 @@ describe("opencode run DAG hold (issue 614)", () => {
         yield* llm.pushMatch(
           bodyIncludes("MIXED-DECISION-GATE"),
           reply()
-            .tool("submit_result", { payload: { verdict: "replan" } })
+            .text('{"verdict":"replan"}')
+            .stop()
             .item(),
         )
 
@@ -452,8 +451,9 @@ describe("opencode run DAG hold (issue 614)", () => {
 
   // s4-style regression: the pre-hold CLI broke on the first idle while the
   // workflow was still running, losing the wake reply. Two busy->idle cycles
-  // are observable here as the two stdout lines: turn one's continuation
-  // ("ok" from the unmatched auto-reply) and the wake turn's reply, last.
+  // are observable here: turn one's continuation ("ok" from the unmatched
+  // auto-reply), then the final-response result index (the workflow has a
+  // reporting checkpoint) and the wake turn's reply, last.
   cliIt.concurrent(
     "holds through a running workflow and prints the final wake reply last",
     ({ home, llm, opencode, target }) =>
@@ -467,7 +467,17 @@ describe("opencode run DAG hold (issue 614)", () => {
 
         opencode.expectExit(result, 0)
         expect(result.target).toEqual(target)
-        expect(result.stdout).toBe("ok\nwake handled\n")
+        expect(normalizeWorkflowIDs(result.stdout)).toBe(
+          [
+            "ok",
+            "DAG · cli-hold-chain · result index",
+            'Workflow "cli-hold-chain" completed. Results:',
+            '- final (completed): workflow result workflow_id="dag_TEST" node_id="final"',
+            '- first (completed): workflow result workflow_id="dag_TEST" node_id="first"',
+            "wake handled",
+            "",
+          ].join("\n"),
+        )
         yield* recordArtifactEvidence("dag-hold", yield* llm.inputs, target, result)
       }),
     180_000,
@@ -501,7 +511,16 @@ describe("opencode run DAG hold (issue 614)", () => {
         const result = yield* run.result
 
         opencode.expectExit(result, 0)
-        expect(result.stdout).toBe("turn one done\nwake handled\n")
+        expect(normalizeWorkflowIDs(result.stdout)).toBe(
+          [
+            "turn one done",
+            "DAG · cli-hold-single · result index",
+            'Workflow "cli-hold-single" completed. Results:',
+            '- only (completed): workflow result workflow_id="dag_TEST" node_id="only"',
+            "wake handled",
+            "",
+          ].join("\n"),
+        )
       }),
     150_000,
   )
@@ -555,7 +574,8 @@ describe("opencode run DAG hold (issue 614)", () => {
         yield* llm.pushMatch(
           bodyIncludes("ADOPT-GATE"),
           reply()
-            .tool("submit_result", { payload: { verdict: "replan" } })
+            .text('{"verdict":"replan"}')
+            .stop()
             .item(),
         )
         yield* llm.pushMatch(bodyIncludes("[DAG Node Result"), reply().text("checkpoint seen").stop().item())
@@ -583,7 +603,17 @@ describe("opencode run DAG hold (issue 614)", () => {
         })
 
         opencode.expectExit(second, 0)
-        expect(second.stdout).toBe("ok\nadopted complete\n")
+        expect(normalizeWorkflowIDs(second.stdout)).toBe(
+          [
+            "ok",
+            "DAG · cli-hold-checkpoint · result index",
+            'Workflow "cli-hold-checkpoint" completed. Results:',
+            '- final (completed): workflow result workflow_id="dag_TEST" node_id="final"',
+            '- gate (completed): workflow result workflow_id="dag_TEST" node_id="gate"',
+            "adopted complete",
+            "",
+          ].join("\n"),
+        )
       }),
     240_000,
   )

@@ -63,8 +63,6 @@ function harness(
     modelError?: boolean | "MessageAbortedError"
     loopFault?: "defect" | "interrupt"
     guardStale?: boolean
-    claimRejection?: DagMessages.Rejection["reason"]
-    beforeClaim?: (h: ReturnType<typeof state>) => void
     beforeFailure?: (h: ReturnType<typeof state>, attempt?: NodeExecutionAttempt) => void
     afterStale?: (h: ReturnType<typeof state>) => void
     afterLoop?: (h: ReturnType<typeof state>) => void
@@ -163,15 +161,7 @@ function harness(
           value: input.latestStop ? { ...snapshot, stopReason: input.latestStop } : undefined,
         }
       }),
-    claimResultNudge: (_caller, revision) =>
-      Effect.sync(() => {
-        input.beforeClaim?.(h)
-        if (input.claimRejection) return { ok: false as const, reason: input.claimRejection }
-        if (revision !== h.acceptedRevision) return { ok: false as const, reason: "stale_input" as const }
-        const claimed = !h.claimedNudgeRevisions.includes(revision)
-        if (claimed) h.claimedNudgeRevisions.push(revision)
-        return { ok: true as const, value: claimed }
-      }),
+    claimResultNudge: () => Effect.succeed({ ok: true as const, value: true }),
     snapshotForTurn: () => Effect.succeed({ ok: true, value: { ...snapshot, stopReason: input.settleStop } }),
   })
   const prompt = Layer.mock(SessionPrompt.Service, {
@@ -362,7 +352,6 @@ function state(input: {
     completionAttempts: 0,
     guardCalls: 0,
     receipts: [] as unknown[],
-    claimedNudgeRevisions: [] as number[],
     acceptedRevision: 1,
     failureAttempts: [] as { reason: string; errorClass: unknown; attempt?: NodeExecutionAttempt }[],
     stale: input.stale ?? 0,
@@ -502,103 +491,23 @@ describe("message recovery continuation admission and settlement branches", () =
       expect(h.completed).toEqual([])
       expect(h.failed).toEqual([])
     })
-  test("submitted structured null settles against its recorded snapshot and clears capture slot", async () => {
+  test("recovered null final response settles without treating null as missing", async () => {
     const { h, run } = harness({
+      text: "null",
       node: { capturedOutput: null, capturedOutputPresent: true, capturedSnapshotID: "ags_null" },
     })
     await run(structured)
     expect(h.completed).toEqual([
-      { output: null, attempt: { childSessionID: "ses_recovery", replanAttempts: 0, inputSnapshotID: "ags_null" } },
+      { output: null, attempt: { childSessionID: "ses_recovery", replanAttempts: 0, inputSnapshotID: "ags_current" } },
     ])
     expect(hasCaptureSlot("ses_recovery")).toBe(false)
   })
-  test("missing structured submission fails instead of interpreting null as a value", async () => {
+  test("missing structured final response fails instead of interpreting null as a value", async () => {
     const { h, run } = harness()
     await run(structured)
     expect(h.failed[0].errorClass).toBe("verdict_fail")
     expect(h.completed).toEqual([])
     expect(hasCaptureSlot("ses_recovery")).toBe(false)
-  })
-  test("stale structured capture without queued input gets one bounded result nudge", async () => {
-    const { h, run } = harness({
-      stale: 1,
-      node: { capturedOutput: "old", capturedOutputPresent: true, capturedSnapshotID: "ags_old" },
-    })
-    await run(structured)
-    expect(h.loops).toBe(1)
-    expect(h.prompts).toBe(1)
-    expect(h.claimedNudgeRevisions).toEqual([1])
-    expect(h.delegatedStops).toEqual(["ses_recovery"])
-    expect(h.completed[0].output).toBeNull()
-    expect(h.completionAttempts).toBe(2)
-  })
-  test("a repeatedly stale structured result cannot claim a second nudge for unchanged input", async () => {
-    const { h, run } = harness({
-      stale: 2,
-      node: { capturedOutput: "old", capturedOutputPresent: true, capturedSnapshotID: "ags_old" },
-    })
-    await run(structured)
-    expect(h.loops).toBe(1)
-    expect(h.prompts).toBe(1)
-    expect(h.claimedNudgeRevisions).toEqual([1])
-    expect(h.completionAttempts).toBe(2)
-    expect(h.completed).toEqual([])
-    expect(h.failed[0].reason).toContain("resubmission already requested")
-  })
-  for (const reason of ["stopped", "closed"] as const)
-    test(`a ${reason} result-nudge claim terminates recovery without another model call`, async () => {
-      const { h, run } = harness({
-        stale: 1,
-        claimRejection: reason,
-        node: { capturedOutput: "old", capturedOutputPresent: true, capturedSnapshotID: "ags_old" },
-      })
-      await run(structured)
-      expect(h.loops).toBe(1)
-      expect(h.prompts).toBe(0)
-      expect(h.claimedNudgeRevisions).toEqual([])
-      expect(h.completed).toEqual([])
-      expect(h.failed).toMatchObject([{ reason: expect.stringContaining(reason), errorClass: "exec_failed" }])
-      expect(h.failureAttempts[0].attempt).toEqual({ childSessionID: "ses_recovery", replanAttempts: 0 })
-    })
-  test("input accepted during the nudge claim resumes the same child without a resubmission prompt", async () => {
-    const { h, run } = harness({
-      stale: 1,
-      node: { capturedOutput: "old", capturedOutputPresent: true, capturedSnapshotID: "ags_old" },
-      beforeClaim: (h) => {
-        h.acceptedRevision++
-      },
-      afterLoop: (h) => {
-        if (h.loops === 2 && h.node) {
-          h.node.capturedOutput = "updated accepted input"
-          h.node.capturedSnapshotID = "ags_new_input"
-        }
-      },
-    })
-    await run(structured)
-    expect(h.loops).toBe(2)
-    expect(h.prompts).toBe(0)
-    expect(h.claimedNudgeRevisions).toEqual([])
-    expect(h.failed).toEqual([])
-    expect(h.completed).toMatchObject([{ output: "updated accepted input" }])
-  })
-  test("new input wins over a spent-nudge failure at its accepted-revision guard", async () => {
-    const { h, run } = harness({
-      stale: 2,
-      node: { capturedOutput: "old", capturedOutputPresent: true, capturedSnapshotID: "ags_old" },
-      beforeFailure: (h, attempt) => {
-        if (attempt?.expectedAcceptedRevision !== 1 || !h.node) return
-        h.acceptedRevision = 2
-        h.node.capturedOutput = "new input after spent nudge"
-        h.node.capturedSnapshotID = "ags_new_input"
-      },
-    })
-    await run(structured)
-    expect(h.loops).toBe(2)
-    expect(h.prompts).toBe(1)
-    expect(h.claimedNudgeRevisions).toEqual([1])
-    expect(h.failureAttempts).toMatchObject([{ attempt: { expectedAcceptedRevision: 1 } }])
-    expect(h.failed).toEqual([])
-    expect(h.completed).toMatchObject([{ output: "new input after spent nudge" }])
   })
   test("a recovered preparation defect fails only its current execution attempt", async () => {
     const { h, run } = harness({ loopFault: "defect" })
@@ -701,7 +610,7 @@ describe("message recovery continuation admission and settlement branches", () =
     expect(h.completed).toEqual([])
   })
   test("recovered review cannot bypass an unresolved implementation fingerprint", async () => {
-    const { h, run } = harness({ node: { capturedOutputPresent: true, capturedOutput: {} } })
+    const { h, run } = harness({ text: "{}", node: { capturedOutputPresent: true, capturedOutput: {} } })
     await run({
       nodes: [
         {

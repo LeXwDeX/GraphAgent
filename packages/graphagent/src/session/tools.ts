@@ -7,7 +7,6 @@ import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
-import { hasCaptureSlot, isFinalResponseSession } from "@/dag/runtime/capture"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Truncate } from "@/tool/truncate"
@@ -151,8 +150,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
     (yield* canUseAgentMessages(input.session))
   const registryItems = registrations.filter((registration) => {
     if (registration.sourceKind !== "host-builtin") return true
-    if (registration.definition.id === "submit_result")
-      return !!input.session.parentID && hasCaptureSlot(input.session.id) && !isFinalResponseSession(input.session.id)
     if (registration.definition.id === "agent") return agentMessagesAvailable
     return true
   })
@@ -192,7 +189,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
     })
   }
   for (const key of Object.keys(mcpItems).toSorted()) {
-    if (key === "submit_result" && isFinalResponseSession(input.session.id)) continue
     effectiveSources.set(key, { sourceKind: "mcp", registrationID: `mcp:${key}` })
   }
   const activeRegistrations = [...effectiveSources.entries()]

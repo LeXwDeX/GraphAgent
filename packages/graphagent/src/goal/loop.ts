@@ -857,8 +857,8 @@ const serviceLayer = Layer.effect(
           .map((p) => p.text)
           .join("\n")
           .slice(-4000)
-        // When the last assistant turn produced no text (pure tool calls,
-        // reasoning-only, or a submit_result with no prose), the goal should
+        // When the last assistant turn produced no text (pure tool calls or
+        // reasoning-only output), the goal should
         // NOT silently stall — the agent is making progress via tools. Skip
         // the judge (there is nothing to classify) and continue directly,
         // using a synthetic "continue" verdict so the loop dispatches the

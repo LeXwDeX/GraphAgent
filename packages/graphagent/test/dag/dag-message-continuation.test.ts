@@ -39,9 +39,36 @@ function reply(text: string, finish: "stop" | "length" = "stop"): SessionV1.With
     parts: [{ id: PartID.ascending(), sessionID, messageID: id, type: "text", text }],
   }
 }
+
+function userReply(text: string): SessionV1.WithParts {
+  const id = MessageID.ascending(),
+    sessionID = SessionID.make("ses_child")
+  return {
+    info: {
+      id,
+      sessionID,
+      role: "user",
+      agent: "build",
+      model: { modelID: ModelV2.ID.make("test"), providerID: ProviderV2.ID.make("test") },
+      time: { created: Date.now() },
+    },
+    parts: [{ id: PartID.ascending(), sessionID, messageID: id, type: "text", text }],
+  }
+}
+
+function errorReply(text: string): SessionV1.WithParts {
+  const message = reply(text)
+  if (message.info.role === "assistant")
+    message.info.error = { name: "UnknownError", data: { message: "continuation failed" } }
+  return message
+}
+const REPAIR_SCHEMA = {
+  type: "object",
+  required: ["result"],
+  properties: { result: { type: "string", enum: ["old", "updated"] } },
+}
+
 type Case = {
-  claimRace?: "accept-before-claim" | "accept-after-spent-claim"
-  noResubmission?: boolean
   modelDefect?: boolean
   artifactPath?: string
   staleReceipt?: boolean
@@ -55,8 +82,14 @@ type Case = {
   modelError?: boolean
   deadline?: boolean
   replaceWhilePaused?: boolean
-  /** First turn ends at the output cap; mutate durable state before the continuation. */
+  /** First turn ends at the output cap; the continuation result takes this shape. */
   lengthFence?: "paused" | "extended" | "replaced" | "cancelled"
+  /** First turn ends at the output cap, then the same-session continuation returns this result. */
+  lengthContinuation?: "user" | "error"
+  /** First final response is a near-miss; `claimResultNudge` decides the repair admission. */
+  repair?: "admitted" | "already" | "stale"
+  /** `snapshotForTurn` reports success without a snapshot for the first final response. */
+  firstSnapshotUnavailable?: boolean
 }
 async function exercise(options: Case = {}) {
   let node = makeNodeRow({
@@ -68,7 +101,6 @@ async function exercise(options: Case = {}) {
   let workflow = makeWorkflowRow({ directory: process.cwd() })
   let accepted = 1
   let newInputQueued = false
-  let nudgeClaimed = false
   let permitReleased = false
   let captureRegistered = false
   const semaphore = Semaphore.makeUnsafe(1)
@@ -80,8 +112,14 @@ async function exercise(options: Case = {}) {
     toolWrites = 0
   const events: { type: string; output?: unknown; reason?: string }[] = []
   const promptStates: Array<{ status: string; overdue: boolean }> = []
-  const initial = reply(options.artifactPath ?? "old"),
-    updated = reply(options.artifactPath ?? "updated")
+  const initial = reply(
+      options.repair
+        ? JSON.stringify({ result: "invalid" })
+        : (options.artifactPath ?? (options.structured ? JSON.stringify({ result: "old" }) : "old")),
+    ),
+    updated = reply(
+      options.artifactPath ?? (options.structured || options.repair ? JSON.stringify({ result: "updated" }) : "updated"),
+    )
   if (options.modelError && initial.info.role === "assistant")
     initial.info.error = { name: "UnknownError", data: { message: "blocked" } }
   const storeLayer = Layer.mock(DagStore.Service, {
@@ -111,7 +149,13 @@ async function exercise(options: Case = {}) {
           nodeCompleted: (_dag, _node, output) =>
             Effect.gen(function* () {
               completions++
-              if ((completions === 1 || options.noResubmission) && !options.staleReceipt && !options.lengthFence) {
+              if (
+                completions === 1 &&
+                !options.staleReceipt &&
+                !options.lengthFence &&
+                !options.repair &&
+                !options.firstSnapshotUnavailable
+              ) {
                 if (options.replaced) node = { ...node, replanAttempts: 1, childSessionId: "ses_replaced" }
                 if (options.paused || options.replaceWhilePaused) workflow = { ...workflow, status: "paused" }
                 if (options.deadline) node = { ...node, deadlineMs: Date.now() - 1 }
@@ -141,31 +185,28 @@ async function exercise(options: Case = {}) {
   const messagesLayer = Layer.mock(DagMessages.Service, {
     guard,
     claimResultNudge: () =>
-      Effect.sync(() => {
-        if (options.claimRace && accepted === 1) {
-          accepted = 2
-          newInputQueued = true
-          return options.claimRace === "accept-before-claim"
-            ? { ok: false as const, reason: "stale_input" as const }
-            : { ok: true as const, value: false }
-        }
-        const claimed = !nudgeClaimed
-        nudgeClaimed = true
-        return { ok: true as const, value: claimed }
-      }),
+      Effect.succeed(
+        options.repair === "stale"
+          ? { ok: false as const, reason: "stale_input" as const }
+          : { ok: true as const, value: options.repair !== "already" },
+      ),
     snapshotForTurn: (_caller, id) =>
-      Effect.succeed({
-        ok: true,
-        value: {
-          id: id === initial.info.id ? "old-snapshot" : "updated-snapshot",
-          mailboxID: "box",
-          logicalTurnID: id,
-          revision: id === initial.info.id ? 0 : 1,
-          messages: [],
-          associated: true,
-          ...(options.stopReason ? { stopReason: options.stopReason } : {}),
-        },
-      }),
+      Effect.succeed(
+        options.firstSnapshotUnavailable && id === initial.info.id
+          ? { ok: true as const, value: undefined }
+          : {
+              ok: true,
+              value: {
+                id: id === initial.info.id ? "old-snapshot" : "updated-snapshot",
+                mailboxID: "box",
+                logicalTurnID: id,
+                revision: id === initial.info.id ? 0 : 1,
+                messages: [],
+                associated: true,
+                ...(options.stopReason ? { stopReason: options.stopReason } : {}),
+              },
+            },
+      ),
     revisions: () =>
       Effect.sync(() => ({
         ok: true as const,
@@ -231,7 +272,6 @@ async function exercise(options: Case = {}) {
   })
   const next = Effect.sync(() => {
     newInputQueued = false
-    if (options.noResubmission) return updated
     node = { ...node, capturedOutput: { result: "updated" }, capturedSnapshotID: "updated-snapshot" }
     return updated
   })
@@ -248,6 +288,7 @@ async function exercise(options: Case = {}) {
         if (prompts > 3) return yield* Effect.die(new Error("unbounded nudge regression"))
         if (prompts === 1) {
           toolWrites++
+          if (options.lengthContinuation) return reply("", "length")
           if (!fence) return initial
           if (fence === "paused") workflow = { ...workflow, status: "paused" }
           if (fence === "cancelled") workflow = { ...workflow, status: "cancelled" }
@@ -255,6 +296,8 @@ async function exercise(options: Case = {}) {
           if (fence === "extended") node = { ...node, deadlineMs: Date.now() - 1 }
           return reply("", "length")
         }
+        if (options.lengthContinuation === "user") return userReply("late input")
+        if (options.lengthContinuation === "error") return errorReply("partial")
         return yield* next
       }),
     loop: () =>
@@ -274,7 +317,11 @@ async function exercise(options: Case = {}) {
           node: makeNodeRow(),
           parentSessionID: "ses_parent",
           promptParts: [{ type: "text", text: "work" }],
-          ...(options.structured ? { outputSchema: { type: "object" } } : {}),
+          ...(options.repair
+            ? { outputSchema: REPAIR_SCHEMA }
+            : options.structured
+              ? { outputSchema: { type: "object" } }
+              : {}),
         })
         if (
           options.paused ||
@@ -318,26 +365,6 @@ async function exercise(options: Case = {}) {
 }
 
 describe("live durable message continuation", () => {
-  for (const claimRace of ["accept-before-claim", "accept-after-spent-claim"] as const)
-    test(`new input winning retry exhaustion continues the live child: ${claimRace}`, async () => {
-      const r = await exercise({ structured: true, queued: 0, claimRace })
-      expect(r).toMatchObject({ created: 1, prompts: 1, loops: 1, toolWrites: 1, permitReleased: true })
-      expect(r.events).toEqual([{ type: "completed", output: { result: "updated" } }])
-    })
-  test("unchanged structured input permits one resubmission then fails without repeated tools", async () => {
-    const r = await exercise({ structured: true, queued: 0, noResubmission: true })
-    expect(r).toMatchObject({
-      created: 1,
-      prompts: 2,
-      loops: 0,
-      toolWrites: 1,
-      permitReleased: true,
-      captureRegistered: false,
-    })
-    expect(r.events).toHaveLength(1)
-    expect(r.events[0]).toMatchObject({ type: "failed" })
-    expect(r.events[0]?.reason).toContain("resubmission already requested")
-  })
   test("live preparation defects settle failure and release capture and concurrency ownership", async () => {
     const r = await exercise({ structured: true, modelDefect: true })
     expect(r).toMatchObject({ prompts: 1, loops: 0, permitReleased: true, captureRegistered: false })
@@ -368,16 +395,10 @@ describe("live durable message continuation", () => {
     expect(r).toMatchObject({ created: 1, loops: 1, prompts: 1, toolWrites: 1 })
     expect(r.events).toEqual([{ type: "completed", output: "updated" }])
   })
-  test("structured capture is refreshed by the same child continuation", async () => {
-    const r = await exercise({ structured: true })
+  test("structured capture is refreshed after a stale receipt continuation", async () => {
+    const r = await exercise({ structured: true, staleReceipt: true })
     expect(r.events).toEqual([{ type: "completed", output: { result: "updated" } }])
-    expect(r.created).toBe(1)
-    expect(r.loops).toBe(1)
-  })
-  test("consumed structured input requires resubmission without replaying tool writes", async () => {
-    const r = await exercise({ structured: true, queued: 0 })
-    expect(r).toMatchObject({ prompts: 2, loops: 0, toolWrites: 1 })
-    expect(r.events[0]?.type).toBe("completed")
+    expect(r).toMatchObject({ created: 1, loops: 1, prompts: 1, toolWrites: 1, receipts: 2 })
   })
   test("budget exhaustion cannot reset through a message continuation", async () => {
     const r = await exercise({ stopReason: "budget_exhausted" })
@@ -437,5 +458,37 @@ describe("live durable message continuation", () => {
     const r = await exercise({ modelError: true })
     expect(r.loops).toBe(0)
     expect(r.events[0]).toMatchObject({ type: "failed" })
+  })
+  test("a length continuation stops when the follow-up turn is not an assistant result", async () => {
+    const r = await exercise({ lengthContinuation: "user" })
+    expect(r.prompts).toBe(2)
+    expect(r.events).toEqual([{ type: "failed", reason: "child model turn stopped before a successful result" }])
+  })
+  test("a length continuation stops when the follow-up turn reports a model error", async () => {
+    const r = await exercise({ lengthContinuation: "error" })
+    expect(r.prompts).toBe(2)
+    expect(r.events[0]?.type).toBe("failed")
+    expect(r.events[0]?.reason).toContain("(UnknownError)")
+  })
+  test("repairs a near-miss final response once when the resubmission is admitted", async () => {
+    const r = await exercise({ repair: "admitted" })
+    expect(r.events).toEqual([{ type: "completed", output: { result: "updated" } }])
+    expect(r).toMatchObject({ created: 1, loops: 0, prompts: 2, toolWrites: 1, receipts: 1 })
+  })
+  test("does not spend a repair turn when the resubmission is already claimed", async () => {
+    const r = await exercise({ repair: "already" })
+    expect(r.prompts).toBe(1)
+    expect(r.events[0]?.type).toBe("failed")
+    expect(r.events[0]?.reason).toContain("resubmission already requested")
+  })
+  test("a stale resubmission receipt re-enters the same session once", async () => {
+    const r = await exercise({ repair: "stale" })
+    expect(r.events).toEqual([{ type: "completed", output: { result: "updated" } }])
+    expect(r).toMatchObject({ created: 1, loops: 1, prompts: 1, receipts: 1 })
+  })
+  test("an unassociated final response re-enters the same session instead of settling", async () => {
+    const r = await exercise({ structured: true, firstSnapshotUnavailable: true })
+    expect(r.events).toEqual([{ type: "completed", output: { result: "updated" } }])
+    expect(r).toMatchObject({ created: 1, loops: 1, prompts: 1, receipts: 1 })
   })
 })

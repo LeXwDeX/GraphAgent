@@ -77,7 +77,7 @@ export function repairPrompt(fix: SchemaValidationFix): string {
   return `${subject} ${expected}; got ${fix.got}. Do not redo the work. Resubmit the same result as one JSON value with only that field corrected.`
 }
 
-/** Shared guarded persistence for submit_result and final-response capture. */
+/** Shared guarded persistence for final-response capture. */
 export function persistValidatedCapture(input: {
   store: DagStore.Interface
   sessionID: string
