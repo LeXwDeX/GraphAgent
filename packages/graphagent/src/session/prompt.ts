@@ -3510,7 +3510,8 @@ export const layer = Layer.effect(
 
             // Building the folding history walks every message; only do it when
             // built-in dynamic folding is enabled for this request.
-            const foldingConfig = (yield* config.get()).compaction
+            const configured = yield* config.get()
+            const foldingConfig = configured.compaction
             const folding = ConfigCompaction.resolveDynamic({
               disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
               dynamic: foldingConfig?.dynamic,
@@ -3528,6 +3529,7 @@ export const layer = Layer.effect(
             const [
               skills,
               env,
+              languageDocs,
               instructions,
               mcpInstructions,
               goalDocs,
@@ -3539,6 +3541,7 @@ export const layer = Layer.effect(
               [
                 sys.skills(agent, session.permission, nativePermission),
                 sys.environment(model),
+                sys.language(configured.language),
                 instruction.system({ sessionID, transcriptPath }).pipe(Effect.orDie),
                 sys.mcp(agent, session.permission, nativePermission),
                 sys.goal(sessionID),
@@ -3555,6 +3558,7 @@ export const layer = Layer.effect(
             )
             const system = [
               ...env,
+              ...languageDocs,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
               ...(skills ? [skills] : []),

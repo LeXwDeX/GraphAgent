@@ -18,6 +18,7 @@ import { Database } from "@graphagent/core/database/database"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { testEffect } from "../lib/effect"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
+import { resolveLanguage } from "@graphagent/core/config/language"
 
 test("every provider receives the same unified prompt", () => {
   const prompt = SystemPrompt.provider()
@@ -214,6 +215,28 @@ describe("session.system", () => {
           "</mcp_instructions>",
         ].join("\n"),
       )
+    }),
+  )
+
+  it.effect("language block follows the configured reply language", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const zh = (yield* prompt.language("zh-CN")).join("\n")
+      const en = (yield* prompt.language("en")).join("\n")
+
+      expect(zh).toContain("## Reply language")
+      expect(zh).toContain("Simplified Chinese (zh-CN)")
+      expect(en).toContain("English (en)")
+      expect(zh).toContain("If the user explicitly asks for another language, follow the user's request.")
+      expect(zh).toContain("Keep code, commands, identifiers, and file paths in their original form.")
+    }),
+  )
+
+  it.effect("language block infers the same default as the shared resolver", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const expected = resolveLanguage(undefined) === "zh-CN" ? "Simplified Chinese (zh-CN)" : "English (en)"
+      expect((yield* prompt.language()).join("\n")).toContain(expected)
     }),
   )
 
