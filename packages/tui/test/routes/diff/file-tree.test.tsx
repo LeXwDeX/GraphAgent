@@ -7,12 +7,9 @@ import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { KVProvider } from "../../../src/context/kv"
 import { ThemeProvider } from "../../../src/context/theme"
 import { TuiConfigProvider } from "../../../src/config"
-import { DiffViewerFileTree } from "../../../src/feature-plugins/system/diff-viewer-file-tree"
+import { DiffViewerFileTree } from "../../../src/routes/diff/file-tree"
 import { TestTuiContexts } from "../../fixture/tui-environment"
-import {
-  allExpandedFileTreeDirectories,
-  buildFileTree,
-} from "../../../src/feature-plugins/system/diff-viewer-file-tree-utils"
+import { allExpandedFileTreeDirectories, buildFileTree } from "../../../src/routes/diff/file-tree-utils"
 
 const theme = {
   background: RGBA.fromHex("#000000"),

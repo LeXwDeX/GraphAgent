@@ -4,8 +4,8 @@ import { Locale } from "../../util/locale"
 import { tint } from "../../context/theme"
 import { createEffect, createMemo, For, Match, Switch } from "solid-js"
 import { useRenderer } from "@opentui/solid"
-import { buildFileTree, flattenFileTree, type FileTreeItem, type FileTreeRow } from "./diff-viewer-file-tree-utils"
-import { Panel } from "./diff-viewer-ui"
+import { buildFileTree, flattenFileTree, type FileTreeItem, type FileTreeRow } from "./file-tree-utils"
+import { Panel } from "./ui"
 
 const FILE_TREE_STATUS_WIDTH = 2
 

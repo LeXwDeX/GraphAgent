@@ -8,7 +8,6 @@ import SidebarGoal from "./sidebar/goal"
 import SidebarLsp from "./sidebar/lsp"
 import SidebarMcp from "./sidebar/mcp"
 import SidebarTodo from "./sidebar/todo"
-import DiffViewer from "./system/diff-viewer"
 import Notifications from "./system/notifications"
 import WhichKey from "./system/which-key"
 
@@ -31,6 +30,5 @@ export function createBuiltinPlugins(): BuiltinTuiPlugin[] {
     SidebarFooter,
     Notifications,
     WhichKey,
-    DiffViewer,
   ]
 }
