@@ -8,22 +8,28 @@ import { McpCatalog } from "@/mcp/catalog"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
-import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
 import { hasCaptureSlot, isFinalResponseSession } from "@/dag/runtime/capture"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
-import { MemorySearch } from "@/tool/memory-search"
 import { Truncate } from "@/tool/truncate"
-import { ToolPipeline, hookStopMetadata, toRecord, withHookCancellation } from "@/tool/pipeline"
+import {
+  MAX_MCP_RESOURCE_BLOB_BYTES,
+  MCP_RESOURCE_TOOLS,
+  SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES,
+  ToolPipeline,
+  base64Size,
+  formatBytes,
+  hookStopMetadata,
+  toRecord,
+  withHookCancellation,
+} from "@/tool/pipeline"
 import type { DirectToolContext, ResolveInput } from "@/tool/pipeline"
-
-import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
 import { HookTranscript } from "@/hook/transcript"
 import { promptIdentity } from "@/hook/prompt-identity"
 import { withHookFeedback, withHookFailure, withPreContext } from "@/hook/trigger-result"
-import { builtinToolOutput, mcpToolOutput, toolOutputReplacement } from "@/hook/tool-output"
+import { mcpToolOutput, toolOutputReplacement } from "@/hook/tool-output"
 import { toolInputValidator } from "@/hook/tool-input"
 import {
   executeWithPermissionInput,
@@ -33,37 +39,17 @@ import {
 } from "@/permission/hook-control"
 import { Logging } from "@graphagent/core/observability/logging"
 import { applyPreHookDecision, classifyPermissionAsk, withoutUnusableDefer } from "@/hook/pre-hook-decision"
-import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
-import { Cause, Effect, Exit, type Schema } from "effect"
+import { type Tool as AITool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
+import { Cause, Effect, Exit } from "effect"
 import * as Option from "effect/Option"
 import { Session } from "./session"
-import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import { SessionContext } from "@/effect/session-context"
 import { ModelV2 } from "@graphagent/core/model"
 import { Hash } from "@graphagent/core/util/hash"
-import { isRecord } from "@/util/record"
-import { hookQuestionAnswers } from "@/hook/question-answers"
-import {
-  ToolSourceLedger,
-  type Interface as ToolSourceLedgerInterface,
-  type Registration as ToolSourceRegistration,
-} from "./tool-source-ledger"
+import { ToolSourceLedger, type Registration as ToolSourceRegistration } from "./tool-source-ledger"
 
-const MCP_RESOURCE_TOOLS = {
-  list: "list_mcp_resources",
-  listTemplates: "list_mcp_resource_templates",
-  read: "read_mcp_resource",
-} as const
-const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
-const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
-  "application/pdf",
-  "image/gif",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-])
 const canUseAgentMessages = Effect.fn("SessionTools.canUseAgentMessages")(function* (session: Session.Info) {
   const store = yield* Effect.serviceOption(DagStore.Service)
   const messages = yield* Effect.serviceOption(DagMessages.Service)
@@ -346,462 +332,29 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: Resol
   }
 
   const configuredPermission = Permission.merge(input.agent.permission, input.session.permission ?? [])
-  yield* ToolPipeline.builtinTools(
-    {
-      input,
-      run,
-      permission,
-      hooks,
-      agentService,
-      questionHookAnswers,
-      hookContext,
-      reportInterrupt,
-      transformSchema,
-      recordSettlement,
-      recordInput,
-      rawContext,
-      context,
-      configuredPermission,
-      registryItems,
-    },
-    tools,
-  )
-
-  if (hasMcpResourceServer) {
-    tools[MCP_RESOURCE_TOOLS.list] = tool({
-      description:
-        "Lists resources provided by connected MCP servers. Resources provide context such as files, database schemas, or application-specific information.",
-      inputSchema: jsonSchema(
-        transformSchema({
-          type: "object",
-          properties: {
-            server: {
-              type: "string",
-              description: "Optional MCP server name. When omitted, lists resources from every connected server.",
-            },
-          },
-          additionalProperties: false,
-        }),
-      ),
-      execute(args, opts) {
-        return run.promise(
-          Effect.gen(function* () {
-            const parsed = parseListMcpResourcesArgs(args)
-            const ctx = context(toRecord(args), opts)
-            const clients = yield* mcp.clients()
-            const resourceServers = Object.entries(clients)
-              .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
-              .map((entry) => entry[0])
-              .sort((a, b) => a.localeCompare(b))
-            if (parsed.server && !resourceServers.includes(parsed.server)) {
-              throw new Error(
-                resourceServers.length === 0
-                  ? `MCP server "${parsed.server}" does not support resources`
-                  : `MCP server "${parsed.server}" does not support resources. Available resource servers: ${resourceServers.join(", ")}`,
-              )
-            }
-            const permissionPatterns = parsed.server
-              ? [`mcp:${parsed.server}:*`]
-              : resourceServers.map((server) => `mcp:${server}:*`)
-            yield* ctx.ask({
-              permission: "read",
-              metadata: parsed.server ? { server: parsed.server } : {},
-              patterns: permissionPatterns,
-              always: permissionPatterns,
-            })
-
-            const resources = Object.values(yield* mcp.resources(parsed.server))
-            const filtered = resources
-              .filter((resource) => !parsed.server || resource.client === parsed.server)
-              .toSorted((a, b) =>
-                (a.client + "\u0000" + a.name + "\u0000" + a.uri).localeCompare(
-                  b.client + "\u0000" + b.name + "\u0000" + b.uri,
-                ),
-              )
-            const content = JSON.stringify({ resources: filtered.map(formatMcpResource) }, null, 2)
-            const truncated = yield* truncate.output(content, {}, input.agent)
-            const output = {
-              title: parsed.server ? `MCP resources: ${parsed.server}` : "MCP resources",
-              metadata: {
-                count: filtered.length,
-                servers: resourceServers,
-                ...(parsed.server ? { server: parsed.server } : {}),
-                truncated: truncated.truncated,
-                ...(truncated.truncated && { outputPath: truncated.outputPath }),
-              },
-              output: truncated.content,
-            }
-            yield* recordSettlement(MCP_RESOURCE_TOOLS.list, opts.toolCallId, {
-              sourceKind: "mcp",
-              registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.list}`,
-            })
-            if (opts.abortSignal?.aborted) {
-              yield* input.processor.completeToolCall(opts.toolCallId, output)
-            }
-            return output
-          }),
-        )
-      },
-    })
-
-    tools[MCP_RESOURCE_TOOLS.listTemplates] = tool({
-      description:
-        "Lists resource templates provided by connected MCP servers. Resource templates are parameterized resources that can be read after filling in their URI template.",
-      inputSchema: jsonSchema(
-        transformSchema({
-          type: "object",
-          properties: {
-            server: {
-              type: "string",
-              description:
-                "Optional MCP server name. When omitted, lists resource templates from every connected server.",
-            },
-          },
-          additionalProperties: false,
-        }),
-      ),
-      execute(args, opts) {
-        return run.promise(
-          Effect.gen(function* () {
-            const parsed = parseListMcpResourcesArgs(args)
-            const ctx = context(toRecord(args), opts)
-            const clients = yield* mcp.clients()
-            const resourceServers = Object.entries(clients)
-              .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
-              .map((entry) => entry[0])
-              .sort((a, b) => a.localeCompare(b))
-            if (parsed.server && !resourceServers.includes(parsed.server)) {
-              throw new Error(
-                resourceServers.length === 0
-                  ? `MCP server "${parsed.server}" does not support resources`
-                  : `MCP server "${parsed.server}" does not support resources. Available resource servers: ${resourceServers.join(", ")}`,
-              )
-            }
-            const permissionPatterns = parsed.server
-              ? [`mcp:${parsed.server}:*`]
-              : resourceServers.map((server) => `mcp:${server}:*`)
-            yield* ctx.ask({
-              permission: "read",
-              metadata: parsed.server ? { server: parsed.server } : {},
-              patterns: permissionPatterns,
-              always: permissionPatterns,
-            })
-
-            const templates = Object.values(yield* mcp.resourceTemplates(parsed.server))
-            const filtered = templates
-              .filter((template) => !parsed.server || template.client === parsed.server)
-              .toSorted((a, b) =>
-                (a.client + "\u0000" + a.name + "\u0000" + a.uriTemplate).localeCompare(
-                  b.client + "\u0000" + b.name + "\u0000" + b.uriTemplate,
-                ),
-              )
-            const content = JSON.stringify({ resourceTemplates: filtered.map(formatMcpResourceTemplate) }, null, 2)
-            const truncated = yield* truncate.output(content, {}, input.agent)
-            const output = {
-              title: parsed.server ? `MCP resource templates: ${parsed.server}` : "MCP resource templates",
-              metadata: {
-                count: filtered.length,
-                servers: resourceServers,
-                ...(parsed.server ? { server: parsed.server } : {}),
-                truncated: truncated.truncated,
-                ...(truncated.truncated && { outputPath: truncated.outputPath }),
-              },
-              output: truncated.content,
-            }
-            yield* recordSettlement(MCP_RESOURCE_TOOLS.listTemplates, opts.toolCallId, {
-              sourceKind: "mcp",
-              registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.listTemplates}`,
-            })
-            if (opts.abortSignal?.aborted) {
-              yield* input.processor.completeToolCall(opts.toolCallId, output)
-            }
-            return output
-          }),
-        )
-      },
-    })
-
-    tools[MCP_RESOURCE_TOOLS.read] = tool({
-      description:
-        "Read a specific resource from an MCP server using the server name and resource URI. The URI is an MCP identifier and does not need to be a file URL.",
-      inputSchema: jsonSchema(
-        transformSchema({
-          type: "object",
-          properties: {
-            server: {
-              type: "string",
-              description: "MCP server name exactly as returned by list_mcp_resources.",
-            },
-            uri: {
-              type: "string",
-              description: "Resource URI to read. Use the exact URI string returned by list_mcp_resources.",
-            },
-          },
-          required: ["server", "uri"],
-          additionalProperties: false,
-        }),
-      ),
-      execute(args, opts) {
-        return run.promise(
-          Effect.gen(function* () {
-            const parsed = parseReadMcpResourceArgs(args)
-            const ctx = context(toRecord(args), opts)
-            const clients = yield* mcp.clients()
-            const client = clients[parsed.server]
-            if (!client) {
-              throw new Error(`MCP server "${parsed.server}" is not connected`)
-            }
-            if (!client.getServerCapabilities()?.resources) {
-              throw new Error(`MCP server "${parsed.server}" does not support resources`)
-            }
-            yield* ctx.ask({
-              permission: "read",
-              metadata: { server: parsed.server, uri: parsed.uri },
-              patterns: [`mcp:${parsed.server}:${parsed.uri}`],
-              always: [`mcp:${parsed.server}:*`],
-            })
-
-            const content = yield* mcp.readResource(parsed.server, parsed.uri)
-            if (!content) throw new Error(`Failed to read MCP resource: ${parsed.server}/${parsed.uri}`)
-
-            const formatted = formatMcpResourceContent(parsed.server, parsed.uri, content)
-            const truncated = yield* truncate.output(formatted.text, {}, input.agent)
-            const output = {
-              title: `MCP resource: ${parsed.uri}`,
-              metadata: {
-                server: parsed.server,
-                uri: parsed.uri,
-                contents: formatted.contents,
-                attachments: formatted.attachments.length,
-                truncated: truncated.truncated,
-                ...(truncated.truncated && { outputPath: truncated.outputPath }),
-              },
-              output: truncated.content,
-              attachments: formatted.attachments.map((attachment) => ({
-                ...attachment,
-                id: PartID.ascending(),
-                sessionID: ctx.sessionID,
-                messageID: input.processor.message.id,
-              })),
-            }
-            yield* recordSettlement(MCP_RESOURCE_TOOLS.read, opts.toolCallId, {
-              sourceKind: "mcp",
-              registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.read}`,
-            })
-            if (opts.abortSignal?.aborted) {
-              yield* input.processor.completeToolCall(opts.toolCallId, output)
-            }
-            return output
-          }),
-        )
-      },
-    })
+  const pipelineDeps = {
+    input,
+    run,
+    permission,
+    hooks,
+    agentService,
+    questionHookAnswers,
+    hookContext,
+    reportInterrupt,
+    transformSchema,
+    recordSettlement,
+    recordInput,
+    rawContext,
+    context,
+    configuredPermission,
+    registryItems,
+    mcp,
+    truncate,
+    resourceHookState,
+    hasMcpResourceServer,
   }
-
-  // Resource helpers are OpenCode-owned tools too: the same settings hooks
-  // must govern them, not only server-provided MCP callTool definitions.
-  for (const name of Object.values(MCP_RESOURCE_TOOLS)) {
-    const item = tools[name]
-    const execute = item?.execute
-    if (!item || !execute) continue
-    const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-    const validateInput = toolInputValidator(schema)
-    item.execute = (original, options) => {
-      let failureContexts: string[] = []
-      let executionPending = false
-      let args = toRecord(original)
-      return run.promise(
-        Effect.gen(function* () {
-          const opts = { ...options }
-          const settingsHook = withHookCancellation(hooks, opts.abortSignal)
-          let confirmed = false
-          let allowed = false
-          let pre: TriggerResult = { additionalContexts: [], systemMessages: [] }
-          if (settingsHook) {
-            pre = yield* settingsHook
-              .trigger(
-                { event: "PreToolUse", toolName: name, toolInput: args, toolUseID: opts.toolCallId },
-                {
-                  ...(yield* hookContext()),
-                  sessionID: input.session.id,
-                },
-              )
-              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
-            if (
-              pre.permissionDecision === "defer" &&
-              !pre.preventContinuation &&
-              !(yield* Effect.promise(() =>
-                Promise.resolve(input.canDefer?.(opts.toolCallId, opts.abortSignal) ?? false),
-              ))
-            )
-              pre = withoutUnusableDefer(pre)
-            yield* SettingsHook.landSystemMessages(pre, { sessionID: input.session.id })
-            let decision = applyPreHookDecision(args, pre)
-            if (decision.deferred)
-              return {
-                title: "",
-                output: "",
-                metadata: {
-                  hookDeferred: true,
-                  deferredToolUse: { id: opts.toolCallId, name, input: original },
-                },
-              }
-            if (decision.deniedReason)
-              return {
-                title: "",
-                output: withPreContext(`[Tool denied by hook] ${decision.deniedReason}`, pre.additionalContexts),
-                metadata: { hookDenied: true },
-              }
-            if (decision.stopReason)
-              return {
-                title: "",
-                output: decision.stopReason,
-                metadata: { hookStopped: true, stopReason: decision.stopReason },
-              }
-            args = decision.effectiveArgs
-            if (pre.updatedInput !== undefined) yield* Effect.sync(() => validateInput(args))
-            allowed = pre.permissionDecision === "allow"
-            if (pre.permissionDecision === "ask") {
-              const ask = yield* confirmPermissionInput(
-                args,
-                (effectiveArgs) =>
-                  permission.ask(
-                    {
-                      sessionID: input.session.id,
-                      permission: name,
-                      patterns: ["*"],
-                      always: [],
-                      metadata: {
-                        toolInput: effectiveArgs,
-                        ...(pre.permissionDecisionReason ? { reason: pre.permissionDecisionReason } : {}),
-                      },
-                      ruleset: [],
-                      tool: { messageID: input.processor.message.id, callID: opts.toolCallId },
-                    },
-                    {
-                      force: true,
-                      toolInput: effectiveArgs,
-                      toolName: name,
-                    },
-                  ),
-                validateInput,
-              ).pipe(Effect.exit)
-              const outcome = classifyPermissionAsk(ask)
-              if (typeof outcome === "object") return yield* Effect.failCause(outcome.propagate)
-              if (outcome === "denied")
-                return {
-                  title: "",
-                  output: withPreContext("[Tool denied by hook] User denied permission", pre.additionalContexts),
-                  metadata: { hookDenied: true },
-                }
-              if (Exit.isSuccess(ask)) args = ask.value.input
-              confirmed = true
-            }
-            failureContexts = pre.additionalContexts
-          }
-          executionPending = true
-          const result = yield* executeWithPermissionInput(
-            args,
-            (next) => {
-              args = next
-              resourceHookState.set(opts, { confirmed, allowed, name, original: toRecord(original) })
-              // The three resource executors ask read permission before any MCP request.
-              // The PreToolUse hook runs once above, outside the permission restart boundary.
-              return Effect.promise(() => Promise.resolve(execute(next, opts)))
-            },
-            {
-              canRestart: true,
-              validate: (next) => {
-                validateInput(next)
-              },
-            },
-          ).pipe(Effect.onInterrupt(() => reportInterrupt(name, args, opts.toolCallId)))
-          executionPending = false
-          if (opts.abortSignal?.aborted)
-            yield* reportInterrupt(name, args, opts.toolCallId).pipe(Effect.uninterruptible)
-          const output = builtinToolOutput(result.value)
-          if (!output) return yield* Effect.die(new Error("Invalid built-in MCP resource output"))
-          args = result.input
-          const preLines = pre.additionalContexts
-          if (settingsHook) {
-            const post = yield* settingsHook
-              .trigger(
-                {
-                  event: "PostToolUse",
-                  toolName: name,
-                  toolInput: args,
-                  toolUseID: opts.toolCallId,
-                  toolResponse: output.metadata,
-                  toolOutput: output,
-                },
-                { ...(yield* hookContext()), sessionID: input.session.id },
-              )
-              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
-            yield* SettingsHook.landSystemMessages(post, { sessionID: input.session.id })
-            const replacement = toolOutputReplacement(post)
-            const rewritten = replacement.present ? builtinToolOutput(replacement.value) : undefined
-            if (rewritten) {
-              output.title = rewritten.title
-              output.output = rewritten.output
-              output.metadata = rewritten.metadata
-              output.attachments = rewritten.attachments?.map((attachment) => ({
-                ...attachment,
-                id: PartID.ascending(),
-                sessionID: input.session.id,
-                messageID: input.processor.message.id,
-              }))
-            }
-            output.output = withHookFeedback(output.output, post)
-            if (post.preventContinuation) output.metadata = { ...output.metadata, ...hookStopMetadata(post) }
-          }
-          if (preLines.length) output.output = `${preLines.join("\n\n")}\n\n${output.output}`
-          return output
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
-              if (Cause.hasInterrupts(cause)) return yield* Effect.failCause(cause)
-              if (executionPending && options.abortSignal?.aborted) {
-                yield* reportInterrupt(name, args, options.toolCallId).pipe(Effect.uninterruptible)
-                return yield* Effect.failCause(cause)
-              }
-              const error = Cause.squash(cause)
-              if (
-                error instanceof PermissionV1.DeniedError ||
-                error instanceof PermissionV1.RejectedError ||
-                error instanceof PermissionV1.CorrectedError
-              )
-                return yield* Effect.failCause(cause)
-              if (error instanceof HookPermissionInterrupt)
-                return { title: "", output: error.message, metadata: { hookStopped: true, stopReason: error.message } }
-              if (!executionPending) return yield* Effect.failCause(cause)
-              const settingsHook = withHookCancellation(hooks, options.abortSignal)
-              if (settingsHook) {
-                const failure = yield* settingsHook
-                  .trigger(
-                    {
-                      event: "PostToolUseFailure",
-                      toolName: name,
-                      toolInput: args,
-                      toolUseID: options.toolCallId,
-                      error: String(error),
-                    },
-                    { ...(yield* hookContext()), sessionID: input.session.id },
-                  )
-                  .pipe(
-                    Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
-                  )
-                yield* SettingsHook.landSystemMessages(failure, { sessionID: input.session.id })
-                const withFeedback = withHookFailure(error, failure, failureContexts)
-                if (withFeedback !== error)
-                  return yield* Cause.hasDies(cause) ? Effect.die(withFeedback) : Effect.fail(withFeedback)
-              }
-              return yield* Effect.failCause(cause)
-            }),
-          ),
-        ),
-      )
-    }
-  }
+  yield* ToolPipeline.builtinTools(pipelineDeps, tools)
+  yield* ToolPipeline.mcpResourceTools(pipelineDeps, tools)
 
   for (const [key, item] of Object.entries(mcpItems)) {
     if (key === "submit_result" && isFinalResponseSession(input.session.id)) continue
@@ -1147,96 +700,6 @@ function materializationSignature(model: Provider.Model | undefined, tools: Reco
     // An unstable or unserializable tool shape must not reuse prior provenance.
     return `unknown:${crypto.randomUUID()}`
   }
-}
-
-function parseListMcpResourcesArgs(value: unknown) {
-  const args = toRecord(value)
-  return { server: optionalString(args, "server") }
-}
-
-function parseReadMcpResourceArgs(value: unknown) {
-  const args = toRecord(value)
-  return { server: requiredString(args, "server"), uri: requiredString(args, "uri") }
-}
-
-function optionalString(args: Record<string, unknown>, key: string) {
-  const value = args[key]
-  if (value === undefined || value === null || value === "") return undefined
-  if (typeof value !== "string") throw new Error(`${key} must be a string`)
-  return value
-}
-
-function requiredString(args: Record<string, unknown>, key: string) {
-  const value = optionalString(args, key)
-  if (value) return value
-  throw new Error(`${key} is required`)
-}
-
-function formatMcpResource(resource: MCP.Resource) {
-  const result = Object.fromEntries(Object.entries(resource).filter((entry) => entry[0] !== "client"))
-  return { ...result, server: resource.client }
-}
-
-function formatMcpResourceTemplate(template: Record<string, unknown> & { client: string }) {
-  const result = Object.fromEntries(Object.entries(template).filter((entry) => entry[0] !== "client"))
-  return { ...result, server: template.client }
-}
-
-function formatMcpResourceContent(server: string, uri: string, content: { contents: unknown }) {
-  const items = (Array.isArray(content.contents) ? content.contents : [content.contents]).filter(isRecord)
-  const text: string[] = []
-  const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []
-
-  for (const item of items) {
-    const itemUri = typeof item.uri === "string" ? item.uri : uri
-    const mime = typeof item.mimeType === "string" ? item.mimeType : "application/octet-stream"
-    if (typeof item.text === "string") {
-      text.push(`Resource: ${itemUri}\nMIME: ${mime}\n${item.text}`)
-      continue
-    }
-    if (typeof item.blob === "string") {
-      const size = base64Size(item.blob)
-      if (!SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)) {
-        text.push(
-          `[Binary MCP resource omitted: ${itemUri} (${mime}, ${formatBytes(size)}) is not a supported attachment type]`,
-        )
-        continue
-      }
-      if (size > MAX_MCP_RESOURCE_BLOB_BYTES) {
-        text.push(
-          `[Binary MCP resource omitted: ${itemUri} (${mime}, ${formatBytes(size)}) exceeds ${formatBytes(MAX_MCP_RESOURCE_BLOB_BYTES)}]`,
-        )
-        continue
-      }
-      text.push(`[Binary MCP resource attached: ${itemUri} (${mime})]`)
-      attachments.push({
-        type: "file",
-        mime,
-        url: `data:${mime};base64,${item.blob}`,
-        filename: itemUri,
-      })
-      continue
-    }
-    text.push(`[MCP resource content without text or blob: ${itemUri}]`)
-  }
-
-  return {
-    contents: items.length,
-    attachments,
-    text: text.join("\n\n") || `MCP resource ${uri} from ${server} returned no contents.`,
-  }
-}
-
-function base64Size(value: string) {
-  const trimmed = value.replace(/\s/g, "")
-  const padding = trimmed.endsWith("==") ? 2 : trimmed.endsWith("=") ? 1 : 0
-  return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
-}
-
-function formatBytes(value: number) {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`
-  return `${Math.ceil(value / (1024 * 1024))} MB`
 }
 
 export * as SessionTools from "./tools"
