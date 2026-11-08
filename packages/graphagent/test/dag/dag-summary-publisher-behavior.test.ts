@@ -59,6 +59,7 @@ function workflow(id: string, sessionId: string, projectId: string): WorkflowRow
     targetFingerprint: { kind: "none" },
     title: id,
     status: "running",
+    pauseReason: null,
     config: "",
     seq: 0,
     wakeReported: false,
@@ -81,6 +82,7 @@ function summary(id: string, completedNodes: number, graphRev = 1): WorkflowSumm
     runningNodes: 0,
     failedNodes: 0,
     skippedNodes: 0,
+    abortedNodes: 0,
     queuedNodes: 0,
     escalatedNodes: 0,
   }

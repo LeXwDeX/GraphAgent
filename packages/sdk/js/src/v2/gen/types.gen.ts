@@ -166,7 +166,7 @@ export type DagWorkflowSummary = {
   runningNodes: number | "Infinity" | "-Infinity" | "NaN"
   failedNodes: number | "Infinity" | "-Infinity" | "NaN"
   skippedNodes: number | "Infinity" | "-Infinity" | "NaN"
-  abortedNodes?: number
+  abortedNodes: number
   queuedNodes: number | "Infinity" | "-Infinity" | "NaN"
   escalatedNodes: number | "Infinity" | "-Infinity" | "NaN"
 }
@@ -4471,6 +4471,7 @@ export type DagWorkflow = {
   session_id: string
   title: string
   status: string
+  pause_reason?: string
   config: string
   seq: number | "Infinity" | "-Infinity" | "NaN"
   started_at?: number | "Infinity" | "-Infinity" | "NaN"

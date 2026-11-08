@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * DAG scheduling core — status enums, transition tables, and error types.
+ * DAG scheduling core — status vocabulary, transition tables, and error types.
  *
  * Pure: zero Effect/DB/I/O imports. This is the single source of truth for the
  * iron-law state machine (validated transitions, terminal irreversibility)
- * that the runtime layer enforces around every status change.
+ * that the runtime layer enforces around every status change. The literal
+ * values themselves live in `@graphagent/schema/dag-status` (also pure), so
+ * schema events and the TUI consume the same list.
  *
  * Ported from the dag-iron-laws branch's state-machine/{types,errors}.ts with
  * shadow-node / old-event-union / old-state.json cruft dropped (sub-DAG nesting
@@ -14,31 +16,61 @@
  * read-model tables replace state.json).
  */
 
+import {
+  ERROR_CLASS_BUDGET_EXHAUSTED,
+  ERROR_CLASS_CANCELLED,
+  NODE_TERMINAL_STATUS_VALUES,
+  NODE_STATUS_VALUES,
+  PAUSE_REASON_BUDGET_EXHAUSTED,
+  WORKFLOW_TERMINAL_STATUS_VALUES,
+  WORKFLOW_STATUS_VALUES,
+  displayState,
+  isActive,
+  isSettled,
+  isTerminal,
+} from "@graphagent/schema/dag-status"
+import type { DisplayState, PauseReason } from "@graphagent/schema/dag-status"
+
+export {
+  ERROR_CLASS_BUDGET_EXHAUSTED,
+  ERROR_CLASS_CANCELLED,
+  NODE_TERMINAL_STATUS_VALUES,
+  PAUSE_REASON_BUDGET_EXHAUSTED,
+  WORKFLOW_TERMINAL_STATUS_VALUES,
+  displayState,
+  isActive,
+  isSettled,
+  isTerminal,
+}
+export type { DisplayState, PauseReason }
+
 // ============================================================================
-// Status enums
+// Status vocabulary (derived from schema/dag-status — computed string enum
+// members are not allowed by TypeScript, so the runtime objects are literal
+// consts with a same-named union type)
 // ============================================================================
 
-export enum WorkflowStatus {
-  PENDING = "pending",
-  RUNNING = "running",
-  PAUSED = "paused",
-  STEPPING = "stepping",
-  COMPLETED = "completed",
-  FAILED = "failed",
-  CANCELLED = "cancelled",
-  ARCHIVED = "archived",
-}
+export const WorkflowStatus = {
+  PENDING: WORKFLOW_STATUS_VALUES[0],
+  RUNNING: WORKFLOW_STATUS_VALUES[1],
+  PAUSED: WORKFLOW_STATUS_VALUES[2],
+  STEPPING: WORKFLOW_STATUS_VALUES[3],
+  COMPLETED: WORKFLOW_STATUS_VALUES[4],
+  FAILED: WORKFLOW_STATUS_VALUES[5],
+  CANCELLED: WORKFLOW_STATUS_VALUES[6],
+} as const
+export type WorkflowStatus = (typeof WorkflowStatus)[keyof typeof WorkflowStatus]
 
-export enum NodeStatus {
-  PENDING = "pending",
-  QUEUED = "queued",
-  RUNNING = "running",
-  PAUSED = "paused",
-  COMPLETED = "completed",
-  FAILED = "failed",
-  ABORTED = "aborted",
-  SKIPPED = "skipped",
-}
+export const NodeStatus = {
+  PENDING: NODE_STATUS_VALUES[0],
+  QUEUED: NODE_STATUS_VALUES[1],
+  RUNNING: NODE_STATUS_VALUES[2],
+  COMPLETED: NODE_STATUS_VALUES[3],
+  FAILED: NODE_STATUS_VALUES[4],
+  ABORTED: NODE_STATUS_VALUES[5],
+  SKIPPED: NODE_STATUS_VALUES[6],
+} as const
+export type NodeStatus = (typeof NodeStatus)[keyof typeof NodeStatus]
 
 /** Why a node entered FAILED — recorded for diagnostics and replan decisions. */
 export enum FallbackTrigger {
@@ -151,17 +183,15 @@ export class StateNotPersistedError extends DagCoreError {
 // Iron-law enforcement: terminal predicates + transition tables
 // ============================================================================
 
-/** Iron law #2: terminal statuses are irreversible. */
-const WORKFLOW_TERMINAL_STATUS_VALUES: ReadonlySet<string> = new Set([
-  WorkflowStatus.COMPLETED,
-  WorkflowStatus.FAILED,
-  WorkflowStatus.CANCELLED,
-  WorkflowStatus.ARCHIVED,
-])
+/** Iron law #2: terminal statuses are irreversible. The value set is shared
+ * with schema/dag-status so durable-row predicates cannot drift from the
+ * schema literals. */
+const WORKFLOW_TERMINAL_STATUS_SET: ReadonlySet<string> = new Set(WORKFLOW_TERMINAL_STATUS_VALUES)
+const NODE_TERMINAL_STATUS_SET: ReadonlySet<string> = new Set(NODE_TERMINAL_STATUS_VALUES)
 
 /** Terminal-status predicate for durable rows, whose status field is a string. */
 export function isTerminalWorkflowStatusValue(status: string): boolean {
-  return WORKFLOW_TERMINAL_STATUS_VALUES.has(status)
+  return WORKFLOW_TERMINAL_STATUS_SET.has(status)
 }
 
 /** Iron law #2: terminal statuses are irreversible. */
@@ -171,12 +201,7 @@ export function isWorkflowTerminalStatus(status: WorkflowStatus): boolean {
 
 /** Iron law #2: terminal statuses are irreversible. */
 export function isNodeTerminalStatus(status: NodeStatus): boolean {
-  return (
-    status === NodeStatus.COMPLETED ||
-    status === NodeStatus.FAILED ||
-    status === NodeStatus.ABORTED ||
-    status === NodeStatus.SKIPPED
-  )
+  return NODE_TERMINAL_STATUS_SET.has(status)
 }
 
 /**
@@ -186,15 +211,11 @@ export function isNodeTerminalStatus(status: NodeStatus): boolean {
  * An empty array means the node is terminal (no further transitions) —
  * callers MUST treat attempts to transition further as TerminalViolationError.
  *
- * The `restart` path (running -> paused -> pending -> running) is encoded here:
- * PAUSED returns [RUNNING, ...] and RUNNING returns [PENDING]. All terminal states
- * (COMPLETED/FAILED/ABORTED/SKIPPED) return [] — restarts never originate from
- * a terminal node; the projector's NodeRestarted resets the row to PENDING.
- *
- * PAUSED additionally admits SKIPPED and FAILED: workflow-level cancel/fail
- * terminalizes paused nodes via NodeSkipped, and a replan NodeCancelled
- * projects them to failed — the table documents what the production paths
- * (and the projector's from-guards) actually do.
+ * The `restart` path is running -> pending -> running: RUNNING admits PENDING
+ * and all terminal states (COMPLETED/FAILED/ABORTED/SKIPPED) return [] —
+ * restarts never originate from a terminal node; the projector's NodeRestarted
+ * resets the row to PENDING. (Node-level PAUSED was removed in D11: no
+ * NodePaused durable event exists and no projector path writes it.)
  */
 export function getValidNextNodeStatuses(currentStatus: NodeStatus): NodeStatus[] {
   switch (currentStatus) {
@@ -206,9 +227,7 @@ export function getValidNextNodeStatuses(currentStatus: NodeStatus): NodeStatus[
       // queue-wait timeout (the deadline keeps running while queued, P0-2).
       return [NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.PENDING, NodeStatus.SKIPPED, NodeStatus.FAILED]
     case NodeStatus.RUNNING:
-      return [NodeStatus.COMPLETED, NodeStatus.FAILED, NodeStatus.ABORTED, NodeStatus.PAUSED, NodeStatus.PENDING, NodeStatus.SKIPPED]
-    case NodeStatus.PAUSED:
-      return [NodeStatus.RUNNING, NodeStatus.ABORTED, NodeStatus.SKIPPED, NodeStatus.FAILED]
+      return [NodeStatus.COMPLETED, NodeStatus.FAILED, NodeStatus.ABORTED, NodeStatus.PENDING, NodeStatus.SKIPPED]
     case NodeStatus.COMPLETED:
     case NodeStatus.FAILED:
     case NodeStatus.ABORTED:
@@ -223,6 +242,8 @@ export function getValidNextNodeStatuses(currentStatus: NodeStatus): NodeStatus[
  * Iron law #1: state changes only through validated transitions.
  *
  * Returns the list of statuses the workflow MAY move to from its current one.
+ * Terminal statuses admit nothing (D11 removed the legacy workflow-only
+ * terminal status: no durable event ever produced it).
  */
 export function getValidNextWorkflowStatuses(currentStatus: WorkflowStatus): WorkflowStatus[] {
   switch (currentStatus) {
@@ -239,8 +260,6 @@ export function getValidNextWorkflowStatuses(currentStatus: WorkflowStatus): Wor
     case WorkflowStatus.COMPLETED:
     case WorkflowStatus.FAILED:
     case WorkflowStatus.CANCELLED:
-      return [WorkflowStatus.ARCHIVED]
-    case WorkflowStatus.ARCHIVED:
       return []
     default:
       return []

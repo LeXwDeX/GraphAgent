@@ -13,6 +13,7 @@ export function makeWorkflowRow(overrides: Partial<DagStore.WorkflowRow> = {}): 
     targetFingerprint: { kind: "none" },
     title: "Test Workflow",
     status: "running",
+    pauseReason: null,
     config: "{}",
     seq: 1,
     wakeReported: false,

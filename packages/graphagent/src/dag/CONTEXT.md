@@ -4,22 +4,24 @@ Workflow Orchestration turns one user objective into one durable DAG. Its model-
 
 ## Glossary
 
-| Term | Meaning |
-| --- | --- |
-| Workflow Source | An in-memory object used by trusted internal callers or a YAML document supplied to runtime and release tooling. Model-authored graph actions use YAML through `spec_path`. |
-| Workflow Authoring Check | The side-effect-free source-to-graph boundary that parses, normalizes file compatibility, decodes the action shape, compiles Blocks, applies the selected validation profile, and returns diagnostics or a Prepared Workflow Graph. |
-| Prepared Workflow Graph | A strictly decoded and compiled graph that passed the requested authoring checks and is ready for a runtime mutation. |
-| Workflow Route | A complete Block or Node composition selected for one objective. It may be custom, saved, or assembled heuristically. |
-| Orchestration Router | The product-owned parent guidance that qualifies an objective and selects one Workflow Route without external Skill discovery. |
-| Block Composer | The Orchestration Router decision that selects the smallest Block graph justified by current evidence. |
-| Decision Checkpoint | One parent-owned confirmation for unresolved user choices that materially change behavior, scope, acceptance, or an irreversible boundary. |
-| Reporting Checkpoint | A `report_to_parent: true` node with dependents; its dependents must gate on its output via `condition`, or it must be a reporting leaf. |
-| Workflow Brief | The recommended route, scope, acceptance evidence, assumptions, risks, and material alternatives presented at a Decision Checkpoint. |
-| Block | A reusable high-level orchestration capability such as explore, plan, debug, coding, verify, or review. Blocks compile into Nodes. |
-| Fan-out Writer | A writer whose `fan_out` dependency's `packages` output decides, at admission, whether it runs as parallel package writers joined by an aggregator under its id or as itself. |
-| Node | A low-level durable unit of child-agent work with dependencies, prompt input, policy, and output contract. |
-| Validation Profile | `portable` checks source-contained structure without user environment state; `environment` additionally resolves live agents, prompt assets, and models. |
-| Runtime Admission | The READY/WAIVED gate for a deep workflow. It is a lifecycle policy after authoring, not another name for Workflow Authoring Check. |
+| Term                     | Meaning                                                                                                                                                                                                                                           |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow Source          | An in-memory object used by trusted internal callers or a YAML document supplied to runtime and release tooling. Model-authored graph actions use YAML through `spec_path`.                                                                       |
+| Workflow Authoring Check | The side-effect-free source-to-graph boundary that parses, normalizes file compatibility, decodes the action shape, compiles Blocks, applies the selected validation profile, and returns diagnostics or a Prepared Workflow Graph.               |
+| Prepared Workflow Graph  | A strictly decoded and compiled graph that passed the requested authoring checks and is ready for a runtime mutation.                                                                                                                             |
+| Workflow Route           | A complete Block or Node composition selected for one objective. It may be custom, saved, or assembled heuristically.                                                                                                                             |
+| Orchestration Router     | The product-owned parent guidance that qualifies an objective and selects one Workflow Route without external Skill discovery.                                                                                                                    |
+| Block Composer           | The Orchestration Router decision that selects the smallest Block graph justified by current evidence.                                                                                                                                            |
+| Decision Checkpoint      | One parent-owned confirmation for unresolved user choices that materially change behavior, scope, acceptance, or an irreversible boundary.                                                                                                        |
+| Reporting Checkpoint     | A `report_to_parent: true` node with dependents; its dependents must gate on its output via `condition`, or it must be a reporting leaf.                                                                                                          |
+| Workflow Brief           | The recommended route, scope, acceptance evidence, assumptions, risks, and material alternatives presented at a Decision Checkpoint.                                                                                                              |
+| Block                    | A reusable high-level orchestration capability such as explore, plan, debug, coding, verify, or review. Blocks compile into Nodes.                                                                                                                |
+| Fan-out Writer           | A writer whose `fan_out` dependency's `packages` output decides, at admission, whether it runs as parallel package writers joined by an aggregator under its id or as itself.                                                                     |
+| Node                     | A low-level durable unit of child-agent work with dependencies, prompt input, policy, and output contract.                                                                                                                                        |
+| Pause Reason             | The durable `workflow.pause_reason` recorded with `WorkflowPaused` (for example `budget_exhausted`). It describes only the current pause episode and is cleared by resume, terminal settlement, or replan.                                        |
+| Display State            | The presentation-only node state derived from the raw status: a cancelled node displays as `cancelled`, a running escalation-pending node as `escalated`, otherwise the raw status. Raw `status` and `error_class` remain available to consumers. |
+| Validation Profile       | `portable` checks source-contained structure without user environment state; `environment` additionally resolves live agents, prompt assets, and models.                                                                                          |
+| Runtime Admission        | The READY/WAIVED gate for a deep workflow. It is a lifecycle policy after authoring, not another name for Workflow Authoring Check.                                                                                                               |
 
 ## Invariants
 
@@ -35,6 +37,10 @@ Workflow Orchestration turns one user objective into one durable DAG. Its model-
 - A rejected live replan or extend parks the workflow by publishing durable `WorkflowPaused` before returning diagnostics. If that pause fails or races with a terminal transition, the tool reports the actual durable status; callers must not assume the graph is parked.
 - A paused workflow gets one durable, delayed reminder per pause episode through the wake marker. A reminder never resumes, completes, or fails the workflow.
 - Dependents of a reporting checkpoint must be gated on its output; authoring rejects ungated shapes at start/validate AND at replan/extend fragment actions, and the runtime replan/extend mutation seam re-checks the merged graph (exempting checkpoints already terminal in the durable graph — they are settled and immutable, the spawn-before-verdict race is past; runtime create remains deliberately unchanged). A gated checkpoint must declare `output_schema` (authoring obligation).
+- Workflow and node status vocabularies each have one source (`@graphagent/schema/dag-status`), and each contains exactly the statuses that durable events can produce. Terminal sets are domain-specific; `settled` means `completed` or `skipped` only, so an `aborted` node never counts as finished progress.
+- A `budget_exhausted` pause is recorded on the durable event and read model, and only a resume/step transition lifts it. The public `Dag.resume` and `Dag.step` paths consult the injectable `ResumeGuard` policy (fail-open when no policy is provided) before publishing; internal terminalization through `failUnrecoverable` deliberately bypasses the guard.
+- Node cancellation is identified structurally by `error_class = "cancelled"` (never by matching `error_reason` text). A cancelled node lands on the `failed` status, is marked superseded, and therefore drops out of current-revision reads and agent-failure wake attribution.
+- Wake attribution excludes cancelled rows (superseded) and `budget_exhausted` failures; both are engine outcomes, not agent failures, and must not trigger replan hints.
 
 ## Conventions
 

@@ -146,7 +146,7 @@ describe("Dag.replan atomic transaction (DAG-A03)", () => {
   const probe: BatchProbe = { failAtConfig: true }
   const it = testEffect(atomicLayer(probe))
 
-  for (const status of ["queued", "paused"] as const) {
+  for (const status of ["queued"] as const) {
     it.live(`rejects a dependency on an omitted ${status} node before any durable mutation`, () =>
       Effect.gen(function* () {
         probe.failAtConfig = false

@@ -195,6 +195,7 @@ export default {
           \`target_fingerprint\` text NOT NULL,
           \`title\` text NOT NULL,
           \`status\` text NOT NULL,
+          \`pause_reason\` text,
           \`config\` text NOT NULL,
           \`seq\` integer NOT NULL,
           \`wake_reported\` integer DEFAULT false NOT NULL,

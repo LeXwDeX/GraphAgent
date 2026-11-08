@@ -116,6 +116,7 @@ describe("workflow child boundary", () => {
         targetFingerprint: { kind: "none" },
         title: "Owned workflow",
         status: "running",
+        pauseReason: null,
         config: "{}",
         seq: 1,
         wakeReported: false,

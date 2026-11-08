@@ -33,6 +33,9 @@ import { Database } from "@graphagent/core/database/database"
 import { DagLocation } from "../location"
 import { WorkflowRuntime, toSchedulingNodes } from "@graphagent/core/dag/core/scheduling"
 import {
+  ERROR_CLASS_BUDGET_EXHAUSTED,
+  ERROR_CLASS_CANCELLED,
+  displayState,
   isNodeTerminalStatus,
   isTransitionRejection,
   isWorkflowTerminalStatus,
@@ -232,8 +235,7 @@ const serviceLayer = Layer.effect(
             !workflow ||
             workflow.status === "completed" ||
             workflow.status === "failed" ||
-            workflow.status === "cancelled" ||
-            workflow.status === "archived"
+            workflow.status === "cancelled"
           )
             return "inactive" as const
           if (workflow.status === "paused") return "paused" as const
@@ -1695,8 +1697,13 @@ const serviceLayer = Layer.effect(
                 if (workflow) yield* recoverWorkflow(workflow)
                 return
               }
-              yield* entry.evalLock.withPermits(1)(
+              const handled = yield* entry.evalLock.withPermits(1)(
                 Effect.gen(function* () {
+                  // A stale terminal event for the run this replan reopened can
+                  // drop the runtime entry while this handler waits for the
+                  // evalLock. Scheduling against that dead entry would silently
+                  // do nothing; recovery owns the new revision instead.
+                  if (runtimes.get(dagID) !== entry) return false
                   const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
                   // F2 (DAG-03): a replan is the parent's explicit disposition
                   // of the verdict — release the fail-closed veto hold and
@@ -1903,8 +1910,13 @@ const serviceLayer = Layer.effect(
                   }
                   yield* spawnReady(dagID)
                   yield* checkCompletion(dagID)
+                  return true
                 }),
               )
+              if (!handled) {
+                const workflow = yield* store.getWorkflow(dagID)
+                if (workflow) yield* recoverWorkflow(workflow)
+              }
             }).pipe(guarded("WorkflowReplanned")),
           ),
           Effect.forkScoped({ startImmediately: true }),
@@ -1933,8 +1945,27 @@ const serviceLayer = Layer.effect(
                 const entry = runtimes.get(dagID)
                 const parentSessionID = entry?.parentSessionID
                 if (entry) {
-                  yield* entry.evalLock.withPermits(1)(
+                  const cleaned = yield* entry.evalLock.withPermits(1)(
                     Effect.gen(function* () {
+                      // Terminal events have their own subscriber fiber per event
+                      // type, so a late WorkflowCompleted/Failed/Cancelled can be
+                      // delivered after an additive extend already reopened the
+                      // workflow (WorkflowReplanned). Projectors run inside the
+                      // durable publish transaction, so a non-terminal durable row
+                      // proves this event is stale: keep the new revision's fibers
+                      // and runtime entry; its own terminal event cleans up later.
+                      const durable = yield* store.getWorkflow(dagID)
+                      if (durable && !isTerminalWorkflowStatusValue(durable.status)) {
+                        yield* Effect.logDebug("DagLoop dropped stale workflow terminal event", {
+                          dagID,
+                          event: def.type,
+                          dbStatus: durable.status,
+                        })
+                        return false
+                      }
+                      // The entry may have been removed or replaced while this
+                      // handler waited for the evalLock.
+                      if (runtimes.get(dagID) !== entry) return false
                       for (const [nodeID, fiber] of entry.fibers) {
                         const node = yield* store.getNode(dagID, nodeID)
                         yield* abortChild(
@@ -1951,8 +1982,10 @@ const serviceLayer = Layer.effect(
                       entry.fibers.clear()
                       entry.watchers.clear()
                       runtimes.delete(dagID)
+                      return true
                     }),
                   )
+                  if (!cleaned) return
                 }
                 // P1-6: trigger wake on workflow terminal so the parent
                 // learns the final outcome even if no idle event fires.
@@ -1976,7 +2009,10 @@ const serviceLayer = Layer.effect(
                   // with no runtime to ever clean it. Foreign-project events
                   // are a no-op here.
                   const wf = yield* store.getWorkflow(dagID)
-                  if (wf && wf.projectId === ctx.project.id) {
+                  // A stale terminal event for a reopened (running) workflow must
+                  // not release its registration; a terminal row only event is
+                  // the one that owes the wake.
+                  if (wf && wf.projectId === ctx.project.id && isTerminalWorkflowStatusValue(wf.status)) {
                     yield* automation.unregister(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
                     // #948: a workflow terminalized without a runtime entry
                     // (swept at host level, or recovery that never adopted)
@@ -2332,13 +2368,18 @@ const serviceLayer = Layer.effect(
                 if (workflow.status !== "failed") continue
                 // Rev-view (v1.0.15 Train A): attribution is terminal
                 // aggregation — only CURRENT-revision failures are attributed.
-                // Superseded replaced failures (cancelled rows already fall
-                // out via errorClass null) must not be re-attributed.
+                // Cancelled rows are superseded by the NodeCancelled projection,
+                // so getCurrentNodes already drops them; the errorClass filter
+                // below is the explicit D12 defense layer for the same rows and
+                // for budget-exhausted failures, which are not agent failures.
                 const failedNodes = yield* store.getCurrentNodes(workflow.id).pipe(
                   Effect.map((nodes) =>
                     nodes.filter(
                       (node): node is DagStore.NodeRow & { errorClass: string } =>
-                        node.status === "failed" && node.errorClass !== null,
+                        node.status === "failed" &&
+                        node.errorClass !== null &&
+                        node.errorClass !== ERROR_CLASS_CANCELLED &&
+                        node.errorClass !== ERROR_CLASS_BUDGET_EXHAUSTED,
                     ),
                   ),
                   Effect.catchCause((cause) =>
@@ -2372,9 +2413,11 @@ const serviceLayer = Layer.effect(
                 if (incomplete.length > 0) {
                   incompleteByWorkflow.set(
                     workflow.id,
-                    incomplete.map((node) =>
-                      `- "${node.id}" (${node.status}${node.errorClass ? `: ${node.errorClass}` : ""})`.slice(0, 300),
-                    ),
+                    incomplete.map((node) => {
+                      const state = displayState(node)
+                      const reason = state === "failed" && node.errorClass ? `: ${node.errorClass}` : ""
+                      return `- "${node.id}" (${state}${reason})`.slice(0, 300)
+                    }),
                   )
                 }
               }
@@ -2385,7 +2428,7 @@ const serviceLayer = Layer.effect(
                   // wake_reported=false, so it cannot be an already-adjudicated
                   // extend — escalation_pending and timeoutExtensions>0 agree
                   // here; the flag is the intent-level signal.
-                  if (node.status === "running" && node.escalationPending) {
+                  if (displayState(node) === "escalated") {
                     const at = new Date(node.timeUpdated ?? node.startedAt ?? Date.now()).toISOString()
                     return `[DAG Node Timeout] RUNNING node "${node.name}" exceeded its execution deadline at ${at} (timeout escalation ${node.timeoutExtensions}) and is still executing. If the workflow's cumulative escalation cap is not exhausted, control(extend_timeout) { workflow_id, node_id, timeout_ms } grants more execution time WITHOUT a replan — it keeps the same child session and attempt, consumes no replan, rewrites no graph, and the deadline watcher picks up the new deadline on its next read. At the cap, extension of this attempt is refused and the watcher enforces the timeout verdict. The cumulative extension count is NOT reset (only a new attempt resets it). Use control(replan) with a NEW worker_config.timeout_ms when you must also change the graph; restart or cancel the node to stop the current attempt. Queued nodes are not extended: their admission deadline was fixed at permit acquisition and is not adjusted by extensions.`
                   }
@@ -2395,14 +2438,17 @@ const serviceLayer = Layer.effect(
                       : (node.errorReason ?? (node.output == null ? "(no output)" : JSON.stringify(node.output)))
                   const truncated = durableResult.length > 500
                   const output = durableResult.slice(0, 500)
-                  const failureClass = node.status === "failed" && node.errorClass ? ` (${node.errorClass})` : ""
+                  const state = displayState(node)
+                  // D11: cancellation is identified only by the structured
+                  // display state; do not render it as "failed (cancelled)".
+                  const failureClass = state === "failed" && node.errorClass ? ` (${node.errorClass})` : ""
                   // #949: every delivered result states when the node settled,
                   // so the parent can answer "when did this arrive?".
                   const at = new Date(node.completedAt ?? node.startedAt ?? node.timeUpdated ?? Date.now()).toISOString()
                   const retrieval = truncated
                     ? `\nComplete output: call workflow result with workflow_id="${node.workflowId}" and node_id="${node.id}".`
                     : ""
-                  return `[DAG Node Result] Node "${node.name}" ${node.status}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}`
+                  return `[DAG Node Result] Node "${node.name}" ${state}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}`
                 }),
                 ...batch.workflows.map((workflow) => {
                   const failures = failuresByWorkflow.get(workflow.id)

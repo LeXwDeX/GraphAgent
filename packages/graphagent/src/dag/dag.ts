@@ -29,6 +29,8 @@ import {
   WorkflowStatus,
   NodeStatus,
 } from "@graphagent/core/dag/core/types"
+import type { PauseReason } from "@graphagent/core/dag/core/types"
+import { ResumeGuard } from "./resume-guard"
 import { AdmissionRecord, ExecutionMode, transitionAdmission, validateAdmission } from "./admission"
 import { unresolvedReviewOutcomes, targetSensitiveNode } from "./review-lifecycle"
 import { ReplanDefinition } from "./replan-definition"
@@ -541,7 +543,7 @@ export interface Interface {
     config: WorkflowConfig
   }) => Effect.Effect<ID, Error>
   readonly store: DagStore.Interface
-  readonly pause: (dagID: string) => Effect.Effect<void, Error>
+  readonly pause: (dagID: string, reason?: PauseReason) => Effect.Effect<void, Error>
   readonly pauseForCheckpoint: (
     dagID: string,
     checkpointSeq: number,
@@ -719,6 +721,7 @@ export const layer = Layer.effect(
       if (!getValidNextWorkflowStatuses(current).includes(target)) {
         return yield* Effect.fail(new InvalidTransitionError(dagID, current, target))
       }
+      return wf
     })
 
     const guardWorkflowNotTerminal = Effect.fn("Dag.guardWorkflowNotTerminal")(function* (
@@ -891,9 +894,13 @@ export const layer = Layer.effect(
       return dagID
     })
 
-    const pause = Effect.fn("Dag.pause")(function* (lock: WorkflowLock, dagID: string) {
+    const pause = Effect.fn("Dag.pause")(function* (lock: WorkflowLock, dagID: string, reason?: PauseReason) {
       yield* guardWorkflow(dagID, WorkflowStatus.PAUSED)
-      yield* events.publish(DagEvent.WorkflowPaused, { dagID: dagID as ID, timestamp: yield* DateTime.now })
+      yield* events.publish(DagEvent.WorkflowPaused, {
+        dagID: dagID as ID,
+        timestamp: yield* DateTime.now,
+        ...(reason !== undefined ? { reason } : {}),
+      })
     })
     const pauseForCheckpoint = Effect.fn("Dag.pauseForCheckpoint")(function* (
       lock: WorkflowLock,
@@ -908,8 +915,7 @@ export const layer = Layer.effect(
         !workflow ||
         workflow.status === "completed" ||
         workflow.status === "failed" ||
-        workflow.status === "cancelled" ||
-        workflow.status === "archived"
+        workflow.status === "cancelled"
       )
         return "inactive" as const
       if (workflow.status === "paused") return "paused" as const
@@ -983,7 +989,7 @@ export const layer = Layer.effect(
             trigger: "exec_failed" as never,
             timestamp: ts,
           })
-        } else if (node.status === "running" || node.status === "paused") {
+        } else if (node.status === "running") {
           yield* events.publish(DagEvent.NodeAborted, {
             dagID: ID.make(dagID),
             nodeID: NodeID.make(node.id),
@@ -1084,15 +1090,12 @@ export const layer = Layer.effect(
       }).pipe(Effect.catchIf(isTransitionRejection, () => Effect.succeed("ignored" as const)))
     })
 
-const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipped"])
-
-/**
- * Natural terminalization shared by the owning DagLoop and the host-level
-     * supervision sweep. The decision and the transition run under the same
-     * workflow lock, and an optional expectedGraphRev fences a stale runtime
-     * snapshot: a recover/replan that bumped the revision wins instead of
-     * being failed with the old graph's evidence.
-     */
+/** Natural terminalization shared by the owning DagLoop and the host-level
+ * supervision sweep. The decision and the transition run under the same
+ * workflow lock, and an optional expectedGraphRev fences a stale runtime
+ * snapshot: a recover/replan that bumped the revision wins instead of
+ * being failed with the old graph's evidence.
+ */
     const settleCompletion = Effect.fn("Dag.settleCompletion")(function* (
       lock: WorkflowLock,
       dagID: string,
@@ -1138,7 +1141,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
           yield* fail(lock, dagID, `required node(s) failed: ${failed.join(", ")}`)
           return { status: "failed" as const }
         }
-        if (nodes.length === 0 || nodes.some((node) => !TERMINAL_NODE_STATUSES.has(node.status)))
+        if (nodes.length === 0 || nodes.some((node) => !isNodeTerminalStatus(node.status as NodeStatus)))
           return { status: "ignored" as const }
         const gaps = requiredCompletionGaps(
           config,
@@ -1227,7 +1230,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       for (const next of normalizedFragment.nodes) {
         if (next.cancel || next.restart) continue
         const status = nodeStatusById.get(next.id)
-        if (status !== NodeStatus.RUNNING && status !== NodeStatus.QUEUED && status !== NodeStatus.PAUSED) continue
+        if (status !== NodeStatus.RUNNING && status !== NodeStatus.QUEUED) continue
         const current = cfgById.get(next.id)
         if (!current) {
           definitionErrors.push(
@@ -1485,7 +1488,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       const config = parseWorkflowConfig(wf.config)
       const cfgById = new Map((config?.nodes ?? []).map((n) => [n.id, n]))
       const newIds = new Set(newNodes.map((n) => n.id))
-      // extend is additive: carry forward pending/queued/paused nodes (with their
+      // extend is additive: carry forward pending/queued nodes (with their
       // existing config definition) so replan treats them as "replace" (preserved)
       // rather than "supersede" (cancelled). Running nodes are intentionally
       // excluded — the merged config (computeMergedConfig: surviving = every
@@ -1499,7 +1502,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       const toPreserve = nodes.filter(
         (n) =>
           !newIds.has(n.id) &&
-          (n.status === NodeStatus.PENDING || n.status === NodeStatus.QUEUED || n.status === NodeStatus.PAUSED),
+          (n.status === NodeStatus.PENDING || n.status === NodeStatus.QUEUED),
       )
       if (toPreserve.length > 0 && !config) {
         return yield* Effect.fail(
@@ -1534,7 +1537,6 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       const earlyCompleted = nodes.some((node) => node.errorReason === "agent_complete")
       const reopenCompleted = wf.status === "completed" && addsNewNode && hasReportingLeafCheckpoint && !earlyCompleted
       function reopenDenial(workflowStatus: string): string | undefined {
-        if (workflowStatus === "archived") return "archived workflows are immutable — start a new workflow instead"
         if (workflowStatus !== "completed")
           return "only a naturally completed workflow can be reopened — failed and cancelled workflows are immutable; start a new workflow reusing their completed outputs as static input"
         if (!addsNewNode) return "the fragment adds no new node ids — an additive reopen requires at least one new node"
@@ -1554,7 +1556,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       // an early control(complete) leaves an agent_complete marker and remains
       // terminal, as do public replan and non-additive terminal mutations.
       const wfTerminal =
-        wf.status === "completed" || wf.status === "failed" || wf.status === "cancelled" || wf.status === "archived"
+        wf.status === "completed" || wf.status === "failed" || wf.status === "cancelled"
       if (wfTerminal && !reopenCompleted) {
         return yield* Effect.fail(new TerminalViolationError(dagID, wf.status, "extend", reopenDenial(wf.status)))
       }
@@ -1574,7 +1576,7 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       if (workflow.status !== "paused" && workflow.status !== "failed" && workflow.status !== "cancelled") {
         return yield* Effect.fail(
           new Error(
-            workflow.status === "completed" || workflow.status === "archived"
+            workflow.status === "completed"
               ? `Recovery requires a paused or failed workflow; ${workflow.status} cannot recover. It is terminal: if in-scope work remains, extend it when allowed or start a bounded successor workflow that reuses its valid outputs — no user approval is needed for work the original request already covers`
               : `Recovery requires a paused or failed workflow; ${workflow.status} cannot recover (pause live scheduling first)`,
           ),
@@ -2043,9 +2045,9 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
       })
     })
     const nodeCancelled = Effect.fn("Dag.nodeCancelled")(function* (lock: WorkflowLock, dagID: string, nodeID: string) {
-      // Cancellation is valid from any non-terminal status; no single target
-      // NodeStatus is a legal transition from all of pending/queued/running/paused
-      // (e.g. PAUSED -> SKIPPED is not in the table), so guard on terminality.
+      // Cancellation is valid from any non-terminal status. NodeCancelled
+      // projects to `failed`, a legal target from pending/queued/running, but
+      // no single declared transition covers all three, so guard on terminality.
       yield* guardWorkflowNotTerminal(dagID, "cancelled")
       const node = yield* store.getNode(dagID, nodeID).pipe(Effect.orDie)
       if (!node) return yield* Effect.fail(new Error(`Node not found: ${nodeID}`))
@@ -2233,11 +2235,30 @@ const TERMINAL_NODE_STATUSES = new Set(["completed", "failed", "aborted", "skipp
     return Service.of({
       create,
       store,
-      pause: (dagID) => withWorkflowLock(dagID)((lock) => pause(lock, dagID)),
+      pause: (dagID, reason) => withWorkflowLock(dagID)((lock) => pause(lock, dagID, reason)),
       pauseForCheckpoint: (dagID, checkpointSeq) =>
         withWorkflowLock(dagID)((lock) => pauseForCheckpoint(lock, dagID, checkpointSeq)),
-      resume: (dagID) => withWorkflowLock(dagID)((lock) => resume(lock, dagID)),
-      step: (dagID) => withWorkflowLock(dagID)((lock) => step(lock, dagID)),
+      // D12: resume/step are the two engine transitions that can lift a pause,
+      // so both consult the injectable ResumeGuard before publishing. The
+      // guard runs under the workflow lock, after the state-machine check, and
+      // only on the public path — failUnrecoverable's internal resume bypasses
+      // it deliberately (terminalizing is not resuming execution).
+      resume: (dagID) =>
+        withWorkflowLock(dagID)((lock) =>
+          Effect.gen(function* () {
+            const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
+            yield* ResumeGuard.check(workflow)
+            yield* resume(lock, dagID)
+          }),
+        ),
+      step: (dagID) =>
+        withWorkflowLock(dagID)((lock) =>
+          Effect.gen(function* () {
+            const workflow = yield* guardWorkflow(dagID, WorkflowStatus.STEPPING)
+            yield* ResumeGuard.check(workflow)
+            return yield* step(lock, dagID)
+          }),
+        ),
       cancel: (dagID) => withWorkflowLock(dagID)((lock) => withMailbox(dagID, "cancelled", cancel(lock, dagID))),
       complete: (dagID, options) =>
         withWorkflowLock(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),

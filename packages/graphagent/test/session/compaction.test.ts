@@ -393,6 +393,7 @@ function workflowRow(input: { id: string; title: string; status: string }): DagS
     targetFingerprint: { kind: "none" },
     title: input.title,
     status: input.status,
+    pauseReason: null,
     config: "",
     seq: 0,
     wakeReported: false,

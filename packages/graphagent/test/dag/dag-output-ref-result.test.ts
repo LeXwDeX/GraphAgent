@@ -107,6 +107,7 @@ const storeImpl = {
             targetFingerprint: { kind: "none" } as const,
             title: "Output ref workflow",
             status: "completed",
+            pauseReason: null,
             config: "{}",
             seq: 2,
             wakeReported: true,

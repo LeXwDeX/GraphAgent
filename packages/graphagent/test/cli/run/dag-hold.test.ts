@@ -198,12 +198,12 @@ describe("dag hold decision rule (issue 614)", () => {
       },
       {
         // Every terminal status behaves like completed.
-        name: "cancelled and archived hold once when first seen, then break",
+        name: "cancelled and failed hold once when first seen, then break",
         steps: [
           { event: "busy", snapshot: [] },
-          { event: "idle", snapshot: [wf("W1", "cancelled"), wf("W2", "archived")], expect: "hold" },
-          { event: "busy", snapshot: [wf("W1", "cancelled"), wf("W2", "archived")] },
-          { event: "idle", snapshot: [wf("W1", "cancelled"), wf("W2", "archived")], expect: "break" },
+          { event: "idle", snapshot: [wf("W1", "cancelled"), wf("W2", "failed")], expect: "hold" },
+          { event: "busy", snapshot: [wf("W1", "cancelled"), wf("W2", "failed")] },
+          { event: "idle", snapshot: [wf("W1", "cancelled"), wf("W2", "failed")], expect: "break" },
         ],
       },
       {
@@ -258,7 +258,7 @@ describe("dag hold decision rule (issue 614)", () => {
   test("pure helpers: active statuses, turn reset, and first-seen id evaluation order", () => {
     expect(DagHold.isDagActiveStatus("pending")).toBe(true)
     expect(DagHold.isDagActiveStatus("running")).toBe(true)
-    for (const status of ["paused", "stepping", "completed", "failed", "cancelled", "archived"]) {
+    for (const status of ["paused", "stepping", "completed", "failed", "cancelled"]) {
       expect(DagHold.isDagActiveStatus(status)).toBe(false)
     }
 

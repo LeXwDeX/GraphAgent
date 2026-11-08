@@ -22,6 +22,9 @@ export const WorkflowResponse = Schema.Struct({
   session_id: Schema.String,
   title: Schema.String,
   status: Schema.String,
+  // D12: durable suspend reason; absent for a plain pause and for rows
+  // written before the column existed.
+  pause_reason: Schema.optional(Schema.String),
   config: Schema.String,
   seq: Schema.Number,
   started_at: Schema.optional(Schema.Number),

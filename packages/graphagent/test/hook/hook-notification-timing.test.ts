@@ -67,6 +67,7 @@ const layer = Layer.mergeAll(Permission.layer, SessionStatus.layer, Question.lay
                     directory: process.cwd(),
                     targetFingerprint: { kind: "none" },
                     config: "{}",
+                    pauseReason: null,
                     seq: 0,
                     wakeReported: false,
                     graphRev: 0,

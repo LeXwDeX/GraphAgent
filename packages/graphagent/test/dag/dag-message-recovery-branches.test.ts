@@ -334,6 +334,7 @@ function state(input: {
           directory: process.cwd(),
           targetFingerprint: { kind: "none" },
           status: "running",
+          pauseReason: null,
           sessionId: "ses_parent",
           title: "Recovery",
           config: "{}",

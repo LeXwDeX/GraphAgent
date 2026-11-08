@@ -32,6 +32,7 @@ function summary(completed: number, total: number, running = 0, failed = 0): Dag
     runningNodes: running,
     failedNodes: failed,
     skippedNodes: 0,
+    abortedNodes: 0,
     queuedNodes: 0,
     escalatedNodes: 0,
   }

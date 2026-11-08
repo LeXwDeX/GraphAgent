@@ -11,6 +11,7 @@ import { versionedType } from "../event"
 import { EventTable } from "../event/sql"
 import { LayerNode } from "../effect/layer-node"
 import { WorkflowNodeTable, WorkflowTable } from "./sql"
+import { isTerminalWorkflowStatusValue, WORKFLOW_TERMINAL_STATUS_VALUES } from "./core/types"
 
 // ============================================================================
 // Row → domain types
@@ -28,6 +29,8 @@ export interface WorkflowRow {
   targetFingerprint: DagEvent.TargetFingerprint
   title: string
   status: string
+  /** D12: why the workflow is paused (e.g. "budget_exhausted"); null outside a pause episode. */
+  pauseReason: string | null
   config: string
   seq: number
   wakeReported: boolean
@@ -121,7 +124,8 @@ export interface WorkflowSummary {
   runningNodes: number
   failedNodes: number
   skippedNodes: number
-  abortedNodes?: number
+  /** D11: aborted is a distinct terminal count (not part of completed+skipped settled progress). */
+  abortedNodes: number
   queuedNodes: number
   /** Running nodes with a not-yet-adjudicated timeout escalation (escalation_pending). */
   escalatedNodes: number
@@ -136,6 +140,7 @@ const mapWorkflow = (r: typeof WorkflowTable.$inferSelect): WorkflowRow => ({
   targetFingerprint: r.target_fingerprint,
   title: r.title,
   status: r.status,
+  pauseReason: r.pause_reason,
   config: r.config,
   seq: r.seq,
   wakeReported: r.wake_reported,
@@ -672,7 +677,7 @@ export const layer = Layer.effect(
           .all()
           .pipe(Effect.orDie)
         return rows
-          .filter((r) => ["completed", "failed", "cancelled"].includes(r.status))
+          .filter((r) => isTerminalWorkflowStatusValue(r.status))
           .map(mapWorkflow)
       }),
 
@@ -682,7 +687,7 @@ export const layer = Layer.effect(
           .from(WorkflowTable)
           .where(and(
             eq(WorkflowTable.wake_reported, false),
-            inArray(WorkflowTable.status, ["completed", "failed", "cancelled"]),
+            inArray(WorkflowTable.status, [...WORKFLOW_TERMINAL_STATUS_VALUES]),
           ))
           .all()
           .pipe(Effect.orDie)

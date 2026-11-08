@@ -89,7 +89,7 @@ function start(dag: Dag.Interface, dagID: string, nodeID: string, childSessionID
 }
 
 describe("replan admitted-definition guard", () => {
-  for (const status of ["queued", "paused"] as const) {
+  for (const status of ["queued"] as const) {
     it.effect(`rejects new dependencies on omitted ${status} nodes before changing durable state`, () =>
       Effect.gen(function* () {
         const sessionID = `ses_replan_omitted_${status}`
@@ -98,13 +98,6 @@ describe("replan admitted-definition guard", () => {
         const old = { ...node("old"), report_to_parent: false }
         const dagID = yield* create(dag, sessionID, [old])
         yield* dag.nodeQueued(dagID, "old", Date.now() + 60_000)
-        if (status === "paused") {
-          // Persist a paused attempt snapshot: there is no public node-pause command.
-          const { db } = yield* Database.Service
-          yield* db.update(WorkflowNodeTable).set({ status }).where(and(
-            eq(WorkflowNodeTable.workflow_id, dagID), eq(WorkflowNodeTable.id, "old"),
-          )).run().pipe(Effect.orDie)
-        }
         const before = yield* dag.store.getWorkflow(dagID)
         const beforeNodes = yield* dag.store.getNodes(dagID)
         const failure = yield* dag.replan(dagID, { nodes: [node("new", ["old"])] }).pipe(Effect.flip)
@@ -199,7 +192,7 @@ describe("replan admitted-definition guard", () => {
     }),
   )
 
-  for (const status of ["queued", "paused", "running"] as const) {
+  for (const status of ["queued", "running"] as const) {
     it.effect(`admits an unchanged legacy definition while ${status}`, () =>
       Effect.gen(function* () {
         const sessionID = `ses_replan_legacy_${status}`
@@ -218,12 +211,6 @@ describe("replan admitted-definition guard", () => {
           .run()
 
         yield* dag.nodeQueued(dagID, "legacy", Date.now() + 60_000)
-        if (status === "paused")
-          yield* db
-            .update(WorkflowNodeTable)
-            .set({ status: "paused" })
-            .where(and(eq(WorkflowNodeTable.workflow_id, dagID), eq(WorkflowNodeTable.id, "legacy")))
-            .run()
         if (status === "running") yield* dag.nodeStarted(dagID, "legacy", "ses_legacy", Date.now() + 60_000)
 
         const result = yield* dag.replan(dagID, { nodes: [legacyWithoutSkip] }).pipe(Effect.result)

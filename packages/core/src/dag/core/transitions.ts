@@ -23,7 +23,7 @@ import { FallbackTrigger, NodeStatus, WorkflowStatus } from "./types"
 /**
  * Aggregate a set of node statuses into a single branch/workflow-level status.
  *
- * Priority (highest wins): FAILED > RUNNING > PAUSED > QUEUED > all-COMPLETED >
+ * Priority (highest wins): FAILED > RUNNING > QUEUED > all-COMPLETED >
  * all-SKIPPED > all-ABORTED > PENDING. Empty input → PENDING.
  *
  * Used by the runtime to derive a workflow's effective status from its nodes
@@ -34,7 +34,6 @@ export function aggregateBranchStatus(statuses: NodeStatus[]): NodeStatus {
   if (statuses.length === 0) return NodeStatus.PENDING
   if (statuses.some((s) => s === NodeStatus.FAILED)) return NodeStatus.FAILED
   if (statuses.some((s) => s === NodeStatus.RUNNING)) return NodeStatus.RUNNING
-  if (statuses.some((s) => s === NodeStatus.PAUSED)) return NodeStatus.PAUSED
   if (statuses.some((s) => s === NodeStatus.QUEUED)) return NodeStatus.QUEUED
   if (statuses.every((s) => s === NodeStatus.COMPLETED)) return NodeStatus.COMPLETED
   if (statuses.every((s) => s === NodeStatus.SKIPPED)) return NodeStatus.SKIPPED
@@ -48,23 +47,22 @@ export function aggregateBranchStatus(statuses: NodeStatus[]): NodeStatus {
  *
  * The from-status disambiguates semantically-identical transitions:
  * - PENDING|QUEUED → RUNNING emits "node.started"
- * - PAUSED → RUNNING emits "node.resumed"
  * - FAILED → RUNNING emits "node.restarted" (the replan restart path, D11)
  * - entering QUEUED emits "node.queued" (admission before permit, P0-2)
+ *
+ * Node-level PAUSED was removed in D11 (no NodePaused durable event exists),
+ * so there is no "node.resumed" mapping.
  */
 export function transitionToNodeEvent(from: NodeStatus, to: NodeStatus): string | null {
   switch (to) {
     case NodeStatus.RUNNING:
       if (from === NodeStatus.PENDING || from === NodeStatus.QUEUED) return "node.started"
-      if (from === NodeStatus.PAUSED) return "node.resumed"
       if (from === NodeStatus.FAILED) return "node.restarted"
       return null
     case NodeStatus.COMPLETED:
       return "node.completed"
     case NodeStatus.FAILED:
       return "node.failed"
-    case NodeStatus.PAUSED:
-      return "node.paused"
     case NodeStatus.ABORTED:
       return "node.aborted"
     case NodeStatus.SKIPPED:
@@ -98,8 +96,6 @@ export function transitionToWorkflowEvent(from: WorkflowStatus, to: WorkflowStat
       return "workflow.failed"
     case WorkflowStatus.CANCELLED:
       return "workflow.cancelled"
-    case WorkflowStatus.ARCHIVED:
-      return "workflow.archived"
     case WorkflowStatus.PENDING:
     default:
       return "workflow.created"

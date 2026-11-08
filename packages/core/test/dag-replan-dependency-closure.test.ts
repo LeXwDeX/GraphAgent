@@ -3,7 +3,7 @@ import { planReplan } from "../src/dag/core/replan"
 import { NodeStatus } from "../src/dag/core/types"
 
 describe("replan dependency closure (#697)", () => {
-  for (const status of [NodeStatus.PENDING, NodeStatus.QUEUED, NodeStatus.PAUSED]) {
+  for (const status of [NodeStatus.PENDING, NodeStatus.QUEUED]) {
     it(`excludes omitted ${status} nodes from both the plan and merged graph`, () => {
       const plan = planReplan({ nodes: [{ id: "old", status, depends_on: [] }] }, { nodes: [] })
       expect(plan.errors).toEqual([])
@@ -31,7 +31,7 @@ describe("replan dependency closure (#697)", () => {
     })
   }
 
-  for (const status of [NodeStatus.QUEUED, NodeStatus.PAUSED]) {
+  for (const status of [NodeStatus.QUEUED]) {
     it(`preserves an included ${status} node and its valid dependencies`, () => {
       const plan = planReplan(
         { nodes: [
@@ -64,7 +64,7 @@ describe("replan dependency closure (#697)", () => {
   it("preserves completed outputs with historical superseded dependencies", () => {
     const plan = planReplan(
       { nodes: [
-        { id: "historical", status: NodeStatus.PAUSED, depends_on: [] },
+        { id: "historical", status: NodeStatus.QUEUED, depends_on: [] },
         { id: "done", status: NodeStatus.COMPLETED, depends_on: ["historical"] },
       ] },
       { nodes: [{ id: "next", depends_on: ["done"] }] },
