@@ -7,7 +7,7 @@ import type { QuestionAnswer, QuestionRequest } from "@graphagent/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
-import { useBindings, useGraphagentModeStack } from "../../keymap"
+import { EscapePriority, useBindings, useGraphagentModeStack } from "../../keymap"
 import { useToast } from "../../ui/toast"
 
 const QUESTION_MODE = "question"
@@ -266,14 +266,6 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
       },
     ],
     bindings: [
-      {
-        key: "escape",
-        desc: "Cancel answer edit",
-        group: "Question",
-        cmd: () => {
-          setStore("editing", false)
-        },
-      },
       ...tuiConfig.keybinds.get("prompt.clear"),
       {
         key: "return",
@@ -317,6 +309,21 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
           }
 
           pick(text, true)
+          setStore("editing", false)
+        },
+      },
+    ],
+  }))
+
+  useBindings(() => ({
+    enabled: store.editing && !confirm(),
+    priority: EscapePriority.askSub,
+    bindings: [
+      {
+        key: "escape",
+        desc: "Cancel answer edit",
+        group: "Question",
+        cmd: () => {
           setStore("editing", false)
         },
       },
@@ -367,7 +374,6 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         ...(confirm()
           ? [
               { key: "return", desc: "Submit answer", group: "Question", cmd: () => submit() },
-              { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
               ...tuiConfig.keybinds.get("app.exit"),
             ]
           : [
@@ -395,12 +401,17 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
               { key: "down", desc: "Next answer", group: "Question", cmd: () => moveTo((store.selected + 1) % total) },
               { key: "j", desc: "Next answer", group: "Question", cmd: () => moveTo((store.selected + 1) % total) },
               { key: "return", desc: "Select answer", group: "Question", cmd: () => selectOption() },
-              { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
               ...tuiConfig.keybinds.get("app.exit"),
             ]),
       ],
     }
   })
+
+  useBindings(() => ({
+    enabled: !store.editing,
+    priority: EscapePriority.ask,
+    bindings: [{ key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() }],
+  }))
 
   return (
     <box

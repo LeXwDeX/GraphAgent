@@ -101,7 +101,7 @@ export function SubagentFooter() {
               backgroundColor={hover() === "parent" ? theme.backgroundElement : theme.backgroundPanel}
             >
               <text fg={theme.text}>
-                Parent <span style={{ fg: theme.textMuted }}>{parentShortcut()}</span>
+                Parent <span style={{ fg: theme.textMuted }}>{parentShortcut() || "esc"}</span>
               </text>
             </box>
             <box
@@ -111,7 +111,7 @@ export function SubagentFooter() {
               backgroundColor={hover() === "prev" ? theme.backgroundElement : theme.backgroundPanel}
             >
               <text fg={theme.text}>
-                Prev <span style={{ fg: theme.textMuted }}>{previousShortcut()}</span>
+                Prev <span style={{ fg: theme.textMuted }}>{previousShortcut() || "←"}</span>
               </text>
             </box>
             <box
@@ -121,7 +121,7 @@ export function SubagentFooter() {
               backgroundColor={hover() === "next" ? theme.backgroundElement : theme.backgroundPanel}
             >
               <text fg={theme.text}>
-                Next <span style={{ fg: theme.textMuted }}>{nextShortcut()}</span>
+                Next <span style={{ fg: theme.textMuted }}>{nextShortcut() || "→"}</span>
               </text>
             </box>
           </box>

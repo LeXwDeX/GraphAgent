@@ -8,7 +8,7 @@ import type { ScrollBoxRenderable } from "@opentui/core"
 import { createMemo, For, Show, Switch, Match, createSignal, createEffect, onCleanup, untrack } from "solid-js"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { Spinner } from "../../component/spinner"
-import { useBindings, useCommandShortcut } from "../../keymap"
+import { useBindings } from "../../keymap"
 import { selectedForeground, useTheme } from "../../context/theme"
 import {
   computeNodeRowIndex,
@@ -420,25 +420,24 @@ function DagInspector(props: { api: TuiPluginApi }) {
 
   useBindings(() => ({
     commands,
-    bindings: props.api.tuiConfig.keybinds.gather(
-      "dag",
-      commands.map((command) => command.name),
-    ),
+    bindings: [
+      { key: "escape", desc: "Close DAG inspector", group: "Workflow", cmd: "dag.close" },
+      { key: "return", desc: "Enter selected node's session", group: "Workflow", cmd: "dag.enter" },
+      { key: "up", desc: "Select previous DAG node", group: "Workflow", cmd: "dag.up" },
+      { key: "down", desc: "Select next DAG node", group: "Workflow", cmd: "dag.down" },
+      { key: "left", desc: "Select previous DAG workflow", group: "Workflow", cmd: "dag.previous_workflow" },
+      { key: "right", desc: "Select next DAG workflow", group: "Workflow", cmd: "dag.next_workflow" },
+    ],
   }))
-
-  const closeShortcut = useCommandShortcut("dag.close")
-  const enterShortcut = useCommandShortcut("dag.enter")
 
   const selectedWorkflowSummary = createMemo(() => workflows().find((workflow) => workflow.id === selectedWorkflow()))
   const selectedNodeDetail = createMemo(() => orderedNodes().find((node) => node.id === selectedNode()))
 
   // Footer advertises only the cursor-level affordances.
-  const footerHints = createMemo(() =>
-    [
-      { key: enterShortcut(), label: "open session" },
-      { key: closeShortcut(), label: "close" },
-    ].filter((hint) => hint.key !== ""),
-  )
+  const footerHints = createMemo(() => [
+    { key: "enter", label: "open session" },
+    { key: "esc", label: "close" },
+  ])
 
   // 1s tick driving the running-node deadline countdown. Only active while the
   // selected node is actually counting down — idle inspectors don't re-render.
