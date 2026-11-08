@@ -1,14 +1,20 @@
 import type { TuiPlugin, TuiPluginApi } from "@graphagent/tui/plugin-api"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo, Show } from "solid-js"
+import { t, type MessageKey } from "../../i18n"
 
 const id = "internal:sidebar-goal"
 
-const STATUS_LABEL: Record<string, string> = {
-  active: "进行中",
-  waiting: "等待中",
-  done: "已达成",
-  paused: "已暂停",
+const STATUS_KEY: Record<string, MessageKey> = {
+  active: "goal.status.active",
+  waiting: "goal.status.waiting",
+  done: "goal.status.done",
+  paused: "goal.status.paused",
+}
+
+function statusLabel(status: string) {
+  const key = STATUS_KEY[status]
+  return key ? t(key) : status
 }
 
 function View(props: { api: TuiPluginApi; session_id: string }) {
@@ -20,10 +26,10 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
       {(g) => (
         <box>
           <text fg={theme().text}>
-            <b>目标</b> [{STATUS_LABEL[g().status] ?? g().status}]
+            <b>{t("goal.title")}</b> [{statusLabel(g().status)}]
           </text>
           <text fg={theme().textMuted}>{g().goal.length > 60 ? g().goal.slice(0, 57) + "..." : g().goal}</text>
-          <text fg={theme().textMuted}>{`${g().turnsUsed}/${g().maxTurns} 轮`}</text>
+          <text fg={theme().textMuted}>{t("goal.turns", { used: g().turnsUsed, max: g().maxTurns })}</text>
         </box>
       )}
     </Show>

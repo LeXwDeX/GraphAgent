@@ -1415,6 +1415,7 @@ export type Config = {
   default_agent?: string
   question_timeout?: number
   username?: string
+  language?: "zh-CN" | "en"
   mode?: {
     build?: AgentConfig
     plan?: AgentConfig

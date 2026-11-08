@@ -25,6 +25,7 @@ import type {
 
 export type { DagWorkflowSummary }
 import { createStore, produce, reconcile } from "solid-js/store"
+import { initLanguage } from "../i18n"
 import { useProject } from "./project"
 import { useEvent } from "./event"
 import { useSDK } from "./sdk"
@@ -577,6 +578,7 @@ export const {
               setStore("provider_next", reconcile(providerList))
               setStore("capabilities", "experimentalBackgroundSubagents", capabilities?.backgroundSubagents === true)
               setStore("agent", reconcile(agents))
+              initLanguage(config.language)
               setStore("config", reconcile(config))
               if (sessions !== undefined) setStore("session", reconcile(sessions))
             })
