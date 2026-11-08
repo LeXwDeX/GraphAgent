@@ -5,6 +5,8 @@ import { Logging } from "@graphagent/core/observability/logging"
 import { Server } from "@/server/server"
 import { InstanceRuntime } from "@/project/instance-runtime"
 import { Rpc } from "@/util/rpc"
+import type { RpcFetchRequest, RpcFetchResponse, WorkerMethods } from "./rpc-contract"
+import { ClientSessions } from "@/session/client-sessions"
 import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
 import { writeHeapSnapshot } from "node:v8"
@@ -13,7 +15,7 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { Global } from "@graphagent/core/global"
-import { APP_NAME, HEADER_PREFIX } from "@graphagent/core/brand"
+import { APP_NAME } from "@graphagent/core/brand"
 import { appendFileSync } from "node:fs"
 import path from "node:path"
 
@@ -56,10 +58,8 @@ GlobalBus.on("event", (event) => {
   Rpc.emit("global.event", event)
 })
 
-const localSessions = new Map<string, string>()
-
 export const rpc = {
-  async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
+  async fetch(input: RpcFetchRequest): Promise<RpcFetchResponse> {
     const request = new Request(input.url, {
       method: input.method,
       headers: input.headers,
@@ -67,39 +67,13 @@ export const rpc = {
     })
     const response = await Server.Default().app.fetch(request)
     const body = await response.text()
-    const url = new URL(input.url)
-    const directory =
-      request.headers.get(`${HEADER_PREFIX}directory`) ?? url.searchParams.get("directory") ?? process.cwd()
-    const existing = url.pathname.match(/\/session\/([^/]+)\/(?:message|prompt|command|shell)$/)
-    if (input.method.toUpperCase() === "POST" && existing) localSessions.set(decodeURIComponent(existing[1]), directory)
-    if (input.method.toUpperCase() === "POST" && /\/session\/?$/.test(url.pathname) && response.ok) {
-      try {
-        const parsed = JSON.parse(body)
-        const created = parsed?.data ?? parsed
-        const payload = input.body ? JSON.parse(input.body) : undefined
-        const createdDirectory =
-          typeof payload?.location?.directory === "string" ? payload.location.directory : directory
-        if (typeof created?.id === "string") localSessions.set(created.id, createdDirectory)
-      } catch {
-        /* Non-JSON responses are not session creation. */
-      }
-    }
-    if (input.method.toUpperCase() === "POST" && url.pathname.endsWith("/control-plane/move-session") && response.ok) {
-      try {
-        const moved = JSON.parse(input.body ?? "{}")
-        if (typeof moved.sessionID === "string" && typeof moved.destination?.directory === "string")
-          localSessions.set(moved.sessionID, moved.destination.directory)
-      } catch {
-        /* Only a successfully decoded move request can update client lifecycle ownership. */
-      }
-    }
     return {
       status: response.status,
       headers: Object.fromEntries(response.headers.entries()),
       body,
     }
   },
-  snapshot() {
+  async snapshot() {
     const result = writeHeapSnapshot("server.heapsnapshot")
     return result
   },
@@ -117,17 +91,17 @@ export const rpc = {
     await AppRuntime.runPromise(
       Logging.backgroundDebug("lifecycle.worker.shutdown", { source: "worker.rpc.shutdown", phase: "requested" }),
     )
-    for (const [sessionID, directory] of localSessions)
+    for (const { sessionID, directory } of ClientSessions.list())
       await AppRuntime.runPromise(
         HookClientLifecycle.endLocalSession({ sessionID, directory, reason: "prompt_input_exit" }).pipe(
           Effect.catchCause(() => Effect.void),
         ),
       )
-    localSessions.clear()
+    ClientSessions.clear()
     await InstanceRuntime.disposeAllInstances()
     process.off("unhandledRejection", onUnhandledRejection)
     process.off("uncaughtException", onUncaughtException)
   },
 }
 
-Rpc.listen(rpc)
+Rpc.listen<WorkerMethods>(rpc)

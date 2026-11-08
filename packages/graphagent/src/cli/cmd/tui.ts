@@ -1,13 +1,12 @@
 import { cmd } from "@/cli/cmd/cmd"
 import { Rpc } from "@/util/rpc"
-import { type rpc } from "../tui/worker"
+import type { WorkerEvents, WorkerMethods } from "../tui/rpc-contract"
 import path from "path"
 import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
 import { errorMessage } from "@graphagent/tui/util/error"
 import { withTimeout } from "@/util/timeout"
 import { Filesystem } from "@/util/filesystem"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
 import type { EventSource } from "@graphagent/tui/context/sdk"
 import { writeHeapSnapshot } from "v8"
 import { validateSession } from "../tui/validate-session"
@@ -17,7 +16,7 @@ declare global {
   const GRAPHAGENT_WORKER_PATH: string
 }
 
-type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
+type RpcClient = ReturnType<typeof Rpc.client<WorkerMethods, WorkerEvents>>
 
 function createWorkerFetch(client: RpcClient): typeof fetch {
   const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -40,7 +39,7 @@ function createWorkerFetch(client: RpcClient): typeof fetch {
 function createEventSource(client: RpcClient): EventSource {
   return {
     subscribe: async (handler) => {
-      return client.on<GlobalEvent>("global.event", (e) => {
+      return client.on("global.event", (e) => {
         handler(e)
       })
     },
@@ -213,9 +212,9 @@ export const TuiThreadCommand = cmd({
       const cwd = Filesystem.resolve(process.cwd())
 
       const worker = new Worker(file)
-      const client = Rpc.client<typeof rpc>(worker)
+      const client = Rpc.client<WorkerMethods, WorkerEvents>(worker)
       const reload = () => {
-        client.call("reload", undefined).catch(() => {})
+        client.call("reload").catch(() => {})
       }
       process.on("SIGUSR2", reload)
 
@@ -224,7 +223,7 @@ export const TuiThreadCommand = cmd({
         if (stopped) return
         stopped = true
         process.off("SIGUSR2", reload)
-        await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
+        await withTimeout(client.call("shutdown"), 5000).catch(() => {})
         worker.terminate()
       }
 
@@ -238,7 +237,7 @@ export const TuiThreadCommand = cmd({
         UI.error("server worker crashed: " + reason)
         process.exit(1)
       }
-      client.on<{ message: string; stack?: string }>("worker.fatal", (data) => fatal(data.message))
+      client.on("worker.fatal", (data) => fatal(data.message))
       worker.addEventListener("error", (event) => fatal(errorMessage(event.error ?? event.message)))
       worker.addEventListener("close", () => fatal("worker exited unexpectedly"))
 
@@ -273,7 +272,7 @@ export const TuiThreadCommand = cmd({
             url: transport.url,
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
-              const server = await client.call("snapshot", undefined)
+              const server = await client.call("snapshot")
               return [tui, server]
             },
             config,
