@@ -242,8 +242,8 @@ export function getValidNextNodeStatuses(currentStatus: NodeStatus): NodeStatus[
  * Iron law #1: state changes only through validated transitions.
  *
  * Returns the list of statuses the workflow MAY move to from its current one.
- * Terminal statuses admit nothing (D11 removed `archived`: no durable event
- * ever produced it).
+ * Terminal statuses admit nothing (D11 removed the legacy workflow-only
+ * terminal status: no durable event ever produced it).
  */
 export function getValidNextWorkflowStatuses(currentStatus: WorkflowStatus): WorkflowStatus[] {
   switch (currentStatus) {
