@@ -51,6 +51,7 @@ import { Shell } from "@graphagent/core/shell"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagAgentMessages } from "@/dag/agent-messages"
@@ -436,6 +437,7 @@ function makePrompt(input?: PromptLayerOptions) {
     Layer.provide(DagAgentMessages.defaultLayer),
     Layer.provide(Skill.defaultLayer),
     Layer.provide(Dag.defaultLayer),
+    Layer.provide(DagControl.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(Git.defaultLayer),
