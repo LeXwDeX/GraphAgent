@@ -2348,10 +2348,10 @@
                   "config": {
                     "anyOf": [
                       {
-                        "$ref": "#/components/schemas/McpLocalConfig"
+                        "$ref": "#/components/schemas/ConfigMCPLocal"
                       },
                       {
-                        "$ref": "#/components/schemas/McpRemoteConfig"
+                        "$ref": "#/components/schemas/ConfigMCPRemote"
                       }
                     ]
                   }
@@ -14575,115 +14575,6 @@
           }
         ]
       },
-      "McpRemoteConfig": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["remote"],
-            "description": "Type of MCP server connection"
-          },
-          "url": {
-            "type": "string",
-            "description": "URL of the remote MCP server"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "headers": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
-          "oauth": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/McpOAuthConfig"
-              },
-              {
-                "type": "boolean",
-                "enum": [false]
-              }
-            ],
-            "description": "OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection."
-          },
-          "timeout": {
-            "type": "integer",
-            "maximum": 9007199254740991,
-            "exclusiveMinimum": 0
-          },
-          "protocol": {
-            "type": "string",
-            "enum": ["auto", "legacy", "modern"]
-          }
-        },
-        "required": ["type", "url"],
-        "additionalProperties": false
-      },
-      "McpOAuthConfig": {
-        "type": "object",
-        "properties": {
-          "clientId": {
-            "type": "string"
-          },
-          "clientSecret": {
-            "type": "string"
-          },
-          "scope": {
-            "type": "string"
-          },
-          "callbackPort": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 65535
-          },
-          "redirectUri": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false
-      },
-      "McpLocalConfig": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["local"],
-            "description": "Type of MCP server connection"
-          },
-          "command": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Command and arguments to run the MCP server"
-          },
-          "cwd": {
-            "type": "string"
-          },
-          "environment": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "timeout": {
-            "type": "integer",
-            "maximum": 9007199254740991,
-            "exclusiveMinimum": 0
-          },
-          "protocol": {
-            "type": "string",
-            "enum": ["auto", "legacy", "modern"]
-          }
-        },
-        "required": ["type", "command"],
-        "additionalProperties": false
-      },
       "FormatterStatus": {
         "type": "object",
         "properties": {
@@ -15609,6 +15500,58 @@
             "type": "string",
             "enum": ["zh-CN", "en"]
           },
+          "engine": {
+            "type": "object",
+            "properties": {
+              "concurrency": {
+                "type": "object",
+                "properties": {
+                  "global": {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "exclusiveMinimum": 0
+                  },
+                  "perProvider": {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "exclusiveMinimum": 0
+                  },
+                  "childGlobal": {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "exclusiveMinimum": 0
+                  },
+                  "taskReserve": {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "staggerSiblings": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "memory": {
+                "type": "object",
+                "properties": {
+                  "selectTimeoutMs": {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
           "mode": {
             "type": "object",
             "properties": {
@@ -15656,29 +15599,6 @@
             "type": "object",
             "additionalProperties": {
               "$ref": "#/components/schemas/ProviderConfig"
-            }
-          },
-          "mcp": {
-            "type": "object",
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/McpLocalConfig"
-                },
-                {
-                  "$ref": "#/components/schemas/McpRemoteConfig"
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "enabled": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": ["enabled"],
-                  "additionalProperties": false
-                }
-              ]
             }
           },
           "formatter": {
@@ -15894,11 +15814,6 @@
               },
               "continue_loop_on_deny": {
                 "type": "boolean"
-              },
-              "mcp_timeout": {
-                "type": "integer",
-                "maximum": 9007199254740991,
-                "exclusiveMinimum": 0
               },
               "policies": {
                 "type": "array",
@@ -18095,6 +18010,114 @@
           }
         },
         "required": ["type", "key"],
+        "additionalProperties": false
+      },
+      "ConfigMCPLocal": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["local"]
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "environment": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "timeout": {
+            "$ref": "#/components/schemas/ConfigMCPTimeout"
+          }
+        },
+        "required": ["type", "command"],
+        "additionalProperties": false
+      },
+      "ConfigMCPOAuth": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "callback_port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "redirect_uri": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConfigMCPRemote": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["remote"]
+          },
+          "url": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "oauth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConfigMCPOAuth"
+              },
+              {
+                "type": "boolean",
+                "enum": [false]
+              }
+            ]
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "timeout": {
+            "$ref": "#/components/schemas/ConfigMCPTimeout"
+          }
+        },
+        "required": ["type", "url"],
+        "additionalProperties": false
+      },
+      "ConfigMCPTimeout": {
+        "type": "object",
+        "properties": {
+          "startup": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "exclusiveMinimum": 0
+          },
+          "request": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "exclusiveMinimum": 0
+          }
+        },
         "additionalProperties": false
       },
       "ConfigV2ExperimentalPolicy": {
