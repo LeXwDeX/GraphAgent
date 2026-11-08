@@ -1032,6 +1032,14 @@
           "type": "string",
           "description": "Custom username to display in conversations instead of system username"
         },
+        "language": {
+          "type": "string",
+          "enum": [
+            "zh-CN",
+            "en"
+          ],
+          "description": "Interface language and default assistant reply language. When unset, inferred from the system locale."
+        },
         "mode": {
           "type": "object",
           "additionalProperties": {

@@ -43,6 +43,7 @@ import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
+import { t } from "../../i18n"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
@@ -51,7 +52,13 @@ import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
-import { GRAPHAGENT_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useGraphagentKeymap } from "../../keymap"
+import {
+  GRAPHAGENT_BASE_MODE,
+  useBindings,
+  useCommandShortcut,
+  useLeaderActive,
+  useGraphagentKeymap,
+} from "../../keymap"
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
@@ -1040,7 +1047,7 @@ export function Prompt(props: PromptProps) {
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
     if (store.mode === "shell" && props.sessionID && local.model.commandActive(props.sessionID)) {
-      toast.show({ message: "命令提交结果未确认，本会话 shell 暂缓", variant: "warning", duration: 5000 })
+      toast.show({ message: t("prompt.submit.unconfirmed.toast"), variant: "warning", duration: 5000 })
       return false
     }
     const agent = local.agent.current()
@@ -1177,7 +1184,8 @@ export function Prompt(props: PromptProps) {
       setSending(false)
       restoreDraft()
     }
-    const variant = props.sessionID && local.model.variant.selected() === "default" ? "default" : local.model.variant.current()
+    const variant =
+      props.sessionID && local.model.variant.selected() === "default" ? "default" : local.model.variant.current()
     let sessionID = props.sessionID
     let finishMoveProgress = false
     if (sessionID == null) {
@@ -1260,20 +1268,21 @@ export function Prompt(props: PromptProps) {
         variant,
         messageID,
         command: true,
-        send: () => sdk.client.session.command(
-          {
-            sessionID,
-            messageID,
-            hookMode: "interactive",
-            command: command.slice(1),
-            arguments: args,
-            agent: agent.name,
-            model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-            variant,
-            parts: nonTextParts.filter((x) => x.type === "file"),
-          },
-          { throwOnError: true },
-        ),
+        send: () =>
+          sdk.client.session.command(
+            {
+              sessionID,
+              messageID,
+              hookMode: "interactive",
+              command: command.slice(1),
+              arguments: args,
+              agent: agent.name,
+              model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+              variant,
+              parts: nonTextParts.filter((x) => x.type === "file"),
+            },
+            { throwOnError: true },
+          ),
         accepted: () => {
           accepted = true
           clearPending()
@@ -1291,26 +1300,27 @@ export function Prompt(props: PromptProps) {
         variant,
         messageID,
         command: false,
-        send: () => sdk.client.session.prompt(
-          {
-            sessionID,
-            hookMode: "interactive",
-            ...selectedModel,
-            messageID,
-            agent: agent.name,
-            model: selectedModel,
-            variant,
-            parts: [
-              ...editorParts,
-              {
-                type: "text",
-                text: inputText,
-              },
-              ...nonTextParts,
-            ],
-          },
-          { throwOnError: true },
-        ),
+        send: () =>
+          sdk.client.session.prompt(
+            {
+              sessionID,
+              hookMode: "interactive",
+              ...selectedModel,
+              messageID,
+              agent: agent.name,
+              model: selectedModel,
+              variant,
+              parts: [
+                ...editorParts,
+                {
+                  type: "text",
+                  text: inputText,
+                },
+                ...nonTextParts,
+              ],
+            },
+            { throwOnError: true },
+          ),
         accepted: () => {
           accepted = true
           markEditorAccepted()
@@ -1712,14 +1722,22 @@ export function Prompt(props: PromptProps) {
           <Switch>
             <Match when={props.sessionID && local.model.uncertain(props.sessionID) === "stopping"}>
               <box flexDirection="column">
-                <text paddingLeft={1} fg={theme.warning}>已请求停止，提交结果未确认</text>
-                <text paddingLeft={1} fg={theme.warning}>本会话提交/模型保存暂缓；重启后不保留此保护</text>
+                <text paddingLeft={1} fg={theme.warning}>
+                  {t("prompt.stop.requested")}
+                </text>
+                <text paddingLeft={1} fg={theme.warning}>
+                  {t("prompt.submit.paused")}
+                </text>
               </box>
             </Match>
             <Match when={props.sessionID && local.model.uncertain(props.sessionID) === "unknown"}>
               <box flexDirection="column">
-                <text paddingLeft={1} fg={theme.warning}>提交结果未确认，本会话提交/模型保存暂缓</text>
-                <text paddingLeft={1} fg={theme.warning}>重启后不保留此保护</text>
+                <text paddingLeft={1} fg={theme.warning}>
+                  {t("prompt.submit.unconfirmed")}
+                </text>
+                <text paddingLeft={1} fg={theme.warning}>
+                  {t("prompt.submit.restart")}
+                </text>
               </box>
             </Match>
             <Match when={stopping()}>
