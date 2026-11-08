@@ -64,6 +64,7 @@ import { HookRewakeLive } from "@/hook/rewake-live"
 import { Goal } from "@/goal/goal"
 import { GoalLoop } from "@/goal/loop"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagLoop } from "@/dag/runtime/loop"
@@ -105,6 +106,7 @@ const BaseAppLayer = Layer.mergeAll(
     DagStore.defaultLayer,
     DagMessages.defaultLayer,
     Dag.defaultLayer,
+    DagControl.defaultLayer,
   ),
   Layer.mergeAll(
     SessionProcessor.defaultLayer,

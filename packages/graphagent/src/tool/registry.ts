@@ -25,6 +25,7 @@ import { WorkflowTool } from "./workflow"
 import { AgentTool } from "./agent"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -307,6 +308,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Ripgrep.defaultLayer),
       Layer.provide(EventV2Bridge.defaultLayer),
       Layer.provide(Dag.defaultLayer),
+      Layer.provide(DagControl.defaultLayer),
       Layer.provide(DagAgentMessages.defaultLayer),
       Layer.provide(FetchHttpClient.layer),
       Layer.provide(Format.defaultLayer),
@@ -342,6 +344,7 @@ export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer
   SettingsHook.node,
   HookStartContext.node,
   Dag.node,
+  DagControl.node,
   DagAgentMessages.node,
 ])
 
