@@ -22,7 +22,7 @@ try {
     })
     if (moved.status !== 204) throw new Error(`move fixture status ${moved.status}`)
   }
-  await client.call("shutdown", undefined)
+  await client.call("shutdown")
 } finally {
   worker.terminate()
 }

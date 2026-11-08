@@ -12,6 +12,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
 import { SessionLifecycle } from "@/session/lifecycle"
+import { ClientSessions } from "@/session/client-sessions"
 import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
@@ -213,7 +214,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {
-      return yield* lifecycle.create(ctx.payload)
+      const created = yield* lifecycle.create(ctx.payload)
+      ClientSessions.touch({ sessionID: created.id, directory: created.directory })
+      return created
     })
 
     const createRaw = Effect.fn("SessionHttpApi.createRaw")(function* (ctx: {
@@ -274,12 +277,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload?: typeof ForkPayload.Type
     }) {
-      return yield* SessionError.mapStorageNotFound(
+      const forked = yield* SessionError.mapStorageNotFound(
         session.fork({
           sessionID: ctx.params.sessionID,
           messageID: ctx.payload?.messageID,
         }),
       )
+      ClientSessions.touch({ sessionID: forked.id, directory: forked.directory })
+      return forked
     })
 
     const forkRaw = Effect.fn("SessionHttpApi.forkRaw")(function* (ctx: {
@@ -326,7 +331,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof SummarizePayload.Type
     }) {
-      yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
+      const current = yield* requireSession(ctx.params.sessionID)
+      ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: current.directory })
+      yield* revertSvc.cleanup(current)
       const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       const defaultAgent = yield* agentSvc.defaultAgent()
       const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
@@ -359,6 +366,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* grantLocalStartup(ctx.params.sessionID)
+      const instance = yield* InstanceRef
+      if (instance) ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: instance.directory })
 
       const parsed = parseCommandPayload(ctx.payload)
       const cmd = parsed ? yield* commands.get(parsed.command) : undefined
@@ -412,7 +421,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof ResumePayload.Type
     }) {
       yield* grantLocalStartup(ctx.params.sessionID)
-      yield* requireSession(ctx.params.sessionID)
+      const current = yield* requireSession(ctx.params.sessionID)
+      ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: current.directory })
       return yield* promptSvc
         .resume({ ...ctx.payload, sessionID: ctx.params.sessionID })
         .pipe(Effect.mapError(promptError))
@@ -455,7 +465,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       yield* grantLocalStartup(ctx.params.sessionID)
 
-      yield* requireSession(ctx.params.sessionID)
+      const current = yield* requireSession(ctx.params.sessionID)
+      ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: current.directory })
       return yield* promptSvc
         .command({ ...ctx.payload, sessionID: ctx.params.sessionID })
         .pipe(Effect.mapError(promptError))
@@ -465,7 +476,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof ShellPayload.Type
     }) {
-      yield* requireSession(ctx.params.sessionID)
+      const current = yield* requireSession(ctx.params.sessionID)
+      ClientSessions.touch({ sessionID: ctx.params.sessionID, directory: current.directory })
       return yield* SessionError.mapBusy(promptSvc.shell({ ...ctx.payload, sessionID: ctx.params.sessionID }))
     })
 

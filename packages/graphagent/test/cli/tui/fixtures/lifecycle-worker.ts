@@ -10,8 +10,8 @@ client.on("worker.fatal", () => {
   throw new Error("unexpected worker fatal")
 })
 try {
-  await client.call("reload", undefined)
-  await client.call("shutdown", undefined)
+  await client.call("reload")
+  await client.call("shutdown")
   const file = path.join(process.env.XDG_DATA_HOME!, "graphagent", "log", "graphagent.log")
   const deadline = Date.now() + 10000
   while (true) {

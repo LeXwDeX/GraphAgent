@@ -1,4 +1,5 @@
 import { MoveSession } from "@graphagent/core/control-plane/move-session"
+import { ClientSessions } from "@/session/client-sessions"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { RootHttpApi } from "../api"
@@ -20,6 +21,10 @@ export const controlPlaneHandlers = HttpApiBuilder.group(RootHttpApi, "controlPl
             }),
         ),
       )
+      ClientSessions.move({
+        sessionID: ctx.payload.sessionID,
+        directory: ctx.payload.destination.directory,
+      })
     })
 
     return handlers.handle("moveSession", moveSession)

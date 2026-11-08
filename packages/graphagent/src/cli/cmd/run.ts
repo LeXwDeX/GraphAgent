@@ -1,5 +1,6 @@
 import { isRecord } from "@/util/record"
 import { LocalPermissionStartup } from "@/permission/local-startup"
+import { ClientSessions } from "@/session/client-sessions"
 import { AppRuntime } from "@/effect/app-runtime"
 import { HookClientLifecycle } from "@/hook/client-lifecycle"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
@@ -57,6 +58,32 @@ type FilePart = {
   url: string
   filename: string
   mime: string
+}
+
+type LocalFetchMark = { sessionID?: string } | undefined
+
+/**
+ * The in-process transport for `run` and `--mini`.
+ *
+ * The request is constructed exactly once and `LocalPermissionStartup.mark`
+ * runs on that final object: marking a copy would drop the startup grant.
+ * Each mode supplies its own authorisation rule so `--mini` cannot widen the
+ * non-interactive scope.
+ */
+function createLocalFetch(options: {
+  skipPermissions: boolean
+  markable: (method: string, pathname: string) => LocalFetchMark
+}): typeof fetch {
+  const fn = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const { Server } = await import("@/server/server")
+    const request = new Request(input, init)
+    if (options.skipPermissions) {
+      const mark = options.markable(request.method, new URL(request.url).pathname)
+      if (mark) LocalPermissionStartup.mark(request, mark.sessionID)
+    }
+    return Server.Default().app.fetch(request)
+  }
+  return Object.assign(fn, { preconnect: globalThis.fetch.preconnect })
 }
 
 type Inline = {
@@ -489,6 +516,7 @@ export const RunCommand = effectCmd({
         }
 
         localSessionIDs.add(id)
+        ClientSessions.touch({ sessionID: id, directory })
         return {
           id,
           title: result.data?.title,
@@ -534,6 +562,7 @@ export const RunCommand = effectCmd({
         }
         const sessionID = sess.id
         localSessionIDs.add(sessionID)
+        ClientSessions.touch({ sessionID, directory })
         let dagHold: DagHold.DagHold | undefined
 
         function emit(type: string, data: Record<string, unknown>) {
@@ -902,21 +931,10 @@ export const RunCommand = effectCmd({
         if (interactive && !args.session && !args.continue) {
           const model = pick(args.model)
           const { runInteractiveLocalMode } = await import("./run/runtime")
-          const fetchFn = Object.assign(
-            async (input: RequestInfo | URL, init?: RequestInit) => {
-              const { Server } = await import("@/server/server")
-              const request = new Request(input, init)
-              const localRequest = new Request(request)
-              if (
-                args["dangerously-skip-permissions"] &&
-                localRequest.method === "POST" &&
-                new URL(localRequest.url).pathname === "/session"
-              )
-                LocalPermissionStartup.mark(localRequest)
-              return Server.Default().app.fetch(localRequest)
-            },
-            { preconnect: globalThis.fetch.preconnect },
-          )
+          const fetchFn = createLocalFetch({
+            skipPermissions: Boolean(args["dangerously-skip-permissions"]),
+            markable: (method, pathname) => (method === "POST" && pathname === "/session" ? {} : undefined),
+          })
 
           try {
             return await runInteractiveLocalMode({
@@ -941,25 +959,16 @@ export const RunCommand = effectCmd({
           }
         }
 
-        const fetchFn = Object.assign(
-          async (input: RequestInfo | URL, init?: RequestInit) => {
-            const { Server } = await import("@/server/server")
-            const request = new Request(input, init)
-            const localRequest = new Request(request)
-            if (args["dangerously-skip-permissions"] && localRequest.method === "POST") {
-              const pathname = new URL(localRequest.url).pathname
-              if (pathname === "/session") LocalPermissionStartup.mark(localRequest)
-              else if (args.session || args.continue || args.fork) {
-                const selected = /^\/session\/([^/]+)\/(message|prompt|prompt_async|command|resume)$/.exec(
-                  pathname,
-                )?.[1]
-                if (selected && localSessionIDs.has(selected)) LocalPermissionStartup.mark(localRequest, selected)
-              }
-            }
-            return Server.Default().app.fetch(localRequest)
+        const fetchFn = createLocalFetch({
+          skipPermissions: Boolean(args["dangerously-skip-permissions"]),
+          markable: (method, pathname) => {
+            if (method !== "POST") return undefined
+            if (pathname === "/session") return {}
+            if (!(args.session || args.continue || args.fork)) return undefined
+            const selected = /^\/session\/([^/]+)\/(message|prompt|prompt_async|command|resume)$/.exec(pathname)?.[1]
+            return selected && localSessionIDs.has(selected) ? { sessionID: selected } : undefined
           },
-          { preconnect: globalThis.fetch.preconnect },
-        )
+        })
         const sdk = createOpencodeClient({
           baseUrl: "http://graphagent.internal", // check-private-hosts: allow in-process dummy base URL
           fetch: fetchFn,
@@ -967,14 +976,15 @@ export const RunCommand = effectCmd({
         })
         await execute(sdk)
       } finally {
-        for (const sessionID of localSessionIDs)
+        for (const { sessionID, directory } of ClientSessions.list())
           await AppRuntime.runPromise(
             HookClientLifecycle.endLocalSession({
               sessionID,
-              directory: directory ?? root,
+              directory,
               reason: interactive ? "prompt_input_exit" : "other",
             }).pipe(Effect.catchCause(() => Effect.void)),
           )
+        ClientSessions.clear()
       }
     })
   }),
