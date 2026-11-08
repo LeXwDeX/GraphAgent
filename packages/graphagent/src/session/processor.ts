@@ -143,6 +143,12 @@ interface ProcessorContext extends Input {
   attemptSuppressedActivity: boolean
   /** Suppressed abort/approval/denial or unknown activity forbids replay. */
   attemptRetryBlockingSuppressedActivity: boolean
+  /**
+   * Any tool signal (input, call, result, error) in the current step. Until
+   * the tool layer declares read-only effects (C2), only a step without tool
+   * signals counts as read-only for snapshot purposes.
+   */
+  stepToolActivity: boolean
   /** Why the retry gate stopped this attempt, when tool work made replay unsafe. */
   retryBlockedBy?: "pending-tools" | "tool-executed"
 }
@@ -214,6 +220,7 @@ export const layer = Layer.effect(
         attemptToolActivity: false,
         attemptSuppressedActivity: false,
         attemptRetryBlockingSuppressedActivity: false,
+        stepToolActivity: false,
       }
       let aborted = false
       let deferred = false
@@ -472,12 +479,14 @@ export const layer = Layer.effect(
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             ctx.attemptToolActivity = true
+            ctx.stepToolActivity = true
             yield* ensureToolCall(value)
             return
 
           case "tool-input-delta":
             {
               ctx.attemptToolActivity = true
+              ctx.stepToolActivity = true
               const toolCall = yield* ensureToolCall(value)
               ctx.toolcalls[value.id] = { ...toolCall.call, raw: toolCall.call.raw + value.text }
             }
@@ -485,6 +494,7 @@ export const layer = Layer.effect(
 
           case "tool-input-end": {
             ctx.attemptToolActivity = true
+            ctx.stepToolActivity = true
             const toolCall = yield* ensureToolCall(value)
             ctx.toolcalls[value.id] = { ...toolCall.call, inputEnded: true }
             return
@@ -499,6 +509,7 @@ export const layer = Layer.effect(
             ctx.pendingToolExecutions.add(value.id)
             ctx.admittedToolCalls += 1
             ctx.attemptToolActivity = true
+            ctx.stepToolActivity = true
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
@@ -554,6 +565,7 @@ export const layer = Layer.effect(
           case "tool-result": {
             ctx.anyToolCalled = true
             ctx.attemptToolActivity = true
+            ctx.stepToolActivity = true
             const toolCall = yield* readToolCall(value.id)
             if (!toolCall && value.result.type === "error") return
             if (value.result.type === "error") {
@@ -617,6 +629,7 @@ export const layer = Layer.effect(
             // Rejected or not, a tool-error signal is tool activity in this
             // attempt; the #773 admission rules decide its retry separately.
             ctx.attemptToolActivity = true
+            ctx.stepToolActivity = true
             yield* failToolCall(value.id, value.error ?? new Error(value.message))
             // A PostToolUseFailure `continue:false` ends the agent turn once the error is recorded.
             if (hookToolStop(value.error)) ctx.blocked = true
@@ -628,6 +641,7 @@ export const layer = Layer.effect(
             return
 
           case "step-start":
+            ctx.stepToolActivity = false
             if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
             yield* session.updatePart({
               id: PartID.ascending(),
@@ -639,7 +653,13 @@ export const layer = Layer.effect(
             return
 
           case "step-finish": {
-            const completedSnapshot = yield* snapshot.track()
+            // A step without tool signals cannot have changed files, so it
+            // reuses its start snapshot and skips both the end track and the
+            // patch. External changes and hooks stay with the next step, whose
+            // start track records them.
+            const completedSnapshot = ctx.stepToolActivity
+              ? yield* snapshot.track()
+              : (ctx.snapshot ?? (yield* snapshot.track()))
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), (reasoningID) => finishReasoning(reasoningID))
             const usage = Session.getUsage({
               model: ctx.model,
@@ -668,7 +688,7 @@ export const layer = Layer.effect(
               cost: usage.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
-            if (ctx.snapshot) {
+            if (ctx.snapshot && ctx.stepToolActivity) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {
                 yield* session.updatePart({
@@ -680,8 +700,8 @@ export const layer = Layer.effect(
                   files: patch.files,
                 })
               }
-              ctx.snapshot = undefined
             }
+            ctx.snapshot = undefined
             if (
               !ctx.assistantMessage.summary &&
               isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
