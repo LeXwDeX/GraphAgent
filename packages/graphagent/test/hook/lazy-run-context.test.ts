@@ -69,6 +69,35 @@ const commandHooks = (dir: string, markers: readonly string[]) => (hookDir: stri
     )
   })
 
+// The event is configured, but neither entry can run for this call: one matcher
+// names another tool and one `if` condition names another tool. Planning reaches
+// the entry loop and short-circuits on no_runnable_entries instead of no_matchers.
+const noRunnableHooks = (dir: string) => (hookDir: string) =>
+  Effect.promise(async () => {
+    await fs.mkdir(path.join(hookDir, ".agents"), { recursive: true })
+    await fs.writeFile(
+      path.join(hookDir, ".agents", "hooks.json"),
+      JSON.stringify({
+        PreToolUse: [
+          {
+            matcher: "Write",
+            hooks: [{ type: "command", command: `echo "handler:matcher" >> '${path.join(dir, "matcher.log")}'` }],
+          },
+          {
+            matcher: "*",
+            hooks: [
+              {
+                type: "command",
+                if: "Edit(*.ts)",
+                command: `echo "handler:if" >> '${path.join(dir, "if.log")}'`,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+  })
+
 describe("lazy per-trigger run context", () => {
   it.instance("no matching handler evaluates no lazy provider", () =>
     Effect.gen(function* () {
@@ -96,12 +125,36 @@ describe("lazy per-trigger run context", () => {
           { sessionID: "ses_lazy_once" },
         )
         expect(result.hookErrors ?? []).toEqual([])
-        // Both handlers ran (distinct commands) but shared one materialization.
+        // Both handlers ran (distinct commands) but shared one materialization
+        // and one environment source.
         expect(serializeCalls).toEqual(["ses_lazy_once"])
+        expect(environmentCalls).toEqual(["ses_lazy_once"])
         expect(yield* Effect.promise(() => fs.readFile(path.join(dir, "a.log"), "utf8"))).toBe("handler:a.log\n")
         expect(yield* Effect.promise(() => fs.readFile(path.join(dir, "b.log"), "utf8"))).toBe("handler:b.log\n")
       }),
     { init: (dir) => commandHooks(dir, ["a.log", "b.log"])(dir) },
+  )
+
+  it.instance(
+    "a configured event with no runnable handler evaluates no lazy provider",
+    () =>
+      Effect.gen(function* () {
+        reset()
+        const { directory: dir } = yield* TestInstance
+        const hook = yield* SettingsHook.Service
+        const result = yield* hook.trigger(
+          { event: "PreToolUse", toolName: "bash", toolInput: { command: "ls" } },
+          { sessionID: "ses_lazy_no_runnable" },
+        )
+        expect(result.additionalContexts).toEqual([])
+        // Matcher and `if` exclude this call, so planning ends with no entries:
+        // nothing is materialized and no handler command runs.
+        expect(serializeCalls).toEqual([])
+        expect(environmentCalls).toEqual([])
+        expect(yield* Effect.promise(() => Bun.file(path.join(dir, "matcher.log")).exists())).toBe(false)
+        expect(yield* Effect.promise(() => Bun.file(path.join(dir, "if.log")).exists())).toBe(false)
+      }),
+    { init: (dir) => noRunnableHooks(dir)(dir) },
   )
 
   it.instance(
