@@ -165,16 +165,7 @@ const CATEGORIES: Category[] = [
     id: "config-file-name",
     stage: 3,
     pattern: /opencode\.jsonc?/,
-    allow: [
-      {
-        file: "packages/tui/src/theme/index.ts",
-        reason: "F1 renames the bundled theme asset",
-      },
-      {
-        file: "packages/tui/src/component/error-component.tsx",
-        reason: "F1 rewrites the theme reference comment",
-      },
-    ],
+    allow: [],
   },
   {
     id: "database-log-name",

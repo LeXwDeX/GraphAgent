@@ -284,6 +284,9 @@ async function mountRoute(
   const app = await testRender(() => <Harness />, { width: 80, height: 24 })
   await ready
   await wait(() => sync.ready)
+  // A prompt rendered for an existing session stands in for the session view,
+  // so register the route interest the event gate needs.
+  if (sessionID) await sync.interest.set("route", [sessionID])
   return {
     app,
     baseline: counter(),
@@ -840,6 +843,7 @@ test("authoritative user message reconciles pending once and a later response fa
   )
   try {
     configureModel(route)
+    await route.sync.session.sync(routeSessionID)
     route.mount()
     await wait(() => Boolean(prompt))
     prompt!.set({ input: "accepted once", parts: [] })

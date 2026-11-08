@@ -1,9 +1,12 @@
 import type { Event } from "@graphagent/sdk/v2"
 import { useSDK } from "./sdk"
+import type { EventScope, GateDecision } from "./event-gate"
 
 type EventMetadata = {
   directory: string
   workspace: string | undefined
+  scope?: EventScope
+  decision?: GateDecision
 }
 
 export function useEvent() {
@@ -15,7 +18,14 @@ export function useEvent() {
         return
       }
 
-      handler(event.payload, { directory: event.directory, workspace: event.workspace })
+      const decision = sdk.eventGate?.(event.payload) ?? "deliver"
+      if (decision === "drop") return
+
+      handler(event.payload, {
+        directory: event.directory,
+        workspace: event.workspace,
+        decision,
+      })
     })
   }
 

@@ -7,6 +7,8 @@ export type TranscriptOptions = {
   toolDetails: boolean
   assistantMetadata: boolean
   providers?: Provider[]
+  /** Store snapshot plus un-settled stream deltas (#886 5.3). */
+  readText?: (part: Part) => string
 }
 
 export type SessionInfo = {
@@ -82,13 +84,15 @@ export function formatAssistantHeader(
 }
 
 export function formatPart(part: Part, options: TranscriptOptions): string {
+  const text = () => options.readText?.(part) ?? (part.type === "text" || part.type === "reasoning" ? part.text : "")
+
   if (part.type === "text" && !part.synthetic) {
-    return `${part.text}\n\n`
+    return `${text()}\n\n`
   }
 
   if (part.type === "reasoning") {
     if (options.thinking) {
-      return `_Thinking:_\n\n${part.text}\n\n`
+      return `_Thinking:_\n\n${text()}\n\n`
     }
     return ""
   }
