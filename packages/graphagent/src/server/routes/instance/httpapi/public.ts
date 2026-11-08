@@ -56,12 +56,7 @@ type OpenApiResponse = {
 // public call shape. These keep SDK callers passing numbers/booleans while the
 // server still decodes string query params at runtime.
 const QueryParameterSchemas: Record<string, OpenApiSchema> = {
-  "GET /experimental/session start": { type: "number" },
-  "GET /experimental/session roots": QueryBooleanOpenApi,
-  "GET /experimental/session archived": QueryBooleanOpenApi,
   "GET /find/file limit": { type: "integer", minimum: 1, maximum: 200 },
-  "GET /experimental/session cursor": { type: "number" },
-  "GET /experimental/session limit": { type: "number" },
   "GET /session start": { type: "number" },
   "GET /session roots": QueryBooleanOpenApi,
   "GET /session limit": { type: "number" },

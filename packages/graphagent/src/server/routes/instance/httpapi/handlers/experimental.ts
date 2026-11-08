@@ -1,103 +1,19 @@
-import { Agent } from "@/agent/agent"
 import { BackgroundJob } from "@/background/job"
-import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
-import { Project } from "@/project/project"
-import { Session } from "@/session/session"
 import type { SessionID } from "@/session/schema"
-import { ToolJsonSchema } from "@/tool/json-schema"
-import { ToolRegistry } from "@/tool/registry"
-import { Worktree } from "@/worktree"
 import { Effect } from "effect"
-import * as HttpServerResponse from "effect/http/HttpServerResponse"
 import { HttpApiBuilder } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
-import { SessionListQuery, ToolListQuery, WorktreeApiError } from "../groups/experimental"
-
-function mapWorktreeError<A, R>(self: Effect.Effect<A, Worktree.Error, R>) {
-  return self.pipe(
-    Effect.mapError((error) => new WorktreeApiError({ name: error._tag, data: { message: error.message } })),
-  )
-}
 
 export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "experimental", (handlers) =>
   Effect.gen(function* () {
-    const agents = yield* Agent.Service
     const mcp = yield* MCP.Service
-    const project = yield* Project.Service
-    const registry = yield* ToolRegistry.Service
-    const worktreeSvc = yield* Worktree.Service
-    const sessions = yield* Session.Service
     const background = yield* BackgroundJob.Service
     const flags = yield* RuntimeFlags.Service
 
     const capabilities = Effect.fn("ExperimentalHttpApi.capabilities")(function* () {
       return { backgroundSubagents: flags.experimentalBackgroundSubagents }
-    })
-
-    const tool = Effect.fn("ExperimentalHttpApi.tool")(function* (ctx: { query: typeof ToolListQuery.Type }) {
-      const list = yield* registry.tools({
-        providerID: ctx.query.provider,
-        modelID: ctx.query.model,
-        agent: yield* agents.defaultInfo(),
-      })
-      return list.map((item) => ({
-        id: item.id,
-        description: item.description,
-        parameters: ToolJsonSchema.fromTool(item),
-      }))
-    })
-
-    const toolIDs = Effect.fn("ExperimentalHttpApi.toolIDs")(function* () {
-      return yield* registry.ids()
-    })
-
-    const worktree = Effect.fn("ExperimentalHttpApi.worktree")(function* () {
-      const ctx = yield* InstanceState.context
-      return yield* project.sandboxes(ctx.project.id)
-    })
-
-    const worktreeCreate = Effect.fn("ExperimentalHttpApi.worktreeCreate")(function* (ctx: {
-      payload: typeof Worktree.CreateInput.Type | void
-    }) {
-      return yield* mapWorktreeError(worktreeSvc.create(ctx.payload ?? undefined))
-    })
-
-    const worktreeRemove = Effect.fn("ExperimentalHttpApi.worktreeRemove")(function* (input: {
-      payload: Worktree.RemoveInput
-    }) {
-      const ctx = yield* InstanceState.context
-      yield* mapWorktreeError(worktreeSvc.remove(input.payload))
-      yield* project.removeSandbox(ctx.project.id, input.payload.directory)
-      return true
-    })
-
-    const worktreeReset = Effect.fn("ExperimentalHttpApi.worktreeReset")(function* (ctx: {
-      payload: Worktree.ResetInput
-    }) {
-      yield* mapWorktreeError(worktreeSvc.reset(ctx.payload))
-      return true
-    })
-
-    const session = Effect.fn("ExperimentalHttpApi.session")(function* (ctx: { query: typeof SessionListQuery.Type }) {
-      const limit = ctx.query.limit ?? 100
-      const all = yield* sessions.listGlobal({
-        directory: ctx.query.directory,
-        roots: ctx.query.roots,
-        start: ctx.query.start,
-        cursor: ctx.query.cursor,
-        search: ctx.query.search,
-        limit: limit + 1,
-        archived: ctx.query.archived,
-      })
-      const list = all.length > limit ? all.slice(0, limit) : all
-      return HttpServerResponse.jsonUnsafe(list, {
-        headers:
-          all.length > limit && list.length > 0
-            ? { "x-next-cursor": String(list[list.length - 1].time.updated) }
-            : undefined,
-      })
     })
 
     const sessionBackground = Effect.fn("ExperimentalHttpApi.sessionBackground")(function* (ctx: {
@@ -121,13 +37,6 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
 
     return handlers
       .handle("capabilities", capabilities)
-      .handle("tool", tool)
-      .handle("toolIDs", toolIDs)
-      .handle("worktree", worktree)
-      .handle("worktreeCreate", worktreeCreate)
-      .handle("worktreeRemove", worktreeRemove)
-      .handle("worktreeReset", worktreeReset)
-      .handle("session", session)
       .handle("sessionBackground", sessionBackground)
       .handle("resource", resource)
   }),
