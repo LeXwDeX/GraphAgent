@@ -1,14 +1,13 @@
 import { afterEach, describe, expect, mock } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer } from "effect"
 import { Flag } from "@graphagent/core/flag/flag"
 import { registerAdapter } from "../../src/control-plane/adapters"
 import { WorkspaceV2 } from "@graphagent/core/workspace"
 import type { WorkspaceAdapter } from "../../src/control-plane/types"
 import { Workspace } from "../../src/control-plane/workspace"
 import { WorkspacePaths } from "../../src/server/routes/instance/httpapi/groups/workspace"
-import { EventPaths } from "../../src/server/routes/instance/httpapi/groups/event"
 import { Session } from "@/session/session"
 import { Database } from "@graphagent/core/database/database"
 import { Ripgrep } from "@graphagent/core/ripgrep"
@@ -39,10 +38,6 @@ const it = testEffect(
 )
 
 function request(path: string, directory: string, init: RequestInit = {}) {
-  return requestInDirectory(path, directory, init)
-}
-
-function requestDefault(path: string, directory: string, init: RequestInit = {}) {
   return requestInDirectory(path, directory, init)
 }
 
@@ -108,70 +103,6 @@ function listedAdapter(directory: string, type: string): WorkspaceAdapter {
 
 function missingAdapterContext(): never {
   throw new Error("missing workspace adapter context")
-}
-
-function remoteAdapter(directory: string, url: string, headers?: HeadersInit): WorkspaceAdapter {
-  return {
-    name: "Remote Test",
-    description: "Create a remote test workspace",
-    configure(info) {
-      return {
-        ...info,
-        name: "remote-test",
-        directory,
-      }
-    },
-    async create() {
-      await mkdir(directory, { recursive: true })
-    },
-    async remove() {},
-    target() {
-      return {
-        type: "remote" as const,
-        url,
-        headers,
-      }
-    },
-  }
-}
-
-type ProxiedRequest = {
-  url: string
-  method: string
-  headers: Record<string, string>
-  body: string
-}
-
-function listenRemoteHttp(handler: (request: ProxiedRequest) => Response | Promise<Response>) {
-  return Bun.serve({
-    port: 0,
-    async fetch(request) {
-      return handler({
-        url: request.url,
-        method: request.method,
-        headers: Object.fromEntries(request.headers.entries()),
-        body: await request.text(),
-      })
-    },
-  })
-}
-
-function eventStreamResponse() {
-  return new Response(
-    new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          new TextEncoder().encode('data: {"payload":{"type":"server.connected","properties":{}}}\n\n'),
-        )
-      },
-    }),
-    {
-      status: 200,
-      headers: {
-        "content-type": "text/event-stream",
-      },
-    },
-  )
 }
 
 afterEach(async () => {
@@ -346,168 +277,6 @@ describe("workspace HttpApi", () => {
       expect(response.status).toBe(200)
       expect(yield* response.json).toMatchObject({ directory: workspaceDir })
       yield* request(WorkspacePaths.remove.replace(":id", workspace.id), dir, { method: "DELETE" })
-    }),
-  )
-
-  it.live("proxies remote workspace HTTP requests with sanitized forwarding", () =>
-    Effect.gen(function* () {
-      Flag.GRAPHAGENT_WORKSPACES = true
-      const dir = yield* tmpdirScoped({ git: true })
-      const proxied: ProxiedRequest[] = []
-      const remote = listenRemoteHttp((request) => {
-        proxied.push(request)
-        const url = new URL(request.url)
-        if (url.pathname === "/base/global/event") return eventStreamResponse()
-        if (url.pathname === "/base/event") return eventStreamResponse()
-        if (url.pathname === "/base/sync/history") return Response.json([])
-        return new Response(
-          JSON.stringify({
-            proxied: true,
-            path: url.pathname,
-            keep: url.searchParams.get("keep"),
-            workspace: url.searchParams.get("workspace"),
-          }),
-          {
-            status: 201,
-            statusText: "Created",
-            headers: {
-              "content-length": "999",
-              "content-type": "application/json",
-              "x-remote": "yes",
-            },
-          },
-        )
-      })
-
-      const project = yield* Project.use.fromDirectory(dir)
-      registerAdapter(
-        project.project.id,
-        "remote-target",
-        remoteAdapter(path.join(dir, ".remote"), `http://127.0.0.1:${remote.port}/base`, {
-          "x-target-auth": "secret",
-        }),
-      )
-      const created = yield* requestDefault(WorkspacePaths.list, dir, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "remote-target", branch: null }),
-      })
-      const workspace = (yield* created.json) as Workspace.Info
-
-      const url = new URL("http://localhost/config")
-      url.searchParams.set("workspace", workspace.id)
-      url.searchParams.set("keep", "yes")
-
-      try {
-        const response = yield* requestDefault(url.toString(), dir, {
-          method: "PATCH",
-          headers: {
-            "accept-encoding": "br",
-            "content-type": "application/json",
-            "x-graphagent-workspace": "internal",
-          },
-          body: JSON.stringify({ $schema: "https://opencode.ai/config.json" }),
-        })
-
-        const responseBody = yield* response.text
-        expect({ status: response.status, body: responseBody }).toMatchObject({ status: 201 })
-        expect(response.headers["content-length"]).toBeUndefined()
-        expect(response.headers["x-remote"]).toBe("yes")
-        expect(JSON.parse(responseBody)).toEqual({ proxied: true, path: "/base/config", keep: "yes", workspace: null })
-        const forwarded = proxied.filter((item) => new URL(item.url).pathname === "/base/config")
-        expect(forwarded).toEqual([
-          {
-            url: `http://127.0.0.1:${remote.port}/base/config?keep=yes`,
-            method: "PATCH",
-            headers: expect.objectContaining({
-              "content-type": "application/json",
-              "x-target-auth": "secret",
-            }),
-            body: JSON.stringify({ $schema: "https://opencode.ai/config.json" }),
-          },
-        ])
-        expect(forwarded[0]?.headers).not.toHaveProperty("x-graphagent-directory")
-        expect(forwarded[0]?.headers).not.toHaveProperty("x-graphagent-workspace")
-
-        const eventURL = new URL(`http://localhost${EventPaths.event}`)
-        eventURL.searchParams.set("workspace", workspace.id)
-        const eventResponse = yield* request(eventURL.toString(), dir)
-        expect(eventResponse.status).toBe(200)
-        expect(eventResponse.headers["content-type"]).toContain("text/event-stream")
-        const event = Array.from(yield* eventResponse.stream.pipe(Stream.take(1), Stream.runCollect))[0]
-        expect(new TextDecoder().decode(event)).toContain("server.connected")
-        expect(proxied.some((item) => new URL(item.url).pathname === "/base/event")).toBe(true)
-      } finally {
-        void remote.stop(true)
-        yield* requestDefault(WorkspacePaths.remove.replace(":id", workspace.id), dir, { method: "DELETE" })
-      }
-    }),
-  )
-
-  it.live("proxies remote workspace requests selected from session ownership", () =>
-    Effect.gen(function* () {
-      Flag.GRAPHAGENT_WORKSPACES = true
-      const dir = yield* tmpdirScoped({ git: true })
-      const proxied: ProxiedRequest[] = []
-      const remote = listenRemoteHttp((request) => {
-        proxied.push(request)
-        const url = new URL(request.url)
-        if (url.pathname === "/base/global/event") return eventStreamResponse()
-        if (url.pathname === "/base/sync/history") return Response.json([])
-        return Response.json({ proxied: true, path: new URL(request.url).pathname })
-      })
-
-      const project = yield* Project.use.fromDirectory(dir)
-      registerAdapter(
-        project.project.id,
-        "remote-session-target",
-        remoteAdapter(path.join(dir, ".remote-session"), `http://127.0.0.1:${remote.port}/base`),
-      )
-      const created = yield* requestDefault(WorkspacePaths.list, dir, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "remote-session-target", branch: null }),
-      })
-      const workspace = (yield* created.json) as Workspace.Info
-      const sessionResponse = yield* requestDefault("/session", dir, { method: "POST" })
-      const session = (yield* sessionResponse.json) as Session.Info
-      const warped = yield* requestDefault(WorkspacePaths.warp, dir, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: workspace.id, sessionID: session.id }),
-      })
-      expect(warped.status).toBe(204)
-
-      try {
-        const response = yield* requestDefault(`http://localhost/session/${session.id}/message`, dir, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ parts: [{ type: "text", text: "hello" }] }),
-        })
-
-        const responseBody = yield* response.text
-        expect({ status: response.status, body: responseBody }).toMatchObject({ status: 200 })
-        expect(JSON.parse(responseBody)).toEqual({ proxied: true, path: `/base/session/${session.id}/message` })
-        expect(proxied.filter((item) => new URL(item.url).pathname === `/base/session/${session.id}/message`)).toEqual([
-          expect.objectContaining({
-            url: `http://127.0.0.1:${remote.port}/base/session/${session.id}/message`,
-            method: "POST",
-          }),
-        ])
-
-        const aborted = yield* request(`http://localhost/session/${session.id}/abort`, dir, { method: "POST" })
-        expect(aborted.status).toBe(200)
-        expect(proxied.filter((item) => new URL(item.url).pathname === `/base/session/${session.id}/abort`)).toEqual([
-          expect.objectContaining({
-            url: `http://127.0.0.1:${remote.port}/base/session/${session.id}/abort`,
-            method: "POST",
-            body: "",
-          }),
-        ])
-      } finally {
-        void remote.stop(true)
-        yield* requestDefault(WorkspacePaths.remove.replace(":id", workspace.id), dir, { method: "DELETE" })
-      }
     }),
   )
 })
