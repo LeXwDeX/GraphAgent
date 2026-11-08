@@ -20,7 +20,7 @@
  *                            the definition is equivalent or the update is safe
  *   - restart: true        → pause + discard child session + re-spawn with fragment's def
  *   - cancel: true         → cancelled; downstream becomes orphan (auto-failed via cascade)
- * - queued/paused nodes:
+ * - queued nodes:
  *   - absent from fragment → cancelled (superseded)
  *   - present               → classified as replace; the host must first prove
  *                             captured execution fields are unchanged
@@ -169,7 +169,7 @@ export function planReplan(
       else cancel.push(n.id) // superseded
       continue
     }
-    // QUEUED / PAUSED: treated like pending for replan purposes.
+    // QUEUED: treated like pending for replan purposes.
     if (frag) replace.push(n.id)
     else cancel.push(n.id)
   }

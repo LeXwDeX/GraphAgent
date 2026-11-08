@@ -9,6 +9,7 @@ import { Database } from "../database/database"
 import { EventV2, type Definition, type Subscriber } from "../event"
 import { LayerNode } from "../effect/layer-node"
 import { DagEvent } from "@graphagent/schema/dag-event"
+import { ERROR_CLASS_CANCELLED } from "@graphagent/schema/dag-status"
 import { WorkflowNodeTable, WorkflowTable } from "./sql"
 
 type WorkflowStatus = DagEvent.WorkflowStatus
@@ -48,21 +49,23 @@ function archiveWorktree(current: typeof WorkflowNodeTable.$inferSelect | undefi
  */
 export const NodeStatusProjection = {
   queued: { to: "queued", from: ["pending", "queued"] },
-  started: { to: "running", from: ["pending", "queued", "paused", "running"] },
+  started: { to: "running", from: ["pending", "queued", "running"] },
   // Publisher-side guardNode admits NodeCompleted only from running; the
-  // former pending/queued/paused tolerance had no producing path and
-  // contradicted the declared table.
+  // former pending/queued tolerance had no producing path and contradicted
+  // the declared table.
   completed: { to: "completed", from: ["running"] },
   failed: { to: "failed", from: ["running", "pending", "queued"] },
-  skipped: { to: "skipped", from: ["pending", "queued", "running", "paused"] },
-  aborted: { to: "aborted", from: ["running", "paused"] },
-  // NodeCancelled has NO independent terminal status — the NodeStatus enum has
-  // no CANCELLED and getValidNextNodeStatuses never returns it. A cancelled
-  // node lands on `failed` with the cancellation carried by `error_reason`
-  // ("cancelled via replan"), never on a phantom node-level "cancelled" status.
-  // Workflow-level cancelled (WorkflowStatusProjection.cancelled below) is a
-  // legitimate, separate terminal — this entry is node-scoped only.
-  cancelled: { to: "failed", from: ["pending", "queued", "running", "paused"] },
+  skipped: { to: "skipped", from: ["pending", "queued", "running"] },
+  aborted: { to: "aborted", from: ["running"] },
+  // NodeCancelled has NO independent terminal status — the NodeStatus
+  // vocabulary has no CANCELLED and getValidNextNodeStatuses never returns it.
+  // A cancelled node lands on `failed` with the cancellation carried
+  // structurally by `error_class="cancelled"` (D11; `error_reason` keeps the
+  // human-readable "cancelled via replan" text), never on a phantom
+  // node-level "cancelled" status. Workflow-level cancelled
+  // (WorkflowStatusProjection.cancelled below) is a legitimate, separate
+  // terminal — this entry is node-scoped only.
+  cancelled: { to: "failed", from: ["pending", "queued", "running"] },
   restarted: { to: "pending", from: ["running"] },
 } as const
 
@@ -164,6 +167,9 @@ export const layer = Layer.effectDiscard(
           status: "paused",
           seq: event.durable!.seq,
           time_updated: toMillis(event.data.timestamp),
+          // D12: the reason rides on the durable event so a restart/replay
+          // reconstructs it; an absent reason projects to NULL.
+          pause_reason: event.data.reason ?? null,
           // One bounded reminder is available for each pause episode. Its
           // delivery is acknowledged through the existing wake batch marker.
           wake_reported: false,
@@ -174,11 +180,18 @@ export const layer = Layer.effectDiscard(
     )
     // Leaving a pause ends that pause episode. A reminder already delivered for
     // it (wake_reported=true) must not suppress the next report, so the
-    // resumed run starts with a fresh, unreported wake marker.
+    // resumed run starts with a fresh, unreported wake marker. The pause
+    // reason is cleared in the same transition so it cannot outlive the pause.
     yield* project(DagEvent.WorkflowResumed, (event) =>
       db
         .update(WorkflowTable)
-        .set({ status: "running", seq: event.durable!.seq, time_updated: toMillis(event.data.timestamp), wake_reported: false })
+        .set({
+          status: "running",
+          seq: event.durable!.seq,
+          time_updated: toMillis(event.data.timestamp),
+          pause_reason: null,
+          wake_reported: false,
+        })
         .where(and(eq(WorkflowTable.id, event.data.dagID), inArray(WorkflowTable.status, [...WorkflowStatusProjection.resumed.from])))
         .run()
         .pipe(Effect.orDie),
@@ -193,6 +206,9 @@ export const layer = Layer.effectDiscard(
           seq: event.durable!.seq,
           completed_at: toMillis(event.data.timestamp),
           time_updated: toMillis(event.data.timestamp),
+          // D12: a terminal workflow is no longer paused; a leftover
+          // budget_exhausted reason must not describe the final state.
+          pause_reason: null,
           // A terminal transition opens its own wake episode (same re-arm as
           // node F2b): a paused reminder reported earlier must not swallow the
           // terminal report. The non-terminal `from` guard keeps replay of an
@@ -233,7 +249,7 @@ export const layer = Layer.effectDiscard(
         yield* db
           .update(WorkflowTable)
           .set({
-            ...(recovery ? { status: ws("running"), wake_reported: false, completed_at: null } : {}),
+            ...(recovery ? { status: ws("running"), wake_reported: false, completed_at: null, pause_reason: null } : {}),
             // #945: a retarget also rebinds the execution directory and the
             // target identity in the same revision bump.
             ...(event.data.retarget?.toDirectory !== undefined
@@ -261,6 +277,8 @@ export const layer = Layer.effectDiscard(
             status: "running",
             wake_reported: false,
             completed_at: null,
+            // D12: reopen leaves any previous pause episode behind.
+            pause_reason: null,
             graph_rev: sql`${WorkflowTable.graph_rev} + 1`,
             seq: event.durable!.seq,
             time_updated: toMillis(event.data.timestamp),
@@ -577,10 +595,12 @@ export const layer = Layer.effectDiscard(
     )
 
     // NodeCancelled carries no independent terminal status: it projects to
-    // status="failed" with the cancellation marker in error_reason and clears
-    // the adjudication flag (cancel is itself an adjudication). A node row can
-    // therefore never hold status="cancelled"; see NodeStatusProjection.cancelled
-    // above and the canonical proof in
+    // status="failed" with a STRUCTURED cancellation marker in
+    // error_class="cancelled" (D11) and keeps the human-readable
+    // error_reason "cancelled via replan". It also clears the adjudication
+    // flag (cancel is itself an adjudication). A node row can therefore never
+    // hold status="cancelled"; see NodeStatusProjection.cancelled above and
+    // the canonical proof in
     // packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148.
     //
     // Rev-view (v1.0.15 Train A): a cancelled node leaves the current graph
@@ -591,7 +611,15 @@ export const layer = Layer.effectDiscard(
     yield* project(DagEvent.NodeCancelled, (event) =>
       db
         .update(WorkflowNodeTable)
-        .set({ status: "failed", superseded: true, error_reason: "cancelled via replan", escalation_pending: false, seq: event.durable!.seq, time_updated: toMillis(event.data.timestamp) })
+        .set({
+          status: "failed",
+          superseded: true,
+          error_reason: "cancelled via replan",
+          error_class: ERROR_CLASS_CANCELLED,
+          escalation_pending: false,
+          seq: event.durable!.seq,
+          time_updated: toMillis(event.data.timestamp),
+        })
         .where(and(
           eq(WorkflowNodeTable.workflow_id, event.data.dagID),
           eq(WorkflowNodeTable.id, event.data.nodeID),

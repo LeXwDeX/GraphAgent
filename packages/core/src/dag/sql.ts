@@ -49,6 +49,10 @@ export const WorkflowTable = sqliteTable(
     target_fingerprint: text({ mode: "json" }).$type<DagEvent.TargetFingerprint>().notNull(),
     title: text().notNull(),
     status: text().notNull(),
+    // D12: why the workflow is paused (e.g. "budget_exhausted"). NULL when the
+    // pause carried no reason. Cleared by resume/terminal/replan projections so
+    // a stale reason cannot outlive the pause episode.
+    pause_reason: text(),
     config: text().notNull(), // YAML string
     seq: integer().notNull(), // latest durable event seq
     wake_reported: integer({ mode: "boolean" }).notNull().default(false), // D3: terminal or paused reminder reported to parent for this status episode?
