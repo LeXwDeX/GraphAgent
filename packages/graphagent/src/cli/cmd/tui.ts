@@ -43,10 +43,12 @@ function createWorkerFetch(client: RpcClient): typeof fetch {
 function createEventSource(client: RpcClient): EventSource {
   return {
     subscribe: async (handler) => {
-      return client.on("global.event", (e) => {
-        handler(e)
+      return client.on("global.events", (events) => {
+        for (const event of events) handler(event)
       })
     },
+    subscribeBatch: async (handler) => client.on("global.events", handler),
+    setInterest: (full) => client.call("setInterest", { full }),
   }
 }
 

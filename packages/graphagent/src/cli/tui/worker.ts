@@ -7,7 +7,7 @@ import { InstanceRuntime } from "@/project/instance-runtime"
 import { Rpc } from "@/util/rpc"
 import type { RpcFetchRequest, RpcFetchResponse, WorkerMethods } from "./rpc-contract"
 import { isCancellableRequest } from "./rpc-contract"
-import { encodeEvent } from "./event-encode"
+import { EventPump, type PumpEvent } from "./event-pump"
 import type { RpcContext } from "@/util/rpc"
 import { ClientSessions } from "@/session/client-sessions"
 import { Config } from "@/config/config"
@@ -56,11 +56,14 @@ const onUncaughtException = (error: Error) => {
 process.on("unhandledRejection", onUnhandledRejection)
 process.on("uncaughtException", onUncaughtException)
 
-// Subscribe to global events and forward them via RPC. Structured cloning does
-// not run `toJSON`, so schema-backed payloads are encoded to their wire shape
-// before crossing the worker boundary.
+// Raw GlobalBus events are filtered, merged and batched by the pump. Schema
+// encoding happens there before the batch crosses the worker boundary.
+const pump = new EventPump({
+  emit: (events) => Rpc.emit("global.events", events),
+})
+
 GlobalBus.on("event", (event) => {
-  Rpc.emit("global.event", encodeEvent(event))
+  pump.push(event as PumpEvent)
 })
 
 export const rpc = {
@@ -86,6 +89,9 @@ export const rpc = {
     const result = writeHeapSnapshot("server.heapsnapshot")
     return result
   },
+  async setInterest(input: { full: readonly string[] }) {
+    await pump.setInterest(input)
+  },
   async reload() {
     await AppRuntime.runPromise(
       Effect.gen(function* () {
@@ -107,6 +113,7 @@ export const rpc = {
         ),
       )
     ClientSessions.clear()
+    pump.dispose()
     await InstanceRuntime.disposeAllInstances()
     process.off("unhandledRejection", onUnhandledRejection)
     process.off("uncaughtException", onUncaughtException)

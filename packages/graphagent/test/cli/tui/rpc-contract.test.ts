@@ -105,11 +105,11 @@ test("client dispatches typed worker events and unsubscribes", async () => {
   const event = { type: "test.event", properties: {} } as unknown as GlobalEvent
   const received: GlobalEvent[] = []
 
-  const off = client.on("global.event", (data) => received.push(data))
-  deliver({ t: "evt", name: "global.event", data: event })
+  const off = client.on("global.events", (data) => received.push(...data))
+  deliver({ t: "evt", name: "global.events", data: [event] })
   expect(received).toEqual([event])
 
   off()
-  deliver({ t: "evt", name: "global.event", data: event })
+  deliver({ t: "evt", name: "global.events", data: [event] })
   expect(received).toHaveLength(1)
 })
