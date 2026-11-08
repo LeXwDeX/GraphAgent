@@ -358,6 +358,8 @@ export const countingClientLayer = Layer.effect(
       compiler,
       driver: "sqlite-bun",
       transactionAcquirer,
+      // Mirror sqlite.bun.ts: nested transactions release their savepoints.
+      releaseSavepoint: (name) => `RELEASE SAVEPOINT ${name}`,
       spanAttributes: [["db.system.name", "sqlite"]],
     })
   }),
