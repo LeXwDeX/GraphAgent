@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { cellWidth } from "../../src/ui/width"
+import { cellWidth, truncateCells } from "../../src/ui/width"
 
 test("ambiguous width defaults to one cell", () => {
   expect(cellWidth("◆")).toBe(1)
@@ -29,4 +29,20 @@ test("ignores ANSI escape sequences", () => {
 test("keeps wide glyphs wide with ambiguous width two", () => {
   expect(cellWidth("中", 2)).toBe(2)
   expect(cellWidth("◆中", 2)).toBe(4)
+})
+
+test("truncates text to a cell budget with an ellipsis", () => {
+  expect(truncateCells("hello", 5)).toBe("hello")
+  expect(truncateCells("hello", 6)).toBe("hello")
+  expect(truncateCells("hello", 4)).toBe("hel…")
+  expect(truncateCells("hello", 0)).toBe("")
+  expect(truncateCells("中文标题", 6)).toBe("中文…")
+  expect(truncateCells("中文标题", 5)).toBe("中文…")
+})
+
+test("truncation follows ambiguous width", () => {
+  expect(truncateCells("◆◆◆", 3)).toBe("◆◆◆")
+  expect(truncateCells("◆◆◆", 2)).toBe("◆…")
+  expect(truncateCells("◆◆◆", 4, 2)).toBe("◆…")
+  expect(cellWidth(truncateCells("a◆b◆c", 7, 2), 2)).toBeLessThanOrEqual(7)
 })

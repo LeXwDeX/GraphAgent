@@ -48,6 +48,10 @@ import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { Session } from "./routes/session"
+import { AppFrame } from "./shell/app-frame"
+import { useFooterKeyHints } from "./shell/footer"
+import type { TopBarRight } from "./shell/top-bar"
+import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -366,6 +370,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
+  const footerKeys = useFooterKeyHints()
 
   const api = createTuiApi(
     createTuiApiAdapters({
@@ -994,6 +999,41 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     return render({ params: route.data.data })
   })
 
+  const topBar = createMemo(() => {
+    const current = local.model.current()
+    const info = current
+      ? sync.data.provider.find((item) => item.id === current.providerID)?.models[current.modelID]
+      : undefined
+    const right: TopBarRight = {
+      model: info?.name ?? current?.modelID,
+      reasoning: local.model.variant.current(),
+    }
+
+    if (route.data.type === "session") {
+      const messages = sync.data.message[route.data.sessionID] ?? []
+      const last = messages.findLast((item) => item.role === "assistant" && item.tokens.output > 0)
+      if (last?.role === "assistant") {
+        const tokens =
+          last.tokens.input +
+          last.tokens.output +
+          last.tokens.reasoning +
+          last.tokens.cache.read +
+          last.tokens.cache.write
+        const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
+        if (model?.limit.context) {
+          right.context = t("shell.topBar.context", {
+            percent: Math.round((tokens / model.limit.context) * 100),
+          })
+        }
+      }
+    }
+
+    return {
+      path: route.data.type === "session" ? sync.session.get(route.data.sessionID)?.title : undefined,
+      right,
+    }
+  })
+
   return (
     <box
       width={dimensions().width}
@@ -1018,7 +1058,15 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         <TimeToFirstDraw />
       </Show>
       <Show when={ready()}>
-        <box flexGrow={1} minHeight={0} flexDirection="column">
+        <AppFrame
+          topBar={topBar()}
+          footer={{
+            agent: local.agent.current()?.name,
+            agentAction: footerKeys().agent,
+            hints: footerKeys().hints,
+          }}
+          bottomZone={<pluginRuntime.Slot name="app_bottom" />}
+        >
           <Switch>
             <Match when={route.data.type === "home"}>
               <Home />
@@ -1030,10 +1078,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             </Match>
           </Switch>
           {plugin()}
-        </box>
-        <box flexShrink={0}>
-          <pluginRuntime.Slot name="app_bottom" />
-        </box>
+        </AppFrame>
         <pluginRuntime.Slot name="app" />
       </Show>
       <Show when={!startup.skipInitialLoading}>
