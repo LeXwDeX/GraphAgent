@@ -25,7 +25,7 @@
 
 import os from "os"
 import path from "path"
-import type { HookCommand, HookEvent } from "../settings"
+import type { HookCommand, HookEvent } from "../types"
 
 /**
  * Evaluate a hook entry's `if` condition against the runtime envelope.
@@ -42,7 +42,7 @@ export function evaluate(
   if (!condition || condition.trim() === "" || condition.trim() === "*") return true
 
   // Tool events that match by tool_name support `if` condition filtering.
-  // This set MUST stay in sync with `matcherTarget` in settings.ts — matcher and
+  // This set MUST stay in sync with `matcherTarget` in match.ts — matcher and
   // `if` must agree on which events are tool-bound, otherwise `if` would be
   // silently ignored on events where the matcher still matches by tool_name.
   if (

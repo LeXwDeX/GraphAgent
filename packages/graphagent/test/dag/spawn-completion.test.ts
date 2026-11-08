@@ -1,4 +1,4 @@
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { $ } from "bun"
 import { describe, expect, it } from "bun:test"
 import { Effect, Layer, Semaphore, Fiber, Deferred, Option } from "effect"

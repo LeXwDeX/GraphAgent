@@ -66,4 +66,4 @@ export { HOOK_REWAKE_SENTINEL, MAX_STOP_CONTINUATIONS, sanitizeHookContext, stop
 export type { Interface } from "./service"
 export { Service, defaultLayer, layer, node } from "./service"
 
-export * as SettingsHook from "./settings"
+export * as SettingsHook from "./index"

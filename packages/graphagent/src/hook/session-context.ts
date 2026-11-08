@@ -1,7 +1,7 @@
 import { consumerContext } from "./consumer-context"
 import { Effect, Option } from "effect"
 import type { Session } from "@/session/session"
-import type { SettingsHook } from "./settings"
+import type { SettingsHook } from "./index"
 import type { TriggerResult } from "./trigger-result"
 import type { HookStartContext } from "./start-context"
 import { HookLifecycle } from "./lifecycle"

@@ -1,7 +1,7 @@
 /**
  * Shared handler contracts and failure policy for hook handlers.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
 import { Cause, Effect, Option } from "effect"
 import {

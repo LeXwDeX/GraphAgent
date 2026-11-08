@@ -57,7 +57,7 @@ import { EventResidueSweep } from "@graphagent/core/event/residue-sweep"
 import { SessionAttention } from "@/notification/attention"
 import { Notification } from "@/notification"
 import { HookTodo } from "@/hook/todo"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { HookRewakeLive } from "@/hook/rewake-live"
 import { SessionHooks } from "@/hook/session-hooks"
 import { ToolRegistry } from "@/tool/registry"
@@ -253,7 +253,7 @@ export const app = LayerNode.group([
   ]),
   SessionHooks.node,
   // HookRewake live node: async hook rewake delivery (hook-async-rewake).
-  // Same app-graph-level placement rationale as SettingsHook above — settings.ts
+  // Same app-graph-level placement rationale as SettingsHook above — the hook barrel
   // resolves HookRewake.Service via serviceOption from the ambient request
   // context, so it must be present in this graph or server-driven sessions
   // would silently skip rewake.

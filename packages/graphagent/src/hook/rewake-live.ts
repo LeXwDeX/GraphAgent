@@ -2,7 +2,7 @@
  * Live HookRewake implementation — routes V1 hook feedback to SessionPrompt.
  *
  * Dependency graph (no cycle):
- *   rewake.ts (tag only) ← settings.ts ← prompt.ts ← this file → rewake.ts
+ *   rewake.ts (tag only) ← index.ts ← prompt.ts ← this file → rewake.ts
  *
  * SessionPrompt is resolved lazily from the ambient request context. The loop
  * guard in prompt.ts (UserPromptSubmit trigger skips prompts whose text starts

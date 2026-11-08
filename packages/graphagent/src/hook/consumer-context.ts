@@ -1,4 +1,4 @@
-import type { TriggerContext } from "./settings"
+import type { TriggerContext } from "./types"
 import { Effect, Option } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { InstanceRef } from "@/effect/instance-ref"

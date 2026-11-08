@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { evaluate } from "@/hook/extensions/condition-filter"
-import type { HookCommand, HookEvent } from "@/hook/settings"
+import type { HookCommand, HookEvent } from "@/hook"
 
 // `evaluate` only reads `entry.if`; `type` is the one required field on
 // HookCommand, so this is the minimal valid fixture.

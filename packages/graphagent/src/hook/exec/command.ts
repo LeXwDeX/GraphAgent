@@ -1,7 +1,7 @@
 /**
  * Hook command expansion and process execution.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
 import path from "path"
 import os from "os"

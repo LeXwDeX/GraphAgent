@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { sanitizeHookContext } from "@/hook/settings"
+import { sanitizeHookContext } from "@/hook"
 
 describe("hook context safety", () => {
   test("escapes reminder tags so hook output cannot close the host envelope", () => {

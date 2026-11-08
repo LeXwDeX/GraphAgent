@@ -14,7 +14,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
-import { SettingsHook, type TriggerResult } from "@/hook/settings"
+import { SettingsHook, type TriggerResult } from "@/hook"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { WorkflowTool } from "../../src/tool/workflow"
 import { GoalLoop } from "@/goal/loop"

@@ -269,7 +269,7 @@ export const RunCommand = effectCmd({
     const agentSvc = yield* Agent.Service
     const flags = yield* RuntimeFlags.Service
     const localInstance = yield* InstanceRef
-    const { SettingsHook } = yield* Effect.promise(() => import("@/hook/settings"))
+    const { SettingsHook } = yield* Effect.promise(() => import("@/hook"))
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     yield* Effect.promise(async () => {
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")

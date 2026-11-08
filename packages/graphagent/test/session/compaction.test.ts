@@ -41,7 +41,7 @@ import { LLMEvent, Usage } from "@graphagent/llm"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { Memory } from "@/memory/memory"
-import { SettingsHook, HOOK_REWAKE_SENTINEL } from "@/hook/settings"
+import { SettingsHook, HOOK_REWAKE_SENTINEL } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { CompactionTimeoutError } from "../../src/session/compaction-timeout"
 

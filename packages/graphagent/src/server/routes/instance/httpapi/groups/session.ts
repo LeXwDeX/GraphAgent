@@ -32,7 +32,7 @@ import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
-import { VALID_HOOK_EVENTS, type HookEvent } from "@/hook/settings"
+import { VALID_HOOK_EVENTS, type HookEvent } from "@/hook"
 
 const root = "/session"
 export const ListQuery = Schema.Struct({

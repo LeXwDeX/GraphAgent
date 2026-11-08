@@ -2,7 +2,7 @@ import path from "path"
 import { Effect, Option, Schema } from "effect"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { Skill } from "../skill"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import * as Tool from "./tool"
 import DESCRIPTION from "./skill.txt"
 

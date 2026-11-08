@@ -20,7 +20,7 @@ import { SessionRunState } from "@/session/run-state"
 import { Notification } from "@/notification"
 import { SessionAttention } from "@/notification/attention"
 import { Permission } from "@/permission"
-import { SettingsHook, type HookPayload } from "@/hook/settings"
+import { SettingsHook, type HookPayload } from "@/hook"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 

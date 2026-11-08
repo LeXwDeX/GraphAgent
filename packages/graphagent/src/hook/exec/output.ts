@@ -1,7 +1,7 @@
 /**
  * Hook stdout/HTTP body classification and output validation.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
 import * as Log from "@/util/log"
 import { HookOutputSchema, HookSpecificOutputSchema } from "../schema"

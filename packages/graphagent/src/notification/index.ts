@@ -26,7 +26,7 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const { SettingsHook } = yield* Effect.promise(() => import("@/hook/settings"))
+    const { SettingsHook } = yield* Effect.promise(() => import("@/hook"))
     const layerSettings = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
 
     const notify = Effect.fn("Notification.notify")(

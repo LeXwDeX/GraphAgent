@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import path from "path"
 import { Effect, FileSystem, Layer } from "effect"

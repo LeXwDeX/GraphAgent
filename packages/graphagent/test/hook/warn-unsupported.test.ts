@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { detectUnsupportedFields, type Settings } from "@/hook/settings"
+import { detectUnsupportedFields, type Settings } from "@/hook"
 
 const hooks = (hook: Record<string, unknown>): Settings["hooks"] => ({
   SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "true", ...hook }] }],

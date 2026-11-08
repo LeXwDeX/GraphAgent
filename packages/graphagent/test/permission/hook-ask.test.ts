@@ -10,7 +10,7 @@ import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 import { SessionID } from "../../src/session/schema"
-import { SettingsHook, type HookPayload, type TriggerContext } from "../../src/hook/settings"
+import { SettingsHook, type HookPayload, type TriggerContext } from "../../src/hook"
 
 // Captures every hook payload so the tests can assert the envelope inputs.
 const triggered: Array<{ payload: HookPayload; ctx: TriggerContext }> = []

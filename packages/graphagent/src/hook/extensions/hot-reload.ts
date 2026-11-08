@@ -29,7 +29,7 @@ import { PROJECT_DIR } from "@graphagent/core/brand"
 import { Global } from "@graphagent/core/global"
 import { hasProjectLayer } from "@/project/project-root"
 import * as Log from "@/util/log"
-import type { Settings } from "../settings"
+import type { Settings } from "../types"
 
 const log = Log.create({ service: "hook.extensions.hot-reload" })
 

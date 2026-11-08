@@ -1,7 +1,7 @@
 /**
  * `type: "prompt"` hook handler and evaluator helpers shared with `agent`.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
 import { Effect, Option } from "effect"
 import { generateObject, type ModelMessage } from "ai"

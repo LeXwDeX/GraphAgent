@@ -2,12 +2,12 @@
  * Cycle-free home for the `TriggerResult` type and the `landSystemMessages`
  * pure helper.
  *
- * `settings.ts` is a heavy module — its construction pulls in Provider →
+ * The hook barrel is a heavy module — its construction pulls in Provider →
  * Plugin → Session, which closes a load-order-sensitive cycle when imported
  * at the top of a Session-layer file (the resulting TDZ ReferenceError breaks
  * `test/goal` and `test/hook` independently). Consumers that only need the
  * result shape or the systemMessage landing helper MUST import from here
- * rather than from `settings.ts`; `settings.ts` re-exports both for backward
+ * rather than from the barrel; `index.ts` re-exports both for backward
  * compatibility with existing import paths.
  *
  * This module depends on `effect` only — no provider/plugin/session edges —

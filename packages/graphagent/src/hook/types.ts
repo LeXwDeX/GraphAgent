@@ -1,7 +1,7 @@
 /**
  * Hook protocol types shared by the hook engine.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1). Runtime
+ * Pure-move extraction from the former monolithic settings module (D1 PR1). Runtime
  * behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import type { PermissionUpdate } from "./schema"
@@ -524,7 +524,7 @@ export type HookEffort = "low" | "medium" | "high" | "xhigh" | "max"
 
 // ── [FORK:hook-ext] Extension callback interface ────────────────
 //
-// All fork-specific hook processing plugs in here. settings.ts calls
+// All fork-specific hook processing plugs in here. The engine calls
 // these at well-defined points; implementations live in hook/extensions/
 // and are wired in the Effect layer.
 //

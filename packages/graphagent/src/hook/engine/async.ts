@@ -1,7 +1,7 @@
 /**
  * Async rewake prompts, stop-hook caps, and background completion handling.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Pure-move extraction from the former monolithic settings module (D1 PR1).
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import path from "path"
@@ -59,8 +59,7 @@ function buildRewakePrompt(entry: HookCommand, event: HookEvent, content: string
 
 // `TriggerResult` and `landSystemMessages` live in `./trigger-result` (a
 // cycle-free leaf). Re-exported here so existing `SettingsHook.*` /
-// `import { type TriggerResult } from "@/hook/settings"` call sites keep
-// working. See trigger-result.ts for the cycle rationale.
+// `@/hook` call sites keep working. See trigger-result.ts for the cycle rationale.
 import { landSystemMessages, type TriggerResult } from "../trigger-result"
 export type { TriggerResult } from "../trigger-result"
 export { landSystemMessages } from "../trigger-result"

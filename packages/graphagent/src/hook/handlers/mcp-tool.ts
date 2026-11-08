@@ -1,7 +1,7 @@
 /**
  * `type: "mcp"` alias and `type: "mcp_tool"` hook handlers.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
 import { Cause, Effect, Option } from "effect"
 import * as Log from "@/util/log"

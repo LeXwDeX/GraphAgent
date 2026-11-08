@@ -3,7 +3,7 @@ import { Effect } from "effect"
 import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { loadChain, mergeSettings, readJSON, type Settings } from "@/hook/settings"
+import { loadChain, mergeSettings, readJSON, type Settings } from "@/hook"
 import { watchSettings } from "@/hook/extensions"
 import { __watchedFiles } from "@/hook/extensions/hot-reload"
 

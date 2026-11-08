@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { SettingsHook } from "@/hook/settings"
+import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { HookRewake } from "@/hook/rewake"
 import { MCP } from "@/mcp"

@@ -1,7 +1,7 @@
 /**
  * hooks.json layer discovery, concat-merge, and scope-tagged summaries.
  *
- * Pure-move extraction from the former `hook/settings.ts` (D1 PR1).
+ * Pure-move extraction from the former monolithic settings module (D1 PR1).
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import path from "path"

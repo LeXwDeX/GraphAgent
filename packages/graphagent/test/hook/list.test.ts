@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { summarizeChain } from "@/hook/settings"
+import { summarizeChain } from "@/hook"
 
 // Unit tests for summarizeChain — the scope-tagged read surface behind
 // SettingsHook.list(). Mirrors load-chain.test.ts: isolated temp dirs for the

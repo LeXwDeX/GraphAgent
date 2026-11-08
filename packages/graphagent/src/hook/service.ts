@@ -1,7 +1,7 @@
 /**
  * SettingsHook Effect service: public interface, layer wiring, and node metadata.
  *
- * Split from the former monolithic `hook/settings.ts` (D1 PR1); behavior is unchanged.
+ * Split from the former monolithic the former monolithic settings module (D1 PR1); behavior is unchanged.
  */
 import { Context, Effect, Layer, Option } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"

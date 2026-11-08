@@ -2,7 +2,7 @@ export * as HookCwd from "./cwd"
 
 import { Effect, Layer } from "effect"
 import { SessionCwdHooks } from "@graphagent/core/session/cwd-hooks"
-import { SettingsHook } from "./settings"
+import { SettingsHook } from "./index"
 import { SessionHooks } from "./session-hooks"
 import { Session } from "@/session/session"
 import { InstanceStore } from "@/project/instance-store"
