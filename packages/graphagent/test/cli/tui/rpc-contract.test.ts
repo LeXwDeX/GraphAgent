@@ -20,7 +20,7 @@ test("client sends a typed request and resolves the worker result", async () => 
   const client = Rpc.client<WorkerMethods, WorkerEvents>(target)
 
   const pending = client.call("fetch", {
-    url: "http://graphagent.internal/session",
+    url: "http://graphagent.test/session",
     method: "POST",
     headers: { "content-type": "application/json" },
     body: "{}",
@@ -31,7 +31,7 @@ test("client sends a typed request and resolves the worker result", async () => 
     id: 0,
     method: "fetch",
     input: {
-      url: "http://graphagent.internal/session",
+      url: "http://graphagent.test/session",
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
