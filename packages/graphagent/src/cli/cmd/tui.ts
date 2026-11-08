@@ -21,13 +21,17 @@ type RpcClient = ReturnType<typeof Rpc.client<WorkerMethods, WorkerEvents>>
 function createWorkerFetch(client: RpcClient): typeof fetch {
   const fn = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(input, init)
-    const body = request.body ? await request.text() : undefined
-    const result = await client.call("fetch", {
-      url: request.url,
-      method: request.method,
-      headers: Object.fromEntries(request.headers.entries()),
-      body,
-    })
+    const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined
+    const result = await client.call(
+      "fetch",
+      {
+        url: request.url,
+        method: request.method,
+        headers: Object.fromEntries(request.headers.entries()),
+        body,
+      },
+      { signal: request.signal },
+    )
     return new Response(result.body, {
       status: result.status,
       headers: result.headers,

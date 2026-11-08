@@ -6,6 +6,9 @@ import { Server } from "@/server/server"
 import { InstanceRuntime } from "@/project/instance-runtime"
 import { Rpc } from "@/util/rpc"
 import type { RpcFetchRequest, RpcFetchResponse, WorkerMethods } from "./rpc-contract"
+import { isCancellableRequest } from "./rpc-contract"
+import { encodeEvent } from "./event-encode"
+import type { RpcContext } from "@/util/rpc"
 import { ClientSessions } from "@/session/client-sessions"
 import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
@@ -53,24 +56,30 @@ const onUncaughtException = (error: Error) => {
 process.on("unhandledRejection", onUnhandledRejection)
 process.on("uncaughtException", onUncaughtException)
 
-// Subscribe to global events and forward them via RPC
+// Subscribe to global events and forward them via RPC. Structured cloning does
+// not run `toJSON`, so schema-backed payloads are encoded to their wire shape
+// before crossing the worker boundary.
 GlobalBus.on("event", (event) => {
-  Rpc.emit("global.event", event)
+  Rpc.emit("global.event", encodeEvent(event))
 })
 
 export const rpc = {
-  async fetch(input: RpcFetchRequest): Promise<RpcFetchResponse> {
+  async fetch(input: RpcFetchRequest, context?: RpcContext): Promise<RpcFetchResponse> {
+    const url = new URL(input.url)
+    // Cancellation is new in the bridge, so apply the signal only to requests
+    // that are safe to abort. State-changing POSTs keep running to completion.
+    const signal = context && isCancellableRequest(input.method, url.pathname) ? context.signal : undefined
     const request = new Request(input.url, {
       method: input.method,
       headers: input.headers,
       body: input.body,
+      signal,
     })
     const response = await Server.Default().app.fetch(request)
-    const body = await response.text()
     return {
       status: response.status,
-      headers: Object.fromEntries(response.headers.entries()),
-      body,
+      headers: [...response.headers.entries()],
+      body: new Uint8Array(await response.arrayBuffer()),
     }
   },
   async snapshot() {

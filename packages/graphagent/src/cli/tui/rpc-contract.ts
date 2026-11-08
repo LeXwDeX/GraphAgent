@@ -1,38 +1,31 @@
 import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { RpcContext, RpcError } from "@/util/rpc"
 
 /**
  * The typed contract between the TUI launcher and its worker.
  *
- * Keep this module free of runtime imports: both sides use it only for types,
- * so a drift between `Rpc.listen` and `Rpc.client` fails at typecheck instead
- * of at runtime as a `TypeError` on an unknown method.
+ * Keep this module free of runtime imports: both sides use it only for types
+ * and pure helpers, so a drift between `Rpc.listen` and `Rpc.client` fails at
+ * typecheck instead of at runtime as a `TypeError` on an unknown method.
  */
 
-export type RpcError = {
-  name: string
-  message: string
-  status?: number
-  data?: unknown
-  stack?: string
-}
+export type { RpcError } from "@/util/rpc"
 
-// PR1 keeps the existing string transport. Cancellation and Uint8Array bodies
-// change these fields together with the frame protocol.
 export type RpcFetchRequest = {
   url: string
   method: string
   headers: Record<string, string>
-  body?: string
+  body?: Uint8Array<ArrayBuffer>
 }
 
 export type RpcFetchResponse = {
   status: number
-  headers: Record<string, string>
-  body: string
+  headers: Array<[string, string]>
+  body: Uint8Array<ArrayBuffer>
 }
 
 export type WorkerMethods = {
-  fetch(input: RpcFetchRequest): Promise<RpcFetchResponse>
+  fetch(input: RpcFetchRequest, context?: RpcContext): Promise<RpcFetchResponse>
   snapshot(): Promise<string>
   reload(): Promise<void>
   shutdown(): Promise<void>
@@ -41,4 +34,18 @@ export type WorkerMethods = {
 export type WorkerEvents = {
   "global.event": GlobalEvent
   "worker.fatal": { message: string; stack?: string }
+}
+
+/**
+ * State-changing POSTs must not be cancelled on client disconnect: stopping a
+ * turn goes through `POST /session/:id/abort`. Only the whitelisted read-like
+ * POST may be aborted. GET/HEAD are always cancellable.
+ */
+export const CANCELLABLE_POSTS = [/^\/session\/[^/]+\/btw$/]
+
+export function isCancellableRequest(method: string, pathname: string): boolean {
+  const normalized = method.toUpperCase()
+  if (normalized === "GET" || normalized === "HEAD") return true
+  if (normalized !== "POST") return false
+  return CANCELLABLE_POSTS.some((pattern) => pattern.test(pathname))
 }

@@ -6,19 +6,21 @@ try {
     url: "http://opencode.example.com/session",
     method: "POST",
     headers: { "content-type": "application/json", "x-graphagent-directory": process.env.LIFECYCLE_DIRECTORY! },
-    body: "{}",
+    body: new TextEncoder().encode("{}"),
   })
   if (response.status !== 200) throw new Error(`session fixture status ${response.status}`)
   if (process.env.LIFECYCLE_MOVE === "1") {
     const directory = process.env.LIFECYCLE_DIRECTORY!
     const destination = directory + "/moved"
     await (await import("node:fs/promises")).mkdir(destination)
-    const session = JSON.parse(response.body)
+    const session = JSON.parse(new TextDecoder().decode(response.body))
     const moved = await client.call("fetch", {
       url: "http://opencode.example.com/experimental/control-plane/move-session",
       method: "POST",
       headers: { "content-type": "application/json", "x-graphagent-directory": directory },
-      body: JSON.stringify({ sessionID: session.id, destination: { directory: destination } }),
+      body: new TextEncoder().encode(
+        JSON.stringify({ sessionID: session.id, destination: { directory: destination } }),
+      ),
     })
     if (moved.status !== 204) throw new Error(`move fixture status ${moved.status}`)
   }
