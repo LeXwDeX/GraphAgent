@@ -10,6 +10,7 @@ import { WorkspaceV2 } from "../workspace"
 import { Timestamps } from "../database/schema.sql"
 import { AgentV2 } from "../agent"
 import type { Revert } from "@graphagent/schema/revert"
+import type { FileDiff } from "@graphagent/schema/file-diff"
 
 type V1MessageData = Omit<SessionV1.Info, "id" | "sessionID">
 type V1PartData = Omit<SessionV1.Part, "id" | "sessionID" | "messageID">
@@ -97,6 +98,23 @@ export const PartTable = sqliteTable(
     index("part_message_id_id_idx").on(table.message_id, table.id),
     index("part_session_idx").on(table.session_id),
   ],
+)
+
+// H5 (#1016): turn diffs are stored per user message instead of inside
+// `message.data`, so hydrating a message never parses a payload-sized diff.
+// Empty diffs leave no row, and the message cascade removes the row with its
+// owning message.
+export const MessageDiffTable = sqliteTable(
+  "message_diff",
+  {
+    message_id: text()
+      .$type<MessageID>()
+      .primaryKey()
+      .references(() => MessageTable.id, { onDelete: "cascade" }),
+    session_id: text().$type<SessionSchema.ID>().notNull(),
+    diff: text({ mode: "json" }).notNull().$type<FileDiff.Info[]>(),
+  },
+  (table) => [index("message_diff_session_idx").on(table.session_id)],
 )
 
 export const TodoTable = sqliteTable(

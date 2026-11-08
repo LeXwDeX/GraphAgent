@@ -119,7 +119,9 @@ const user = (input: { messageID: string; synthetic?: boolean; summary?: boolean
     time: { created: 0 },
     agent: "build",
     model: { providerID: "provider", modelID: "model" },
-    ...(input.summary ? { summary: { diffs: [] } } : {}),
+    // H5 (#1016): diffs alone no longer mark a synthetic turn, so the
+    // compaction fixture also carries a title/body summary.
+    ...(input.summary ? { summary: { title: "compacted", diffs: [] } } : {}),
   } as SessionV1.User,
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- fixtures only exercise role, summary and text parts
   parts: [

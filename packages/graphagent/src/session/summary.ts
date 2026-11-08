@@ -64,7 +64,11 @@ function unquoteGitPath(input: string) {
 }
 
 export interface Interface {
-  readonly summarize: (input: { sessionID: SessionID; messageID: MessageID }) => Effect.Effect<void>
+  readonly summarizeTurn: (input: {
+    sessionID: SessionID
+    userMessageIDs: ReadonlyArray<MessageID>
+  }) => Effect.Effect<void>
+  readonly read: (messageID: MessageID) => Effect.Effect<ReadonlyArray<Snapshot.FileDiff>>
   readonly diff: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Snapshot.FileDiff[]>
   readonly computeDiff: (input: { messages: SessionV1.WithParts[] }) => Effect.Effect<Snapshot.FileDiff[]>
 }
@@ -83,26 +87,25 @@ export const layer = Layer.effect(
       let from: string | undefined
       let to: string | undefined
       for (const item of input.messages) {
-        if (!from) {
-          for (const part of item.parts) {
-            if (part.type === "step-start" && part.snapshot) {
-              from = part.snapshot
-              break
-            }
+        for (const part of item.parts) {
+          if (part.type === "step-start" && part.snapshot) {
+            from ??= part.snapshot
+            to = part.snapshot
+          } else if (part.type === "step-finish" && part.snapshot) {
+            to = part.snapshot
           }
         }
-        for (const part of item.parts) {
-          if (part.type === "step-finish" && part.snapshot) to = part.snapshot
-        }
       }
-      if (from && to) return yield* snapshot.diffFull(from, to)
-      return []
+      if (!from || !to || from === to) return []
+      return yield* snapshot.diffFull(from, to)
     })
 
-    const summarize = Effect.fn("SessionSummary.summarize")(function* (input: {
+    const summarizeTurn = Effect.fn("SessionSummary.summarizeTurn")(function* (input: {
       sessionID: SessionID
-      messageID: MessageID
+      userMessageIDs: ReadonlyArray<MessageID>
     }) {
+      // One zero summary and one empty diff event per turn; the session-level
+      // aggregate is owned by the caller's data layer, not by this table.
       yield* sessions.setSummary({
         sessionID: input.sessionID,
         summary: {
@@ -113,26 +116,26 @@ export const layer = Layer.effect(
       })
       yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: [] })
       if ((yield* config.get()).snapshot === false) return
+      if (input.userMessageIDs.length === 0) return
       const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-      if (!all.length) return
 
-      const messages = all.filter(
-        (m) => m.info.id === input.messageID || (m.info.role === "assistant" && m.info.parentID === input.messageID),
-      )
-      const target = messages.find((m) => m.info.id === input.messageID)
-      if (!target || target.info.role !== "user") return
-      const msgDiffs = yield* computeDiff({ messages })
-      target.info.summary = { ...target.info.summary, diffs: truncateSummaryDiffs(msgDiffs) ?? [] }
-      yield* sessions.updateMessage(target.info)
+      for (const userMessageID of input.userMessageIDs) {
+        const messages = all.filter(
+          (m) => m.info.id === userMessageID || (m.info.role === "assistant" && m.info.parentID === userMessageID),
+        )
+        const target = messages.find((m) => m.info.id === userMessageID)
+        if (!target || target.info.role !== "user") continue
+        const diffs = truncateSummaryDiffs(yield* computeDiff({ messages })) ?? []
+        if (diffs.length === 0) {
+          yield* sessions.deleteMessageDiff(userMessageID)
+          continue
+        }
+        yield* sessions.writeMessageDiff({ sessionID: input.sessionID, messageID: userMessageID, diff: diffs })
+      }
     })
 
-    const diff = Effect.fn("SessionSummary.diff")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
-      if (!input.messageID) return []
-      const message = (yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)).find(
-        (item) => item.info.id === input.messageID,
-      )
-      if (!message || message.info.role !== "user") return []
-      const diffs = message.info.summary?.diffs ?? []
+    const read = Effect.fn("SessionSummary.read")(function* (messageID: MessageID) {
+      const diffs = yield* sessions.readMessageDiff(messageID)
       return diffs.map((item) => {
         if (item.file === undefined) return item
         const file = unquoteGitPath(item.file)
@@ -141,7 +144,12 @@ export const layer = Layer.effect(
       })
     })
 
-    return Service.of({ summarize, diff, computeDiff })
+    const diff = Effect.fn("SessionSummary.diff")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
+      if (!input.messageID) return []
+      return yield* read(input.messageID)
+    })
+
+    return Service.of({ summarizeTurn, read, diff, computeDiff })
   }),
 )
 

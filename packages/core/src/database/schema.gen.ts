@@ -284,6 +284,14 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`message_diff\` (
+          \`message_id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`diff\` text NOT NULL,
+          CONSTRAINT \`fk_message_diff_message_id_message_id_fk\` FOREIGN KEY (\`message_id\`) REFERENCES \`message\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`message\` (
           \`id\` text PRIMARY KEY,
           \`session_id\` text NOT NULL,
@@ -403,6 +411,7 @@ export default {
         `CREATE INDEX \`goal_outcome_session_completed_idx\` ON \`goal_outcome\` (\`session_id\`,\`completed_at\`);`,
       )
       yield* tx.run(`CREATE INDEX \`goal_state_updated_at_idx\` ON \`goal_state\` (\`updated_at\`);`)
+      yield* tx.run(`CREATE INDEX \`message_diff_session_idx\` ON \`message_diff\` (\`session_id\`);`)
       yield* tx.run(
         `CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`,\`time_created\`,\`id\`);`,
       )

@@ -255,7 +255,8 @@ describe("reconcileWorkflow — failed branch forwards the durable error identit
 const summary = Layer2.succeed(
   SessionSummary.Service,
   SessionSummary.Service.of({
-    summarize: () => Effect2.void,
+    summarizeTurn: () => Effect2.void,
+    read: () => Effect2.succeed([]),
     diff: () => Effect2.succeed([]),
     computeDiff: () => Effect2.succeed([]),
   }),

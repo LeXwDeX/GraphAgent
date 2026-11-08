@@ -175,7 +175,8 @@ it.live("tool execution produces non-empty session diff (snapshot race)", () =>
       expect(tool?.state.status).toBe("completed")
       if (!user) throw new Error("Expected user message")
 
-      // Poll for the turn diff — summarize() is fire-and-forget.
+      // prompt.loop awaits turn-end summarizeTurn before returning, so the diff
+      // row is already written; keep the bounded poll as a safety net.
       let diff: Array<{ file?: string }> = []
       for (let i = 0; i < 50; i++) {
         diff = yield* summary.diff({ sessionID: session.id, messageID: user.info.id })

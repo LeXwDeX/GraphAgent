@@ -3,7 +3,6 @@ import { Effect, Layer, Context, Schema } from "effect"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Snapshot } from "../snapshot"
-import { Storage } from "@/storage/storage"
 import { Session } from "./session"
 import { MessageV2 } from "./message-v2"
 import { SessionID, MessageID, PartID } from "./schema"
@@ -30,7 +29,6 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sessions = yield* Session.Service
     const snap = yield* Snapshot.Service
-    const storage = yield* Storage.Service
     const events = yield* EventV2Bridge.Service
     const summary = yield* SessionSummary.Service
     const state = yield* SessionRunState.Service
@@ -74,7 +72,6 @@ export const layer = Layer.effect(
       const revMessage = all.find((msg) => msg.info.id === rev.messageID)
       const range = revMessage ? all.filter((msg) => !MessageV2.before(msg.info, revMessage.info)) : []
       const diffs = yield* summary.computeDiff({ messages: range })
-      yield* storage.write(["session_diff", input.sessionID], diffs).pipe(Effect.ignore)
       yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: diffs })
       yield* sessions.setRevert({
         sessionID: input.sessionID,
@@ -146,7 +143,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(SessionRunState.defaultLayer),
     Layer.provide(Session.defaultLayer),
     Layer.provide(Snapshot.defaultLayer),
-    Layer.provide(Storage.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
     Layer.provide(SessionSummary.defaultLayer),
   ),
@@ -155,7 +151,6 @@ export const defaultLayer = Layer.suspend(() =>
 export const node = LayerNode.make(layer, [
   Session.node,
   Snapshot.node,
-  Storage.node,
   EventV2Bridge.node,
   SessionSummary.node,
   SessionRunState.node,
