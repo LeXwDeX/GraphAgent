@@ -10,6 +10,7 @@ export const InvalidTool = Tool.define(
   "invalid",
   Effect.succeed({
     description: "Do not use",
+    effects: "read",
     parameters: Parameters,
     execute: (params: { tool: string; error: string }) =>
       Effect.succeed({

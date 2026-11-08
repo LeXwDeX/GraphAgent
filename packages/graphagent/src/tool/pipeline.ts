@@ -1,5 +1,5 @@
 import type { JSONSchema7 } from "@ai-sdk/provider"
-import { type Tool as AITool, asSchema, jsonSchema, tool, type ToolExecutionOptions } from "ai"
+import { type Tool as AITool, jsonSchema, tool, type ToolExecutionOptions } from "ai"
 import { Cause, Effect, Exit, type Schema } from "effect"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { SessionV1 } from "@graphagent/core/v1/session"
@@ -19,20 +19,21 @@ import type { Provider } from "@/provider/provider"
 import type { SessionProcessor } from "@/session/processor"
 import { PartID } from "@/session/schema"
 import type { Session } from "@/session/session"
-import type { MCP } from "@/mcp"
+import { MCP } from "@/mcp"
 import type { Truncate } from "@/tool/truncate"
-import type { Registration as ToolSourceRegistration, ToolSourceLedger } from "@/session/tool-source-ledger"
+import type { ToolSourceLedger } from "@/session/tool-source-ledger"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MemorySearch } from "@/tool/memory-search"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import type { Tool } from "@/tool/tool"
+import type { ToolEntry } from "./registry"
 import { isRecord } from "@/util/record"
 
-export const MCP_RESOURCE_TOOLS = {
-  list: "list_mcp_resources",
-  listTemplates: "list_mcp_resource_templates",
-  read: "read_mcp_resource",
-} as const
+export type { ToolEntry }
+
+export { MCP_RESOURCE_TOOLS, MCP_RESOURCE_ORDER, type McpResourceOp } from "./mcp-resource"
+import type { McpResourceOp } from "./mcp-resource"
+
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
@@ -60,6 +61,7 @@ const PERMISSION_RESTART_TOOLS = new Set([
   "workflow",
 ])
 const ROOT_ONLY_TOOLS = new Set([MemorySearch.MemorySearchTool.id, TaskTool.id, "workflow", "goal", "watch_pr"])
+export { ROOT_ONLY_TOOLS }
 
 export const hookAddsInstructions = (result: TriggerResult) =>
   (result.additionalContexts?.length ?? 0) > 0 ||
@@ -111,9 +113,13 @@ export type DirectTool = Omit<Tool.Def, "execute"> & {
 export type ToolSelection =
   { directTool: DirectTool; model?: Provider.Model } | { directTool?: undefined; model: Provider.Model }
 
-export type ResolveInput = ToolSelection & {
+export type WrapInput = ToolSelection & {
   agent: Agent.Info
   session: Session.Info
+  /** Per-message tool switches from the latest user message. */
+  user?: Pick<SessionV1.User, "tools">
+  /** Session rules; defaults to `session.permission`. */
+  permission?: PermissionV1.Ruleset
   processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
@@ -135,14 +141,8 @@ export type RawContextFn = (
 
 export type ContextFn = (...args: Parameters<RawContextFn>) => Tool.Context
 
-export type RegistryItem = Readonly<{
-  definition: Tool.Def | DirectTool
-  sourceKind: ToolSourceRegistration["sourceKind"]
-  registrationID: string
-}>
-
 export interface Deps {
-  input: ResolveInput
+  input: WrapInput
   run: EffectBridge.Shape
   permission: Permission.Interface
   hooks: SettingsHook.Interface | undefined
@@ -150,22 +150,35 @@ export interface Deps {
   questionHookAnswers: WeakMap<ToolExecutionOptions, ReadonlyArray<ReadonlyArray<string>>>
   hookContext: (toolName?: string) => Effect.Effect<Omit<SettingsHook.TriggerContext, "sessionID">>
   reportInterrupt: (toolName: string, args: unknown, toolUseID: string) => Effect.Effect<void>
-  transformSchema: (schema: JSONSchema7) => JSONSchema7
-  recordSettlement: (toolName: string, callID: string, source: ToolSourceRegistration) => Effect.Effect<void>
+  recordSettlement: (entry: ToolEntry, callID: string) => Effect.Effect<void>
   recordInput: (callID: string, args: Record<string, unknown>) => Effect.Effect<void>
   rawContext: RawContextFn
   context: ContextFn
   configuredPermission: PermissionV1.Ruleset
-  registryItems: ReadonlyArray<RegistryItem>
-  mcp: MCP.Interface
+  /** Resolved entries; each source kind is executed by exactly one helper below. */
+  entries: ReadonlyArray<ToolEntry>
   truncate: Truncate.Interface
-  hasMcpResourceServer: boolean
-  mcpItems: Record<string, AITool>
-  mcpRequiresInteraction: Map<string, { server: string; tool: string }>
   resourceHookState: WeakMap<
     ToolExecutionOptions,
     { confirmed: boolean; allowed: boolean; name: string; original: Record<string, unknown> }
   >
+}
+
+export type BuiltinEntry = Extract<ToolEntry, { source: { kind: "builtin" } }>
+export type DirectShellEntry = Extract<ToolEntry, { source: { kind: "direct-shell" } }>
+export type McpEntry = Extract<ToolEntry, { source: { kind: "mcp" } }>
+export type McpResourceEntry = Extract<ToolEntry, { source: { kind: "mcp-resource" } }>
+
+export function isBuiltinEntry(entry: ToolEntry): entry is BuiltinEntry {
+  return entry.source.kind === "builtin"
+}
+
+export function isDirectShellEntry(entry: ToolEntry): entry is DirectShellEntry {
+  return entry.source.kind === "direct-shell"
+}
+
+export function isMcpEntry(entry: ToolEntry): entry is McpEntry {
+  return entry.source.kind === "mcp"
 }
 
 export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
@@ -184,25 +197,17 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
     recordSettlement,
     reportInterrupt,
     hookContext,
-    transformSchema,
-    configuredPermission,
-    agentService,
-    registryItems,
+    entries,
   } = deps
 
-  for (const registration of registryItems) {
-    const item = registration.definition
-    if (input.session.parentID && ROOT_ONLY_TOOLS.has(item.id)) continue
-    if (item.id === MemorySearch.MemorySearchTool.id) {
-      const nativePermission = agentService ? (yield* agentService.permissionPolicy(input.agent.name)).native : []
-      if (Permission.disabledByPolicy([item.id], nativePermission, configuredPermission).has(item.id)) continue
-    }
+  for (const entry of entries) {
+    if (!isBuiltinEntry(entry) && !isDirectShellEntry(entry)) continue
+    const item = entry.definition
     const toolSchema = item.jsonSchema ?? ToolJsonSchema.fromSchema(item.parameters as Schema.Top)
-    const schema = transformSchema(toolSchema)
     const validateInput = toolInputValidator(toolSchema)
-    tools[item.id] = tool({
-      description: item.description,
-      inputSchema: jsonSchema(schema),
+    tools[entry.id] = tool({
+      description: entry.description,
+      inputSchema: jsonSchema(entry.jsonSchema),
       execute(args, options) {
         const settingsHook = withHookCancellation(hooks, options.abortSignal)
         // PreToolUse context also rides on a failure of the call it governed.
@@ -348,19 +353,19 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   ctx = context(next, options, hookConfirmed, next, item.id, hookAllowed)
                   return recordInput(options.toolCallId, next).pipe(
                     Effect.andThen(
-                      Effect.suspend(() => {
-                        return input.directTool
-                          ? input.directTool.execute(
+                      Effect.suspend((): Effect.Effect<Tool.ExecuteResult, unknown> =>
+                        isDirectShellEntry(entry)
+                          ? entry.definition.execute(
                               next,
                               rawContext(next, options, hookConfirmed, next, item.id, hookAllowed),
                             )
-                          : item.execute(next, ctx)
-                      }),
+                          : entry.definition.execute(next, ctx),
+                      ),
                     ),
                   )
                 },
                 {
-                  canRestart: registration.sourceKind === "host-builtin" && PERMISSION_RESTART_TOOLS.has(item.id),
+                  canRestart: entry.source.kind === "builtin" && PERMISSION_RESTART_TOOLS.has(item.id),
                   validate: (next) => {
                     validateInput(next)
                   },
@@ -449,7 +454,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                 ...(isRecord(output.metadata) ? output.metadata : {}),
                 contextFoldingInstructions: dynamicInstructions ? "dynamic" : "none",
               }
-              yield* recordSettlement(item.id, options.toolCallId, registration)
+              yield* recordSettlement(entry, options.toolCallId)
               if (options.abortSignal?.aborted) {
                 yield* input.processor.completeToolCall(options.toolCallId, output)
               }
@@ -612,31 +617,25 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
     permission,
     context,
     truncate,
-    mcp,
     recordSettlement,
     reportInterrupt,
     hookContext,
-    transformSchema,
     resourceHookState,
-    hasMcpResourceServer,
+    entries,
   } = deps
+  const mcp = yield* MCP.Service
 
-  if (hasMcpResourceServer) {
-    tools[MCP_RESOURCE_TOOLS.list] = tool({
-      description:
-        "Lists resources provided by connected MCP servers. Resources provide context such as files, database schemas, or application-specific information.",
-      inputSchema: jsonSchema(
-        transformSchema({
-          type: "object",
-          properties: {
-            server: {
-              type: "string",
-              description: "Optional MCP server name. When omitted, lists resources from every connected server.",
-            },
-          },
-          additionalProperties: false,
-        }),
-      ),
+  const resourceEntries = entries.filter(
+    (entry): entry is Extract<ToolEntry, { source: { kind: "mcp-resource" } }> => entry.source.kind === "mcp-resource",
+  )
+  const resourceEntry = (op: McpResourceOp) =>
+    resourceEntries.find((entry) => entry.source.kind === "mcp-resource" && entry.source.op === op)
+
+  const listEntry = resourceEntry("list")
+  if (listEntry) {
+    tools[listEntry.id] = tool({
+      description: listEntry.description,
+      inputSchema: jsonSchema(listEntry.jsonSchema),
       execute(args, opts) {
         return run.promise(
           Effect.gen(function* () {
@@ -685,10 +684,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
               },
               output: truncated.content,
             }
-            yield* recordSettlement(MCP_RESOURCE_TOOLS.list, opts.toolCallId, {
-              sourceKind: "mcp",
-              registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.list}`,
-            })
+            yield* recordSettlement(listEntry, opts.toolCallId)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -697,23 +693,13 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
         )
       },
     })
+  }
 
-    tools[MCP_RESOURCE_TOOLS.listTemplates] = tool({
-      description:
-        "Lists resource templates provided by connected MCP servers. Resource templates are parameterized resources that can be read after filling in their URI template.",
-      inputSchema: jsonSchema(
-        transformSchema({
-          type: "object",
-          properties: {
-            server: {
-              type: "string",
-              description:
-                "Optional MCP server name. When omitted, lists resource templates from every connected server.",
-            },
-          },
-          additionalProperties: false,
-        }),
-      ),
+  const listTemplatesEntry = resourceEntry("listTemplates")
+  if (listTemplatesEntry) {
+    tools[listTemplatesEntry.id] = tool({
+      description: listTemplatesEntry.description,
+      inputSchema: jsonSchema(listTemplatesEntry.jsonSchema),
       execute(args, opts) {
         return run.promise(
           Effect.gen(function* () {
@@ -762,10 +748,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
               },
               output: truncated.content,
             }
-            yield* recordSettlement(MCP_RESOURCE_TOOLS.listTemplates, opts.toolCallId, {
-              sourceKind: "mcp",
-              registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.listTemplates}`,
-            })
+            yield* recordSettlement(listTemplatesEntry, opts.toolCallId)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -774,27 +757,13 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
         )
       },
     })
+  }
 
-    tools[MCP_RESOURCE_TOOLS.read] = tool({
-      description:
-        "Read a specific resource from an MCP server using the server name and resource URI. The URI is an MCP identifier and does not need to be a file URL.",
-      inputSchema: jsonSchema(
-        transformSchema({
-          type: "object",
-          properties: {
-            server: {
-              type: "string",
-              description: "MCP server name exactly as returned by list_mcp_resources.",
-            },
-            uri: {
-              type: "string",
-              description: "Resource URI to read. Use the exact URI string returned by list_mcp_resources.",
-            },
-          },
-          required: ["server", "uri"],
-          additionalProperties: false,
-        }),
-      ),
+  const readEntry = resourceEntry("read")
+  if (readEntry) {
+    tools[readEntry.id] = tool({
+      description: readEntry.description,
+      inputSchema: jsonSchema(readEntry.jsonSchema),
       execute(args, opts) {
         return run.promise(
           Effect.gen(function* () {
@@ -838,10 +807,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
                 messageID: input.processor.message.id,
               })),
             }
-            yield* recordSettlement(MCP_RESOURCE_TOOLS.read, opts.toolCallId, {
-              sourceKind: "mcp",
-              registrationID: `mcp-resource:${MCP_RESOURCE_TOOLS.read}`,
-            })
+            yield* recordSettlement(readEntry, opts.toolCallId)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -854,12 +820,12 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
 
   // Resource helpers are OpenCode-owned tools too: the same settings hooks
   // must govern them, not only server-provided MCP callTool definitions.
-  for (const name of Object.values(MCP_RESOURCE_TOOLS)) {
+  for (const entry of resourceEntries) {
+    const name = entry.id
     const item = tools[name]
     const execute = item?.execute
     if (!item || !execute) continue
-    const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-    const validateInput = toolInputValidator(schema)
+    const validateInput = toolInputValidator(entry.jsonSchema)
     item.execute = (original, options) => {
       let failureContexts: string[] = []
       let executionPending = false
@@ -1062,29 +1028,18 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
   deps: Deps,
   tools: Record<string, AITool>,
 ) {
-  const {
-    input,
-    run,
-    hooks,
-    permission,
-    context,
-    truncate,
-    recordSettlement,
-    reportInterrupt,
-    hookContext,
-    transformSchema,
-    mcpItems,
-    mcpRequiresInteraction,
-  } = deps
+  const { input, run, hooks, permission, context, truncate, recordSettlement, reportInterrupt, hookContext, entries } =
+    deps
 
-  for (const [key, item] of Object.entries(mcpItems)) {
+  for (const entry of entries) {
+    if (!isMcpEntry(entry)) continue
+    const key = entry.id
+    const item = entry.tool
     const execute = item.execute
     if (!execute) continue
 
-    const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
-    const validateInput = toolInputValidator(schema)
-    const transformed = transformSchema({ ...schema, properties: schema.properties ?? {} })
-    item.inputSchema = jsonSchema(transformed)
+    const validateInput = toolInputValidator(entry.jsonSchema)
+    item.inputSchema = jsonSchema(entry.jsonSchema)
     item.execute = (args, opts) => {
       const settingsHook = withHookCancellation(hooks, opts.abortSignal)
       let preContexts: string[] = []
@@ -1199,7 +1154,9 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
               toRecord(args),
               (next) => {
                 ctx = context(next, opts, hookConfirmed, next, key, hookAllowed)
-                const interaction = mcpRequiresInteraction.get(key)
+                const interaction = entry.source.requiresUserInteraction
+                  ? { server: entry.source.server, tool: entry.source.tool }
+                  : undefined
                 return ctx.ask(
                   interaction
                     ? {
@@ -1326,10 +1283,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
             if (postResult.preventContinuation)
               output.metadata = { ...output.metadata, ...hookStopMetadata(postResult) }
           }
-          yield* recordSettlement(key, opts.toolCallId, {
-            sourceKind: "mcp",
-            registrationID: `mcp:${key}`,
-          })
+          yield* recordSettlement(entry, opts.toolCallId)
           if (opts.abortSignal?.aborted) {
             yield* input.processor.completeToolCall(opts.toolCallId, output)
           }

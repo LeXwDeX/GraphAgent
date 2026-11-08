@@ -678,7 +678,10 @@ export const ShellTool = Tool.define(
             // The process can exit before the reader drains stdout. Join it so
             // the final lines reach the truncation buffer; a child that keeps
             // the pipe open is bounded by the timeout.
-            yield* Fiber.join(readerFiber).pipe(Effect.catchCause(() => Effect.void), Effect.timeoutOption("5 seconds"))
+            yield* Fiber.join(readerFiber).pipe(
+              Effect.catchCause(() => Effect.void),
+              Effect.timeoutOption("5 seconds"),
+            )
           } else {
             // A killed shell can leave a child holding stdout open (for example a
             // sleeping pipeline), so joining the reader may outlive session
@@ -773,6 +776,7 @@ export const ShellTool = Tool.define(
 
         return {
           description: prompt.description,
+          effects: "unknown",
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {

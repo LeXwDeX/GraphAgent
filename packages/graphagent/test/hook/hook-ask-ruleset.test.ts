@@ -8,6 +8,7 @@ import { SettingsHook } from "@/hook/settings"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { ToolRegistry } from "@/tool/registry"
+import type { Interface as ToolRegistryInterface } from "@/tool/registry"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -16,6 +17,7 @@ import type { Tool } from "@/tool/tool"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
+import { builtinEntry, mcpEntries } from "../fixture/tool-registry"
 import { jsonSchema, tool } from "ai"
 
 // A PreToolUse `permissionDecision:"ask"` must always surface a dialog, even when
@@ -61,11 +63,15 @@ const it = testEffect(
     Layer.mock(Truncate.Service, {}),
     Layer.mock(ToolRegistry.Service, {
       tools: () => Effect.succeed([editDefinition, bashDefinition]),
-      registrations: () =>
-        Effect.succeed([
-          { definition: editDefinition, sourceKind: "host-builtin", registrationID: "test:edit" },
-          { definition: bashDefinition, sourceKind: "host-builtin", registrationID: "test:bash" },
-        ]),
+      resolve: (() =>
+        Effect.gen(function* () {
+          const mcp = yield* MCP.Service
+          return [
+            builtinEntry(editDefinition, "test:edit"),
+            builtinEntry(bashDefinition, "test:bash"),
+            ...mcpEntries(yield* mcp.tools()),
+          ]
+        })) as unknown as ToolRegistryInterface["resolve"],
     }),
   ),
 )

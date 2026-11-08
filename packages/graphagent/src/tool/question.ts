@@ -19,6 +19,7 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
 
     return {
       description: QuestionGuidance.description,
+      effects: "read",
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {

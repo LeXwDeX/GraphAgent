@@ -529,6 +529,7 @@ export const ReadTool = Tool.define<
 
     return {
       description: DESCRIPTION,
+      effects: "read",
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         run(params, ctx).pipe(Effect.orDie),

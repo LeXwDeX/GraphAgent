@@ -45,6 +45,7 @@ export const GrepTool = Tool.define(
     const trunc = yield* Truncate.Service
     return {
       description: DESCRIPTION,
+      effects: "read",
       parameters: Parameters,
       execute: (
         params: { pattern: string; path?: string; include?: string; limit?: number; context?: number },
@@ -224,9 +225,9 @@ export const GrepTool = Tool.define(
               (more
                 ? "The scan stopped at the match cap. "
                 : byBytes
-                  ? (omitted > 0
-                      ? `${omitted} ${omitted === 1 ? "match" : "matches"} omitted by the output byte budget. `
-                      : "Context lines were omitted by the output byte budget. ")
+                  ? omitted > 0
+                    ? `${omitted} ${omitted === 1 ? "match" : "matches"} omitted by the output byte budget. `
+                    : "Context lines were omitted by the output byte budget. "
                   : `${omitted} ${omitted === 1 ? "match" : "matches"} omitted. `) +
               `Full output: ${full}]`,
           )

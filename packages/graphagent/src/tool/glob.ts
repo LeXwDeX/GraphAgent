@@ -32,6 +32,7 @@ export const GlobTool = Tool.define(
     const ripgrep = yield* Ripgrep.Service
     return {
       description: DESCRIPTION,
+      effects: "read",
       parameters: Parameters,
       execute: (params: { pattern: string; path?: string; limit?: number }, ctx: Tool.Context) =>
         Effect.gen(function* () {

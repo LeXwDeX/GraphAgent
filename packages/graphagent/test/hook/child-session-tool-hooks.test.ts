@@ -10,6 +10,7 @@ import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "@/session/schema"
 import { TestInstance } from "../fixture/fixture"
+import { builtinEntry } from "../fixture/tool-registry"
 import { testEffect } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
 
@@ -53,8 +54,7 @@ const it = testEffect(
     Layer.mock(Truncate.Service, {}),
     Layer.mock(ToolRegistry.Service, {
       tools: () => Effect.succeed([writeDefinition]),
-      registrations: () =>
-        Effect.succeed([{ definition: writeDefinition, sourceKind: "host-builtin", registrationID: "test:write" }]),
+      resolve: () => Effect.succeed([builtinEntry(writeDefinition)]),
     }),
   ),
 )

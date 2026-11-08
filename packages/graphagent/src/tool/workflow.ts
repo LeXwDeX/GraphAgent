@@ -420,6 +420,7 @@ export const WorkflowTool = Tool.define<
 
     return {
       description: CommandPlugin.WorkflowContent,
+      effects: "unknown",
       parameters: Parameters,
       parseOptions: { onExcessProperty: "error" },
       repairContainerFields: ["params"],

@@ -41,6 +41,7 @@ export const LspTool = Tool.define(
     const fs = yield* FSUtil.Service
     return {
       description: DESCRIPTION,
+      effects: "read",
       parameters: Parameters,
       execute: (args: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
