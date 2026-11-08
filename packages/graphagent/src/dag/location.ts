@@ -58,8 +58,8 @@ export const stampDirectory = (): Effect.Effect<string> =>
 
 /**
  * #949: the shared node-location view for status, observe, and HTTP node
- * payloads. Only populated fields are emitted; legacy rows and pre-#949
- * clients see the same shape as before.
+ * payloads. Only populated fields are emitted, so a node that recorded no
+ * location (non-git target, non-isolated run) keeps the same short shape.
  */
 export function nodeLocationView(node: {
   directory?: string | null
@@ -207,9 +207,9 @@ export const fingerprintTarget = (directory: string): DagEvent.TargetFingerprint
 }
 
 /**
- * #944: a missing fingerprint cannot prove a mismatch (legacy rows), and two
- * `none` markers are the same stable non-git target. Any git/none transition
- * is a mismatch: the result was judged against a different kind of tree.
+ * #944: a missing fingerprint cannot prove a mismatch, and two `none` markers
+ * are the same stable non-git target. Any git/none transition is a mismatch:
+ * the result was judged against a different kind of tree.
  */
 export const sameFingerprint = (
   a: DagEvent.TargetFingerprint | null | undefined,
@@ -313,21 +313,17 @@ export const resolveWorkspace = (workspace: string, ownerDirectory: string): Wor
 /**
  * The durable execution-location verdict shared by adoption, recovery, spawn,
  * and the host-level sweep. `directory` is the bound workspace when present
- * (#943) and the owner directory otherwise, so legacy rows keep their
- * DAG-LOC-01 behavior. `unstamped` covers both NULL (pre-DAG-LOC-01 rows) and
- * an empty stamp; `missing` covers a stamp that no longer names a directory.
- * An EXPLICIT bound workspace is additionally checked for identity on every
- * use: same git project, listed by `git worktree list`, and still resolving to
- * its persisted realpath. A legacy owner fallback keeps the existence-only
- * check, because non-git owner directories are valid.
+ * (#943) and the owner directory otherwise. `missing` covers a directory that
+ * no longer exists; `invalid` covers an empty stamp or a bound workspace that
+ * fails its identity check. An EXPLICIT bound workspace is checked for identity
+ * on every use: same git project, listed by `git worktree list`, and still
+ * resolving to its persisted realpath. The owner fallback keeps the
+ * existence-only check, because non-git owner directories are valid.
  */
 export type ExecutionLocation =
   | { readonly _tag: "ok"; readonly directory: string }
   | { readonly _tag: "missing"; readonly directory: string }
   | { readonly _tag: "invalid"; readonly directory: string; readonly reason: string }
-  | { readonly _tag: "unstamped" }
-
-const UNSTAMPED: ExecutionLocation = { _tag: "unstamped" }
 
 const invalidExecution = (directory: string, reason: string): ExecutionLocation => ({
   _tag: "invalid",
@@ -337,16 +333,19 @@ const invalidExecution = (directory: string, reason: string): ExecutionLocation 
 
 /** Resolve whether a workflow's execution directory can still be used. */
 export const resolveExecution = (row: {
-  readonly directory: string | null
+  readonly directory: string
   readonly executionDirectory?: string | null
 }): ExecutionLocation => {
-  // A string (including "") is an explicit binding; null/absent means the
-  // legacy owner fallback. The two must not share the strict identity check:
-  // a non-git owner directory is a valid legacy execution location.
+  // An explicit binding is a string (including ""); null/absent means the
+  // owner fallback. The two must not share the strict identity check: a
+  // non-git owner directory is a valid execution location.
   const explicit = typeof row.executionDirectory === "string"
   const target = explicit ? row.executionDirectory : row.directory
-  if (typeof target !== "string" || target === "")
-    return explicit ? invalidExecution(target ?? "", "execution directory is empty") : UNSTAMPED
+  if (target === "")
+    return invalidExecution(
+      target,
+      explicit ? "execution directory is empty" : "workflow has no recorded execution directory",
+    )
   try {
     if (!statSync(target).isDirectory()) return { _tag: "missing", directory: target }
   } catch {
@@ -360,7 +359,7 @@ export const resolveExecution = (row: {
       `execution directory resolves to "${canonical}" instead of the bound realpath "${target}"`,
     )
   }
-  if (!row.directory) {
+  if (row.directory === "") {
     return invalidExecution(target, "workflow has no owner directory to validate the workspace against")
   }
   const resolved = resolveWorkspace(target, row.directory)
@@ -374,8 +373,6 @@ export const resolveExecution = (row: {
  * terminalizes an unusable execution location reports the same reason.
  */
 export const executionFailureReason = (location: Exclude<ExecutionLocation, { _tag: "ok" }>): string => {
-  if (location._tag === "unstamped")
-    return "workspace_unstamped: workflow has no recorded execution directory (created before DAG-LOC-01); terminalized. Recreate the workflow to run it again."
   if (location._tag === "invalid")
     return `workspace_invalid: ${location.reason}. Restore the original linked worktree for "${location.directory}" (git worktree add <path> <branch>) or start a new workflow.`
   return `workspace_missing: execution directory "${location.directory}" no longer exists or is not a directory. Restore it (for a linked worktree: git worktree add <path> <branch>) or start a new workflow.`
@@ -403,7 +400,7 @@ export const ownsWorkflow = (workflowID: string, directory: string): Effect.Effe
       .pipe(Effect.orDie)
     if (!row) return false
     if (row.project_id !== instance.project.id) return false
-    if (row.directory === null || row.directory === "") return false
+    if (row.directory === "") return false
     return canonicalDirectory(row.directory) === canonicalDirectory(directory)
   })
 
@@ -411,17 +408,17 @@ export const ownsWorkflow = (workflowID: string, directory: string): Effect.Effe
  * Owns the session's EXECUTION wake iff every durable non-terminal workflow row
  * still belongs to the ambient instance (same project id + directory conjunct
  * as ownsWorkflow). Terminal rows are ignored here: they have no execution to
- * own, and a legacy NULL-terminal row must not permanently suppress wake
- * delivery for a later valid workflow in the same session (#948). Delivery of
- * a terminal-only batch is gated separately by the caller on the parent
+ * own, so a terminal row must not permanently suppress wake delivery for a
+ * later valid workflow in the same session (#948). Delivery of a
+ * terminal-only batch is gated separately by the caller on the parent
  * session's directory, so ignoring terminal rows never widens execution
  * ownership. Vacuous-true when the session has no live workflow rows: there is
- * no execution data to deliver and goal-only sessions predate workflow
- * stamping. Also vacuous-true when the Database service is absent from the
- * runtime graph (synthetic goal tests; every production graph carries it) —
- * ownership cannot be disproven there and the gate must not silently disable
- * pre-existing loops. The workflow-row key keeps execution ownership free of
- * session-table reads (R7).
+ * no execution data to deliver and goal-only sessions have no workflow rows.
+ * Also vacuous-true when the Database service is absent from the runtime graph
+ * (synthetic goal tests; every production graph carries it) — ownership cannot
+ * be disproven there and the gate must not silently disable pre-existing
+ * loops. The workflow-row key keeps execution ownership free of session-table
+ * reads (R7).
  */
 export const ownsSession = (sessionID: string, directory: string): Effect.Effect<boolean> =>
   Effect.gen(function* () {
@@ -440,7 +437,7 @@ export const ownsSession = (sessionID: string, directory: string): Effect.Effect
       if (isTerminalWorkflowStatusValue(row.status)) continue
       if (row.project_id !== instance.project.id) {
         owned = false
-      } else if (row.directory === null || row.directory === "") {
+      } else if (row.directory === "") {
         owned = false
       } else if (canonicalDirectory(row.directory) !== canonicalDirectory(directory)) {
         owned = false

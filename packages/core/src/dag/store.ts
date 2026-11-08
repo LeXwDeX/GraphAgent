@@ -21,11 +21,11 @@ export interface WorkflowRow {
   projectId: string
   sessionId: string
   /** Execution-location key (DAG-LOC-01): the creating instance's directory. */
-  directory: string | null
+  directory: string
   /** #943: bound workspace where children run; NULL/absent means the owner directory. */
   executionDirectory?: string | null
   /** #944: working-tree identity captured at workflow start. */
-  targetFingerprint?: DagEvent.TargetFingerprint | null
+  targetFingerprint: DagEvent.TargetFingerprint
   title: string
   status: string
   config: string

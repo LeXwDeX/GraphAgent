@@ -144,8 +144,8 @@ export const WorkflowCreated = Event.define({
     status: WorkflowStatus,
     // Execution-location key (DAG-LOC-01): the creating instance's directory,
     // stamped at create. Optional so legacy durable events and manual
-    // publishers still decode; absent directories project to NULL and match
-    // no instance (a foreign row, never adopted).
+    // publishers still decode; the projector maps an absent directory to the
+    // empty string, which no instance owns (fail-closed, never adopted).
     directory: Schema.optional(Schema.String),
     /** #943: the bound workspace (absolute realpath) where child sessions run.
      * Optional so legacy durable events still decode; absent means the owner
@@ -153,8 +153,8 @@ export const WorkflowCreated = Event.define({
      * key used by adoption, recovery and wake. */
     executionDirectory: Schema.optional(Schema.String),
     /** #944: the target fingerprint captured when the workflow started.
-     * Optional so legacy durable events still decode; absent means the field
-     * predates target fingerprinting. */
+     * Optional so legacy durable events still decode; an absent value projects
+     * to the explicit `{ kind: "none" }` marker (non-git). */
     targetFingerprint: Schema.optional(TargetFingerprint),
   },
 })

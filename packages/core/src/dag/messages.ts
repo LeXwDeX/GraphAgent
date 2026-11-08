@@ -148,7 +148,7 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 
 type DB = Database.Interface["db"]
 type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0]
-type Workflow = { id: string; project_id: string; session_id: string; directory: string | null; execution_directory: string | null; status: string }
+type Workflow = { id: string; project_id: string; session_id: string; directory: string; execution_directory: string | null; status: string }
 type Node = {
   id: string
   workflow_id: string
