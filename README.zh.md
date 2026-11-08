@@ -238,7 +238,7 @@ config:
 | `prompt_template`  | 通过 `id` 引用模板（先项目、后全局的 `dag-prompts/`）或 `inline` 内联，支持 `{{var}}` 插值 |
 | `input_mapping`    | 把上游节点输出映射为模板变量（`"count": "node-b.output.count"`）                           |
 | `condition`        | 基于上游输出的表达式；为假则跳过节点，纯依赖它的下游级联跳过                               |
-| `output_schema`    | JSON Schema；子智能体必须调用 `submit_result` 提交匹配的结构化结果                         |
+| `output_schema`    | JSON Schema；子智能体的最终回复必须是匹配该 schema 的一个 JSON 值                         |
 | `required`         | 必需节点失败会使整个工作流失败                                                             |
 | `report_to_parent` | 节点到达终态时唤醒父智能体                                                                 |
 | `review`           | `design` 或 `diff` 审查阶段，带实现指纹契约（见下）                                        |
@@ -267,7 +267,7 @@ config:
 
 ### 节点输出
 
-节点的最终回复可以是纯文本、结构化结果（`output_schema` + `submit_result`），或者一个文件。回复是一个存在的非空文件的绝对路径时，运行时捕获 `{content_ref, size, sha256, summary}`；`workflow(action="result")` 返回指针和短摘要，父智能体自己去读文件。长报告不再挤进转录，完整性由捕获时记录的哈希保证。写到 `.opencode/workflow-reports/` 下的报告文件，首次写入时自动补一条追加式的 `.gitignore` 条目。
+节点的最终回复可以是纯文本、结构化结果（最终回复是匹配 `output_schema` 的一个 JSON 值），或者一个文件。回复是一个存在的非空文件的绝对路径时，运行时捕获 `{content_ref, size, sha256, summary}`；`workflow(action="result")` 返回指针和短摘要，父智能体自己去读文件。长报告不再挤进转录，完整性由捕获时记录的哈希保证。写到 `.opencode/workflow-reports/` 下的报告文件，首次写入时自动补一条追加式的 `.gitignore` 条目。
 
 ### deep 模式：准入与审查
 

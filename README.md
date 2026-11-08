@@ -321,7 +321,7 @@ Each node declares:
 | `prompt_template`  | Prompt by `id` (from project, then global `dag-prompts/`) or `inline`, with `{{var}}` interpolation |
 | `input_mapping`    | Map upstream node outputs into template variables (`"count": "node-b.output.count"`)                |
 | `condition`        | Expression over upstream outputs; false → node skipped, pure descendants cascade-skip               |
-| `output_schema`    | JSON Schema; the child agent must call `submit_result` with a matching structured payload           |
+| `output_schema`    | JSON Schema; the child agent's final answer must be exactly one JSON value matching it              |
 | `required`         | Failure of a required node fails the workflow                                                       |
 | `report_to_parent` | Wake the parent agent when this node reaches a terminal state                                       |
 | `review`           | `design` or `diff` review phase with an implementation-fingerprint contract (below)                 |
@@ -350,7 +350,7 @@ Two things this fixes. A workflow whose failed segment was rewritten now reports
 
 ### Node outputs
 
-A node's final reply can be plain text, a structured payload (`output_schema` + `submit_result`), or a file. For a node without an output schema, a final reply containing one absolute path to a non-empty file (up to 64 MiB) commits a managed copy under application data. Its receipt records the digest, size, short summary and execution provenance. Downstream nodes receive a path and read the body as needed; deleting the source working tree does not delete the managed result. Result reads, downstream execution and local recovery verify managed object integrity before reuse. Legacy receipts remain compatible. See [file artifacts and recovery](docs/dag-file-artifacts-and-recovery.md) for the tool calls and limits.
+A node's final reply can be plain text, a structured payload (one final JSON value matching `output_schema`), or a file. For a node without an output schema, a final reply containing one absolute path to a non-empty file (up to 64 MiB) commits a managed copy under application data. Its receipt records the digest, size, short summary and execution provenance. Downstream nodes receive a path and read the body as needed; deleting the source working tree does not delete the managed result. Result reads, downstream execution and local recovery verify managed object integrity before reuse. Legacy receipts remain compatible. See [file artifacts and recovery](docs/dag-file-artifacts-and-recovery.md) for the tool calls and limits.
 
 ### Deep mode: admission & review
 
