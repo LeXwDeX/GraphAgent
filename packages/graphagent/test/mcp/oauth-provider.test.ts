@@ -14,28 +14,28 @@ describe("McpOAuthProvider.redirectUrl", () => {
     expect(provider.redirectUrl).toBe(`http://127.0.0.1:${OAUTH_CALLBACK_PORT}${OAUTH_CALLBACK_PATH}`)
   })
 
-  test("uses callbackPort when set", () => {
-    const provider = makeProvider({ callbackPort: 6620 })
+  test("uses callback_port when set", () => {
+    const provider = makeProvider({ callback_port: 6620 })
     expect(provider.redirectUrl).toBe(`http://127.0.0.1:6620${OAUTH_CALLBACK_PATH}`)
   })
 
-  test("redirectUri takes precedence over callbackPort", () => {
+  test("redirect_uri takes precedence over callback_port", () => {
     const provider = makeProvider({
-      callbackPort: 6620,
-      redirectUri: "http://127.0.0.1:9999/custom/callback",
+      callback_port: 6620,
+      redirect_uri: "http://127.0.0.1:9999/custom/callback",
     })
     expect(provider.redirectUrl).toBe("http://127.0.0.1:9999/custom/callback")
   })
 
-  test("uses explicit redirectUri when set without callbackPort", () => {
-    const provider = makeProvider({ redirectUri: "http://127.0.0.1:8080/oauth/callback" })
+  test("uses explicit redirect_uri when set without callback_port", () => {
+    const provider = makeProvider({ redirect_uri: "http://127.0.0.1:8080/oauth/callback" })
     expect(provider.redirectUrl).toBe("http://127.0.0.1:8080/oauth/callback")
   })
 })
 
 describe("McpOAuthProvider.clientMetadata", () => {
   test("includes redirect_uris from redirectUrl", () => {
-    const provider = makeProvider({ callbackPort: 6620 })
+    const provider = makeProvider({ callback_port: 6620 })
     expect(provider.clientMetadata.redirect_uris).toEqual([`http://127.0.0.1:6620${OAUTH_CALLBACK_PATH}`])
   })
 
@@ -49,12 +49,12 @@ describe("McpOAuthProvider.clientMetadata", () => {
     expect(provider.clientMetadata.scope).toBeUndefined()
   })
 
-  test("sets token_endpoint_auth_method to client_secret_post when clientSecret provided", () => {
-    const provider = makeProvider({ clientSecret: "secret" })
+  test("sets token_endpoint_auth_method to client_secret_post when client_secret provided", () => {
+    const provider = makeProvider({ client_secret: "secret" })
     expect(provider.clientMetadata.token_endpoint_auth_method).toBe("client_secret_post")
   })
 
-  test("sets token_endpoint_auth_method to none when no clientSecret", () => {
+  test("sets token_endpoint_auth_method to none when no client_secret", () => {
     const provider = makeProvider({})
     expect(provider.clientMetadata.token_endpoint_auth_method).toBe("none")
   })

@@ -166,7 +166,7 @@ export type RunHandle = {
   readonly result: Effect.Effect<RunResult>
 }
 
-export type SpawnOpts = { readonly timeoutMs?: number; readonly env?: Record<string, string> }
+export type SpawnOpts = { readonly timeoutMs?: number; readonly env?: Record<string, string>; readonly cwd?: string }
 
 // Typed equivalent of constructing argv for `opencode run`. New flags should
 // land here so tests stay grep-able and refactor-safe.
@@ -319,7 +319,7 @@ export function withCliFixture<A, E>(
       yield* Effect.promise(() => verifyCliTarget(target))
       const invocation = cliCommand(target, args)
       const command = ChildProcess.make(invocation.executable, invocation.args, {
-        cwd: home,
+        cwd: opts?.cwd ?? home,
         env: { ...env, ...opts?.env },
         extendEnv: true,
         stdin: "ignore",

@@ -68,13 +68,11 @@ describe("mcp HttpApi", () => {
         expect(yield* json(response)).toEqual({ demo: { status: "disabled" } })
       }),
     {
-      config: {
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
+      mcp: {
+        demo: {
+          type: "local",
+          command: ["echo", "demo"],
+          disabled: true,
         },
       },
     },
@@ -94,7 +92,7 @@ describe("mcp HttpApi", () => {
             config: {
               type: "local",
               command: ["echo", "added"],
-              enabled: false,
+              disabled: true,
             },
           }),
         })
@@ -114,13 +112,11 @@ describe("mcp HttpApi", () => {
         expect(yield* json(disconnected)).toBe(true)
       }),
     {
-      config: {
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
+      mcp: {
+        demo: {
+          type: "local",
+          command: ["echo", "demo"],
+          disabled: true,
         },
       },
     },
@@ -143,13 +139,11 @@ describe("mcp HttpApi", () => {
         expect(yield* json(removed)).toEqual({ success: true })
       }),
     {
-      config: {
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
+      mcp: {
+        demo: {
+          type: "local",
+          command: ["echo", "demo"],
+          disabled: true,
         },
       },
     },
@@ -178,12 +172,12 @@ describe("mcp HttpApi", () => {
       config: {
         formatter: false,
         lsp: false,
-        mcp: {
-          demo: {
-            type: "local",
-            command: ["echo", "demo"],
-            enabled: false,
-          },
+      },
+      mcp: {
+        demo: {
+          type: "local",
+          command: ["echo", "demo"],
+          disabled: true,
         },
       },
     },
@@ -218,6 +212,6 @@ describe("mcp HttpApi", () => {
           })
         }
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 })

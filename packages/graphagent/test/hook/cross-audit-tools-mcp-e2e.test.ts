@@ -47,8 +47,13 @@ cliIt.live(
         await fs.writeFile(
           path.join(home, ".config/graphagent/graphagent.json"),
           JSON.stringify({
-            mcp: { fixture: { type: "local", command: [process.execPath, serverScript], enabled: true } },
             permission: { "*": "ask" },
+          }),
+        )
+        await fs.writeFile(
+          path.join(home, ".config/graphagent/mcp.json"),
+          JSON.stringify({
+            mcpServers: { fixture: { type: "local", command: [process.execPath, serverScript] } },
           }),
         )
       })

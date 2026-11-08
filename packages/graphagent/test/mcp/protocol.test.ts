@@ -1,7 +1,7 @@
 import { describe, expect, mock, test, beforeEach } from "bun:test"
-import { Effect, Schema } from "effect"
-import { ConfigMCPV1 } from "@graphagent/core/v1/config/mcp"
+import { Effect } from "effect"
 import { testEffect } from "../lib/effect"
+import { McpConfig } from "../../src/mcp/config"
 
 // Captures the options passed to each Client constructor
 const clientOptions: Array<{ capabilities?: unknown; versionNegotiation?: { mode?: unknown } }> = []
@@ -53,149 +53,131 @@ beforeEach(() => {
   clientOptions.length = 0
 })
 
+// ConfigInvalidError carries its user-facing text in `data.message`; its
+// Error.message is just the tag name.
+function decodeError(fn: () => unknown): string {
+  try {
+    fn()
+  } catch (error) {
+    const message = (error as { data?: { message?: string } }).data?.message
+    return message ?? (error instanceof Error ? error.message : String(error))
+  }
+  throw new Error("expected decodeDocument to throw")
+}
+
 // Import MCP after mocking
 const { MCP } = await import("../../src/mcp/index")
 const it = testEffect(MCP.defaultLayer)
 
-describe("mcp.protocol config parsing", () => {
-  test("accepts auto, legacy, and modern on local and remote entries", () => {
-    for (const protocol of ["auto", "legacy", "modern"] as const) {
-      const local = Schema.decodeUnknownSync(ConfigMCPV1.Info)({
-        type: "local",
-        command: ["echo", "test"],
-        protocol,
-      })
-      expect(local.protocol).toBe(protocol)
+describe("mcp.json decoding", () => {
+  test("accepts entries under mcpServers with split timeouts and disabled", () => {
+    const servers = McpConfig.decodeDocument(
+      JSON.stringify({
+        mcpServers: {
+          local: { type: "local", command: ["echo", "test"], disabled: true, timeout: { startup: 1000 } },
+          remote: {
+            type: "remote",
+            url: "https://example.com/mcp",
+            oauth: { client_id: "id", client_secret: "secret", callback_port: 19876 },
+            timeout: { request: 2000 },
+          },
+        },
+      }),
+      "mcp.json",
+    )
+    expect(servers.local).toMatchObject({ type: "local", disabled: true, timeout: { startup: 1000 } })
+    expect(servers.remote).toMatchObject({ type: "remote", timeout: { request: 2000 } })
+  })
 
-      const remote = Schema.decodeUnknownSync(ConfigMCPV1.Info)({
-        type: "remote",
-        url: "https://example.com/mcp",
-        protocol,
-      })
-      expect(remote.protocol).toBe(protocol)
+  test("rejects the removed protocol field instead of negotiating it", () => {
+    for (const type of ["local", "remote"] as const) {
+      expect(
+        decodeError(() =>
+          McpConfig.decodeDocument(
+            JSON.stringify({
+              mcpServers: {
+                server:
+                  type === "local"
+                    ? { type, command: ["echo", "test"], protocol: "legacy" }
+                    : { type, url: "https://example.com/mcp", protocol: "modern" },
+              },
+            }),
+            "mcp.json",
+          ),
+        ),
+      ).toMatch(/protocol negotiation is automatic/)
     }
   })
 
-  test("protocol is optional and stays undefined when absent (auto is applied at client construction)", () => {
-    const local = Schema.decodeUnknownSync(ConfigMCPV1.Info)({ type: "local", command: ["echo", "test"] })
-    expect(local.protocol).toBeUndefined()
-
-    const remote = Schema.decodeUnknownSync(ConfigMCPV1.Info)({ type: "remote", url: "https://example.com/mcp" })
-    expect(remote.protocol).toBeUndefined()
+  test("rejects the removed enabled field and points at disabled", () => {
+    expect(
+      decodeError(() =>
+        McpConfig.decodeDocument(
+          JSON.stringify({ mcpServers: { server: { type: "local", command: ["echo", "test"], enabled: false } } }),
+          "mcp.json",
+        ),
+      ),
+    ).toMatch(/use "disabled": true/)
   })
 
-  test("rejects unrecognized protocol values", () => {
-    expect(() =>
-      Schema.decodeUnknownSync(ConfigMCPV1.Info)({ type: "local", command: ["echo", "test"], protocol: "2025" }),
-    ).toThrow()
-    expect(() =>
-      Schema.decodeUnknownSync(ConfigMCPV1.Info)({
-        type: "remote",
-        url: "https://example.com/mcp",
-        protocol: "auto-modern",
-      }),
-    ).toThrow()
+  test("rejects the V1 top-level shape and extra top-level keys", () => {
+    expect(
+      decodeError(() =>
+        McpConfig.decodeDocument(
+          JSON.stringify({ server: { type: "local", command: ["echo", "test"] } }),
+          "mcp.json",
+        ),
+      ),
+    ).toMatch(/removed V1 shape/)
+    expect(
+      decodeError(() => McpConfig.decodeDocument(JSON.stringify({ mcpServers: {}, servers: {} }), "mcp.json")),
+    ).toMatch(/only accepts "mcpServers"/)
   })
 })
 
-describe("mcp.versionNegotiation mapping", () => {
+describe("mcp.versionNegotiation", () => {
   it.instance(
-    "undefined protocol negotiates auto (probe with fallback)",
+    "remote entries always negotiate automatically",
     () =>
       Effect.gen(function* () {
         const mcp = yield* MCP.Service
-        yield* mcp.add("auto-default", { type: "remote", url: "https://example.com/mcp" }).pipe(
+        yield* mcp.add("auto-remote", { type: "remote", url: "https://example.com/mcp" }).pipe(
           Effect.catch(() => Effect.void),
         )
 
         expect(clientOptions.length).toBe(1)
         expect(clientOptions[0].versionNegotiation).toEqual({ mode: "auto" })
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 
   it.instance(
-    "protocol auto negotiates auto",
+    "local entries use the same automatic negotiation",
     () =>
       Effect.gen(function* () {
         const mcp = yield* MCP.Service
-        yield* mcp.add("auto-explicit", {
-          type: "remote",
-          url: "https://example.com/mcp",
-          protocol: "auto",
-        }).pipe(Effect.catch(() => Effect.void))
+        yield* mcp.add("auto-local", { type: "local", command: ["echo", "test"] }).pipe(
+          Effect.catch(() => Effect.void),
+        )
 
         expect(clientOptions.length).toBe(1)
         expect(clientOptions[0].versionNegotiation).toEqual({ mode: "auto" })
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 
   it.instance(
-    "protocol legacy skips the probe and runs the 2025 initialize handshake",
+    "client capabilities stay elicitation + roots",
     () =>
       Effect.gen(function* () {
         const mcp = yield* MCP.Service
-        yield* mcp.add("legacy-server", {
-          type: "remote",
-          url: "https://example.com/mcp",
-          protocol: "legacy",
-        }).pipe(Effect.catch(() => Effect.void))
-
-        expect(clientOptions.length).toBe(1)
-        expect(clientOptions[0].versionNegotiation).toEqual({ mode: "legacy" })
-      }),
-    { config: { mcp: {} } },
-  )
-
-  it.instance(
-    "protocol modern pins 2026-07-28 with no fallback",
-    () =>
-      Effect.gen(function* () {
-        const mcp = yield* MCP.Service
-        yield* mcp.add("modern-server", {
-          type: "remote",
-          url: "https://example.com/mcp",
-          protocol: "modern",
-        }).pipe(Effect.catch(() => Effect.void))
-
-        expect(clientOptions.length).toBe(1)
-        expect(clientOptions[0].versionNegotiation).toEqual({ mode: { pin: "2026-07-28" } })
-      }),
-    { config: { mcp: {} } },
-  )
-
-  it.instance(
-    "local entries map protocol the same way",
-    () =>
-      Effect.gen(function* () {
-        const mcp = yield* MCP.Service
-        yield* mcp.add("modern-local", {
-          type: "local",
-          command: ["echo", "test"],
-          protocol: "modern",
-        }).pipe(Effect.catch(() => Effect.void))
-
-        expect(clientOptions.length).toBe(1)
-        expect(clientOptions[0].versionNegotiation).toEqual({ mode: { pin: "2026-07-28" } })
-      }),
-    { config: { mcp: {} } },
-  )
-
-  it.instance(
-    "client capabilities stay elicitation + roots regardless of protocol",
-    () =>
-      Effect.gen(function* () {
-        const mcp = yield* MCP.Service
-        yield* mcp.add("caps-server", {
-          type: "remote",
-          url: "https://example.com/mcp",
-          protocol: "legacy",
-        }).pipe(Effect.catch(() => Effect.void))
+        yield* mcp.add("caps-server", { type: "remote", url: "https://example.com/mcp" }).pipe(
+          Effect.catch(() => Effect.void),
+        )
 
         expect(clientOptions.length).toBe(1)
         expect(clientOptions[0].capabilities).toEqual({ elicitation: {}, roots: {} })
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 })

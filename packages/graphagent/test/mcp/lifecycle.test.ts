@@ -292,7 +292,7 @@ it.instance(
         expect(result).toEqual({ roots: [{ uri: pathToFileURL(directory).href }] })
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -306,7 +306,7 @@ it.instance(
         expect(stdioOptsByName.get("rel-cwd")?.cwd).toBe(path.resolve(directory, "plugins/sub"))
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -340,7 +340,7 @@ it.instance(
         expect(serverState.listToolsCalls).toBe(1)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -364,7 +364,7 @@ it.instance(
         })
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -394,7 +394,7 @@ it.instance(
         expect(instructions.some((item) => item.name === "blank-server")).toBe(false)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -445,7 +445,7 @@ it.instance(
         expect(serverState.listResourceTemplatesCalls).toBe(2)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -469,7 +469,7 @@ it.instance(
         expect(yield* mcp.tools()).toEqual({})
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -496,7 +496,7 @@ it.instance(
         expect(serverState.listPromptsCalls).toBe(2)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -534,7 +534,7 @@ it.instance(
         expect(serverState.listToolsCalls).toBe(2)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -568,14 +568,12 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "disc-server": {
           type: "local",
           command: ["echo", "test"],
         },
       },
-    },
   },
 )
 
@@ -606,14 +604,12 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "reconn-server": {
           type: "local",
           command: ["echo", "test"],
         },
       },
-    },
   },
 )
 
@@ -652,7 +648,7 @@ it.instance(
         expect(secondState.closed).toBe(false)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -696,8 +692,7 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "good-server": {
           type: "local",
           command: ["echo", "good"],
@@ -707,7 +702,6 @@ it.instance(
           command: ["echo", "bad"],
         },
       },
-    },
   },
 )
 
@@ -733,7 +727,7 @@ it.instance(
         expect(serverState.closed).toBe(true)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -767,7 +761,7 @@ it.instance(
         expect(serverState.requestCalls).toBe(1)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -790,7 +784,7 @@ it.instance(
         expect(serverState.requestCalls).toBe(0)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -807,8 +801,8 @@ it.instance(
         yield* mcp.add("disabled-server", {
           type: "local",
           command: ["echo", "test"],
-          enabled: false,
-        } as any)
+          disabled: true,
+        })
 
         // No client should have been created
         expect(clientCreateCount).toBe(countBefore)
@@ -818,13 +812,11 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
-        "disabled-server": {
-          type: "local",
-          command: ["echo", "test"],
-          enabled: false,
-        },
+    mcp: {
+      "disabled-server": {
+        type: "local",
+        command: ["echo", "test"],
+        disabled: true,
       },
     },
   },
@@ -856,14 +848,12 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "prompt-server": {
           type: "local",
           command: ["echo", "test"],
         },
       },
-    },
   },
 )
 
@@ -892,14 +882,12 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "resource-server": {
           type: "local",
           command: ["echo", "test"],
         },
       },
-    },
   },
 )
 
@@ -914,7 +902,7 @@ it.instance(
         yield* mcp.add("timeout-server", {
           type: "local",
           command: ["echo", "test"],
-          timeout: 2500,
+          timeout: { request: 2500 },
         })
         yield* mcp.getPrompt("timeout-server", "test")
         yield* mcp.readResource("timeout-server", "test://resource")
@@ -923,7 +911,7 @@ it.instance(
         expect(serverState.readResourceTimeout).toBe(2500)
       }),
     ),
-  { config: { mcp: {}, experimental: { mcp_timeout: 5000 } } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -949,7 +937,7 @@ it.instance(
         expect(serverState.listPromptsCalls).toBe(0)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -975,7 +963,7 @@ it.instance(
         expect(serverState.listResourcesCalls).toBe(0)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -1001,7 +989,7 @@ it.instance(
         expect(serverState.listResourcesCalls).toBe(0)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 it.instance(
@@ -1025,14 +1013,12 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "prompt-disc-server": {
           type: "local",
           command: ["echo", "test"],
         },
       },
-    },
   },
 )
 
@@ -1054,7 +1040,7 @@ it.instance(
         expect(status["nonexistent"]).toBeUndefined()
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -1073,7 +1059,7 @@ it.instance(
         }
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -1089,7 +1075,7 @@ it.instance(
         expect(Object.keys(tools).length).toBe(0)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -1123,14 +1109,12 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "fail-connect": {
           type: "local",
           command: ["echo", "test"],
         },
       },
-    },
   },
 )
 
@@ -1194,14 +1178,12 @@ it.instance(
       }),
     ),
   {
-    config: {
-      mcp: {
+    mcp: {
         "my.special-server": {
           type: "local",
           command: ["echo", "test"],
         },
       },
-    },
   },
 )
 
@@ -1221,7 +1203,7 @@ it.instance(
         const addResult = yield* mcp.add("hanging-server", {
           type: "local",
           command: ["node", "fake.js"],
-          timeout: 100,
+          timeout: { startup: 100 },
         })
 
         const serverStatus = (addResult.status as any)["hanging-server"] ?? addResult.status
@@ -1231,7 +1213,7 @@ it.instance(
         expect(transportCloseCount).toBeGreaterThanOrEqual(1)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -1250,7 +1232,7 @@ it.instance(
         const addResult = yield* mcp.add("hanging-remote", {
           type: "remote",
           url: "http://localhost:9999/mcp",
-          timeout: 100,
+          timeout: { startup: 100 },
           oauth: false,
         })
 
@@ -1260,7 +1242,7 @@ it.instance(
         expect(transportCloseCount).toBeGreaterThanOrEqual(1)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )
 
 // ========================================================================
@@ -1280,7 +1262,7 @@ it.instance(
         const addResult = yield* mcp.add("fail-remote", {
           type: "remote",
           url: "http://localhost:9999/mcp",
-          timeout: 5000,
+          timeout: { startup: 5000 },
           oauth: false,
         })
 
@@ -1290,5 +1272,5 @@ it.instance(
         expect(transportCloseCount).toBeGreaterThanOrEqual(1)
       }),
     ),
-  { config: { mcp: {} } },
+  { mcp: {} },
 )

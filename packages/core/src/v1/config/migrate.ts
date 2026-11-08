@@ -2,7 +2,6 @@ export * as ConfigMigrateV1 from "./migrate"
 
 import { ConfigV1 } from "./config"
 import { ConfigAgentV1 } from "./agent"
-import { ConfigMCPV1 } from "./mcp"
 import { ConfigPermissionV1 } from "./permission"
 import { ConfigProviderV1 } from "./provider"
 import { ConfigProviderOptionsV1 } from "./provider-options"
@@ -50,7 +49,6 @@ export function migrate(info: typeof ConfigV1.Info.Type, source?: unknown) {
     lsp: info.lsp,
     attachments: info.attachment,
     tool_output: info.tool_output,
-    mcp: mcp(info),
     compaction: info.compaction && {
       auto: info.compaction.auto,
       dynamic: info.compaction.dynamic,
@@ -144,44 +142,6 @@ export function migrateAgent(info: ConfigAgentV1.Info) {
     steps: info.steps,
     disabled: info.disable,
     permissions: permissions(info.permission),
-  }
-}
-
-function mcp(info: typeof ConfigV1.Info.Type) {
-  const servers = Object.fromEntries(
-    Object.entries(info.mcp ?? {}).flatMap(([name, server]) =>
-      "type" in server ? [[name, migrateMcp(server)] as const] : [],
-    ),
-  )
-  const timeout = info.experimental?.mcp_timeout
-  if (!timeout && !Object.keys(servers).length) return undefined
-  return { timeout: timeout === undefined ? undefined : { request: timeout }, servers }
-}
-
-function migrateMcp(info: ConfigMCPV1.Info) {
-  const disabled = info.enabled === undefined ? undefined : !info.enabled
-  if (info.type === "local")
-    return {
-      type: info.type,
-      command: info.command,
-      cwd: info.cwd,
-      environment: info.environment,
-      disabled,
-      timeout: info.timeout === undefined ? undefined : { request: info.timeout },
-    }
-  return {
-    type: info.type,
-    url: info.url,
-    headers: info.headers,
-    oauth: info.oauth && {
-      client_id: info.oauth.clientId,
-      client_secret: info.oauth.clientSecret,
-      scope: info.oauth.scope,
-      callback_port: info.oauth.callbackPort,
-      redirect_uri: info.oauth.redirectUri,
-    },
-    disabled,
-    timeout: info.timeout === undefined ? undefined : { request: info.timeout },
   }
 }
 

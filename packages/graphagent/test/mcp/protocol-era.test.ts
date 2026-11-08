@@ -90,7 +90,7 @@ describe("mcp connected status era population", () => {
           protocolVersion: "2026-07-28",
         })
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 
   it.instance(
@@ -107,7 +107,7 @@ describe("mcp connected status era population", () => {
           protocolVersion: "2025-06-18",
         })
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 
   it.instance(
@@ -119,7 +119,7 @@ describe("mcp connected status era population", () => {
         const statuses = yield* mcp.status()
         expect(statuses["era-unreported"]).toEqual({ status: "connected" })
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 
   it.instance(
@@ -133,6 +133,6 @@ describe("mcp connected status era population", () => {
         expect(statuses["era-status"]?.status).toBe("connected")
         expect(statuses["era-status"]).toMatchObject({ era: "modern", protocolVersion: "2026-07-28" })
       }),
-    { config: { mcp: {} } },
+    { mcp: {} },
   )
 })

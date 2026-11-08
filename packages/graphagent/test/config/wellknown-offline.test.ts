@@ -117,7 +117,7 @@ const remoteOk = (seen: { wellKnown?: string; remote?: string }) =>
       seen.remote = request.url
       return Effect.succeed(
         json(request, {
-          config: { mcp: { confluence: { type: "remote", url: "https://confluence.example.com/mcp", enabled: true } } },
+          config: { username: "remote-wellknown" },
         }),
       )
     }
@@ -492,7 +492,7 @@ unreachableIt.instance(
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(config.model).toBe("local/model")
-      expect(config.mcp?.jira?.enabled).toBe(true)
+      expect(config.username).toBe("local-user")
       const logs = JSON.stringify(yield* logLines)
       expect(logs).toContain("failed to fetch remote config")
       expect(logs).toContain(RemoteLkg.digest(`${missingWellKnownOrigin}/.well-known/graphagent`))
@@ -502,7 +502,7 @@ unreachableIt.instance(
   {
     config: {
       model: "local/model",
-      mcp: { jira: { type: "remote", url: "https://jira.example.com/mcp", enabled: true } },
+      username: "local-user",
     },
   },
 )
@@ -536,7 +536,7 @@ remoteOkIt.instance("success path unchanged: remote config merges, no degradatio
     const config = yield* Config.use.get()
     expect(remoteOkSeen.wellKnown).toBe("https://example.com/.well-known/graphagent")
     expect(remoteOkSeen.remote).toBe("https://config.example.com/graphagent.json")
-    expect(config.mcp?.confluence?.enabled).toBe(true)
+    expect(config.username).toBe("remote-wellknown")
     expect(JSON.stringify(yield* logLines)).not.toContain("failed to fetch remote config")
   }),
 )
@@ -561,7 +561,7 @@ bodyReadFailsIt.instance(
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(config.model).toBe("local/model")
-      expect(config.mcp?.jira?.enabled).toBe(true)
+      expect(config.username).toBe("local-user")
       const logs = JSON.stringify(yield* logLines)
       expect(logs).toContain("failed to read remote config")
       expect(logs).toContain(RemoteLkg.digest(`${bodyReadMissingOrigin}/.well-known/graphagent`))
@@ -571,7 +571,7 @@ bodyReadFailsIt.instance(
   {
     config: {
       model: "local/model",
-      mcp: { jira: { type: "remote", url: "https://jira.example.com/mcp", enabled: true } },
+      username: "local-user",
     },
   },
 )

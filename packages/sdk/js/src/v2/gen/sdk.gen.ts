@@ -28,6 +28,8 @@ import type {
   Config as Config3,
   ConfigGetErrors,
   ConfigGetResponses,
+  ConfigMcpLocal,
+  ConfigMcpRemote,
   ConfigProvidersErrors,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
@@ -117,8 +119,6 @@ import type {
   McpConnectResponses,
   McpDisconnectErrors,
   McpDisconnectResponses,
-  McpLocalConfig,
-  McpRemoteConfig,
   McpStatusErrors,
   McpStatusResponses,
   MoveSessionDestination,
@@ -1971,7 +1971,7 @@ export class Mcp extends HeyApiClient {
       directory?: string
       workspace?: string
       name: string
-      config: McpLocalConfig | McpRemoteConfig
+      config: ConfigMcpLocal | ConfigMcpRemote
     },
     options?: Options<never, ThrowOnError>,
   ): RequestResult<McpAddResponses, McpAddErrors, ThrowOnError> {

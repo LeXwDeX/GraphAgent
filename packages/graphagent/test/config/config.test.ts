@@ -616,6 +616,34 @@ it.instance("rejects MCP servers in project settings", () =>
   }),
 )
 
+it.instance("rejects the removed mcp key in configuration", () =>
+  withProcessEnv(
+    "GRAPHAGENT_CONFIG_CONTENT",
+    JSON.stringify({ mcp: { docs: { type: "remote", url: "https://docs.example.com/mcp" } } }),
+    Effect.gen(function* () {
+      const exit = yield* Config.use.get().pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+      const message = error as { message?: string; data?: { message?: string } } | undefined
+      expect(String(message?.data?.message ?? message?.message ?? error)).toContain("mcp.json")
+    }),
+  ),
+)
+
+it.instance("rejects the removed experimental.mcp_timeout setting", () =>
+  withProcessEnv(
+    "GRAPHAGENT_CONFIG_CONTENT",
+    JSON.stringify({ experimental: { mcp_timeout: 5000 } }),
+    Effect.gen(function* () {
+      const exit = yield* Config.use.get().pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+      const message = error as { message?: string; data?: { message?: string } } | undefined
+      expect(String(message?.data?.message ?? message?.message ?? error)).toContain("experimental.mcp_timeout")
+    }),
+  ),
+)
+
 it.instance("handles agent configuration", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
@@ -1290,125 +1318,8 @@ test("config parser preserves permission order while ignoring unknown top-level 
   expect(config).not.toHaveProperty("plugins")
 })
 
-// MCP config merging tests
-
-it.instance("local project settings can override MCP server enabled status", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    // Simulates a base config (like from remote .well-known) with disabled MCP.
-    yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        jira: {
-          type: "remote",
-          url: "https://jira.example.com/mcp",
-          enabled: false,
-        },
-        wiki: {
-          type: "remote",
-          url: "https://wiki.example.com/mcp",
-          enabled: false,
-        },
-      },
-    })
-    // Local settings enable just jira.
-    yield* writeProjectLocalConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        jira: {
-          type: "remote",
-          url: "https://jira.example.com/mcp",
-          enabled: true,
-        },
-      },
-    })
-
-    const config = yield* Config.use.get()
-    expect(config.mcp?.jira).toEqual({
-      type: "remote",
-      url: "https://jira.example.com/mcp",
-      enabled: true,
-    })
-    expect(config.mcp?.wiki).toEqual({
-      type: "remote",
-      url: "https://wiki.example.com/mcp",
-      enabled: false,
-    })
-  }),
-)
-
-it.instance("MCP config deep merges preserving base config properties", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        myserver: {
-          type: "remote",
-          url: "https://myserver.example.com/mcp",
-          enabled: false,
-          headers: {
-            "X-Custom-Header": "value",
-          },
-        },
-      },
-    })
-    yield* writeProjectLocalConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        myserver: {
-          type: "remote",
-          url: "https://myserver.example.com/mcp",
-          enabled: true,
-        },
-      },
-    })
-
-    const config = yield* Config.use.get()
-    expect(config.mcp?.myserver).toEqual({
-      type: "remote",
-      url: "https://myserver.example.com/mcp",
-      enabled: true,
-      headers: {
-        "X-Custom-Header": "value",
-      },
-    })
-  }),
-)
-
-it.instance("local .agents config can override MCP from project config", () =>
-  Effect.gen(function* () {
-    const test = yield* TestInstance
-    yield* writeProjectConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        docs: {
-          type: "remote",
-          url: "https://docs.example.com/mcp",
-          enabled: false,
-        },
-      },
-    })
-    yield* writeProjectLocalConfigEffect(test.directory, {
-      $schema: "https://opencode.ai/config.json",
-      mcp: {
-        docs: {
-          type: "remote",
-          url: "https://docs.example.com/mcp",
-          enabled: true,
-        },
-      },
-    })
-
-    const config = yield* Config.use.get()
-    expect(config.mcp?.docs?.enabled).toBe(true)
-  }),
-)
-
 const remoteProjectOverride = wellKnown({
-  config: {
-    mcp: { jira: { type: "remote", url: "https://jira.example.com/mcp", enabled: false } },
-  },
+  config: { username: "remote-well-known" },
 })
 
 remoteProjectOverride.it.instance(
@@ -1417,19 +1328,17 @@ remoteProjectOverride.it.instance(
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(remoteProjectOverride.seen.wellKnown).toBe("https://example.com/.well-known/graphagent")
-      expect(config.mcp?.jira?.enabled).toBe(true)
+      expect(config.username).toBe("local-project")
     }),
   {
     git: true,
-    config: { mcp: { jira: { type: "remote", url: "https://jira.example.com/mcp", enabled: true } } },
+    config: { username: "local-project" },
   },
 )
 
 const trailingSlashWellKnown = wellKnown({
   authUrl: "https://example.com/",
-  config: {
-    mcp: { slack: { type: "remote", url: "https://slack.example.com/mcp", enabled: true } },
-  },
+  config: { username: "trailing-slash" },
 })
 
 trailingSlashWellKnown.it.instance("wellknown URL with trailing slash is normalized", () =>
@@ -1447,9 +1356,7 @@ test("remote well-known config can use FetchHttpClient layer", async () => {
       fetchedUrl = request.url
       return new Response(
         JSON.stringify({
-          config: {
-            mcp: { jira: { type: "remote", url: "https://jira.example.com/mcp", enabled: true } },
-          },
+          config: { username: "remote-well-known" },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       )
@@ -1463,7 +1370,7 @@ test("remote well-known config can use FetchHttpClient layer", async () => {
           Effect.gen(function* () {
             const config = yield* svc.get()
             expect(fetchedUrl).toBe(`${server.url.origin}/.well-known/graphagent`)
-            expect(config.mcp?.jira?.enabled).toBe(true)
+            expect(config.username).toBe("remote-well-known")
           }),
         ),
       { git: true },
@@ -1496,7 +1403,7 @@ const templatedHeaderWellKnown = wellKnown({
     headers: { Authorization: "Bearer {env:TEST_TOKEN}" },
   },
   remote: {
-    mcp: { confluence: { type: "remote", url: "https://confluence.example.com/mcp", enabled: true } },
+    config: { username: "remote-config" },
   },
 })
 
@@ -1506,17 +1413,15 @@ templatedHeaderWellKnown.it.instance("wellknown remote_config supports templated
     expect(templatedHeaderWellKnown.seen.wellKnown).toBe("https://example.com/.well-known/graphagent")
     expect(templatedHeaderWellKnown.seen.remote).toBe("https://config.example.com/graphagent.json")
     expect(templatedHeaderWellKnown.seen.authorization).toBe("Bearer test-token")
-    expect(config.mcp?.confluence?.enabled).toBe(true)
+    expect(config.username).toBe("remote-config")
   }),
 )
 
 const remotePrecedenceWellKnown = wellKnown({
-  config: {
-    mcp: { confluence: { type: "remote", url: "https://confluence.example.com/mcp", enabled: false } },
-  },
+  config: { username: "embedded" },
   remoteConfig: { url: "https://config.example.com/{env:TEST_TOKEN}/graphagent.json" },
   remote: {
-    config: { mcp: { confluence: { type: "remote", url: "https://confluence.example.com/mcp", enabled: true } } },
+    config: { username: "remote-precedence" },
   },
 })
 
@@ -1526,7 +1431,7 @@ remotePrecedenceWellKnown.it.instance(
     Effect.gen(function* () {
       const config = yield* Config.use.get()
       expect(remotePrecedenceWellKnown.seen.remote).toBe("https://config.example.com/test-token/graphagent.json")
-      expect(config.mcp?.confluence?.enabled).toBe(true)
+      expect(config.username).toBe("remote-precedence")
     }),
 )
 
@@ -1536,7 +1441,7 @@ const envIsolationWellKnown = wellKnown({
     headers: { Authorization: "Bearer {env:TEST_TOKEN}" },
   },
   remote: {
-    mcp: { confluence: { type: "remote", url: "https://confluence.example.com/mcp", enabled: true } },
+    config: { model: "remote/config-model" },
   },
 })
 
@@ -1559,7 +1464,7 @@ const nullConfigWellKnown = wellKnown({
     remote_config: { url: "https://config.example.com/graphagent.json" },
   },
   remote: {
-    mcp: { confluence: { type: "remote", url: "https://confluence.example.com/mcp", enabled: true } },
+    config: { username: "remote-config" },
   },
 })
 
@@ -1567,7 +1472,7 @@ nullConfigWellKnown.it.instance("wellknown config null is treated as absent", ()
   Effect.gen(function* () {
     const config = yield* Config.use.get()
     expect(nullConfigWellKnown.seen.remote).toBe("https://config.example.com/graphagent.json")
-    expect(config.mcp?.confluence?.enabled).toBe(true)
+    expect(config.username).toBe("remote-config")
   }),
 )
 

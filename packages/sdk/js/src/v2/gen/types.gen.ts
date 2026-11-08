@@ -973,53 +973,6 @@ export type McpStatusConnected = {
 export type McpStatus =
   McpStatusConnected | McpStatusDisabled | McpStatusFailed | McpStatusNeedsAuth | McpStatusNeedsClientRegistration
 
-export type McpRemoteConfig = {
-  /**
-   * Type of MCP server connection
-   */
-  type: "remote"
-  /**
-   * URL of the remote MCP server
-   */
-  url: string
-  enabled?: boolean
-  headers?: {
-    [key: string]: string
-  }
-  /**
-   * OAuth authentication configuration for the MCP server. Set to false to disable OAuth auto-detection.
-   */
-  oauth?: McpOAuthConfig | false
-  timeout?: number
-  protocol?: "auto" | "legacy" | "modern"
-}
-
-export type McpOAuthConfig = {
-  clientId?: string
-  clientSecret?: string
-  scope?: string
-  callbackPort?: number
-  redirectUri?: string
-}
-
-export type McpLocalConfig = {
-  /**
-   * Type of MCP server connection
-   */
-  type: "local"
-  /**
-   * Command and arguments to run the MCP server
-   */
-  command: Array<string>
-  cwd?: string
-  environment?: {
-    [key: string]: string
-  }
-  enabled?: boolean
-  timeout?: number
-  protocol?: "auto" | "legacy" | "modern"
-}
-
 export type FormatterStatus = {
   name: string
   extensions: Array<string>
@@ -1343,14 +1296,6 @@ export type Config = {
   provider?: {
     [key: string]: ProviderConfig
   }
-  mcp?: {
-    [key: string]:
-      | McpLocalConfig
-      | McpRemoteConfig
-      | {
-          enabled: boolean
-        }
-  }
   /**
    * Enable or configure formatters. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.
    */
@@ -1422,7 +1367,6 @@ export type Config = {
     openTelemetry?: boolean
     primary_tools?: Array<string>
     continue_loop_on_deny?: boolean
-    mcp_timeout?: number
     policies?: Array<ConfigV2ExperimentalPolicy>
   }
   /**
@@ -2050,6 +1994,41 @@ export type ApiAuth = {
   metadata?: {
     [key: string]: string
   }
+}
+
+export type ConfigMcpLocal = {
+  type: "local"
+  command: Array<string>
+  cwd?: string
+  environment?: {
+    [key: string]: string
+  }
+  disabled?: boolean
+  timeout?: ConfigMcpTimeout
+}
+
+export type ConfigMcpoAuth = {
+  client_id?: string
+  client_secret?: string
+  scope?: string
+  callback_port?: number
+  redirect_uri?: string
+}
+
+export type ConfigMcpRemote = {
+  type: "remote"
+  url: string
+  headers?: {
+    [key: string]: string
+  }
+  oauth?: ConfigMcpoAuth | false
+  disabled?: boolean
+  timeout?: ConfigMcpTimeout
+}
+
+export type ConfigMcpTimeout = {
+  startup?: number
+  request?: number
 }
 
 export type ConfigV2ExperimentalPolicy = {
@@ -5727,7 +5706,7 @@ export type McpStatusResponse = McpStatusResponses[keyof McpStatusResponses]
 export type McpAddData = {
   body?: {
     name: string
-    config: McpLocalConfig | McpRemoteConfig
+    config: ConfigMcpLocal | ConfigMcpRemote
   }
   path?: never
   query?: {
