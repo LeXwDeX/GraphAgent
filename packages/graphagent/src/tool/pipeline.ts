@@ -5,12 +5,13 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Logging } from "@graphagent/core/observability/logging"
 import type { Agent } from "@/agent/agent"
+import { isFinalResponseSession } from "@/dag/runtime/capture"
 import type { EffectBridge } from "@/effect/bridge"
 import { SessionContext } from "@/effect/session-context"
 import { applyPreHookDecision, classifyPermissionAsk, withoutUnusableDefer } from "@/hook/pre-hook-decision"
 import { hookQuestionAnswers } from "@/hook/question-answers"
 import { SettingsHook, type TriggerResult } from "@/hook/settings"
-import { builtinToolOutput, toolOutputReplacement } from "@/hook/tool-output"
+import { builtinToolOutput, mcpToolOutput, toolOutputReplacement } from "@/hook/tool-output"
 import { toolInputValidator } from "@/hook/tool-input"
 import { withHookFeedback, withHookFailure, withPreContext } from "@/hook/trigger-result"
 import { Permission } from "@/permission"
@@ -33,8 +34,8 @@ export const MCP_RESOURCE_TOOLS = {
   listTemplates: "list_mcp_resource_templates",
   read: "read_mcp_resource",
 } as const
-export const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
-export const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
+const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
+const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
   "image/gif",
   "image/jpeg",
@@ -160,6 +161,8 @@ export interface Deps {
   mcp: MCP.Interface
   truncate: Truncate.Interface
   hasMcpResourceServer: boolean
+  mcpItems: Record<string, AITool>
+  mcpRequiresInteraction: Map<string, { server: string; tool: string }>
   resourceHookState: WeakMap<
     ToolExecutionOptions,
     { confirmed: boolean; allowed: boolean; name: string; original: Record<string, unknown> }
@@ -587,13 +590,13 @@ function formatMcpResourceContent(server: string, uri: string, content: { conten
   }
 }
 
-export function base64Size(value: string) {
+function base64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
   const padding = trimmed.endsWith("==") ? 2 : trimmed.endsWith("=") ? 1 : 0
   return Math.max(0, Math.floor((trimmed.length * 3) / 4) - padding)
 }
 
-export function formatBytes(value: number) {
+function formatBytes(value: number) {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`
   return `${Math.ceil(value / (1024 * 1024))} MB`
@@ -1053,6 +1056,336 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
         ),
       )
     }
+  }
+})
+
+export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function* (
+  deps: Deps,
+  tools: Record<string, AITool>,
+) {
+  const {
+    input,
+    run,
+    hooks,
+    permission,
+    context,
+    truncate,
+    recordSettlement,
+    reportInterrupt,
+    hookContext,
+    transformSchema,
+    mcpItems,
+    mcpRequiresInteraction,
+  } = deps
+
+  for (const [key, item] of Object.entries(mcpItems)) {
+    if (key === "submit_result" && isFinalResponseSession(input.session.id)) continue
+    const execute = item.execute
+    if (!execute) continue
+
+    const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
+    const validateInput = toolInputValidator(schema)
+    const transformed = transformSchema({ ...schema, properties: schema.properties ?? {} })
+    item.inputSchema = jsonSchema(transformed)
+    item.execute = (args, opts) => {
+      const settingsHook = withHookCancellation(hooks, opts.abortSignal)
+      let preContexts: string[] = []
+      let executionPending = false
+      return run.promise(
+        Effect.gen(function* () {
+          const originalArgs = toRecord(args)
+          let hookConfirmed = false
+          let hookAllowed = false
+          let ctx = context(args, opts, false, originalArgs, key)
+          // SettingsHook PreToolUse
+          if (settingsHook) {
+            let preResult = yield* settingsHook
+              .trigger(
+                { event: "PreToolUse", toolName: key, toolInput: toRecord(args), toolUseID: opts.toolCallId },
+                { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
+              )
+              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+            yield* SettingsHook.landSystemMessages(preResult, { sessionID: ctx.sessionID })
+            if (
+              preResult.permissionDecision === "defer" &&
+              !preResult.preventContinuation &&
+              !(yield* Effect.promise(() =>
+                Promise.resolve(input.canDefer?.(opts.toolCallId, opts.abortSignal) ?? false),
+              ))
+            ) {
+              yield* Logging.backgroundDebug("hook defer ignored", { reason: "interactive-or-multiple-tool-call" })
+              preResult = withoutUnusableDefer(preResult)
+            }
+            let decision = applyPreHookDecision(toRecord(args), preResult)
+            if (decision.deferred)
+              return {
+                output: "",
+                attachments: [],
+                content: [],
+                metadata: { hookDeferred: true, deferredToolUse: { id: opts.toolCallId, name: key, input: args } },
+              }
+            if (decision.deniedReason) {
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: withPreContext(
+                      `[Tool denied by hook] ${decision.deniedReason}`,
+                      preResult.additionalContexts,
+                    ),
+                  },
+                ],
+              }
+            }
+            if (decision.stopReason) {
+              const text = `[Hook stopped] ${decision.stopReason}`
+              return {
+                title: "",
+                output: text,
+                metadata: { hookStopped: true, stopReason: decision.stopReason },
+                content: [{ type: "text", text }],
+              }
+            }
+            if (preResult.updatedInput !== undefined) yield* Effect.sync(() => validateInput(decision.effectiveArgs))
+            // permissionDecision:"ask" — confirmation dialog (see native path note:
+            // typed rejections deny; interrupts/defects propagate).
+            hookAllowed = preResult.permissionDecision === "allow"
+            hookConfirmed = false
+            if (preResult.permissionDecision === "ask") {
+              const askReason = preResult.permissionDecisionReason
+              const verdict = yield* confirmPermissionInput(
+                decision.effectiveArgs,
+                (effectiveArgs) =>
+                  permission.ask(
+                    {
+                      permission: key,
+                      sessionID: ctx.sessionID,
+                      patterns: [key],
+                      always: [],
+                      metadata: {
+                        hookAsk: true,
+                        input: effectiveArgs,
+                        ...(askReason ? { reason: askReason } : {}),
+                      },
+                      tool: { messageID: input.processor.message.id, callID: opts.toolCallId },
+                      ruleset: [],
+                    },
+                    { force: true, toolInput: effectiveArgs },
+                  ),
+                validateInput,
+              ).pipe(Effect.exit)
+              const outcome = classifyPermissionAsk(verdict)
+              if (outcome !== "approved" && outcome !== "denied")
+                return yield* Effect.failCause(outcome.propagate as never)
+              if (outcome === "denied") {
+                const reason = askReason ?? "Denied by user in hook confirmation"
+                return {
+                  content: [
+                    {
+                      type: "text",
+                      text: withPreContext(`[Tool denied by hook] ${reason}`, preResult.additionalContexts),
+                    },
+                  ],
+                }
+              }
+              if (Exit.isSuccess(verdict)) decision = { ...decision, effectiveArgs: verdict.value.input }
+              hookConfirmed = true
+            }
+            preContexts = preResult.additionalContexts ?? []
+            ctx = context(decision.effectiveArgs, opts, hookConfirmed, decision.effectiveArgs, key)
+            args = decision.effectiveArgs
+          }
+          if (opts.abortSignal?.aborted) return yield* Effect.interrupt
+          let result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.gen(function* () {
+            const authorized = yield* executeWithPermissionInput(
+              toRecord(args),
+              (next) => {
+                ctx = context(next, opts, hookConfirmed, next, key, hookAllowed)
+                const interaction = mcpRequiresInteraction.get(key)
+                return ctx.ask(
+                  interaction
+                    ? {
+                        permission: key,
+                        metadata: {
+                          requiresUserInteraction: true,
+                          mcpServer: interaction.server,
+                          mcpTool: interaction.tool,
+                        },
+                        patterns: ["*"],
+                        always: [],
+                      }
+                    : { permission: key, metadata: {}, patterns: ["*"], always: ["*"] },
+                )
+              },
+              {
+                canRestart: true,
+                validate: (next) => {
+                  validateInput(next)
+                },
+              },
+            )
+            args = authorized.input
+            executionPending = true
+            return yield* Effect.suspend(() => {
+              return Effect.promise(() => SessionContext.run(ctx.sessionID, () => execute(args, opts)))
+            }).pipe(Effect.onInterrupt(() => reportInterrupt(key, args, opts.toolCallId)))
+          }).pipe(
+            Effect.withSpan("Tool.execute", {
+              attributes: {
+                "tool.name": key,
+                "tool.call_id": opts.toolCallId,
+                "session.id": ctx.sessionID,
+                "message.id": input.processor.message.id,
+              },
+            }),
+          )
+          executionPending = false
+          if (opts.abortSignal?.aborted) yield* reportInterrupt(key, args, opts.toolCallId).pipe(Effect.uninterruptible)
+          let postResult: TriggerResult | undefined
+          if (settingsHook) {
+            postResult = yield* settingsHook
+              .trigger(
+                {
+                  event: "PostToolUse",
+                  toolName: key,
+                  toolInput: toRecord(args),
+                  toolResponse: result,
+                  toolUseID: opts.toolCallId,
+                },
+                { ...(yield* hookContext(key)), sessionID: ctx.sessionID },
+              )
+              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+            yield* SettingsHook.landSystemMessages(postResult, { sessionID: ctx.sessionID })
+            const replacement = toolOutputReplacement(postResult, true)
+            if (replacement.present) result = mcpToolOutput(replacement.value)
+          }
+
+          const textParts: string[] = []
+          const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []
+          for (const contentItem of result.content) {
+            if (contentItem.type === "text") textParts.push(contentItem.text)
+            else if (contentItem.type === "image") {
+              attachments.push({
+                type: "file",
+                mime: contentItem.mimeType,
+                url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
+              })
+            } else if (contentItem.type === "resource") {
+              const { resource } = contentItem
+              if (resource.text) textParts.push(resource.text)
+              if (resource.blob) {
+                const mime = resource.mimeType ?? "application/octet-stream"
+                const size = base64Size(resource.blob)
+                if (!SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)) {
+                  textParts.push(
+                    `[Binary MCP resource omitted: ${resource.uri} (${mime}, ${formatBytes(size)}) is not a supported attachment type]`,
+                  )
+                  continue
+                }
+                if (size > MAX_MCP_RESOURCE_BLOB_BYTES) {
+                  textParts.push(
+                    `[Binary MCP resource omitted: ${resource.uri} (${mime}, ${formatBytes(size)}) exceeds ${formatBytes(MAX_MCP_RESOURCE_BLOB_BYTES)}]`,
+                  )
+                  continue
+                }
+                attachments.push({
+                  type: "file",
+                  mime,
+                  url: `data:${mime};base64,${resource.blob}`,
+                  filename: resource.uri,
+                })
+              }
+            }
+          }
+
+          const truncated = yield* truncate.output(textParts.join("\n\n"), {}, input.agent)
+          const metadata = {
+            ...result.metadata,
+            truncated: truncated.truncated,
+            ...(truncated.truncated && { outputPath: truncated.outputPath }),
+          }
+
+          const output = {
+            title: "",
+            metadata,
+            output: truncated.content,
+            attachments: attachments.map((attachment) => ({
+              ...attachment,
+              id: PartID.ascending(),
+              sessionID: ctx.sessionID,
+              messageID: input.processor.message.id,
+            })),
+            content: result.content,
+          }
+          // PreToolUse additionalContexts: prepend so the model sees any hook-injected
+          // gate/reminder before the tool result (mirrors PostToolUse surfacing below).
+          const preLines = preContexts.filter((line): line is string => Boolean(line))
+          if (preLines.length) {
+            output.output = `${preLines.join("\n\n")}\n\n${output.output ?? ""}`
+          }
+          if (postResult) {
+            output.output = withHookFeedback(output.output ?? "", postResult)
+            if (postResult.preventContinuation)
+              output.metadata = { ...output.metadata, ...hookStopMetadata(postResult) }
+          }
+          yield* recordSettlement(key, opts.toolCallId, {
+            sourceKind: "mcp",
+            registrationID: `mcp:${key}`,
+          })
+          if (opts.abortSignal?.aborted) {
+            yield* input.processor.completeToolCall(opts.toolCallId, output)
+          }
+          return output
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              if (Cause.hasInterrupts(cause)) return yield* Effect.failCause(cause)
+              if (executionPending && opts.abortSignal?.aborted) {
+                yield* reportInterrupt(key, args, opts.toolCallId).pipe(Effect.uninterruptible)
+                return yield* Effect.failCause(cause)
+              }
+              const error = Cause.squash(cause)
+              if (
+                error instanceof PermissionV1.DeniedError ||
+                error instanceof PermissionV1.RejectedError ||
+                error instanceof PermissionV1.CorrectedError
+              )
+                return yield* Effect.failCause(cause)
+              if (error instanceof HookPermissionInterrupt)
+                return {
+                  title: "",
+                  output: error.message,
+                  attachments: [],
+                  content: [],
+                  metadata: { hookStopped: true, stopReason: error.message },
+                }
+              if (!executionPending) return yield* Effect.failCause(cause)
+              if (settingsHook) {
+                const failResult = yield* settingsHook
+                  .trigger(
+                    {
+                      event: "PostToolUseFailure",
+                      toolName: key,
+                      toolInput: toRecord(args),
+                      error: String(error),
+                      toolUseID: opts.toolCallId,
+                    },
+                    { ...(yield* hookContext(key)), sessionID: input.session.id },
+                  )
+                  .pipe(
+                    Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
+                  )
+                yield* SettingsHook.landSystemMessages(failResult, { sessionID: input.session.id })
+                const failure = withHookFailure(error, failResult, preContexts)
+                if (failure !== error) return yield* Cause.hasDies(cause) ? Effect.die(failure) : Effect.fail(failure)
+              }
+              return yield* Effect.failCause(cause)
+            }),
+          ),
+        ),
+      )
+    }
+    tools[key] = item
   }
 })
 
