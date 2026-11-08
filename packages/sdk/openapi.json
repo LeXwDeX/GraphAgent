@@ -12175,6 +12175,7 @@
           "runningNodes",
           "failedNodes",
           "skippedNodes",
+          "abortedNodes",
           "queuedNodes",
           "escalatedNodes"
         ],
@@ -25655,6 +25656,9 @@
             "type": "string"
           },
           "status": {
+            "type": "string"
+          },
+          "pause_reason": {
             "type": "string"
           },
           "config": {
