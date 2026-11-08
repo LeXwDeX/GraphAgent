@@ -6,7 +6,7 @@
 import { Cause, Effect, Option } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import * as Log from "@/util/log"
-import type { HookCommand, HookEnvelope } from "../types"
+import type { HookCommand } from "../types"
 import { commandText, httpUrl, timeoutFor } from "../exec/command"
 import { classifyHttpBody } from "../exec/output"
 import { blocksOnFailure, hookFailureText, type HookHandler } from "./shared"

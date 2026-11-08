@@ -12,7 +12,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
 import { SessionID } from "@/session/schema"
 import { SessionCancellation } from "@/session/cancellation"
-import type { SessionHooks, ScopedHooksInput } from "../session-hooks"
+import type { SessionHooks } from "../session-hooks"
 import type { SessionHookEntry } from "../session-hooks"
 import type { HookConfigChange } from "../config-change"
 import type { HookFileWatch } from "../file-watch"
@@ -32,8 +32,6 @@ import type { HookExecution, HookHandler } from "../handlers/shared"
 import type {
   ForkHooks,
   HookCommand,
-  HookEffort,
-  HookEnvelope,
   HookEvent,
   HookJSONOutput,
   HookMatcher,

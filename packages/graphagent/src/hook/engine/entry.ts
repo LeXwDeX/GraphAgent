@@ -6,7 +6,7 @@
  */
 import os from "os"
 import { Effect, Context } from "effect"
-import { FetchHttpClient, HttpClient } from "effect/http"
+import { HttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import * as Log from "@/util/log"
 import { FSUtil } from "@graphagent/core/fs-util"

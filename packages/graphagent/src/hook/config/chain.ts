@@ -6,15 +6,12 @@
  */
 import path from "path"
 import os from "os"
-import * as Log from "@/util/log"
 import { Global } from "@graphagent/core/global"
 import { APP_NAME, PROJECT_DIR } from "@graphagent/core/brand"
 import { hasProjectLayer } from "@/project/project-root"
-import type { HookCommand, HookEvent, HookSummary, Settings } from "../types"
+import type { HookCommand, HookSummary, Settings } from "../types"
 import { commandText, httpUrl, promptText } from "../exec/command"
 import { canRewake, inactiveEventWarning, isHookEvent, readJSONFile, warnUnsupportedFields } from "./load"
-
-const log = Log.create({ service: "hook.settings" })
 
 /**
  * Short human-readable description of a hook entry for the Active Hooks block.
