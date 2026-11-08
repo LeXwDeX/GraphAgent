@@ -3,8 +3,9 @@
 
 import { Tool } from "./tool"
 import { CommandPlugin } from "@graphagent/core/plugin/command"
-import { Cause, Effect, Exit, Option, Schema } from "effect"
+import { Cause, Effect, Option, Result, Schema } from "effect"
 import { Dag } from "@/dag/dag"
+import { DagControl } from "@/dag/control"
 import { DagReviewLifecycle } from "@/dag/review-lifecycle"
 import { DagWorkflows } from "@/dag/workflows"
 import { DagLocation } from "@/dag/location"
@@ -24,8 +25,7 @@ import {
   workflowArtifactsRoot,
   workflowDraftsArea,
 } from "@/dag/runtime/output-ref"
-import { TerminalViolationError, displayState, isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
-import { ResumeBlockedError } from "@/dag/resume-guard"
+import { displayState } from "@graphagent/core/dag/core/types"
 import type { DagEvent } from "@graphagent/schema/dag-event"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { stringify as yamlStringify } from "yaml"
@@ -151,7 +151,7 @@ const Status = Schema.Struct({
   action: Schema.Literal("status").annotate({ description: "Inspect durable workflow and node state" }),
   workflow_id: Dag.ID.annotate({ description: "Target workflow ID" }),
 })
-const Result = Schema.Struct({
+const ResultPath = Schema.Struct({
   action: Schema.Literal("result").annotate({
     description:
       "Read inline durable node output in bounded pages. File-backed output instead returns content_ref, path, summary, and next_cursor: null; use the read tool on path to read the file",
@@ -213,7 +213,7 @@ const ActionParams = Schema.Union([
   ControlExtendTimeout,
   ControlRetarget,
   Status,
-  Result,
+  ResultPath,
   List,
   Read,
   Guide,
@@ -248,11 +248,12 @@ type AuthoringSource = Parameters<ReturnType<typeof WorkflowAuthoring.make>["pre
 export const WorkflowTool = Tool.define<
   typeof Parameters,
   Metadata,
-  Dag.Service | Session.Service | Agent.Service | Provider.Service
+  Dag.Service | DagControl.Service | Session.Service | Agent.Service | Provider.Service
 >(
   id,
   Effect.gen(function* () {
     const dag = yield* Dag.Service
+    const control = yield* DagControl.Service
     const sessions = yield* Session.Service
     const agents = yield* Agent.Service
     const provider = yield* Provider.Service
@@ -268,68 +269,92 @@ export const WorkflowTool = Tool.define<
       return workflow
     })
 
-    const parkRejectedWorkflow = (workflowID: Dag.ID, action: "extend" | "replan") =>
-      Effect.gen(function* () {
-        // A terminal workflow cannot pause: the attempt only produces an
-        // InvalidTransitionError that reads like a second failure. Nothing was
-        // mutated, so report the unchanged state and let the caller retry.
-        const currentExit = yield* dag.store.getWorkflow(workflowID).pipe(Effect.exit)
-        if (Exit.isFailure(currentExit) && Cause.hasInterrupts(currentExit.cause)) return yield* Effect.interrupt
-        const currentStatus = Exit.isSuccess(currentExit) ? currentExit.value?.status : undefined
-        if (currentStatus && isTerminalWorkflowStatusValue(currentStatus)) {
-          return `Workflow state: ${currentStatus} (unchanged). Correct the fragment and retry ${action}.`
-        }
-        const pauseExit = yield* dag.pause(workflowID).pipe(Effect.exit)
-        if (Exit.isFailure(pauseExit) && Cause.hasInterrupts(pauseExit.cause)) return yield* Effect.interrupt
-        if (Exit.isSuccess(pauseExit))
-          return "Workflow state: paused (durably parked). A corrected mutation can resume it."
-        const readExit = yield* dag.store.getWorkflow(workflowID).pipe(Effect.exit)
-        if (Exit.isFailure(readExit) && Cause.hasInterrupts(readExit.cause)) return yield* Effect.interrupt
-        const actualStatus = Exit.isSuccess(readExit) ? (readExit.value?.status ?? "missing") : "unknown"
-        return actualStatus === "paused"
-          ? "Workflow state: paused (already parked). A corrected mutation can resume it."
-          : `Workflow state: ${actualStatus}. Automatic pause failed; inspect workflow status before retrying or waiting. Pause failure: ${String(Cause.squash(pauseExit.cause))}`
-      })
+    /** Render the durable park outcome shared by every rejected mutation. */
+    const parkText = (outcome: DagControl.ParkOutcome, action: "extend" | "replan") => {
+      const result = outcome.result
+      if (result === "terminal-unchanged")
+        return `Workflow state: ${outcome.status} (unchanged). Correct the fragment and retry ${action}.`
+      if (result === "parked") return "Workflow state: paused (durably parked). A corrected mutation can resume it."
+      if (result === "already-paused")
+        return "Workflow state: paused (already parked). A corrected mutation can resume it."
+      return `Workflow state: ${result.actualStatus}. Automatic pause failed; inspect workflow status before retrying or waiting. Pause failure: ${result.failed}`
+    }
 
-    // D12: a ResumeGuard veto is a normal control outcome. Surface its
-    // message (which carries the durable pause_reason) instead of letting the
-    // generic orDie collapse it into an opaque defect.
-    const resumeThroughGuard = <A>(effect: Effect.Effect<A, Error>) =>
+    /** User-visible message for a classified rejection. The ResumeGuard D12
+     * guidance and terminal recovery guidance live here, not in the service:
+     * they are tool copy tied to this call site. */
+    const renderRejection = (rejection: DagControl.ControlConflict | DagControl.ControlInvalid, guidance?: string) => {
+      if (rejection._tag === "Conflict" && rejection.kind === "resume-blocked")
+        return `${rejection.message}. The workflow stays paused. Inspect workflow status for pause_reason, resolve the blocker, then retry control(resume) or control(step).`
+      if (rejection._tag === "Conflict" && rejection.kind === "terminal" && guidance !== undefined)
+        return `${rejection.message}. ${guidance}`
+      return rejection.message
+    }
+
+    /** Non-mutation control ops surface a rejection as a defect. Resume and
+     * step gain the D12 guidance; every other op keeps the original error
+     * object so existing diagnostics stay unchanged. */
+    const runControl = <A>(
+      workflowID: Dag.ID,
+      effect: Effect.Effect<A, DagControl.ControlRejection>,
+    ): Effect.Effect<A> =>
       effect.pipe(
-        Effect.catchIf(
-          (error): error is ResumeBlockedError => error instanceof ResumeBlockedError,
-          (error) =>
-            Effect.die(
-              new Error(
-                `${error.message}. The workflow stays paused. Inspect workflow status for pause_reason, resolve the blocker, then retry control(resume) or control(step).`,
-              ),
-            ),
-        ),
-        Effect.orDie,
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterrupts(cause)) return Effect.interrupt
+          const defect = Cause.findDefect(cause)
+          if (Result.isSuccess(defect)) return Effect.die(defect.success)
+          const failure = Option.getOrThrow(Cause.findErrorOption(cause))
+          if (failure instanceof DagControl.ControlNotFound) {
+            return Effect.die(new Error(`Workflow not found: ${workflowID}`))
+          }
+          if (failure._tag === "Conflict" && failure.kind === "resume-blocked") {
+            return Effect.die(new Error(renderRejection(failure)))
+          }
+          return Effect.die(failure.cause instanceof Error ? failure.cause : new Error(renderRejection(failure)))
+        }),
       )
 
-    const runRecoverableMutation = <A>(
+    /**
+     * Replan/extend mutations render a rejection and append the durable park
+     * state plus the shared recovery instruction. An unclassified defect (for
+     * example a runtime batch-write failure) still parks before dying, which
+     * preserves the audit trail and the "never leave it running" contract.
+     */
+    const runMutation = <A>(
       workflowID: Dag.ID,
-      mutation: Effect.Effect<A, Error>,
       action: "extend" | "replan",
-    ) =>
-      mutation.pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.failCause(cause)
-            : Effect.gen(function* () {
-                const workflowState = yield* parkRejectedWorkflow(workflowID, action)
-                return yield* Effect.die(
-                  new Error(`${String(Cause.squash(cause))}\n${workflowState}\n${WORKFLOW_RECOVERY.instruction}`),
-                )
-              }),
-        ),
+      sessionID: string,
+      guidance: string,
+      effect: Effect.Effect<A, DagControl.ControlRejection>,
+    ): Effect.Effect<A> =>
+      effect.pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterrupts(cause)) return Effect.interrupt
+          const defect = Cause.findDefect(cause)
+          if (Result.isSuccess(defect)) {
+            return Effect.gen(function* () {
+              const parked = yield* control.parkRejected(workflowID, { sessionID }).pipe(Effect.option)
+              const state = Option.isSome(parked) ? `\n${parkText(parked.value, action)}` : ""
+              return yield* Effect.die(new Error(`${String(defect.success)}${state}\n${WORKFLOW_RECOVERY.instruction}`))
+            })
+          }
+          const failure = Option.getOrThrow(Cause.findErrorOption(cause))
+          if (failure instanceof DagControl.ControlNotFound) {
+            return Effect.die(new Error(`Workflow not found: ${workflowID}`))
+          }
+          const state = failure.parked
+            ? `\n${parkText({ result: failure.parked, status: failure.status }, action)}`
+            : ""
+          return Effect.die(
+            new Error(`${renderRejection(failure, guidance)}${state}\n${WORKFLOW_RECOVERY.instruction}`),
+          )
+        }),
       )
 
     const rejectDiagnostics = (
       diagnostics: Diagnostic[],
       context: string,
-      parking?: { workflowID: Dag.ID; action: "extend" | "replan" },
+      parking?: { workflowID: Dag.ID; action: "extend" | "replan"; sessionID: string },
     ) => {
       // P1-F: a missing replan envelope is a deterministic, self-correcting
       // mistake. Emit a machine-readable retry signal alongside the prose so the
@@ -347,7 +372,10 @@ export const WorkflowTool = Tool.define<
         // A rejected mutation parks a live workflow durably. When the pause
         // fails, read back the actual state instead of claiming it is parked:
         // a terminal race or a storage defect needs a different recovery path.
-        const workflowState = parking ? yield* parkRejectedWorkflow(parking.workflowID, parking.action) : ""
+        const parked = parking
+          ? yield* control.parkRejected(parking.workflowID, { sessionID: parking.sessionID }).pipe(Effect.option)
+          : Option.none()
+        const workflowState = parking && Option.isSome(parked) ? `\n${parkText(parked.value, parking.action)}` : ""
         return yield* Effect.die(
           new Error(
             `${context} rejected by workflow validation:\n${diagnostics
@@ -928,46 +956,33 @@ export const WorkflowTool = Tool.define<
                 known_dependencies: knownDependencies,
                 node_defaults: workflowDefaults,
               })
-              if (!result.valid || !result.prepared)
+              if (!result.valid || !result.prepared || result.prepared.action !== "extend")
                 return yield* rejectDiagnostics(result.errors, "Workflow extend", {
                   workflowID: params.workflow_id,
                   action: "extend",
+                  sessionID: ctx.sessionID,
                 })
-              const r = yield* runRecoverableMutation(
+              const prepared = result.prepared
+              const outcome = yield* runMutation(
                 params.workflow_id,
-                withTerminalRecovery(
-                  dag.extend(params.workflow_id, result.prepared.nodes),
-                  "Terminal workflows are immutable except for the additive-extend reopen, which requires the workflow to have completed naturally at a wake-eligible reporting checkpoint (fragment adds new node ids; no early control(complete); no executed node beyond the checkpoint — condition-skipped dependents are fine). For failed workflows, use control(recover) with node_ids and expected_graph_rev from status. Cancelled workflows additionally require explicit resume_cancelled: true.",
-                ),
                 "extend",
-              ).pipe(Effect.orDie)
+                ctx.sessionID,
+                "Terminal workflows are immutable except for the additive-extend reopen, which requires the workflow to have completed naturally at a wake-eligible reporting checkpoint (fragment adds new node ids; no early control(complete); no executed node beyond the checkpoint — condition-skipped dependents are fine). For failed workflows, use control(recover) with node_ids and expected_graph_rev from status. Cancelled workflows additionally require explicit resume_cancelled: true.",
+                control.apply(params.workflow_id, { op: "extend", prepared }, { sessionID: ctx.sessionID }),
+              )
+              const r = outcome.result
               // #381: extend shares replan's resume contract — a paused
               // workflow must resume for the added nodes to ever run (pause
               // admits nothing and no wake path prompts a resume), and the
-              // extend intent is "the graph grew, proceed". Resume races with
-              // concurrent control ops are tolerated: the extend already
+              // extend intent is "the graph grew, proceed". The service owns
+              // that resume; races are reported because the extend already
               // landed, so never die on them.
-              const wfAfterExtend = yield* dag.store.getWorkflow(params.workflow_id).pipe(Effect.orDie)
-              const resumedFromPause = wfAfterExtend?.status === "paused"
-              const resumedOk = resumedFromPause
-                ? yield* dag.resume(params.workflow_id).pipe(
-                    Effect.map(() => true),
-                    Effect.catch((error) =>
-                      Effect.gen(function* () {
-                        yield* Effect.logWarning("Workflow resume after extend failed", {
-                          wfId: params.workflow_id,
-                          error,
-                        })
-                        return false
-                      }),
-                    ),
-                  )
-                : false
-              const pauseNote = !resumedFromPause
-                ? ""
-                : resumedOk
-                  ? "\nWorkflow was paused and has been resumed — added nodes are now schedulable."
-                  : "\nWorkflow was paused; automatic resume raced with another control op — check status and issue control(resume) if still paused."
+              const pauseNote =
+                outcome.resume === "not-paused"
+                  ? ""
+                  : outcome.resume === "resumed"
+                    ? "\nWorkflow was paused and has been resumed — added nodes are now schedulable."
+                    : "\nWorkflow was paused; automatic resume raced with another control op — check status and issue control(resume) if still paused."
               return {
                 title: `Workflow extended: ${r.add.length} nodes added`,
                 output: `<workflow id="${params.workflow_id}" action="extend">\nAdded: ${r.add.join(", ")}${pauseNote}\n${authoringWarnings(result)}</workflow>`,
@@ -977,14 +992,22 @@ export const WorkflowTool = Tool.define<
             case "control": {
               const wfId = params.workflow_id
               const workflow = yield* requireOwnedWorkflow(wfId, ctx.sessionID)
+              const caller = { sessionID: ctx.sessionID }
               if (params.operation === "recover") {
-                const result = yield* dag
-                  .recover(wfId, {
-                    nodeIDs: params.node_ids,
-                    expectedGraphRev: params.expected_graph_rev,
-                    resumeCancelled: params.resume_cancelled,
-                  })
-                  .pipe(Effect.orDie)
+                const outcome = yield* runControl(
+                  wfId,
+                  control.apply(
+                    wfId,
+                    {
+                      op: "recover",
+                      nodeIDs: params.node_ids,
+                      expectedGraphRev: params.expected_graph_rev,
+                      resumeCancelled: params.resume_cancelled,
+                    },
+                    caller,
+                  ),
+                )
+                const result = outcome.result
                 return {
                   title: `Workflow recovered: ${result.replacements.length} new attempts`,
                   output: JSON.stringify(
@@ -1006,14 +1029,21 @@ export const WorkflowTool = Tool.define<
                 }
               }
               if (params.operation === "retarget") {
-                const result = yield* dag
-                  .retarget(wfId, {
-                    workspace: params.workspace,
-                    fingerprint: params.fingerprint,
-                    nodeIDs: params.node_ids,
-                    reason: params.reason,
-                  })
-                  .pipe(Effect.orDie)
+                const outcome = yield* runControl(
+                  wfId,
+                  control.apply(
+                    wfId,
+                    {
+                      op: "retarget",
+                      workspace: params.workspace,
+                      fingerprint: params.fingerprint,
+                      nodeIDs: params.node_ids,
+                      reason: params.reason,
+                    },
+                    caller,
+                  ),
+                )
+                const result = outcome.result
                 return {
                   title: `Workflow retargeted: ${result.nodes.length} node(s) restarted`,
                   output: JSON.stringify(
@@ -1054,50 +1084,40 @@ export const WorkflowTool = Tool.define<
                   known_dependencies: knownDependencies,
                   node_defaults: workflowDefaults,
                 })
-                if (!result.valid || !result.prepared)
+                if (!result.valid || !result.prepared || result.prepared.action !== "replan")
                   return yield* rejectDiagnostics(result.errors, "Workflow replan", {
                     workflowID: wfId,
                     action: "replan",
+                    sessionID: ctx.sessionID,
                   })
+                const prepared = result.prepared
                 // The graph raced to terminal while the fragment was being
                 // composed (the pause-first protocol was skipped). Surface
                 // the recovery options instead of a bare iron-law rejection.
-                const r = yield* runRecoverableMutation(
+                const outcome = yield* runMutation(
                   wfId,
-                  withTerminalRecovery(
-                    dag.replan(wfId, { nodes: result.prepared.nodes }),
-                    "The workflow reached a terminal status before the replan arrived. For a local retry of failed work, use control(recover) with current node_ids and expected_graph_rev; cancelled work also requires explicit resume_cancelled: true. Additive extend remains available after a qualifying naturally completed checkpoint. Pause live scheduling before composing a changed graph.",
-                  ),
                   "replan",
-                ).pipe(Effect.orDie)
+                  ctx.sessionID,
+                  "The workflow reached a terminal status before the replan arrived. For a local retry of failed work, use control(recover) with current node_ids and expected_graph_rev; cancelled work also requires explicit resume_cancelled: true. Additive extend remains available after a qualifying naturally completed checkpoint. Pause live scheduling before composing a changed graph.",
+                  control.apply(wfId, { op: "replan", prepared }, caller),
+                )
+                const r = outcome.result
                 // A paused workflow (explicit pause-first protocol, or the
                 // runtime's gate pause after a checkpoint replan verdict) must
                 // resume for the corrective nodes to run — the replan intent
                 // is "the graph changed, proceed", so resume closes the loop.
-                // Resume races with concurrent control ops are tolerated: the
-                // replan already landed, so never die on them.
-                const wfAfterReplan = yield* dag.store.getWorkflow(wfId).pipe(Effect.orDie)
-                const resumedFromPause = wfAfterReplan?.status === "paused"
-                const resumedOk = resumedFromPause
-                  ? yield* dag.resume(wfId).pipe(
-                      Effect.map(() => true),
-                      Effect.catch((error) =>
-                        Effect.gen(function* () {
-                          yield* Effect.logWarning("Workflow resume after replan failed", { wfId, error })
-                          return false
-                        }),
-                      ),
-                    )
-                  : false
+                // The service owns that resume; races are reported because
+                // the replan already landed, so never die on them.
                 const ignored =
                   r.ignore.length > 0
                     ? `\nIgnored (terminal, immutable — add replacements under new ids to retry): ${r.ignore.join(", ")}`
                     : ""
-                const pauseNote = !resumedFromPause
-                  ? ""
-                  : resumedOk
-                    ? "\nWorkflow was paused and has been resumed — corrective nodes are now schedulable."
-                    : "\nWorkflow was paused; automatic resume raced with another control op — check status and issue control(resume) if still paused."
+                const pauseNote =
+                  outcome.resume === "not-paused"
+                    ? ""
+                    : outcome.resume === "resumed"
+                      ? "\nWorkflow was paused and has been resumed — corrective nodes are now schedulable."
+                      : "\nWorkflow was paused; automatic resume raced with another control op — check status and issue control(resume) if still paused."
                 return {
                   title: `Workflow replanned: +${r.add.length} -${r.cancel.length} ↻${r.restart.length}`,
                   output: `<workflow id="${wfId}" action="replan">\nAdded: ${r.add.join(", ")}\nCancelled: ${r.cancel.join(", ")}\nRestarted: ${r.restart.join(", ")}\nReplaced: ${r.replace.join(", ")}${ignored}${pauseNote}\n${authoringWarnings(result)}</workflow>`,
@@ -1105,7 +1125,15 @@ export const WorkflowTool = Tool.define<
                 }
               }
               if (params.operation === "extend_timeout") {
-                const verdict = yield* dag.extendTimeout(wfId, params.node_id, params.timeout_ms).pipe(Effect.orDie)
+                const outcome = yield* runControl(
+                  wfId,
+                  control.apply(
+                    wfId,
+                    { op: "extend_timeout", nodeID: params.node_id, timeoutMs: params.timeout_ms },
+                    caller,
+                  ),
+                )
+                const verdict = outcome.result
                 const copy = EXTEND_TIMEOUT_COPY[verdict.status]
                 const detail = verdict.status === "extended" ? ` deadline_ms="${verdict.deadlineMs}"` : ""
                 return {
@@ -1116,35 +1144,36 @@ export const WorkflowTool = Tool.define<
               }
               switch (params.operation) {
                 case "pause":
-                  yield* dag.pause(wfId).pipe(Effect.orDie)
+                  yield* runControl(wfId, control.apply(wfId, { op: "pause" }, caller))
                   return {
                     title: "Workflow paused",
                     output: `<workflow id="${wfId}" state="paused"/>\nNote: pause stops new node spawns only — nodes already running continue to completion. To stop a running node, submit a replan spec marking it restart: true or cancel: true (replan is valid while paused, and a successful replan resumes the paused workflow so corrective nodes can run).`,
                     metadata: { workflowId: wfId } as Metadata,
                   }
                 case "resume":
-                  yield* resumeThroughGuard(dag.resume(wfId))
+                  yield* runControl(wfId, control.apply(wfId, { op: "resume" }, caller))
                   return {
                     title: "Workflow resumed",
                     output: `<workflow id="${wfId}" state="running"/>`,
                     metadata: { workflowId: wfId } as Metadata,
                   }
                 case "cancel":
-                  yield* dag.cancel(wfId).pipe(Effect.orDie)
+                  yield* runControl(wfId, control.apply(wfId, { op: "cancel" }, caller))
                   return {
                     title: "Workflow cancelled",
                     output: `<workflow id="${wfId}" state="cancelled"/>`,
                     metadata: { workflowId: wfId } as Metadata,
                   }
                 case "complete":
-                  yield* dag.complete(wfId).pipe(Effect.orDie)
+                  yield* runControl(wfId, control.apply(wfId, { op: "complete" }, caller))
                   return {
                     title: "Workflow completed (early)",
                     output: `<workflow id="${wfId}" state="completed"/>`,
                     metadata: { workflowId: wfId } as Metadata,
                   }
                 case "step": {
-                  const r = yield* resumeThroughGuard(dag.step(wfId))
+                  const outcome = yield* runControl(wfId, control.apply(wfId, { op: "step" }, caller))
+                  const r = outcome.result
                   if (r.status === "no_ready_nodes") {
                     return {
                       title: "Workflow step: no ready nodes",
@@ -1467,17 +1496,6 @@ function resolveSpecPath(specPath: string, directory: string, projectID: string,
 function savedWorkflowNotFound(name: string, directory: string) {
   return new Error(
     `Saved workflow not found: "${name}". Searched ${searchedScopes(directory)}. Run workflow(action: "list") to see what is available, or pass a path to a .yaml spec file.`,
-  )
-}
-
-/** Terminal-workflow rejections surface as defects carrying recovery
- * guidance, not bare iron-law errors. Shared by the replan and extend paths. */
-function withTerminalRecovery<A>(effect: Effect.Effect<A, Error>, guidance: string) {
-  return effect.pipe(
-    Effect.catchIf(
-      (err): err is TerminalViolationError => err instanceof TerminalViolationError,
-      (err) => Effect.die(new Error(`${err.message}. ${guidance}`)),
-    ),
   )
 }
 
