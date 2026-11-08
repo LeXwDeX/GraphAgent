@@ -264,3 +264,25 @@ test("renders a toast in the footer right slot instead of idle hints", async () 
     app.renderer.destroy()
   }
 })
+
+test("shows pending leader keys ahead of a toast in the shared right slot", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => (
+    <ToastProvider>
+      <FooterFromStatus />
+    </ToastProvider>
+  ), { width: 80, state: tmp.path })
+  await app.renderOnce()
+  expect(app.captureCharFrame()).toContain("Copied to clipboard")
+
+  try {
+    app.mockInput.pressKey("x", { ctrl: true })
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+    expect(frame).not.toContain("Copied to clipboard")
+    expect(frame).not.toContain("/ 命令")
+    expectWithin(frame, 80, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
