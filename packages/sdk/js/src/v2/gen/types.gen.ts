@@ -1278,6 +1278,20 @@ export type Config = {
   question_timeout?: number
   username?: string
   language?: "zh-CN" | "en"
+  engine?: {
+    concurrency?: {
+      global?: number
+      perProvider?: number
+      childGlobal?: number
+      taskReserve?: number
+    }
+    cache?: {
+      staggerSiblings?: boolean
+    }
+    memory?: {
+      selectTimeoutMs?: number
+    }
+  }
   mode?: {
     build?: AgentConfig
     plan?: AgentConfig
