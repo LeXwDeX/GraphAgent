@@ -231,16 +231,16 @@ describe("DAG baseline branch coverage", () => {
     }),
   )
 
-  it.effect("rejects extends on archived workflows with the archived denial", () =>
+  it.effect("rejects extends on failed workflows with the immutable denial", () =>
     Effect.gen(function* () {
       const sessionID = "ses_baseline_extend_archived"
       yield* setup(sessionID)
       const dag = yield* Dag.Service
       const dagID = yield* create(dag, sessionID, [node("n")])
-      yield* setWorkflowStatus(dagID, "archived")
+      yield* setWorkflowStatus(dagID, "failed")
 
       const failure = yield* dag.extend(dagID, [node("m")]).pipe(Effect.flip)
-      expect(failure.message).toContain("archived workflows are immutable")
+      expect(failure.message).toContain("failed and cancelled workflows are immutable")
     }),
   )
 

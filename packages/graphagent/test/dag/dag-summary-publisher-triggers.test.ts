@@ -22,6 +22,7 @@ const workflow = (id: string): WorkflowRow => ({
   targetFingerprint: { kind: "none" },
   title: id,
   status: "running",
+  pauseReason: null,
   config: "",
   seq: 0,
   wakeReported: false,

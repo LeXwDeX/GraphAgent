@@ -105,6 +105,7 @@ const storeImpl = {
             targetFingerprint: { kind: "none" } as const,
             title: "Rev status",
             status: "running",
+            pauseReason: null,
             config: "{}",
             seq: 3,
             wakeReported: false,

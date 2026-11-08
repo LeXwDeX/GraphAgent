@@ -91,12 +91,14 @@ export function dagNodeHistoryLabel(node: { replan_attempts: number | string }):
 
 /** Settled progress with a completed/skipped split (P1-E). A bare "8/8" reads
  * as "8 succeeded" even when 7 were skipped — condition gates, or a cancelled
- * workflow's never-run/aborted nodes (never-run nodes publish NodeSkipped;
- * running or paused nodes cancelled by terminateNonTerminalNodes publish
- * NodeAborted). The ✓ completed / ⊘ skipped split removes that false-success
- * signal. The split is omitted when nothing has settled so a narrow nav row
- * keeps the workflow title (primary navigation) visible. Accepts the SDK's
- * Infinity/NaN string sentinels (coerced via Number). */
+ * workflow's never-run nodes (never-run nodes publish NodeSkipped; running or
+ * queued nodes cancelled by terminateNonTerminalNodes publish NodeAborted).
+ * The ✓ completed / ⊘ skipped split removes that false-success signal, and
+ * D11 keeps aborted (terminal but not settled) out of the numerator so a
+ * cancelled workflow never reads as finished. The split is omitted when
+ * nothing has settled so a narrow nav row keeps the workflow title (primary
+ * navigation) visible. Accepts the SDK's Infinity/NaN string sentinels
+ * (coerced via Number). */
 export function formatDagProgress(summary: {
   nodeCount: number | string
   completedNodes: number | string
@@ -107,7 +109,7 @@ export function formatDagProgress(summary: {
   const completed = Number(summary.completedNodes)
   const skipped = Number(summary.skippedNodes)
   const aborted = Number(summary.abortedNodes ?? 0)
-  const settled = completed + skipped + aborted
+  const settled = completed + skipped
   return settled > 0
     ? `${settled}/${total} ✓${completed} ⊘${skipped}${aborted > 0 ? ` ↯${aborted}` : ""}`
     : `${settled}/${total}`

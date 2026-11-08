@@ -111,8 +111,9 @@ describe("node detail formatting", () => {
     // audit #8 — the incident shape: a cancelled workflow's 1 completed + 7
     // skipped must NOT read as a bare "8/8" success; the ✓/⊘ split exposes it.
     expect(formatDagProgress({ nodeCount: 8, completedNodes: 1, skippedNodes: 7 })).toBe("8/8 ✓1 ⊘7")
+    // D11: aborted is terminal but not settled — it stays out of the numerator.
     expect(formatDagProgress({ nodeCount: 8, completedNodes: 1, skippedNodes: 6, abortedNodes: 1 })).toBe(
-      "8/8 ✓1 ⊘6 ↯1",
+      "7/8 ✓1 ⊘6 ↯1",
     )
   })
 })

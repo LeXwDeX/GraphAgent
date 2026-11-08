@@ -449,7 +449,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           const cancelled = yield* store.getNode(dagID, "a")
           expect(cancelled?.status).toBe("failed")
           expect(cancelled?.errorReason).toBe("cancelled via replan")
-          expect(cancelled?.errorClass).toBeNull()
+          expect(cancelled?.errorClass).toBe("cancelled")
           const replacement = yield* takeWithin(childPrompts, "replacement b did not start")
           expect(replacement.title).toBe("b")
           expect(state.replacement?.status).toBe("running")
