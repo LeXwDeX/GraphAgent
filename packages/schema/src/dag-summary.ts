@@ -20,8 +20,9 @@ export const WorkflowSummary = Schema.Struct({
   // displays count completed+skipped as settled so a gated workflow doesn't
   // finish with a "3/9" denominator lie. queued surfaces true concurrency.
   skippedNodes: Schema.Number,
-  // Optional on the wire so a new client can still read an older server.
-  abortedNodes: Schema.optional(NonNegativeInt),
+  // D11: aborted is terminal but not settled — the summary carries the count
+  // as a required field now that the B2 compatibility window is closed.
+  abortedNodes: NonNegativeInt,
   queuedNodes: Schema.Number,
   // F10: running nodes with a not-yet-adjudicated timeout escalation
   // (escalation_pending) — lets the TUI distinguish normal RUNNING from

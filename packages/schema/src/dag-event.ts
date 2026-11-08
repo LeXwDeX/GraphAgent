@@ -4,6 +4,7 @@
 export * as DagEvent from "./dag-event"
 
 import { Schema } from "effect"
+import { NODE_STATUS_VALUES, WORKFLOW_STATUS_VALUES } from "./dag-status"
 import { Event } from "./event"
 import { DateTimeUtcFromMillis, NonNegativeInt } from "./schema"
 import { withStatics } from "./schema"
@@ -64,19 +65,11 @@ const options = {
 } as const
 
 // ============================================================================
-// Status enums (mirrors core/types.ts but as Schema literals for events)
+// Status enums (D11: literal values come from the single dag-status source;
+// core/types.ts derives its scheduling enums from the same arrays)
 // ============================================================================
 
-export const WorkflowStatus = Schema.Literals([
-  "pending",
-  "running",
-  "paused",
-  "stepping",
-  "completed",
-  "failed",
-  "cancelled",
-  "archived",
-])
+export const WorkflowStatus = Schema.Literals(WORKFLOW_STATUS_VALUES)
 export type WorkflowStatus = typeof WorkflowStatus.Type
 
 /**
@@ -97,16 +90,7 @@ export const TargetFingerprint = Schema.Union([
 ])
 export type TargetFingerprint = typeof TargetFingerprint.Type
 
-export const NodeStatus = Schema.Literals([
-  "pending",
-  "queued",
-  "running",
-  "paused",
-  "completed",
-  "failed",
-  "aborted",
-  "skipped",
-])
+export const NodeStatus = Schema.Literals(NODE_STATUS_VALUES)
 export type NodeStatus = typeof NodeStatus.Type
 
 /** #946: the worktree an isolated node ran in. `started` carries only the
@@ -170,7 +154,13 @@ export type WorkflowStarted = typeof WorkflowStarted.Type
 export const WorkflowPaused = Event.define({
   type: "dag.workflow.paused",
   ...options,
-  schema: Base,
+  schema: {
+    ...Base,
+    /** D12: why the pause happened (e.g. "budget_exhausted"). Optional and
+     * open so legacy durable events and future reasons both decode; the write
+     * side narrows to the PauseReason union at the call site. */
+    reason: Schema.optional(Schema.String),
+  },
 })
 export type WorkflowPaused = typeof WorkflowPaused.Type
 
