@@ -470,6 +470,8 @@ describe("spawn worktree isolation", () => {
               id: "dag_1",
               project_id: Project.ID.make("project-1"),
               session_id: SessionSchema.ID.make("ses_parent"),
+              directory: target,
+              target_fingerprint: { kind: "none" },
               title: "Isolation",
               status: "running",
               config: "{}",

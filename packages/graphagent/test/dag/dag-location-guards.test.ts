@@ -567,6 +567,8 @@ function seedTerminalWorkflow(
     id: "wake-wf",
     project_id: PROJECT_ID as never,
     session_id: SES_A as never,
+    directory: DIR_A as never,
+    target_fingerprint: { kind: "none" },
     title: "Terminal workflow for sesA",
     status: "failed",
     config: "{}",
@@ -1289,7 +1291,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     }
   })
 
-  it("#948: an unstamped terminal wake reaches the parent directory and does not block a later valid workflow", async () => {
+  it("#948: a terminal wake reaches the parent directory and does not block a later valid workflow", async () => {
     await Effect.runPromise(
       runTwoInstanceGuardTest(
         { deliverWakes: true },
@@ -1307,7 +1309,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             const text = wake.input.parts
               .map((part) => (part.type === "text" ? part.text : ""))
               .join("\n")
-            expect(text).toContain("NULL zombie")
+            expect(text).toContain("Earlier terminal workflow")
             expect(text).toContain("Valid later workflow")
             yield* Deferred.succeed(wake.release, "acknowledged")
 
@@ -1329,7 +1331,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
                 id: "wake-null",
                 project_id: PROJECT_ID as never,
                 session_id: SES_A as never,
-                title: "NULL zombie",
+                directory: DIR_A as never,
+                target_fingerprint: { kind: "none" },
+                title: "Earlier terminal workflow",
                 status: "failed",
                 config: "{}",
                 seq: 1,
@@ -1340,6 +1344,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
                 project_id: PROJECT_ID as never,
                 session_id: SES_A as never,
                 directory: DIR_A as never,
+                target_fingerprint: { kind: "none" },
                 title: "Valid later workflow",
                 status: "failed",
                 config: "{}",
@@ -1352,7 +1357,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     )
   })
 
-  it("#948: a sweep-terminalized NULL workflow notifies the parent without a runtime entry", async () => {
+  it("#948: a sweep-terminalized unusable workflow notifies the parent without a runtime entry", async () => {
     await Effect.runPromise(
       runTwoInstanceGuardTest(
         { deliverWakes: true },
@@ -1363,13 +1368,13 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             // event published by the host-level sweep for a workflow the live
             // loop never adopted (no runtime entry).
             yield* sweep.sweepOnce()
-            expect((yield* store.getWorkflow("dag-wake-swept-null"))?.status).toBe("failed")
+            expect((yield* store.getWorkflow("dag-wake-swept-unusable"))?.status).toBe("failed")
 
             const wake = yield* takeWithin(childPromptsA, "parent did not receive the swept workflow wake")
             const text = wake.input.parts
               .map((part) => (part.type === "text" ? part.text : ""))
               .join("\n")
-            expect(text).toContain("Swept NULL workflow")
+            expect(text).toContain("Swept unusable workflow")
             yield* Deferred.succeed(wake.release, "acknowledged")
             yield* pollWithTimeout(
               Effect.gen(function* () {
@@ -1383,10 +1388,13 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
           }),
         ({ database }) =>
           database.db.insert(WorkflowTable).values({
-            id: "dag-wake-swept-null",
+            id: "dag-wake-swept-unusable",
             project_id: PROJECT_ID as never,
             session_id: SES_A as never,
-            title: "Swept NULL workflow",
+            directory: DIR_A as never,
+            execution_directory: path.join(directoryRoot, "gone-workflow") as never,
+            target_fingerprint: { kind: "none" },
+            title: "Swept unusable workflow",
             status: "running",
             config: "{}",
             seq: 1,
@@ -1521,7 +1529,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     expect(logs).not.toContain("goal afterIdle failed")
   })
 
-  it("P2-D: a NULL-directory workflow is never owned and raises no per-process skip warning", async () => {
+  it("P2-D: an empty-directory workflow is never owned and raises no per-process skip warning", async () => {
     const lines: string[] = []
     const collector = Logger.make((opts) => {
       lines.push(String(opts.message))
@@ -1542,24 +1550,29 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
           title: SES_A,
           version: "test",
         }).run().pipe(Effect.orDie)
-        // A pre-DAG-LOC-01 workflow with no directory stamp (post-backfill
-        // cross-version write): ownership stays fail-closed, but the sweep is
-        // now the terminalization path (covered by the workspace-missing test).
+        // An empty stamp cannot be produced by create, but the projector keeps
+        // a stored event without the field NOT NULL by writing "". Ownership
+        // and execution stay fail-closed for that row.
         yield* database.db.insert(WorkflowTable).values({
-          id: "p2d-null-wf",
+          id: "p2d-empty-wf",
           project_id: PROJECT_ID as never,
           session_id: SES_A as never,
-          title: "NULL zombie",
+          directory: "",
+          target_fingerprint: { kind: "none" },
+          title: "Empty stamp",
           status: "running",
           config: "{}",
           seq: 1,
         }).run().pipe(Effect.orDie)
-        yield* DagLocation.ownsWorkflow("p2d-null-wf", DIR_A).pipe(Effect.ignore)
-        yield* DagLocation.ownsWorkflow("p2d-null-wf", DIR_A).pipe(Effect.ignore)
+        yield* DagLocation.ownsWorkflow("p2d-empty-wf", DIR_A).pipe(Effect.ignore)
+        yield* DagLocation.ownsWorkflow("p2d-empty-wf", DIR_A).pipe(Effect.ignore)
         const warnings = lines.filter((line) => line.includes("NULL execution-location directory"))
         expect(warnings).toHaveLength(0)
-        expect(DagLocation.resolveExecution({ directory: null })._tag).toBe("unstamped")
-        expect(DagLocation.resolveExecution({ directory: "" })._tag).toBe("unstamped")
+        expect(DagLocation.resolveExecution({ directory: "" })).toEqual({
+          _tag: "invalid",
+          directory: "",
+          reason: "workflow has no recorded execution directory",
+        })
         expect(DagLocation.resolveExecution({ directory: DIR_A })).toEqual({ _tag: "ok", directory: DIR_A })
         expect(DagLocation.resolveExecution({ directory: path.join(directoryRoot, "gone") })._tag).toBe("missing")
       }).pipe(
@@ -1657,6 +1670,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
           config: "{}",
           seq: 1,
           directory: process.cwd() as never,
+          target_fingerprint: { kind: "none" },
         }).run().pipe(Effect.orDie)
         const scope = yield* Scope.Scope
         const watcher = yield* makeDeadlineWatcher({ dagID: "p2w", nodeID: "n1", timeoutMs: 300 }).pipe(
@@ -1859,6 +1873,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               project_id: PROJECT_ID as never,
               session_id: SES_A as never,
               directory: DIR_A as never,
+              target_fingerprint: { kind: "none" },
               title: "terminal wake c8",
               status: "failed",
               config: "{}",
@@ -2027,6 +2042,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
                 project_id: PROJECT_ID as never,
                 session_id: sessionID as never,
                 directory: DIR_A as never,
+                target_fingerprint: { kind: "none" },
                 title: `terminal wake ${id}`,
                 status: "failed",
                 config: "{}",
@@ -2058,6 +2074,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               project_id: PROJECT_ID as never,
               session_id: SES_A as never,
               directory: DIR_A as never,
+              target_fingerprint: { kind: "none" },
               title: "pending orphan",
               status: "pending",
               config: "{}",

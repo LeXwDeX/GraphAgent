@@ -1555,6 +1555,7 @@ describe("DagLoop atomic wake integration", () => {
                 project_id: "project-1" as never,
                 session_id: "ses_parent" as never,
                 directory: process.cwd(),
+                target_fingerprint: { kind: "none" },
                 title: "Recovered workflow",
                 status: "completed",
                 config: "{}",
@@ -1840,6 +1841,7 @@ describe("DagLoop atomic wake integration", () => {
                 project_id: "project-1" as never,
                 session_id: "ses_parent" as never,
                 directory: process.cwd(),
+                target_fingerprint: { kind: "none" },
                 title: "Recovered conditional workflow",
                 status: "running",
                 config: JSON.stringify({
@@ -2088,6 +2090,7 @@ describe("DagLoop atomic wake integration", () => {
                 project_id: Project.ID.make("project-1"),
                 session_id: SessionID.make("ses_parent"),
                 directory: process.cwd(),
+                target_fingerprint: { kind: "none" },
                 title: "Recovered required skip",
                 status: "running",
                 config: JSON.stringify({
@@ -2221,6 +2224,7 @@ describe("DagLoop atomic wake integration", () => {
                 project_id: "project-1" as never,
                 session_id: "ses_parent" as never,
                 directory: process.cwd(),
+                target_fingerprint: { kind: "none" },
                 title: "Recovered review rejection",
                 status: "running",
                 config: JSON.stringify({

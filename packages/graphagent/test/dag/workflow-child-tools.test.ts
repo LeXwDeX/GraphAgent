@@ -113,6 +113,7 @@ describe("workflow child boundary", () => {
         projectId: ProjectV2.ID.global,
         sessionId: owner,
         directory: "/tmp/opencode",
+        targetFingerprint: { kind: "none" },
         title: "Owned workflow",
         status: "running",
         config: "{}",
