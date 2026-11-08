@@ -7,10 +7,17 @@ import { batch, onCleanup, onMount } from "solid-js"
 export type EventSource = {
   subscribe: (handler: (event: GlobalEvent) => void) => Promise<() => void>
   /**
+   * Preferred transport: one worker frame per batch. The worker already merged
+   * deltas and aligned the batch to its frame budget, so the client only wraps
+   * the emissions in a single Solid `batch`.
+   */
+  subscribeBatch?: (handler: (events: GlobalEvent[]) => void) => Promise<() => void>
+  /** Replace the session set whose full event stream the worker forwards. */
+  setInterest?: (full: readonly string[]) => Promise<void>
+  /**
    * Optional reconnect notifier. When the transport re-establishes a stream
    * after a disconnect, this hook fires so the SDK can emit its local
-   * `reconnected` lifecycle signal. Absent in production (the SSE retry loop
-   * emits the signal directly); present in tests for deterministic injection.
+   * `reconnected` lifecycle signal.
    */
   onReconnect?: (handler: () => void) => () => void
 }
@@ -32,7 +39,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     events?: EventSource
   }) => {
     const abort = new AbortController()
-    let sse: AbortController | undefined
 
     function createSDK() {
       return createOpencodeClient({
@@ -70,110 +76,41 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       },
     }
 
-    let queue: GlobalEvent[] = []
-    let timer: Timer | undefined
-    let last = 0
-    const retryDelay = 1000
-    const maxRetryDelay = 30000
-
-    const flush = () => {
-      if (queue.length === 0) return
-      const events = queue
-      queue = []
-      timer = undefined
-      last = Date.now()
-      // Batch all event emissions so all store updates result in a single render
-      batch(() => {
-        for (const event of events) {
-          emitter.emit("event", event)
-        }
-      })
-    }
-
-    const handleEvent = (event: GlobalEvent) => {
-      queue.push(event)
-      const elapsed = Date.now() - last
-
-      if (timer) return
-      // If we just flushed recently (within 16ms), batch this with future events
-      // Otherwise, process immediately to avoid latency
-      if (elapsed < 16) {
-        timer = setTimeout(flush, 16)
-        return
-      }
-      flush()
-    }
-
-    function startSSE() {
-      sse?.abort()
-      const ctrl = new AbortController()
-      sse = ctrl
-      ;(async () => {
-        let attempt = 0
-        while (true) {
-          if (abort.signal.aborted || ctrl.signal.aborted) break
-
-          const events = await sdk.global.event({
-            signal: ctrl.signal,
-            sseMaxRetryAttempts: 0,
-          })
-
-          // A retry that successfully acquires a stream is a reconnect —
-          // emit the lifecycle signal so consumers can recover state they
-          // may have missed while the transport was down. The first
-          // connection (attempt 0) is NOT a reconnect.
-          if (attempt > 0) emitter.emit("reconnected")
-
-          if (Flag.GRAPHAGENT_WORKSPACES) {
-            // Start syncing workspaces, it's important to do this after
-            // we've started listening to events
-            await sdk.sync.start().catch(() => {})
-          }
-
-          for await (const event of events.stream) {
-            if (ctrl.signal.aborted) break
-            handleEvent(event)
-          }
-
-          if (timer) clearTimeout(timer)
-          if (queue.length > 0) flush()
-          attempt += 1
-          if (abort.signal.aborted || ctrl.signal.aborted) break
-
-          // Exponential backoff
-          const backoff = Math.min(retryDelay * 2 ** (attempt - 1), maxRetryDelay)
-          await new Promise((resolve) => setTimeout(resolve, backoff))
-        }
-      })().catch(() => {})
-    }
-
     onMount(async () => {
-      if (props.events) {
-        const unsub = await props.events.subscribe(handleEvent)
-        onCleanup(unsub)
+      const events = props.events
+      // The TUI always receives events from the worker transport. There is no
+      // SSE fallback: a missing source means no event delivery, not a second
+      // retry loop with its own 16ms queue.
+      if (!events) return
 
-        // Plumb the optional reconnect notifier through the same local signal
-        // so tests and desktop event sources can trigger recovery without the
-        // SSE retry loop.
-        if (props.events.onReconnect) {
-          const unsubReconnect = props.events.onReconnect(() => emitter.emit("reconnected"))
-          onCleanup(unsubReconnect)
-        }
+      const emitBatch = (batchEvents: GlobalEvent[]) => {
+        if (batchEvents.length === 0) return
+        batch(() => {
+          for (const event of batchEvents) {
+            emitter.emit("event", event)
+          }
+        })
+      }
 
-        if (Flag.GRAPHAGENT_WORKSPACES) {
-          // Start syncing workspaces, it's important to do this after
-          // we've started listening to events
-          await sdk.sync.start().catch(() => {})
-        }
-      } else {
-        startSSE()
+      const unsub = events.subscribeBatch
+        ? await events.subscribeBatch(emitBatch)
+        : await events.subscribe((event) => emitBatch([event]))
+      onCleanup(unsub)
+
+      if (events.onReconnect) {
+        const unsubReconnect = events.onReconnect(() => emitter.emit("reconnected"))
+        onCleanup(unsubReconnect)
+      }
+
+      if (Flag.GRAPHAGENT_WORKSPACES) {
+        // Start syncing workspaces, it's important to do this after
+        // we've started listening to events
+        await sdk.sync.start().catch(() => {})
       }
     })
 
     onCleanup(() => {
       abort.abort()
-      sse?.abort()
-      if (timer) clearTimeout(timer)
       eventHandlers.clear()
       reconnectHandlers.clear()
     })
@@ -185,6 +122,8 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       directory: props.directory,
       event: emitter,
       fetch: props.fetch ?? fetch,
+      /** Replace the full-session interest set, e.g. from the F1 aggregator. */
+      setInterest: (full: readonly string[]) => props.events?.setInterest?.(full) ?? Promise.resolve(),
       url: props.url,
     }
   },

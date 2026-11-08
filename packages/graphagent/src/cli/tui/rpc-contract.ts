@@ -29,10 +29,12 @@ export type WorkerMethods = {
   snapshot(): Promise<string>
   reload(): Promise<void>
   shutdown(): Promise<void>
+  /** Replace the set of sessions whose full event stream is forwarded. */
+  setInterest(input: { full: readonly string[] }): Promise<void>
 }
 
 export type WorkerEvents = {
-  "global.event": GlobalEvent
+  "global.events": GlobalEvent[]
   "worker.fatal": { message: string; stack?: string }
 }
 

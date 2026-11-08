@@ -5,7 +5,7 @@ import path from "node:path"
 const worker = new Worker(new URL("../../../../src/cli/tui/worker.ts", import.meta.url).href)
 const events: unknown[] = []
 const client = Rpc.client<typeof import("../../../../src/cli/tui/worker").rpc>(worker)
-client.on("global.event", (event) => events.push(event))
+client.on("global.events", (batch) => events.push(...(batch as unknown[])))
 client.on("worker.fatal", () => {
   throw new Error("unexpected worker fatal")
 })
