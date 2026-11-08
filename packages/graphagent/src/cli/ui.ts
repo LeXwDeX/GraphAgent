@@ -1,8 +1,6 @@
 import { EOL } from "os"
 import { Schema } from "effect"
-import { LOGO_AGENT, LOGO_GAP, LOGO_GRAPH } from "./logo"
-
-const wordmark = LOGO_GRAPH.map((row, index) => row + " ".repeat(LOGO_GAP) + (LOGO_AGENT[index] ?? ""))
+import { LOGO_AGENT, LOGO_GAP, LOGO_GRAPH, LOGO_MINI, LOGO_MIN_COLUMNS } from "./logo"
 
 export class CancelledError extends Schema.TaggedError<CancelledError>()("UICancelledError", {}) {}
 
@@ -41,14 +39,10 @@ export function empty() {
 }
 
 export function logo(pad?: string) {
-  if (!process.stdout.isTTY && !process.stderr.isTTY) {
-    const result = []
-    for (const row of wordmark) {
-      if (pad) result.push(pad)
-      result.push(row)
-      result.push(EOL)
-    }
-    return result.join("").trimEnd()
+  // The wordmark only fits a wide interactive terminal. Narrow terminals,
+  // pipes and non-TTY stderr get the single-line mark instead.
+  if (!process.stderr.isTTY || (process.stderr.columns ?? 0) < LOGO_MIN_COLUMNS) {
+    return (pad ?? "") + LOGO_MINI
   }
 
   const result: string[] = []
