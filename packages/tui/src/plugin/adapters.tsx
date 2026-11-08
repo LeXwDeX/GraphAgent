@@ -139,9 +139,6 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
           ? { goal: g.goal, status: g.status, turnsUsed: Number(g.turnsUsed), maxTurns: Number(g.maxTurns) }
           : undefined
       },
-      dag(sessionID) {
-        return sync.data.dag[sessionID] ?? []
-      },
       messages(sessionID) {
         return sync.data.message[sessionID] ?? []
       },

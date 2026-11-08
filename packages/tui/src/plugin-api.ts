@@ -16,7 +16,6 @@ import type {
   SessionStatus,
   TextPart,
   Config as SdkConfig,
-  DagWorkflowSummary,
 } from "@graphagent/sdk/v2"
 import type { CliRenderer, KeyEvent, RGBA, Renderable, SlotMode } from "@opentui/core"
 import type { Binding, Keymap } from "@opentui/keymap"
@@ -388,7 +387,6 @@ export type TuiState = {
     status: (sessionID: string) => SessionStatus | undefined
     permission: (sessionID: string) => ReadonlyArray<PermissionRequest>
     question: (sessionID: string) => ReadonlyArray<QuestionRequest>
-    dag: (sessionID: string) => ReadonlyArray<TuiSidebarDagItem>
   }
   part: (messageID: string) => ReadonlyArray<Part>
   lsp: () => ReadonlyArray<TuiSidebarLspItem>
@@ -426,7 +424,6 @@ type TuiConfigView = {
   leader_timeout: number
   attention: TuiAttentionConfigView
   keybinds: TuiBindingLookupView
-  dag_fetch_timeout_ms?: number
 }
 
 export type TuiApp = {
@@ -458,8 +455,6 @@ export type TuiSidebarFileItem = {
   additions: number
   deletions: number
 }
-
-export type TuiSidebarDagItem = DagWorkflowSummary
 
 export type TuiHostSlotMap = {
   app: {}

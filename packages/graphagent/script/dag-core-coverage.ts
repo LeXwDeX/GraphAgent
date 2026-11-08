@@ -103,18 +103,14 @@ export async function runDagCoreCoverageGate() {
     await run(["bun", "test", "test/event-manifest.test.ts", "--only-failures"], path.join(root, "packages/schema"))
     await run(["bun", "run", "check:generated"], path.join(root, "packages/sdk/js"))
 
-    yieldMessage("TUI projection and inspector seams")
+    yieldMessage("TUI DAG projection and pure model seams")
     await runCoverageSuite({
       cwd: path.join(root, "packages/tui"),
       output: path.join(output, "tui"),
-      tests: [
-        "test/cli/cmd/tui/sync-dag.test.tsx",
-        "test/feature-plugins/dag-inspector.test.tsx",
-        "test/feature-plugins/dag-inspector-utils.test.ts",
-      ],
+      tests: ["test/cli/cmd/tui/sync-dag.test.tsx", "test/dag/model.test.ts", "test/dag/waves.test.ts"],
       thresholds: [
-        { file: "src/feature-plugins/system/dag-inspector-utils.ts", lines: 98, functions: 95 },
-        { file: "src/feature-plugins/system/dag-inspector.tsx", lines: 90, functions: 88 },
+        { file: "src/dag/model.ts", lines: 100, functions: 100 },
+        { file: "src/dag/waves.ts", lines: 100, functions: 100 },
       ],
     })
   } finally {
