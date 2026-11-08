@@ -347,8 +347,12 @@ export const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Serv
           )
         })
 
-        // Coalesce concurrent track() calls per directory. patch/diffFull and
-        // the other locked operations stay on the semaphore alone.
+        // Coalesce concurrent track() calls per directory. The coordinator must
+        // live in this directory's state, not in a layer-level map keyed by
+        // gitdir: add() runs with cwd=state.directory and pathspec ".", so two
+        // directories of one worktree track different trees and must not share
+        // a batch. patch/diffFull and the other locked operations stay on the
+        // semaphore alone.
         const track = (yield* TrackCoordinator.make(trackOnce)).track
 
         const patch = Effect.fnUntraced(function* (hash: string) {
