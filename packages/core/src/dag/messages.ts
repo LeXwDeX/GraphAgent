@@ -256,6 +256,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const { db } = yield* Database.Service
+    const client = db.$client
     // Process-scoped change stream: mutations collect events inside their
     // transaction and publish only after COMMIT. Unlike durable Event rows,
     // these are invalidation nudges — a lost event costs a rescan, never state.
@@ -263,12 +264,21 @@ export const layer = Layer.effect(
     yield* Effect.addFinalizer(() => PubSub.shutdown(changed))
     const publish = (changes: readonly Change[]) =>
       Effect.forEach(changes, (change) => PubSub.publish(changed, change), { discard: true })
+    // Registered on the innermost transaction level, so the client runs it
+    // after the *outermost* COMMIT — a released savepoint hands its callbacks
+    // to the enclosing level — and discards it when that transaction rolls
+    // back. Publishing after `db.transaction` returns instead would emit
+    // events of a nested level whose enclosing transaction later rolls back.
+    const afterCommit = (changes: readonly Change[]) =>
+      changes.length === 0 ? Effect.void : client.afterCommit(publish(changes))
     const transaction = <A, E, R>(body: (tx: Tx, changes: Change[]) => Effect.Effect<A, E, R>) =>
       Effect.suspend(() => {
         const changes: Change[] = []
         return db
-          .transaction((tx) => body(tx, changes), { behavior: "immediate" })
-          .pipe(Effect.orDie, Effect.tap(() => publish(changes)))
+          .transaction((tx) => body(tx, changes).pipe(Effect.tap(() => afterCommit(changes))), {
+            behavior: "immediate",
+          })
+          .pipe(Effect.orDie)
       })
     const read = <A, E, R>(body: (tx: Tx) => Effect.Effect<A, E, R>) => db.transaction(body).pipe(Effect.orDie)
     const workflow = (tx: Tx, id: string) => tx.get<Workflow>(sql`SELECT * FROM workflow WHERE id = ${id}`)
@@ -281,15 +291,23 @@ export const layer = Layer.effect(
     const workflowParent = (tx: Tx, wf: Workflow) =>
       Effect.gen(function* () {
         const parent = yield* session(tx, wf.session_id)
-        return parent && wf.directory && parent.project_id === wf.project_id &&
+        return parent &&
+          wf.directory &&
+          parent.project_id === wf.project_id &&
           resolvePath(parent.directory) === resolvePath(wf.directory)
           ? parent
           : undefined
       })
     const boundChild = (wf: Workflow, n: Node, s: Session | undefined) => {
       const directory = n.directory ?? wf.execution_directory ?? wf.directory
-      return !!s && !!directory && s.id === n.child_session_id && s.project_id === wf.project_id &&
-        s.parent_id === wf.session_id && resolvePath(s.directory) === resolvePath(directory)
+      return (
+        !!s &&
+        !!directory &&
+        s.id === n.child_session_id &&
+        s.project_id === wf.project_id &&
+        s.parent_id === wf.session_id &&
+        resolvePath(s.directory) === resolvePath(directory)
+      )
     }
     const main = (s: Session): Endpoint => ({
       id: JSON.stringify(["main", s.id, s.time_created]),
@@ -396,7 +414,9 @@ export const layer = Layer.effect(
           const released = yield* undeliverable(tx, id, reason)
           // A repeat close with nothing left to release is a no-op.
           if (box.closed_reason !== null && released.length === 0) continue
-          yield* tx.run(sql`UPDATE agent_mailbox SET closed_reason = COALESCE(closed_reason,${reason}) WHERE id = ${id}`)
+          yield* tx.run(
+            sql`UPDATE agent_mailbox SET closed_reason = COALESCE(closed_reason,${reason}) WHERE id = ${id}`,
+          )
           yield* record(tx, box, "closed", changes)
         }
       })
@@ -475,7 +495,7 @@ export const layer = Layer.effect(
                       )
                   }
                   return result
-                }),
+                }).pipe(Effect.tap(() => afterCommit(changes))),
               { behavior: "immediate" },
             )
             .pipe(
@@ -484,7 +504,6 @@ export const layer = Layer.effect(
                   ? Effect.die(error)
                   : Effect.fail(error),
               ),
-              Effect.tap(() => publish(changes)),
             )
         }),
       resolve: (caller, workflowID, nodeID) =>
@@ -537,8 +556,7 @@ export const layer = Layer.effect(
               if (!n || !request.attemptID || attempt(n) !== request.attemptID) return reject("stale_attempt")
               if (!liveNode(n)) return reject("closed")
               const targetSession = yield* session(tx, n.child_session_id!)
-              if (!boundChild(wf, n, targetSession))
-                return reject("closed")
+              if (!boundChild(wf, n, targetSession)) return reject("closed")
               recipient = child(n)
             } else {
               if (sender.kind !== "node") return reject("unauthorized")
@@ -836,7 +854,7 @@ export const layer = Layer.effect(
                   const target = yield* directory(tx, box.session_id)
                   changes.push(change(box, target?.directory, "closed", claimed.change_seq))
                   return success(yield* commit)
-                }),
+                }).pipe(Effect.tap(() => afterCommit(changes))),
               { behavior: "immediate" },
             )
             .pipe(
@@ -845,7 +863,6 @@ export const layer = Layer.effect(
                   ? Effect.die(error)
                   : Effect.fail(error),
               ),
-              Effect.tap(() => publish(changes)),
             )
         }),
       closeSession: (sessionID, reason) =>
@@ -890,8 +907,14 @@ export const layer = Layer.effect(
             for (const b of boxes) {
               if (!b.workflow_id || !b.node_id) continue
               const wf = yield* workflow(tx, b.workflow_id)
-              if (wf && (wf.project_id !== caller.projectID || !(yield* workflowParent(tx, wf)) ||
-                (caller.sessionID !== wf.session_id && (b.session_id !== caller.sessionID || current!.parent_id !== wf.session_id)))) continue
+              if (
+                wf &&
+                (wf.project_id !== caller.projectID ||
+                  !(yield* workflowParent(tx, wf)) ||
+                  (caller.sessionID !== wf.session_id &&
+                    (b.session_id !== caller.sessionID || current!.parent_id !== wf.session_id)))
+              )
+                continue
               const n = yield* node(tx, b.workflow_id, b.node_id)
               if (!wf || !liveWorkflow(wf.status) || !n || !liveNode(n) || attempt(n) !== b.attempt_id)
                 yield* close(

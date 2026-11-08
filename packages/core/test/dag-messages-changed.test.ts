@@ -463,4 +463,111 @@ describe("DagMessages.changed", () => {
         ])
       }),
     ))
+
+  test("a change nested in a committed outer transaction publishes once after the outer commit", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const m = yield* DagMessages.Service
+        const { db } = yield* Database.Service
+        const queue = yield* record(m)
+
+        yield* db.transaction(() =>
+          Effect.gen(function* () {
+            value(yield* m.send(parent, request()))
+            // The inner savepoint released on return must not publish: the
+            // enclosing transaction has not committed yet.
+            expect(yield* drain(queue)).toEqual([])
+          }),
+        )
+        expect(yield* drain(queue)).toEqual([
+          {
+            workflowID: "wf",
+            nodeID: "n",
+            recipientSessionID: "child",
+            directory: process.cwd(),
+            kind: "queued",
+            mailboxVersion: 1,
+          },
+        ])
+      }),
+    ))
+
+  test("a change nested in a rolled-back outer transaction publishes nothing and keeps its version", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const m = yield* DagMessages.Service
+        const { db } = yield* Database.Service
+        const queue = yield* record(m)
+
+        const outer = yield* Effect.exit(
+          db.transaction(() =>
+            Effect.gen(function* () {
+              value(yield* m.send(parent, request()))
+              expect(yield* drain(queue)).toEqual([])
+              return yield* Effect.fail(new Error("outer rollback"))
+            }),
+          ),
+        )
+        expect(Exit.isFailure(outer)).toBe(true)
+        expect(yield* drain(queue)).toEqual([])
+        // The mailbox creation and its change_seq were rolled back together.
+        expect(
+          yield* db.get<{ revision: number }>(sql`SELECT revision FROM agent_mailbox WHERE session_id = 'child'`),
+        ).toBeUndefined()
+
+        // The rolled-back attempt consumed no mailbox version.
+        value(yield* m.send(parent, request()))
+        expect((yield* drain(queue)).map((change) => change.mailboxVersion)).toEqual([1])
+      }),
+    ))
+
+  test("fenceWorkflow publishes only when it closes or invalidates a mailbox", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const m = yield* DagMessages.Service
+        const queue = yield* record(m)
+
+        value(yield* m.send(parent, request()))
+        yield* drain(queue)
+        // No reason and a live attempt: the commit leaves the mailbox open.
+        expect(yield* m.fenceWorkflow("wf", undefined, Effect.succeed("noop"))).toBe("noop")
+        expect(yield* m.fenceWorkflow("wf", () => undefined, Effect.succeed("noop"))).toBe("noop")
+        expect(yield* drain(queue)).toEqual([])
+        // A function reason derives the terminal reason from the commit result.
+        expect(yield* m.fenceWorkflow("wf", (result) => `done:${result}`, Effect.succeed("ok"))).toBe("ok")
+        expect((yield* drain(queue)).map((change) => change.kind)).toEqual(["closed"])
+      }),
+    ))
+
+  test("rejected operations publish nothing", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const m = yield* DagMessages.Service
+        const queue = yield* record(m)
+
+        const rejected = yield* m.send({ ...parent, projectID: "other" }, request())
+        expect(rejected.ok).toBe(false)
+        expect(yield* drain(queue)).toEqual([])
+      }),
+    ))
+
+  test("every queued message publishes exactly one change with a monotonic version", async () =>
+    run(
+      Effect.gen(function* () {
+        yield* seed
+        const m = yield* DagMessages.Service
+        const queue = yield* record(m)
+
+        for (const key of ["a", "b", "c"]) value(yield* m.send(parent, request(key, key)))
+        expect((yield* drain(queue)).map((change) => [change.kind, change.mailboxVersion])).toEqual([
+          ["queued", 1],
+          ["queued", 2],
+          ["queued", 3],
+        ])
+      }),
+    ))
 })
