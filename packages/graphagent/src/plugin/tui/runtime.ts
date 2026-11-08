@@ -11,7 +11,6 @@ import {
 import { TuiConfig } from "@/config/tui"
 import { errorData, errorMessage } from "@graphagent/tui/util/error"
 import { resolveHostAttentionSoundPaths } from "@/config/tui-host-attention"
-import { internalTuiPlugins, type InternalTuiPlugin } from "./internal"
 import type { HostPluginApi, HostSlots } from "@graphagent/tui/plugin/slots"
 import { createCommandShim } from "@graphagent/tui/plugin/command-shim"
 import { createPluginRuntime, type PluginRuntime, type TuiPluginHost } from "@graphagent/tui/plugin/runtime"
@@ -195,17 +194,6 @@ function createMeta(load: PluginLoad): TuiPluginMeta {
     time_changed: now,
     load_count: 1,
     fingerprint: load.spec,
-  }
-}
-
-function loadInternalPlugin(item: InternalTuiPlugin): PluginLoad {
-  return {
-    options: undefined,
-    spec: item.id,
-    source: "internal",
-    id: item.id,
-    module: item,
-    plugin_root: process.cwd(),
   }
 }
 
@@ -466,16 +454,6 @@ async function load(input: {
   }
   runtime = next
   try {
-    for (const item of internalTuiPlugins()) {
-      const entry = loadInternalPlugin(item)
-      addPluginEntry(next, {
-        id: entry.id,
-        load: entry,
-        meta: createMeta(entry),
-        plugin: entry.module.tui,
-      })
-    }
-
     for (const plugin of next.plugins) {
       // Keep plugin execution sequential for deterministic side effects:
       // command registration order affects keybind/command precedence,

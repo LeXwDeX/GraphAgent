@@ -27,7 +27,8 @@ import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { DialogProvider } from "../../src/ui/dialog"
-import { Toast, ToastProvider } from "../../src/ui/toast"
+import { ToastProvider } from "../../src/ui/toast"
+import { useFooterStatus } from "../../src/shell/footer-status"
 import { tmpdir } from "../fixture/fixture"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -99,6 +100,11 @@ async function mount(
       </Show>
     )
   }
+  // Mirrors the production footer slot that renders transient footer content.
+  function FooterStatusView() {
+    const status = useFooterStatus()
+    return <box flexShrink={0}>{status()}</box>
+  }
   function Harness() {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
@@ -120,7 +126,6 @@ async function mount(
                               <ProjectProvider>
                                 <SyncProvider>
                                   <ThemeProvider mode="dark">
-                                    <Toast />
                                     <LocalProvider>
                                       <PromptStashProvider>
                                         <DialogProvider>
@@ -130,6 +135,7 @@ async function mount(
                                                 <EditorContextProvider integration={{}}>
                                                   <LocationProvider>
                                                     <Content />
+                                                    <FooterStatusView />
                                                   </LocationProvider>
                                                 </EditorContextProvider>
                                               </PromptRefProvider>

@@ -4,7 +4,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { BottomZone } from "./bottom-zone"
 import { Drawer } from "./drawer"
-import { Footer, type FooterHint } from "./footer"
+import { Footer, type FooterHint, type FooterMeta } from "./footer"
 import { StatusBand } from "./status-band"
 import { TopBar, type TopBarRight } from "./top-bar"
 
@@ -21,6 +21,7 @@ export type AppFrameFooter = {
   agent?: string
   agentAction?: string
   hints?: readonly FooterHint[]
+  meta?: FooterMeta
   dag?: JSX.Element
   right?: JSX.Element
 }
@@ -80,6 +81,7 @@ export function AppFrame(props: AppFrameProps) {
           agent={props.footer?.agent}
           agentAction={props.footer?.agentAction}
           hints={props.footer?.hints}
+          meta={props.footer?.meta}
           dag={props.footer?.dag}
           right={props.footer?.right}
         />

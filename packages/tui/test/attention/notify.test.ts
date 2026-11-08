@@ -1,11 +1,15 @@
-import { describe, expect, test } from "bun:test"
-import Notifications from "../../../../src/feature-plugins/system/notifications"
+import { beforeEach, describe, expect, test } from "bun:test"
+import { createTuiNotifications } from "../../src/attention/notify"
+import { setLanguage } from "../../src/i18n"
 import type { Event, PermissionRequest, QuestionRequest, Session } from "@graphagent/sdk/v2"
-import type { TuiAttentionNotifyInput } from "@graphagent/tui/plugin-api"
-import { createTuiPluginApi } from "../../../fixture/tui-plugin"
 
-async function setup() {
-  const notifications: TuiAttentionNotifyInput[] = []
+function setup() {
+  const notifications: {
+    title?: string
+    message: string
+    notification: false | { when: "blurred" }
+    sound: { name: string; when: "always" }
+  }[] = []
   const handlers = new Map<Event["type"], ((event: Event) => void)[]>()
   const session = (id: string, title: string, parentID?: string): Session => ({
     id,
@@ -24,40 +28,35 @@ async function setup() {
     timeout: session("timeout", "Timeout session"),
   }
 
-  await Notifications.tui(
-    createTuiPluginApi({
-      attention: {
-        async notify(input) {
-          notifications.push(input)
-          return { ok: true, notification: true, sound: true }
-        },
+  const dispose = createTuiNotifications({
+    event: {
+      on: <Type extends Event["type"]>(type: Type, handler: (event: Extract<Event, { type: Type }>) => void) => {
+        const list = handlers.get(type) ?? []
+        const wrapped = handler as (event: Event) => void
+        list.push(wrapped)
+        handlers.set(type, list)
+        return () => {
+          handlers.set(
+            type,
+            (handlers.get(type) ?? []).filter((item) => item !== wrapped),
+          )
+        }
       },
-      event: {
-        on: <Type extends Event["type"]>(type: Type, handler: (event: Extract<Event, { type: Type }>) => void) => {
-          const list = handlers.get(type) ?? []
-          const wrapped = handler as (event: Event) => void
-          list.push(wrapped)
-          handlers.set(type, list)
-          return () => {
-            handlers.set(
-              type,
-              (handlers.get(type) ?? []).filter((item) => item !== wrapped),
-            )
-          }
-        },
+    },
+    sessions: {
+      get: (sessionID: string) => sessions[sessionID],
+    },
+    attention: {
+      async notify(input) {
+        notifications.push(input)
+        return { ok: true, notification: true, sound: true }
       },
-      state: {
-        session: {
-          get: (sessionID: string) => sessions[sessionID],
-        },
-      },
-    }),
-    undefined,
-    {} as never,
-  )
+    },
+  })
 
   return {
     notifications,
+    dispose,
     emit(event: Event) {
       for (const handler of handlers.get(event.type) ?? []) handler(event)
     },
@@ -83,23 +82,27 @@ function permission(id: string, sessionID = "session"): PermissionRequest {
   }
 }
 
-const questionNotification: TuiAttentionNotifyInput = {
+const questionNotification = {
   title: "Demo session",
   message: "Question needs input",
-  notification: { when: "blurred" },
-  sound: { name: "question", when: "always" },
+  notification: { when: "blurred" as const },
+  sound: { name: "question", when: "always" as const },
 }
 
-const permissionNotification: TuiAttentionNotifyInput = {
+const permissionNotification = {
   title: "Demo session",
   message: "Permission needs input",
-  notification: { when: "blurred" },
-  sound: { name: "permission", when: "always" },
+  notification: { when: "blurred" as const },
+  sound: { name: "permission", when: "always" as const },
 }
 
-describe("internal notifications TUI plugin", () => {
-  test("notifies for question and permission requests with blurred notifications and always-on sounds", async () => {
-    const harness = await setup()
+beforeEach(() => {
+  setLanguage("en")
+})
+
+describe("internal attention notifications", () => {
+  test("notifies for question and permission requests with blurred notifications and always-on sounds", () => {
+    const harness = setup()
 
     harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1") })
     harness.emit({ id: "event-2", type: "permission.asked", properties: permission("permission-1") })
@@ -107,8 +110,8 @@ describe("internal notifications TUI plugin", () => {
     expect(harness.notifications).toEqual([questionNotification, permissionNotification])
   })
 
-  test("dedupes pending questions and permissions until they are resolved", async () => {
-    const harness = await setup()
+  test("dedupes pending questions and permissions until they are resolved", () => {
+    const harness = setup()
 
     harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1") })
     harness.emit({ id: "event-2", type: "question.asked", properties: question("question-1") })
@@ -136,8 +139,8 @@ describe("internal notifications TUI plugin", () => {
     ])
   })
 
-  test("notifies when an active session becomes idle and suppresses no-op idle", async () => {
-    const harness = await setup()
+  test("notifies when an active session becomes idle and suppresses no-op idle", () => {
+    const harness = setup()
 
     harness.emit({
       id: "event-1",
@@ -165,8 +168,8 @@ describe("internal notifications TUI plugin", () => {
     ])
   })
 
-  test("uses sound-only notifications and subagent_done sound for subagent sessions", async () => {
-    const harness = await setup()
+  test("uses sound-only notifications and subagent_done sound for subagent sessions", () => {
+    const harness = setup()
 
     harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1", "subagent") })
     harness.emit({
@@ -196,8 +199,8 @@ describe("internal notifications TUI plugin", () => {
     ])
   })
 
-  test("notifies session errors once and suppresses the following idle done notification", async () => {
-    const harness = await setup()
+  test("notifies session errors once and suppresses the following idle done notification", () => {
+    const harness = setup()
 
     harness.emit({
       id: "event-1",
@@ -225,8 +228,8 @@ describe("internal notifications TUI plugin", () => {
     ])
   })
 
-  test("special-cases aborts and model response timeouts", async () => {
-    const harness = await setup()
+  test("special-cases aborts and model response timeouts", () => {
+    const harness = setup()
 
     harness.emit({
       id: "event-1",
@@ -263,5 +266,14 @@ describe("internal notifications TUI plugin", () => {
         sound: { name: "error", when: "always" },
       },
     ])
+  })
+
+  test("dispose unsubscribes every handler", () => {
+    const harness = setup()
+
+    harness.dispose()
+    harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1") })
+
+    expect(harness.notifications).toEqual([])
   })
 })

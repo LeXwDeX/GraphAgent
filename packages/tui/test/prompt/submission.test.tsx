@@ -28,7 +28,8 @@ import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
 import { DialogProvider } from "../../src/ui/dialog"
-import { ToastProvider, Toast } from "../../src/ui/toast"
+import { ToastProvider } from "../../src/ui/toast"
+import { useFooterStatus } from "../../src/shell/footer-status"
 import { tmpdir } from "../fixture/fixture"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -143,6 +144,12 @@ function RouteProbe(props: { ready: (value: ReturnType<typeof useRoute>) => void
   return <box />
 }
 
+// Mirrors the production footer slot that renders transient footer content.
+function FooterStatusView() {
+  const status = useFooterStatus()
+  return <box flexShrink={0}>{status()}</box>
+}
+
 function EditorProbe(props: { ready: (value: ReturnType<typeof useEditorContext>) => void }) {
   props.ready(useEditorContext())
   return <box />
@@ -228,7 +235,6 @@ async function mountRoute(
                               <ProjectProvider>
                                 <SyncProvider>
                                     <ThemeProvider mode="dark">
-                                      <Toast />
                                       <LocalProvider>
                                         <LocalProbe
                                           ready={(value) => {
@@ -262,6 +268,7 @@ async function mountRoute(
                                                           <PromptRoute sessionID={sessionID} />
                                                         )}
                                                       </Show>
+                                                      <FooterStatusView />
                                                     </LocationProvider>
                                                   </EditorContextProvider>
                                                 </PromptRefProvider>

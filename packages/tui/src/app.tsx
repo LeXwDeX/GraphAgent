@@ -46,12 +46,17 @@ import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
+import { HomeSessionDestinationProvider } from "./routes/home/session-destination"
+import { useHomeFooterMeta } from "./routes/home/footer-meta"
 import { Main } from "./routes/session"
 import { Diff } from "./routes/diff"
 import { useDiffNavigation } from "./routes/diff/route"
 import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
+import { useDrawer } from "./shell/drawer"
 import { useFooterKeyHints } from "./shell/footer"
+import { useFooterStatus } from "./shell/footer-status"
+import { SessionDrawer } from "./routes/session/drawer"
 import type { TopBarRight } from "./shell/top-bar"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
@@ -82,6 +87,7 @@ import {
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
 import { createTuiAttention } from "./attention"
+import { createTuiNotifications } from "./attention/notify"
 import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
@@ -305,10 +311,12 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                             <PromptRefProvider>
                                                               <EditorContextProvider>
                                                                 <LocationProvider>
-                                                                  <App
-                                                                    onSnapshot={input.onSnapshot}
-                                                                    pluginHost={input.pluginHost}
-                                                                  />
+                                                                  <HomeSessionDestinationProvider>
+                                                                    <App
+                                                                      onSnapshot={input.onSnapshot}
+                                                                      pluginHost={input.pluginHost}
+                                                                    />
+                                                                  </HomeSessionDestinationProvider>
                                                                 </LocationProvider>
                                                               </EditorContextProvider>
                                                             </PromptRefProvider>
@@ -371,8 +379,12 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const promptRef = usePromptRef()
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
+  const disposeNotifications = createTuiNotifications({ event, sessions: sync.session, attention })
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
+  const footerStatus = useFooterStatus()
+  const homeMeta = useHomeFooterMeta()
+  const drawer = useDrawer()
   const diffFooterHints = useDiffFooterHints()
   const diffNavigation = useDiffNavigation()
 
@@ -421,6 +433,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   )
   onCleanup(() => {
     offSelectionKeys()
+    disposeNotifications()
     attention.dispose()
   })
 
@@ -1046,6 +1059,13 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     }
   })
 
+  const drawerContent = createMemo(() => {
+    if (route.data.type !== "session") return
+    if (!drawer.visible()) return
+    if (sync.session.get(route.data.sessionID)?.parentID) return
+    return <SessionDrawer sessionID={route.data.sessionID} />
+  })
+
   return (
     <box
       width={dimensions().width}
@@ -1076,8 +1096,11 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             agent: local.agent.current()?.name,
             agentAction: footerKeys().agent,
             hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
+            meta: route.data.type === "home" ? homeMeta() : undefined,
+            right: footerStatus(),
           }}
           bottomZone={<pluginRuntime.Slot name="app_bottom" />}
+          drawer={drawerContent()}
         >
           <Switch>
             <Match when={route.data.type === "home"}>

@@ -13,7 +13,6 @@
   },
   "exports": {
     ".": "./src/index.tsx",
-    "./builtins": "./src/feature-plugins/builtins.ts",
     "./config": "./src/config/index.tsx",
     "./i18n": "./src/i18n/index.ts",
     "./i18n/receipt": "./src/i18n/receipt.ts",
@@ -29,7 +28,7 @@
     "./context/theme": "./src/context/theme.tsx",
     "./context/editor": "./src/context/editor.ts",
     "./context/clipboard": "./src/context/clipboard.tsx",
-    "./attention": "./src/attention.ts",
+    "./attention": "./src/attention/index.ts",
     "./editor": "./src/editor.ts",
     "./editor-zed": "./src/editor-zed.ts",
     "./runtime": "./src/runtime.tsx",

@@ -1,4 +1,4 @@
-/// <reference path="./audio.d.ts" />
+/// <reference path="../audio.d.ts" />
 import type {
   TuiAttention,
   TuiAttentionNotifyInput,
@@ -10,16 +10,16 @@ import type {
   TuiAttentionSoundPack,
   TuiAttentionSoundPackInfo,
 } from "@graphagent/tui/plugin-api"
-import { AttentionSoundName, type TuiConfig } from "./config"
+import { AttentionSoundName, type TuiConfig } from "../config"
 import { Schema } from "effect"
 import stripAnsi from "strip-ansi"
-import * as TuiAudio from "./audio"
-import defaultSoundPath from "../assets/audio/bip-bop-01.mp3" with { type: "file" }
-import questionSoundPath from "../assets/audio/bip-bop-03.mp3" with { type: "file" }
-import permissionSoundPath from "../assets/audio/staplebops-06.mp3" with { type: "file" }
-import errorSoundPath from "../assets/audio/nope-03.mp3" with { type: "file" }
-import doneSoundPath from "../assets/audio/bip-bop-01.mp3" with { type: "file" }
-import subagentDoneSoundPath from "../assets/audio/yup-01.mp3" with { type: "file" }
+import * as TuiAudio from "../audio"
+import defaultSoundPath from "../../assets/audio/bip-bop-01.mp3" with { type: "file" }
+import questionSoundPath from "../../assets/audio/bip-bop-03.mp3" with { type: "file" }
+import permissionSoundPath from "../../assets/audio/staplebops-06.mp3" with { type: "file" }
+import errorSoundPath from "../../assets/audio/nope-03.mp3" with { type: "file" }
+import doneSoundPath from "../../assets/audio/bip-bop-01.mp3" with { type: "file" }
+import subagentDoneSoundPath from "../../assets/audio/yup-01.mp3" with { type: "file" }
 
 type FocusState = "unknown" | "focused" | "blurred"
 
