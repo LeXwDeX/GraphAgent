@@ -401,7 +401,11 @@ export const layer = Layer.effect(
             effects: "unknown" as const,
             description: definition.description,
             jsonSchema: transform(jsonSchema),
-            definition,
+            // Carry the derived schema on the definition: the execution
+            // pipeline falls back to `fromSchema(parameters)` when the
+            // definition has none, and re-deriving it here doubles the
+            // per-request schema work (H0 S1 `schema.fromSchema`).
+            definition: definition.jsonSchema ? definition : { ...definition, jsonSchema },
           },
         ]
       }
@@ -423,6 +427,7 @@ export const layer = Layer.effect(
         }
         if (input.session.parentID && ROOT_ONLY_TOOLS.has(definition.id)) continue
         if (definition.id === AgentTool.id && !(yield* canUseAgentMessages(input.session))) continue
+        const jsonSchema = definition.jsonSchema ?? ToolJsonSchema.fromSchema(definition.parameters)
         entries.set(definition.id, {
           id: definition.id,
           source: { kind: "builtin", registrationID: `builtin:${index}:${definition.id}` },
@@ -447,8 +452,10 @@ export const layer = Layer.effect(
           ]
             .filter(Boolean)
             .join("\n"),
-          jsonSchema: transform(definition.jsonSchema ?? ToolJsonSchema.fromSchema(definition.parameters)),
-          definition,
+          jsonSchema: transform(jsonSchema),
+          // Keep the derived schema on the definition so the execution
+          // pipeline does not derive it a second time (H0 S1).
+          definition: definition.jsonSchema ? definition : { ...definition, jsonSchema },
         })
       }
 
