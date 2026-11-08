@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createEffect, createMemo, For, Match, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
@@ -128,6 +128,15 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
   const sync = useSync()
   const [store, setStore] = createStore({
     stage: "permission" as PermissionStage,
+  })
+  let requestID = props.request.id
+  // Session routes no longer remount per session; reset the confirmation stage
+  // when a different request replaces the current one.
+  createEffect(() => {
+    const id = props.request.id
+    if (requestID === id) return
+    requestID = id
+    setStore("stage", "permission")
   })
   const pathFormatter = usePathFormatter()
 

@@ -779,10 +779,13 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         category: "VCS",
         slashName: "diff",
         run: () => {
-          diffNavigation.open({
-            mode: "git",
-            sessionID: route.data.type === "session" ? route.data.sessionID : undefined,
-          })
+          const sessionID =
+            route.data.type === "session"
+              ? route.data.sessionID
+              : route.data.type === "diff"
+                ? route.data.params.sessionID
+                : undefined
+          diffNavigation.open({ mode: "git", sessionID })
           dialog.clear()
         },
       },

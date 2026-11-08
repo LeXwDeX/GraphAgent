@@ -961,4 +961,3 @@ function DiffViewerHelpDialog() {
     </box>
   )
 }
-
