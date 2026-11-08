@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import type { FoldRef } from "@graphagent/core/session/context-folding"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { jsonSchema, tool, type ModelMessage } from "ai"
+import { Effect } from "effect"
 import { ContextFolding, type HistorySnapshot, type Snapshot } from "@/session/context-folding"
+import type { Interface as ToolSourceLedgerInterface } from "@/session/tool-source-ledger"
+import { MessageID, PartID, SessionID } from "@/session/schema"
 import { LLMNative } from "@/session/llm/native-request"
 import { ProviderTransform } from "@/provider/transform"
 import { ProviderTest } from "../fake/provider"
@@ -614,5 +618,123 @@ describe("session.context-folding OpenCode wire adapters", () => {
     expect(dropped).toBeDefined()
     expect(dropped!.duplicatePlan.replacements).toEqual([])
     expect(dropped!.duplicatePlan.skipReason).toBe("mapping-mismatch")
+  })
+})
+
+// H5 (#1016): turn diffs moved to `message_diff`, so a user message that only
+// carries `summary.diffs` is still a real user turn. A summary with a
+// title/body still marks a synthetic message.
+describe("session.context-folding task epochs", () => {
+  const sessionID = SessionID.make("ses_context_folding_epoch")
+  const pad = "x".repeat(30_000)
+
+  const ledger: ToolSourceLedgerInterface = {
+    activate: () => Effect.succeed("generation"),
+    record: () => Effect.void,
+    lookup: (input) =>
+      Effect.succeed({
+        sessionID: input.sessionID,
+        assistantMessageID: input.assistantMessageID,
+        callID: input.callID,
+        toolName: input.toolName,
+        sourceKind: "host-builtin" as const,
+        registrationID: "read",
+        registrationGeneration: "generation",
+      }),
+    clearSession: () => Effect.void,
+  }
+
+  const textPart = (messageID: MessageID, text: string): SessionV1.TextPart => ({
+    id: PartID.ascending(),
+    sessionID,
+    messageID,
+    type: "text",
+    text,
+  })
+
+  const userMessage = (id: MessageID, text: string, summary?: SessionV1.User["summary"]): SessionV1.WithParts => ({
+    info: {
+      id,
+      sessionID,
+      role: "user",
+      time: { created: 1 },
+      agent: "build",
+      model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
+      ...(summary ? { summary } : {}),
+    },
+    parts: [textPart(id, text)],
+  })
+
+  const assistantMessage = (id: MessageID, parentID: MessageID, parts: SessionV1.Part[]): SessionV1.WithParts => ({
+    info: {
+      id,
+      sessionID,
+      role: "assistant",
+      parentID,
+      time: { created: 2 },
+      agent: "build",
+      modelID: ModelV2.ID.make("test-model"),
+      providerID: ProviderV2.ID.make("test"),
+      mode: "build",
+      path: { cwd: "/tmp", root: "/tmp" },
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      finish: "stop",
+    },
+    parts,
+  })
+
+  const readPart = (messageID: MessageID, callID: string): SessionV1.ToolPart => ({
+    id: PartID.ascending(),
+    sessionID,
+    messageID,
+    type: "tool",
+    callID,
+    tool: "read",
+    state: {
+      status: "completed",
+      input: { filePath: "/tmp/a.txt" },
+      output: body,
+      title: "a.txt",
+      metadata: { contextFoldingInstructions: "none", loaded: [] },
+      time: { start: 1, end: 2 },
+    },
+  })
+
+  // Six steps: the duplicated read sits in step 0 (source) and step 5
+  // (witness). The last four steps are padded past the recent-protection token
+  // budget so step 0 stays foldable.
+  const history = (lateUserSummary: SessionV1.User["summary"]) => {
+    const first = MessageID.make("msg_epoch_first")
+    const second = MessageID.make("msg_epoch_second")
+    const assistant = (index: number, parentID: MessageID, parts: SessionV1.Part[]) =>
+      assistantMessage(MessageID.make(`msg_epoch_a${index}`), parentID, parts)
+    return ContextFolding.history({
+      messages: [
+        userMessage(first, "first task", { diffs: [] }),
+        assistant(0, first, [readPart(MessageID.make("msg_epoch_a0"), "call:epoch-source")]),
+        assistant(1, first, [textPart(MessageID.make("msg_epoch_a1"), pad)]),
+        assistant(2, first, [textPart(MessageID.make("msg_epoch_a2"), pad)]),
+        assistant(3, first, [textPart(MessageID.make("msg_epoch_a3"), pad)]),
+        userMessage(second, "second task", lateUserSummary),
+        assistant(4, second, [textPart(MessageID.make("msg_epoch_a4"), pad)]),
+        assistant(5, second, [readPart(MessageID.make("msg_epoch_a5"), "call:epoch-witness")]),
+      ],
+      ledger,
+    })
+  }
+
+  test("a diffs-only user summary still opens a new task epoch", () => {
+    const result = Effect.runSync(history({ diffs: [] }))
+    expect(result.duplicatePlan.replacements).toHaveLength(1)
+    expect(result.duplicatePlan.replacements[0]?.source.callID).toBe("call:epoch-source")
+    // Source belongs to the first epoch, the witness to the latest one.
+    expect(result.duplicatePlan.replacements[0]?.anchor).toBe(false)
+  })
+
+  test("a titled user summary stays synthetic and keeps one epoch", () => {
+    const result = Effect.runSync(history({ title: "compacted", diffs: [] }))
+    expect(result.duplicatePlan.replacements).toHaveLength(1)
+    expect(result.duplicatePlan.replacements[0]?.anchor).toBe(true)
   })
 })

@@ -30,7 +30,8 @@ import { LLMEvent } from "@graphagent/llm"
 const summary = Layer.succeed(
   SessionSummary.Service,
   SessionSummary.Service.of({
-    summarize: () => Effect.void,
+    summarizeTurn: () => Effect.void,
+    read: () => Effect.succeed([]),
     diff: () => Effect.succeed([]),
     computeDiff: () => Effect.succeed([]),
   }),

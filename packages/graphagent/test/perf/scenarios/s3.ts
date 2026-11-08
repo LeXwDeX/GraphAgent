@@ -15,7 +15,7 @@ import type { Measurement, Scenario } from "./types"
 // marker points near the end, so the reconstructed visible history is only the
 // retained tail. The measured turn is a plain conversation request: it must
 // read the visible history, carry the media parts (images on user messages,
-// one 256KiB summary diff), and trigger no compaction.
+// one 256KiB message diff), and trigger no compaction.
 //
 // This is the H4 baseline shape: `sql.read` records what the current
 // full-table read costs, and `convert.messages` records what the reconstructed

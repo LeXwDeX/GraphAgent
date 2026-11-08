@@ -6,9 +6,9 @@ import { Session } from "@/session/session"
 import { MessageID, PartID, type SessionID } from "@/session/schema"
 
 // Session history seeders for the H0 compaction scenarios (S2/S3). They write
-// through Session.updateMessage/updatePart so seeding exercises the same event
-// bus and projectors as production, but always before `reset()` so the seed
-// cost is not part of a measurement.
+// through Session.updateMessage/updatePart (and writeMessageDiff for turn
+// diffs) so seeding exercises the same event bus and projectors as production,
+// but always before `reset()` so the seed cost is not part of a measurement.
 
 export const modelRef = {
   providerID: ProviderV2.ID.make("test"),
@@ -51,11 +51,11 @@ export interface SeedTurnOptions {
    */
   readonly userParts?: (messageID: MessageID, sessionID: SessionID) => ReadonlyArray<SessionV1.Part>
   /**
-   * `summary.diffs` for the user message. This is where production persists
-   * payload-sized diffs (`MAX_SUMMARY_DIFF_BYTES` truncates exactly this list),
-   * so a 256KiB diff fixture belongs here rather than on tool output.
+   * `message_diff` row for the user message. This is where production persists
+   * payload-sized turn diffs (`MAX_SUMMARY_DIFF_BYTES` truncates exactly this
+   * list), so a 256KiB diff fixture belongs here rather than on tool output.
    */
-  readonly userSummaryDiffs?: NonNullable<SessionV1.User["summary"]>["diffs"]
+  readonly userMessageDiff?: NonNullable<SessionV1.User["summary"]>["diffs"]
 }
 
 /** A valid 1x1 PNG: real image bytes small enough to repeat every few turns. */
@@ -126,7 +126,7 @@ export interface SeedCompactedHistoryOptions {
   readonly tailTurns: number
   /** Every Nth retained-turn user message also carries an inline image. */
   readonly imageEvery?: number
-  /** Size of the summary diff stored on the newest user message. */
+  /** Size of the turn diff stored in `message_diff` for the newest user message. */
   readonly summaryDiffBytes?: number
 }
 
@@ -157,7 +157,7 @@ export const seedCompactedHistory = (sessionID: SessionID, options: SeedCompacte
             : []
         },
         ...(last && diff
-          ? { userSummaryDiffs: [{ file: "file.txt", patch: diff, additions: 1, deletions: 0, status: "modified" }] }
+          ? { userMessageDiff: [{ file: "file.txt", patch: diff, additions: 1, deletions: 0, status: "modified" }] }
           : {}),
       })
       if (turn === tailStartTurn) tailStartID = seeded.user.id
@@ -256,8 +256,9 @@ export const seedTurn = (sessionID: SessionID, turn: number, options: SeedTurnOp
       agent: "build",
       model: modelRef,
       time: { created: createdAt },
-      ...(options.userSummaryDiffs ? { summary: { diffs: [...options.userSummaryDiffs] } } : {}),
     })
+    if (options.userMessageDiff)
+      yield* sessions.writeMessageDiff({ sessionID, messageID: user.id, diff: options.userMessageDiff })
     yield* sessions.updatePart({
       id: PartID.ascending(),
       messageID: user.id,

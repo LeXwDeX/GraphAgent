@@ -78,10 +78,14 @@ describe("session diff with missing patch (#26574)", () => {
           time: { created: Date.now() },
           agent: "build",
           model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
-          summary: {
-            diffs: [{ file: "turn.ts", additions: 1, deletions: 0, status: "modified" }],
-          },
         } satisfies SessionV1.User)
+        // H5 (#1016): turn diffs are stored in `message_diff`, not on the
+        // message's `summary`.
+        yield* Session.use.writeMessageDiff({
+          sessionID: session.id,
+          messageID,
+          diff: [{ file: "turn.ts", additions: 1, deletions: 0, status: "modified" }],
+        })
 
         const response = yield* requestInDirectory(
           `${pathFor(SessionPaths.diff, { sessionID: session.id })}?messageID=${messageID}`,

@@ -83,7 +83,8 @@ import { jsonSchema, tool as aiTool, type Tool as AITool } from "ai"
 const summary = Layer.succeed(
   SessionSummary.Service,
   SessionSummary.Service.of({
-    summarize: () => Effect.void,
+    summarizeTurn: () => Effect.void,
+    read: () => Effect.succeed([]),
     diff: () => Effect.succeed([]),
     computeDiff: () => Effect.succeed([]),
   }),

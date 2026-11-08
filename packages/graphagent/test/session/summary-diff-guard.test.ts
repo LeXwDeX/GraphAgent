@@ -94,7 +94,7 @@ const seedUserTurn = Effect.fnUntraced(function* (sessionID: SessionID) {
 
 describe("summary.diffs source truncation", () => {
   it.instance(
-    "summarize truncates oversized diffs to the byte budget and keeps the leading files",
+    "summarizeTurn truncates oversized diffs to the byte budget and keeps the leading files",
     () =>
       Effect.gen(function* () {
         const sessions = yield* SessionNs.Service
@@ -103,7 +103,7 @@ describe("summary.diffs source truncation", () => {
         const userMessageID = yield* seedUserTurn(session.id)
 
         stub.diffs = giantDiffs(300)
-        yield* summary.summarize({ sessionID: session.id, messageID: userMessageID })
+        yield* summary.summarizeTurn({ sessionID: session.id, userMessageIDs: [userMessageID] })
 
         const diffs = yield* pollWithTimeout(
           Effect.gen(function* () {
