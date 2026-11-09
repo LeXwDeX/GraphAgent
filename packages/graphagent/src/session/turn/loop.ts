@@ -34,6 +34,7 @@ import type { SessionStatus } from "../status"
 import type { SessionSummary } from "../summary"
 import { SessionTools } from "../tools"
 import type { ToolSourceLedger } from "../tool-source-ledger"
+import type { TurnExecution } from "../turns"
 import { Decide } from "./decide"
 import type { PrepareApi, TurnRequestInput } from "./prepare"
 import { Settle } from "./settle"
@@ -696,7 +697,9 @@ function makeAttemptRunner(deps: LoopDeps) {
   })
 }
 
-type StopGateResult = { readonly kind: "step" | "continue" | "finish"; readonly state: TurnState }
+type StopGateResult =
+  | { readonly kind: "step" | "continue"; readonly state: TurnState }
+  | { readonly kind: "finish"; readonly state: TurnState; readonly outcome: Decide.TurnOutcome }
 
 function makeStopGate(deps: LoopDeps) {
   const { stopFns, agentMessages } = deps
@@ -795,7 +798,7 @@ function makeStopGate(deps: LoopDeps) {
       }
     }
     if (transition.kind === "check_step_input") {
-      if (!agentMessages) return { kind: "finish", state: input.state }
+      if (!agentMessages) return { kind: "finish", state: input.state, outcome: Decide.outcomeOfExit(input.state) }
       const incoming = yield* agentMessages.revisions(input.identity)
       signals = {
         ...signals,
@@ -813,7 +816,7 @@ function makeStopGate(deps: LoopDeps) {
             : State.continueFromQueuedInput(input.state),
       }
     }
-    if (transition.kind === "finish") return { kind: "finish", state: input.state }
+    if (transition.kind === "finish") return { kind: "finish", state: input.state, outcome: transition.outcome }
     return { kind: "step", state: input.state }
   })
 }
@@ -828,7 +831,7 @@ function makeTurnFinisher(deps: LoopDeps) {
 
 type StepRunResult =
   | { readonly kind: "continue"; readonly state: TurnState }
-  | { readonly kind: "finish"; readonly state: TurnState }
+  | { readonly kind: "finish"; readonly state: TurnState; readonly outcome: Decide.TurnOutcome }
   | { readonly kind: "return"; readonly state: TurnState; readonly message: SessionV1.WithParts }
 
 function makeStepRunner(deps: LoopDeps) {
@@ -881,7 +884,7 @@ function makeStepRunner(deps: LoopDeps) {
       msgs: input.msgs,
     })
     if (task.kind === "continue") return { kind: "continue", state }
-    if (task.kind === "finish") return { kind: "finish", state }
+    if (task.kind === "finish") return { kind: "finish", state, outcome: { type: "completed" } }
     const overflow = yield* overflowGate({
       sessionID: input.sessionID,
       state,
@@ -925,16 +928,22 @@ function makeTurnLoop(deps: LoopDeps) {
   const stepRunner = makeStepRunner(deps)
   const finishTurn = makeTurnFinisher(deps)
 
-  return Effect.fn("SessionPrompt.run")(function* (sessionID: SessionID) {
+  return Effect.fn("SessionPrompt.run")(function* (sessionID: SessionID): Effect.fn.Return<TurnExecution> {
     const ctx = yield* InstanceState.context
     const displayTurnID = randomUUID()
     let state = State.initial({ stopCap: SettingsHook.stopHookBlockCap() })
-    // Temporary turn boundary until H1 (#1019) lands session turns: the initial
-    // user message of this loop invocation identifies the turn.
+    // The initial user message of this loop invocation identifies the turn.
     let turnUserID: MessageID | undefined
     const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
     const requestOverheadBySession = yield* readRequestOverheads()
     const runtimeContextBySession = yield* readRuntimeContexts()
+    const execution = (message: SessionV1.WithParts, outcome: Decide.TurnOutcome): TurnExecution => ({
+      message,
+      outcome,
+      steps: state.step,
+      userMessageID: turnUserID,
+      lastAssistantID: message.info.role === "user" ? undefined : message.info.id,
+    })
 
     while (true) {
       yield* status.set(sessionID, { type: "busy" })
@@ -983,7 +992,7 @@ function makeTurnLoop(deps: LoopDeps) {
         lastAssistant,
         lastAssistantMsg,
       })
-      if (resume.kind === "return") return resume.message
+      if (resume.kind === "return") return execution(resume.message, Decide.outcomeOfExit(state))
       if (resume.kind === "continue") {
         if (resume.stopped) state = State.markStopped(state)
         continue
@@ -1001,7 +1010,7 @@ function makeTurnLoop(deps: LoopDeps) {
       })
       state = stopped.state
       if (stopped.kind === "continue") continue
-      if (stopped.kind === "finish") return yield* finishTurn(sessionID, turnUserID)
+      if (stopped.kind === "finish") return execution(yield* finishTurn(sessionID, turnUserID), stopped.outcome)
 
       const step = yield* stepRunner({
         sessionID,
@@ -1022,8 +1031,8 @@ function makeTurnLoop(deps: LoopDeps) {
         root: ctx.worktree,
       })
       state = step.state
-      if (step.kind === "return") return step.message
-      if (step.kind === "finish") return yield* finishTurn(sessionID, turnUserID)
+      if (step.kind === "return") return execution(step.message, Decide.outcomeOfExit(state))
+      if (step.kind === "finish") return execution(yield* finishTurn(sessionID, turnUserID), step.outcome)
       continue
     }
   })
@@ -1102,13 +1111,18 @@ export function makeLoop(deps: LoopDeps) {
   const runLoopImpl = makeTurnLoop(deps)
   const cleanupScopedAgent = makeScopedAgentCleanup(deps)
   const recordPreparationError = makeErrorRecorder(deps)
-  const runLoop = (sessionID: SessionID): Effect.Effect<SessionV1.WithParts> =>
+  // Rich entry point: Turns records steps and the terminal outcome alongside
+  // the final message. Cleanup and preparation-error recording stay identical
+  // to the historical message-only wrapper.
+  const runTurn = (sessionID: SessionID): Effect.Effect<TurnExecution> =>
     runLoopImpl(sessionID).pipe(
       Effect.ensuring(cleanupScopedAgent(sessionID)),
       Effect.onError(recordPreparationError(sessionID)),
     )
+  const runLoop = (sessionID: SessionID): Effect.Effect<SessionV1.WithParts> =>
+    runTurn(sessionID).pipe(Effect.map((turn) => turn.message))
 
-  return { runLoop }
+  return { runTurn, runLoop }
 }
 
 export * as Loop from "./loop"

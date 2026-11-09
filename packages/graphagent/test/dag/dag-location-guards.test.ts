@@ -373,7 +373,13 @@ function twoInstanceLayer(input: TwoInstanceInput) {
         const gate = input.parkWakeDelivery
         if (!gate) {
           if (!input.deliverWakes) return Option.none()
-          return Option.some({ activate: Effect.void, result: deliver(value), abort: Effect.void })
+          return Option.some({
+            turn: undefined,
+            run: true,
+            activate: Effect.void,
+            result: deliver(value),
+            abort: Effect.void,
+          })
         }
         gate.calls.value++
         if (gate.released.value) return Option.none()
@@ -383,7 +389,13 @@ function twoInstanceLayer(input: TwoInstanceInput) {
             Effect.die(new Error(`session ${(value as { sessionID?: string }).sessionID} removed during wake delivery`)),
           ),
         )
-        return Option.some({ activate: Effect.void, result, abort: Effect.void })
+        return Option.some({
+          turn: undefined,
+          run: true,
+          activate: Effect.void,
+          result,
+          abort: Effect.void,
+        })
       }).pipe(Effect.tap((prepared) => Option.isSome(prepared) ? persistAdmission ?? Effect.void : Effect.void)),
   })
   const agent = Layer.mock(Agent.Service, {
