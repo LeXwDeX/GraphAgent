@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: Apache-2.0
-
 import { createStore } from "solid-js/store"
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"

@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: Apache-2.0
-
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
 import { createEffect, createMemo, For, Show } from "solid-js"
