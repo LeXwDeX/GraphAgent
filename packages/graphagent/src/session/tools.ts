@@ -179,6 +179,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
           },
         }
       }),
+    preview: (val) => input.processor.previewToolCall(options.toolCallId, val),
     ask: (req) =>
       permission
         .ask(

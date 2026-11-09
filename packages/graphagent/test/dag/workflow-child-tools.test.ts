@@ -319,7 +319,10 @@ describe("workflow child boundary", () => {
 
 function resolveSessionTools(agent: Agent.Info, info: Session.Info) {
   const userID = MessageID.make(`msg_${info.id}`)
-  const processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall"> = {
+  const processor: Pick<
+    SessionProcessor.Handle,
+    "message" | "updateToolCall" | "previewToolCall" | "completeToolCall"
+  > = {
     message: {
       id: MessageID.make(`msg_assistant_${info.id}`),
       role: "assistant",
@@ -335,6 +338,7 @@ function resolveSessionTools(agent: Agent.Info, info: Session.Info) {
       time: { created: 1 },
     },
     updateToolCall: () => Effect.void.pipe(Effect.as(undefined)),
+    previewToolCall: () => Effect.void,
     completeToolCall: () => Effect.void,
   }
   const promptOps: TaskPromptOps = {

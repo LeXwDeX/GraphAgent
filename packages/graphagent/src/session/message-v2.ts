@@ -72,6 +72,7 @@ export const Event = {
   Removed: SessionV1.Event.MessageRemoved,
   PartUpdated: SessionV1.Event.PartUpdated,
   PartDelta: SessionV1.Event.PartDelta,
+  PartPreview: SessionV1.Event.PartPreview,
   PartRemoved: SessionV1.Event.PartRemoved,
 }
 

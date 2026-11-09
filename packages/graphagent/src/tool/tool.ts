@@ -57,9 +57,7 @@ export interface ChildRunView {
   readonly state: string
 }
 
-export type ChildRunCancelOrigin =
-  | { kind: "main_agent_tool"; toolCallID: string }
-  | { kind: "engine"; reason: string }
+export type ChildRunCancelOrigin = { kind: "main_agent_tool"; toolCallID: string } | { kind: "engine"; reason: string }
 
 export interface ChildRuns {
   start(spec: unknown): Effect.Effect<ChildRunHandle, unknown, Scope.Scope>
@@ -79,6 +77,11 @@ export type Context<M extends Metadata = Metadata> = {
   children?: ChildRuns
   messages: SessionV1.WithParts[]
   metadata(input: { title?: string; metadata?: M }): Effect.Effect<void>
+  /**
+   * Non-durable running output preview (#1016 HS4a). Hosts that cannot stream
+   * previews omit it; the tool then keeps the final result as its only output.
+   */
+  preview?(input: { tail: string; totalLength: number }): Effect.Effect<void>
   ask(input: Omit<PermissionV1.Request, "id" | "sessionID" | "tool">): Effect.Effect<void>
 }
 
