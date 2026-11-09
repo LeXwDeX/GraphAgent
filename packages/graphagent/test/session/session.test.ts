@@ -366,6 +366,31 @@ describe("Session", () => {
       expect(saved.metadata).toEqual({ engine: "v1", hookTitleSource: "custom" })
     }),
   )
+
+  it.instance("persists creation-time dagMode and leaves it unchanged on update", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({ title: "dag-on", dagMode: "on" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const saved = yield* session.get(created.id)
+
+      expect(created.dagMode).toBe("on")
+      expect(created.dagBudgetTokens).toBeNull()
+      expect(saved.dagMode).toBe("on")
+      expect(saved.dagBudgetTokens).toBeNull()
+
+      const updated = yield* session.applyUpdate({ sessionID: created.id, title: "dag-on-renamed" })
+      expect(updated.title).toBe("dag-on-renamed")
+      expect(updated.dagMode).toBe("on")
+
+      const defaulted = yield* Effect.acquireRelease(session.create({ title: "dag-default" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      expect(defaulted.dagMode).toBe("off")
+      expect(defaulted.dagBudgetTokens).toBeNull()
+    }),
+  )
 })
 
 describe("adopted reasoning", () => {

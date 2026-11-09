@@ -300,6 +300,8 @@ export const CreateInput = Schema.optional(
     metadata: Schema.optional(Metadata),
     permission: Schema.optional(PermissionV1.Ruleset),
     workspaceID: Schema.optional(WorkspaceV2.ID),
+    // #1013 (C1 PR5): DAG mode is chosen at creation time only; PATCH rejects it.
+    dagMode: Schema.optional(DagMode),
   }),
 )
 export type CreateInput = Types.DeepMutable<Schema.Schema.Type<typeof CreateInput>>
@@ -447,6 +449,8 @@ export interface Interface {
     metadata?: typeof Metadata.Type
     permission?: PermissionV1.Ruleset
     workspaceID?: WorkspaceV2.ID
+    /** #1013 (C1 PR5): creation-time DAG mode; defaults to "off". */
+    dagMode?: "on" | "off"
     /** #943: explicit execution directory; defaults to the ambient instance. */
     directory?: string
   }) => Effect.Effect<Info>
@@ -891,6 +895,7 @@ export const layer: Layer.Layer<
       metadata?: typeof Metadata.Type
       permission?: PermissionV1.Ruleset
       workspaceID?: WorkspaceV2.ID
+      dagMode?: "on" | "off"
       directory?: string
     }) {
       const ctx = yield* InstanceState.context
@@ -906,6 +911,7 @@ export const layer: Layer.Layer<
         metadata: input?.metadata,
         permission: input?.permission,
         workspaceID: input?.workspaceID ?? workspace,
+        dagMode: input?.dagMode,
       })
     })
 

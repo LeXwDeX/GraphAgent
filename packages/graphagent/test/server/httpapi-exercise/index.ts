@@ -774,13 +774,19 @@ const scenarios: Scenario[] = [
   http.protected
     .post("/session", "session.create")
     .mutating()
-    .at((ctx) => ({ path: "/session", headers: ctx.headers(), body: { title: "Created session" } }))
+    .at((ctx) => ({
+      path: "/session",
+      headers: ctx.headers(),
+      body: { title: "Created session", dagMode: "on" },
+    }))
     .json(
       200,
       (body, ctx) => {
         object(body)
         check(body.title === "Created session", "created session should use requested title")
         check(body.directory === ctx.directory, "created session should use scenario directory")
+        check(body.dagMode === "on", "created session should use requested dagMode")
+        check(body.dagBudgetTokens === null, "created session should start without a DAG budget")
       },
       "status",
     ),
@@ -826,6 +832,42 @@ const scenarios: Scenario[] = [
       body: { title: 1 },
     }))
     .status(400),
+  http.protected
+    .patch("/session/{sessionID}", "session.update.rejectsDagMode")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Immutable DAG mode" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { dagMode: "on" },
+    }))
+    .status(400, (_ctx, result) =>
+      Effect.sync(() => {
+        const body = result.body
+        object(body)
+        check(body.name === "BadRequest", "rejected dagMode should return the BadRequest error shape")
+        object(body.data)
+        check(typeof body.data.message === "string", "rejected dagMode should include an error message")
+      }),
+    ),
+  http.protected
+    .patch("/session/{sessionID}", "session.update.rejectsDagBudget")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Immutable DAG budget" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { dagBudgetTokens: 1000 },
+    }))
+    .status(400, (_ctx, result) =>
+      Effect.sync(() => {
+        const body = result.body
+        object(body)
+        check(body.name === "BadRequest", "rejected dagBudgetTokens should return the BadRequest error shape")
+        object(body.data)
+        check(typeof body.data.message === "string", "rejected dagBudgetTokens should include an error message")
+      }),
+    ),
   http.protected
     .delete("/session/{sessionID}", "session.delete")
     .mutating()

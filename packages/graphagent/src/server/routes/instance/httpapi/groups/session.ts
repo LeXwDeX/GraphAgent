@@ -63,6 +63,11 @@ export const UpdatePayload = Schema.Struct({
       archived: Schema.optional(Session.ArchivedTimestamp),
     }),
   ),
+  // #1013 (C1 PR5): DAG mode and its budget are creation-time only. Declaring
+  // them as `Never` makes the payload decoder reject the keys with a 400
+  // BadRequest instead of silently stripping them.
+  dagMode: Schema.optional(Schema.Never),
+  dagBudgetTokens: Schema.optional(Schema.Never),
 })
 export const ForkPayload = Schema.Struct(Struct.omit(Session.ForkInput.fields, ["sessionID"]))
 export const InitPayload = Schema.Struct({
