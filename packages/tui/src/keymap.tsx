@@ -37,6 +37,8 @@ export const EscapePriority = {
   detail: 300,
   subagent: 200,
   shell: 110,
+  /** Composer prefill edit: Esc rolls back instead of interrupting the run. */
+  edit: 105,
   interrupt: 100,
   none: -1,
 } as const

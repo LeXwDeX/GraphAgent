@@ -2,7 +2,6 @@ import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import path from "path"
 import { useTuiPaths } from "../../context/runtime"
 import { errorMessage } from "../../util/error"
-import { useDialog } from "../../ui/dialog"
 import { useSDK, locationHeaders } from "../../context/sdk"
 import { useSync } from "../../context/sync"
 import { useToast } from "../../ui/toast"
@@ -18,7 +17,6 @@ function moveReminderText(directory: string) {
 }
 
 export function usePromptMove(input: { projectID: () => string | undefined; sessionID: () => string | undefined }) {
-  const dialog = useDialog()
   const bottomZone = useBottomZoneOptional()
   const sdk = useSDK()
   const sync = useSync()
@@ -128,7 +126,7 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
       .catch(() => undefined)
     const choice =
       status?.data?.length && bottomZone
-        ? await showWorkspaceFileChanges({ host: bottomZone.host, dialog, files: status.data })
+        ? await showWorkspaceFileChanges({ host: bottomZone.host, zone: bottomZone, files: status.data })
         : "no"
     if (!choice) return
     const directory = selection.type === "new" ? await create(sessionContext(sessionID)) : selection.directory

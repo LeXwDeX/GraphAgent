@@ -4,6 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { Session, TextPart, UserMessage } from "@graphagent/sdk"
 import { afterEach, beforeEach, expect, test } from "bun:test"
+import type { PromptEditRequest } from "../../src/component/prompt"
 import { setLanguage } from "../../src/i18n"
 import { DiffSourcePanel } from "../../src/panel/diff-source"
 import { ForkPanel } from "../../src/panel/fork"
@@ -259,7 +260,7 @@ test("fork panel forks from a selected user message and prefills its text", asyn
 test("queued message edit takes the prompt back into the composer", async () => {
   await using tmp = await shellState()
   let host: PanelHostApi | undefined
-  const prompts: PromptInfo[] = []
+  const edits: PromptEditRequest[] = []
   let deletes = 0
   const app = await renderAppPanel(
     () => (
@@ -271,7 +272,7 @@ test("queued message edit takes the prompt back into the composer", async () => 
               messageID={messageA}
               sessionID={sessionID}
               queued={true}
-              setPrompt={(prompt) => prompts.push(prompt)}
+              editPrompt={(request) => edits.push(request)}
             />
           ),
         }}
@@ -305,7 +306,7 @@ test("queued message edit takes the prompt back into the composer", async () => 
     app.mockInput.pressEnter()
     await settle(app)
     expect(deletes).toBe(1)
-    expect(prompts).toEqual([{ input: "alpha message", parts: [] }])
+    expect(edits).toEqual([{ label: "排队消息", value: "alpha message", parts: [] }])
     expect(host?.depth()).toBe(0)
   } finally {
     app.renderer.destroy()

@@ -9,9 +9,10 @@ import { useProject } from "../../src/context/project"
 import { useSDK } from "../../src/context/sdk"
 import { useSync } from "../../src/context/sync"
 import { setLanguage } from "../../src/i18n"
-import { createPanelHost, PanelHost, PanelHostProvider, type PanelHostApi } from "../../src/panel/host"
+import { type PanelHostApi, type PanelSpec } from "../../src/panel/host"
 import { MoveSessionPanel } from "../../src/panel/move-session"
 import { ProviderPanel } from "../../src/panel/provider"
+import { BottomZone, useBottomZone } from "../../src/shell/bottom-zone"
 import {
   openWorkspacePanel,
   recentConnectedWorkspaces,
@@ -34,6 +35,20 @@ afterEach(() => {
 async function settle(app: Awaited<ReturnType<typeof renderAppPanel>>) {
   await Bun.sleep(30)
   await app.renderOnce()
+}
+
+/**
+ * Mounts a panel through the shared bottom zone so an ask surface suspends the
+ * panel exactly as it does in the app. Rendering the panel outside the zone
+ * would keep its filter input focused while a confirm prompt is up.
+ */
+function ZonedPanel(props: { spec: PanelSpec; onHost?: (host: PanelHostApi) => void }) {
+  const zone = useBottomZone()
+  onMount(() => {
+    zone.host.push(props.spec)
+    props.onHost?.(zone.host)
+  })
+  return <BottomZone state={zone} composer={<></>} />
 }
 
 async function waitFor(app: Awaited<ReturnType<typeof renderAppPanel>>, condition: () => boolean, message: string) {
@@ -139,7 +154,7 @@ test("move panel refreshes, deletes the selected copy after confirmation and clo
 
   const app = await renderAppPanel(
     () => (
-      <PanelSurface
+      <ZonedPanel
         spec={{ id: "move-session", render: () => <MoveSessionPanel projectID="proj_test" onSelect={() => {}} /> }}
         onHost={(value) => (host = value)}
       />
@@ -185,6 +200,7 @@ test("move panel refreshes, deletes the selected copy after confirmation and clo
     await settle(app)
     expect(app.captureCharFrame()).toContain("删除工作副本？")
 
+    // The ask surface suspends the panel, so its enter binding is the only one live.
     app.mockInput.pressEnter()
     await waitFor(app, () => deletes === 1, "copy deletion")
     await waitFor(app, () => !app.captureCharFrame().includes("/tmp/copy-a"), "deleted row removal")
@@ -219,7 +235,7 @@ test("recent connected workspaces excludes the current one and keeps the newest 
 })
 
 function WorkspaceHarness(props: { onReady(host: PanelHostApi, selected: WorkspaceSelection[]): void }) {
-  const host = createPanelHost()
+  const zone = useBottomZone()
   const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
@@ -228,9 +244,9 @@ function WorkspaceHarness(props: { onReady(host: PanelHostApi, selected: Workspa
   const selected: WorkspaceSelection[] = []
 
   onMount(() => {
-    props.onReady(host, selected)
+    props.onReady(zone.host, selected)
     void openWorkspacePanel({
-      host,
+      host: zone.host,
       dialog,
       sdk,
       sync,
@@ -242,11 +258,7 @@ function WorkspaceHarness(props: { onReady(host: PanelHostApi, selected: Workspa
     })
   })
 
-  return (
-    <PanelHostProvider host={host}>
-      <PanelHost host={host} />
-    </PanelHostProvider>
-  )
+  return <BottomZone state={zone} composer={<></>} />
 }
 
 test("workspace panel selects an adapter, confirms creation and closes the flow", async () => {
@@ -286,6 +298,7 @@ test("workspace panel selects an adapter, confirms creation and closes the flow"
     expect(app.captureCharFrame()).toContain("将创建并切换到 Alpha。继续吗？")
     expect(host?.depth()).toBe(1)
 
+    // See the move-panel test: the panel is suspended while the confirm is up.
     app.mockInput.pressEnter()
     await waitFor(app, () => selected.length === 1 && host?.depth() === 0, "workspace selection")
     expect(selected).toEqual([{ type: "new", workspaceType: "worktree", workspaceName: "Alpha" }])

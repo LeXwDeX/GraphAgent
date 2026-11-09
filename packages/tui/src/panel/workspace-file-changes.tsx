@@ -5,8 +5,8 @@ import type { VcsFileStatus } from "@graphagent/sdk"
 import { createMemo } from "solid-js"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
-import { DialogConfirm } from "../ui/dialog-confirm"
-import type { DialogContext } from "../ui/dialog"
+import { askConfirm } from "../ask/local-ask"
+import type { BottomZoneStateApi } from "../shell/bottom-zone"
 import { DetailPanel, type DetailRow } from "./detail"
 import type { PanelHostApi } from "./host"
 
@@ -60,18 +60,16 @@ export function WorkspaceFileChangesPanel(
 }
 
 /**
- * Shows the file-change list in the bottom zone and asks for confirmation when
- * the user activates a row. The ask area moves this confirmation in PR4; until
- * then it reuses the existing dialog.
+ * Shows the file-change list in the bottom zone and asks for confirmation in
+ * the ask area when the user activates a row.
  */
 export function showWorkspaceFileChanges(
   input: WorkspaceFileChangesOptions & {
     host: PanelHostApi
-    dialog: DialogContext
+    zone?: BottomZoneStateApi
     files: VcsFileStatus[]
   },
 ): Promise<WorkspaceFileChangesChoice | undefined> {
-  input.dialog.clear()
   const title = input.title ?? t("panel.workspace.changes.title")
   const message = input.message ?? t("panel.workspace.changes.message")
   return new Promise((resolve) => {
@@ -85,11 +83,15 @@ export function showWorkspaceFileChanges(
           title={title}
           message={message}
           onConfirm={async () => {
-            if (confirming || choice) return
+            if (confirming || choice || !input.zone) return
             confirming = true
             try {
-              const confirmed = await DialogConfirm.show(input.dialog, title, message)
-              if (confirmed === undefined) return
+              const confirmed = await askConfirm(input.zone, {
+                title,
+                body: message,
+                confirmLabel: t("ask.confirm.confirm"),
+                cancelLabel: t("ask.confirm.cancel"),
+              })
               choice = confirmed ? "yes" : "no"
               input.host.close()
             } finally {

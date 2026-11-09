@@ -280,3 +280,23 @@ test("unmounting deactivates the session and restores the event listener baselin
     await harness.tmp[Symbol.asyncDispose]()
   }
 })
+
+test("/rename without a title edits the current title in the composer", async () => {
+  const harness = await mountMain()
+  try {
+    await harness.mount()
+    await waitForFrame(harness.app, "agents")
+    for (const key of "/rename") harness.app.mockInput.pressKey(key)
+    await harness.app.renderOnce()
+    harness.app.mockInput.pressEnter()
+    await waitForFrame(harness.app, "Editing: Rename")
+    expect(harness.app.captureCharFrame()).toContain("Session A")
+
+    harness.app.mockInput.pressKey("ESCAPE")
+    await waitFor(() => !harness.app.captureCharFrame().includes("Editing: Rename"))
+    expect(harness.app.captureCharFrame()).not.toContain("Session A")
+  } finally {
+    harness.app.renderer.destroy()
+    await harness.tmp[Symbol.asyncDispose]()
+  }
+})

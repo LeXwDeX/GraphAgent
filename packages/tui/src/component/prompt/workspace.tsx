@@ -70,7 +70,7 @@ export function usePromptWorkspace(sessionID?: string) {
     const sourceWorkspaceID = project.workspace.current()
     const copyChanges = bottomZone
       ? await confirmWorkspaceFileChanges({
-          dialog,
+          zone: bottomZone,
           host: bottomZone.host,
           sdk,
           sourceWorkspaceID,

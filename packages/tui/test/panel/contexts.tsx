@@ -26,6 +26,7 @@ import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/ke
 import { PanelHost, PanelHostProvider, createPanelHost, type PanelHostApi, type PanelSpec } from "../../src/panel/host"
 import { PromptStashProvider, usePromptStash } from "../../src/component/prompt/stash"
 import { DialogProvider } from "../../src/ui/dialog"
+import { BottomZoneProvider, useBottomZone, type BottomZoneStateApi } from "../../src/shell/bottom-zone"
 import { ToastProvider, useToast } from "../../src/ui/toast"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -110,6 +111,8 @@ export interface AppPanelTestContext {
   theme: ReturnType<typeof useTheme>
   stash: ReturnType<typeof usePromptStash>
   toast: ReturnType<typeof useToast>
+  /** Shared ask state so confirm/choice promises can be driven from tests. */
+  bottomZone: BottomZoneStateApi
 }
 
 export interface AppPanelContextsProps extends ParentProps<{
@@ -165,13 +168,15 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
                                 <LocationProvider>
                                   <PromptStashProvider>
                                     <DialogProvider>
-                                      <AppPanelSetup
-                                        language={props.language}
-                                        setup={props.setup}
-                                        onReady={props.onReady}
-                                      >
-                                        <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
-                                      </AppPanelSetup>
+                                      <BottomZoneProvider>
+                                        <AppPanelSetup
+                                          language={props.language}
+                                          setup={props.setup}
+                                          onReady={props.onReady}
+                                        >
+                                          <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
+                                        </AppPanelSetup>
+                                      </BottomZoneProvider>
                                     </DialogProvider>
                                   </PromptStashProvider>
                                 </LocationProvider>
@@ -206,6 +211,7 @@ function AppPanelSetup(
   const theme = useTheme()
   const stash = usePromptStash()
   const toast = useToast()
+  const bottomZone = useBottomZone()
   let seeded = false
 
   createEffect(() => {
@@ -215,7 +221,7 @@ function AppPanelSetup(
     // fixture leaves unset; pin it after the bootstrap so panel assertions do
     // not depend on the host locale.
     setLanguage(props.language ?? "zh-CN")
-    void Promise.resolve(props.setup?.({ sync, project, route, local, theme, stash, toast })).then(() => {
+    void Promise.resolve(props.setup?.({ sync, project, route, local, theme, stash, toast, bottomZone })).then(() => {
       props.onReady?.()
     })
   })

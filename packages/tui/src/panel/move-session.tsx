@@ -13,8 +13,8 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { abbreviateHome } from "../runtime"
 import { errorMessage } from "../util/error"
-import { DialogConfirm } from "../ui/dialog-confirm"
-import { useDialog } from "../ui/dialog"
+import { askConfirm } from "../ask/local-ask"
+import { useBottomZoneOptional } from "../shell/bottom-zone"
 import { useToast } from "../ui/toast"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -32,7 +32,7 @@ export interface MoveSessionPanelProps {
 
 /** `/move`: lists project copies and creates, refreshes or deletes them. */
 export function MoveSessionPanel(props: MoveSessionPanelProps) {
-  const dialog = useDialog()
+  const bottomZone = useBottomZoneOptional()
   const host = usePanelHost()
   const sdk = useSDK()
   const sync = useSync()
@@ -173,11 +173,14 @@ export function MoveSessionPanel(props: MoveSessionPanelProps) {
     const value = item.value
     if (!canDelete(item) || value.type !== "directory") return
     const deletingCurrent = value.directory === currentRoot()?.directory
-    const confirmed = await DialogConfirm.show(
-      dialog,
-      t("panel.move.delete.title"),
-      t("panel.move.delete.message", { directory: abbreviateHome(value.directory, paths.home) }),
-    )
+    if (!bottomZone) return
+    const confirmed = await askConfirm(bottomZone, {
+      title: t("panel.move.delete.title"),
+      body: t("panel.move.delete.message", { directory: abbreviateHome(value.directory, paths.home) }),
+      confirmLabel: t("ask.confirm.confirm"),
+      cancelLabel: t("ask.confirm.cancel"),
+      danger: true,
+    })
     if (!confirmed) return
     await performRemove(value.directory, deletingCurrent, false)
   }
@@ -196,7 +199,7 @@ export function MoveSessionPanel(props: MoveSessionPanelProps) {
         const status = await sdk.client.vcs.status({ headers: locationHeaders({ directory }) }).catch(() => undefined)
         const choice = await showWorkspaceFileChanges({
           host,
-          dialog,
+          zone: bottomZone,
           files: status?.data ?? [],
           title: t("panel.move.delete.title"),
           message: t("panel.move.delete.force"),

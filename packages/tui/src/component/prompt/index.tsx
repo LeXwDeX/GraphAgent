@@ -47,10 +47,9 @@ import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { t } from "../../i18n"
 import { openProviderPanel } from "../../panel/provider"
-import { DialogAlert } from "../../ui/dialog-alert"
+import { askChoice } from "../../ask/local-ask"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
-import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import {
   EscapePriority,
@@ -98,10 +97,26 @@ export type PromptRef = {
   set(prompt: PromptInfo): void
   /** Append text to the draft, preserving existing content and parts, then focus. */
   append(text: string): void
+  /** Replace the draft with prefill text that can be committed or rolled back. */
+  edit(request: PromptEditRequest): void
   reset(): void
   blur(): void
   focus(): void
   submit(): void
+}
+
+/**
+ * A transient edit of the composer text, used by `/rename` and queued-message
+ * editing. Enter commits the value (and restores the previous draft when
+ * `commit` is set); Esc always restores the previous draft.
+ */
+export type PromptEditRequest = {
+  /** Shown in the status line above the composer. */
+  label: string
+  value: string
+  parts?: PromptInfo["parts"]
+  /** When set, Enter commits the value here instead of sending a prompt. */
+  commit?(value: string): void | Promise<void>
 }
 
 const money = new Intl.NumberFormat("en-US", {
@@ -699,6 +714,33 @@ export function Prompt(props: PromptProps) {
     bindings: tuiConfig.keybinds.get("session.interrupt"),
   }))
 
+  const [editing, setEditing] = createSignal<{ request: PromptEditRequest; original: PromptInfo } | undefined>()
+
+  function cancelEdit() {
+    const current = editing()
+    if (!current) return
+    setEditing(undefined)
+    ref.set(current.original)
+    input.focus()
+  }
+
+  useBindings(() => ({
+    target: inputTarget,
+    // Above the interrupt layer: Esc cancels the edit instead of stopping the
+    // running session, and below ask/panel layers so an incoming request wins.
+    priority: EscapePriority.edit,
+    enabled: () => editing() !== undefined,
+    commands: [
+      {
+        name: "prompt.edit.cancel",
+        title: "Cancel edit",
+        category: "Prompt",
+        run: cancelEdit,
+      },
+    ],
+    bindings: [{ key: "escape", desc: "Cancel edit", group: "Prompt", cmd: "prompt.edit.cancel" }],
+  }))
+
   const ref: PromptRef = {
     get focused() {
       return input.focused
@@ -723,6 +765,12 @@ export function Prompt(props: PromptProps) {
       const current = unwrap(store.prompt)
       const next = current.input ? `${current.input}\n${text}` : text
       ref.set({ ...current, input: next })
+      input.focus()
+    },
+    edit(request) {
+      const original = structuredClone(unwrap(store.prompt))
+      setEditing({ request, original })
+      ref.set({ input: request.value, parts: request.parts ? [...request.parts] : [] })
       input.focus()
     },
     reset() {
@@ -1055,6 +1103,7 @@ export function Prompt(props: PromptProps) {
   })
 
   let draftRevision = 0
+  let workspaceAskOpen = false
   let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
@@ -1089,14 +1138,28 @@ export function Prompt(props: PromptProps) {
     if (props.disabled) return false
     if (workspace.creating() || move.creating()) return false
     if (auto()?.visible) return false
+    // `/rename` and provider inputs commit through a callback; the previous
+    // draft comes back so the edit never replaces the user's work.
+    const edit = editing()
+    if (edit?.request.commit) {
+      const value = store.prompt.input
+      setEditing(undefined)
+      ref.set(edit.original)
+      await edit.request.commit(value)
+      return true
+    }
     if (!store.prompt.input) return false
+    const editSend = edit !== undefined
+    if (editSend) setEditing(undefined)
     if (store.mode === "shell" && props.sessionID && local.model.commandActive(props.sessionID)) {
       toast.show({ message: t("prompt.submit.unconfirmed.toast"), variant: "warning", duration: 5000 })
       return false
     }
     const agent = local.agent.current()
     if (!agent) return false
-    const builtin = resolveSlashInput(commands, commandScope(), store.prompt.input)
+    const builtin = editSend
+      ? ({ kind: "message" } as const)
+      : resolveSlashInput(commands, commandScope(), store.prompt.input)
     if (builtin.kind === "builtin") {
       input.extmarks.clear()
       input.clear()
@@ -1121,14 +1184,24 @@ export function Prompt(props: PromptProps) {
     const workspaceID = workspaceSession?.workspaceID
     const workspaceStatus = workspaceID ? (project.workspace.status(workspaceID) ?? "error") : undefined
     if (props.sessionID && workspaceID && workspaceStatus !== "connected") {
-      dialog.replace(() => (
-        <DialogWorkspaceUnavailable
-          onRestore={() => {
-            workspace.open()
-            return false
-          }}
-        />
-      ))
+      if (!bottomZone) {
+        toast.show({ message: t("prompt.workspace.unavailable.body"), variant: "warning" })
+        return false
+      }
+      if (!workspaceAskOpen) {
+        workspaceAskOpen = true
+        void askChoice(bottomZone, {
+          title: t("prompt.workspace.unavailable.title"),
+          body: t("prompt.workspace.unavailable.body"),
+          options: [
+            { id: "restore", label: t("prompt.workspace.unavailable.restore") },
+            { id: "cancel", label: t("prompt.workspace.unavailable.cancel") },
+          ],
+        }).then((choice) => {
+          workspaceAskOpen = false
+          if (choice === "restore") workspace.open()
+        })
+      }
       return false
     }
 
@@ -1626,6 +1699,13 @@ export function Prompt(props: PromptProps) {
             flexGrow={1}
             width="100%"
           >
+            <Show when={editing()}>
+              {(current) => (
+                <text fg={theme.textMuted} wrapMode="none">
+                  {t("prompt.edit.status", { label: current().request.label })}
+                </text>
+              )}
+            </Show>
             <textarea
               width="100%"
               placeholder={placeholderText()}
@@ -1858,7 +1938,7 @@ export function Prompt(props: PromptProps) {
                         const r = retry()
                         if (!r) return
                         if (isTruncated()) {
-                          void DialogAlert.show(dialog, "Retry Error", r.message)
+                          toast.show({ title: "Retry Error", message: r.message, variant: "warning" })
                         }
                       }
 

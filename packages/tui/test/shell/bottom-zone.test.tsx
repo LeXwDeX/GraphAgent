@@ -230,6 +230,36 @@ test("declarative asks lead, and local asks survive setAsk replacement", () => {
   expect(state.state().kind).toBe("composer")
 })
 
+test("removeAsk drops one local request without touching declarative ones", () => {
+  const state = createBottomZoneState()
+  const queueIDs = () => {
+    const current = state.state()
+    if (current.kind !== "ask") throw new Error(`expected an ask state, got ${current.kind}`)
+    return current.queue.map((request) => request.id)
+  }
+  const permission = { id: "per-a", render: () => <text>permission</text> }
+  const confirmA = { id: "confirm-1", render: () => <text>confirm a</text> }
+  const confirmB = { id: "confirm-2", render: () => <text>confirm b</text> }
+
+  state.setAsk([permission])
+  state.ask(confirmA, confirmB)
+
+  expect(state.removeAsk("missing")).toBeUndefined()
+  expect(queueIDs()).toEqual(["per-a", "confirm-1", "confirm-2"])
+
+  // Declarative entries belong to the server stores; local removal must not
+  // touch them even when the id matches.
+  expect(state.removeAsk("per-a")).toBeUndefined()
+  expect(queueIDs()).toEqual(["per-a", "confirm-1", "confirm-2"])
+
+  expect(state.removeAsk("confirm-1")).toBe(confirmA)
+  expect(queueIDs()).toEqual(["per-a", "confirm-2"])
+
+  // Removing a non-head local entry leaves the declarative head first.
+  expect(state.removeAsk("confirm-2")).toBe(confirmB)
+  expect(queueIDs()).toEqual(["per-a"])
+})
+
 test("the frame dims the main area only while a panel or ask surface is open", async () => {
   await using tmp = await shellState()
   let state!: BottomZoneStateApi
