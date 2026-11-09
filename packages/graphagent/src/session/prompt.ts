@@ -113,7 +113,6 @@ import { SettingsHook, type TriggerResult, type HookPayload } from "@/hook"
 import { TaskSubagents } from "@/hook/task-subagents"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
-import { HookTurnContext } from "@/hook/turn-context"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTranscript } from "@/hook/transcript"
 import { Skill } from "@/skill"
@@ -126,6 +125,7 @@ import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { Admit } from "./turn/admit"
 import { ModelSwitchBlocked, Prepare } from "./turn/prepare"
 import { Settle } from "./turn/settle"
+import { Stop } from "./turn/stop"
 import type { QueuedMessageDeleteInput, QueuedMessageEditInput, QueuedMessageError } from "./turn/prepare"
 import type { AdmissionCommit, AdmissionOptions, IdleAdmission, ModelBaseline } from "./turns"
 
@@ -157,12 +157,6 @@ function mapAdmissionBlocked<A, E, R>(
       (error) => Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
     ),
   )
-}
-
-function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
-  // cleanup() marks abandoned tool_use blocks this way after retries/aborts.
-  // They are not pending work and must not trigger an assistant-prefill request.
-  return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
 export interface Interface {
@@ -638,6 +632,16 @@ export const layer = Layer.effect(
       agentMessages,
     })
 
+    const stopFns = Stop.makeStop({
+      sessions,
+      summary,
+      settingsHook,
+      hookLifecycle,
+      agentMessages,
+      backgroundJobs,
+      workflowStore,
+    })
+
     const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput, ready?: Latch.Latch) {
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
@@ -992,7 +996,8 @@ export const layer = Layer.effect(
             (previous.assistant?.finish &&
               previous.assistant.finish !== "tool-calls" &&
               !previousParts?.some(
-                (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
+                (part) =>
+                  part.type === "tool" && !part.metadata?.providerExecuted && !Stop.isOrphanedInterruptedTool(part),
               ) &&
               previous.user &&
               MessageV2.before(previous.user, previous.assistant))
@@ -1117,195 +1122,33 @@ export const layer = Layer.effect(
             // Re-read persisted input and settlement before the next model request.
             continue
           }
-          // Some providers return "stop" even when the assistant message contains
-          // tool calls. Keep the loop running so tool results can be sent back to
-          // the model, but ignore cleanup-marked interrupted orphans.
-          const hasToolCalls =
-            lastAssistantMsg?.parts.some(
-              (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
-            ) ?? false
-
-          if (
-            turnStopped ||
-            (lastAssistant?.finish &&
-              !["tool-calls"].includes(lastAssistant.finish) &&
-              !hasToolCalls &&
-              MessageV2.before(lastUser, lastAssistant))
-          ) {
-            const orphan = lastAssistantMsg?.parts.find(
-              (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
-            )
-            if (orphan) {
-              yield* Effect.logWarning("loop exit with orphaned interrupted tool", {
-                "session.id": sessionID,
-                messageID: lastAssistant?.id,
-                tool: orphan.tool,
-                callID: orphan.callID,
-              })
-            }
-            // Stop-hook continuation: when forceContinue is set (a prior Stop hook
-            // blocked), skip the Stop exit for one iteration so another model turn
-            // runs; reset the flag so that turn can finish and Stop normally.
-            if (forceContinue && !agentInputBlocked) {
-              forceContinue = false
-              turnStopped = false
-            } else {
-              yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
-              let agentContinuationPrevented = false
-              // Main-agent Stop does not fire for a foreground task-tool subagent's
-              // clean exit: task.ts fires SubagentStop (and drives its continuation)
-              // for it. task.ts fails a child that ended in error or was cancelled
-              // without SubagentStop, so StopFailure still fires for those. Only
-              // positively registered sessions are skipped; any other child
-              // (SDK-created or background task) still fires Stop. DAG owners
-              // defer their one notification until the whole attempt settles.
-              const taskSubagentCleanExit =
-                !turnError &&
-                (TaskSubagents.delegateStop(sessionID) ||
-                  (hookLifecycle && (yield* hookLifecycle.isChildStopDelegated(sessionID))))
-              // SettingsHook: Stop on clean turn exit, StopFailure when it ended in error.
-              if (settingsHook && !taskSubagentCleanExit) {
-                const lastAssistantMessage =
-                  lastAssistantMsg?.parts
-                    .filter((part): part is SessionV1.TextPart => part.type === "text")
-                    .map((part) => part.text)
-                    .join("") || undefined
-                const stopPayload = turnError
-                  ? ({
-                      event: "StopFailure",
-                      stopHookActive: stopHookBlocked,
-                      ...HookTurnContext.failure(
-                        turnError,
-                        "message" in turnError.data && typeof turnError.data.message === "string"
-                          ? turnError.data.message
-                          : undefined,
-                      ),
-                    } as const)
-                  : session.parentID
-                    ? ({
-                        event: "SubagentStop",
-                        stopHookActive: stopHookBlocked,
-                        lastAssistantMessage,
-                        agentID: sessionID,
-                        agentType: lastUser.agent,
-                        backgroundTasks: yield* HookTurnContext.backgroundTasks(session.parentID, {
-                          jobs: backgroundJobs,
-                          workflows: workflowStore,
-                        }),
-                        sessionCrons: [],
-                      } as const)
-                    : ({
-                        event: "Stop",
-                        stopHookActive: stopHookBlocked,
-                        lastAssistantMessage,
-                        backgroundTasks: yield* HookTurnContext.backgroundTasks(sessionID, {
-                          jobs: backgroundJobs,
-                          workflows: workflowStore,
-                        }),
-                        sessionCrons: [],
-                      } as const)
-                const stopResult = yield* settingsHook
-                  .trigger(stopPayload, {
-                    sessionID: session.parentID && !turnError ? session.parentID : sessionID,
-                  })
-                  .pipe(
-                    Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)),
-                  )
-                agentContinuationPrevented = stopResult.preventContinuation === true
-                // `continue:false` ends the turn, so its stopReason can never be
-                // model feedback. Land it as a user-visible notice.
-                if (
-                  agentContinuationPrevented &&
-                  stopResult.stopReason &&
-                  !stopResult.systemMessages.includes(stopResult.stopReason)
-                )
-                  yield* SettingsHook.landSystemMessages(
-                    { additionalContexts: [], systemMessages: [stopResult.stopReason] },
-                    { sessionID },
-                  )
-                if (agentContinuationPrevented && agentMessages) {
-                  const input = lastAssistant && (yield* agentMessages.snapshotForTurn(identity, lastAssistant.id))
-                  if (input?.ok && input.value)
-                    yield* agentMessages.markStopped(identity, input.value.id, "hook_blocked")
-                  yield* agentMessages.discardPending(identity, "hook_blocked")
-                }
-                // Stop-hook block → drive another model turn. The next Stop then carries
-                // stop_hook_active=true so a well-behaved hook stops blocking (anti-loop).
-                // Capped by CLAUDE_CODE_STOP_HOOK_BLOCK_CAP (default MAX_STOP_CONTINUATIONS)
-                // so a hook that ignores the signal can't loop forever; at the limit we
-                // log.warn and force a normal exit.
-                const continuing =
-                  !agentInputBlocked &&
-                  !turnError &&
-                  stopResult.blocked !== undefined &&
-                  !stopResult.preventContinuation &&
-                  stopContinuationCount < stopHookContinuationCap
-                // Consume Stop-hook outputs so nothing is silently dropped. On a
-                // continuation they go into a new synthetic user message AFTER the
-                // assistant reply (block reason last, so the request ends with the
-                // instruction to continue — mirrors task.ts SubagentStop). On exit they
-                // are recorded on the turn's user message (model-visible next prompt).
-                const feedback: string[] = [...(stopResult.additionalContexts ?? [])]
-                yield* SettingsHook.landSystemMessages(stopResult, {
-                  sessionID,
-                  inject: (message) => Effect.sync(() => feedback.push(message)),
-                })
-                if (continuing && stopResult.blocked) feedback.push(stopResult.blocked.reason || "Continue.")
-                const target = continuing ? MessageID.ascending() : lastUser.id
-                if (target !== lastUser.id) {
-                  yield* sessions.updateMessage({
-                    id: target,
-                    sessionID,
-                    role: "user",
-                    agent: lastUser.agent,
-                    model: lastUser.model,
-                    format: lastUser.format,
-                    system: lastUser.system,
-                    tools: lastUser.tools,
-                    time: { created: Date.now() },
-                  })
-                }
-                for (const text of feedback) {
-                  yield* sessions.updatePart({
-                    id: PartID.ascending(),
-                    messageID: target,
-                    sessionID,
-                    type: "text",
-                    text,
-                    synthetic: true,
-                  } satisfies SessionV1.TextPart)
-                }
-                if (
-                  !agentInputBlocked &&
-                  !turnError &&
-                  stopResult.blocked !== undefined &&
-                  !stopResult.preventContinuation
-                ) {
-                  if (continuing) {
-                    stopContinuationCount++
-                    stopHookBlocked = true
-                    forceContinue = true
-                    continue
-                  }
-                  yield* Effect.logWarning("Stop hook continuation limit reached; forcing exit", {
-                    "session.id": sessionID,
-                    limit: stopHookContinuationCap,
-                  })
-                }
-              }
-              if (!agentInputBlocked && !agentContinuationPrevented && !turnError && agentMessages) {
-                const incoming = yield* agentMessages.revisions(identity)
-                if (incoming.ok && incoming.value.queued > 0) {
-                  agentBoundaryApproved = true
-                  turnStopped = false
-                  continue
-                }
-              }
-              if (turnUserID)
-                yield* summary.summarizeTurn({ sessionID, userMessageIDs: [turnUserID] }).pipe(Effect.ignore)
-              return yield* getLastAssistant(sessionID)
-            }
-          }
+          const stopped: Stop.StopAttemptResult = yield* stopFns.stopAttempt({
+            sessionID,
+            session,
+            identity,
+            lastUser,
+            lastAssistant,
+            lastAssistantMsg,
+            turnUserID,
+            turnError,
+            turnStopped,
+            forceContinue,
+            agentInputBlocked,
+            agentBoundaryApproved,
+            stopHookBlocked,
+            stopContinuationCount,
+            stopHookContinuationCap,
+          })
+          // Write the turn-local flags back at the original statement position
+          // before acting on the transition, so the next iteration observes the
+          // same values and order as the inlined block did.
+          forceContinue = stopped.forceContinue
+          turnStopped = stopped.turnStopped
+          agentBoundaryApproved = stopped.agentBoundaryApproved
+          stopHookBlocked = stopped.stopHookBlocked
+          stopContinuationCount = stopped.stopContinuationCount
+          if (stopped.kind === "continue") continue
+          if (stopped.kind === "exit") return yield* getLastAssistant(sessionID)
 
           forceContinue = false
           step++
