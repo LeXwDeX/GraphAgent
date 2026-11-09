@@ -5,7 +5,7 @@ import { SessionProjector } from "@graphagent/core/session/projector"
 import { Effect, Option } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
-import { MessageID, PartID, type SessionID } from "../../src/session/schema"
+import { MessageID, PartID, SessionID } from "../../src/session/schema"
 
 import { NotFoundError } from "@/storage/storage"
 import { testEffect } from "../lib/effect"
@@ -57,6 +57,34 @@ const fill = Effect.fn("Test.fill")(function* (
     })
   }
   return ids
+})
+
+const addUserAt = Effect.fn("Test.addUserAt")(function* (
+  sessionID: SessionID,
+  created: number,
+  id: MessageID,
+  text?: string,
+) {
+  const session = yield* SessionNs.Service
+  const message: SessionV1.User = {
+    id,
+    sessionID,
+    role: "user",
+    time: { created },
+    agent: "test",
+    model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test") },
+  }
+  yield* session.updateMessage(message)
+  if (text) {
+    yield* session.updatePart({
+      id: PartID.ascending(),
+      sessionID,
+      messageID: id,
+      type: "text",
+      text,
+    })
+  }
+  return id
 })
 
 const addUser = Effect.fn("Test.addUser")(function* (sessionID: SessionID, text?: string) {
@@ -1051,6 +1079,112 @@ describe("MessageV2 consistency", () => {
         const all = stream.toReversed()
 
         expect(filtered.map((m) => m.info.id)).toEqual(all.map((m) => m.info.id))
+      }),
+    ),
+  )
+})
+
+// D1 PR3 added the forward paging primitive and the count used to detect
+// deletions before an already-persisted transcript prefix.
+describe("MessageV2.after", () => {
+  const seedOutOfOrder = (sessionID: SessionID) =>
+    Effect.gen(function* () {
+      // Insertion order is the reverse of time order; two messages share a time
+      // and are disambiguated by id.
+      const late = yield* addUserAt(sessionID, 5002, MessageID.make("msg_zzz_late"), "late")
+      const tieB = yield* addUserAt(sessionID, 5001, MessageID.make("msg_bbb_tie"), "tie-b")
+      const tieA = yield* addUserAt(sessionID, 5001, MessageID.make("msg_aaa_tie"), "tie-a")
+      const early = yield* addUserAt(sessionID, 5000, MessageID.make("msg_yyy_early"), "early")
+      return { late, tieB, tieA, early }
+    })
+
+  it.instance("pages forward in (time_created, id) order and strictly after the cursor", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const { late, tieB, tieA, early } = yield* seedOutOfOrder(sessionID)
+
+        const first = yield* MessageV2.after({ sessionID, limit: 2 })
+        expect(first.items.map((item) => item.info.id)).toEqual([early, tieA])
+        expect(first.items.every((item) => item.parts.length === 1)).toBe(true)
+        expect(first.more).toBe(true)
+        expect(first.cursor).toBeTruthy()
+
+        const second = yield* MessageV2.after({ sessionID, limit: 2, after: first.cursor! })
+        expect(second.items.map((item) => item.info.id)).toEqual([tieB, late])
+        expect(second.more).toBe(false)
+        expect(second.cursor).toBeUndefined()
+      }),
+    ),
+  )
+
+  it.instance("returns an empty page for a missing session", () =>
+    Effect.gen(function* () {
+      const result = yield* MessageV2.after({ sessionID: SessionID.make("ses_missing"), limit: 10 })
+      expect(result.items).toEqual([])
+      expect(result.more).toBe(false)
+      expect(result.cursor).toBeUndefined()
+    }),
+  )
+})
+
+describe("MessageV2.countThrough", () => {
+  it.instance("counts rows at or before the cursor under (time_created, id)", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const late = yield* addUserAt(sessionID, 5002, MessageID.make("msg_zzz_late"))
+        const tieB = yield* addUserAt(sessionID, 5001, MessageID.make("msg_bbb_tie"))
+        const tieA = yield* addUserAt(sessionID, 5001, MessageID.make("msg_aaa_tie"))
+        const early = yield* addUserAt(sessionID, 5000, MessageID.make("msg_yyy_early"))
+
+        const at = (id: MessageID, time: number) =>
+          MessageV2.countThrough({ sessionID, cursor: MessageV2.cursor.encode({ id, time }) })
+
+        expect(yield* at(early, 5000)).toBe(1)
+        expect(yield* at(tieA, 5001)).toBe(2)
+        expect(yield* at(tieB, 5001)).toBe(3)
+        expect(yield* at(late, 5002)).toBe(4)
+      }),
+    ),
+  )
+
+  it.instance("decreases after an earlier row is removed", () =>
+    withSession(({ session, sessionID }) =>
+      Effect.gen(function* () {
+        const late = yield* addUserAt(sessionID, 5002, MessageID.make("msg_zzz_late"))
+        const tieB = yield* addUserAt(sessionID, 5001, MessageID.make("msg_bbb_tie"))
+        const tieA = yield* addUserAt(sessionID, 5001, MessageID.make("msg_aaa_tie"))
+        const early = yield* addUserAt(sessionID, 5000, MessageID.make("msg_yyy_early"))
+
+        const cursor = MessageV2.cursor.encode({ id: late, time: 5002 })
+        expect(yield* MessageV2.countThrough({ sessionID, cursor })).toBe(4)
+
+        yield* session.removeMessage({ sessionID, messageID: tieA })
+        expect(yield* MessageV2.countThrough({ sessionID, cursor })).toBe(3)
+        expect(yield* MessageV2.after({ sessionID, limit: 10 })).toMatchObject({
+          items: [{ info: { id: early } }, { info: { id: tieB } }, { info: { id: late } }],
+        })
+      }),
+    ),
+  )
+})
+
+describe("MessageV2.recentUsers", () => {
+  it.instance("returns the newest user messages oldest-first with parts", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUserAt(sessionID, 1000, MessageID.make("msg_001_user"), "one")
+        const a1 = yield* addAssistant(sessionID, u1)
+        const u2 = yield* addUserAt(sessionID, 1002, MessageID.make("msg_002_user"), "two")
+        yield* addAssistant(sessionID, a1)
+        const u3 = yield* addUserAt(sessionID, 1004, MessageID.make("msg_003_user"), "three")
+
+        const all = yield* MessageV2.recentUsers({ sessionID, limit: 32 })
+        expect(all.map((item) => item.info.id)).toEqual([u1, u2, u3])
+        expect(all.every((item) => item.info.role === "user")).toBe(true)
+        expect(all.map((item) => item.parts.length)).toEqual([1, 1, 1])
+
+        const last = yield* MessageV2.recentUsers({ sessionID, limit: 1 })
+        expect(last.map((item) => item.info.id)).toEqual([u3])
       }),
     ),
   )
