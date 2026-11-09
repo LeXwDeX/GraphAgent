@@ -402,6 +402,42 @@ test("list panel moves with arrows, selects with return, and runs ctrl bindings"
   }
 })
 
+test("list panel reports the remaining items while filtering", async () => {
+  await using tmp = await shellState()
+  const seen: string[][] = []
+  const items: ListItem<string>[] = [
+    { id: "alpha", value: "alpha", title: "alpha" },
+    { id: "beta", value: "beta", title: "beta" },
+  ]
+  const app = await renderPanel(
+    () => (
+      <PanelSurface
+        spec={{
+          render: () => (
+            <ListPanel
+              title="过滤"
+              items={items}
+              onSelect={() => {}}
+              onFilter={(_value, filtered) => seen.push(filtered.map((item) => item.value))}
+            />
+          ),
+        }}
+      />
+    ),
+    { width: 120, height: 40, state: tmp.path },
+  )
+
+  try {
+    app.mockInput.pressKey("a")
+    app.mockInput.pressKey("l")
+    await Bun.sleep(50)
+    await app.renderOnce()
+    expect(seen.at(-1)).toEqual(["alpha"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("settings panel cycles choice and toggle rows", async () => {
   await using tmp = await shellState()
   const changes: string[] = []

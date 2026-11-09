@@ -3,7 +3,18 @@
 
 import type { Renderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, on, Show, type Accessor, type JSX } from "solid-js"
+import {
+  createContext,
+  createEffect,
+  createMemo,
+  createSignal,
+  on,
+  Show,
+  useContext,
+  type Accessor,
+  type JSX,
+  type ParentProps,
+} from "solid-js"
 import { EscapePriority, useBindings } from "../keymap"
 import { createPanelHost, PanelHost, PanelHostProvider, type PanelHostApi, type PanelSpec } from "../panel/host"
 
@@ -108,6 +119,33 @@ export interface BottomZoneProps {
   state: BottomZoneStateApi
   /** Input area; it remains mounted while hidden so the draft is preserved. */
   composer: JSX.Element
+}
+
+const BottomZoneContext = createContext<BottomZoneStateApi>()
+
+/**
+ * Shares the bottom-zone state with adjacent regions such as the prompt and
+ * command handlers. The host is provided here as well so panels can be pushed
+ * from outside the rendered `BottomZone` subtree.
+ */
+export function BottomZoneProvider(props: ParentProps<{ state?: BottomZoneStateApi }>) {
+  const state = props.state ?? createBottomZoneState()
+  return (
+    <BottomZoneContext.Provider value={state}>
+      <PanelHostProvider host={state.host}>{props.children}</PanelHostProvider>
+    </BottomZoneContext.Provider>
+  )
+}
+
+/** Components shared by tests and the app; returns undefined outside a provider. */
+export function useBottomZoneOptional() {
+  return useContext(BottomZoneContext)
+}
+
+export function useBottomZone() {
+  const state = useContext(BottomZoneContext)
+  if (!state) throw new Error("useBottomZone must be used within a BottomZoneProvider")
+  return state
 }
 
 function contains(root: Renderable, target: Renderable) {
