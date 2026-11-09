@@ -99,6 +99,13 @@ export type Theme = {
   readonly thinkingOpacity: number
   _hasSelectedListItemText: boolean
 }
+/**
+ * Resolved theme colors consumed by direct interactive `run` mode.
+ *
+ * Internal bookkeeping (`_hasSelectedListItemText`) is excluded because it is
+ * not a color and must not be quantized into the terminal palette.
+ */
+export type TuiThemeCurrent = Omit<Theme, "_hasSelectedListItemText">
 type ThemeColor = Exclude<keyof Theme, "thinkingOpacity" | "_hasSelectedListItemText">
 export type SyntaxStyleOverrides = Record<string, { italic?: boolean }>
 

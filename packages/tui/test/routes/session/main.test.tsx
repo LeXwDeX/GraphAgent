@@ -6,8 +6,7 @@ import { expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import type { Session } from "@graphagent/sdk"
-import type { TuiPluginApi } from "@graphagent/tui/plugin-api"
-import { createSignal, onCleanup, onMount, Show } from "solid-js"
+import { createSignal, onCleanup, Show } from "solid-js"
 import { ArgsProvider } from "../../../src/context/args"
 import { ClipboardProvider } from "../../../src/context/clipboard"
 import { EditorContextProvider } from "../../../src/context/editor"
@@ -23,7 +22,6 @@ import { SyncProvider, useSync } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
 import { TuiConfigProvider } from "../../../src/config"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../../src/keymap"
-import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/runtime"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
@@ -146,12 +144,7 @@ async function mountMain(initialPrompt?: string) {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createTuiResolvedConfig()
-    const runtime = createPluginRuntime()
     onCleanup(registerGraphagentKeymap(keymap, renderer, config))
-    // Production wires the slot registry from the plugin host; with no plugins
-    // the registry renders each Slot's fallback children, which is what the
-    // real session prompt relies on.
-    onMount(() => runtime.setupSlots({ renderer, theme: {} } as unknown as TuiPluginApi))
     return (
       <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
         <ExitProvider exit={() => {}}>
@@ -169,35 +162,33 @@ async function mountMain(initialPrompt?: string) {
                         }}
                       >
                         <TuiConfigProvider config={config}>
-                          <PluginRuntimeProvider value={runtime}>
-                            <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
-                              <ProjectProvider>
-                                <SyncProvider>
-                                  <ThemeProvider mode="dark">
-                                    <LocalProvider>
-                                      <PromptStashProvider>
-                                        <DialogProvider>
-                                          <FrecencyProvider>
-                                            <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={{}}>
-                                                  <BusCounter onReady={(value) => (listeners = value)} />
-                                                  <Probe />
-                                                  <Show when={mounted()}>
-                                                    <Main />
-                                                  </Show>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
-                                            </PromptHistoryProvider>
-                                          </FrecencyProvider>
-                                        </DialogProvider>
-                                      </PromptStashProvider>
-                                    </LocalProvider>
-                                  </ThemeProvider>
-                                </SyncProvider>
-                              </ProjectProvider>
-                            </SDKProvider>
-                          </PluginRuntimeProvider>
+                          <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
+                            <ProjectProvider>
+                              <SyncProvider>
+                                <ThemeProvider mode="dark">
+                                  <LocalProvider>
+                                    <PromptStashProvider>
+                                      <DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider integration={{}}>
+                                                <BusCounter onReady={(value) => (listeners = value)} />
+                                                <Probe />
+                                                <Show when={mounted()}>
+                                                  <Main />
+                                                </Show>
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
+                                      </DialogProvider>
+                                    </PromptStashProvider>
+                                  </LocalProvider>
+                                </ThemeProvider>
+                              </SyncProvider>
+                            </ProjectProvider>
+                          </SDKProvider>
                         </TuiConfigProvider>
                       </RouteProvider>
                     </ToastProvider>

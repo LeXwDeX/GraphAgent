@@ -72,6 +72,7 @@ export {
   upsertTheme,
   type Theme,
   type ThemeJson,
+  type TuiThemeCurrent,
   type SyntaxStyleOverrides,
 } from "../theme"
 

@@ -13,8 +13,7 @@ import {
   type NativeResourceOwner,
   type TerminalColors,
 } from "@opentui/core"
-import type { Theme, ThemeJson } from "@graphagent/tui/context/theme"
-import type { TuiThemeCurrent } from "@graphagent/tui/plugin-api"
+import type { Theme, ThemeJson, TuiThemeCurrent } from "@graphagent/tui/context/theme"
 import type { EntryKind } from "./types"
 
 type Tone = {
@@ -76,7 +75,7 @@ export type RunTheme = {
   block: RunBlockTheme
 }
 
-type ThemeColor = Exclude<keyof TuiThemeCurrent, "thinkingOpacity">
+type ThemeColor = Exclude<keyof TuiThemeCurrent, "thinkingOpacity" | "_hasSelectedListItemText">
 
 type SharedSyntaxTheme = Theme & {
   _hasSelectedListItemText: boolean
@@ -422,7 +421,7 @@ function quantizeColor(indexed: RGBA[], rgba: RGBA): RGBA {
 function quantizeTheme(theme: TuiThemeCurrent, indexed: RGBA[]): TuiThemeCurrent {
   const resolved = Object.fromEntries(
     Object.entries(theme)
-      .filter(([key]) => key !== "thinkingOpacity")
+      .filter(([key]) => key !== "thinkingOpacity" && key !== "_hasSelectedListItemText")
       .map(([key, value]) => [key, quantizeColor(indexed, value as RGBA)]),
   ) as Partial<Record<ThemeColor, RGBA>>
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Event } from "@graphagent/sdk"
-import type { TuiAttentionSoundName } from "@graphagent/tui/plugin-api"
+import type { AttentionSoundName } from "../config"
 import { t } from "../i18n"
 
 type SessionError = Extract<Event, { type: "session.error" }>["properties"]["error"]
@@ -11,7 +11,7 @@ type NotifyInput = {
   title?: string
   message: string
   notification: false | { when: "blurred" }
-  sound: { name: TuiAttentionSoundName; when: "always" }
+  sound: { name: AttentionSoundName; when: "always" }
 }
 
 type NotificationsInput = {
@@ -46,7 +46,7 @@ export function createTuiNotifications(input: NotificationsInput): () => void {
   const questions = new Set<string>()
   const permissions = new Set<string>()
 
-  function notify(sessionID: string | undefined, message: string, sound: TuiAttentionSoundName) {
+  function notify(sessionID: string | undefined, message: string, sound: AttentionSoundName) {
     const session = sessionID ? input.sessions.get(sessionID) : undefined
     const isSubagent = session?.parentID !== undefined
     void input.attention.notify({

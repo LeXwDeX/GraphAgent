@@ -23,7 +23,6 @@ import { SDKProvider } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../src/keymap"
-import { createPluginRuntime, PluginRuntimeProvider } from "../../src/plugin/runtime"
 import { Prompt, type PromptRef } from "../../src/component/prompt"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
@@ -140,38 +139,36 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
                     <ToastProvider>
                       <RouteProvider initialRoute={{ type: "session", sessionID: fixture.session.id }}>
                         <TuiConfigProvider config={config}>
-                          <PluginRuntimeProvider value={createPluginRuntime()}>
-                            <SDKProvider
-                              url="http://test"
-                              directory={directory}
-                              events={events.source}
-                              fetch={calls.fetch}
-                            >
-                              <ProjectProvider>
-                                <SyncProvider>
-                                    <ThemeProvider mode="dark">
-                                      <LocalProvider>
-                                        <PromptStashProvider>
-                                          <DialogProvider>
-                                            <FrecencyProvider>
-                                              <PromptHistoryProvider>
-                                                <PromptRefProvider>
-                                                  <EditorContextProvider integration={{}}>
-                                                    <LocationProvider>
-                                                      <Probe />
-                                                    </LocationProvider>
-                                                  </EditorContextProvider>
-                                                </PromptRefProvider>
-                                              </PromptHistoryProvider>
-                                            </FrecencyProvider>
-                                          </DialogProvider>
-                                        </PromptStashProvider>
-                                      </LocalProvider>
-                                    </ThemeProvider>
-                                </SyncProvider>
-                              </ProjectProvider>
-                            </SDKProvider>
-                          </PluginRuntimeProvider>
+                          <SDKProvider
+                            url="http://test"
+                            directory={directory}
+                            events={events.source}
+                            fetch={calls.fetch}
+                          >
+                            <ProjectProvider>
+                              <SyncProvider>
+                                <ThemeProvider mode="dark">
+                                  <LocalProvider>
+                                    <PromptStashProvider>
+                                      <DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider integration={{}}>
+                                                <LocationProvider>
+                                                  <Probe />
+                                                </LocationProvider>
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
+                                      </DialogProvider>
+                                    </PromptStashProvider>
+                                  </LocalProvider>
+                                </ThemeProvider>
+                              </SyncProvider>
+                            </ProjectProvider>
+                          </SDKProvider>
                         </TuiConfigProvider>
                       </RouteProvider>
                     </ToastProvider>
@@ -208,7 +205,9 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     const frame = app.captureCharFrame()
     app.renderer.destroy()
     await stateDir[Symbol.asyncDispose]()
-    throw new Error(`Session Prompt did not mount (${names.filter((name) => name.toLowerCase().includes("text")).join(", ")}):\n${frame}`)
+    throw new Error(
+      `Session Prompt did not mount (${names.filter((name) => name.toLowerCase().includes("text")).join(", ")}):\n${frame}`,
+    )
   }
 
   const emit = (event: Parameters<typeof events.emit>[0]) => {

@@ -4,7 +4,6 @@ import { Deferred, Effect } from "effect"
 import { Global } from "@graphagent/core/global"
 import { APP_TITLE } from "@graphagent/core/brand"
 import { Flag } from "@graphagent/core/flag/flag"
-import { InstallationVersion } from "@graphagent/core/installation/version"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
@@ -24,7 +23,7 @@ import {
   Show,
   on,
 } from "solid-js"
-import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
+import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { ErrorComponent } from "./component/error-component"
@@ -32,7 +31,6 @@ import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
-import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
@@ -71,9 +69,6 @@ import { ArgsProvider, useArgs, type Args } from "./context/args"
 import open from "open"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
-import { createTuiApiAdapters } from "./plugin/adapters"
-import { createTuiApi } from "./plugin/api"
-import { createPluginRuntime, PluginRuntimeProvider, usePluginRuntime, type TuiPluginHost } from "./plugin/runtime"
 import { CommandPaletteDialog } from "./component/command-palette"
 import {
   COMMAND_PALETTE_COMMAND,
@@ -150,7 +145,6 @@ export type TuiInput = {
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
   events?: EventSource
-  pluginHost: TuiPluginHost
 }
 
 function errorMessage(error: unknown) {
@@ -213,15 +207,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         Effect.sync(() => registerGraphagentKeymap(keymap, renderer, input.config)),
         (unregister) => Effect.sync(unregister),
       )
-      yield* Effect.addFinalizer(() =>
-        Effect.promise(async () => {
-          try {
-            await input.pluginHost.dispose()
-          } catch (error) {
-            TuiLog.write("error", "Failed to dispose TUI plugins", error)
-          }
-        }),
-      )
       yield* Effect.addFinalizer(() => Effect.sync(TuiAudio.dispose))
       const shutdown = yield* Deferred.make<unknown>()
       const onSighup = () => destroyRenderer(renderer)
@@ -233,7 +218,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         () => Effect.sync(() => process.off("SIGHUP", onSighup)),
       )
       renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
-      const pluginRuntime = createPluginRuntime()
 
       yield* Effect.tryPromise(async () => {
         // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
@@ -273,7 +257,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                     >
                       <TuiStartupProvider
                         value={{
-                          initialRoute: process.env.GRAPHAGENT_ROUTE ? JSON.parse(process.env.GRAPHAGENT_ROUTE) : undefined,
+                          initialRoute: process.env.GRAPHAGENT_ROUTE
+                            ? JSON.parse(process.env.GRAPHAGENT_ROUTE)
+                            : undefined,
                           skipInitialLoading: Boolean(process.env.GRAPHAGENT_FAST_BOOT),
                         }}
                       >
@@ -293,44 +279,39 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                     }
                                   >
                                     <TuiConfigProvider config={input.config}>
-                                      <PluginRuntimeProvider value={pluginRuntime}>
-                                        <SDKProvider
-                                          url={input.url}
-                                          directory={input.directory}
-                                          fetch={input.fetch}
-                                          headers={input.headers}
-                                          events={input.events}
-                                        >
-                                          <ProjectProvider>
-                                            <SyncProvider>
-                                              <ThemeProvider mode={mode}>
-                                                  <LocalProvider>
-                                                    <PromptStashProvider>
-                                                      <DialogProvider>
-                                                        <FrecencyProvider>
-                                                          <PromptHistoryProvider>
-                                                            <PromptRefProvider>
-                                                              <EditorContextProvider>
-                                                                <LocationProvider>
-                                                                  <HomeSessionDestinationProvider>
-                                                                    <App
-                                                                      onSnapshot={input.onSnapshot}
-                                                                      pluginHost={input.pluginHost}
-                                                                    />
-                                                                  </HomeSessionDestinationProvider>
-                                                                </LocationProvider>
-                                                              </EditorContextProvider>
-                                                            </PromptRefProvider>
-                                                          </PromptHistoryProvider>
-                                                        </FrecencyProvider>
-                                                      </DialogProvider>
-                                                    </PromptStashProvider>
-                                                  </LocalProvider>
-                                                </ThemeProvider>
-                                            </SyncProvider>
-                                          </ProjectProvider>
-                                        </SDKProvider>
-                                      </PluginRuntimeProvider>
+                                      <SDKProvider
+                                        url={input.url}
+                                        directory={input.directory}
+                                        fetch={input.fetch}
+                                        headers={input.headers}
+                                        events={input.events}
+                                      >
+                                        <ProjectProvider>
+                                          <SyncProvider>
+                                            <ThemeProvider mode={mode}>
+                                              <LocalProvider>
+                                                <PromptStashProvider>
+                                                  <DialogProvider>
+                                                    <FrecencyProvider>
+                                                      <PromptHistoryProvider>
+                                                        <PromptRefProvider>
+                                                          <EditorContextProvider>
+                                                            <LocationProvider>
+                                                              <HomeSessionDestinationProvider>
+                                                                <App onSnapshot={input.onSnapshot} />
+                                                              </HomeSessionDestinationProvider>
+                                                            </LocationProvider>
+                                                          </EditorContextProvider>
+                                                        </PromptRefProvider>
+                                                      </PromptHistoryProvider>
+                                                    </FrecencyProvider>
+                                                  </DialogProvider>
+                                                </PromptStashProvider>
+                                              </LocalProvider>
+                                            </ThemeProvider>
+                                          </SyncProvider>
+                                        </ProjectProvider>
+                                      </SDKProvider>
                                     </TuiConfigProvider>
                                   </RouteProvider>
                                 </ToastProvider>
@@ -359,8 +340,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
-  const startup = useTuiStartup()
+function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const tuiConfig = useTuiConfig()
   const route = useRoute()
   const dimensions = useTerminalDimensions()
@@ -378,7 +358,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
-  const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const disposeNotifications = createTuiNotifications({ event, sessions: sync.session, attention })
   const clipboard = useClipboard()
@@ -388,40 +367,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const drawer = useDrawer()
   const diffFooterHints = useDiffFooterHints()
   const diffNavigation = useDiffNavigation()
-
-  const api = createTuiApi(
-    createTuiApiAdapters({
-      version: InstallationVersion,
-      tuiConfig,
-      dialog,
-      keymap,
-      kv,
-      route,
-      routes: pluginRuntime.routes,
-      event,
-      sdk,
-      sync,
-      theme: themeState,
-      toast,
-      renderer,
-      attention,
-      Slot: pluginRuntime.Slot,
-    }),
-  )
-  const [ready, setReady] = createSignal(false)
-  props.pluginHost
-    .start({
-      api,
-      config: tuiConfig,
-      runtime: pluginRuntime,
-      dispose: () => attention.dispose(),
-    })
-    .catch((error) => {
-      TuiLog.write("error", "Failed to load TUI plugins", error)
-    })
-    .finally(() => {
-      setReady(true)
-    })
 
   // Let selection copy/dismiss win ahead of normal bindings when explicit copy is required.
   const offSelectionKeys = keymap.intercept(
@@ -1081,45 +1026,34 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         evt.preventDefault()
         evt.stopPropagation()
       }}
-      onMouseUp={
-        !Flag.GRAPHAGENT_DISABLE_COPY_ON_SELECT
-          ? () => Selection.copy(renderer, toast, clipboard)
-          : undefined
-      }
+      onMouseUp={!Flag.GRAPHAGENT_DISABLE_COPY_ON_SELECT ? () => Selection.copy(renderer, toast, clipboard) : undefined}
     >
       <Show when={Flag.GRAPHAGENT_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-      <Show when={ready()}>
-        <AppFrame
-          topBar={topBar()}
-          footer={{
-            agent: local.agent.current()?.name,
-            agentAction: footerKeys().agent,
-            hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
-            meta: route.data.type === "home" ? homeMeta() : undefined,
-            right: footerStatus(),
-          }}
-          bottomZone={<pluginRuntime.Slot name="app_bottom" />}
-          drawer={drawerContent()}
-        >
-          <Switch>
-            <Match when={route.data.type === "home"}>
-              <Home />
-            </Match>
-            <Match when={route.data.type === "session"}>
-              <Main />
-            </Match>
-            <Match when={route.data.type === "diff"}>
-              <Diff />
-            </Match>
-          </Switch>
-        </AppFrame>
-        <pluginRuntime.Slot name="app" />
-      </Show>
-      <Show when={!startup.skipInitialLoading}>
-        <StartupLoading ready={ready} />
-      </Show>
+      <AppFrame
+        topBar={topBar()}
+        footer={{
+          agent: local.agent.current()?.name,
+          agentAction: footerKeys().agent,
+          hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
+          meta: route.data.type === "home" ? homeMeta() : undefined,
+          right: footerStatus(),
+        }}
+        drawer={drawerContent()}
+      >
+        <Switch>
+          <Match when={route.data.type === "home"}>
+            <Home />
+          </Match>
+          <Match when={route.data.type === "session"}>
+            <Main />
+          </Match>
+          <Match when={route.data.type === "diff"}>
+            <Diff />
+          </Match>
+        </Switch>
+      </AppFrame>
     </box>
   )
 }
