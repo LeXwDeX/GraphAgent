@@ -54,7 +54,7 @@ test("abort after a move invalidates the old Stop callback without masking the n
             Effect.sync(() =>
               Log.setSink((entry) => {
                 if (
-                  entry.message === "async Stop callback discarded: chain invalidated" &&
+                  entry.message === "async Stop callback discarded: rewake token stale" &&
                   entry.meta?.includes(`sessionID=${session.id}`)
                 )
                   discarded = true

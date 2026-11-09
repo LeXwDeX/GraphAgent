@@ -60,21 +60,20 @@ export interface Interface {
    */
   readonly list: () => Effect.Effect<ReadonlyArray<HookSummary>>
   /**
-   * Invalidate the pending Stop/SubagentStop/StopFailure rewake chain for a
-   * session. SessionPrompt.cancel calls this so a user abort is not overridden
+   * Advance the session's rewake generation and clear its Stop-continuation
+   * counts. SessionPrompt.cancel calls this so a user abort is not overridden
    * by a callback that completes afterwards and rewakes a fresh turn. Optional
    * so partial test mocks stay valid; the real layer always provides it.
    */
-  readonly invalidateStopRewakeChain?: (sessionID: SessionID | string) => Effect.Effect<void>
+  readonly bumpRewakeGeneration?: (sessionID: SessionID | string) => Effect.Effect<void>
   /**
-   * Re-validate a stop-chain token captured at Stop-trigger time. Returns
-   * false when the chain has since been invalidated or replaced (session
-   * cancel, newer user prompt, SessionEnd, instance dispose). Admission and
-   * the run path re-check with this, because invalidation can land after the
-   * callback's own completion check. Optional so partial test mocks stay
-   * valid; the real layer always provides it.
+   * Re-validate a rewake token captured at Stop-trigger time. Returns false
+   * when the chain has since been reset (session cancel, newer user prompt,
+   * SessionEnd, clearSession). Admission and the run path re-check with this,
+   * because a reset can land after the callback's own completion check.
+   * Optional so partial test mocks stay valid; the real layer always provides it.
    */
-  readonly validateStopRewakeChain?: (sessionID: SessionID | string, token: unknown) => Effect.Effect<boolean>
+  readonly validateRewakeToken?: (sessionID: SessionID | string, token: unknown) => Effect.Effect<boolean>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SettingsHook") {}
