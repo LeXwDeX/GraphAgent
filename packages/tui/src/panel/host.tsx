@@ -32,7 +32,11 @@ export interface PanelHostApi {
   /** Returns false when the stack is already at MAX_PANEL_DEPTH. */
   push(spec: PanelSpec): boolean
   pop(): PanelSpec | undefined
+  /** Pops the top entry and runs its `onClose` hook. */
+  close(): PanelSpec | undefined
   clear(): void
+  /** Clears the stack and runs every `onClose` hook in last-in-first-out order. */
+  closeAll(): void
 }
 
 export function createPanelHost(): PanelHostApi {
@@ -59,8 +63,21 @@ export function createPanelHost(): PanelHostApi {
       setStack((current) => current.slice(0, -1))
       return top
     },
+    close() {
+      const top = stack().at(-1)
+      if (!top) return undefined
+      setStack((current) => current.slice(0, -1))
+      top.onClose?.()
+      return top
+    },
     clear() {
       setStack([])
+    },
+    closeAll() {
+      const entries = [...stack()].reverse()
+      if (entries.length === 0) return
+      setStack([])
+      for (const entry of entries) entry.onClose?.()
     },
   }
 }
@@ -98,14 +115,11 @@ export function PanelHost(props: { host: PanelHostApi }) {
   })
 
   function closeTop() {
-    const top = props.host.pop()
-    top?.onClose?.()
+    props.host.close()
   }
 
   function closeAll() {
-    const entries = [...props.host.stack()].reverse()
-    props.host.clear()
-    for (const entry of entries) entry.onClose?.()
+    props.host.closeAll()
   }
 
   useBindings(() => ({

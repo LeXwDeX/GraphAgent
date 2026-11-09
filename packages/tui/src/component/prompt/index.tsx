@@ -34,7 +34,9 @@ import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
-import { DialogStash } from "../dialog-stash"
+import { useBottomZoneOptional } from "../../shell/bottom-zone"
+import { SkillsPanel } from "../../panel/skills"
+import { StashPanel } from "../../panel/stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@graphagent/sdk"
@@ -48,7 +50,6 @@ import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
-import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
 import { useArgs } from "../../context/args"
 import {
@@ -161,6 +162,7 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const commands = useCommands()
   const commandScope = useCommandScope()
+  const bottomZone = useBottomZoneOptional()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const [sending, setSending] = createSignal(false)
@@ -453,18 +455,22 @@ export function Prompt(props: PromptProps) {
   }
 
   function openSkillsDialog() {
-    dialog.replace(() => (
-      <DialogSkill
-        onSelect={(skill) => {
-          input.setText(`/${skill} `)
-          setStore("prompt", {
-            input: `/${skill} `,
-            parts: [],
-          })
-          input.gotoBufferEnd()
-        }}
-      />
-    ))
+    if (!bottomZone) return
+    bottomZone.host.push({
+      id: "skills",
+      render: () => (
+        <SkillsPanel
+          onSelect={(skill) => {
+            input.setText(`/${skill} `)
+            setStore("prompt", {
+              input: `/${skill} `,
+              parts: [],
+            })
+            input.gotoBufferEnd()
+          }}
+        />
+      ),
+    })
   }
 
   const promptCommands = createMemo(() => [
@@ -747,7 +753,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || dialog.stack.length > 0 || bottomZone?.composerVisible() === false) {
       if (input.focused) input.blur()
       return
     }
@@ -887,16 +893,20 @@ export function Prompt(props: PromptProps) {
       category: "Prompt",
       enabled: stash.list().length > 0,
       run: () => {
-        dialog.replace(() => (
-          <DialogStash
-            onSelect={(entry) => {
-              input.setText(entry.input)
-              setStore("prompt", { input: entry.input, parts: entry.parts })
-              restoreExtmarksFromParts(entry.parts)
-              input.gotoBufferEnd()
-            }}
-          />
-        ))
+        if (!bottomZone) return
+        bottomZone.host.push({
+          id: "stash",
+          render: () => (
+            <StashPanel
+              onSelect={(entry) => {
+                input.setText(entry.input)
+                setStore("prompt", { input: entry.input, parts: entry.parts })
+                restoreExtmarksFromParts(entry.parts)
+                input.gotoBufferEnd()
+              }}
+            />
+          ),
+        })
       },
     },
   ])
@@ -1585,7 +1595,11 @@ export function Prompt(props: PromptProps) {
 
   return (
     <>
-      <box ref={(r: BoxRenderable) => (anchor = r)} visible={props.visible !== false} width="100%">
+      <box
+        ref={(r: BoxRenderable) => (anchor = r)}
+        visible={props.visible !== false && (bottomZone?.composerVisible() ?? true)}
+        width="100%"
+      >
         <box
           width="100%"
           border={["left"]}

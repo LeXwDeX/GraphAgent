@@ -51,6 +51,8 @@ export interface ListPanelProps<T> {
   activeTab?: string
   onTab?: (id: string) => void
   onSelect(item: ListItem<T>): void
+  /** Fires on every filter edit with the remaining items; used by previewing panels. */
+  onFilter?(value: string, items: readonly ListItem<T>[]): void
   /** Preview hook, used by panels such as the theme picker. */
   onMove?(item: ListItem<T>): void
   actions?: readonly ListAction<T>[]
@@ -269,7 +271,10 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
                 input = element
               }}
               width="100%"
-              onInput={(value) => setFilter(value)}
+              onInput={(value) => {
+                setFilter(value)
+                props.onFilter?.(value, filtered())
+              }}
               placeholder={placeholder() ?? t("panel.list.filter")}
               placeholderColor={theme.textMuted}
               focusedBackgroundColor={theme.backgroundPanel}
