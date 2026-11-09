@@ -41,7 +41,6 @@ function parseCommandPayload(payload: PromptInput) {
     arguments: firstLineArgs.join(" ") + (rest ? "\n" + rest : ""),
   }
 }
-import { SHELL_ABORT_NOTE } from "../tool/shell"
 import { Session } from "./session"
 import { Agent } from "../agent/agent"
 import { Provider } from "@/provider/provider"
@@ -53,27 +52,19 @@ import { Instruction } from "./instruction"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
-import { ulid } from "ulid"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
-import * as Stream from "effect/Stream"
 import { Command } from "../command"
-import { fileURLToPath } from "url"
 import { Config } from "@/config/config"
-import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
-import { NamedError } from "@graphagent/core/util/error"
 import { SessionProcessor } from "./processor"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
-import { Shell } from "@graphagent/core/shell"
-import { ShellID } from "@/tool/shell/id"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
-import { Process } from "@/util/process"
-import { Cause, Effect, Exit, Fiber, Latch, Layer, Option, Scope, Context, Schema, Struct } from "effect"
+import { Effect, Fiber, Layer, Option, Scope, Context, Schema, Struct } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
@@ -84,13 +75,11 @@ import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { Todo } from "./todo"
 import { TodoReminders } from "./todo-reminders"
-import { SessionTools } from "./tools"
 import { ToolSourceLedger } from "./tool-source-ledger"
 import { SettingsHook, type TriggerResult, type HookPayload } from "@/hook"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
 import { HookStartContext } from "@/hook/start-context"
-import { HookTranscript } from "@/hook/transcript"
 import { Skill } from "@/skill"
 import { Goal } from "@/goal/goal"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
@@ -98,13 +87,15 @@ import { Memory } from "@/memory/memory"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 
+import { makeCommand } from "./command"
+import { makeShell } from "./shell"
 import { Admit } from "./turn/admit"
 import { ModelSwitchBlocked, Prepare } from "./turn/prepare"
 import { Settle } from "./turn/settle"
 import { Loop } from "./turn/loop"
 import { Stop } from "./turn/stop"
 import type { QueuedMessageDeleteInput, QueuedMessageEditInput, QueuedMessageError } from "./turn/prepare"
-import type { AdmissionCommit, AdmissionOptions, IdleAdmission, ModelBaseline } from "./turns"
+import type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
 
 export type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
 export {
@@ -120,21 +111,10 @@ export {
 } from "./turn/prepare"
 export type { PromptModelSelection, QueuedMessageError } from "./turn/prepare"
 export { isClosingOnlyCause } from "./turn/settle"
+export { expandCommandTemplate } from "./command"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
-
-/** Maps an admission cancellation to the prompt's typed rejected-command error. */
-function mapAdmissionBlocked<A, E, R>(
-  effect: Effect.Effect<A, E | SessionAdmission.Blocked, R>,
-): Effect.Effect<A, E | ModelSwitchBlocked, R> {
-  return effect.pipe(
-    Effect.catchIf(
-      (error): error is SessionAdmission.Blocked => error instanceof SessionAdmission.Blocked,
-      (error) => Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
-    ),
-  )
-}
 
 export interface Interface {
   readonly cancel: (
@@ -619,233 +599,6 @@ export const layer = Layer.effect(
       workflowStore,
     })
 
-    const shellImpl = Effect.fn("SessionPrompt.shellImpl")(function* (input: ShellInput, ready?: Latch.Latch) {
-      return yield* Effect.uninterruptibleMask((restore) =>
-        Effect.gen(function* () {
-          const markReady = ready ? ready.open.pipe(Effect.asVoid) : Effect.void
-          const { msg, part, cwd } = yield* Effect.gen(function* () {
-            const ctx = yield* InstanceState.context
-            const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-            if (session.revert) {
-              yield* revert.cleanup(session)
-            }
-            const agent = yield* agents.get(input.agent)
-            if (!agent) {
-              const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
-              const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-              const error = new NamedError.Unknown({ message: `Agent not found: "${input.agent}".${hint}` })
-              yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
-              throw error
-            }
-            const model = input.model ?? agent.model ?? (yield* prepareFns.currentModel(input.sessionID))
-            const userMsg: SessionV1.User = {
-              id: input.messageID ?? MessageID.ascending(),
-              sessionID: input.sessionID,
-              time: { created: Date.now() },
-              role: "user",
-              agent: input.agent,
-              model: { providerID: model.providerID, modelID: model.modelID },
-            }
-            yield* sessions.updateMessage(userMsg)
-            const userPart: SessionV1.Part = {
-              type: "text",
-              id: PartID.ascending(),
-              messageID: userMsg.id,
-              sessionID: input.sessionID,
-              text: "The following tool was executed by the user",
-              synthetic: true,
-            }
-            yield* sessions.updatePart(userPart)
-
-            const msg: SessionV1.Assistant = {
-              id: MessageID.ascending(),
-              sessionID: input.sessionID,
-              parentID: userMsg.id,
-              mode: input.agent,
-              agent: input.agent,
-              cost: 0,
-              path: { cwd: ctx.directory, root: ctx.worktree },
-              time: { created: Date.now() },
-              role: "assistant",
-              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-              modelID: model.modelID,
-              providerID: model.providerID,
-            }
-            yield* sessions.updateMessage(msg)
-            const started = Date.now()
-            const part: SessionV1.ToolPart = {
-              type: "tool",
-              id: PartID.ascending(),
-              messageID: msg.id,
-              sessionID: input.sessionID,
-              tool: ShellID.ToolID,
-              callID: ulid(),
-              state: {
-                status: "running",
-                time: { start: started },
-                input: { command: input.command },
-              },
-            }
-            yield* sessions.updatePart(part)
-            return { msg, part, cwd: ctx.directory }
-          }).pipe(Effect.ensuring(markReady))
-
-          // Reassign part to mutable for hook updates
-          let mutablePart = part
-          const cfg = yield* config.get()
-          const sh = Shell.preferred(cfg.shell)
-          // effectiveCommand mirrors input.command but is mutable: a PreToolUse hook
-          // with `updatedInput` may rewrite it. args / part display / PostToolUse toolInput
-          // all read effectiveCommand so a rewrite is reflected end-to-end.
-          let effectiveCommand = input.command
-          let args = Shell.args(sh, effectiveCommand, cwd)
-          let output = ""
-          let aborted = false
-          let finalMetadata: Record<string, unknown> = {}
-          let finalAttachments: SessionV1.FilePart[] | undefined
-
-          const finish = Effect.uninterruptible(
-            Effect.gen(function* () {
-              if (aborted) {
-                output += "\n\n" + ["<metadata>", SHELL_ABORT_NOTE, "</metadata>"].join("\n")
-              }
-              const completed = Date.now()
-              if (!msg.time.completed) {
-                msg.time.completed = completed
-                yield* sessions.updateMessage(msg)
-              }
-              if (mutablePart.state.status === "running") {
-                mutablePart.state = {
-                  status: "completed",
-                  time: { ...mutablePart.state.time, end: completed },
-                  input: mutablePart.state.input,
-                  title: "",
-                  metadata: { ...finalMetadata, output },
-                  attachments: finalAttachments,
-                  output,
-                }
-                yield* sessions.updatePart(mutablePart)
-              }
-            }),
-          )
-
-          const exit = yield* restore(
-            Effect.gen(function* () {
-              const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-              const agent = yield* agents.get(input.agent)
-              if (!agent) throw new Error(`Agent not found: "${input.agent}"`)
-              // Keep explicit-shell spawning and streaming, but use the same
-              // validated hook/permission boundary as model-invoked tools.
-              const definition = {
-                id: "bash",
-                description: "Execute an explicit user shell command",
-                parameters: Schema.Struct({ command: Schema.String }),
-                execute: (parameters: { command: string }, context: import("./tools").DirectToolContext) =>
-                  Effect.gen(function* () {
-                    yield* context.ask({
-                      permission: "bash",
-                      patterns: [parameters.command],
-                      always: ["*"],
-                      metadata: {},
-                    })
-                    effectiveCommand = parameters.command
-                    args = Shell.args(sh, effectiveCommand, cwd)
-                    const baseEnvironment = { ...process.env }
-                    const sessionEnvironment = HookTranscript.applyEnvironment(
-                      baseEnvironment,
-                      yield* HookTranscript.environment(input.sessionID, undefined, baseEnvironment),
-                    )
-                    const command = ChildProcess.make(sh, args, {
-                      cwd,
-                      extendEnv: false,
-                      env: { ...sessionEnvironment, TERM: "dumb" },
-                      stdin: "ignore",
-                      forceKillAfter: "3 seconds",
-                    })
-                    const handle = yield* spawner.spawn(command)
-                    yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-                      Effect.gen(function* () {
-                        output += chunk
-                        if (mutablePart.state.status === "running") {
-                          mutablePart.state.metadata = { output }
-                          yield* sessions.updatePart(mutablePart)
-                        }
-                      }),
-                    )
-                    const code = yield* handle.exitCode
-                    return { title: "", output, metadata: { output, exit: code } }
-                  }).pipe(Effect.scoped),
-              }
-              const tools = yield* SessionTools.resolve({
-                agent,
-                session,
-                messages: [],
-                promptOps: yield* ops(),
-                bypassAgentCheck: false,
-                hooks: settingsHook,
-                sourceLedger: toolSources,
-                directTool: definition,
-                processor: {
-                  message: msg,
-                  updateToolCall: (_id, update) =>
-                    Effect.gen(function* () {
-                      mutablePart = yield* sessions.updatePart(update(mutablePart))
-                      return mutablePart
-                    }),
-                  completeToolCall: () => Effect.void,
-                },
-              }).pipe(
-                Effect.provideService(Permission.Service, permission),
-                Effect.provideService(ToolRegistry.Service, registry),
-                Effect.provideService(MCP.Service, mcp),
-                Effect.provideService(Truncate.Service, truncate),
-              )
-              const result = yield* Effect.tryPromise({
-                try: (signal) =>
-                  Promise.resolve(
-                    tools.bash.execute!(
-                      { command: input.command },
-                      {
-                        toolCallId: mutablePart.callID,
-                        messages: [],
-                        abortSignal: signal,
-                      },
-                    ),
-                  ),
-                catch: (error) => error,
-              })
-              output = result.output
-              finalMetadata = result.metadata
-              finalAttachments = result.attachments
-            }).pipe(Effect.scoped),
-          ).pipe(Effect.exit)
-
-          if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause) && !Cause.hasDies(exit.cause)) {
-            aborted = true
-          }
-          if (Exit.isFailure(exit) && !aborted && !Cause.hasInterruptsOnly(exit.cause)) {
-            if (Cause.hasDies(exit.cause)) {
-              yield* finish
-              return yield* Effect.die(Cause.squash(exit.cause))
-            }
-            mutablePart = yield* sessions.updatePart({
-              ...mutablePart,
-              state: {
-                status: "error",
-                input: mutablePart.state.input,
-                error: String(Cause.squash(exit.cause)),
-                time: { start: part.state.status === "running" ? part.state.time.start : Date.now(), end: Date.now() },
-              },
-            })
-          }
-
-          yield* finish
-
-          return { info: msg, parts: [mutablePart] }
-        }),
-      )
-    })
-
     const admit = Admit.makeAdmit({
       sessions,
       status,
@@ -1016,7 +769,7 @@ export const layer = Layer.effect(
             const shared = { sessionID, messageID: pending.messageID, hookMode: "noninteractive" as const }
             return yield* (
               pending.input.kind === "command"
-                ? command({ ...pending.input, ...shared }, { skipHookStart: true })
+                ? commandFns.command({ ...pending.input, ...shared }, { skipHookStart: true })
                 : admit.prompt(
                     { ...pending.input, ...shared },
                     {
@@ -1147,463 +900,49 @@ export const layer = Layer.effect(
       return yield* finishPendingInput(input.sessionID, yield* result, epoch)
     })
 
-    const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
-      "SessionPrompt.shell",
-    )(function* (input: ShellInput) {
-      const ready = yield* Latch.make()
-      const result = yield* withRunRequest(input.sessionID, (request) =>
-        promptLocks.withLock(input.sessionID)(
-          state.startShellHandle(
-            input.sessionID,
-            lastAssistant(input.sessionID),
-            shellImpl(input, ready),
-            ready,
-            request,
-          ),
-        ),
-      )
-      return yield* result
+    const shellFns = makeShell({
+      sessions,
+      agents,
+      config,
+      revert,
+      events,
+      settingsHook,
+      toolSources,
+      permission,
+      registry,
+      mcp,
+      truncate,
+      spawner,
+      prepareFns,
+      ops: () => ops(),
+      promptLocks,
+      withRunRequest,
+      state,
+      lastAssistant: (sessionID) => lastAssistant(sessionID),
     })
 
-    // #409: early-return command dispatches (/memory, /goal non-kick)
-    // must still drive the busy→idle status transition — the run CLI exits its
-    // event loop on the idle event, which only the runner's onIdle publishes.
-    // startIfIdle keeps today's inline semantics while another turn is running
-    // (no queueing, no second idle); the in-flight turn re-emits idle itself.
-    const commandTurn = Effect.fnUntraced(function* (sessionID: SessionID, work: Effect.Effect<SessionV1.WithParts>) {
-      return yield* withRunRequest(sessionID, (request) =>
-        promptLocks.withLock(sessionID)(
-          Effect.gen(function* () {
-            if (!request.valid()) return yield* Effect.interrupt
-            const handle = yield* state.startIfIdle(sessionID, lastAssistant(sessionID), work, request)
-            if (!request.valid()) return yield* Effect.interrupt
-            return yield* Option.getOrElse(handle, () => work)
-          }),
-        ),
-      )
+    const commandFns = makeCommand({
+      sessions,
+      agents,
+      config,
+      events,
+      commands,
+      settingsHook,
+      attention,
+      goal,
+      startContext,
+      prepareFns,
+      resume: (input, options) => resume(input, options),
+      admit,
+      loop: (input) => loop(input),
+      budgetState: (sessionID) => budgetState(sessionID),
+      promptLocks,
+      withRunRequest,
+      state,
+      lastAssistant: (sessionID) => lastAssistant(sessionID),
+      modelWriteBegin,
+      followupAdmissions,
     })
-
-    const commandBody = Effect.fnUntraced(function* (
-      input: CommandInput,
-      options: { skipHookStart?: boolean } | undefined,
-      commitAdmission: AdmissionCommit | undefined,
-      epoch: number,
-    ) {
-      if (attention) yield* attention.input(input.sessionID)
-      // Capture the durable model selection and the app-layer write epoch
-      // before the expansion hook. The command commit compares both inside its
-      // transaction and skips the old ModelSwitched/post-switch hook if a newer
-      // user write landed meanwhile (including no-op and ABA writes).
-      const modelBaseline: ModelBaseline = { ...(yield* prepareFns.modelSelection(input.sessionID)), epoch }
-      if (!options?.skipHookStart && input.hookMode !== "interactive") {
-        const { sessionID, ...followup } = input
-        const initial = yield* resume({
-          sessionID,
-          agent: input.agent,
-          variant: input.variant,
-          hookMode: "noninteractive",
-          initialOnly: true,
-          followup: { kind: "command", ...followup },
-        })
-        if (initial) return initial
-      }
-      yield* Effect.logInfo("command", {
-        "session.id": input.sessionID,
-        command: input.command,
-        agent: input.agent,
-      })
-      if (input.command === "memory") {
-        return yield* commandTurn(
-          input.sessionID,
-          Effect.gen(function* () {
-            const memory = Option.getOrUndefined(yield* Effect.serviceOption(Memory.Service))
-            const argument = input.arguments.trim()
-            // #396: anything that is not an exact on/off is a status query —
-            // report the true state instead of a hardcoded "remains off".
-            const result = memory
-              ? argument === "on"
-                ? yield* memory.setEnabled(true)
-                : argument === "off"
-                  ? yield* memory.setEnabled(false)
-                  : yield* memory.status()
-              : "Memory remains off"
-            const model = yield* prepareFns.currentModel(input.sessionID)
-            const agentName = input.agent ?? (yield* agents.defaultAgent())
-            const userMsg: SessionV1.User = {
-              id: input.messageID ?? MessageID.ascending(),
-              role: "user",
-              sessionID: input.sessionID,
-              time: { created: Date.now() },
-              agent: agentName,
-              model: { providerID: model.providerID, modelID: model.modelID },
-            }
-            yield* sessions.updateMessage(userMsg)
-            const commandPart: SessionV1.TextPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.id,
-              sessionID: input.sessionID,
-              type: "text",
-              text: `/memory ${input.arguments}`.trim(),
-              metadata: { command: "memory" },
-            }
-            yield* sessions.updatePart(commandPart)
-            const now = Date.now()
-            // time.end set so run-mode consumers print the response (run CLI
-            // only renders text parts once ended).
-            const responsePart: SessionV1.TextPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.id,
-              sessionID: input.sessionID,
-              type: "text",
-              text: result,
-              time: { start: now, end: now },
-            }
-            yield* sessions.updatePart(responsePart)
-            yield* sessions.touch(input.sessionID)
-            return { info: userMsg, parts: [commandPart, responsePart] }
-          }),
-        )
-      }
-      // Goal/Subgoal command dispatch — early return BEFORE command registry lookup
-      if (goal && (input.command === "goal" || input.command === "subgoal")) {
-        const dispatch = input.command === "goal" ? goal.dispatch : goal.dispatchSubgoal
-        // Dispatch runs OUTSIDE any runner turn: its busy guards read the true
-        // session status, which a commandTurn busy marker would corrupt.
-        const dispatchResult = yield* dispatch(input.sessionID, input.arguments).pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
-              yield* Effect.logError("goal dispatch failed", { command: input.command, cause: String(cause) })
-              return undefined
-            }),
-          ),
-        )
-        if (dispatchResult?.type === "kick" && input.command === "goal") {
-          const m = yield* prepareFns.currentModel(input.sessionID)
-          const agentName = input.agent ?? (yield* agents.defaultAgent())
-          // Resume is decided before the command message exists ("earlier messages" excludes it)
-          // and outside the uninterruptible commit so a slow hook stays cancellable.
-          const goalResumeTexts = yield* admit.resumeContexts(yield* sessions.get(input.sessionID).pipe(Effect.orDie))
-          // Persist the input and register its budget before any snapshot can
-          // claim it. Run the model only after releasing the admission lock.
-          yield* promptLocks.withLock(input.sessionID)(
-            Effect.gen(function* () {
-              const budget = ToolBudget.create((yield* config.get()).maxToolCalls)
-              const userMsg: SessionV1.User = {
-                id: input.messageID ?? MessageID.ascending(),
-                role: "user",
-                sessionID: input.sessionID,
-                time: { created: Date.now() },
-                agent: agentName,
-                model: { providerID: m.providerID, modelID: m.modelID },
-              }
-              yield* sessions.updateMessage(userMsg)
-              const dispatchText = dispatchResult.announce ?? dispatchResult.text
-              const cmdText: SessionV1.TextPart = {
-                id: PartID.ascending(),
-                messageID: userMsg.id,
-                sessionID: input.sessionID,
-                type: "text",
-                text: `/${input.command} ${input.arguments}`.trim(),
-                metadata: { command: input.command },
-              }
-              yield* sessions.updatePart(cmdText)
-              // Non-synthetic so UserMessage renders it — the command confirmation
-              // (e.g. "⏸ 目标已暂停") must be visible. Matches the goal "done" case
-              // (loop.ts), which emits visible goal messages as non-synthetic parts.
-              const responsePart: SessionV1.TextPart = {
-                id: PartID.ascending(),
-                messageID: userMsg.id,
-                sessionID: input.sessionID,
-                type: "text",
-                text: dispatchText,
-              }
-              yield* sessions.updatePart(responsePart)
-              yield* sessions.touch(input.sessionID)
-              // GOAL-TURN-SCOPE: this loop() is a goal-driven turn (kick or
-              // resume-kick) — mark it so ESC maps to a goal pause.
-              yield* goal?.markTurnDriven(input.sessionID)
-              // Drain SessionStart hook contexts before loop
-              if (startContext) {
-                const contexts = [...goalResumeTexts, ...(yield* startContext.consume(input.sessionID))]
-                for (const ctx of contexts) {
-                  yield* sessions.updatePart({
-                    id: PartID.ascending(),
-                    messageID: responsePart.messageID,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    text: ctx,
-                    synthetic: true,
-                  } satisfies SessionV1.TextPart)
-                }
-              }
-              const state = yield* budgetState(input.sessionID)
-              state.pending.set(userMsg.id, budget)
-            }).pipe(Effect.uninterruptible),
-          )
-          return yield* loop({ sessionID: input.sessionID })
-        }
-        return yield* commandTurn(
-          input.sessionID,
-          Effect.gen(function* () {
-            const m = yield* prepareFns.currentModel(input.sessionID)
-            const agentName = input.agent ?? (yield* agents.defaultAgent())
-            const userMsg: SessionV1.User = {
-              id: input.messageID ?? MessageID.ascending(),
-              role: "user",
-              sessionID: input.sessionID,
-              time: { created: Date.now() },
-              agent: agentName,
-              model: { providerID: m.providerID, modelID: m.modelID },
-            }
-            yield* sessions.updateMessage(userMsg)
-            if (!dispatchResult) {
-              // Dispatch failed — return error message to user instead of silent fallthrough
-              const now = Date.now()
-              // time.end set so run-mode consumers print the response (run CLI
-              // only renders text parts once ended).
-              const errorPart: SessionV1.TextPart = {
-                id: PartID.ascending(),
-                messageID: userMsg.id,
-                sessionID: input.sessionID,
-                type: "text",
-                ignored: true,
-                text: `⚠️ /${input.command} 执行失败，请检查日志。`,
-                synthetic: true,
-                time: { start: now, end: now },
-              }
-              yield* sessions.updatePart(errorPart)
-              yield* sessions.touch(input.sessionID)
-              return { info: userMsg, parts: [errorPart] }
-            }
-            const dispatchText = dispatchResult.announce ?? dispatchResult.text
-            const cmdText: SessionV1.TextPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.id,
-              sessionID: input.sessionID,
-              type: "text",
-              ignored: true,
-              text: `/${input.command} ${input.arguments}`.trim(),
-              metadata: { command: input.command },
-            }
-            yield* sessions.updatePart(cmdText)
-            // Non-synthetic so UserMessage renders it — the command confirmation
-            // (e.g. "⏸ 目标已暂停") must be visible. Matches the goal "done" case
-            // (loop.ts), which emits visible goal messages as non-synthetic parts.
-            const now = Date.now()
-            // time.end set so run-mode consumers print the response (run CLI
-            // only renders text parts once ended).
-            const responsePart: SessionV1.TextPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.id,
-              sessionID: input.sessionID,
-              type: "text",
-              ignored: true,
-              text: dispatchText,
-              time: { start: now, end: now },
-            }
-            yield* sessions.updatePart(responsePart)
-            yield* sessions.touch(input.sessionID)
-            return { info: userMsg, parts: [cmdText, responsePart] }
-          }),
-        )
-      }
-
-      const cmd = yield* commands.get(input.command)
-      if (!cmd) {
-        const available = (yield* commands.list()).map((c) => c.name)
-        const hint = available.length ? ` Available commands: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Command not found: "${input.command}".${hint}` })
-        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
-        throw error
-      }
-      const agentName = cmd.agent ?? input.agent
-      const expansion = settingsHook
-        ? yield* settingsHook.trigger(
-            {
-              event: "UserPromptExpansion",
-              commandName: input.command,
-              commandArgs: input.arguments,
-              commandSource: cmd.source ?? "command",
-              expansionType: cmd.source === "mcp" ? "mcp_prompt" : "slash_command",
-              prompt: `/${input.command}${input.arguments ? ` ${input.arguments}` : ""}`,
-            },
-            { sessionID: input.sessionID },
-          )
-        : undefined
-      if (expansion?.blocked || expansion?.preventContinuation) {
-        // This branch returns before the normal landing point below, so notices
-        // from the hook that stopped the command must be published here.
-        if (expansion) yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
-        return yield* withRunRequest(input.sessionID, (request) =>
-          promptLocks.withLock(input.sessionID)(
-            Effect.gen(function* () {
-              if (!request.valid()) return yield* Effect.interrupt
-              // A command cancelled while this blocked notice is being admitted
-              // must surface as the normal rejected-command error, not a defect
-              // that the HTTP layer reports as 500.
-              const message = yield* prepareFns
-                .createUserMessage(
-                  {
-                    sessionID: input.sessionID,
-                    messageID: input.messageID,
-                    agent: input.agent,
-                    parts: [
-                      {
-                        type: "text",
-                        text: `[Hook stopped] ${expansion.stopReason ?? expansion.blocked?.reason ?? "Command expansion blocked"}`,
-                        ignored: true,
-                      },
-                    ],
-                  },
-                  undefined,
-                  commitAdmission,
-                  modelBaseline,
-                )
-                .pipe(
-                  Effect.catchTag("SessionConversationHookBlocked", (error) =>
-                    Effect.fail(new ModelSwitchBlocked({ message: error.reason })),
-                  ),
-                )
-              const handle = yield* state.startIfIdle(
-                input.sessionID,
-                lastAssistant(input.sessionID),
-                Effect.succeed(message),
-                request,
-              )
-              return yield* Option.getOrElse(handle, () => Effect.succeed(message))
-            }),
-          ),
-        )
-      }
-
-      const templateCommand = yield* Effect.promise(async () => cmd.template)
-      let template = expandCommandTemplate(templateCommand, input.arguments)
-
-      const shellMatches = ConfigMarkdown.shell(template)
-      if (shellMatches.length > 0) {
-        const cfg = yield* config.get()
-        const sh = Shell.preferred(cfg.shell)
-        const results = yield* Effect.promise(() =>
-          Promise.all(
-            shellMatches.map(async ([, cmd]) => (await Process.text([cmd], { shell: sh, nothrow: true })).text),
-          ),
-        )
-        let index = 0
-        template = template.replace(bashRegex, () => results[index++])
-      }
-      template = template.trim()
-
-      const taskModel = yield* Effect.gen(function* () {
-        if (cmd.model) return Provider.parseModel(cmd.model)
-        if (cmd.agent) {
-          const cmdAgent = yield* agents.get(cmd.agent)
-          if (cmdAgent?.model) return cmdAgent.model
-        }
-        if (input.model) return Provider.parseModel(input.model)
-        return yield* prepareFns.currentModel(input.sessionID)
-      })
-
-      yield* prepareFns.getModel(taskModel.providerID, taskModel.modelID, input.sessionID)
-
-      const agent = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
-      if (!agent) {
-        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
-        const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Agent not found: "${agentName}".${hint}` })
-        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
-        throw error
-      }
-
-      const templateParts = yield* prepareFns.resolvePromptParts(template)
-      const inputFiles = new Set(
-        input.parts?.filter((part) => new URL(part.url).protocol === "file:").map((part) => fileURLToPath(part.url)),
-      )
-      const uniqueTemplateParts = templateParts.filter(
-        (part) => part.type !== "file" || !inputFiles.has(fileURLToPath(part.url)),
-      )
-      const isSubtask = (agent.mode === "subagent" && cmd.subtask !== false) || cmd.subtask === true
-      const parts = isSubtask
-        ? [
-            {
-              type: "subtask" as const,
-              agent: agent.name,
-              description: cmd.description ?? "",
-              command: input.command,
-              model: { providerID: taskModel.providerID, modelID: taskModel.modelID },
-              prompt: templateParts.find((y) => y.type === "text")?.text ?? "",
-            },
-          ]
-        : [
-            {
-              type: "text" as const,
-              text: `/${input.command}${input.arguments ? ` ${input.arguments}` : ""}`,
-              // Marks the invocation so consumers (Memory) can tell commands from pasted paths.
-              metadata: { command: input.command },
-            },
-            ...uniqueTemplateParts.map((part) => (part.type === "text" ? { ...part, synthetic: true } : part)),
-            ...(input.parts ?? []),
-          ]
-
-      if (expansion) {
-        yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
-        for (const text of expansion.additionalContexts) {
-          parts.push({ type: "text", text, synthetic: true } as (typeof parts)[number])
-        }
-      }
-      const userAgent = isSubtask ? (input.agent ?? (yield* agents.defaultInfo()).name) : agent.name
-      const userModel = isSubtask
-        ? input.model
-          ? Provider.parseModel(input.model)
-          : yield* prepareFns.currentModel(input.sessionID)
-        : taskModel
-
-      const result = yield* admit.promptImpl(
-        {
-          sessionID: input.sessionID,
-          messageID: input.messageID,
-          model: userModel,
-          agent: userAgent,
-          parts,
-          variant: input.variant,
-          hookMode: input.hookMode,
-        },
-        { skipHookStart: true },
-        commitAdmission,
-        modelBaseline,
-      )
-      yield* events.publish(Command.Event.Executed, {
-        name: input.command,
-        sessionID: input.sessionID,
-        arguments: input.arguments,
-        messageID: result.info.id,
-      })
-      return result
-    })
-    const commandImpl = Effect.fnUntraced(function* (
-      input: CommandInput,
-      options: { skipHookStart?: boolean } | undefined,
-      commitAdmission?: AdmissionCommit,
-    ) {
-      return yield* Effect.acquireUseRelease(
-        Effect.sync(() => modelWriteBegin(input.sessionID)),
-        (scope) => commandBody(input, options, commitAdmission, scope.epoch),
-        (scope) => Effect.sync(scope.release),
-      )
-    })
-    // The expansion hook can run for a long time before the message is admitted.
-    // Register the admission owner before any hook so an abort fences this command
-    // even while it is still expanding, and so its commit cannot land afterwards.
-    const command: (
-      input: CommandInput,
-      options?: { skipHookStart?: boolean },
-    ) => Effect.Effect<SessionV1.WithParts, PromptError> = Effect.fn("SessionPrompt.command")(
-      function* (input, options) {
-        if (options?.skipHookStart)
-          return yield* mapAdmissionBlocked<SessionV1.WithParts, PromptError, never>(commandImpl(input, options))
-        const admitted = followupAdmissions.run(input.sessionID, (commit) => commandImpl(input, options, commit))
-        return yield* mapAdmissionBlocked<SessionV1.WithParts, PromptError, never>(admitted)
-      },
-    )
 
     const submit: Interface["submit"] = Effect.fn("SessionPrompt.submit")(function* (input, options) {
       if (options?.localGrant) {
@@ -1612,7 +951,7 @@ export const layer = Layer.effect(
       }
       const parsed = parseCommandPayload(input)
       if (parsed && (yield* commands.get(parsed.command))) {
-        return yield* command({
+        return yield* commandFns.command({
           sessionID: input.sessionID,
           command: parsed.command,
           arguments: parsed.arguments,
@@ -1653,8 +992,8 @@ export const layer = Layer.effect(
       resume,
       followupAdmissionOwnerCount: (sessionID) => followupAdmissions.ownerCount(sessionID),
       loop,
-      shell,
-      command,
+      shell: shellFns.shell,
+      command: commandFns.command,
       submit,
       summarize,
       resolvePromptParts: prepareFns.resolvePromptParts,
@@ -1822,31 +1161,6 @@ export const ResumeInput = Schema.Struct({
   followup: Schema.optional(HookFollowupInput),
 })
 export type ResumeInput = typeof ResumeInput.Type
-
-const bashRegex = /!`([^`]+)`/g
-// Match [Image N] as single token, quoted strings, or non-space sequences
-const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
-const placeholderRegex = /\$(\d+)/g
-const quoteTrimRegex = /^["']|["']$/g
-
-/** @internal Exported for command-template regression tests. */
-export function expandCommandTemplate(template: string, input: string) {
-  const args = (input.match(argsRegex) ?? []).map((arg) => arg.replace(quoteTrimRegex, ""))
-  const placeholders = template.match(placeholderRegex) ?? []
-  const last = placeholders.reduce((max, item) => Math.max(max, Number(item.slice(1))), 0)
-  const expanded = template
-    .replaceAll(placeholderRegex, (_, index) => {
-      const position = Number(index)
-      const argIndex = position - 1
-      if (argIndex >= args.length) return ""
-      if (position === last) return args.slice(argIndex).join(" ")
-      return args[argIndex]
-    })
-    .replaceAll("$ARGUMENTS", input)
-
-  if (placeholders.length > 0 || template.includes("$ARGUMENTS") || !input.trim()) return expanded
-  return `${expanded}\n\n${input}`
-}
 
 export const node = LayerNode.make(layer, [
   SessionStatus.node,
