@@ -4,10 +4,15 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { HookLifecycle } from "./lifecycle"
 import { NodeFileSystem } from "@effect/platform-node"
-import { Effect, FileSystem, Option } from "effect"
+import { ByteSize, Effect, FileSystem, Option } from "effect"
 import { createHash, randomUUID } from "node:crypto"
 import path from "node:path"
 import { Global } from "@graphagent/core/global"
+import { Database } from "@graphagent/core/database/database"
+import { MessageID, SessionID } from "@/session/schema"
+import * as Log from "@/util/log"
+
+const log = Log.create({ service: "hook.transcript" })
 
 export interface Message {
   readonly info: {
@@ -29,6 +34,29 @@ export interface Message {
     readonly parentID?: string
   }
   readonly parts: readonly unknown[]
+}
+
+/**
+ * D1 PR3 test instrumentation. These counters exist so the scaling regressions
+ * (materialization skipped, no full reads, bounded incremental writes) can be
+ * asserted without reaching into engine internals. Not part of the public API.
+ */
+export const __transcriptStats = {
+  materializeCalls: 0,
+  messagesRead: 0,
+  writes: 0,
+  writtenBytes: 0,
+  fullRewrites: 0,
+  lastRewriteReason: undefined as string | undefined,
+}
+
+export function resetTranscriptStats() {
+  __transcriptStats.materializeCalls = 0
+  __transcriptStats.messagesRead = 0
+  __transcriptStats.writes = 0
+  __transcriptStats.writtenBytes = 0
+  __transcriptStats.fullRewrites = 0
+  __transcriptStats.lastRewriteReason = undefined
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -59,66 +87,275 @@ export const history = Effect.fn("HookTranscript.history")(function* (
   return legacyHistory
 })
 
+/** Ordering key shared with `MessageV2.page`/`after`: `(time_created, id)`. */
+interface CursorKey {
+  readonly id: string
+  readonly time: number
+}
+
+/**
+ * One session's persisted transcript state. `settledOffset` is the byte length
+ * of the longest stable prefix in the file; `settled`/`settledParentUuid`/
+ * `settledCount` describe the message that prefix ends at.
+ */
+interface TranscriptCursor {
+  readonly file: string
+  readonly directory: string
+  readonly settledOffset: number
+  readonly settled?: CursorKey
+  readonly settledParentUuid: string | null
+  readonly settledCount: number
+}
+
+const cursors = new Map<string, TranscriptCursor>()
+// Safety valve for sessions that never emit SessionEnd (crashes, imports).
+const CURSOR_LIMIT = 1024
+const PAGE_SIZE = 200
+
+/** Session end drops the in-memory cursor; the next materialization rebuilds once. */
+export function clearCursor(sessionID: string) {
+  cursors.delete(sessionID)
+}
+
+function remember(sessionID: string, cursor: TranscriptCursor) {
+  cursors.delete(sessionID)
+  if (cursors.size >= CURSOR_LIMIT) {
+    const oldest = cursors.keys().next()
+    if (!oldest.done) cursors.delete(oldest.value)
+  }
+  cursors.set(sessionID, cursor)
+}
+
+/** A message is stable when no later part update can change its JSONL line. */
+function stableMessage(message: Message): boolean {
+  if (message.info.role !== "assistant") return true
+  if (message.info.time.completed === undefined) return false
+  return message.parts.every((value) => {
+    const part = record(value)
+    if (!part || part.type !== "tool") return true
+    const state = record(part.state)
+    return !!state && (state.status === "completed" || state.status === "error")
+  })
+}
+
+interface RenderedMessage {
+  /** JSONL lines this message contributes (its own row plus an optional tool-results row). */
+  readonly lines: readonly string[]
+  /** Last uuid written for this message; the next message without `parentID` chains to it. */
+  readonly lastUuid: string
+}
+
+function renderMessage(message: Message, sessionID: string, directory: string, parent: string | null): RenderedMessage {
+  const row = {
+    type: message.info.role,
+    uuid: message.info.id,
+    parentUuid: message.info.parentID ?? parent,
+    sessionId: sessionID,
+    cwd: directory,
+    timestamp: new Date(message.info.time.created).toISOString(),
+    message: { role: message.info.role, content: content(message.parts) },
+  }
+  const results = message.parts.flatMap((value) => {
+    const part = record(value)
+    const state = record(part?.state)
+    if (!part || part.type !== "tool" || !state || (state.status !== "completed" && state.status !== "error")) return []
+    return [
+      {
+        type: "tool_result",
+        tool_use_id: part.callID,
+        content: state.status === "error" ? state.error : state.output,
+        is_error: state.status === "error",
+      },
+    ]
+  })
+  if (!results.length) return { lines: [JSON.stringify(row)], lastUuid: message.info.id }
+  const resultID = `${message.info.id}:tool-results`
+  const result = {
+    ...row,
+    type: "user",
+    uuid: resultID,
+    parentUuid: message.info.id,
+    message: { role: "user", content: results },
+  }
+  return { lines: [JSON.stringify(row), JSON.stringify(result)], lastUuid: resultID }
+}
+
+function lineBytes(line: string) {
+  return Buffer.byteLength(line, "utf8") + 1
+}
+
+function linesBytes(lines: readonly string[]) {
+  return lines.reduce((total, line) => total + lineBytes(line), 0)
+}
+
+/**
+ * Persisted messages in ascending order. `after` limits the read to the
+ * unsettled tail; transcript materialization never loads the whole session
+ * unless it is rebuilding the file from scratch.
+ */
+const loadMessages = (input: { sessionID: string; after?: string }) =>
+  Effect.gen(function* () {
+    const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
+    if (!database) return [] as readonly Message[]
+    const { MessageV2 } = yield* Effect.promise(() => import("@/session/message-v2"))
+    const items: Message[] = []
+    let after = input.after
+    while (true) {
+      const page = yield* MessageV2.after({
+        sessionID: SessionID.make(input.sessionID),
+        limit: PAGE_SIZE,
+        after,
+      }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
+      __transcriptStats.messagesRead += page.items.length
+      items.push(...(page.items as readonly Message[]))
+      if (!page.more || !page.cursor) break
+      after = page.cursor
+    }
+    return [...(yield* history(input.sessionID, items))].filter((item) => item.info.sessionID === input.sessionID)
+  })
+
+const countThrough = (sessionID: string, at: CursorKey) =>
+  Effect.gen(function* () {
+    const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
+    if (!database) return undefined
+    const { MessageV2 } = yield* Effect.promise(() => import("@/session/message-v2"))
+    return yield* MessageV2.countThrough({
+      sessionID: SessionID.make(sessionID),
+      cursor: MessageV2.cursor.encode({ id: MessageID.make(at.id), time: at.time }),
+    }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
+  })
+
+const encodeCursor = (at: CursorKey) =>
+  Effect.gen(function* () {
+    const { MessageV2 } = yield* Effect.promise(() => import("@/session/message-v2"))
+    return MessageV2.cursor.encode({ id: MessageID.make(at.id), time: at.time })
+  })
+
 /** Materialize a stable, private JSONL snapshot before invoking an external hook. */
 export const materialize = Effect.fn("HookTranscript.materialize")(function* (input: {
   readonly sessionID: string
   readonly directory: string
-  readonly messages: readonly Message[]
   readonly root?: string
 }) {
   const fs = yield* FileSystem.FileSystem
   const root = input.root ?? path.join(Global.Path.data, "hooks", "transcripts")
-  yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 })
   const file = path.join(root, createHash("sha256").update(input.sessionID).digest("hex") + ".jsonl")
-  const temp = file + "." + randomUUID() + ".tmp"
-  let parent: string | null = null
-  const messages = yield* history(input.sessionID, input.messages)
-  const rows = messages
-    .filter((item) => item.info.sessionID === input.sessionID)
-    .flatMap((item) => {
-      const row = {
-        type: item.info.role,
-        uuid: item.info.id,
-        parentUuid: item.info.parentID ?? parent,
-        sessionId: input.sessionID,
-        cwd: input.directory,
-        timestamp: new Date(item.info.time.created).toISOString(),
-        message: { role: item.info.role, content: content(item.parts) },
-      }
-      parent = item.info.id
-      const results = item.parts.flatMap((value) => {
-        const part = record(value)
-        const state = record(part?.state)
-        if (!part || part.type !== "tool" || !state || (state.status !== "completed" && state.status !== "error"))
-          return []
-        return [
-          {
-            type: "tool_result",
-            tool_use_id: part.callID,
-            content: state.status === "error" ? state.error : state.output,
-            is_error: state.status === "error",
-          },
-        ]
-      })
-      if (!results.length) return [JSON.stringify(row)]
-      const resultID = `${item.info.id}:tool-results`
-      const result = {
-        ...row,
-        type: "user",
-        uuid: resultID,
-        parentUuid: item.info.id,
-        message: { role: "user", content: results },
-      }
-      parent = resultID
-      return [JSON.stringify(row), JSON.stringify(result)]
-    })
-  const write = Effect.gen(function* () {
-    yield* fs.writeFileString(temp, rows.length ? rows.join("\n") + "\n" : "", { mode: 0o600 })
-    yield* fs.rename(temp, file)
-    return file
-  }).pipe(Effect.ensuring(fs.remove(temp).pipe(Effect.ignore)))
   const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
-  return lifecycle ? yield* lifecycle.serializeTranscript(input.sessionID, write) : yield* write
+
+  const rewrite = (reason: string) =>
+    Effect.gen(function* () {
+      const messages = yield* loadMessages({ sessionID: input.sessionID })
+      let parent: string | null = null
+      let settledOffset = 0
+      let settledCount = 0
+      let settled: CursorKey | undefined
+      let settledParentUuid: string | null = null
+      let prefixOpen = true
+      const lines: string[] = []
+      for (const message of messages) {
+        const rendered = renderMessage(message, input.sessionID, input.directory, parent)
+        if (prefixOpen && stableMessage(message)) {
+          settledOffset += linesBytes(rendered.lines)
+          settledCount++
+          settled = { id: message.info.id, time: message.info.time.created }
+          settledParentUuid = rendered.lastUuid
+        } else prefixOpen = false
+        lines.push(...rendered.lines)
+        parent = rendered.lastUuid
+      }
+      const text = lines.length ? lines.join("\n") + "\n" : ""
+      const temp = file + "." + randomUUID() + ".tmp"
+      yield* Effect.gen(function* () {
+        yield* fs.writeFileString(temp, text, { mode: 0o600 })
+        yield* fs.rename(temp, file)
+      }).pipe(Effect.ensuring(fs.remove(temp).pipe(Effect.ignore)))
+      remember(input.sessionID, {
+        file,
+        directory: input.directory,
+        settledOffset,
+        settled,
+        settledParentUuid,
+        settledCount,
+      })
+      __transcriptStats.writes++
+      __transcriptStats.fullRewrites++
+      __transcriptStats.writtenBytes += Buffer.byteLength(text, "utf8")
+      __transcriptStats.lastRewriteReason = reason
+      log.debug("transcript full rewrite", {
+        sessionID: input.sessionID,
+        reason,
+        messages: messages.length,
+        bytes: Buffer.byteLength(text, "utf8"),
+      })
+      return file
+    })
+
+  const update = Effect.gen(function* () {
+    yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 })
+    const known = cursors.get(input.sessionID)
+    if (!known) return yield* rewrite("cold_start")
+    if (known.file !== file) return yield* rewrite("root_changed")
+    // Every row embeds `cwd`, so a working-directory change invalidates the file.
+    if (known.directory !== input.directory) return yield* rewrite("directory_changed")
+    const stat = yield* fs.stat(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
+    if (!stat) return yield* rewrite("file_missing")
+    if (Number(ByteSize.toBigInt(stat.size)) < known.settledOffset) return yield* rewrite("file_truncated")
+    if (known.settled) {
+      // A different count through the settled key means a revert or deletion
+      // changed the prefix; a same-count modification is out of scope.
+      const current = yield* countThrough(input.sessionID, known.settled)
+      if (current !== undefined && current !== known.settledCount) return yield* rewrite("count_mismatch")
+    }
+
+    const tail = yield* loadMessages({
+      sessionID: input.sessionID,
+      after: known.settled ? yield* encodeCursor(known.settled) : undefined,
+    })
+    let parent = known.settledParentUuid
+    let settledOffset = known.settledOffset
+    let settledCount = known.settledCount
+    let settled = known.settled
+    let settledParentUuid = known.settledParentUuid
+    let prefixOpen = true
+    const lines: string[] = []
+    for (const message of tail) {
+      const rendered = renderMessage(message, input.sessionID, input.directory, parent)
+      if (prefixOpen && stableMessage(message)) {
+        settledOffset += linesBytes(rendered.lines)
+        settledCount++
+        settled = { id: message.info.id, time: message.info.time.created }
+        settledParentUuid = rendered.lastUuid
+      } else prefixOpen = false
+      lines.push(...rendered.lines)
+      parent = rendered.lastUuid
+    }
+    const text = lines.length ? lines.join("\n") + "\n" : ""
+    const size = Number(ByteSize.toBigInt(stat.size))
+    // The unstable tail is rewritten on every trigger; an empty tail only needs
+    // the file truncated back to the stable prefix when a previous tail vanished.
+    if (size > known.settledOffset || text.length > 0) {
+      if (text.length > 0) {
+        yield* fs.truncate(file, known.settledOffset)
+        yield* fs.writeFileString(file, text, { flag: "a", mode: 0o600 })
+      } else {
+        yield* fs.truncate(file, known.settledOffset)
+      }
+      __transcriptStats.writes++
+      __transcriptStats.writtenBytes += Buffer.byteLength(text, "utf8")
+    }
+    remember(input.sessionID, {
+      file,
+      directory: input.directory,
+      settledOffset,
+      settled,
+      settledParentUuid,
+      settledCount,
+    })
+    return file
+  })
+
+  __transcriptStats.materializeCalls++
+  return lifecycle ? yield* lifecycle.serializeTranscript(input.sessionID, update) : yield* update
 }, Effect.provide(NodeFileSystem.layer))
 
 /**

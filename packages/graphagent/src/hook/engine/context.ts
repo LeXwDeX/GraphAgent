@@ -2,18 +2,22 @@
  * Lazily resolved per-trigger execution context (D1 PR2).
  *
  * A trigger constructor only names the session (and the directory comes from
- * the instance state). Everything expensive — loading persisted messages,
- * materializing the JSONL transcript, sourcing the hook environment, creating
- * the scratchpad, deriving prompt identity and the permission mode — is a
- * memoized effect evaluated only when the engine has decided that at least one
- * handler will run. Each provider is evaluated at most once per trigger, and a
- * trigger that matches no runnable hook evaluates none of them.
+ * the instance state). Everything expensive — materializing the JSONL
+ * transcript, sourcing the hook environment, creating the scratchpad, deriving
+ * prompt identity and the permission mode — is a memoized effect evaluated only
+ * when the engine has decided that at least one handler will run. Each provider
+ * is evaluated at most once per trigger, and a trigger that matches no runnable
+ * hook evaluates none of them.
+ *
+ * D1 PR3 removed the eager full-history load: the transcript materializes
+ * incrementally from the database, and prompt identity reads only the newest
+ * user messages.
  */
 import { Effect, Option } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
-import { HookTranscript, type Message } from "../transcript"
+import { HookTranscript } from "../transcript"
 import { promptIdentity, type PromptIdentity } from "../prompt-identity"
 import { agentToPermissionMode } from "../match"
 import type { HookPayload, TriggerContext } from "../types"
@@ -36,29 +40,23 @@ export interface RunContext {
 }
 
 /**
- * Persisted history in ascending order. Mirrors `hook/consumer-context.ts`:
- * paging keeps memory bounded and returns an empty history when no database is
- * in scope (unit layers that only mount the hook engine).
+ * Identity of the newest user prompt without loading the whole session. A
+ * bounded window of the newest user messages is enough: only compaction
+ * carriers are skipped, and they never occur 32 deep without a real prompt in
+ * between. Without a database (unit layers that only mount the hook engine) no
+ * prompt identity is derived.
  */
-const loadMessages = (sessionID: string) =>
+const loadPromptIdentity = (sessionID: string) =>
   Effect.gen(function* () {
-    if (!sessionID) return [] as readonly Message[]
+    if (!sessionID) return {} as PromptIdentity
     const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
-    if (!database) return [] as readonly Message[]
+    if (!database) return {} as PromptIdentity
     const { MessageV2 } = yield* Effect.promise(() => import("@/session/message-v2"))
-    const messages: Message[] = []
-    let before: string | undefined
-    while (true) {
-      const page = yield* MessageV2.page({ sessionID: SessionID.make(sessionID), limit: 100, before }).pipe(
-        Effect.provideService(Database.Service, database),
-        Effect.catchTag("NotFoundError", () => Effect.succeed({ items: [], more: false, cursor: undefined })),
-        Effect.orDie,
-      )
-      messages.unshift(...page.items)
-      if (!page.more || !page.cursor) break
-      before = page.cursor
-    }
-    return [...(yield* HookTranscript.history(sessionID, messages))]
+    const recent = yield* MessageV2.recentUsers({ sessionID: SessionID.make(sessionID), limit: 32 }).pipe(
+      Effect.provideService(Database.Service, database),
+      Effect.orDie,
+    )
+    return promptIdentity(recent)
   })
 
 /**
@@ -76,18 +74,11 @@ export const makeRunContext: (
   directory: string,
 ) {
   const sessionID = ctx.sessionID
-  const messages: Effect.Effect<readonly Message[]> = yield* Effect.cached(loadMessages(sessionID).pipe(Effect.orDie))
-  const identity: Effect.Effect<PromptIdentity> = yield* Effect.cached(
-    Effect.map(messages, (rows) => promptIdentity(rows)),
-  )
+  const identity: Effect.Effect<PromptIdentity> = yield* Effect.cached(loadPromptIdentity(sessionID).pipe(Effect.orDie))
   const transcript: Effect.Effect<string> = yield* Effect.cached(
-    Effect.gen(function* () {
-      const path = yield* HookTranscript.materialize({
-        sessionID,
-        directory: (yield* InstanceRef)?.directory ?? directory,
-        messages: yield* messages,
-      })
-      return path
+    HookTranscript.materialize({
+      sessionID,
+      directory: (yield* InstanceRef)?.directory ?? directory,
     }).pipe(Effect.orDie),
   )
   const environmentFileSource: Effect.Effect<string | undefined, unknown> =
@@ -141,7 +132,6 @@ export const makeRunContext: (
       const path = yield* HookTranscript.materialize({
         sessionID: stoppedAgentID,
         directory: (yield* InstanceRef)?.directory ?? directory,
-        messages: yield* loadMessages(stoppedAgentID).pipe(Effect.orDie),
       })
       return path
     }).pipe(Effect.orDie),
