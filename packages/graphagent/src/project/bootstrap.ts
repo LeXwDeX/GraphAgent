@@ -1,4 +1,5 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { Database } from "@graphagent/core/database/database"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 import { Format } from "../format"
 import { LSP } from "@/lsp/lsp"
@@ -13,6 +14,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { Service } from "./bootstrap-service"
 import { Memory } from "@/memory/memory"
+import { Turns } from "@/session/turns"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -32,6 +34,7 @@ export const layer = Layer.effect(
     // purely so bootstrap-built entry points can serviceOption it; no bootstrap
     // caller invokes its init, and the shared memoMap dedups construction.)
     const config = yield* Config.Service
+    const database = yield* Effect.serviceOption(Database.Service)
     const dagLoop = yield* DagLoop.Service
     const dagPublisher = yield* DagSummaryPublisher.Service
     const format = yield* Format.Service
@@ -45,6 +48,13 @@ export const layer = Layer.effect(
     const run = Effect.gen(function* () {
       const ctx = yield* InstanceState.context
       yield* Effect.logInfo("bootstrapping", { directory: ctx.directory })
+      // Turn rows from a previous process cannot still be running. Settle them
+      // before any new admission in this instance can observe `running`.
+      if (database._tag === "Some") {
+        yield* Turns.recover(database.value).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("session turn recovery failed", { cause })),
+        )
+      }
       // everything depends on config so eager load it for nice traces
       yield* config.get()
       // Provider adapters own per-instance construction and must initialize before other services.
@@ -94,6 +104,7 @@ export const layer = Layer.effect(
 export const defaultLayer: Layer.Layer<Service> = layer.pipe(
   Layer.provide([
     Config.defaultLayer,
+    Database.defaultLayer,
     DagLoop.defaultLayer,
     DagSummaryPublisher.defaultLayer,
     Format.defaultLayer,
@@ -106,6 +117,7 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
 
 export const node = LayerNode.make(layer, [
   Config.node,
+  Database.node,
   DagLoop.node,
   DagSummaryPublisher.node,
   Format.node,

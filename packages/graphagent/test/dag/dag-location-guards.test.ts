@@ -373,7 +373,13 @@ function twoInstanceLayer(input: TwoInstanceInput) {
         const gate = input.parkWakeDelivery
         if (!gate) {
           if (!input.deliverWakes) return Option.none()
-          return Option.some({ activate: Effect.void, result: deliver(value), abort: Effect.void })
+          return Option.some({
+            turn: undefined,
+            run: true,
+            activate: Effect.void,
+            result: deliver(value),
+            abort: Effect.void,
+          })
         }
         gate.calls.value++
         if (gate.released.value) return Option.none()
@@ -383,7 +389,13 @@ function twoInstanceLayer(input: TwoInstanceInput) {
             Effect.die(new Error(`session ${(value as { sessionID?: string }).sessionID} removed during wake delivery`)),
           ),
         )
-        return Option.some({ activate: Effect.void, result, abort: Effect.void })
+        return Option.some({
+          turn: undefined,
+          run: true,
+          activate: Effect.void,
+          result,
+          abort: Effect.void,
+        })
       }).pipe(Effect.tap((prepared) => Option.isSome(prepared) ? persistAdmission ?? Effect.void : Effect.void)),
   })
   const agent = Layer.mock(Agent.Service, {
@@ -818,50 +830,57 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
 
     const loopFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/loop.ts"))
     expect(loopFile).toBeDefined()
-    const source = loopFile!.source
+    const deliveryFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/delivery.ts"))
+    expect(deliveryFile).toBeDefined()
 
     // Positive half: every adoption/wake ownership gate must carry a
-    // directory-level check. The four adoption sites and the wake-delivery
-    // path are located by their semantic anchors so the probe survives
-    // refactors that keep the handler boundaries.
-    const regions: Array<{ name: string; from: string; to: string }> = [
+    // directory-level check. The four adoption sites live in the loop and the
+    // wake-delivery path lives in the D7 delivery module; both are located by
+    // their semantic anchors so the probe survives refactors that keep the
+    // handler boundaries.
+    const regions: Array<{ name: string; source: string; from: string; to: string }> = [
       {
         name: "recoverWorkflow (startup recovery adoption)",
+        source: loopFile!.source,
         from: "const recoverWorkflow = Effect.fn(",
         to: "// Orphan-pending recovery",
       },
       {
         name: "recoverOrphanPending (orphan-pending sweep)",
+        source: loopFile!.source,
         from: "const recoverOrphanPending = Effect.fn(",
         to: "yield* events.subscribe(DagEvent.WorkflowStarted)",
       },
       {
         name: "WorkflowStarted handler (first-wave adoption)",
+        source: loopFile!.source,
         from: "yield* events.subscribe(DagEvent.WorkflowStarted)",
         to: "for (const def of [DagEvent.NodeCompleted, DagEvent.NodeSkipped, DagEvent.NodeAborted])",
       },
       {
         name: "startup wake sweep",
+        source: loopFile!.source,
         from: "const pendingWakeSessions =",
         to: "return {}",
       },
       {
-        name: "tryDeliverWake (idle-Status wake delivery path)",
-        from: 'const deliverWake = Effect.fn("DagLoop.tryDeliverWake")',
-        to: "// Idle-event subscription",
+        name: "DagDelivery.deliverWake (idle-Status wake delivery path)",
+        source: deliveryFile!.source,
+        from: 'const deliverWake = Effect.fn("DagDelivery.deliverWake")',
+        to: "// The in-flight reservation must have a finite lifetime",
       },
     ]
     const unguarded: string[] = []
     for (const region of regions) {
-      const start = source.indexOf(region.from)
-      const end = source.indexOf(region.to, start)
+      const start = region.source.indexOf(region.from)
+      const end = region.source.indexOf(region.to, start)
       if (start === -1 || end === -1) {
         unguarded.push(`${region.name}: anchor not found (from="${region.from}" to="${region.to}")`)
         continue
       }
       // Scan CODE lines only — the guard must be an executable directory
       // comparison, not a mention in an adjacent comment.
-      const codeLines = source
+      const codeLines = region.source
         .slice(start, end)
         .split("\n")
         .filter((line) => !line.trim().startsWith("//"))

@@ -75,7 +75,13 @@ function mailboxLayer(probe: MailboxProbe) {
     prepareIfIdle: (input) =>
       Effect.sync(() => {
         probe.admissions.push(input)
-        return Option.some({ activate: Effect.void, result: Effect.never, abort: Effect.void })
+        return Option.some({
+          turn: undefined,
+          run: true,
+          activate: Effect.void,
+          result: Effect.never,
+          abort: Effect.void,
+        })
       }),
   })
   const loop = DagLoop.layer.pipe(

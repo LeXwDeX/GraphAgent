@@ -12,6 +12,8 @@ import { Database } from "@graphagent/core/database/database"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionProjector } from "@graphagent/core/session/projector"
+import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
+import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import { tmpdirScoped } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -137,6 +139,65 @@ describe("instance bootstrap DAG wiring", () => {
           )
           expect(result.workflow.status).toBe("completed")
           expect(result.node.status).toBe("skipped")
+        }),
+      )
+    }),
+  )
+
+  appIt.live("Turns.recover ends a running turn whose runner is gone during bootstrap", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped({ git: true })
+      const instances = yield* InstanceStore.Service
+      const turnID = "turn_bootstrap_recovery"
+      yield* instances.provide(
+        { directory },
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const database = yield* Database.Service
+          const parent = yield* session.create({ title: "bootstrap turn recovery" })
+          yield* pollWithTimeout(
+            session.get(parent.id).pipe(
+              Effect.as(true as const),
+              Effect.catch(() => Effect.succeed(undefined)),
+            ),
+            "session projection did not become visible",
+          )
+          // 2147483647 cannot be a live PID, so recovery must treat the row as
+          // orphaned even though another process owns this test runner.
+          yield* database.db
+            .insert(SessionTurnTable)
+            .values({
+              id: turnID,
+              session_id: parent.id,
+              origin: JSON.stringify({ kind: "user", via: "prompt" }),
+              state: "running",
+              runner_id: "2147483647",
+              time_started: Date.now(),
+            })
+            .run()
+            .pipe(Effect.orDie)
+        }),
+      )
+      yield* instances.reload({ directory })
+      yield* instances.provide(
+        { directory },
+        Effect.gen(function* () {
+          const database = yield* Database.Service
+          const recovered = yield* pollWithTimeout(
+            database.db
+              .select()
+              .from(SessionTurnTable)
+              .where(eq(SessionTurnTable.id, turnID))
+              .get()
+              .pipe(
+                Effect.orDie,
+                Effect.map((row) => (row?.state === "ended" ? row : undefined)),
+              ),
+            "bootstrap did not recover the orphaned turn",
+            "1 second",
+          )
+          expect(recovered.outcome).toEqual({ type: "interrupted" })
+          expect(recovered.time_ended).not.toBeNull()
         }),
       )
     }),

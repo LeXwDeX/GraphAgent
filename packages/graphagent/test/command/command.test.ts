@@ -81,6 +81,23 @@ describe("legacy command registry", () => {
     }),
   )
 
+  it.instance("registers import-claude as an interactive command", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      const command = yield* commands.get("import-claude")
+
+      expect(command).toMatchObject({
+        name: "import-claude",
+        description: "Review Claude Code config and convert it into .agents/",
+        source: "command",
+        hints: [],
+      })
+      expect(command?.subtask).toBeUndefined()
+      expect(command?.template).toContain("# Import Claude Configuration")
+      expect(yield* commands.get("import-claude-hooks")).toBeUndefined()
+    }),
+  )
+
   it.instance("registers the canonical dag-auto command", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service

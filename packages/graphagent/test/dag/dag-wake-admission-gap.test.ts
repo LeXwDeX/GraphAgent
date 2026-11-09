@@ -174,7 +174,13 @@ function restartLayer(filename: string, probe: Probe) {
               )
               .pipe(Effect.orDie)
             if (probe.legacyAdmission) yield* persistAdmission ?? Effect.void
-            return Option.some({ activate: Effect.void, result: Effect.never, abort: Effect.void })
+            return Option.some({
+              turn: undefined,
+              run: true,
+              activate: Effect.void,
+              result: Effect.never,
+              abort: Effect.void,
+            })
           }),
       })
     }),

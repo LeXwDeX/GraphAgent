@@ -37,7 +37,7 @@ opencode (providers, LSP, client/server and TUI) retains its existing behavior.
 | [DAG workflows](#dag-workflows)            | Decomposes a task into a durable dependency graph of child agents                                    | `/dag-auto`, the `workflow` tool, `.opencode/dag.jsonc` |
 | [Project Memory](#project-memory)          | Keeps confirmed preferences, decisions and terminology per project                                   | `/memory on`                                            |
 | [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally                                     | `/goal`, `/subgoal`                                     |
-| [Hooks](#hooks)                            | Claude Code–compatible lifecycle hooks                                                               | `hooks.json`, `/create-hook`, `/import-claude-hooks`    |
+| [Hooks](#hooks)                            | Claude Code–compatible lifecycle hooks                                                               | `hooks.json`, `/create-hook`, `/import-claude`          |
 | [Context management](#context-management)  | Bounds tool output, limits tool calls, compacts long sessions                                        | `tool_output`, `compaction`, `maxToolCalls`             |
 
 ---
@@ -136,8 +136,8 @@ producer in this build.
   workspace trust-list entry.
 - Hooks of every execution type can declare `inputFormat: "claude-code"` to receive Claude Code tool names and input keys. This gives
   naming compatibility, not full behavioral parity.
-- Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude-hooks` migrates them, and
-  `/create-hook` walks through authoring a new hook.
+- Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude` reviews and converts them into
+  `.agents/`, and `/create-hook` walks through authoring a new hook.
 - Background waits: an `asyncRewake` command hook can watch CI, reviews or deploys while the agent keeps working; a
   conclusion exits with code 2 and wakes the session with a bounded summary. The Active Hooks block marks such hooks
   `background`. See the [background watcher recipe](./packages/graphagent/src/skill/builtin/configure-hooks.md#background-watcher-recipe).

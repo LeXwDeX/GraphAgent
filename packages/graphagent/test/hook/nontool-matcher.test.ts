@@ -28,7 +28,7 @@ const ctxHook = (marker: string, event: string) => ({
 // Claude Code matches non-tool events against an event-specific field:
 // SessionStart → source (startup|resume|clear|compact), PreCompact → trigger
 // (manual|auto), SessionEnd → reason, Notification → notification_type.
-// /import-claude-hooks imports such matchers "as-is".
+// /import-claude imports such matchers "as-is".
 const write = (dir: string) =>
   Effect.promise(async () => {
     await fs.mkdir(path.join(dir, ".agents"), { recursive: true })

@@ -878,6 +878,8 @@ describe("GoalLoop — real SessionRunState admission seam (GOAL-FP-01-13)", () 
       return Option.none()
     }
     return Option.some({
+      turn: undefined,
+      run: true,
       activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
       result: admitted.value.pipe(Effect.exit, Effect.as(mkAssistant())),
       abort: runState.value.cancel(input.sessionID),

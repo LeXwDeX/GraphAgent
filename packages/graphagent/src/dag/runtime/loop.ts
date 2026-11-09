@@ -14,7 +14,6 @@ import {
   Option,
   DateTime,
   Clock,
-  Schema,
   Scope,
   Exit,
   Deferred,
@@ -28,14 +27,10 @@ import { SessionEvent } from "@graphagent/schema/session-event"
 import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
-import { Hash } from "@graphagent/core/util/hash"
 import { Database } from "@graphagent/core/database/database"
 import { DagLocation } from "../location"
 import { WorkflowRuntime, toSchedulingNodes } from "@graphagent/core/dag/core/scheduling"
 import {
-  ERROR_CLASS_BUDGET_EXHAUSTED,
-  ERROR_CLASS_CANCELLED,
-  displayState,
   isNodeTerminalStatus,
   isTransitionRejection,
   isWorkflowTerminalStatus,
@@ -55,8 +50,7 @@ import {
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
-import * as MessageV2 from "@/session/message-v2"
-import { MessageID, PartID, SessionID } from "@/session/schema"
+import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { SessionAutomationLease } from "@/session/automation-lease"
 import { renderTemplate } from "../templates/resolve"
@@ -80,10 +74,10 @@ import { artifactPermissionBase, makeArtifactSourceAuthorizer } from "./artifact
 import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
-import { deliverReport, reportingCheckpoints, selectReportNode } from "./report-delivery"
+import { DagDelivery } from "./delivery"
 import { Logging } from "@graphagent/core/observability/logging"
 
-const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
+export { PAUSED_REMINDER_DELAY_MS, isPausedReminderDue, wakeBatchIdentity } from "./delivery"
 
 /** State the schema's enum values at the end of the output contract so the
  * runtime answer wins over conflicting verdict wording in the instruction. */
@@ -108,47 +102,6 @@ function settledWithoutOutputPlaceholder(node: DagStore.NodeRow | undefined) {
   if (node?.status === "aborted") return `Dependency "${node.id}" aborted`
   return undefined
 }
-const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
-
-function completionReportReference(workflow: DagStore.WorkflowRow) {
-  return `[DAG Final Report] The final report for workflow "${workflow.title}" was delivered to the parent transcript before this turn (workflow_id="${workflow.id}", completion_seq=${workflow.seq}). Continue the plan from it: if it names bounded remaining work, act with the workflow tool (control replan / extend, or control extend_timeout for a running escalation); otherwise stop without restating the report.`
-}
-
-/** Stable local receipt for the exact durable wake batch, including execution
- * identity and event revisions. Repeated text from a new attempt is new input. */
-export function wakeBatchIdentity(sessionID: string, batch: DagStore.WakeBatch) {
-  const identity = Hash.sha256(
-    JSON.stringify([
-      sessionID,
-      batch.nodes
-        .map((node) => [
-          node.workflowId,
-          node.id,
-          node.childSessionId,
-          node.replanAttempts,
-          node.seq,
-          node.status,
-          node.deadlineMs,
-          node.timeoutExtensions,
-        ])
-        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-      batch.workflows
-        .map((workflow) => [workflow.id, workflow.graphRev, workflow.seq, workflow.status])
-        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-    ]),
-  )
-  return { messageID: MessageID.make(`msg_dag_wake_${identity}`), partID: PartID.make(`prt_dag_wake_${identity}`) }
-}
-
-export function isPausedReminderDue(
-  workflow: Pick<DagStore.WorkflowRow, "status" | "wakeReported" | "timeUpdated">,
-  now: number,
-) {
-  return (
-    workflow.status === "paused" && !workflow.wakeReported && now - workflow.timeUpdated >= PAUSED_REMINDER_DELAY_MS
-  )
-}
-
 export interface Interface {
   readonly init: () => Effect.Effect<void>
 }
@@ -207,11 +160,14 @@ const serviceLayer = Layer.effect(
         // runtimes.has check is check-then-act. Reserved synchronously at
         // adoption entry, released when the adoption settles.
         const recovering = new Set<string>()
-        const wakeInFlight = new Set<string>()
-        const wakePending = new Set<string>()
-        // Cache the receipt only as an optimization. Exact durable message/part
-        // lookup below survives a crash between admission and wake marking.
-        const deliveredWakeSummaries = new Map<string, string>()
+        // D7: all delivery scheduling (wake + agent mailbox) lives in
+        // DagDelivery. This forward reference is assigned below, before any
+        // event or recovery path can trigger it; every call site only nudges.
+        let delivery: DagDelivery.Interface = {
+          drain: () => Effect.void,
+          nudge: () => Effect.void,
+          scan: () => Effect.void,
+        }
 
         // Seed the commented global dag.jsonc once per instance init — the
         // per-round DagConfig.load below stays a pure read so the spawn
@@ -348,7 +304,7 @@ const serviceLayer = Layer.effect(
           yield* automation
             .unregister(SessionID.make(wf.sessionId), { kind: "dag", id: wf.id })
             .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void)))
-          yield* tryDeliverWake(wf.sessionId).pipe(Effect.ignore, Effect.forkScoped)
+          yield* delivery.nudge(wf.sessionId)
           return outcome
         })
 
@@ -913,9 +869,7 @@ const serviceLayer = Layer.effect(
         const forkWakeAfter =
           (sessionID: string) =>
           <A, E>(exit: Exit.Exit<A, E>) =>
-            Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
-              ? Effect.void
-              : tryDeliverWake(sessionID).pipe(Effect.ignore, Effect.forkScoped, Effect.asVoid)
+            Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause) ? Effect.void : delivery.nudge(sessionID)
 
         startMessageContinuations = Effect.fn("DagLoop.startMessageContinuations")(function* (
           dagID: string,
@@ -1201,7 +1155,7 @@ const serviceLayer = Layer.effect(
             // the next idle event — the workflow just paused itself and the
             // parent is the only actor that can dispose of it.
             if (pausedForRecovery || pausedForCheckpoint) {
-              yield* tryDeliverWake(wf.sessionId).pipe(Effect.ignore, Effect.forkScoped)
+              yield* delivery.nudge(wf.sessionId)
             }
           }).pipe(Effect.ensuring(Effect.sync(() => recovering.delete(dagID))))
         })
@@ -1592,7 +1546,7 @@ const serviceLayer = Layer.effect(
               const dagID = evt.data.dagID as string
               const entry = runtimes.get(dagID)
               if (!entry) return
-              yield* tryDeliverWake(entry.parentSessionID).pipe(Effect.ignore, Effect.forkScoped)
+              yield* delivery.nudge(entry.parentSessionID)
             }).pipe(guarded("NodeTimeoutEscalated")),
           ),
           Effect.forkScoped({ startImmediately: true }),
@@ -1996,10 +1950,10 @@ const serviceLayer = Layer.effect(
                   // keep its registration (and the Session's ownership)
                   // indefinitely. The key matches the registration key
                   // (WorkflowTable.id === event dagID, per the projector);
-                  // tryDeliverWake re-registers its batch itself before
+                  // the delivery drain re-registers its batch itself before
                   // claiming the wake lease when a delivery is attempted.
                   yield* automation.unregister(SessionID.make(parentSessionID), { kind: "dag", id: dagID })
-                  yield* tryDeliverWake(parentSessionID).pipe(Effect.ignore, Effect.forkScoped)
+                  yield* delivery.nudge(parentSessionID)
                 } else {
                   // GOAL-FP-01-03 follow-up (P2-A): no runtime entry, but the
                   // startup wake sweep may have registered this non-terminal
@@ -2018,7 +1972,7 @@ const serviceLayer = Layer.effect(
                     // (swept at host level, or recovery that never adopted)
                     // still owes the parent one wake. The drain re-applies
                     // execution and notification-only ownership.
-                    yield* tryDeliverWake(wf.sessionId).pipe(Effect.ignore, Effect.forkScoped)
+                    yield* delivery.nudge(wf.sessionId)
                   }
                 }
               }).pipe(guarded("WorkflowTerminal")),
@@ -2027,774 +1981,37 @@ const serviceLayer = Layer.effect(
           )
         }
 
-        // ── D2+D7: Autonomous wake — extracted as reusable function ────
-        // Called from both the idle-event subscription AND node-terminal
-        // event handlers, so a wake fires even when the parent session is
-        // already idle (P1-2 fix).
-
-        const readWakeBatch = Effect.fn("DagLoop.readWakeBatch")(function* (sessionID: string) {
-          const snapshot = yield* store
-            .getWakeSnapshot(sessionID)
-            .pipe(Effect.catch(() => Effect.succeed({ nodes: [], workflows: [] } satisfies DagStore.WakeSnapshot)))
-          const now = yield* Clock.currentTimeMillis
-          const reportableWorkflows = snapshot.workflows.filter(
-            (workflow) =>
-              !workflow.wakeReported &&
-              (isTerminalWorkflowStatusValue(workflow.status) || isPausedReminderDue(workflow, now)),
-          )
-          // Timeout-escalated nodes must reach the main agent for
-          // adjudication — their workflow is a delivery boundary even though
-          // the runtime still reports a running node. F11: a non-eligible node
-          // that escalated then terminalized (cap-exhausted force-cancel) must
-          // deliver its verdict immediately, not wait for the next natural
-          // boundary (it may never come while other nodes keep running).
-          // The boundary is escalation_pending (a live, not-yet-adjudicated
-          // escalation) OR an escalated node that terminalized — NOT the sticky
-          // extension count alone, or an already-adjudicated running node would
-          // override the delivery boundary for the rest of the attempt.
-          const escalatedWorkflowIDs = new Set(
-            snapshot.nodes
-              .filter(
-                (node) =>
-                  node.escalationPending || (node.timeoutExtensions > 0 && isNodeTerminalStatus(node.status as never)),
-              )
-              .map((node) => node.workflowId),
-          )
-          const workflowIDs = [
-            ...new Set([
-              ...snapshot.nodes.map((node) => node.workflowId),
-              ...reportableWorkflows.map((workflow) => workflow.id),
-            ]),
-          ]
-          const workflowsByID = new Map(snapshot.workflows.map((workflow) => [workflow.id, workflow]))
-          const workflows = workflowIDs.map((workflowID) => workflowsByID.get(workflowID))
-          // A completed final-response workflow either displays its final report
-          // without a model turn, or owns reporting checkpoints and therefore
-          // needs one completion turn. Durable node evidence decides: a delivery
-          // leaf reports the final answer itself, while every other
-          // `report_to_parent` node remains a parent checkpoint. Without a
-          // completed delivery node there is no final answer, only a result
-          // index: a gate (verify FAIL, review REJECT) skipped the delivery
-          // path and settled the graph as completed so the parent can repair
-          // or reopen it (#294). That outcome always needs a parent turn.
-          const finalResponseCompletions = new Map<string, boolean>()
-          for (const workflow of workflows) {
-            if (!workflow || workflow.status !== "completed") continue
-            const config = parseWorkflowConfig(workflow.config)
-            if (!config) continue
-            const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
-            finalResponseCompletions.set(
-              workflow.id,
-              reportingCheckpoints(config, nodes).length > 0 || !selectReportNode(config, nodes),
-            )
-          }
-          const needsCompletionTurn = (workflowID: string) => finalResponseCompletions.get(workflowID) === true
-          // A reporting checkpoint that completed while its downstream nodes
-          // are still running is informative, not a stalled/actionable
-          // boundary. It must reach the parent as its own coalesced batch
-          // without entering the orchestrator-unresponsive net.
-          const runningReportWorkflowIDs = new Set(
-            snapshot.nodes
-              // The snapshot predicate already limits wake-eligible rows to
-              // completed/failed; escalation-only rows have wakeEligible=false.
-              .filter((node) => node.wakeEligible)
-              .filter((node) => {
-                const workflow = workflowsByID.get(node.workflowId)
-                if (workflow?.status !== "running") return false
-                // Final-response workflows deliver progress checkpoints while
-                // downstream work continues.
-                const entry = runtimes.get(workflow.id)
-                return !!entry && !entry.runtime.isPaused() && !entry.runtime.isStepMode()
-              })
-              .map((node) => node.workflowId),
-          )
-          const boundaryWorkflows = workflows.filter((workflow): workflow is DagStore.WorkflowRow => {
-            if (!workflow) return false
-            if (isWorkflowTerminalStatus(workflow.status as never)) return true
-            const entry = runtimes.get(workflow.id)
-            if (workflow.status === "paused" || workflow.status === "stepping") return true
-            if (entry?.runtime.isPaused() || entry?.runtime.isStepMode()) return true
-            if (workflow.status !== "running" || !entry) return false
-            if (escalatedWorkflowIDs.has(workflow.id)) return true
-            // Delivery boundary uses the runtime's own running set, NOT fiber
-            // ownership: between markRunning and fibers.set the spawn path has
-            // async yield points, and a wake reading that window would misjudge
-            // "running, no fiber, nothing ready" as a stalled boundary and
-            // deliver a mid-flight batch. The orchestrator-unresponsive net
-            // below keeps the stricter fiber-ownership check.
-            if (entry.runtime.hasRunning()) return false
-            return entry.runtime.getReadyNodes().length === 0
-          })
-          const atBoundary = new Set([...boundaryWorkflows.map((workflow) => workflow.id), ...runningReportWorkflowIDs])
-          const batch = {
-            // Display-only completion reports never consume node wakes. Their
-            // delivery leaf is the report itself; leave every node row to its
-            // own durable lifecycle instead of acking it under the display path.
-            nodes: snapshot.nodes.filter(
-              (node) => atBoundary.has(node.workflowId) && finalResponseCompletions.get(node.workflowId) !== false,
-            ),
-            workflows: reportableWorkflows.filter((workflow) => atBoundary.has(workflow.id)),
-          } satisfies DagStore.WakeBatch
-          const atDeliveryBoundary = new Set(boundaryWorkflows.map((workflow) => workflow.id))
-          return {
-            batch,
-            completedReports: reportableWorkflows.filter(
-              (workflow) => atDeliveryBoundary.has(workflow.id) && finalResponseCompletions.get(workflow.id) === false,
-            ),
-            completionReports: reportableWorkflows.filter(
-              (workflow) => atDeliveryBoundary.has(workflow.id) && needsCompletionTurn(workflow.id),
-            ),
-            actionableDagIDs: new Set(
-              boundaryWorkflows
-                .filter((workflow) => !isWorkflowTerminalStatus(workflow.status as never))
-                .map((workflow) => workflow.id),
-            ),
-            unresponsiveDagIDs: new Set(
-              boundaryWorkflows
-                .filter((workflow) => {
-                  const entry = runtimes.get(workflow.id)
-                  return workflow.status === "running" && !entry?.runtime.isPaused() && !entry?.runtime.isStepMode()
-                })
-                .map((workflow) => workflow.id),
-            ),
-          }
+        // D7: one delivery scheduler owns the durable wake ledger and the
+        // agent mailbox ledger (see DagDelivery). This loop only triggers it:
+        // the idle subscription, node-terminal handlers, pause recovery,
+        // escalation, moves, and the startup sweep all nudge the same
+        // in-flight reservations, and delivery keeps the fixed order — wake
+        // first, mailbox second.
+        delivery = yield* DagDelivery.make({
+          directory: ctx.directory,
+          projectID: ctx.project.id,
+          scope: stateScope,
+          store,
+          dag,
+          sessions: sessionSvc,
+          prompts: promptSvc,
+          status: statusSvc,
+          automation,
+          database,
+          events,
+          messages: messageSvc,
+          entries: (dagID) => runtimes.get(dagID),
+          lastAssistantMessage,
         })
 
-        /**
-         * #948 notification-only ownership. `ownsSession` ignores terminal
-         * rows so a dead workflow cannot block a later valid workflow in the
-         * same session. That leaves one gap: a terminal-only batch has no
-         * execution owner. Gate it on each durable workflow directory
-         * instead — this grants notification delivery only, never execution,
-         * and never falls back to process.cwd.
-         */
-        const sessionNotificationOwned = Effect.fnUntraced(function* (sessionID: string) {
-          const snapshot = yield* store
-            .getWakeSnapshot(sessionID)
-            .pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterrupts(cause)
-                  ? Effect.interrupt
-                  : Effect.succeed({ nodes: [], workflows: [] } satisfies DagStore.WakeSnapshot),
-              ),
-            )
-          const terminal = snapshot.workflows.filter(
-            (workflow) => !workflow.wakeReported && isTerminalWorkflowStatusValue(workflow.status),
-          )
-          for (const workflow of terminal) {
-            if (!(yield* DagLocation.ownsWorkflow(workflow.id, ctx.directory))) return false
-          }
-          return true
-        })
-
-        let tryDeliverWake: (sessionID: string) => Effect.Effect<void> = () => Effect.void
-        const deliverWake = Effect.fn("DagLoop.tryDeliverWake")(function* (sessionID: string) {
-          // Cross-instance guard via the execution-location authority: wake
-          // delivery is store-global (idle Status events, node-terminal
-          // handlers, the startup sweep). Only the instance whose DIRECTORY
-          // owns the session's workflows may deliver its wakes — sibling
-          // worktrees of the same project must ignore each other's idle
-          // sessions. The guard also covers the workflow-terminal stimulus
-          // after a session deletion (the durable rows are gone).
-          if (!(yield* DagLocation.ownsSession(sessionID, ctx.directory))) return
-          if (!(yield* sessionNotificationOwned(sessionID))) return
-          if (wakeInFlight.has(sessionID)) {
-            wakePending.add(sessionID)
-            return
-          }
-          wakeInFlight.add(sessionID)
-          // Re-read after each stable batch so rows committed during delivery
-          // remain a separate batch. The reservation is released by an Effect
-          // finalizer, not a generator `finally`: Effect does not resume a
-          // generator's `finally` when the fiber is interrupted (the lease
-          // timeout below), fails, or dies, so a generator release would leak
-          // the reservation and park every later wake in `wakePending`.
-          yield* Effect.gen(function* () {
-            const deliveredUnresponsiveDagIDs = new Set<string>()
-            for (;;) {
-              const plan = yield* readWakeBatch(sessionID)
-              let batch = plan.batch
-              const hasUnreported = batch.nodes.length > 0 || batch.workflows.length > 0
-
-              if (!hasUnreported) {
-                // A terminal event can commit between either query. Coalesce
-                // its trigger into another durable read before declaring idle.
-                if (wakePending.delete(sessionID)) continue
-                // D7: if we delivered at least one wake in this call and no more
-                // unreported rows remain, check for orchestrator-unresponsive.
-                // #5: scoped per-workflow — only fail the workflow whose node
-                // was reported, not any other workflow under the same session.
-                // Skip paused and stepping workflows; both can intentionally
-                // have no ready nodes.
-                if (deliveredUnresponsiveDagIDs.size > 0) {
-                  for (const dagID of deliveredUnresponsiveDagIDs) {
-                    const entry = runtimes.get(dagID)
-                    if (!entry) continue
-                    // Torn-read fix: every runtime/fibers mutation happens as a
-                    // pair inside this entry's evalLock (markRunning+fibers.set
-                    // in spawnReady, settle+spawnReady in the terminal handlers),
-                    // so reading the five conditions under the same lock waits
-                    // out the markRunning→fibers.set window instead of misreading
-                    // it as a stalled orchestrator. dag.fail must run under the
-                    // SAME permit: releasing the lock between the check and the
-                    // fail lets a terminal-event handler spawn new ready nodes in
-                    // the window, and the stale verdict would then kill a
-                    // progressing workflow. evalLock→workflowLock nesting is the
-                    // established order here (checkCompletion inside evalLock
-                    // takes the same KeyedMutex); dag.ts never acquires evalLock,
-                    // so no reverse ordering exists.
-                    yield* entry.evalLock.withPermits(1)(
-                      Effect.gen(function* () {
-                        // P0-C: re-read the durable status under the evalLock. A
-                        // parent that responded this turn — e.g. submitted a
-                        // replan/extend that failed validation, which parks the
-                        // workflow paused — must NOT be failed as unresponsive.
-                        // The durable row is transactional with the pause event,
-                        // so it is authoritative over the in-memory paused flag,
-                        // which the WorkflowPaused handler refreshes async and
-                        // could otherwise lose the race against this check.
-                        const durable = yield* store.getWorkflow(dagID)
-                        const shouldFail =
-                          durable?.status === "running" &&
-                          !entry.runtime.isPaused() &&
-                          !entry.runtime.isStepMode() &&
-                          // Suppress the net only when current-process execution
-                          // ownership proves that a running node is making progress.
-                          !entry.runtime.hasRunningMatching((id) => entry.fibers.has(id)) &&
-                          entry.runtime.getReadyNodes().length === 0 &&
-                          !entry.runtime.isComplete()
-                        if (shouldFail) yield* dag.fail(dagID, "orchestrator_unresponsive").pipe(Effect.ignore)
-                      }),
-                    )
-                  }
-                }
-                return
-              }
-
-              if ((yield* statusSvc.get(SessionID.make(sessionID))).type !== "idle") return
-
-              // Completed final-response workflows display their result without a model turn.
-              // Other decisions in the same snapshot take precedence; their wake excludes
-              // these completed reports so they cannot invite a duplicate summary.
-              const completedIDs = new Set(plan.completedReports.map((workflow) => workflow.id))
-              const decisions = {
-                nodes: batch.nodes.filter((node) => !completedIDs.has(node.workflowId)),
-                workflows: batch.workflows.filter((workflow) => !completedIDs.has(workflow.id)),
-              } satisfies DagStore.WakeBatch
-              if (
-                plan.completedReports.length > 0 &&
-                decisions.nodes.length === 0 &&
-                decisions.workflows.length === 0
-              ) {
-                for (const workflow of plan.completedReports) {
-                  const reportBatch = {
-                    nodes: [],
-                    workflows: batch.workflows.filter((row) => row.id === workflow.id),
-                  }
-                  if (reportBatch.workflows.length === 0) continue
-                  yield* automation.register(SessionID.make(sessionID), { kind: "dag", id: workflow.id })
-                  const lease = Option.getOrUndefined(
-                    yield* automation.claim(SessionID.make(sessionID), { kind: "dag" }),
-                  )
-                  if (!lease) return
-                  const config = parseWorkflowConfig(workflow.config)
-                  const reportNodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
-                  const node =
-                    (config ? selectReportNode(config, reportNodes) : undefined) ??
-                    reportNodes.find((node) => node.status === "completed")
-                  const source = node?.childSessionId
-                    ? yield* lastAssistantMessage(node.childSessionId).pipe(Effect.orDie)
-                    : undefined
-                  const delivered = yield* automation.use(
-                    lease,
-                    promptSvc.withIdle(
-                      SessionID.make(sessionID),
-                      deliverReport({
-                        workflow,
-                        batch: reportBatch,
-                        store,
-                        sessions: sessionSvc,
-                        events,
-                        directory: ctx.directory,
-                        source,
-                      }).pipe(
-                        Effect.provideService(Database.Service, database),
-                        Effect.tap((didDeliver) =>
-                          didDeliver
-                            ? statusSvc
-                                .set(SessionID.make(sessionID), { type: "busy" })
-                                .pipe(Effect.ensuring(statusSvc.set(SessionID.make(sessionID), { type: "idle" })))
-                            : Effect.void,
-                        ),
-                      ),
-                    ),
-                  )
-                  if (Option.isNone(delivered) || Option.isNone(delivered.value) || !delivered.value.value) return
-                  yield* automation.unregister(SessionID.make(sessionID), { kind: "dag", id: workflow.id })
-                }
-                continue
-              }
-              if (completedIDs.size > 0) batch = decisions
-
-              const wakeIdentity = wakeBatchIdentity(sessionID, batch)
-              const durableReceipt =
-                deliveredWakeSummaries.get(sessionID) === wakeIdentity.messageID
-                  ? undefined
-                  : yield* sessionSvc.getPart({
-                      sessionID: SessionID.make(sessionID),
-                      messageID: wakeIdentity.messageID,
-                      partID: wakeIdentity.partID,
-                    })
-              const alreadyAdmitted =
-                deliveredWakeSummaries.get(sessionID) === wakeIdentity.messageID ||
-                (durableReceipt?.type === "text" && durableReceipt.synthetic === true)
-
-              // Preemption guard (task 3.3): abort if fresher user message exists
-              const msgs = yield* sessionSvc
-                .messages({ sessionID: SessionID.make(sessionID), limit: 20 })
-                .pipe(Effect.catch(() => Effect.succeed([])))
-              let lastUserAt = -1
-              let lastAsstAt = -1
-              for (const m of msgs) {
-                const t = m.info.time?.created
-                if (typeof t !== "number") continue
-                if (m.info.role === "user" && t > lastUserAt) lastUserAt = t
-                else if (m.info.role === "assistant" && t > lastAsstAt) lastAsstAt = t
-              }
-              if (!alreadyAdmitted && lastUserAt > lastAsstAt) return
-
-              const failuresByWorkflow = new Map<string, string[]>()
-              for (const workflow of batch.workflows) {
-                if (workflow.status !== "failed") continue
-                // Rev-view (v1.0.15 Train A): attribution is terminal
-                // aggregation — only CURRENT-revision failures are attributed.
-                // Cancelled rows are superseded by the NodeCancelled projection,
-                // so getCurrentNodes already drops them; the errorClass filter
-                // below is the explicit D12 defense layer for the same rows and
-                // for budget-exhausted failures, which are not agent failures.
-                const failedNodes = yield* store.getCurrentNodes(workflow.id).pipe(
-                  Effect.map((nodes) =>
-                    nodes.filter(
-                      (node): node is DagStore.NodeRow & { errorClass: string } =>
-                        node.status === "failed" &&
-                        node.errorClass !== null &&
-                        node.errorClass !== ERROR_CLASS_CANCELLED &&
-                        node.errorClass !== ERROR_CLASS_BUDGET_EXHAUSTED,
-                    ),
-                  ),
-                  Effect.catchCause((cause) =>
-                    Effect.gen(function* () {
-                      yield* Effect.logWarning("wake digest failed to read failed nodes", {
-                        workflowId: workflow.id,
-                        cause,
-                      })
-                      return [] as (DagStore.NodeRow & { errorClass: string })[]
-                    }),
-                  ),
-                )
-                if (failedNodes.length > 0) {
-                  failuresByWorkflow.set(
-                    workflow.id,
-                    failedNodes.map((node) =>
-                      `- "${node.name}" (${node.errorClass}): ${node.errorReason ?? "unknown error"}`.slice(0, 300),
-                    ),
-                  )
-                }
-              }
-              const completionIDs = new Set(plan.completionReports.map((workflow) => workflow.id))
-              // A completed workflow can still leave required work undone when a
-              // gate skipped it; name those nodes so the turn acts on them.
-              const incompleteByWorkflow = new Map<string, string[]>()
-              for (const workflow of batch.workflows) {
-                if (workflow.status !== "completed" || !completionIDs.has(workflow.id)) continue
-                const incomplete = (yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)).filter(
-                  (node) => node.required && node.status !== "completed",
-                )
-                if (incomplete.length > 0) {
-                  incompleteByWorkflow.set(
-                    workflow.id,
-                    incomplete.map((node) => {
-                      const state = displayState(node)
-                      const reason = state === "failed" && node.errorClass ? `: ${node.errorClass}` : ""
-                      return `- "${node.id}" (${state}${reason})`.slice(0, 300)
-                    }),
-                  )
-                }
-              }
-              const summaries = [
-                ...batch.nodes.map((node) => {
-                  // The timeout advisory is for a running node awaiting
-                  // adjudication (escalation_pending). A batch node is
-                  // wake_reported=false, so it cannot be an already-adjudicated
-                  // extend — escalation_pending and timeoutExtensions>0 agree
-                  // here; the flag is the intent-level signal.
-                  if (displayState(node) === "escalated") {
-                    const at = new Date(node.timeUpdated ?? node.startedAt ?? Date.now()).toISOString()
-                    return `[DAG Node Timeout] RUNNING node "${node.name}" exceeded its execution deadline at ${at} (timeout escalation ${node.timeoutExtensions}) and is still executing. If the workflow's cumulative escalation cap is not exhausted, control(extend_timeout) { workflow_id, node_id, timeout_ms } grants more execution time WITHOUT a replan — it keeps the same child session and attempt, consumes no replan, rewrites no graph, and the deadline watcher picks up the new deadline on its next read. At the cap, extension of this attempt is refused and the watcher enforces the timeout verdict. The cumulative extension count is NOT reset (only a new attempt resets it). Use control(replan) with a NEW worker_config.timeout_ms when you must also change the graph; restart or cancel the node to stop the current attempt. Queued nodes are not extended: their admission deadline was fixed at permit acquisition and is not adjusted by extensions.`
-                  }
-                  const durableResult =
-                    typeof node.output === "string"
-                      ? node.output
-                      : (node.errorReason ?? (node.output == null ? "(no output)" : JSON.stringify(node.output)))
-                  const truncated = durableResult.length > 500
-                  const output = durableResult.slice(0, 500)
-                  const state = displayState(node)
-                  // D11: cancellation is identified only by the structured
-                  // display state; do not render it as "failed (cancelled)".
-                  const failureClass = state === "failed" && node.errorClass ? ` (${node.errorClass})` : ""
-                  // #949: every delivered result states when the node settled,
-                  // so the parent can answer "when did this arrive?".
-                  const at = new Date(node.completedAt ?? node.startedAt ?? node.timeUpdated ?? Date.now()).toISOString()
-                  const retrieval = truncated
-                    ? `\nComplete output: call workflow result with workflow_id="${node.workflowId}" and node_id="${node.id}".`
-                    : ""
-                  return `[DAG Node Result] Node "${node.name}" ${state}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}`
-                }),
-                ...batch.workflows.map((workflow) => {
-                  const failures = failuresByWorkflow.get(workflow.id)
-                  const incomplete = incompleteByWorkflow.get(workflow.id)
-                  const attribution = failures
-                    ? `\nFailed nodes:\n${failures.join("\n")}`
-                    : incomplete
-                      ? `\nRequired nodes not completed (no final answer was produced):\n${incomplete.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
-                      : ""
-                  return workflow.status === "paused"
-                    ? `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
-                    : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
-                }),
-              ]
-              const summary = [
-                ...summaries,
-                ...(plan.actionableDagIDs.size > 0
-                  ? [
-                      "Act on these workflows this turn (workflow tool: control extend_timeout for a timeout escalation; control replan / extend to reshape the graph; control resume / complete / cancel to settle). The orchestrator_unresponsive verdict is state-based: a workflow left RUNNING and stalled (no running or ready nodes) at the end of the turn is failed. After a rejected replan/extend, inspect its reported actual state: a durably paused workflow is recoverable, but a failed automatic pause does not protect a still-running workflow. Never cancel the whole graph over a rejection. If you need the user before acting on a stalled workflow, control(pause) it first and verify the state, then stop and ask. A paused workflow whose nodes have all finished settles via control(resume), not control(complete).",
-                    ]
-                  : []),
-              ].join("\n\n")
-              if (durableReceipt?.type === "text" && durableReceipt.text !== summary) {
-                yield* Effect.die(new Error("DAG wake receipt content does not match its durable batch"))
-                return
-              }
-
-              const wakeWorkflowIDs = new Set([
-                ...batch.nodes.map((node) => node.workflowId),
-                ...batch.workflows.map((workflow) => workflow.id),
-              ])
-              for (const workflowID of wakeWorkflowIDs) {
-                yield* automation.register(SessionID.make(sessionID), { kind: "dag", id: workflowID })
-              }
-              const wakeLease = Option.getOrUndefined(
-                yield* automation.claim(SessionID.make(sessionID), { kind: "dag" }),
-              )
-              if (!wakeLease) return
-
-              // A completed workflow with reporting checkpoints keeps both its
-              // final report and a parent turn. Deliver the report first so the
-              // completion wake can reference durable, already-visible content;
-              // the wake admission below marks the workflow completion row and
-              // any pending checkpoint nodes in one transaction. A crash between
-              // the two steps adopts the report receipt on retry.
-              if (!alreadyAdmitted) {
-                for (const workflow of plan.completionReports) {
-                  if (!batch.workflows.some((row) => row.id === workflow.id)) continue
-                  const config = parseWorkflowConfig(workflow.config)
-                  const reportNodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
-                  const node =
-                    (config ? selectReportNode(config, reportNodes) : undefined) ??
-                    reportNodes.find((candidate) => candidate.status === "completed")
-                  const source = node?.childSessionId
-                    ? yield* lastAssistantMessage(node.childSessionId).pipe(Effect.orDie)
-                    : undefined
-                  const delivered = yield* automation.use(
-                    wakeLease,
-                    promptSvc.withIdle(
-                      SessionID.make(sessionID),
-                      deliverReport({
-                        workflow,
-                        batch: { nodes: [], workflows: [workflow] },
-                        store,
-                        sessions: sessionSvc,
-                        events,
-                        directory: ctx.directory,
-                        source,
-                        acknowledge: false,
-                      }).pipe(Effect.provideService(Database.Service, database)),
-                    ),
-                  )
-                  if (Option.isNone(delivered) || Option.isNone(delivered.value) || !delivered.value.value) return
-                }
-              }
-
-              // The part is marked synthetic: model-visible (the orchestrator
-              // receives the node result and can act) but NOT rendered as a user
-              // message in the TUI chat — DAG data surfaces via the sidebar panel
-              // and Inspector, keeping the chat conversation clean.
-              //
-              // ADMIT SUCCESS == DELIVERED (issue #321). The previous contract
-              // (GOAL-FP-01-14) persisted wake_reported only AFTER the whole
-              // wake-driven parent turn completed. A restart or mid-turn
-              // interruption therefore left wake_reported=false while the
-              // synthetic part was already durable in transcript, so the startup
-              // sweep re-injected a byte-identical wake (real incident: the same
-              // 4391-char wake injected twice, ~10 min apart, after a TUI
-              // restart). Redelivery adds duplicates, never information. The
-              // Transcript persistence and the wake mark commit in one short
-              // transaction; the prepared model turn activates after commit.
-              //
-              // The stable message and part IDs bind this exact durable batch
-              // to its transcript receipt. A failed mark retries by reading
-              // that receipt even after restart. New attempt/event revisions
-              // produce a new identity; equal summary text cannot suppress it.
-              if (deliveredWakeSummaries.size > 1024) deliveredWakeSummaries.clear()
-              const didDeliver = yield* Effect.gen(function* () {
-                let wakeTurn: Effect.Effect<SessionV1.WithParts> | undefined
-                if (!alreadyAdmitted) {
-                  const delivered = yield* SessionPrompt.admitIfIdle(
-                    promptSvc,
-                    automation,
-                    wakeLease,
-                    {
-                      sessionID: SessionID.make(sessionID),
-                      messageID: wakeIdentity.messageID,
-                      parts: [{ id: wakeIdentity.partID, type: "text", text: summary, synthetic: true }],
-                    },
-                    { continueToolBudget: true },
-                    store.markWakeBatchReported(batch),
-                  )
-                  if (Option.isNone(delivered)) return false
-                  deliveredWakeSummaries.set(sessionID, wakeIdentity.messageID)
-                  wakeTurn = delivered.value
-                }
-
-                // New admission already committed its mark atomically. An old
-                // durable receipt from before this boundary can still be
-                // acknowledged under the current automation lease.
-                const markLease = !alreadyAdmitted
-                  ? undefined
-                  : Option.getOrUndefined(yield* automation.claim(SessionID.make(sessionID), { kind: "dag" }))
-                // Any mark failure (lease lost, generation raced, or the store
-                // write dying) degrades to retry-later instead of propagating:
-                // the rows stay unreported and a later trigger re-marks, while
-                // the admitted turn below still runs (its end-of-turn idle is
-                // what re-arms that retry). Only interruption propagates.
-                const markSucceeded =
-                  !alreadyAdmitted ||
-                  (markLease
-                    ? Option.isSome(
-                        yield* automation.use(markLease, store.markWakeBatchReported(batch)).pipe(
-                          Effect.catchCause((cause) =>
-                            Cause.hasInterrupts(cause)
-                              ? Effect.failCause(cause)
-                              : Effect.logWarning("DAG wake batch mark failed; rows stay unreported for retry", {
-                                  sessionID,
-                                  cause: Cause.pretty(cause),
-                                }).pipe(Effect.as(Option.none())),
-                          ),
-                        ),
-                      )
-                    : false)
-                if (markSucceeded) {
-                  plan.unresponsiveDagIDs.forEach((workflowID) => deliveredUnresponsiveDagIDs.add(workflowID))
-                  yield* Effect.forEach(
-                    batch.workflows.filter((workflow) => isWorkflowTerminalStatus(workflow.status as never)),
-                    (workflow) => automation.unregister(SessionID.make(sessionID), { kind: "dag", id: workflow.id }),
-                    { discard: true },
-                  )
-                }
-
-                // Pacing — keep one wake turn at a time. The turn runs AFTER the
-                // durable mark, so its failure can no longer lose the report;
-                // swallow non-interrupt failures instead of surfacing them as a
-                // delivery failure. It also runs when the mark raced, so its
-                // end-of-turn idle re-arms the mark retry.
-                if (wakeTurn) {
-                  yield* wakeTurn.pipe(
-                    Effect.catchCause((cause) =>
-                      Cause.hasInterrupts(cause)
-                        ? Effect.failCause(cause)
-                        : Effect.logInfo("DAG wake turn did not complete; wake already reported", {
-                            sessionID,
-                            cause: Cause.pretty(cause),
-                          }),
-                    ),
-                  )
-                }
-                return markSucceeded
-              }).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("DAG wake delivery failed", { sessionID, cause: Cause.pretty(cause) }).pipe(
-                    Effect.as(false),
-                  ),
-                ),
-              )
-              if (!didDeliver) return
-            }
-          }).pipe(
-            Effect.ensuring(
-              Effect.suspend(() => {
-                const retry = wakePending.delete(sessionID)
-                wakeInFlight.delete(sessionID)
-                return retry
-                  ? tryDeliverWake(sessionID).pipe(
-                      guarded("WakePendingRetry"),
-                      Effect.forkIn(stateScope),
-                      Effect.asVoid,
-                    )
-                  : Effect.void
-              }),
-            ),
-          )
-        })
-        // The in-flight reservation must have a finite lifetime even when a
-        // parent turn or a dependency never settles. Timing out interrupts the
-        // old delivery fiber; its `Effect.ensuring` finalizer releases the
-        // reservation (and re-forks a wake that was queued behind it), so a
-        // queued or periodic stimulus retries through the ordinary idle
-        // admission gate.
-        tryDeliverWake = (sessionID) =>
-          deliverWake(sessionID).pipe(
-            Effect.timeoutOption("7 minutes"),
-            Effect.flatMap(
-              Option.match({
-                onSome: () => Effect.void,
-                onNone: () =>
-                  Effect.logWarning("DAG wake delivery lease expired; retry remains available", { sessionID }),
-              }),
-            ),
-          )
-
-        const mailboxInFlight = new Set<string>()
-        const deliverAgentMessages = Effect.fn("DagLoop.deliverAgentMessages")(
-          function* (sessionID: string) {
-            if (!messageSvc || mailboxInFlight.has(sessionID)) return
-            mailboxInFlight.add(sessionID)
-            yield* Effect.gen(function* () {
-              if ((yield* statusSvc.get(SessionID.make(sessionID))).type !== "idle") return
-              const caller = { projectID: ctx.project.id, directory: ctx.directory, sessionID }
-              const queued = yield* messageSvc.receive(caller, { limit: 64, queuedOnly: true })
-              if (!queued.ok) return
-              const message = queued.value.find((item) => item.state === "queued")
-              if (!message || message.recipient.kind !== "main") return
-              const history = yield* sessionSvc.messages({ sessionID: SessionID.make(sessionID), limit: 20 })
-              const latestAssistant = history
-                .filter((item) => item.info.role === "assistant")
-                .toSorted((a, b) => (MessageV2.before(a.info, b.info) ? -1 : MessageV2.before(b.info, a.info) ? 1 : 0))
-                .at(-1)
-              if (
-                latestAssistant?.info.role === "assistant" &&
-                (latestAssistant.info.error || ["error", "content-filter"].includes(latestAssistant.info.finish ?? ""))
-              ) {
-                const mailboxInputs = new Set(queued.value.map((item) => item.transcriptID))
-                const newContext = history.some((item) => {
-                  if (
-                    item.info.role !== "user" ||
-                    !MessageV2.before(latestAssistant.info, item.info) ||
-                    mailboxInputs.has(item.info.id)
-                  )
-                    return false
-                  return !item.parts.some((part) => {
-                    if (part.type !== "text") return false
-                    const envelope = Option.getOrUndefined(parseJsonOption(part.text))
-                    return (
-                      typeof envelope === "object" &&
-                      envelope !== null &&
-                      "kind" in envelope &&
-                      envelope.kind === "dag_agent_message"
-                    )
-                  })
-                })
-                // A retained queue cannot reset a failed execution every poll.
-                // A later host-admitted prompt advances context; this predicate
-                // grants no permissions and infers no human provenance.
-                if (!newContext) return
-              }
-              // The mailbox lease is separate from workflow lifecycle ownership:
-              // accepted node reports survive source completion and cancellation.
-              const owner = { kind: "dag" as const, id: `agent-mailbox:${message.recipient.id}` }
-              yield* automation.register(SessionID.make(sessionID), owner)
-              yield* Effect.gen(function* () {
-                const token = yield* automation.claim(SessionID.make(sessionID), { kind: "dag" })
-                if (Option.isNone(token)) return
-                const admitted = yield* SessionPrompt.admitIfIdle(promptSvc, automation, token.value, {
-                  sessionID: SessionID.make(sessionID),
-                  messageID: MessageID.make(message.transcriptID),
-                  parts: [
-                    {
-                      id: PartID.make(message.partID),
-                      type: "text",
-                      text: DagMessages.renderMessage(message),
-                      synthetic: true,
-                    },
-                  ],
-                })
-                if (Option.isNone(admitted)) return
-                // Admission alone leaves delivery queued. SessionPrompt freezes
-                // and associates the actual model input, then advances delivery.
-                yield* automation.unregister(SessionID.make(sessionID), owner)
-                yield* admitted.value
-              }).pipe(Effect.ensuring(automation.unregister(SessionID.make(sessionID), owner)))
-            }).pipe(Effect.ensuring(Effect.sync(() => mailboxInFlight.delete(sessionID))))
-          },
-          Effect.timeoutOption("7 minutes"),
-          Effect.asVoid,
-        )
-
-        let mailboxCursor: string | undefined
-        const pollAgentMailboxes = Effect.gen(function* () {
-          if (!messageSvc) return
-          const recipients = yield* messageSvc.pendingRecipients({
-            projectID: ctx.project.id,
-            directory: ctx.directory,
-            limit: 20,
-            afterSessionID: mailboxCursor,
-          })
-          mailboxCursor = recipients.at(-1)?.sessionID
-          for (const endpoint of recipients) {
-            yield* deliverAgentMessages(endpoint.sessionID).pipe(guarded("AgentMailboxAdmission"), Effect.forkScoped)
-          }
-        }).pipe(guarded("AgentMailboxSweep"))
-        // Scoped, bounded scanning avoids a second event transport and catches
-        // idle parents even when the source node finished before a restart.
-        if (messageSvc) {
-          yield* pollAgentMailboxes
-          yield* Effect.forever(Effect.sleep(250).pipe(Effect.andThen(pollAgentMailboxes))).pipe(Effect.forkScoped)
-        }
-
-        // Idle-event subscription: the primary wake trigger. The handler only
-        // forks, so the subscription itself cannot die — guarded here so a
-        // defect inside a delivery attempt is logged instead of silently
-        // killing its fiber.
+        // Idle-event subscription: the primary delivery trigger. The handler
+        // only nudges; DagDelivery coalesces repeats through its in-flight
+        // reservations and its guarded handler keeps this subscription alive
+        // through a defect inside a delivery attempt.
         yield* events.subscribe(SessionStatusEvent.Status).pipe(
           Stream.filter((evt) => evt.data.status.type === "idle"),
-          Stream.runForEach((evt) =>
-            Effect.gen(function* () {
-              yield* tryDeliverWake(evt.data.sessionID as string).pipe(guarded("WakeDelivery"), Effect.forkScoped)
-              yield* deliverAgentMessages(evt.data.sessionID as string).pipe(
-                guarded("AgentMailboxIdle"),
-                Effect.forkScoped,
-              )
-            }),
-          ),
+          Stream.runForEach((evt) => delivery.nudge(evt.data.sessionID as string)),
           Effect.forkScoped({ startImmediately: true }),
-        )
-
-        // A parked workflow can outlive the parent turn that caused its pause.
-        // The paused row's durable wake marker permits one reminder per pause
-        // episode, including after restart. Scanning only starts delivery; the
-        // regular idle/admission and directory ownership gates still apply.
-        const remindPausedWorkflows = Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis
-          const paused = yield* store.listByStatus("paused")
-          const sessions = new Set(
-            paused.filter((workflow) => isPausedReminderDue(workflow, now)).map((workflow) => workflow.sessionId),
-          )
-          for (const sessionID of sessions) {
-            if (!(yield* DagLocation.ownsSession(sessionID, ctx.directory))) continue
-            yield* tryDeliverWake(sessionID).pipe(guarded("PausedReminder"), Effect.forkScoped)
-          }
-        }).pipe(guarded("PausedReminderSweep"))
-        yield* Effect.forever(Effect.sleep(30_000).pipe(Effect.flatMap(() => remindPausedWorkflows))).pipe(
-          Effect.forkScoped,
         )
 
         // R5 session-deletion teardown: when the parent session is removed,
@@ -2909,7 +2126,7 @@ const serviceLayer = Layer.effect(
                 }
                 // Wake rows that were wedged (mixed stamps → no owner) are now
                 // deliverable.
-                yield* tryDeliverWake(sessionID).pipe(Effect.ignore, Effect.forkScoped)
+                yield* delivery.nudge(sessionID)
               }
             }).pipe(guarded("SessionMoved")),
           ),
@@ -2939,7 +2156,10 @@ const serviceLayer = Layer.effect(
             ),
           )
         }
-        yield* remindPausedWorkflows
+        // Re-scan after recovery adopted the durable rows: the construction
+        // scan ran before adoption, so this is where paused reminders become
+        // deliverable against the reconciled runtimes.
+        yield* delivery.scan()
 
         // Terminal rows can survive a process crash after projection but before
         // parent delivery. Re-enter the normal serialized drain for every
@@ -2983,7 +2203,7 @@ const serviceLayer = Layer.effect(
           // them lives in the wake-delivery SUCCESS path, whose batch only
           // carries unreported workflows) — permanently leaking a dag
           // registration and blocking the goal. Terminal-but-unreported
-          // workflows are safe to skip here too: tryDeliverWake registers
+          // workflows are safe to skip here too: the delivery drain registers
           // every workflow in its batch itself right before claiming the wake
           // lease, so wake redelivery does not depend on this sweep.
           yield* Effect.forEach(
@@ -2991,7 +2211,7 @@ const serviceLayer = Layer.effect(
             (workflow) => automation.register(SessionID.make(sessionID), { kind: "dag", id: workflow.id }),
             { discard: true },
           )
-          yield* tryDeliverWake(sessionID).pipe(Effect.forkScoped)
+          yield* delivery.nudge(sessionID)
         }
 
         return {}
