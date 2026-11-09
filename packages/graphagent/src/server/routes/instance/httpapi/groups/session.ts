@@ -30,6 +30,7 @@ import {
 } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
+import { DagModeStatus } from "@/dag/mode-status"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { VALID_HOOK_EVENTS, type HookEvent } from "@/hook"
@@ -63,6 +64,11 @@ export const UpdatePayload = Schema.Struct({
       archived: Schema.optional(Session.ArchivedTimestamp),
     }),
   ),
+  // #1013 (C1 PR5): DAG mode and its budget are creation-time only. Declaring
+  // them as `Never` makes the payload decoder reject the keys with a 400
+  // BadRequest instead of silently stripping them.
+  dagMode: Schema.optional(Schema.Never),
+  dagBudgetTokens: Schema.optional(Schema.Never),
 })
 export const ForkPayload = Schema.Struct(Struct.omit(Session.ForkInput.fields, ["sessionID"]))
 export const InitPayload = Schema.Struct({
@@ -138,6 +144,7 @@ export const SessionPaths = {
   list: root,
   status: `${root}/status`,
   get: `${root}/:sessionID`,
+  dagMode: `${root}/:sessionID/dag-mode`,
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
   goal: `${root}/:sessionID/goal`,
@@ -205,6 +212,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.get",
             summary: "Get session",
             description: "Retrieve detailed information about a specific OpenCode session.",
+          }),
+        ),
+        HttpApiEndpoint.get("dagMode", SessionPaths.dagMode, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(DagModeStatus.Status, "Read-only DAG mode status"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.dagMode",
+            summary: "Get DAG mode status",
+            description:
+              "Read the session's effective DAG mode, its global default, availability, budget usage, process-wide limits, and quality summary.",
           }),
         ),
         HttpApiEndpoint.get("children", SessionPaths.children, {

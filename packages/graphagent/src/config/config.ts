@@ -33,6 +33,7 @@ import { HookConfigChange } from "@/hook/config-change"
 import { HookPermissions } from "./permissions"
 import type { PermissionUpdate } from "@/hook/trigger-result"
 import { ConfigPaths } from "./paths"
+import { changedTopLevelKeys } from "./hot-reload"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -147,9 +148,10 @@ export interface Interface {
     updates: readonly PermissionUpdate[],
   ) => Effect.Effect<Info, HookConfigChange.ConfigChangeBlocked>
   readonly update: (config: Info) => Effect.Effect<void, HookConfigChange.ConfigChangeBlocked>
-  readonly updateGlobal: (
-    config: Info,
-  ) => Effect.Effect<{ info: Info; changed: boolean }, HookConfigChange.ConfigChangeBlocked>
+  readonly updateGlobal: (config: Info) => Effect.Effect<
+    { info: Info; changed: boolean; changedKeys: string[] },
+    HookConfigChange.ConfigChangeBlocked
+  >
   readonly invalidate: () => Effect.Effect<void, HookConfigChange.ConfigChangeBlocked>
   readonly directories: () => Effect.Effect<string[]>
   readonly waitForDependencies: () => Effect.Effect<void>
@@ -774,20 +776,24 @@ export const layer = Layer.effect(
 
       let next: Info
       let changed: boolean
+      let changedKeys: string[]
       if (!file.endsWith(".jsonc")) {
         const existing = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(before, file), file)
         const merged = mergeDeep(writable(existing), patch)
         const serialized = JSON.stringify(merged, null, 2)
         changed = serialized !== before
+        changedKeys = changed ? changedTopLevelKeys(existing, merged) : []
         if (changed) {
           yield* checkConfigChange(file, "user_settings")
           yield* fs.writeFileString(file, serialized).pipe(Effect.orDie)
         }
         next = merged
       } else {
+        const existing = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(before, file), file)
         const updated = patchJsonc(before, patch)
         next = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(updated, file), file)
         changed = updated !== before
+        changedKeys = changed ? changedTopLevelKeys(existing, next) : []
         if (changed) {
           yield* checkConfigChange(file, "user_settings")
           yield* fs.writeFileString(file, updated).pipe(Effect.orDie)
@@ -795,7 +801,7 @@ export const layer = Layer.effect(
       }
 
       if (changed) yield* invalidateGlobal
-      return { info: next, changed }
+      return { info: next, changed, changedKeys }
     })
 
     return Service.of({

@@ -128,6 +128,17 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
             : operation.requestBody.content?.["application/json"]?.schema?.properties
           if (properties?.id) properties.id = { anyOf: [properties.id, { type: "null" }] }
         }
+        if (path === "/session/{sessionID}" && method === "patch") {
+          // #1013 (C1 PR5): dagMode/dagBudgetTokens are creation-time only.
+          // The request schema declares them as `Never` so the decoder rejects
+          // them with 400; keep the generated SDK surface free of impossible
+          // fields.
+          const properties = operation.requestBody.content?.["application/json"]?.schema?.properties
+          if (properties) {
+            delete properties.dagMode
+            delete properties.dagBudgetTokens
+          }
+        }
       }
       for (const response of Object.values(operation.responses ?? {})) {
         for (const content of Object.values(response.content ?? {})) {
@@ -288,6 +299,15 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   }
   if (schemas.GlobalSession?.properties?.project)
     schemas.GlobalSession.properties.project = nullable(schemas.GlobalSession.properties.project)
+  // #1013 (C1 PR5): these are genuine nullable values, not optional fields, so
+  // re-add the null arm removed by stripOptionalNull.
+  if (schemas.Session?.properties?.dagBudgetTokens)
+    schemas.Session.properties.dagBudgetTokens = nullable(schemas.Session.properties.dagBudgetTokens)
+  const dagModeStatus = schemas.SessionDagMode?.properties
+  if (dagModeStatus?.unavailableReason)
+    dagModeStatus.unavailableReason = nullable(dagModeStatus.unavailableReason)
+  if (dagModeStatus?.budget?.properties?.tokens)
+    dagModeStatus.budget.properties.tokens = nullable(dagModeStatus.budget.properties.tokens)
   const providerOptions = schemas.ProviderConfig?.properties?.options
   if (providerOptions) providerOptions.additionalProperties = {}
   const model = schemas.ProviderConfig?.properties?.models?.additionalProperties

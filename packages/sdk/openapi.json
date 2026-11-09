@@ -4295,6 +4295,10 @@
                   "workspaceID": {
                     "type": "string",
                     "pattern": "^wrk"
+                  },
+                  "dagMode": {
+                    "type": "string",
+                    "enum": ["on", "off"]
                   }
                 },
                 "additionalProperties": false
@@ -4638,6 +4642,86 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.session.update({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/{sessionID}/dag-mode": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.dagMode",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          },
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read-only DAG mode status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDagMode"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/EffectHttpApiErrorBadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "description": "Read the session's effective DAG mode, its global default, availability, budget usage, process-wide limits, and quality summary.",
+        "summary": "Get DAG mode status",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.session.dagMode({\n  ...\n})"
           }
         ]
       }
@@ -13705,7 +13789,14 @@
             "enum": ["on", "off"]
           },
           "dagBudgetTokens": {
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
@@ -14135,6 +14226,81 @@
         "required": ["type", "text"],
         "additionalProperties": false
       },
+      "SessionDagMode": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["on", "off"]
+          },
+          "defaultMode": {
+            "type": "string",
+            "enum": ["on", "off"]
+          },
+          "availability": {
+            "type": "string",
+            "enum": ["available", "unavailable"]
+          },
+          "unavailableReason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["start_denied", "workflow_tool_disabled", "model_no_tool_calling", "no_worker"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "budget": {
+            "type": "object",
+            "properties": {
+              "tokens": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "used": {
+                "type": "number"
+              },
+              "usedCacheRead": {
+                "type": "number"
+              },
+              "warnRatio": {
+                "type": "number"
+              }
+            },
+            "required": ["tokens", "used", "usedCacheRead", "warnRatio"],
+            "additionalProperties": false
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "concurrency": {
+                "type": "number"
+              },
+              "maxTotalNodes": {
+                "type": "number"
+              },
+              "running": {
+                "type": "number"
+              }
+            },
+            "required": ["concurrency", "maxTotalNodes", "running"],
+            "additionalProperties": false
+          },
+          "quality": {
+            "type": "null"
+          }
+        },
+        "required": ["mode", "defaultMode", "availability", "unavailableReason", "budget", "limits", "quality"],
+        "additionalProperties": false
+      },
       "Provider": {
         "type": "object",
         "properties": {
@@ -14215,6 +14381,10 @@
               },
               "toolcall": {
                 "type": "boolean"
+              },
+              "forcedToolChoice": {
+                "type": "string",
+                "enum": ["required", "none"]
               },
               "input": {
                 "type": "object",
@@ -15249,6 +15419,9 @@
                 "tool_call": {
                   "type": "boolean"
                 },
+                "tool_choice": {
+                  "type": "boolean"
+                },
                 "interleaved": {
                   "anyOf": [
                     {
@@ -15619,7 +15792,8 @@
                     "exclusiveMinimum": 0
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Draft concurrency limits for the session engine; values are provisional."
               },
               "cache": {
                 "type": "object",
@@ -15628,7 +15802,8 @@
                     "type": "boolean"
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Draft prompt-cache scheduling options; defaults are provisional."
               },
               "memory": {
                 "type": "object",
@@ -15639,7 +15814,8 @@
                     "exclusiveMinimum": 0
                   }
                 },
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Draft memory selection options; defaults are provisional."
               }
             },
             "additionalProperties": false
@@ -18002,6 +18178,9 @@
               },
               {
                 "$ref": "#/components/schemas/EventServerInstanceDisposed"
+              },
+              {
+                "$ref": "#/components/schemas/EventConfigUpdated"
               },
               {
                 "$ref": "#/components/schemas/SyncEventSessionCreated"
@@ -26364,6 +26543,33 @@
           }
         },
         "required": ["type", "id", "syncEvent"],
+        "additionalProperties": false
+      },
+      "EventConfigUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["config.updated"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["keys"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
         "additionalProperties": false
       },
       "MoveSessionDestination": {
