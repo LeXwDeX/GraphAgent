@@ -204,8 +204,14 @@ export const onAsyncComplete = Effect.fnUntraced(function* (
 
   // Ordinary async output waits for the next actual turn. asyncRewake only
   // wakes an idle session on exit 2; normal completion never invents a turn.
-  if (classified.kind === "queue") return yield* queue(classified.contexts)
-  if (!hookRewake) return yield* queue(queuedContexts(event, result))
+  if (classified.kind === "queue") {
+    yield* queue(classified.contexts)
+    return
+  }
+  if (!hookRewake) {
+    yield* queue(queuedContexts(event, result))
+    return
+  }
 
   // A Stop/SubagentStop continuation owns the session's live rewake chain.
   // A newer non-hook prompt, SessionEnd, clearSession, or session cancel

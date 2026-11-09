@@ -997,7 +997,10 @@ it.instance("Stop and SubagentStop continuation budgets are independent", () =>
       SettingsHook.MAX_STOP_CONTINUATIONS,
     )
     // The separate SubagentStop counter is untouched by the exhausted Stop one.
-    yield* hook.trigger({ event: "SubagentStop", stopHookActive: false }, { sessionID, transcript: () => Effect.succeed("") })
+    yield* hook.trigger(
+      { event: "SubagentStop", stopHookActive: false },
+      { sessionID, transcript: () => Effect.succeed("") },
+    )
     yield* pollWithTimeout(
       Effect.sync(() => (rewakeCalls.some((call) => call.text.includes("subagent verdict")) ? true : undefined)),
       "SubagentStop budget was consumed by Stop continuations",
@@ -1008,6 +1011,7 @@ it.instance("Stop and SubagentStop continuation budgets are independent", () =>
 it.instance("V1 rewake continues the tool budget and carries the rewake token", () =>
   Effect.gen(function* () {
     const calls: { input: unknown; options: unknown }[] = []
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the rewake layer only calls prompt; this partial service mock is structurally typed at the boundary
     const promptMock = Layer.succeed(SessionPrompt.Service, {
       prompt: (input: unknown, options?: unknown) =>
         Effect.sync(() => {
