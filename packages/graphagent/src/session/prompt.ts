@@ -142,7 +142,13 @@ import { TodoReminders } from "./todo-reminders"
 import { SessionTools } from "./tools"
 import { ToolSourceLedger } from "./tool-source-ledger"
 import { LLMEvent } from "@graphagent/llm"
-import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult, type HookPayload } from "@/hook"
+import {
+  SettingsHook,
+  HOOK_REWAKE_SENTINEL,
+  type TriggerResult,
+  type HookPayload,
+  type RewakeToken,
+} from "@/hook"
 import { TaskSubagents } from "@/hook/task-subagents"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -249,13 +255,13 @@ export interface AdmissionOptions {
    */
   readonly internalDelegation?: true
   /**
-   * Opaque SettingsHook stop-chain token riding on an async Stop-hook rewake.
-   * When set, admission re-validates the chain before commit and the run path
-   * re-validates before runLoop, refusing callbacks whose chain was
-   * invalidated by a session cancel after their completion check. Only the
+   * SettingsHook rewake token riding on an async Stop-hook rewake. When set,
+   * admission re-validates the chain before commit and the run path
+   * re-validates before runLoop, refusing callbacks whose chain was reset
+   * (cancel, newer prompt, SessionEnd) after their completion check. Only the
    * hook rewake paths set this; plain user prompts never do.
    */
-  readonly stopChainToken?: unknown
+  readonly rewakeToken?: RewakeToken
 }
 
 /** Admission-guarded commit: fails with Blocked when the session was cancelled first. */
@@ -1013,6 +1019,11 @@ export const layer = Layer.effect(
       options?: { readonly reason?: SessionAbortReason.Info },
     ) {
       const cancellation = yield* Effect.sync(() => SessionCancellation.begin(sessionID))
+      // The cancellation epoch already invalidates pending Stop rewakes; the
+      // generation bump is the second half of the same reset and also clears
+      // the continuation budget for the next real prompt.
+      if (settingsHook?.bumpRewakeGeneration)
+        yield* settingsHook.bumpRewakeGeneration(sessionID).pipe(Effect.ignore)
       const abort = options?.reason
       let transferred = false
       let waiters: Array<Fiber.Fiber<void>> = []
@@ -2358,20 +2369,20 @@ export const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
-    // Re-validates the stop-chain token carried by an async Stop-hook rewake.
-    // Returns false when the chain was invalidated (session cancel, newer user
+    // Re-validates the rewake token carried by an async Stop-hook rewake.
+    // Returns false when the chain was reset (session cancel, newer user
     // prompt, SessionEnd) after the callback's own completion check; the
     // committed message parts are then marked ignored so nothing stale stays
     // model-visible, and the caller must not run the turn. No-op for plain
     // prompts and non-Stop async rewakes (no token).
-    const fenceStopRewake = Effect.fn("SessionPrompt.fenceStopRewake")(function* (
+    const fenceRewake = Effect.fn("SessionPrompt.fenceRewake")(function* (
       sessionID: SessionID,
       options: AdmissionOptions | undefined,
       message: SessionV1.WithParts,
     ) {
-      if (!settingsHook?.validateStopRewakeChain || options?.stopChainToken === undefined) return true
-      if (yield* settingsHook.validateStopRewakeChain(sessionID, options.stopChainToken)) return true
-      yield* Effect.logWarning("stop-chain rewake discarded after commit", { "session.id": sessionID })
+      if (!settingsHook?.validateRewakeToken || options?.rewakeToken === undefined) return true
+      if (yield* settingsHook.validateRewakeToken(sessionID, options.rewakeToken)) return true
+      yield* Effect.logWarning("rewake token stale after commit", { "session.id": sessionID })
       for (const part of message.parts) {
         if (part.type === "text" && !part.ignored) {
           yield* sessions.updatePart({ ...part, ignored: true } satisfies SessionV1.TextPart)
@@ -2411,7 +2422,16 @@ export const layer = Layer.effect(
         history,
       })
       const result = yield* settingsHook
-        .trigger({ event: "SessionStart", source: "resume", ...metrics }, { sessionID: target.id })
+        .trigger(
+          {
+            event: "SessionStart",
+            source: "resume",
+            // Child sessions never reach here (checked above): report DAG mode read-only.
+            ...(current.dagMode !== undefined ? { dagMode: current.dagMode } : {}),
+            ...metrics,
+          },
+          { sessionID: target.id },
+        )
         .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
       const instance = yield* InstanceState.context
       const skills = hookSkills
@@ -2446,13 +2466,13 @@ export const layer = Layer.effect(
       let hookResult: TriggerResult | undefined
       const promptText = input.parts.map((p: any) => (p.type === "text" ? p.text : "")).join("\n")
       const isRewake = promptText.startsWith(HOOK_REWAKE_SENTINEL)
-      // Refuse a stale stop-chain rewake before anything is committed. Cancel
-      // stays lock-free; the post-commit fence below covers cancels that land
-      // while admission is suspended inside hook callbacks.
-      if (settingsHook?.validateStopRewakeChain && isRewake && options?.stopChainToken !== undefined) {
-        const chainValid = yield* settingsHook.validateStopRewakeChain(input.sessionID, options.stopChainToken)
-        if (!chainValid) {
-          yield* Effect.logWarning("stop-chain rewake discarded before admission", { "session.id": input.sessionID })
+      // Refuse a stale rewake before anything is committed. Cancel stays
+      // lock-free; the post-commit fence below covers cancels that land while
+      // admission is suspended inside hook callbacks.
+      if (settingsHook?.validateRewakeToken && isRewake && options?.rewakeToken !== undefined) {
+        const tokenValid = yield* settingsHook.validateRewakeToken(input.sessionID, options.rewakeToken)
+        if (!tokenValid) {
+          yield* Effect.logWarning("rewake token stale before admission", { "session.id": input.sessionID })
           // Record the discard in the transcript (`ignored` keeps it out of
           // model input) so the refusal is observable, then stop without work.
           const message = yield* createUserMessage(
@@ -2488,6 +2508,10 @@ export const layer = Layer.effect(
               event: "UserPromptSubmit",
               prompt: promptText,
               ...(titled !== undefined ? { sessionTitle: titled } : {}),
+              // Child sessions do not report DAG mode; a top-level session reports it read-only.
+              ...(session.parentID === undefined && session.dagMode !== undefined
+                ? { dagMode: session.dagMode }
+                : {}),
             },
             { sessionID: input.sessionID, promptID: promptMessageID },
           )
@@ -2541,11 +2565,11 @@ export const layer = Layer.effect(
       )
       yield* sessions.touch(input.sessionID)
 
-      // The chain was validated before admission, but cancel can land while
+      // The token was validated before admission, but cancel can land while
       // the hook callbacks above suspend. A committed stale rewake is
       // stripped from model input (parts ignored) and never starts a run.
-      if (isRewake && options?.stopChainToken !== undefined) {
-        if (!(yield* fenceStopRewake(input.sessionID, options, message))) {
+      if (isRewake && options?.rewakeToken !== undefined) {
+        if (!(yield* fenceRewake(input.sessionID, options, message))) {
           return { message, run: false as const }
         }
       }
@@ -2643,7 +2667,7 @@ export const layer = Layer.effect(
               input.sessionID,
               lastAssistant(input.sessionID),
               Effect.gen(function* () {
-                if (!(yield* fenceStopRewake(input.sessionID, options, admitted.message))) {
+                if (!(yield* fenceRewake(input.sessionID, options, admitted.message))) {
                   return admitted.message
                 }
                 return yield* runLoop(input.sessionID)
@@ -2702,7 +2726,7 @@ export const layer = Layer.effect(
                     if (!admitted.value.run) return admitted.value.message
                     // Same runner-first ordering as prompt(): a cancel landing
                     // after a passing fence interrupts the registered runner.
-                    if (!(yield* fenceStopRewake(input.sessionID, options, admitted.value.message))) {
+                    if (!(yield* fenceRewake(input.sessionID, options, admitted.value.message))) {
                       return admitted.value.message
                     }
                     return yield* runLoop(input.sessionID)

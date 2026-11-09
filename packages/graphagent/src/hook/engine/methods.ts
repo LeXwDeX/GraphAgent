@@ -10,7 +10,7 @@ import { SessionID } from "@/session/schema"
 import * as Log from "@/util/log"
 import type { SessionHooks, ScopedHooksInput } from "../session-hooks"
 import type { HookEvent } from "../types"
-import { removeStopChain, staticWatchPaths } from "./state"
+import { advanceRewakeGeneration, rewakeTokenValid, staticWatchPaths } from "./state"
 import type { State } from "./state"
 
 const log = Log.create({ service: "hook.settings" })
@@ -43,7 +43,7 @@ export function makeServiceMethods(state: InstanceState<State>, sessionHooks: Se
     s.seen.delete(sessionID)
     s.once.delete(sessionID)
     s.onceRunning.delete(sessionID)
-    for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) removeStopChain(s, key)
+    advanceRewakeGeneration(s, String(sessionID))
     for (const fiber of s.asyncFibers.get(sessionID) ?? []) yield* Fiber.interrupt(fiber)
     s.asyncFibers.delete(sessionID)
     yield* sessionHooks.clear(SessionID.make(String(sessionID)))
@@ -102,28 +102,25 @@ export function makeServiceMethods(state: InstanceState<State>, sessionHooks: Se
     sessionHooks.unregisterScoped(SessionID.make(String(sessionID)), origin),
   )
 
-  // A pending Stop/SubagentStop/StopFailure rewake chain dies with the
-  // user's cancel intent. `stopRewakeChains` holds one chain object per
-  // session while callbacks are in flight; identity comparison is monotonic
-  // across abort/prompt cycles: after invalidation, a later Stop trigger
-  // creates a new chain object, so an old token cannot match that chain.
-  const invalidateStopRewakeChain = Effect.fn("SettingsHook.invalidateStopRewakeChain")(function* (
-    sessionID: SessionID | string,
-  ) {
-    const s = yield* InstanceState.get(state)
-    let deleted = false
-    for (const key of s.stopRewakeChains.keys())
-      if (key.endsWith(`:${sessionID}`)) deleted = removeStopChain(s, key) || deleted
-    if (deleted) log.info("stop rewake chain invalidated", { sessionID })
-  })
-
-  const validateStopRewakeChain = Effect.fn("SettingsHook.validateStopRewakeChain")(function* (
+  // A pending Stop/SubagentStop rewake dies with the user's cancel intent.
+  // The generation is monotonic across abort/prompt cycles: after a bump, a
+  // later Stop trigger captures the new value, so an old token cannot match.
+  // The cancellation epoch is compared too, covering cancels that land while
+  // a callback is being admitted.
+  const validateRewakeToken = Effect.fn("SettingsHook.validateRewakeToken")(function* (
     sessionID: SessionID | string,
     token: unknown,
   ) {
     const s = yield* InstanceState.get(state)
-    for (const [key, chain] of s.stopRewakeChains) if (key.endsWith(`:${sessionID}`) && chain === token) return true
-    return false
+    return rewakeTokenValid(s, String(sessionID), token)
+  })
+
+  const bumpRewakeGeneration = Effect.fn("SettingsHook.bumpRewakeGeneration")(function* (
+    sessionID: SessionID | string,
+  ) {
+    const s = yield* InstanceState.get(state)
+    advanceRewakeGeneration(s, String(sessionID))
+    log.debug("rewake generation advanced", { sessionID })
   })
   return {
     list,
@@ -136,7 +133,7 @@ export function makeServiceMethods(state: InstanceState<State>, sessionHooks: Se
     settleSessionEnd,
     registerScoped,
     unregisterScoped,
-    invalidateStopRewakeChain,
-    validateStopRewakeChain,
+    validateRewakeToken,
+    bumpRewakeGeneration,
   }
 }

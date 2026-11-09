@@ -29,10 +29,11 @@ export const liveLayer = Layer.effect(
                 sessionID: SessionID.make(input.sessionID),
                 parts: [{ type: "text", text: input.text }],
               },
-              // Forward the stop-chain token: admission and the run path
-              // re-validate it, refusing callbacks whose chain was invalidated
-              // by a session cancel after their completion check.
-              { stopChainToken: input.stopChain },
+              // A rewake continues the turn that produced it: keep the current
+              // input's tool budget instead of starting a fresh one, and carry
+              // the rewake token so admission and the run path can refuse a
+              // callback whose chain was reset after its completion check.
+              { continueToolBudget: true, rewakeToken: input.rewakeToken },
             )
             .pipe(
               Effect.catch((error) =>

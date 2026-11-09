@@ -8,6 +8,8 @@ import { SessionLifecycle } from "@/session/lifecycle"
 import { SettingsHook } from "@/hook"
 import { Database } from "@graphagent/core/database/database"
 import { SessionProjector } from "@graphagent/core/session/projector"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { eq } from "drizzle-orm"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
@@ -96,15 +98,31 @@ const providerCfg = (url: string) => ({
   },
 })
 
-const sources: Array<{ sessionID: string; source: string }> = []
+const sources: Array<{ sessionID: string; event: string; source?: string; dagMode?: string; hasDagMode?: boolean }> = []
 const settingsHook = Layer.succeed(
   SettingsHook.Service,
   SettingsHook.Service.of({
     trigger: (payload, ctx) =>
       Effect.sync(() => {
-        if (payload.event !== "SessionStart") return { additionalContexts: [], systemMessages: [] }
-        sources.push({ sessionID: ctx.sessionID ?? "", source: payload.source })
-        return { additionalContexts: [`ctx-${payload.source}`], systemMessages: [] }
+        if (payload.event === "SessionStart") {
+          sources.push({
+            sessionID: ctx.sessionID ?? "",
+            event: payload.event,
+            source: payload.source,
+            dagMode: payload.dagMode,
+            hasDagMode: Object.hasOwn(payload, "dagMode"),
+          })
+          return { additionalContexts: [`ctx-${payload.source}`], systemMessages: [] }
+        }
+        if (payload.event === "UserPromptSubmit") {
+          sources.push({
+            sessionID: ctx.sessionID ?? "",
+            event: payload.event,
+            dagMode: payload.dagMode,
+            hasDagMode: Object.hasOwn(payload, "dagMode"),
+          })
+        }
+        return { additionalContexts: [], systemMessages: [] }
       }),
     hasEvent: (event) => Effect.succeed(event === "SessionStart"),
     list: () => Effect.succeed([]),
@@ -129,7 +147,14 @@ const it = testEffect(
       LayerNode.replace(LSP.node, lsp),
       LayerNode.replace(SettingsHook.node, settingsHook),
     ],
-  }),
+  }).pipe(
+    // Session.fork resolves SettingsHook optionally from its own construction
+    // context (`Effect.serviceOption`), and Session.node cannot list
+    // SettingsHook.node as a dependency (the hook barrel closes a load-order
+    // cycle). AppLayer solves this by provideMerge-ing SettingsHook.defaultLayer
+    // over the whole graph; do the same here so the recorder is ambient.
+    Layer.provideMerge(settingsHook),
+  ),
 )
 
 const ref = { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") }
@@ -163,7 +188,8 @@ const syntheticTexts = (messages: ReadonlyArray<{ info: { role: string }; parts:
       message.parts.flatMap((part) => (part.type === "text" && part.synthetic ? [part.text as string] : [])),
     )
 
-const forSession = (id: string) => sources.filter((entry) => entry.sessionID === id).map((entry) => entry.source)
+const forSession = (id: string) =>
+  sources.filter((entry) => entry.sessionID === id && entry.event === "SessionStart").map((entry) => entry.source)
 
 it.live("resume fires once on the first admission of a pre-existing top-level session", () =>
   provideTmpdirServer(
@@ -250,6 +276,91 @@ it.live("SessionLifecycle.create does not fire SessionStart for child sessions",
       const parent = yield* sessions.create({ title: "Parent", permission: [] })
       const child = yield* share.create({ parentID: parent.id, title: "Child", permission: [] })
       expect(forSession(child.id)).toEqual([])
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+// §12: dag_mode is a read-only payload field for the two events that can
+// observe it. A top-level session reports its stored mode; a child session
+// omits the key entirely (hasDagMode false), never sending an empty value.
+const setDagMode = (sessionID: SessionID, mode: "on" | "off") =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* db.update(SessionTable).set({ dag_mode: mode }).where(eq(SessionTable.id, sessionID))
+  })
+
+it.live("UserPromptSubmit reports dag_mode on/off for a top-level session and omits it for a child", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const parent = yield* sessions.create({ title: "DAG mode", permission: [] })
+      const child = yield* sessions.create({ parentID: parent.id, title: "Child", permission: [] })
+      yield* setDagMode(parent.id, "on")
+      yield* llm.text("one")
+      yield* llm.text("two")
+      yield* llm.text("three")
+      yield* prompt.prompt({ sessionID: parent.id, agent: "build", parts: [{ type: "text", text: "on" }] })
+      yield* setDagMode(parent.id, "off")
+      yield* prompt.prompt({ sessionID: parent.id, agent: "build", parts: [{ type: "text", text: "off" }] })
+      yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "child" }] })
+
+      const parentPrompts = sources.filter((entry) => entry.sessionID === parent.id && entry.event === "UserPromptSubmit")
+      expect(parentPrompts.map((entry) => entry.dagMode)).toEqual(["on", "off"])
+      expect(parentPrompts.every((entry) => entry.hasDagMode)).toBe(true)
+      const childPrompts = sources.filter((entry) => entry.sessionID === child.id && entry.event === "UserPromptSubmit")
+      expect(childPrompts).toHaveLength(1)
+      expect(childPrompts[0].hasDagMode).toBe(false)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("SessionStart startup reports the default dag mode", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const share = yield* SessionLifecycle.Service
+      const session = yield* share.create({ title: "Startup DAG mode", permission: [] })
+      const startup = sources.find((entry) => entry.sessionID === session.id && entry.event === "SessionStart")
+      expect(startup).toMatchObject({ source: "startup", dagMode: "off", hasDagMode: true })
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("SessionStart resume reports the stored dag mode", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Resume DAG mode", permission: [] })
+      yield* seedHistory(sessions, session.id)
+      yield* setDagMode(session.id, "on")
+      yield* llm.text("one")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "first" }] })
+      expect(sources.find((entry) => entry.sessionID === session.id && entry.event === "SessionStart")).toMatchObject({
+        source: "resume",
+        dagMode: "on",
+        hasDagMode: true,
+      })
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+it.live("SessionStart fork reports the source session's dag mode", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* () {
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Fork DAG mode", permission: [] })
+      yield* setDagMode(session.id, "on")
+      const forked = yield* sessions.fork({ sessionID: session.id })
+      expect(sources.find((entry) => entry.sessionID === forked.id && entry.event === "SessionStart")).toMatchObject({
+        source: "fork",
+        dagMode: "on",
+        hasDagMode: true,
+      })
     }),
     { git: true, config: providerCfg },
   ),

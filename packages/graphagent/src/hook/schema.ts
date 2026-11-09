@@ -41,6 +41,9 @@ export const HookCommandSchema = z
     async: z.boolean().optional(),
     asyncRewake: z.boolean().optional(),
     options: z.record(z.string(), z.unknown()).optional(),
+    // Loader metadata: the chain layer and file that declared this entry.
+    __source: z.object({ scope: z.enum(["global", "project", "local"]), file: z.string() }).optional(),
+    // Reserved for plugin/scoped sources; the hooks.json chain never stamps it.
     __sourceDir: z.string().optional(),
   })
   .superRefine((entry, ctx) => {

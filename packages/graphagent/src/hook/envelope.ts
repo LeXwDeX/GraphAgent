@@ -157,6 +157,8 @@ export function buildStdinEnvelope(payload: HookPayload, ctx: EnvelopeContext, c
         ...base,
         prompt: payload.prompt,
         ...(payload.sessionTitle !== undefined ? { session_title: payload.sessionTitle } : {}),
+        // Read-only: hooks observe the session's DAG mode; they cannot change it.
+        ...(payload.dagMode !== undefined ? { dag_mode: payload.dagMode } : {}),
       }
     case "Stop":
       return {
@@ -207,6 +209,8 @@ export function buildStdinEnvelope(payload: HookPayload, ctx: EnvelopeContext, c
         ...(payload.model !== undefined ? { model: payload.model } : {}),
         ...(payload.agentType !== undefined ? { agent_type: payload.agentType } : {}),
         ...(payload.sessionTitle !== undefined ? { session_title: payload.sessionTitle } : {}),
+        // Read-only: hooks observe the session's DAG mode; they cannot change it.
+        ...(payload.dagMode !== undefined ? { dag_mode: payload.dagMode } : {}),
         ...((payload.source === "resume" || payload.source === "fork") && payload.secondsSinceLastResponse !== undefined
           ? {
               seconds_since_last_response: payload.secondsSinceLastResponse,

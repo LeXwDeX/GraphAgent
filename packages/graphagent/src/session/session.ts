@@ -979,6 +979,8 @@ export const layer: Layer.Layer<
           {
             event: "SessionStart",
             source: "fork",
+            // A fork is top-level by construction: report its inherited DAG mode read-only.
+            ...(session.dagMode !== undefined ? { dagMode: session.dagMode } : {}),
             ...(yield* HookModelMetrics.forSession({
               source: "fork",
               sessionID: session.id,

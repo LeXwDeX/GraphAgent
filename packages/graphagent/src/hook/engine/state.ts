@@ -5,14 +5,10 @@
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import type { Fiber } from "effect"
-import type { HookCommand, HookSummary, Settings } from "../types"
+import { SessionCancellation } from "@/session/cancellation"
+import type { HookCommand, HookEvent, HookSummary, RewakeToken, Settings } from "../types"
 import type { TriggerResult } from "../trigger-result"
 import type { HookExecution } from "../handlers/shared"
-
-export interface StopRewakeChain {
-  count: number
-  unregister?: () => void
-}
 
 /**
  * One running foreground handler per (session, hook digest). Several fibers may
@@ -23,14 +19,6 @@ export interface StopRewakeChain {
 export interface RunningHook {
   readonly fibers: Set<Fiber.Fiber<HookExecution>>
   readonly cancelled: Set<Fiber.Fiber<HookExecution>>
-}
-
-export function removeStopChain(state: State, key: string, expected?: StopRewakeChain): boolean {
-  const chain = state.stopRewakeChains.get(key)
-  if (!chain || (expected && chain !== expected)) return false
-  state.stopRewakeChains.delete(key)
-  chain.unregister?.()
-  return true
 }
 
 export interface State {
@@ -49,7 +37,21 @@ export interface State {
   seen: Map<string, Set<string>>
   once: Map<string, WeakSet<HookCommand>>
   onceRunning: Map<string, WeakMap<HookCommand, string>>
-  stopRewakeChains: Map<string, StopRewakeChain>
+  /**
+   * Rewake-chain generation per session (default 0). Advanced whenever the
+   * chain resets: a real UserPromptSubmit, SessionEnd, clearSession, or cancel.
+   * A pending async Stop callback captured under an older generation is stale.
+   * Never evicted: a reused session ID must not validate an old generation-0
+   * token, at the cost of one number per historical session.
+   */
+  rewakeGenerations: Map<string, number>
+  /**
+   * Consecutive blocked Stop continuations per session and event. Stop,
+   * StopFailure and SubagentStop each keep an independent budget so a main
+   * Stop rewake cannot exhaust (or leak `stop_hook_active` into) a later
+   * subagent stop.
+   */
+  stopContinuations: Map<string, Map<HookEvent, number>>
   asyncResults: Map<string, TriggerResult>
   asyncFibers: Map<string, Set<Fiber.Fiber<unknown, unknown>>>
   /** Running foreground handlers keyed by `${sessionID}:${hookID}`; backs `Hooks.cancel`. */
@@ -90,6 +92,48 @@ export const addSeen = (seen: Map<string, Set<string>>, sessionID: string, text:
     if (oldest !== undefined) bucket.delete(oldest)
   }
   seen.set(sessionID, bucket)
+  return true
+}
+
+/** Snapshot of the session's current rewake-chain identity. */
+export function rewakeTokenFor(state: State, sessionID: string): RewakeToken {
+  return { epoch: SessionCancellation.epoch(sessionID), generation: state.rewakeGenerations.get(sessionID) ?? 0 }
+}
+
+/** True when `token` still identifies the session's live rewake chain. */
+export function rewakeTokenValid(state: State, sessionID: string, token: unknown): boolean {
+  if (!token || typeof token !== "object") return false
+  const { epoch, generation } = token as Partial<RewakeToken>
+  return epoch === SessionCancellation.epoch(sessionID) && generation === (state.rewakeGenerations.get(sessionID) ?? 0)
+}
+
+/**
+ * Reset the session's rewake chain: advance the generation so every captured
+ * token becomes stale, and drop the Stop-continuation counts with it. Used by
+ * every chain boundary (UserPromptSubmit, SessionEnd, clearSession, cancel).
+ */
+export function advanceRewakeGeneration(state: State, sessionID: string): void {
+  state.rewakeGenerations.set(sessionID, (state.rewakeGenerations.get(sessionID) ?? 0) + 1)
+  state.stopContinuations.delete(sessionID)
+}
+
+/** Blocked-continuation count for one event, without consuming a slot. */
+export function stopContinuationCount(state: State, sessionID: string, event: HookEvent): number {
+  return state.stopContinuations.get(sessionID)?.get(event) ?? 0
+}
+
+/**
+ * Consume one Stop-continuation slot. Returns false when `cap` consecutive
+ * blocked continuations have already been issued for this (session, event).
+ * The read and write are synchronous, so concurrent completions cannot both
+ * claim the last slot.
+ */
+export function claimStopContinuation(state: State, sessionID: string, event: HookEvent, cap: number): boolean {
+  const counts = state.stopContinuations.get(sessionID) ?? new Map<HookEvent, number>()
+  const count = counts.get(event) ?? 0
+  if (count >= cap) return false
+  counts.set(event, count + 1)
+  state.stopContinuations.set(sessionID, counts)
   return true
 }
 

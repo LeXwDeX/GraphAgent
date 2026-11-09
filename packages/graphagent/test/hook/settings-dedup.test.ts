@@ -1,9 +1,11 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as fs from "fs/promises"
+import os from "os"
 import path from "path"
 import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
+import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { SessionID } from "@/session/schema"
@@ -44,6 +46,8 @@ const writeSettings = (dir: string) =>
       .mkdir(path.join(dir, ".agents"), { recursive: true })
       .then(() => fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooksJson))),
   )
+
+const projectHooks = (command: string) => ({ SessionStart: [{ hooks: [{ type: "command", command }] }] })
 
 describe("SettingsHook additionalContext dedup — per-session (F2)", () => {
   // F2 core: dedup is bucketed per sessionID, so a context the first session
@@ -122,6 +126,51 @@ describe("SettingsHook additionalContext dedup — per-session (F2)", () => {
         expect(r2.additionalContexts).toEqual([CONTEXT])
       }),
     { init: writeSettings },
+  )
+})
+
+describe("handler identity ignores loader metadata — cross-layer dedup (§11.2)", () => {
+  // The same handler declared in two layers carries different `__source`
+  // metadata (scope + file). `handlerKey` strips it, so the trigger planner
+  // keeps only the first occurrence instead of running the same command twice.
+  it.instance(
+    "the same handler in global and project hooks.json runs once per trigger",
+    () =>
+      Effect.gen(function* () {
+        const count = path.join(os.tmpdir(), `hook-dedup-count-${crypto.randomUUID()}`)
+        const globalDir = yield* Effect.promise(() =>
+          fs.mkdtemp(path.join(os.tmpdir(), "hook-dedup-global-")),
+        )
+        const previous = process.env.GRAPHAGENT_TEST_CONFIG_DIR
+        process.env.GRAPHAGENT_TEST_CONFIG_DIR = globalDir
+        try {
+          // The project layer and the global layer declare the exact same
+          // command, differing only in the file they come from.
+          const command = `printf 'run\\n' >> ${JSON.stringify(count)}; printf '%s' '${HOOK_JSON}'`
+          const ctx = yield* InstanceState.context
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(ctx.root, ".agents"), { recursive: true })
+            await fs.writeFile(path.join(globalDir, "hooks.json"), JSON.stringify(projectHooks(command)))
+            await fs.writeFile(path.join(ctx.root, ".agents", "hooks.json"), JSON.stringify(projectHooks(command)))
+          })
+          const hook = yield* SettingsHook.Service
+          const r = yield* hook.trigger(
+            { event: "SessionStart", source: "startup" },
+            { sessionID: "sess-cross-layer-dedup", transcript: () => Effect.succeed("") },
+          )
+          expect(r.additionalContexts).toEqual([CONTEXT])
+          expect(yield* Effect.promise(() => fs.readFile(count, "utf8"))).toBe("run\n")
+        } finally {
+          if (previous === undefined) delete process.env.GRAPHAGENT_TEST_CONFIG_DIR
+          else process.env.GRAPHAGENT_TEST_CONFIG_DIR = previous
+          yield* Effect.promise(() =>
+            Promise.all([
+              fs.rm(count, { force: true }),
+              fs.rm(globalDir, { recursive: true, force: true }),
+            ]),
+          )
+        }
+      }),
   )
 })
 

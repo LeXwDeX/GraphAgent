@@ -9,7 +9,7 @@ import os from "os"
 import { Global } from "@graphagent/core/global"
 import { APP_NAME, PROJECT_DIR } from "@graphagent/core/brand"
 import { hasProjectLayer } from "@/project/project-root"
-import type { HookCommand, HookSummary, Settings } from "../types"
+import type { HookCommand, HookSourceScope, HookSummary, Settings } from "../types"
 import { commandText, httpUrl, promptText } from "../exec/command"
 import { canRewake, isHookEvent, readJSONFile, warnUnsupportedFields } from "./load"
 
@@ -86,14 +86,51 @@ export function descriptorFor(entry: HookCommand): string {
       return commandText(entry).slice(0, 60)
   }
 }
+/** One hooks.json chain layer, tagged with the scope it was loaded from. */
+export interface HookLayer {
+  scope: HookSourceScope
+  settings: Settings
+}
+
+/**
+ * Merge one allowlist across the chain. The first layer that defines the list
+ * seeds the result (a global layer therefore acts as a ceiling; without one,
+ * the project list still restricts), and every later definition intersects.
+ * An explicit empty list denies everything. Layers that do not define the
+ * field do not participate; when no layer defines it, the result stays
+ * `undefined` (allow all), matching the consumer's contract.
+ *
+ * Intersection is by literal pattern: overlapping glob patterns with different
+ * spellings are not recognized as subsets.
+ */
+function mergeAllowlist(
+  layers: ReadonlyArray<HookLayer>,
+  values: (settings: Settings) => string[] | undefined,
+): string[] | undefined {
+  let merged: string[] | undefined
+  for (const { settings } of layers) {
+    const layer = values(settings)
+    if (layer === undefined) continue
+    if (merged === undefined) {
+      merged = [...new Set(layer)]
+      continue
+    }
+    const allowed = new Set(layer)
+    merged = merged.filter((pattern) => allowed.has(pattern))
+  }
+  return merged
+}
+
 /**
  * Concat-merge hook matchers across layers. Later layers append after earlier
  * ones (matches CC's merge semantics — does NOT replace by matcher key).
+ * Allowlists are not concatenated: they intersect across layers so a stricter
+ * project/local layer can only narrow the global ceiling.
  */
 // Exported for unit testing only; not part of the public surface.
-export function mergeSettings(layers: Settings[]): Settings {
+export function mergeSettings(layers: ReadonlyArray<HookLayer>): Settings {
   const out: Settings = { hooks: {} }
-  for (const layer of layers) {
+  for (const { settings: layer } of layers) {
     if (!layer.hooks) continue
     for (const [event, matchers] of Object.entries(layer.hooks)) {
       if (!isHookEvent(event)) continue
@@ -101,11 +138,12 @@ export function mergeSettings(layers: Settings[]): Settings {
       acc.push(...(matchers ?? []))
     }
   }
-  for (const layer of layers) if (layer.disableAllHooks !== undefined) out.disableAllHooks = layer.disableAllHooks
-  if (layers.some((l) => l.allowedHttpHookUrls !== undefined))
-    out.allowedHttpHookUrls = [...new Set(layers.flatMap((l) => l.allowedHttpHookUrls ?? []))]
-  if (layers.some((l) => l.httpHookAllowedEnvVars !== undefined))
-    out.httpHookAllowedEnvVars = [...new Set(layers.flatMap((l) => l.httpHookAllowedEnvVars ?? []))]
+  for (const { settings: layer } of layers)
+    if (layer.disableAllHooks !== undefined) out.disableAllHooks = layer.disableAllHooks
+  const allowedHttpHookUrls = mergeAllowlist(layers, (settings) => settings.allowedHttpHookUrls)
+  if (allowedHttpHookUrls !== undefined) out.allowedHttpHookUrls = allowedHttpHookUrls
+  const httpHookAllowedEnvVars = mergeAllowlist(layers, (settings) => settings.httpHookAllowedEnvVars)
+  if (httpHookAllowedEnvVars !== undefined) out.httpHookAllowedEnvVars = httpHookAllowedEnvVars
   return out
 }
 
@@ -164,16 +202,16 @@ function readChain(
   root: string,
   globalConfig?: string,
 ): { settings: Settings; summaries: HookSummary[]; invalid: string[] } {
-  const layers: Settings[] = []
+  const layers: HookLayer[] = []
   const summaries: HookSummary[] = []
   const invalid: string[] = []
   for (const { scope, file } of chainCandidates(root, globalConfig)) {
-    const read = readJSONFile(file)
+    const read = readJSONFile(file, scope)
     if (read.invalid) invalid.push(file)
     const data = read.settings
     if (!data) continue
     warnUnsupportedFields(data.hooks, path.dirname(file))
-    layers.push(data)
+    layers.push({ scope, settings: data })
     if (!data.hooks) continue
     for (const [event, matchers] of Object.entries(data.hooks)) {
       if (!isHookEvent(event)) continue

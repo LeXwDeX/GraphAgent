@@ -34,13 +34,20 @@ import type {
   HookJSONOutput,
   HookMatcher,
   HookPayload,
+  RewakeToken,
   ToolHookContext,
   TriggerContext,
 } from "../types"
 import type { TriggerResult } from "../trigger-result"
 import { applyResult, PER_TRIGGER_DEDUP_EVENTS } from "./reduce"
-import { addSeen, removeStopChain, staticWatchPaths } from "./state"
-import type { State, StopRewakeChain } from "./state"
+import {
+  addSeen,
+  advanceRewakeGeneration,
+  rewakeTokenFor,
+  staticWatchPaths,
+  stopContinuationCount,
+} from "./state"
+import type { State } from "./state"
 import { entryEligible, compileGroup, groupMatches, handlerKey } from "./plan"
 import { HookIndexByEvent } from "../index-by-event"
 import type { CompiledMatcher } from "../match"
@@ -83,7 +90,8 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           seen: new Map<string, Set<string>>(),
           once: new Map<string, WeakSet<HookCommand>>(),
           onceRunning: new Map<string, WeakMap<HookCommand, string>>(),
-          stopRewakeChains: new Map<string, StopRewakeChain>(),
+          rewakeGenerations: new Map<string, number>(),
+          stopContinuations: new Map<string, Map<HookEvent, number>>(),
           asyncResults: new Map<string, TriggerResult>(),
           asyncFibers: new Map<string, Set<Fiber.Fiber<unknown, unknown>>>(),
           runningHooks: new Map(),
@@ -160,7 +168,6 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
             handle.close()
-            for (const key of stateObj.stopRewakeChains.keys()) removeStopChain(stateObj, key)
           }),
         )
 
@@ -192,6 +199,9 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       s.once.delete(sessionID)
       s.onceRunning.delete(sessionID)
       s.asyncResults.delete(sessionID)
+      // An ended session never has a later turn: invalidate any callback that
+      // captured the rewake chain before it ended.
+      advanceRewakeGeneration(s, sessionID)
       for (const fiber of s.asyncFibers.get(sessionID) ?? []) yield* Fiber.interrupt(fiber)
       s.asyncFibers.delete(sessionID)
     })
@@ -209,36 +219,22 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       if (owner && !owner.valid()) return result
 
       // Hook rewake prompts skip UserPromptSubmit in SessionPrompt. Every other
-      // prompt (including a Goal continuation) begins a new automatic hook chain.
-      const clearStopChains = (sessionID: string) => {
-        for (const key of s.stopRewakeChains.keys()) if (key.endsWith(`:${sessionID}`)) removeStopChain(s, key)
-      }
-      if (payload.event === "UserPromptSubmit" && ctx.sessionID) clearStopChains(ctx.sessionID)
-      if (payload.event === "SessionEnd" && ctx.sessionID) clearStopChains(ctx.sessionID)
-      let stopChain: StopRewakeChain | undefined
+      // prompt (including a Goal continuation) begins a new automatic hook chain:
+      // it invalidates callbacks from the previous Stop chain and resets their
+      // continuation budgets. SessionEnd resets the same state in
+      // clearEndedSession.
+      if (payload.event === "UserPromptSubmit" && ctx.sessionID) advanceRewakeGeneration(s, ctx.sessionID)
+      let rewakeToken: RewakeToken | undefined
       if (
         (payload.event === "Stop" || payload.event === "StopFailure" || payload.event === "SubagentStop") &&
         ctx.sessionID
       ) {
-        // Stop, StopFailure and SubagentStop have independent chains. Sharing one key leaks stop_hook_active from a
-        // main Stop rewake into a later subagent stop.
-        const chainKey = `${payload.event}:${ctx.sessionID}`
-        stopChain = s.stopRewakeChains.get(chainKey)
-        if (!stopChain) {
-          const chain: StopRewakeChain = { count: 0 }
-          const unregister = owner?.register(
-            () =>
-              Effect.sync(() => {
-                removeStopChain(s, chainKey, chain)
-              }),
-            s.cwd,
-          )
-          if (owner && !unregister) return result
-          chain.unregister = unregister
-          stopChain = chain
-          s.stopRewakeChains.set(chainKey, chain)
-        }
-        if (stopChain.count > 0) payload = { ...payload, stopHookActive: true }
+        // Stop, StopFailure and SubagentStop have independent continuation
+        // budgets, so a main Stop rewake cannot leak stop_hook_active into a
+        // later subagent stop.
+        if (stopContinuationCount(s, ctx.sessionID, payload.event) > 0)
+          payload = { ...payload, stopHookActive: true }
+        rewakeToken = rewakeTokenFor(s, ctx.sessionID)
       }
 
       // ── SessionEnd lifecycle cleanup (F2) ──────────────────────
@@ -623,7 +619,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
                   capturedSessionID,
                   hookRewake,
                   s,
-                  stopChain,
+                  rewakeToken,
                   r,
                   entryToken,
                 )

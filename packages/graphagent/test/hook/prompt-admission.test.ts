@@ -14,6 +14,7 @@ import { HookNotification } from "@/hook/notifications"
 import { SessionSummary } from "@/session/summary"
 import { Database } from "@graphagent/core/database/database"
 import { EventTable } from "@graphagent/core/event/sql"
+import { SessionTable } from "@graphagent/core/session/sql"
 import { eq } from "drizzle-orm"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { provideTmpdirServer } from "../fixture/fixture"
@@ -1866,3 +1867,44 @@ for (const scenario of ["no-op", "aba"] as const) {
     ),
   )
 }
+
+// §12: the session reports dag_mode to UserPromptSubmit, but hook output can
+// never change the mode — the field is input-only and the session's stored
+// value is untouched even when a hook echoes a conflicting one back.
+it.live("UserPromptSubmit receives dag_mode and hook output cannot change the session mode", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      const session = yield* sessions.create({ title: "DAG mode payload", permission: [] })
+      yield* db
+        .update(SessionTable)
+        .set({ dag_mode: "on" })
+        .where(eq(SessionTable.id, session.id))
+      const audit = path.join(dir, "dag-mode-input.json")
+      const script = path.join(dir, "dag-mode-hook.ts")
+      yield* Effect.promise(async () => {
+        await fs.writeFile(
+          script,
+          `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},JSON.stringify(i));console.log(JSON.stringify({dag_mode:"off",hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:"DAG_MODE_OUTPUT"}}))`,
+        )
+        await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
+        await fs.writeFile(
+          path.join(dir, ".agents", "hooks.json"),
+          JSON.stringify({
+            UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }],
+          }),
+        )
+      })
+      yield* llm.text("done")
+      yield* prompt.prompt({ sessionID: session.id, agent: "build", parts: [{ type: "text", text: "which mode?" }] })
+
+      const received = yield* Effect.promise(() => fs.readFile(audit, "utf8").then((text) => JSON.parse(text)))
+      expect(received).toMatchObject({ hook_event_name: "UserPromptSubmit", dag_mode: "on" })
+      // The hook echoed `dag_mode: "off"`; the runtime ignores it entirely.
+      expect((yield* sessions.get(session.id)).dagMode).toBe("on")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)

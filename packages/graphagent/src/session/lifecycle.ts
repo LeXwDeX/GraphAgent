@@ -61,6 +61,8 @@ export const layer = Layer.effect(
             {
               event: "SessionStart",
               source: "startup",
+              // Top-level only (parentID returned above): report the DAG mode read-only.
+              ...(result.dagMode !== undefined ? { dagMode: result.dagMode } : {}),
               ...(yield* HookModelMetrics.forSession({
                 source: "startup",
                 sessionID: result.id,
