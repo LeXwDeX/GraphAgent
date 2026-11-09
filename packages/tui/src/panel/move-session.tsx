@@ -256,11 +256,16 @@ export function MoveSessionPanel(props: MoveSessionPanelProps) {
           <text fg={theme.textMuted}>{t("panel.move.empty")}</text>
         )
       }
-      onSelect={(item) => props.onSelect(item.value)}
+      onSelect={(item) => {
+        // Deletion re-renders the list; do not move the session mid-flight.
+        if (removing()) return
+        props.onSelect(item.value)
+      }}
       actions={[
         {
           key: "dialog.move_session.new",
           label: t("panel.move.new"),
+          when: () => !removing(),
           run: () => props.onSelect({ type: "new" }),
         },
         {
