@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import type { Database } from "@graphagent/core/database/database"
 import { Shell } from "@graphagent/core/shell"
 import { NamedError } from "@graphagent/core/util/error"
@@ -24,7 +23,7 @@ import { ShellID } from "@/tool/shell/id"
 import type { Agent } from "../agent/agent"
 import { MCP } from "../mcp"
 import type { Config } from "@/config/config"
-import type { SessionCancellation } from "./cancellation"
+import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
 import type { SessionRevert } from "./revert"
 import type { SessionRunState } from "./run-state"
 import { MessageID, PartID, type SessionID } from "./schema"
@@ -51,11 +50,15 @@ export interface ShellDeps {
   readonly spawner: ChildProcessSpawner["Service"]
   readonly prepareFns: PrepareApi
   readonly ops: () => Effect.Effect<TaskPromptOps>
-  readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly withRunRequest: <A, E, R>(
     sessionID: SessionID,
-    use: (request: ReturnType<typeof SessionCancellation.request>) => Effect.Effect<A, E, R>,
-    admitted?: ReturnType<typeof SessionCancellation.request>,
+    use: (request: Request, witness: RunRequestWitness) => Effect.Effect<A, E, R>,
+    admitted?: Request,
+  ) => Effect.Effect<A, E, R>
+  readonly withPromptLock: <A, E, R>(
+    witness: RunRequestWitness,
+    sessionID: SessionID,
+    use: (witness: PromptLockWitness) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, R>
   readonly state: SessionRunState.Interface
   readonly lastAssistant: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
@@ -78,8 +81,8 @@ export function makeShell(deps: ShellDeps) {
     spawner,
     prepareFns,
     ops,
-    promptLocks,
     withRunRequest,
+    withPromptLock,
     state,
     lastAssistant,
   } = deps
@@ -316,8 +319,8 @@ export function makeShell(deps: ShellDeps) {
     "SessionPrompt.shell",
   )(function* (input: ShellInput) {
     const ready = yield* Latch.make()
-    const result = yield* withRunRequest(input.sessionID, (request) =>
-      promptLocks.withLock(input.sessionID)(
+    const result = yield* withRunRequest(input.sessionID, (request, witness) =>
+      withPromptLock(witness, input.sessionID, () =>
         state.startShellHandle(
           input.sessionID,
           lastAssistant(input.sessionID),

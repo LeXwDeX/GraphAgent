@@ -22,7 +22,7 @@ import type { Goal } from "@/goal/goal"
 import type { HookStartContext } from "@/hook/start-context"
 import type { SessionAttention } from "@/notification/attention"
 import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
-import type { SessionCancellation } from "./cancellation"
+import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
 import { MessageID, PartID, type SessionID } from "./schema"
 import { Session } from "./session"
 import type { SessionRunState } from "./run-state"
@@ -53,8 +53,13 @@ export interface CommandDeps {
   readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly withRunRequest: <A, E, R>(
     sessionID: SessionID,
-    use: (request: ReturnType<typeof SessionCancellation.request>) => Effect.Effect<A, E, R>,
-    admitted?: ReturnType<typeof SessionCancellation.request>,
+    use: (request: Request, witness: RunRequestWitness) => Effect.Effect<A, E, R>,
+    admitted?: Request,
+  ) => Effect.Effect<A, E, R>
+  readonly withPromptLock: <A, E, R>(
+    witness: RunRequestWitness,
+    sessionID: SessionID,
+    use: (witness: PromptLockWitness) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, R>
   readonly state: SessionRunState.Interface
   readonly lastAssistant: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
@@ -117,6 +122,7 @@ export function makeCommand(deps: CommandDeps) {
     budgetState,
     promptLocks,
     withRunRequest,
+    withPromptLock,
     state,
     lastAssistant,
     modelWriteBegin,
@@ -129,8 +135,8 @@ export function makeCommand(deps: CommandDeps) {
   // startIfIdle keeps today's inline semantics while another turn is running
   // (no queueing, no second idle); the in-flight turn re-emits idle itself.
   const commandTurn = Effect.fnUntraced(function* (sessionID: SessionID, work: Effect.Effect<SessionV1.WithParts>) {
-    return yield* withRunRequest(sessionID, (request) =>
-      promptLocks.withLock(sessionID)(
+    return yield* withRunRequest(sessionID, (request, witness) =>
+      withPromptLock(witness, sessionID, () =>
         Effect.gen(function* () {
           if (!request.valid()) return yield* Effect.interrupt
           const handle = yield* state.startIfIdle(sessionID, lastAssistant(sessionID), work, request)
@@ -392,8 +398,8 @@ export function makeCommand(deps: CommandDeps) {
       // This branch returns before the normal landing point below, so notices
       // from the hook that stopped the command must be published here.
       if (expansion) yield* SettingsHook.landSystemMessages(expansion, { sessionID: input.sessionID })
-      return yield* withRunRequest(input.sessionID, (request) =>
-        promptLocks.withLock(input.sessionID)(
+      return yield* withRunRequest(input.sessionID, (request, witness) =>
+        withPromptLock(witness, input.sessionID, () =>
           Effect.gen(function* () {
             if (!request.valid()) return yield* Effect.interrupt
             // A command cancelled while this blocked notice is being admitted

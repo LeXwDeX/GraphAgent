@@ -16,6 +16,7 @@ import { Deferred, Effect, Fiber, Option, Scope } from "effect"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Runner } from "@/effect/runner"
 import { SessionCancellation } from "@/session/cancellation"
+import { makeSessionLocks } from "@/session/locks"
 import type { PromptInput } from "@/session/prompt"
 import type { SessionRunState } from "@/session/run-state"
 import { MessageID, SessionID } from "@/session/schema"
@@ -148,16 +149,27 @@ function makeHarness(db: Database.Interface["db"]) {
       cancel: (sessionID: SessionID) => runnerFor(sessionID).cancel,
     } as unknown as SessionRunState.Interface
 
+    const locks = makeSessionLocks(KeyedMutex.makeUnsafe<SessionID>())
+    // Keep one admitted request per session for the whole test: the real
+    // run-state layer registers an owner that outlives the callback, which the
+    // stub state above does not model. Passing it as an admitted request skips
+    // the release in `withRunRequest`.
+    const admitted = new Map<SessionID, ReturnType<typeof SessionCancellation.request>>()
+    const admittedFor = (sessionID: SessionID) => {
+      const existing = admitted.get(sessionID)
+      if (existing) return existing
+      const created = SessionCancellation.request(sessionID)
+      admitted.set(sessionID, created)
+      return created
+    }
+
     const turns = makeTurns({
       db,
       sessions: mockSessions(),
       state,
       scope,
-      promptLocks: KeyedMutex.makeUnsafe<SessionID>(),
-      // Keep the request current for the whole test: the real run-state layer
-      // registers an owner that outlives this callback, which the stub state
-      // above does not model.
-      withRunRequest: (sessionID, use) => Effect.suspend(() => use(SessionCancellation.request(sessionID))),
+      withRunRequest: (sessionID, use) => locks.withRunRequest(sessionID, use, admittedFor(sessionID)),
+      withPromptLock: locks.withPromptLock,
       goal: undefined,
       settingsHook: undefined,
       admitPrompt: (input) => admit(input),

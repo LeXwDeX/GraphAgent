@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { EngineProcess } from "./engine-process"
+
 export * as ClientSessions from "./client-sessions"
 
 /**
@@ -10,6 +12,9 @@ export * as ClientSessions from "./client-sessions"
  * hooks. It is not consulted for authorization: `run` keeps its own
  * `localSessionIDs` set because authorization is decided before a request
  * reaches the handler that records the session here.
+ *
+ * The map lives on `EngineProcess` so the process-level mutable state has a
+ * single owner (Issue #1019, PR9), matching the cancellation and abort state.
  */
 
 export type Entry = {
@@ -17,20 +22,18 @@ export type Entry = {
   readonly directory: string
 }
 
-const sessions = new Map<string, string>()
-
 export function touch(input: Entry): void {
-  sessions.set(input.sessionID, input.directory)
+  EngineProcess.clientSessions.set(input.sessionID, input.directory)
 }
 
 export function move(input: Entry): void {
-  sessions.set(input.sessionID, input.directory)
+  EngineProcess.clientSessions.set(input.sessionID, input.directory)
 }
 
 export function list(): Entry[] {
-  return [...sessions].map(([sessionID, directory]) => ({ sessionID, directory }))
+  return [...EngineProcess.clientSessions].map(([sessionID, directory]) => ({ sessionID, directory }))
 }
 
 export function clear(): void {
-  sessions.clear()
+  EngineProcess.clientSessions.clear()
 }

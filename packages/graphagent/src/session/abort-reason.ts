@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { EngineProcess } from "./engine-process"
+
 // Runtime-initiated session cancellations carry a named reason and actor.
 // SessionPrompt stores the reason in-process before interrupting the run, and
 // the interrupted turn writes it into its durable MessageAbortedError. DAG
@@ -14,7 +16,6 @@ export type Origin = "runtime" | "provider" | "legacy"
 
 const encoder = /^[a-z][a-z0-9-]*$/
 const providerPrefix = "provider aborted"
-const pending = new Map<string, Info>()
 
 export function make(reason: string, actor: string): Info {
   if (!encoder.test(reason) || !encoder.test(actor)) throw new Error("invalid session abort reason or actor")
@@ -52,15 +53,16 @@ export function replaceableByCancellation(message: string | undefined): boolean 
 
 /** Remember the reason until the interrupted turn finalizes its durable error. */
 export function set(sessionID: string, info: Info): void {
-  pending.set(sessionID, info)
+  EngineProcess.abort.pending.set(sessionID, info)
 }
 
 /** Multiple interrupted owners may need the same reason. */
 export function peek(sessionID: string): Info | undefined {
-  return pending.get(sessionID)
+  return EngineProcess.abort.pending.get(sessionID)
 }
 
 export function take(sessionID: string): Info | undefined {
+  const pending = EngineProcess.abort.pending
   const info = pending.get(sessionID)
   if (info) pending.delete(sessionID)
   return info
@@ -68,6 +70,7 @@ export function take(sessionID: string): Info | undefined {
 
 /** Clear only our own entry, never a newer cancellation's reason. */
 export function clear(sessionID: string, info: Info): void {
+  const pending = EngineProcess.abort.pending
   if (pending.get(sessionID) === info) pending.delete(sessionID)
 }
 
