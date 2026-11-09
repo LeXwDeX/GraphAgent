@@ -41,7 +41,7 @@ function sourceFiles(dir: string): string[] {
 describe("hook event trigger coverage", () => {
   test("bundled hook instructions name the supported event count", () => {
     const create = readFileSync(path.join(SRC_ROOT, "command/template/create-hook.txt"), "utf8")
-    const migrate = readFileSync(path.join(SRC_ROOT, "command/template/import-claude-hooks.txt"), "utf8")
+    const migrate = readFileSync(path.join(SRC_ROOT, "command/template/import-claude.txt"), "utf8")
     const skill = readFileSync(path.join(SRC_ROOT, "skill/builtin/configure-hooks.md"), "utf8")
     const description = BUILTIN_SKILLS.find((item) => item.name === "configure-hooks")?.description ?? ""
     expect(VALID_HOOK_EVENTS.size).toBe(31)

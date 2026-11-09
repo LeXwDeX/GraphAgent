@@ -29,7 +29,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，�
 | [DAG 工作流](#dag-工作流)             | 把任务拆成可持久化的子智能体依赖图并跑完             | `/dag-auto`、`workflow` 工具、`.opencode/dag.jsonc`  |
 | [项目 Memory](#项目-memory)           | 按项目保存经用户确认的偏好、决策和术语               | `/memory on`                                         |
 | [自主目标（GOAL）](#自主目标循环goal) | 跨回合推进一个持久、有预算、外部评审的目标           | `/goal`、`/subgoal`                                  |
-| [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                    | `hooks.json`、`/create-hook`、`/import-claude-hooks` |
+| [Hooks](#hooks)                       | 兼容 Claude Code 的生命周期 hooks                    | `hooks.json`、`/create-hook`、`/import-claude`       |
 | [上下文管理](#上下文管理)             | 限制工具输出、限制工具调用、压缩长会话               | `tool_output`、`compaction`、`maxToolCalls`          |
 
 ---
@@ -97,7 +97,7 @@ GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，�
 
 - `hooks.json` 从全局 opencode 配置目录和项目/worktree 的 `.opencode` 目录读取，按追加方式合并并热加载；也可以经 HTTP 按会话注册，无需工作区信任列表。
 - 各执行类型的 hook 都可以声明 `inputFormat: "claude-code"`，以 Claude Code 的工具名和参数键接收输入。这提供的是命名兼容，不是完整的行为等价。
-- Claude 的 `.claude/settings*.json` 不会自动加载：用 `/import-claude-hooks` 迁移，用 `/create-hook` 引导编写新 hook。
+- Claude 的 `.claude/settings*.json` 不会自动加载：用 `/import-claude` 审阅并转换进 `.agents/`，用 `/create-hook` 引导编写新 hook。
 - 后台等待：`asyncRewake` 命令 hook 可以盯着 CI、审查或部署，智能体继续干别的；有结论时脚本以退出码 2 结束并用一段有界摘要唤醒会话。Active Hooks 块会把这类 hook 标成 `background`。参见[后台监听配方](./packages/graphagent/src/skill/builtin/configure-hooks.md#background-watcher-recipe)。
 - 参考：[hooks 指南](./packages/graphagent/src/skill/builtin/configure-hooks.md)。
 

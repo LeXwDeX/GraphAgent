@@ -35,7 +35,7 @@ const hooksJsonTopLevel = (marker: string) => ({
 })
 
 // Legacy wrapper format {"hooks": {...}} — rejected: hooks.json uses top-level
-// event keys and Claude settings are converted by /import-claude-hooks.
+// event keys and Claude settings are converted by /import-claude.
 const hooksJsonWrapped = (marker: string) => ({
   hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: marker }] }] },
 })
