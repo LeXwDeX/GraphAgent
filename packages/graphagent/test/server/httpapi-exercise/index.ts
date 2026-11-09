@@ -949,7 +949,7 @@ const scenarios: Scenario[] = [
           { type: "http", url: "https://example.com", inputFormat: "claude-code" },
           { type: "prompt", prompt: "Check the request", inputFormat: "claude-code" },
           { type: "agent", prompt: "Review the request", inputFormat: "claude-code" },
-          { type: "mcp", command: "mcp__test__lookup", inputFormat: "claude-code" },
+          { type: "mcp_tool", server: "test", tool: "lookup", inputFormat: "claude-code" },
         ],
       },
     }))
@@ -973,13 +973,27 @@ const scenarios: Scenario[] = [
           "hook list should preserve all supported handlers",
         )
         const hooks = entry.hooks
-        for (const type of ["http", "prompt", "agent", "mcp"]) {
+        for (const type of ["http", "prompt", "agent", "mcp_tool"]) {
           const hook = hooks.find((item) => isRecord(item) && item.type === type)
           check(isRecord(hook), `hook list should include the ${type} handler`)
           check(hook.inputFormat === "claude-code", `${type} hook should preserve inputFormat`)
         }
+        const mcpTool = hooks.find((item) => isRecord(item) && item.type === "mcp_tool")
+        check(
+          isRecord(mcpTool) && mcpTool.server === "test" && mcpTool.tool === "lookup",
+          "mcp_tool hook should preserve server and tool",
+        )
       }),
     ),
+  http.protected
+    .post("/session/{sessionID}/hook", "session.hook.add.legacy_mcp_alias_rejected")
+    .seeded((ctx) => ctx.session({ title: "Hook legacy mcp alias session" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/hook", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { event: "PreToolUse", hooks: [{ type: "mcp", command: "mcp__test__lookup" }] },
+    }))
+    .status(400),
   http.protected
     .post("/session/{sessionID}/hook", "session.hook.add.empty_command")
     .seeded((ctx) => ctx.session({ title: "Hook empty command session" }))
