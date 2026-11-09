@@ -6,7 +6,7 @@ import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
-import { evaluate } from "@/hook/extensions/condition-filter"
+import { evaluateCondition as evaluate } from "@/hook/match"
 import { testEffect } from "../lib/effect"
 
 const testLayer = SettingsHook.layer.pipe(

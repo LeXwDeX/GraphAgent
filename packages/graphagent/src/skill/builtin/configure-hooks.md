@@ -8,7 +8,7 @@ Hooks run a command, MCP tool, HTTP request, prompt, or agent at a local convers
 
 The file chain is `${Global.Path.config}/hooks.json`, project `.agents/hooks.json`, then project-local `.agents/hooks.local.json`. The global path follows XDG configuration (usually `~/.config/graphagent`). A linked worktree is its own project root and therefore uses its own `.agents/` layer. Event arrays append across layers. Matching foreground handlers run concurrently; identical handlers matched more than once run once per trigger. Files reload after about two seconds of polling plus debounce.
 
-Use top-level event keys. A legacy `{ "hooks": { ... } }` wrapper is accepted. `.claude/settings*.json` and deprecated OpenCode `settings.json` hook fields are not loaded as hook sources; `/import-claude-hooks` migrates them. Skill and agent frontmatter can supply scoped `hooks`; they become active when that skill or agent is actually selected. Plugin contributions retain their real plugin provenance. A project cannot label itself as a trusted user or plugin source.
+Use top-level event keys. An outer `{ "hooks": { ... } }` wrapper is not supported: it is ignored with one warning, so hooks.json must use top-level event keys. `.claude/settings*.json` and deprecated OpenCode `settings.json` hook fields are not loaded as hook sources; `/import-claude-hooks` migrates them. Skill and agent frontmatter can supply scoped `hooks`; they become active when that skill or agent is actually selected. Plugin contributions retain their real plugin provenance. A project cannot label itself as a trusted user or plugin source.
 
 Workspace trust gating and the built-in `/trust` command have been removed. Hooks from global, project, project-local, skill, and agent sources execute without a trust-list prerequisite. Existing `trusted-workspaces.json` files are neither read nor modified. Tool permissions, `allowedHttpHookUrls`, and `httpHookAllowedEnvVars` retain their existing behavior.
 
@@ -24,6 +24,8 @@ Workspace trust gating and the built-in `/trust` command have been removed. Hook
 ```
 
 ## Events (31 total)
+
+Claude Code's `PermissionDenied` and `TeammateIdle` events are not provided; declaring either event in configuration produces a warning and is skipped. The table below lists all 31 supported events.
 
 | Events                                            | Boundary and principal input                                                                                          | Matcher                |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------- |
@@ -65,7 +67,7 @@ Under `inputFormat: "claude-code"`, `PostToolUse.tool_response` exposes Bash `st
 | `prompt`   | `prompt`                           | One model evaluation, optionally `model`; returns `{ok, reason?, impossible?}`                               |
 | `agent`    | `prompt`                           | Bounded agent evaluation using exposed tools, optionally `model`; same decision response                     |
 
-The legacy `mcp` form with `command: "mcp__server__tool"` is an alias. Legacy HTTP/prompt/agent `command` action fields remain accepted; use `url` or `prompt` for new definitions. `$ARGUMENTS` in evaluator prompts is replaced with the serialized input; otherwise input is appended.
+Handler types are exactly `command` | `mcp_tool` | `http` | `prompt` | `agent`. A `command` handler requires `command`; `mcp_tool` requires `server` and `tool`; `http` requires `url`; `prompt` and `agent` require `prompt`. There are no fallback action fields. `$ARGUMENTS` in evaluator prompts is replaced with the serialized input; otherwise input is appended.
 
 SessionStart and Setup allow command and MCP handlers; unavailable MCP connections are skipped at early startup. PermissionRequest permits command, HTTP, MCP and prompt handlers, but only command/HTTP output can return its nested permission decision. Tool/prompt/batch/Stop/SubagentStop/task/classifier events support all five kinds. Remaining events support command, HTTP and MCP. A recognized type does not make it valid on every event.
 

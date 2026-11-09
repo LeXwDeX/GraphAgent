@@ -157,7 +157,9 @@ it.instance("Claude HTTP input adapts tool names, output and returned input with
     yield* withFetch(
       async (request) => {
         seen.push(await request.json())
-        return Response.json({ hookSpecificOutput: { updatedInput: { file_path: "updated.ts" } } })
+        return Response.json({
+          hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { file_path: "updated.ts" } },
+        })
       },
       (url) =>
         Effect.gen(function* () {

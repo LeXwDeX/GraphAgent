@@ -41,27 +41,19 @@ describe("hook event trigger coverage", () => {
     const migrate = readFileSync(path.join(SRC_ROOT, "command/template/import-claude-hooks.txt"), "utf8")
     const skill = readFileSync(path.join(SRC_ROOT, "skill/builtin/configure-hooks.md"), "utf8")
     const description = BUILTIN_SKILLS.find((item) => item.name === "configure-hooks")?.description ?? ""
-    // These two names are accepted for Claude-import compatibility but have no
-    // local trigger, so the authoring skill documents only the actionable set.
-    const inactive = new Set(["PermissionDenied", "TeammateIdle"])
-    const actionable = [...VALID_HOOK_EVENTS].filter((event) => !inactive.has(event))
+    expect(VALID_HOOK_EVENTS.size).toBe(31)
     expect(create).toContain("event list in `configure-hooks`")
-    expect(migrate).toContain(`${VALID_HOOK_EVENTS.size} events total`)
-    expect(migrate).toContain(`${actionable.length} have a local trigger`)
-    expect(skill).toContain(`Events (${actionable.length} total)`)
-    expect(description).toContain(`the ${actionable.length} supported events`)
+    expect(migrate).toContain(`${VALID_HOOK_EVENTS.size} events`)
+    expect(migrate).toContain("all with a local trigger")
+    expect(skill).toContain(`Events (${VALID_HOOK_EVENTS.size} total)`)
+    expect(description).toContain(`the ${VALID_HOOK_EVENTS.size} supported events`)
     for (const event of VALID_HOOK_EVENTS) {
       expect(create).toContain(event)
-    }
-    for (const event of actionable) {
       expect(skill).toContain(event)
-    }
-    for (const event of inactive) {
-      expect(skill).not.toContain(event)
     }
     expect(create).toContain("Matchers are case-sensitive")
     expect(skill).toContain("Matchers are case-sensitive")
-    expect(migrate).toContain("do not silently discard")
+    expect(migrate).toContain("silently discarding")
   })
 
   const haystack = [...sourceFiles(SRC_ROOT), ...sourceFiles(path.resolve(SRC_ROOT, "../../core/src"))]
@@ -74,11 +66,7 @@ describe("hook event trigger coverage", () => {
     .map((entry) => readFileSync(path.join(HOOK_ENGINE, entry), "utf8"))
     .join("\n")
 
-  // These names belong to the import protocol, but the corresponding local
-  // business operations do not exist. Native permission denial is not a classifier.
-  const unavailable = new Set(["TeammateIdle", "PermissionDenied"])
   for (const event of VALID_HOOK_EVENTS) {
-    if (unavailable.has(event)) continue
     test(`event "${event}" has at least one trigger site`, () => {
       const wired = haystack.includes(`event: "${event}"`) || engineSource.includes(`event: "${event}"`)
       expect(wired).toBe(true)

@@ -25,7 +25,7 @@ describe("hooks.json chain candidates", () => {
 })
 
 describe("hot reload watched files", () => {
-  test("polls the global, project and local hooks files", () => {
+  test("watches the global, project and local hooks files", () => {
     expect(__watchedFiles(project, globalConfig)).toEqual([
       path.join(globalConfig, "hooks.json"),
       path.join(project, ".agents", "hooks.json"),
@@ -43,7 +43,7 @@ describe("chain loading", () => {
       await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
       await fs.mkdir(global, { recursive: true })
       const hook = (command: string) => ({
-        hooks: { Stop: [{ hooks: [{ type: "command" as const, command }] }] },
+        Stop: [{ hooks: [{ type: "command" as const, command }] }],
       })
       await fs.writeFile(path.join(global, "hooks.json"), JSON.stringify(hook("printf global")))
       await fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hook("printf project")))
@@ -64,7 +64,7 @@ describe("chain loading", () => {
       await fs.mkdir(path.join(dir, ".agents"), { recursive: true })
       await fs.writeFile(
         path.join(dir, ".agents", "hooks.local.json"),
-        JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "printf local" }] }] } }),
+        JSON.stringify({ Stop: [{ hooks: [{ type: "command", command: "printf local" }] }] }),
       )
 
       const summaries = summarizeChain(dir, global)

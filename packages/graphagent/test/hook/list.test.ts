@@ -177,14 +177,14 @@ describe("summarizeChain — descriptor derivation by type", () => {
     }
   })
 
-  test("mcp descriptor is the tool name (command field)", async () => {
+  test("mcp_tool descriptor is server/tool", async () => {
     const projectDir = await mktmp("desc-mcp")
     try {
       await writeHooksJson(projectDir, {
-        PreToolUse: [{ hooks: [{ type: "mcp", command: "my-server__my-tool" }] }],
+        PreToolUse: [{ hooks: [{ type: "mcp_tool", server: "my-server", tool: "my-tool" }] }],
       })
       const [summary] = summarizeChain(projectDir, projectDir)
-      expect(summary.descriptor).toBe("my-server__my-tool")
+      expect(summary.descriptor).toBe("my-server/my-tool")
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true })
     }
@@ -311,16 +311,3 @@ describe("summarizeChain — matcher handling", () => {
     }
   })
 })
-
-for (const event of ["PermissionDenied", "TeammateIdle"]) {
-  test(`${event} is visibly marked inactive in the Active Hooks descriptor`, async () => {
-    const projectDir = await mktmp("inactive")
-    try {
-      await writeHooksJson(projectDir, { [event]: [{ hooks: [{ type: "command", command: "true" }] }] })
-      const [summary] = summarizeChain(projectDir, projectDir)
-      expect(summary.descriptor).toContain("inactive: this build has no event trigger")
-    } finally {
-      await fs.rm(projectDir, { recursive: true, force: true })
-    }
-  })
-}

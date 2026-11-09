@@ -20,7 +20,7 @@ const timeout = (overrides: Partial<HookCommand>, event: HookEvent) => timeoutFo
 describe("hook default timeouts", () => {
   test("foreground command/HTTP/MCP hooks default to 30 seconds", () => {
     expect(DEFAULT_TIMEOUT_MS).toBe(30_000)
-    for (const type of ["command", "http", "mcp", "mcp_tool"] as const)
+    for (const type of ["command", "http", "mcp_tool"] as const)
       expect(timeout({ type, url: "https://example.com", server: "s", tool: "t" }, "PreToolUse")).toBe(30_000)
     expect(timeout({}, "PostToolUse")).toBe(30_000)
     expect(timeout({}, "Notification")).toBe(30_000)

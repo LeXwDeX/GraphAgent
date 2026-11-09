@@ -126,7 +126,7 @@ describe("additionalContext dedup scope", () => {
                   hooks: [
                     {
                       type: "command",
-                      command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { additionalContext: "stop-feedback" } })}'`,
+                      command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: "Stop", additionalContext: "stop-feedback" } })}'`,
                     },
                   ],
                 },

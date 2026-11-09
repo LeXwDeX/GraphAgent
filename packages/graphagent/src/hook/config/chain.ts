@@ -11,12 +11,12 @@ import { APP_NAME, PROJECT_DIR } from "@graphagent/core/brand"
 import { hasProjectLayer } from "@/project/project-root"
 import type { HookCommand, HookSummary, Settings } from "../types"
 import { commandText, httpUrl, promptText } from "../exec/command"
-import { canRewake, inactiveEventWarning, isHookEvent, readJSONFile, warnUnsupportedFields } from "./load"
+import { canRewake, isHookEvent, readJSONFile, warnUnsupportedFields } from "./load"
 
 /**
  * Short human-readable description of a hook entry for the Active Hooks block.
  * All types are uniformly truncated to 60 chars: command → command text,
- * http → URL, mcp → tool name, prompt/agent → first line of the prompt/goal.
+ * http → URL, mcp_tool → server/tool, prompt/agent → first line of the prompt/goal.
  */
 // Only recognisable script arguments supply the display name; code passed to
 // `-e` or a version string must not be mistaken for a file.
@@ -77,8 +77,6 @@ export function descriptorFor(entry: HookCommand): string {
     }
     case "http":
       return httpUrl(entry).slice(0, 60)
-    case "mcp":
-      return commandText(entry).slice(0, 60)
     case "mcp_tool":
       return `${entry.server}/${entry.tool}`.slice(0, 60)
     case "prompt":
@@ -185,9 +183,7 @@ function readChain(
             event,
             scope,
             type: h.type,
-            descriptor: inactiveEventWarning(event)
-              ? `${descriptorFor(h)} [${inactiveEventWarning(event)}]`
-              : descriptorFor(h),
+            descriptor: descriptorFor(h),
             ...(m.matcher && m.matcher !== "*" ? { matcher: m.matcher } : {}),
             ...(h.type === "command" && h.asyncRewake === true && canRewake(event) ? { asyncRewake: true } : {}),
           })

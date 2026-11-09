@@ -42,7 +42,7 @@ export function httpHookUrlAllowed(url: string, allowed: readonly string[] | und
 }
 
 /**
- * `type: "http"` handler. Per CC protocol, `url` (legacy: `command`) is the
+ * `type: "http"` handler. Per CC protocol, `url` is the
  * endpoint; the envelope is POSTed once as JSON with `headers` after `$VAR` /
  * `${VAR}` interpolation restricted to `allowedEnvVars` (unlisted variables
  * become ""). Timeout comes from `timeoutFor`: 30 s for foreground HTTP hooks,

@@ -38,11 +38,11 @@ export function hookIDFor(entry: HookCommand, origin?: string): string {
 }
 
 /** Per-event handler availability from the 2026-10-16 Claude Code hooks reference. */
-const ALL_HANDLER_TYPES = new Set<HookCommand["type"]>(["command", "http", "mcp_tool", "mcp", "prompt", "agent"])
-const OBSERVATIONAL_HANDLER_TYPES = new Set<HookCommand["type"]>(["command", "http", "mcp_tool", "mcp"])
+const ALL_HANDLER_TYPES = new Set<HookCommand["type"]>(["command", "http", "mcp_tool", "prompt", "agent"])
+const OBSERVATIONAL_HANDLER_TYPES = new Set<HookCommand["type"]>(["command", "http", "mcp_tool"])
 function supportsHandler(event: HookEvent, type: HookCommand["type"]): boolean {
   if (event === "Setup") return type === "command"
-  if (event === "SessionStart") return type === "command" || type === "mcp_tool" || type === "mcp"
+  if (event === "SessionStart") return type === "command" || type === "mcp_tool"
   if (event === "PermissionRequest") return type !== "agent"
   if (
     [
@@ -52,12 +52,10 @@ function supportsHandler(event: HookEvent, type: HookCommand["type"]): boolean {
       "PostToolUse",
       "PostToolUseFailure",
       "PostToolBatch",
-      "PermissionDenied",
       "Stop",
       "SubagentStop",
       "TaskCreated",
       "TaskCompleted",
-      "TeammateIdle",
     ].includes(event)
   )
     return ALL_HANDLER_TYPES.has(type)
@@ -78,7 +76,7 @@ export function compileGroup(group: Pick<HookMatcher, "matcher">, event: HookEve
 export function entryEligible(payload: HookPayload, entry: HookCommand): boolean {
   if (!supportsHandler(payload.event, entry.type)) return false
   if (
-    (entry.type === "mcp_tool" || entry.type === "mcp") &&
+    entry.type === "mcp_tool" &&
     (payload.event === "Setup" ||
       (payload.event === "SessionStart" && ["startup", "resume", "fork"].includes(payload.source)))
   )

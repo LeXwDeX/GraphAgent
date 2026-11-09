@@ -156,7 +156,13 @@ for (const event of ["PreToolUse", "Stop"] as const) {
     Effect.gen(function* () {
       const json =
         event === "PreToolUse"
-          ? { hookSpecificOutput: { permissionDecision: "allow", updatedInput: { command: "changed" } } }
+          ? {
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "allow",
+                updatedInput: { command: "changed" },
+              },
+            }
           : { decision: "block", reason: "keep going" }
       const { result } = yield* trigger(
         [node(`console.log(JSON.stringify(${JSON.stringify(json)}));process.exit(1)`)],

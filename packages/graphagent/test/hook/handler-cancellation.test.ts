@@ -21,8 +21,7 @@ const base = SettingsHook.layer.pipe(
   Layer.provideMerge(SessionHooks.defaultLayer),
 )
 const it = testEffect(Layer.mergeAll(base, CrossSpawnSpawner.defaultLayer, FSUtil.defaultLayer))
-type RunEvent =
-  "PreToolUse" | "PostToolUse" | "PermissionRequest" | "PermissionDenied" | "TaskCreated" | "TaskCompleted"
+type RunEvent = "PreToolUse" | "PostToolUse" | "PermissionRequest" | "TaskCreated" | "TaskCompleted"
 const run = (entry: HookCommand, event: RunEvent = "PreToolUse") =>
   Effect.gen(function* () {
     const store = yield* SessionHooks.Service
@@ -145,20 +144,18 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
     }),
   )
 
-  it.instance("prompt PermissionRequest and PermissionDenied outputs are discarded", () =>
+  it.instance("prompt PermissionRequest output is discarded", () =>
     Effect.gen(function* () {
       const model = new MockLanguageModelV3({
         doGenerate: generated(JSON.stringify({ ok: false, reason: "cannot override permission" })),
       })
-      for (const event of ["PermissionRequest", "PermissionDenied"] as const) {
-        const result = yield* run({ type: "prompt", prompt: "audit permission" }, event).pipe(
-          Effect.provide(providerLayer(model)),
-        )
-        expect(result.blocked).toBeUndefined()
-        expect(result.preventContinuation).toBeUndefined()
-        expect(result.permissionRequestDecision).toBeUndefined()
-        expect(result.additionalContexts).toEqual([])
-      }
+      const result = yield* run({ type: "prompt", prompt: "audit permission" }, "PermissionRequest").pipe(
+        Effect.provide(providerLayer(model)),
+      )
+      expect(result.blocked).toBeUndefined()
+      expect(result.preventContinuation).toBeUndefined()
+      expect(result.permissionRequestDecision).toBeUndefined()
+      expect(result.additionalContexts).toEqual([])
     }),
   )
 
@@ -189,7 +186,14 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
             },
           } as any),
       })
-      const result = yield* run({ type: "mcp", command: "mcp__audit__check" }).pipe(Effect.provide(mcp))
+      // `mcp_tool` receives `input` with `${...}` substitution; it does not
+      // forward the raw envelope the removed `mcp` alias used to pass.
+      const result = yield* run({
+        type: "mcp_tool",
+        server: "audit",
+        tool: "check",
+        input: { hook_event_name: "${hook_event_name}" },
+      }).pipe(Effect.provide(mcp))
       expect(envelope.hook_event_name).toBe("PreToolUse")
       expect(result.permissionDecision).toBe("deny")
       expect(result.permissionDecisionReason).toBe("mcp-real-handler")
@@ -236,7 +240,9 @@ describe("hook handlers through real AI SDK and MCP invocation adapter", () => {
             },
           } as any),
       })
-      const result = yield* run({ type: "mcp", command: "mcp__audit__check", timeout: 0.03 }).pipe(Effect.provide(mcp))
+      const result = yield* run({ type: "mcp_tool", server: "audit", tool: "check", timeout: 0.03 }).pipe(
+        Effect.provide(mcp),
+      )
       const aborted = signal?.aborted ?? false
       release()
       expect(result.blocked).toBeUndefined()

@@ -21,7 +21,7 @@ const log = Log.create({ service: "hook.settings" })
 /**
  * `type: "agent"` handler — multi-turn LLM with a tool palette (CC v1 protocol).
  *
- * `entry.command` is the system prompt; the stdin envelope is JSON-stringified
+ * `entry.prompt` is the system prompt; the stdin envelope is JSON-stringified
  * into the user message. The model is given 5 read-only tools from `agent-tools.ts`
  * (read_file / list_dir / grep / bash / synthetic_output) and runs up to
  * MAX_AGENT_TURNS turns. The hook decision is emitted by calling synthetic_output;

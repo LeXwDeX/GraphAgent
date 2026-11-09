@@ -29,16 +29,24 @@ export function readJSONFile(filepath: string): { settings?: Settings; invalid?:
   if (!existsSync(filepath)) return {}
   try {
     const parsed: unknown = JSON.parse(readFileSync(filepath, "utf8"))
-    // hooks.json uses top-level event keys; a legacy {"hooks": {...}} wrapper is
-    // tolerated (D1 graceful degradation). The wrapper wins when present.
+    // hooks.json uses top-level event keys. A legacy {"hooks": {...}} wrapper is
+    // rejected: Claude's settings.json is converted by /import-claude-hooks, which
+    // writes top-level event keys, so no loader compatibility is needed.
     const obj = isRecord(parsed) ? parsed : undefined
-    const rawHooks = obj && isRecord(obj.hooks) ? obj.hooks : obj
+    if (obj && isRecord(obj.hooks))
+      log.warn('hooks.json must use top-level event keys; the "hooks" wrapper is ignored', { path: filepath })
+    const rawHooks = obj && isRecord(obj.hooks) ? undefined : obj
 
     const hooks: Settings["hooks"] = {}
     const sourceDir = path.dirname(filepath)
     if (rawHooks) {
       for (const [key, value] of Object.entries(rawHooks)) {
-        if (!isHookEvent(key)) continue
+        if (!isHookEvent(key)) {
+          // A PascalCase key is event-shaped: an unsupported Claude Code event
+          // or a typo. Settings keys are camelCase and are not diagnosed here.
+          if (/^[A-Z][A-Za-z0-9]*$/.test(key)) log.warn("unknown hook event skipped", { path: filepath, event: key })
+          continue
+        }
         if (!Array.isArray(value)) {
           log.warn("invalid hook event configuration", { path: filepath, event: key })
           continue
@@ -111,31 +119,18 @@ export function detectUnsupportedFields(
 }
 
 /**
- * Warn about fields supplied to a handler type that cannot use them.
- */
-const INACTIVE_EVENTS = new Set<HookEvent>(["PermissionDenied", "TeammateIdle"])
-
-export function inactiveEventWarning(event: HookEvent): string | undefined {
-  return INACTIVE_EVENTS.has(event) ? "inactive: this build has no event trigger" : undefined
-}
-
-/**
  * Events whose async completion never reaches a rewake. SessionEnd has no later
- * turn, StopFailure discards its output and exit code, and the inactive events
- * have no producer. Marking these `background` would tell the agent to wait for
- * a callback the code guarantees will never arrive.
+ * turn and StopFailure discards its output and exit code. Marking these
+ * `background` would tell the agent to wait for a callback the code guarantees
+ * will never arrive.
  */
 const NO_REWAKE_EVENTS = new Set<HookEvent>(["SessionEnd", "StopFailure"])
 
 export function canRewake(event: HookEvent): boolean {
-  return !NO_REWAKE_EVENTS.has(event) && !INACTIVE_EVENTS.has(event)
+  return !NO_REWAKE_EVENTS.has(event)
 }
 
 export function warnUnsupportedFields(hooks: Settings["hooks"], sourceDir: string): void {
-  for (const event of Object.keys(hooks ?? {})) {
-    if (isHookEvent(event) && inactiveEventWarning(event))
-      log.warn("hook event has no trigger in this build", { sourceDir, event })
-  }
   const unsupported = detectUnsupportedFields(hooks)
   if (unsupported.length > 0) {
     log.warn("hook settings contains fields ignored by this handler type", {

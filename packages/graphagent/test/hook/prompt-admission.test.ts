@@ -1217,7 +1217,7 @@ it.live("native tool failures run failure hooks and preserve their feedback", ()
         hooks: [
           {
             type: "command",
-            command: `printf '%s' '{"hookSpecificOutput":{"additionalContext":"failure-feedback: retry an existing file"}}'`,
+            command: `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolUseFailure","additionalContext":"failure-feedback: retry an existing file"}}'`,
           },
         ],
       })

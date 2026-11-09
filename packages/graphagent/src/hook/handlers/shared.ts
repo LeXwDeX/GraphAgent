@@ -65,12 +65,7 @@ export interface HookExecution {
 }
 
 /** Exit 2 on these events keeps the agent working, so a hook that cannot run must not trap it (reference 949). */
-export const FAILURE_EXEMPT_EVENTS: ReadonlySet<HookEvent> = new Set([
-  "Stop",
-  "SubagentStop",
-  "TaskCompleted",
-  "TeammateIdle",
-])
+export const FAILURE_EXEMPT_EVENTS: ReadonlySet<HookEvent> = new Set(["Stop", "SubagentStop", "TaskCompleted"])
 /** Events whose exit-2 "file is missing" run is a non-blocking error (reference 800). */
 export const MISSING_FILE_EXIT2_EVENTS: ReadonlySet<HookEvent> = new Set(["Stop", "SubagentStop", "TaskCompleted"])
 export const MISSING_FILE_STDERR = /no such file or directory|enoent|cannot find (?:module|the (?:file|path))/i

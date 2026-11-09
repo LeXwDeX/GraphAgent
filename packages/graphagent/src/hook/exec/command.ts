@@ -142,11 +142,11 @@ export function commandText(entry: HookCommand): string {
 }
 
 export function httpUrl(entry: HookCommand): string {
-  return entry.url ?? entry.command ?? ""
+  return entry.url ?? ""
 }
 
 export function promptText(entry: HookCommand): string {
-  return entry.prompt ?? entry.command ?? ""
+  return entry.prompt ?? ""
 }
 
 // ── Shell command runner ────────────────────────────────────────

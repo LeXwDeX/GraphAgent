@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { evaluate } from "@/hook/extensions/condition-filter"
+import { evaluateCondition as evaluate } from "@/hook/match"
 import type { HookCommand, HookEvent } from "@/hook"
 
 // `evaluate` only reads `entry.if`; `type` is the one required field on
@@ -17,12 +17,12 @@ describe("condition-filter evaluate", () => {
     expect(result).toBe(false)
   })
 
-  test("PermissionDenied: if 匹配 → 执行", () => {
+  test("PermissionRequest: if 匹配 → 执行", () => {
     // delta spec scenario: Edit(*.ts) against filePath a.ts → match
     const result = evaluate(
       entry("Edit(*.ts)"),
       { tool_name: "edit", tool_input: { filePath: "a.ts" } },
-      "PermissionDenied",
+      "PermissionRequest",
     )
     expect(result).toBe(true)
   })
@@ -49,12 +49,12 @@ describe("condition-filter evaluate", () => {
   // model's raw input. Reading only filePath/file_path made every file guard
   // fail open — `Edit(*.ts)` fired for a .py edit and its negation never did.
   test("原生 `path` 参数参与条件匹配（core Edit/Write/Read）", () => {
-    expect(evaluate(entry("Edit(*.ts)"), { tool_name: "edit", tool_input: { path: "a.ts" } }, "PermissionDenied")).toBe(
-      true,
-    )
-    expect(evaluate(entry("Edit(*.ts)"), { tool_name: "edit", tool_input: { path: "a.py" } }, "PermissionDenied")).toBe(
-      false,
-    )
+    expect(
+      evaluate(entry("Edit(*.ts)"), { tool_name: "edit", tool_input: { path: "a.ts" } }, "PermissionRequest"),
+    ).toBe(true)
+    expect(
+      evaluate(entry("Edit(*.ts)"), { tool_name: "edit", tool_input: { path: "a.py" } }, "PermissionRequest"),
+    ).toBe(false)
     expect(evaluate(entry("Read(*.ts)"), { tool_name: "read", tool_input: { path: "x.py" } }, "PostToolUse")).toBe(
       false,
     )

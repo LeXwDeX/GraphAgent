@@ -63,7 +63,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
   }),
 )
 
-cliIt.live("direct shell respects configured deny and never emits auto-only PermissionDenied", ({ home, opencode }) =>
+cliIt.live("direct shell respects configured deny and emits no failure events", ({ home, opencode }) =>
   Effect.gen(function* () {
     const target = path.join(home, "forbidden")
     const audit = path.join(home, "unexpected-events")
@@ -81,7 +81,6 @@ cliIt.live("direct shell respects configured deny and never emits auto-only Perm
               ],
             },
           ],
-          PermissionDenied: [{ hooks: [{ type: "command", command: `printf denied >> '${audit}'` }] }],
           PostToolUseFailure: [{ hooks: [{ type: "command", command: `printf failure >> '${audit}'` }] }],
         }),
       ),
