@@ -1,5 +1,6 @@
 export * from "./attention.js"
 export * from "./client.js"
+export * from "./event.js"
 export * from "./server.js"
 
 import { createOpencodeClient } from "./client.js"
