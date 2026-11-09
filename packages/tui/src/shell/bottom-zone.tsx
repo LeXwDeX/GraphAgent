@@ -30,9 +30,9 @@ export interface AsidePanelSpec {
 }
 
 /**
- * Minimal queue entry for the bottom-zone state machine. The full permission,
- * question, confirm, and choice union is owned by `ask/ask-queue.ts` (D4);
- * until then the request supplies its own rendered surface.
+ * Queue entry for the bottom-zone state machine. The full permission,
+ * question, confirm, and choice union lives in `ask/ask-queue.ts`; the zone
+ * only needs a stable identity and the surface that renders it.
  */
 export interface AskRequest {
   id: string
@@ -61,8 +61,13 @@ export interface BottomZoneStateApi {
   composerVisible: Accessor<boolean>
   openAside(spec: AsidePanelSpec): void
   closeAside(): AsidePanelSpec | undefined
-  /** Appends requests; the head is shown first and panels are suspended. */
+  /** Appends local requests; the head is shown first and panels are suspended. */
   ask(...requests: readonly AskRequest[]): void
+  /**
+   * Replaces the declarative permission/question queue while keeping local
+   * confirm/choice entries. The route calls this from a memo over `askQueue`.
+   */
+  setAsk(requests: readonly AskRequest[]): void
   /** Removes the head request; panels resume once the queue drains. */
   resolveAsk(): AskRequest | undefined
   clearAsk(): readonly AskRequest[]
@@ -71,7 +76,11 @@ export interface BottomZoneStateApi {
 export function createBottomZoneState(options: BottomZoneOptions = {}): BottomZoneStateApi {
   const host = options.host ?? createPanelHost()
   const [aside, setAside] = createSignal<AsidePanelSpec | undefined>(options.aside)
-  const [queue, setQueue] = createSignal<readonly AskRequest[]>(options.ask ?? [])
+  // Declarative entries mirror the server ask stores; local entries belong to
+  // surrounding UI (confirm/choice in PR4b). The declarative head answers first.
+  const [declarative, setDeclarative] = createSignal(options.ask ?? [])
+  const [local, setLocal] = createSignal<AskRequest[]>([])
+  const queue = createMemo(() => [...declarative(), ...local()])
 
   const state = createMemo<BottomState>(() => {
     const asks = queue()
@@ -98,18 +107,23 @@ export function createBottomZoneState(options: BottomZoneOptions = {}): BottomZo
     },
     ask(...requests) {
       if (requests.length === 0) return
-      setQueue((current) => [...current, ...requests])
+      setLocal((current) => [...current, ...requests])
+    },
+    setAsk(requests) {
+      setDeclarative(() => [...requests])
     },
     resolveAsk() {
       const head = queue()[0]
       if (!head) return undefined
-      setQueue((current) => current.slice(1))
+      if (declarative().length > 0) setDeclarative((current) => current.slice(1))
+      else setLocal((current) => current.slice(1))
       return head
     },
     clearAsk() {
       const cleared = queue()
       if (cleared.length === 0) return cleared
-      setQueue([])
+      setDeclarative([])
+      setLocal([])
       return cleared
     },
   }

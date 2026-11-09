@@ -19,6 +19,8 @@ export interface Ticker {
   subscribeSecond(): () => void
   /** Run `cb` once at the absolute time `time` (epoch milliseconds). Returns the cancel function. */
   at(time: number, cb: () => void): () => void
+  /** Current time in epoch milliseconds, from the clock that drives this ticker. */
+  now(): number
 }
 
 export interface TickerOptions {
@@ -150,5 +152,5 @@ export function createTicker(options: TickerOptions = {}): Ticker {
     arm()
   })
 
-  return { frame, second: secondCount, subscribe, subscribeSecond, at }
+  return { frame, second: secondCount, subscribe, subscribeSecond, at, now }
 }

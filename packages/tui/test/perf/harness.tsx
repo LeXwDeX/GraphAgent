@@ -75,6 +75,11 @@ function findPrompt(root: Renderable): PromptRef | undefined {
     set(prompt) {
       input.setText(prompt.input)
     },
+    append(text) {
+      const current = input.plainText
+      input.setText(current ? `${current}\n${text}` : text)
+      input.focus()
+    },
     reset() {
       input.clear()
     },

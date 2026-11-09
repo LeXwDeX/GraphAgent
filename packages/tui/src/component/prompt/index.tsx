@@ -96,6 +96,8 @@ export type PromptRef = {
   focused: boolean
   current: PromptInfo
   set(prompt: PromptInfo): void
+  /** Append text to the draft, preserving existing content and parts, then focus. */
+  append(text: string): void
   reset(): void
   blur(): void
   focus(): void
@@ -716,6 +718,12 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", prompt)
       restoreExtmarksFromParts(prompt.parts)
       input.gotoBufferEnd()
+    },
+    append(text) {
+      const current = unwrap(store.prompt)
+      const next = current.input ? `${current.input}\n${text}` : text
+      ref.set({ ...current, input: next })
+      input.focus()
     },
     reset() {
       input.clear()
