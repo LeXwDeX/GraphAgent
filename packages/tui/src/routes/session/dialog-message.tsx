@@ -10,7 +10,7 @@ import { DialogPrompt } from "../../ui/dialog-prompt"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
-import { queuedMessageExpected } from "./queued-message"
+import { queuedMessageExpected } from "../../prompt/queued-message"
 import type { DialogContext } from "../../ui/dialog"
 
 export function DialogMessage(props: {

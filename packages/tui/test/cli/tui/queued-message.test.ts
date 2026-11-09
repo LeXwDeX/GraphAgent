@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 import type { FilePart, TextPart, UserMessage } from "@graphagent/sdk"
-import { isQueuedMessage, queuedMessageExpected } from "../../../src/routes/session/queued-message"
+import { isQueuedMessage, queuedMessageExpected } from "../../../src/prompt/queued-message"
 
 const user = (input: { id: string; created: number; consumed?: number }) =>
   ({
