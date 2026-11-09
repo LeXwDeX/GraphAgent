@@ -5,7 +5,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { AssistantMessage, TextPart, UserMessage } from "@graphagent/sdk/v2"
+import type { AssistantMessage, TextPart, UserMessage } from "@graphagent/sdk"
 import { onCleanup } from "solid-js"
 import { TuiConfigProvider } from "../../../src/config"
 import { ArgsProvider } from "../../../src/context/args"

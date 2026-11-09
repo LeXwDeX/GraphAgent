@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Event } from "@graphagent/sdk/v2"
+import type { Event } from "@graphagent/sdk"
 import type { AttentionSoundName } from "../config"
 import { t } from "../i18n"
 

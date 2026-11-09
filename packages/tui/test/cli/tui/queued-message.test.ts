@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
-import type { FilePart, TextPart, UserMessage } from "@graphagent/sdk/v2"
+import type { FilePart, TextPart, UserMessage } from "@graphagent/sdk"
 import { isQueuedMessage, queuedMessageExpected } from "../../../src/routes/session/queued-message"
 
 const user = (input: { id: string; created: number; consumed?: number }) =>

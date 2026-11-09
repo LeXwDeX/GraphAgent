@@ -985,7 +985,11 @@ test("built-in openai adapter resets its Responses socket on session.compacted a
       await completed("builtin-session")
       expect(upstream.connections("builtin-session")).toBe(1)
       const closed = upstream.closing("builtin-session")
-      const compacted: Event = { type: "session.compacted", properties: { sessionID: "builtin-session" } }
+      const compacted: Event = {
+        id: "session.compacted",
+        type: "session.compacted",
+        properties: { sessionID: "builtin-session" },
+      }
       await adapter.onEvent!({ id: "session.compacted", type: compacted.type, properties: compacted.properties })
       await closed
       await completed("builtin-session")
@@ -999,10 +1003,13 @@ test("built-in openai adapter resets its Responses socket on session.compacted a
         await Bun.sleep(1)
       }
       const deleted: Event = {
+        id: "session.deleted",
         type: "session.deleted",
         properties: {
+          sessionID: "delete:builtin",
           info: {
             id: "delete:builtin",
+            slug: "delete-builtin",
             projectID: "builtin-openai",
             directory: "/tmp/issue868",
             title: "Deleted",

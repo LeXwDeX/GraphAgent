@@ -164,9 +164,7 @@ describe("session messages endpoint", () => {
         const session = yield* sessionScoped
         yield* fill(session.id, 1)
 
-        const res = yield* request(
-          `/session/${session.id}/message?limit=80&directory=${encodeURIComponent(tmp.directory)}`,
-        )
+        const res = yield* request(`/session/${session.id}/message?limit=80`)
         expect(res.status).toBe(200)
         const body = yield* json<unknown[]>(res)
         expect(Array.isArray(body)).toBe(true)

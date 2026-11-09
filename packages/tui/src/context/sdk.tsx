@@ -1,11 +1,27 @@
-import { createOpencodeClient } from "@graphagent/sdk/v2"
-import type { Event, GlobalEvent } from "@graphagent/sdk/v2"
+import { createClient } from "@graphagent/sdk"
+import type { Event, GlobalEvent } from "@graphagent/sdk"
 import { BoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { batch, onCleanup, onMount } from "solid-js"
 import { createSimpleContext } from "./helper"
 import { createFrameClock, type FrameClock } from "./frame-clock"
 import type { GateDecision } from "./event-gate"
+
+/**
+ * Per-request location addressing. The server only honours the
+ * `x-graphagent-directory` / `x-graphagent-workspace` headers, so callers that
+ * target a directory or workspace other than the client default pass these
+ * headers in the request options.
+ */
+export function locationHeaders(input: {
+  directory?: string | null
+  workspace?: string | null
+}): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (input.directory) headers["x-graphagent-directory"] = encodeURIComponent(input.directory)
+  if (input.workspace) headers["x-graphagent-workspace"] = input.workspace
+  return headers
+}
 
 export type EventSource = {
   subscribe: (handler: (event: GlobalEvent) => void) => Promise<() => void>
@@ -91,7 +107,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let eventGate: ((event: Event) => GateDecision) | undefined
 
     function createSDK() {
-      return createOpencodeClient({
+      return createClient({
         baseUrl: props.url,
         signal: abort.signal,
         directory: props.directory,

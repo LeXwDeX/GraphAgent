@@ -3,7 +3,7 @@
 
 import { expect } from "bun:test"
 import { Identifier } from "@graphagent/core/id/id"
-import { createOpencodeClient } from "@graphagent/sdk/v2"
+import { createClient } from "@graphagent/sdk"
 import { Cause, Effect, Exit } from "effect"
 import { chmod, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
@@ -183,7 +183,7 @@ run(
           )
           expect(health.ok).toBe(true)
           checkpoint = "external-server-healthy"
-          const sdk = createOpencodeClient({ baseUrl: `http://127.0.0.1:${port}`, directory: project })
+          const sdk = createClient({ baseUrl: `http://127.0.0.1:${port}`, directory: project })
           const sessions = array(
             sdkData(
               yield* Effect.promise(() => bounded(sdk.session.list({ limit: 10 }), "the SDK session list", 5_000)),

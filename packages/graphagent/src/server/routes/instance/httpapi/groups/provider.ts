@@ -4,7 +4,7 @@ import { Provider } from "@/provider/provider"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
+import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 import { ProviderV2 } from "@graphagent/core/provider"
 
@@ -35,7 +35,6 @@ export const ProviderApi = HttpApi.make("provider")
     HttpApiGroup.make("provider")
       .add(
         HttpApiEndpoint.get("list", root, {
-          query: WorkspaceRoutingQuery,
           success: described(Provider.ListResult, "List of providers"),
         }).annotateMerge(
           OpenApi.annotations({
@@ -45,7 +44,6 @@ export const ProviderApi = HttpApi.make("provider")
           }),
         ),
         HttpApiEndpoint.get("auth", `${root}/auth`, {
-          query: WorkspaceRoutingQuery,
           success: described(ProviderAuth.Methods, "Provider auth methods"),
         }).annotateMerge(
           OpenApi.annotations({
@@ -56,7 +54,6 @@ export const ProviderApi = HttpApi.make("provider")
         ),
         HttpApiEndpoint.post("authorize", `${root}/:providerID/oauth/authorize`, {
           params: { providerID: ProviderV2.ID },
-          query: WorkspaceRoutingQuery,
           payload: ProviderAuth.AuthorizeInput,
           success: described(Schema.UndefinedOr(ProviderAuth.Authorization), "Authorization URL and method"),
           error: ProviderAuthApiError,
@@ -69,7 +66,6 @@ export const ProviderApi = HttpApi.make("provider")
         ),
         HttpApiEndpoint.post("callback", `${root}/:providerID/oauth/callback`, {
           params: { providerID: ProviderV2.ID },
-          query: WorkspaceRoutingQuery,
           payload: ProviderAuth.CallbackInput,
           success: described(Schema.Boolean, "OAuth callback processed successfully"),
           error: ProviderAuthApiError,
@@ -88,7 +84,7 @@ export const ProviderApi = HttpApi.make("provider")
         }),
       )
       .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
+      .middleware(WorkspaceRoutingMiddleware),
   )
   .annotateMerge(
     OpenApi.annotations({

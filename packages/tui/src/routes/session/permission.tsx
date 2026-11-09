@@ -4,8 +4,8 @@ import { createEffect, createMemo, For, Match, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
-import type { PermissionRequest } from "@graphagent/sdk/v2"
-import { useSDK } from "../../context/sdk"
+import type { PermissionRequest } from "@graphagent/sdk"
+import { useSDK, locationHeaders } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useSync } from "../../context/sync"
 import { useProject } from "../../context/project"
@@ -196,25 +196,30 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
           onSelect={(option) => {
             setStore("stage", "permission")
             if (option === "cancel") return
-            void sdk.client.permission.reply({
-              reply: "always",
-              requestID: props.request.id,
-              directory: props.directory,
-              workspace: project.workspace.current(),
-            })
+            void sdk.client.permission.reply(
+              { reply: "always", requestID: props.request.id },
+              {
+                headers: locationHeaders({
+                  directory: props.directory,
+                  workspace: project.workspace.current(),
+                }),
+              },
+            )
           }}
         />
       </Match>
       <Match when={store.stage === "reject"}>
         <RejectPrompt
           onConfirm={(message) => {
-            void sdk.client.permission.reply({
-              reply: "reject",
-              requestID: props.request.id,
-              directory: props.directory,
-              message: message || undefined,
-              workspace: project.workspace.current(),
-            })
+            void sdk.client.permission.reply(
+              { reply: "reject", requestID: props.request.id, message: message || undefined },
+              {
+                headers: locationHeaders({
+                  directory: props.directory,
+                  workspace: project.workspace.current(),
+                }),
+              },
+            )
           }}
           onCancel={() => {
             setStore("stage", "permission")
@@ -475,20 +480,26 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
                     setStore("stage", "reject")
                     return
                   }
-                  void sdk.client.permission.reply({
-                    reply: "reject",
-                    requestID: props.request.id,
-                    directory: props.directory,
-                    workspace: project.workspace.current(),
-                  })
+                  void sdk.client.permission.reply(
+                    { reply: "reject", requestID: props.request.id },
+                    {
+                      headers: locationHeaders({
+                        directory: props.directory,
+                        workspace: project.workspace.current(),
+                      }),
+                    },
+                  )
                   return
                 }
-                void sdk.client.permission.reply({
-                  reply: "once",
-                  requestID: props.request.id,
-                  directory: props.directory,
-                  workspace: project.workspace.current(),
-                })
+                void sdk.client.permission.reply(
+                  { reply: "once", requestID: props.request.id },
+                  {
+                    headers: locationHeaders({
+                      directory: props.directory,
+                      workspace: project.workspace.current(),
+                    }),
+                  },
+                )
               }}
             />
           )

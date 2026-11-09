@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
 import type { RpcContext, RpcError } from "@/util/rpc"
 
 /**

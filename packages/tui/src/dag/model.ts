@@ -5,19 +5,13 @@
  * state, or SDK access lives here; UI code maps the returned tokens and
  * strings to theme colors and components. */
 
-import type { DagNode } from "@graphagent/sdk/v2"
+import type { DagNode } from "@graphagent/sdk"
 
 export type { DagNode }
 
 /** Theme token a DAG status maps to. The theme owns the concrete color. */
 export type DagStatusToken =
-  | "success"
-  | "error"
-  | "statusPaused"
-  | "statusRunning"
-  | "statusQueued"
-  | "textMuted"
-  | "text"
+  "success" | "error" | "statusPaused" | "statusRunning" | "statusQueued" | "textMuted" | "text"
 
 /** Acceptance and durable model-input association are separate delivery states. */
 export function formatDagAgentMessages(node: DagNode): string | undefined {

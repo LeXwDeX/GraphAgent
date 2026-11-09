@@ -2,8 +2,6 @@ import { afterEach, describe, expect } from "bun:test"
 import { Effect, Schema } from "effect"
 import { OpenApi } from "effect/http-api"
 import { Flag } from "@graphagent/core/flag/flag"
-import { Server } from "../../src/server/server"
-import { SessionID } from "../../src/session/schema"
 import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 import {
   FilePaths,
@@ -20,7 +18,7 @@ import {
 } from "../../src/server/routes/instance/httpapi/groups/session"
 import { QueryBoolean, QueryBooleanOpenApi } from "../../src/server/routes/instance/httpapi/groups/query"
 import { resetDatabase } from "../fixture/db"
-import { disposeAllInstances, tmpdir } from "../fixture/fixture"
+import { disposeAllInstances } from "../fixture/fixture"
 import { it } from "../lib/effect"
 
 const originalWorkspaces = Flag.GRAPHAGENT_WORKSPACES
@@ -79,24 +77,6 @@ const pathParamPatterns = [
   { method: "delete", path: WorkspacePaths.remove, name: "id", pattern: "^wrk" },
 ] satisfies Array<{ method: Method; path: string; name: string; pattern: string }>
 
-function app() {
-  return Server.Default().app
-}
-
-function request(url: string, init?: RequestInit) {
-  return Effect.promise(async () => app().request(url, init))
-}
-
-function withTmp<A, E, R>(
-  options: Parameters<typeof tmpdir>[0],
-  fn: (tmp: Awaited<ReturnType<typeof tmpdir>>) => Effect.Effect<A, E, R>,
-) {
-  return Effect.acquireRelease(
-    Effect.promise(() => tmpdir(options)),
-    (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
-  ).pipe(Effect.flatMap(fn))
-}
-
 function openApiPath(path: string) {
   return path.replace(/:([A-Za-z0-9_]+)/g, "{$1}")
 }
@@ -134,17 +114,7 @@ afterEach(async () => {
   await resetDatabase()
 })
 
-// Regression for the "OpenAPI advertises ?directory&workspace, runtime
-// rejects them" drift class. Each affected route must accept both params
-// without 400.
 describe("httpapi query schema drift", () => {
-  const routingParams = (dir: string) =>
-    `directory=${encodeURIComponent(dir)}&workspace=${encodeURIComponent("ws_test")}`
-
-  const expectNotSchemaRejection = (status: number, url: string) => {
-    expect(status, `route ${url} 400'd, query schema is missing routing fields`).not.toBe(400)
-  }
-
   it.effect(
     "boolean query schema accepts only true and false strings",
     Effect.sync(() => {
@@ -223,71 +193,5 @@ describe("httpapi query schema drift", () => {
         }),
       ).toThrow("advertises query params not accepted by runtime schema")
     }),
-  )
-
-  it.live(
-    "session list accepts directory and workspace",
-    withTmp({ config: { formatter: false, lsp: false } }, (tmp) =>
-      Effect.gen(function* () {
-        const url = `/session?${routingParams(tmp.path)}`
-        const response = yield* request(url)
-        expectNotSchemaRejection(response.status, url)
-      }),
-    ),
-  )
-
-  it.live(
-    "session messages accepts directory and workspace",
-    withTmp({ config: { formatter: false, lsp: false } }, (tmp) =>
-      Effect.gen(function* () {
-        const url = `/session/${SessionID.descending()}/message?limit=80&${routingParams(tmp.path)}`
-        const response = yield* request(url)
-        expectNotSchemaRejection(response.status, url)
-      }),
-    ),
-  )
-
-  it.live(
-    "file find/file accepts directory and workspace",
-    withTmp({ config: { formatter: false, lsp: false } }, (tmp) =>
-      Effect.gen(function* () {
-        const url = `/find/file?query=foo&${routingParams(tmp.path)}`
-        const response = yield* request(url)
-        expectNotSchemaRejection(response.status, url)
-      }),
-    ),
-  )
-
-  it.live(
-    "file find/text accepts directory and workspace",
-    withTmp({ config: { formatter: false, lsp: false } }, (tmp) =>
-      Effect.gen(function* () {
-        const url = `/find?pattern=foo&${routingParams(tmp.path)}`
-        const response = yield* request(url)
-        expectNotSchemaRejection(response.status, url)
-      }),
-    ),
-  )
-
-  it.live(
-    "file read accepts directory and workspace",
-    withTmp({ config: { formatter: false, lsp: false } }, (tmp) =>
-      Effect.gen(function* () {
-        const url = `/file?path=foo&${routingParams(tmp.path)}`
-        const response = yield* request(url)
-        expectNotSchemaRejection(response.status, url)
-      }),
-    ),
-  )
-
-  it.live(
-    "vcs diff accepts directory and workspace",
-    withTmp({ config: { formatter: false, lsp: false } }, (tmp) =>
-      Effect.gen(function* () {
-        const url = `/vcs/diff?mode=working&${routingParams(tmp.path)}`
-        const response = yield* request(url)
-        expectNotSchemaRejection(response.status, url)
-      }),
-    ),
   )
 })

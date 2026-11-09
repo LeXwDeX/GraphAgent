@@ -4,7 +4,7 @@ import { createMemo, createResource, createSignal, onMount, Show } from "solid-j
 import path from "path"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
-import { useSDK } from "../context/sdk"
+import { useSDK, locationHeaders } from "../context/sdk"
 import { useTheme } from "../context/theme"
 import { useSync } from "../context/sync"
 import { abbreviateHome } from "../runtime"
@@ -16,7 +16,7 @@ import { useCommandShortcut } from "../keymap"
 import { useProject } from "../context/project"
 import { Spinner } from "./spinner"
 import { DialogWorkspaceFileChanges } from "./dialog-workspace-file-changes"
-import type { ProjectDirectories } from "@graphagent/sdk/v2"
+import type { ProjectDirectories } from "@graphagent/sdk"
 import { useRoute } from "../context/route"
 
 export type MoveSessionSelection = { type: "directory"; directory: string; subdirectory: boolean } | { type: "new" }
@@ -61,7 +61,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     () => (projectContext.project() === props.projectID ? undefined : props.projectID),
     (projectID) =>
       sdk.client.project
-        .current({}, { throwOnError: true })
+        .current({ throwOnError: true })
         .then((result) => (result.data?.id === projectID ? result.data.worktree : undefined))
         .catch(() => undefined),
   )
@@ -75,8 +75,8 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     async (projectID, info): Promise<ProjectDirectory[] | undefined> => {
       try {
         await sdk.client.experimental.projectCopy.refresh(
-          { projectID, directory: sdk.directory },
-          { throwOnError: true },
+          { projectID },
+          { throwOnError: true, headers: locationHeaders({ directory: sdk.directory }) },
         )
         const directories = await sdk.client.project.directories({ projectID }, { throwOnError: true })
         setLoadError(undefined)
@@ -232,7 +232,9 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
       setRemoving(undefined)
       setWorking(false)
       if ("data" in result.error && result.error.data.forceRequired) {
-        const status = await sdk.client.vcs.status({ directory: selected.directory }).catch(() => undefined)
+        const status = await sdk.client.vcs
+          .status({ headers: locationHeaders({ directory: selected.directory }) })
+          .catch(() => undefined)
         const choice = await DialogWorkspaceFileChanges.show(dialog, status?.data ?? [], {
           title: "Delete working copy?",
           message: "This working copy has file changes. Do you want to delete it anyway?",

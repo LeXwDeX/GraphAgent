@@ -1,12 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import type { SnapshotFileDiff, VcsFileDiff } from "@graphagent/sdk/v2"
+import type { SnapshotFileDiff, VcsFileDiff } from "@graphagent/sdk"
 import { TextAttributes, type BorderSides, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { LANGUAGE_EXTENSIONS } from "../../util/filetype"
 import { useBindings, useCommandShortcut } from "../../keymap"
 import { useTheme } from "../../context/theme"
 import { useRouteData, type DiffMode } from "../../context/route"
 import { useSync } from "../../context/sync"
-import { useSDK } from "../../context/sdk"
+import { useSDK, locationHeaders } from "../../context/sdk"
 import { useKV } from "../../context/kv"
 import { useTuiConfig } from "../../config"
 import { useDialog } from "../../ui/dialog"
@@ -115,24 +115,19 @@ export function Diff() {
     if (input.mode === "last-turn") {
       const sessionID = input.sessionID
       if (!sessionID) return []
-      const result = await sdk.client.session.diff(
-        { sessionID, messageID: input.messageID },
-        { throwOnError: true },
-      )
+      const result = await sdk.client.session.diff({ sessionID, messageID: input.messageID }, { throwOnError: true })
       return normalizeDiffs(result.data ?? [])
     }
 
     const result = await sdk.client.vcs.diff(
-      { directory: input.directory, mode: input.mode, context: VCS_DIFF_CONTEXT_LINES },
-      { throwOnError: true },
+      { mode: input.mode, context: VCS_DIFF_CONTEXT_LINES },
+      { throwOnError: true, headers: locationHeaders({ directory: input.directory }) },
     )
     return normalizeDiffs(result.data ?? [])
   })
   const files = createMemo(() => diff() ?? [])
   const [focus, setFocus] = createSignal<DiffViewerFocus>("patches")
-  const [fileTreeEnabled, setFileTreeEnabled] = createSignal(
-    kv.get(KV_SHOW_FILE_TREE, true) !== false,
-  )
+  const [fileTreeEnabled, setFileTreeEnabled] = createSignal(kv.get(KV_SHOW_FILE_TREE, true) !== false)
   const showFileTree = createMemo(() => showDiffViewerFileTree(fileTreeEnabled(), files().length))
   const [singlePatch, setSinglePatch] = createSignal(kv.get(KV_SINGLE_PATCH, false) === true)
   const patchPaneWidth = createMemo(() => dimensions().width - (showFileTree() ? 33 : 0) - 4)
@@ -857,7 +852,6 @@ export function Diff() {
             </Match>
           </Switch>
         </box>
-
       </PanelGroup>
     </box>
   )

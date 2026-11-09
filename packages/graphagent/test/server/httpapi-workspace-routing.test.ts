@@ -16,7 +16,6 @@ import { Session } from "../../src/session/session"
 import { WorkspacePaths } from "../../src/server/routes/instance/httpapi/groups/workspace"
 import {
   WorkspaceRoutingMiddleware,
-  WorkspaceRoutingQuery,
   WorkspaceRouteContext,
   workspaceRoutingLayer,
 } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
@@ -92,13 +91,10 @@ const ProbeResult = Schema.Struct({
 const ProbeApi = HttpApi.make("workspace-routing-probe").add(
   HttpApiGroup.make("probe")
     .add(
-      HttpApiEndpoint.get("get", "/probe", { query: WorkspaceRoutingQuery, success: ProbeResult }),
-      HttpApiEndpoint.patch("patch", "/probe", { query: WorkspaceRoutingQuery, success: Schema.Boolean }),
-      HttpApiEndpoint.get("session", "/session", { query: WorkspaceRoutingQuery, success: ProbeResult }),
-      HttpApiEndpoint.get("workspace", WorkspacePaths.list, {
-        query: WorkspaceRoutingQuery,
-        success: ProbeResult,
-      }),
+      HttpApiEndpoint.get("get", "/probe", { success: ProbeResult }),
+      HttpApiEndpoint.patch("patch", "/probe", { success: Schema.Boolean }),
+      HttpApiEndpoint.get("session", "/session", { success: ProbeResult }),
+      HttpApiEndpoint.get("workspace", WorkspacePaths.list, { success: ProbeResult }),
     )
     .middleware(WorkspaceRoutingMiddleware),
 )
@@ -132,7 +128,10 @@ describe("HttpApi workspace routing middleware", () => {
       // reached and the response should be the middleware error response.
       yield* serveProbe
 
-      const response = yield* HttpClient.get(`/probe?workspace=${workspaceID}`)
+      const response = yield* HttpClientRequest.get("/probe").pipe(
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspaceID),
+        HttpClient.execute,
+      )
 
       expect(response.status).toBe(500)
       expect(yield* response.text).toBe(`Workspace not found: ${workspaceID}`)
@@ -155,7 +154,10 @@ describe("HttpApi workspace routing middleware", () => {
       // process and should not be redirected into the selected workspace target.
       yield* serveProbe
 
-      const response = yield* HttpClient.get(`/session?workspace=${workspace.id}`)
+      const response = yield* HttpClientRequest.get("/session").pipe(
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspace.id),
+        HttpClient.execute,
+      )
 
       expect(response.status).toBe(200)
       expect(yield* response.json).toEqual({ directory: process.cwd(), workspaceID: workspace.id })
@@ -178,30 +180,34 @@ describe("HttpApi workspace routing middleware", () => {
       // swap the route context to the workspace target directory.
       yield* serveProbe
 
-      const response = yield* HttpClient.get(`${WorkspacePaths.list}?workspace=${workspace.id}`)
+      const response = yield* HttpClientRequest.get(WorkspacePaths.list).pipe(
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspace.id),
+        HttpClient.execute,
+      )
 
       expect(response.status).toBe(200)
       expect(yield* response.json).toEqual({ directory: process.cwd(), workspaceID: workspace.id })
     }),
   )
 
-  it.live("uses directory query/header fallback when no workspace is selected", () =>
+  it.live("uses the directory header and ignores the retired query parameter", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
       const queryDir = path.join(dir, "query-target")
       const headerDir = path.join(dir, "header-target")
       yield* serveProbe
 
-      // Without a selected workspace, the middleware falls back to request
-      // directory hints before using the process cwd.
-      const queryResponse = yield* HttpClient.get(`/probe?directory=${encodeURIComponent(queryDir)}`)
+      // Directory addressing is header-only: the retired query parameter is
+      // accepted but ignored, and its fallback never selects a location.
+      const retiredQuery = new URLSearchParams({ directory: queryDir })
+      const queryResponse = yield* HttpClient.get(`/probe?${retiredQuery}`)
       const headerResponse = yield* HttpClientRequest.get("/probe").pipe(
         HttpClientRequest.setHeader("x-graphagent-directory", headerDir),
         HttpClient.execute,
       )
 
       expect(queryResponse.status).toBe(200)
-      expect(yield* queryResponse.json).toEqual({ directory: queryDir, workspaceID: null })
+      expect(yield* queryResponse.json).toEqual({ directory: process.cwd(), workspaceID: null })
       expect(headerResponse.status).toBe(200)
       expect(yield* headerResponse.json).toEqual({ directory: headerDir, workspaceID: null })
     }),
@@ -223,7 +229,10 @@ describe("HttpApi workspace routing middleware", () => {
 
       // /probe is not a control-plane route, so selecting a local workspace
       // should swap the route context to the workspace target directory.
-      const response = yield* HttpClient.get(`/probe?workspace=${workspace.id}`)
+      const response = yield* HttpClientRequest.get("/probe").pipe(
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspace.id),
+        HttpClient.execute,
+      )
 
       expect(response.status).toBe(200)
       expect(yield* response.json).toEqual({

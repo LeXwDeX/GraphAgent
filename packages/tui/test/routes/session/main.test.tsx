@@ -5,7 +5,7 @@
 import { expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { Session } from "@graphagent/sdk/v2"
+import type { Session } from "@graphagent/sdk"
 import { createSignal, onCleanup, Show } from "solid-js"
 import { ArgsProvider } from "../../../src/context/args"
 import { ClipboardProvider } from "../../../src/context/clipboard"

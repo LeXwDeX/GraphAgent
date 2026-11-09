@@ -1,8 +1,9 @@
-import type { Event as SDKEvent } from "@graphagent/sdk/v2/types"
+import type { Event as SchemaEvent } from "@graphagent/schema/event"
+import type { Definitions } from "@graphagent/schema/event-manifest"
 import type { Stream } from "effect"
 
 export type EventMap = {
-  [Item in SDKEvent as Item["type"]]: Item
+  [D in (typeof Definitions)[number] as D["type"]]: SchemaEvent.Payload<D>
 }
 
 export interface Event {

@@ -12,7 +12,7 @@
 //   3. starts the stream transport (SDK event subscription), lazily for fresh
 //      local sessions,
 //   4. runs the prompt queue until the footer closes.
-import { createOpencodeClient, createSessionAttention } from "@graphagent/sdk/v2"
+import { createClient, createSessionAttention } from "@graphagent/sdk"
 import { Flag } from "@graphagent/core/flag/flag"
 import { MessageID } from "@/session/schema"
 import { createRunDemo } from "./demo"
@@ -210,8 +210,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
   let backgroundView = false
   const attention = createSessionAttention({
     clientType: "terminal",
-    send: (payload, signal) =>
-      ctx.sdk.session.attention({ ...payload, directory: ctx.directory }, { throwOnError: true, signal }),
+    send: (payload, signal) => ctx.sdk.session.attention({ ...payload }, { throwOnError: true, signal }),
   })
   attention.select(state.sessionID || undefined, backgroundView)
   const ensureSession = () => {
@@ -236,7 +235,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
     directory: ctx.directory,
     findFiles: (query) =>
       ctx.sdk.find
-        .files({ query, directory: ctx.directory })
+        .files({ query })
         .then((x) => x.data?.map((item) => item.path) ?? [])
         .catch(() => []),
     agents: [],
@@ -396,15 +395,15 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
     const [agents, resources, commands] = await Promise.all([
       ctx.sdk.app
-        .agents({ directory: ctx.directory })
+        .agents()
         .then((x) => x.data ?? [])
         .catch(() => []),
       ctx.sdk.experimental.resource
-        .list({ directory: ctx.directory })
+        .list()
         .then((x) => Object.values(x.data ?? {}))
         .catch(() => []),
       ctx.sdk.command
-        .list({ directory: ctx.directory })
+        .list()
         .then((x) => x.data ?? [])
         .catch(() => []),
     ])
@@ -758,7 +757,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 // Local in-process mode. Creates an SDK client backed by a direct fetch to
 // the in-process server, so no external HTTP server is needed.
 export async function runInteractiveLocalMode(input: RunLocalInput, deps?: RunRuntimeDeps): Promise<void> {
-  const sdk = createOpencodeClient({
+  const sdk = createClient({
     baseUrl: "http://graphagent.internal", // check-private-hosts: allow in-process dummy base URL
     fetch: input.fetch,
     directory: input.directory,

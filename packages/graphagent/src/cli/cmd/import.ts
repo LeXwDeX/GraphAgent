@@ -1,4 +1,4 @@
-import type { Session as SDKSession, Message, Part } from "@graphagent/sdk/v2"
+import type { Session as SDKSession, Message, Part } from "@graphagent/sdk"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "@/session/session"
 import { MessageV2 } from "../../session/message-v2"

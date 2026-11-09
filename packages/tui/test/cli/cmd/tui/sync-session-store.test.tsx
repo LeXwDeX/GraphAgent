@@ -3,7 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
 import { tmpdir } from "../../../fixture/fixture"
 import { json, mount, wait } from "./sync-fixture"
 
@@ -52,11 +52,7 @@ test("session.updated keeps one entry per session id regardless of recency order
 
   try {
     await sync.session.refresh()
-    expect(sync.data.session.map((session) => session.id)).toStrictEqual([
-      sessionOld.id,
-      sessionMid.id,
-      sessionNew.id,
-    ])
+    expect(sync.data.session.map((session) => session.id)).toStrictEqual([sessionOld.id, sessionMid.id, sessionNew.id])
     // Touching the oldest session moves it to most-recent by time.updated;
     // the id-keyed store must reconcile in place, never duplicate.
     emit(
@@ -67,11 +63,7 @@ test("session.updated keeps one entry per session id regardless of recency order
       }),
     )
     await wait(() => sync.data.session.find((session) => session.id === sessionOld.id)?.time.updated === 99)
-    expect(sync.data.session.map((session) => session.id)).toStrictEqual([
-      sessionOld.id,
-      sessionMid.id,
-      sessionNew.id,
-    ])
+    expect(sync.data.session.map((session) => session.id)).toStrictEqual([sessionOld.id, sessionMid.id, sessionNew.id])
   } finally {
     app.renderer.destroy()
   }

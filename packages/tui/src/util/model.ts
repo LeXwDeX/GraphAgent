@@ -1,4 +1,4 @@
-import type { Provider } from "@graphagent/sdk/v2"
+import type { Provider } from "@graphagent/sdk"
 
 export function parse(value: string) {
   const [providerID, ...modelID] = value.split("/")

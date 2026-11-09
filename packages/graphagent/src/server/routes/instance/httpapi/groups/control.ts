@@ -9,11 +9,6 @@ const AuthParams = Schema.Struct({
   providerID: ProviderV2.ID,
 })
 
-const LogQuery = Schema.Struct({
-  directory: Schema.optional(Schema.String),
-  workspace: Schema.optional(Schema.String),
-})
-
 export const LogInput = Schema.Struct({
   service: Schema.String.annotate({ description: "Service name for the log entry" }),
   level: Schema.Union([
@@ -60,7 +55,6 @@ export const ControlApi = HttpApi.make("control").add(
         }),
       ),
       HttpApiEndpoint.post("log", ControlPaths.log, {
-        query: LogQuery,
         payload: LogInput,
         success: described(Schema.Boolean, "Log entry written successfully"),
         error: HttpApiError.BadRequest,

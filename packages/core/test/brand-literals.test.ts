@@ -300,9 +300,7 @@ const CATEGORIES: Category[] = [
   {
     id: "code-identifier",
     stage: 2,
-    // PENDING_C1: OpencodeClient, createOpencodeClient and OpencodeClientConfig
-    // are renamed by C1 (#1013); every other Opencode-containing identifier is B3.
-    pattern: /\b(?!(?:OpencodeClient|createOpencodeClient|OpencodeClientConfig)\b)[A-Za-z]*Opencode[A-Za-z]*\b/,
+    pattern: /\b[A-Za-z]*Opencode[A-Za-z]*\b/,
     allow: [],
   },
   {
@@ -415,9 +413,6 @@ describe("brand literals", () => {
         "const lower = opencodeGlobal",
         "const upper = OpenCodeHttpApi",
         "const plugin = OpencodeKeymapProvider",
-        "const keep = createOpencodeClient",
-        "const keep2 = OpencodeClient",
-        "const keep3: OpencodeClientConfig = { client: OpencodeClient }",
         "const prose = 'OpenCode is a product word'",
       ].join("\n"),
     )
@@ -439,8 +434,8 @@ describe("brand literals", () => {
     ]) {
       expect({ category: id, detected: categories.has(id) }).toEqual({ category: id, detected: true })
     }
-    // PENDING_C1 symbols and the standalone OpenCode word stay unflagged.
-    expect(hits.filter((hit) => /keep|product word/.test(hit.text))).toEqual([])
+    // The standalone OpenCode word stays unflagged.
+    expect(hits.filter((hit) => /product word/.test(hit.text))).toEqual([])
   })
 
   test("the scan skips immutable release notes and dependency directories", async () => {

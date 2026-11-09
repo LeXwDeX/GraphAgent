@@ -3,7 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
 import { tmpdir } from "../../../fixture/fixture"
 import { directory, json, mount, wait, worktree } from "./sync-fixture"
 

@@ -74,7 +74,7 @@ describe("messages endpoint tolerates legacy negative token counts", () => {
       yield* Effect.addFinalizer(() => Effect.promise(() => resetDatabase()))
       const test = yield* TestInstance
       const sessionID = yield* seedNegativeTokenSession()
-      const url = `${SessionPaths.messages.replace(":sessionID", sessionID)}?limit=80&directory=${encodeURIComponent(test.directory)}`
+      const url = `${SessionPaths.messages.replace(":sessionID", sessionID)}?limit=80`
       const res = yield* requestInDirectory(url, test.directory)
       expect(res.status, "messages endpoint 400'd on legacy negative tokens").not.toBe(400)
     }),

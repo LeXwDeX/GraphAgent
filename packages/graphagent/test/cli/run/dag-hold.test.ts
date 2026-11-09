@@ -7,7 +7,7 @@
 // wrapper: each row is one CLI run's poll sequence with the expected idle
 // decisions. Real-CLI lifecycle coverage lives in run-dag-hold-process.test.ts.
 import { describe, expect, test } from "bun:test"
-import type { Event, OpencodeClient } from "@graphagent/sdk/v2"
+import type { Event, Client } from "@graphagent/sdk"
 import { reportIdentity } from "@/dag/report-identity"
 import { DagHold } from "../../../src/cli/cmd/run/dag-hold"
 
@@ -351,7 +351,7 @@ describe("final-response answer receipt polling", () => {
             : { error: "missing" }
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const poll = DagHold.makeDagWorkflowPoll(client, "parent")
     const firstPoll = await poll()
     expect(firstPoll?.map((row) => row.awaitingReport)).toEqual([false, true])
@@ -376,7 +376,7 @@ describe("final-response answer receipt polling", () => {
           return answer(row)
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const poll = DagHold.makeDagWorkflowPoll(client, "parent")
     expect((await poll())?.[0]?.awaitingReport).toBe(false)
     row = completed("same", 11)
@@ -400,7 +400,7 @@ describe("final-response answer receipt polling", () => {
           return receipt
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const poll = DagHold.makeDagWorkflowPoll(client, "parent")
     expect((await poll())?.map((item) => item.awaitingReport)).toEqual([true, undefined])
     mode = "wrong-kind"
@@ -426,7 +426,7 @@ describe("final-response answer receipt polling", () => {
           return { error: { name: "NotFoundError", data: { message: "Message not found" } } }
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const poll = DagHold.makeDagWorkflowPoll(client, "parent")
     expect((await poll())?.every((row) => row.awaitingReport === true)).toBe(true)
     expect(reads).toBe(4)
@@ -444,7 +444,7 @@ describe("final-response answer receipt polling", () => {
         },
       },
       session: { message: async () => answer(old) },
-    } as unknown as OpencodeClient
+    } as unknown as Client
 
     const hold = await DagHold.createDagRunHold(client, "parent")
     expect(listReads).toBe(2)
@@ -470,7 +470,7 @@ describe("final-response answer receipt polling", () => {
           return answer(old)
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
 
     const hold = await DagHold.createDagRunHold(client, "parent")
     expect(listReads).toBe(2)
@@ -505,7 +505,7 @@ describe("final-response answer receipt polling", () => {
             return messageID === identity(old).messageID ? missing.response(old) : answer(next)
           },
         },
-      } as unknown as OpencodeClient
+      } as unknown as Client
 
       const hold = await DagHold.createDagRunHold(client, "parent")
       expect(reads).toEqual([identity(old).messageID])
@@ -528,7 +528,7 @@ describe("final-response answer receipt polling", () => {
         },
       },
       session: { message: async () => ({ data: {} }) },
-    } as unknown as OpencodeClient
+    } as unknown as Client
 
     await expect(DagHold.createDagRunHold(client, "parent")).rejects.toThrow(
       "Unable to establish the DAG startup baseline after 5 attempts",
@@ -547,7 +547,7 @@ describe("final-response answer receipt polling", () => {
           throw new Error("receipt endpoint unavailable")
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
 
     await expect(DagHold.createDagRunHold(client, "parent")).rejects.toThrow(
       "Unable to establish the DAG startup baseline after 5 attempts",
@@ -565,7 +565,7 @@ describe("final-response answer receipt polling", () => {
         message: async ({ messageID }: { messageID: string }) =>
           answer(messageID === identity(old).messageID ? old : next),
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     // Startup happens before the prompt. The old answer is historical and
     // does not need replay; the second answer appears after this baseline.
     const hold = await DagHold.createDagRunHold(client, "parent")
@@ -588,7 +588,7 @@ describe("final-response answer receipt polling", () => {
     const client = {
       dag: { bySession: async () => ({ data: [row] }) },
       session: { message: async () => answer(row) },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const hold = await DagHold.createDagRunHold(client, "parent")
     row = current
     await hold.onBusy()
@@ -621,7 +621,7 @@ describe("final-response answer receipt polling", () => {
           return answer(row)
         },
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const hold = await DagHold.createDagRunHold(client, "parent")
     rows = [row]
     await hold.onBusy()
@@ -644,7 +644,7 @@ describe("final-response answer receipt polling", () => {
     const client = {
       dag: { bySession: async () => ({ data: [current] }) },
       session: { message: async () => receipt },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const rendered: string[] = []
     const hold = await DagHold.createDagRunHold(client, "parent", undefined, (part) => rendered.push(part.text))
     await hold.onBusy()
@@ -668,7 +668,7 @@ describe("final-response answer receipt polling", () => {
     const client = {
       dag: { bySession: async () => ({ data: rows }) },
       session: { message: async () => answer(row) },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const hold = await DagHold.createDagRunHold(client, "parent", undefined, () => {
       if (++attempts === 1) throw new Error("stdout temporarily unavailable")
     })
@@ -690,7 +690,7 @@ describe("final-response answer receipt polling", () => {
         message: async ({ messageID }: { messageID: string }) =>
           answer(messageID === identity(old).messageID ? old : next),
       },
-    } as unknown as OpencodeClient
+    } as unknown as Client
     const rendered: string[] = []
     const hold = await DagHold.createDagRunHold(client, "parent", undefined, (part) => rendered.push(part.text))
     rows = [old, next]

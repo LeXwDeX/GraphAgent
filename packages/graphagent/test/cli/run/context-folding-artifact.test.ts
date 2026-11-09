@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { createOpencodeClient } from "@graphagent/sdk/v2"
+import { createClient } from "@graphagent/sdk"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { chmod, mkdir } from "node:fs/promises"
@@ -38,7 +38,7 @@ const prompts = {
   continue: "continue after the manual artifact compaction",
 } as const
 
-type Sdk = ReturnType<typeof createOpencodeClient>
+type Sdk = ReturnType<typeof createClient>
 type SdkResult = { response?: Response; data?: unknown; error?: unknown }
 
 function record(value: unknown): Record<string, unknown> {
@@ -223,7 +223,7 @@ const runArm =
         readyTimeoutMs: 30_000,
         env: { GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(providerConfig(llm.url, dynamic)) },
       })
-      const sdk = createOpencodeClient({ baseUrl: server.url, directory: home })
+      const sdk = createClient({ baseUrl: server.url, directory: home })
       const health = yield* Effect.promise(() => sdk.global.health())
       expect(health.response?.status).toBe(200)
 

@@ -5,7 +5,7 @@
 import { expect, test } from "bun:test"
 import { RGBA, SyntaxStyle } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import type { AssistantMessage, ReasoningPart } from "@graphagent/sdk/v2"
+import type { AssistantMessage, ReasoningPart } from "@graphagent/sdk"
 import { useSync } from "../../../../src/context/sync"
 import { ReasoningMarkdown } from "../../../../src/routes/session"
 import { tmpdir } from "../../../fixture/fixture"

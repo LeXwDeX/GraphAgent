@@ -7,7 +7,7 @@ import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { DiffRenderable, ScrollBoxRenderable, type Renderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { Session } from "@graphagent/sdk/v2"
+import type { Session } from "@graphagent/sdk"
 import { onCleanup } from "solid-js"
 import { ArgsProvider } from "../../../src/context/args"
 import { ClipboardProvider } from "../../../src/context/clipboard"
@@ -86,6 +86,7 @@ async function renderDiff(
   await Bun.write(`${tmp.path}/kv.json`, "{}")
   const events = createEventSource()
   const vcsDiffRequests: URL[] = []
+  const vcsDiffHeaders: Headers[] = []
   const sessionDiffRequests: URL[] = []
   const base = createFetch((url) => {
     if (url.pathname === "/config") return json(input.config ?? { language: "en" })
@@ -97,6 +98,7 @@ async function renderDiff(
     const url = new URL(request instanceof Request ? request.url : String(request))
     if (url.pathname === "/vcs/diff") {
       vcsDiffRequests.push(url)
+      vcsDiffHeaders.push(request instanceof Request ? request.headers : new Headers())
       return json(input.diff ?? diffFiles)
     }
     if (url.pathname === `/session/${sessionID}/diff`) {
@@ -180,6 +182,7 @@ async function renderDiff(
     sync: () => sync,
     footerHints: () => footerHints(),
     vcsDiffRequests,
+    vcsDiffHeaders,
     sessionDiffRequests,
     tmp,
     async dispose() {
@@ -228,9 +231,15 @@ test("renders the diff title, file tree and patch body", async () => {
     expect(frame).toContain("z-small.ts")
     expect(frame).toContain("small final")
     await waitFor(harness.app, () =>
-      harness.vcsDiffRequests.some((url) => url.searchParams.get("directory") === sessionDirectory),
+      harness.vcsDiffHeaders.some(
+        (headers) => decodeURIComponent(headers.get("x-graphagent-directory") ?? "") === sessionDirectory,
+      ),
     )
-    const request = harness.vcsDiffRequests.find((url) => url.searchParams.get("directory") === sessionDirectory)!
+    const index = harness.vcsDiffHeaders.findIndex(
+      (headers) => decodeURIComponent(headers.get("x-graphagent-directory") ?? "") === sessionDirectory,
+    )
+    const request = harness.vcsDiffRequests[index]!
+    expect(request.searchParams.get("directory")).toBeNull()
     expect(request.searchParams.get("mode")).toBe("git")
     expect(request.searchParams.get("context")).toBe("12")
   } finally {
@@ -344,9 +353,13 @@ test("switch source reopens the diff and keeps the original return route", async
       returnRoute: { type: "session", sessionID },
     })
     await waitFor(harness.app, () =>
-      harness.vcsDiffRequests.some(
-        (url) => url.searchParams.get("directory") === sessionDirectory && url.searchParams.get("mode") === "branch",
-      ),
+      harness.vcsDiffRequests.some((url, index) => {
+        const headers = harness.vcsDiffHeaders[index]!
+        return (
+          url.searchParams.get("mode") === "branch" &&
+          decodeURIComponent(headers.get("x-graphagent-directory") ?? "") === sessionDirectory
+        )
+      }),
     )
   } finally {
     await harness.dispose()

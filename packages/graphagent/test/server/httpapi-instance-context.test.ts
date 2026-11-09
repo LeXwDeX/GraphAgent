@@ -21,7 +21,6 @@ import {
 } from "../../src/server/routes/instance/httpapi/middleware/instance-context"
 import {
   WorkspaceRoutingMiddleware,
-  WorkspaceRoutingQuery,
   workspaceRoutingLayer,
 } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
 import { resetDatabase } from "../fixture/db"
@@ -113,12 +112,9 @@ const ProbeResult = Schema.Struct({
 const ProbeApi = HttpApi.make("instance-context-probe").add(
   HttpApiGroup.make("probe")
     .add(
-      HttpApiEndpoint.get("get", "/probe", { query: WorkspaceRoutingQuery, success: ProbeResult }),
-      HttpApiEndpoint.get("session", "/session", { query: WorkspaceRoutingQuery, success: ProbeResult }),
-      HttpApiEndpoint.post("dispose", "/dispose-probe", {
-        query: WorkspaceRoutingQuery,
-        success: Schema.Boolean,
-      }),
+      HttpApiEndpoint.get("get", "/probe", { success: ProbeResult }),
+      HttpApiEndpoint.get("session", "/session", { success: ProbeResult }),
+      HttpApiEndpoint.post("dispose", "/dispose-probe", { success: Schema.Boolean }),
     )
     .middleware(InstanceContextMiddleware)
     .middleware(WorkspaceRoutingMiddleware),
@@ -166,7 +162,10 @@ describe("HttpApi instance context middleware", () => {
       const project = yield* Project.use.fromDirectory(dir)
       yield* serveProbe()
 
-      const response = yield* HttpClient.get(`/probe?directory=${encodeURIComponent(dir)}`)
+      const response = yield* HttpClientRequest.get("/probe").pipe(
+        HttpClientRequest.setHeader("x-graphagent-directory", dir),
+        HttpClient.execute,
+      )
 
       expect(response.status).toBe(200)
       expect(yield* response.json).toEqual({
@@ -182,7 +181,10 @@ describe("HttpApi instance context middleware", () => {
     Effect.gen(function* () {
       yield* serveProbe()
 
-      const response = yield* HttpClient.get("/probe?directory=%25E0%25A4%25A")
+      const response = yield* HttpClientRequest.get("/probe").pipe(
+        HttpClientRequest.setHeader("x-graphagent-directory", "%E0%A4%A"),
+        HttpClient.execute,
+      )
 
       expect(response.status).toBe(200)
       expect(yield* response.json).toMatchObject({
@@ -203,8 +205,9 @@ describe("HttpApi instance context middleware", () => {
       })
       yield* serveProbe()
 
-      const response = yield* HttpClientRequest.get(`/session?workspace=${workspace.id}`).pipe(
+      const response = yield* HttpClientRequest.get("/session").pipe(
         HttpClientRequest.setHeader("x-graphagent-directory", dir),
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspace.id),
         HttpClient.execute,
       )
 
@@ -228,8 +231,9 @@ describe("HttpApi instance context middleware", () => {
       })
       yield* serveProbe()
 
-      const response = yield* HttpClientRequest.get(`/probe?workspace=${workspace.id}`).pipe(
+      const response = yield* HttpClientRequest.get("/probe").pipe(
         HttpClientRequest.setHeader("x-graphagent-directory", dir),
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspace.id),
         HttpClient.execute,
       )
 
@@ -254,7 +258,8 @@ describe("HttpApi instance context middleware", () => {
       yield* serveDisposeProbe()
       const disposed = yield* waitDisposedEvent.pipe(Effect.forkScoped({ startImmediately: true }))
 
-      const response = yield* HttpClientRequest.post(`/dispose-probe?workspace=${workspace.id}`).pipe(
+      const response = yield* HttpClientRequest.post("/dispose-probe").pipe(
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspace.id),
         HttpClient.execute,
       )
 

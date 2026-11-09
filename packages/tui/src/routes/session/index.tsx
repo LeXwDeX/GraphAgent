@@ -44,13 +44,13 @@ import type {
   UserMessage,
   TextPart,
   ReasoningPart,
-} from "@graphagent/sdk/v2"
-import { createSessionAttention } from "@graphagent/sdk/v2/attention"
+} from "@graphagent/sdk"
+import { createSessionAttention } from "@graphagent/sdk/attention"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import { useSDK } from "../../context/sdk"
+import { useSDK, locationHeaders } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
@@ -1038,10 +1038,10 @@ export function Main() {
       hidden: true,
       enabled: foregroundTasks().length > 0,
       run: () => {
-        void sdk.client.experimental.session.background({
-          sessionID: route.sessionID,
-          workspace: project.workspace.current(),
-        })
+        void sdk.client.experimental.session.background(
+          { sessionID: route.sessionID },
+          { headers: locationHeaders({ workspace: project.workspace.current() }) },
+        )
         dialog.clear()
       },
     },

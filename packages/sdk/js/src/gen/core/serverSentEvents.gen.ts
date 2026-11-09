@@ -5,6 +5,17 @@ import type { Config } from "./types.gen.js"
 export type ServerSentEventsOptions<TData = unknown> = Omit<RequestInit, "method"> &
   Pick<Config, "method" | "responseTransformer" | "responseValidator"> & {
     /**
+     * Fetch API implementation. You can use this option to provide a custom
+     * fetch instance.
+     *
+     * @default globalThis.fetch
+     */
+    fetch?: typeof fetch
+    /**
+     * Implementing clients can call request interceptors inside this hook.
+     */
+    onRequest?: (url: string, init: RequestInit) => Promise<Request>
+    /**
      * Callback invoked when a network or parsing error occurs during streaming.
      *
      * This option applies only if the endpoint returns a stream of events.
@@ -21,6 +32,7 @@ export type ServerSentEventsOptions<TData = unknown> = Omit<RequestInit, "method
      * @returns Nothing (void).
      */
     onSseEvent?: (event: StreamEvent<TData>) => void
+    serializedBody?: RequestInit["body"]
     /**
      * Default retry delay in milliseconds.
      *
@@ -63,7 +75,8 @@ export type ServerSentEventsResult<TData = unknown, TReturn = void, TNext = unkn
   stream: AsyncGenerator<TData extends Record<string, unknown> ? TData[keyof TData] : TData, TReturn, TNext>
 }
 
-export const createSseClient = <TData = unknown>({
+export function createSseClient<TData = unknown>({
+  onRequest,
   onSseError,
   onSseEvent,
   responseTransformer,
@@ -74,7 +87,7 @@ export const createSseClient = <TData = unknown>({
   sseSleepFn,
   url,
   ...options
-}: ServerSentEventsOptions): ServerSentEventsResult<TData> => {
+}: ServerSentEventsOptions): ServerSentEventsResult<TData> {
   let lastEventId: string | undefined
 
   const sleep = sseSleepFn ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
@@ -99,7 +112,21 @@ export const createSseClient = <TData = unknown>({
       }
 
       try {
-        const response = await fetch(url, { ...options, headers, signal })
+        const requestInit: RequestInit = {
+          redirect: "follow",
+          ...options,
+          body: options.serializedBody,
+          headers,
+          signal,
+        }
+        let request = new Request(url, requestInit)
+        if (onRequest) {
+          request = await onRequest(url, requestInit)
+        }
+        // fetch must be assigned here, otherwise it would throw the error:
+        // TypeError: Failed to execute 'fetch' on 'Window': Illegal invocation
+        const _fetch = options.fetch ?? globalThis.fetch
+        const response = await _fetch(request)
 
         if (!response.ok) throw new Error(`SSE failed: ${response.status} ${response.statusText}`)
 
@@ -111,7 +138,7 @@ export const createSseClient = <TData = unknown>({
 
         const abortHandler = () => {
           try {
-            void reader.cancel()
+            reader.cancel()
           } catch {
             // noop
           }
@@ -124,6 +151,7 @@ export const createSseClient = <TData = unknown>({
             const { done, value } = await reader.read()
             if (done) break
             buffer += value
+            buffer = buffer.replace(/\r\n?/g, "\n") // normalize line endings
 
             const chunks = buffer.split("\n\n")
             buffer = chunks.pop() ?? ""

@@ -1,4 +1,4 @@
-import type { ExperimentalWorkspaceAdapterListResponse, Workspace } from "@graphagent/sdk/v2"
+import type { ExperimentalWorkspaceAdapterListResponse, Workspace } from "@graphagent/sdk"
 import { useDialog } from "../ui/dialog"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useSync } from "../context/sync"
@@ -6,7 +6,7 @@ import { useProject } from "../context/project"
 import { useRoute } from "../context/route"
 import { createMemo, createSignal, onMount } from "solid-js"
 import { errorMessage } from "../util/error"
-import { useSDK } from "../context/sdk"
+import { useSDK, locationHeaders } from "../context/sdk"
 import { useToast } from "../ui/toast"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogWorkspaceFileChanges } from "./dialog-workspace-file-changes"
@@ -56,7 +56,9 @@ async function loadWorkspaceAdapters(input: {
 }) {
   const dir = input.sync.path.directory || input.sdk.directory
   try {
-    const response = await input.sdk.client.experimental.workspace.adapter.list({ directory: dir })
+    const response = await input.sdk.client.experimental.workspace.adapter.list({
+      headers: locationHeaders({ directory: dir }),
+    })
     if (response.error) throw response.error
     return response.data
   } catch (err) {
@@ -137,18 +139,20 @@ export async function warpWorkspaceSession(input: {
   const dir = input.project.instance.directory() || input.sync.path.directory
   if (dir) {
     await input.sdk.client.session
-      .promptAsync({
-        sessionID: input.sessionID,
-        workspace: input.workspaceID ?? undefined,
-        noReply: true,
-        parts: [
-          {
-            type: "text",
-            text: warpReminderText(dir),
-            synthetic: true,
-          },
-        ],
-      })
+      .promptAsync(
+        {
+          sessionID: input.sessionID,
+          noReply: true,
+          parts: [
+            {
+              type: "text",
+              text: warpReminderText(dir),
+              synthetic: true,
+            },
+          ],
+        },
+        { headers: locationHeaders({ workspace: input.workspaceID }) },
+      )
       .catch(() => undefined)
   }
 
@@ -167,7 +171,9 @@ export async function confirmWorkspaceFileChanges(input: {
   sdk: ReturnType<typeof useSDK>
   sourceWorkspaceID?: string
 }) {
-  const status = await input.sdk.client.vcs.status({ workspace: input.sourceWorkspaceID }).catch(() => undefined)
+  const status = await input.sdk.client.vcs
+    .status({ headers: locationHeaders({ workspace: input.sourceWorkspaceID }) })
+    .catch(() => undefined)
   const fileChangeChoice = status?.data?.length
     ? await DialogWorkspaceFileChanges.show(input.dialog, status.data)
     : "no"

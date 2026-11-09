@@ -8,32 +8,18 @@
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "build": "bun ./script/build.ts",
-    "check:generated": "bun run build && git diff --exit-code -- src/v2/gen",
+    "check:generated": "bun run build && git diff --exit-code -- src/gen",
     "test:build-race": "bun ./script/build-race-stress.ts"
   },
   "exports": {
     ".": "./src/index.ts",
-    "./client": "./src/client.ts",
-    "./server": "./src/server.ts",
-    "./v2": "./src/v2/index.ts",
-    "./v2/attention": "./src/v2/attention.ts",
-    "./v2/client": "./src/v2/client.ts",
-    "./v2/gen/client": "./src/v2/gen/client/index.ts",
-    "./v2/server": "./src/v2/server.ts",
-    "./v2/types": "./src/v2/gen/types.gen.ts"
+    "./attention": "./src/attention.ts"
   },
-  "files": [
-    "dist"
-  ],
   "devDependencies": {
     "@hey-api/openapi-ts": "0.99.0",
     "@tsconfig/node22": "catalog:",
-    "@types/cross-spawn": "catalog:",
     "@types/node": "catalog:",
     "@typescript/native-preview": "catalog:",
     "typescript": "catalog:"
-  },
-  "dependencies": {
-    "cross-spawn": "catalog:"
   }
 }

@@ -24,13 +24,13 @@ import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
-import { createOpencodeClient, type OpencodeClient, type TextPart, type ToolPart } from "@graphagent/sdk/v2"
+import { createClient, type Client, type TextPart, type ToolPart } from "@graphagent/sdk"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { DagHold } from "./run/dag-hold"
 import { MessageID } from "@/session/schema"
 
-type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
+type ModelInput = Parameters<Client["session"]["prompt"]>[0]["model"]
 
 function pick(value: string | undefined): ModelInput | undefined {
   if (!value) return undefined
@@ -410,7 +410,7 @@ export const RunCommand = effectCmd({
         return message.slice(0, 50) + (message.length > 50 ? "..." : "")
       }
 
-      async function session(sdk: OpencodeClient, agent?: string): Promise<SessionInfo | undefined> {
+      async function session(sdk: Client, agent?: string): Promise<SessionInfo | undefined> {
         if (args.session) {
           const current = await sdk.session
             .get({
@@ -495,7 +495,7 @@ export const RunCommand = effectCmd({
       }
 
       async function createFreshSession(
-        sdk: OpencodeClient,
+        sdk: Client,
         input: { agent: string | undefined; model: ModelInput | undefined; variant: string | undefined },
       ): Promise<SessionInfo> {
         const result = await sdk.session.create({
@@ -553,7 +553,7 @@ export const RunCommand = effectCmd({
         return localAgent()
       }
 
-      async function execute(sdk: OpencodeClient) {
+      async function execute(sdk: Client) {
         const localSelectedAgent = await pickAgent()
         const sess = await session(sdk, localSelectedAgent)
         if (!sess?.id) {
@@ -599,7 +599,7 @@ export const RunCommand = effectCmd({
         // Consume one subscribed event stream for the active session and mirror it
         // to stdout/UI.
         async function loop(
-          client: OpencodeClient,
+          client: Client,
           events: Awaited<ReturnType<typeof sdk.event.subscribe>>,
           stop: () => void,
           keepAlive?: () => boolean,
@@ -757,7 +757,7 @@ export const RunCommand = effectCmd({
           let requestPending = true
           async function begin() {
             subscription = new AbortController()
-            const events = await client.event.subscribe(undefined, { signal: subscription.signal })
+            const events = await client.event.subscribe({ signal: subscription.signal })
             requestedMessageID = !hasInput ? undefined : MessageID.ascending()
             dagHold = await DagHold.createDagRunHold(client, sessionID, requestedMessageID, renderText)
             completed = loop(
@@ -782,11 +782,11 @@ export const RunCommand = effectCmd({
             process.exitCode = 1
           }
           function deferred(
-            result: { info: import("@graphagent/sdk/v2").Message; parts: Array<unknown> } | null | undefined,
+            result: { info: import("@graphagent/sdk").Message; parts: Array<unknown> } | null | undefined,
           ) {
             const reason = result?.info.role === "assistant" ? result.info.finish : undefined
             if (!result || (reason !== "tool_deferred" && reason !== "tool_deferred_unavailable")) return false
-            const part = result.parts.find((value): value is import("@graphagent/sdk/v2").ToolPart => {
+            const part = result.parts.find((value): value is import("@graphagent/sdk").ToolPart => {
               return (
                 isRecord(value) &&
                 value.type === "tool" &&
@@ -961,7 +961,7 @@ export const RunCommand = effectCmd({
             return selected && localSessionIDs.has(selected) ? { sessionID: selected } : undefined
           },
         })
-        const sdk = createOpencodeClient({
+        const sdk = createClient({
           baseUrl: "http://graphagent.internal", // check-private-hosts: allow in-process dummy base URL
           fetch: fetchFn,
           directory,

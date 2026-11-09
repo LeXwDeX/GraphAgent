@@ -1,4 +1,4 @@
-import type { Event } from "@graphagent/sdk/v2"
+import type { Event } from "@graphagent/sdk"
 import { useSDK } from "./sdk"
 import type { EventScope, GateDecision } from "./event-gate"
 

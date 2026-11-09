@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Part, TextPart, UserMessage } from "@graphagent/sdk/v2"
+import type { Part, TextPart, UserMessage } from "@graphagent/sdk"
 
 export function orderedBefore(
   a: { id: string; time: { created: number } },

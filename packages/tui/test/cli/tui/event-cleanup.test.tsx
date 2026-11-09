@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { Event, GlobalEvent } from "@graphagent/sdk/v2"
+import type { Event, GlobalEvent } from "@graphagent/sdk"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { Prompt } from "../../../src/component/prompt"
 import { TuiConfigProvider } from "../../../src/config"

@@ -3,7 +3,7 @@ import { SessionID } from "@/session/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware, WorkspaceRoutingQueryFields } from "../middleware/workspace-routing"
+import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 
 const CapabilitiesResponse = Schema.Struct({
@@ -21,7 +21,6 @@ export const ExperimentalApi = HttpApi.make("experimental")
     HttpApiGroup.make("experimental")
       .add(
         HttpApiEndpoint.get("capabilities", ExperimentalPaths.capabilities, {
-          query: WorkspaceRoutingQueryFields,
           success: described(CapabilitiesResponse, "Experimental capabilities"),
         }).annotateMerge(
           OpenApi.annotations({
@@ -32,7 +31,6 @@ export const ExperimentalApi = HttpApi.make("experimental")
         ),
         HttpApiEndpoint.post("sessionBackground", ExperimentalPaths.sessionBackground, {
           params: { sessionID: SessionID },
-          query: WorkspaceRoutingQueryFields,
           success: described(Schema.Boolean, "Backgrounded subagents"),
           error: HttpApiError.BadRequest,
         }).annotateMerge(
@@ -44,7 +42,6 @@ export const ExperimentalApi = HttpApi.make("experimental")
           }),
         ),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {
-          query: WorkspaceRoutingQueryFields,
           success: described(Schema.Record(Schema.String, MCP.Resource), "MCP resources"),
         }).annotateMerge(
           OpenApi.annotations({

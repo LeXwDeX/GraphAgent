@@ -346,18 +346,15 @@ describe("session HttpApi", () => {
         provideInstanceEffect(sessionDirectory),
       )
 
-      const response = yield* request(
-        `${pathFor(SessionPaths.prompt, { sessionID: session.id })}?directory=${encodeURIComponent(requestDirectory)}`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            agent: "build",
-            model: { providerID: "test", modelID: "test-model" },
-            parts: [{ type: "text", text: "which directory?" }],
-          }),
-        },
-      )
+      const response = yield* request(pathFor(SessionPaths.prompt, { sessionID: session.id }), {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-graphagent-directory": requestDirectory },
+        body: JSON.stringify({
+          agent: "build",
+          model: { providerID: "test", modelID: "test-model" },
+          parts: [{ type: "text", text: "which directory?" }],
+        }),
+      })
 
       expect(response.status).toBe(200)
       yield* responseJson(response)
@@ -462,17 +459,21 @@ describe("session HttpApi", () => {
           directory: path.join(test.directory, ".workspace-local"),
         })
 
-        const created = yield* requestJson<Session.Info>(`${SessionPaths.create}?workspace=${workspace.id}`, {
+        const created = yield* requestJson<Session.Info>(SessionPaths.create, {
           method: "POST",
-          headers: { "x-graphagent-directory": test.directory, "content-type": "application/json" },
+          headers: {
+            "x-graphagent-directory": test.directory,
+            "x-graphagent-workspace": workspace.id,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({ title: "workspace session" }),
         })
-        const messages = yield* request(
-          `${pathFor(SessionPaths.messages, { sessionID: created.id })}?workspace=${workspace.id}`,
-          {
-            headers: { "x-graphagent-directory": test.directory },
+        const messages = yield* request(pathFor(SessionPaths.messages, { sessionID: created.id }), {
+          headers: {
+            "x-graphagent-directory": test.directory,
+            "x-graphagent-workspace": workspace.id,
           },
-        )
+        })
 
         expect(created).toMatchObject({ id: created.id, workspaceID: workspace.id })
         expect(messages.status).toBe(200)

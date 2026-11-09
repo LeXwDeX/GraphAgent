@@ -1,4 +1,4 @@
-import type { Workspace } from "@graphagent/sdk/v2"
+import type { Workspace } from "@graphagent/sdk"
 import { useDialog } from "../ui/dialog"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useProject } from "../context/project"

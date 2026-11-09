@@ -44,7 +44,7 @@ describe("project directories and copies endpoints", () => {
         const current = yield* request(test.directory, "/project/current")
         const projectID = (yield* json<{ id: string }>(current)).id
         const base = `/project/${projectID}`
-        const copies = `/experimental/project/${projectID}/copy?location%5Bdirectory%5D=${encodeURIComponent(test.directory)}`
+        const copies = `/experimental/project/${projectID}/copy`
         const createdParent = path.join(test.directory, "..", path.basename(test.directory) + "-http-copy")
         const createdDirectory = path.join(createdParent, "copy")
         yield* Effect.addFinalizer(() =>
@@ -102,13 +102,9 @@ describe("project directories and copies endpoints", () => {
           Effect.promise(() => fs.rm(externalDirectory, { recursive: true, force: true })).pipe(Effect.ignore),
         )
         yield* Effect.promise(() => $`git worktree add --detach ${externalDirectory} HEAD`.cwd(test.directory).quiet())
-        const refresh = yield* request(
-          test.directory,
-          `/experimental/project/${projectID}/copy/refresh?location%5Bdirectory%5D=${encodeURIComponent(test.directory)}`,
-          {
-            method: "POST",
-          },
-        )
+        const refresh = yield* request(test.directory, `/experimental/project/${projectID}/copy/refresh`, {
+          method: "POST",
+        })
         expect(refresh.status).toBe(204)
         const refreshed = yield* request(test.directory, `${base}/directories`)
         expect(yield* json<ProjectDirectory[]>(refreshed)).toEqual([

@@ -1,36 +1,13 @@
 export * from "./gen/types.gen.js"
+export type { FileSystemEntry as LocationFileSystemEntry } from "./gen/types.gen.js"
 
-import { createClient } from "./gen/client/client.gen.js"
+import { createClient as createFetchClient } from "./gen/client/client.gen.js"
 import { type Config } from "./gen/client/types.gen.js"
-import { OpencodeClient } from "./gen/sdk.gen.js"
+import { Client } from "./gen/sdk.gen.js"
 import { wrapClientError } from "./error-interceptor.js"
-export { type Config as OpencodeClientConfig, OpencodeClient }
+export { type Config as ClientConfig, Client }
 
-function pick(value: string | null, fallback?: string) {
-  if (!value) return
-  if (!fallback) return value
-  if (value === fallback) return fallback
-  if (value === encodeURIComponent(fallback)) return fallback
-  return value
-}
-
-function rewrite(request: Request, directory?: string) {
-  if (request.method !== "GET" && request.method !== "HEAD") return request
-
-  const value = pick(request.headers.get("x-graphagent-directory"), directory)
-  if (!value) return request
-
-  const url = new URL(request.url)
-  if (!url.searchParams.has("directory")) {
-    url.searchParams.set("directory", value)
-  }
-
-  const next = new Request(url, request)
-  next.headers.delete("x-graphagent-directory")
-  return next
-}
-
-export function createOpencodeClient(config?: Config & { directory?: string }) {
+export function createClient(config?: Config & { directory?: string; experimental_workspaceID?: string }) {
   if (!config?.fetch) {
     const customFetch: any = (req: any) => {
       // @ts-ignore
@@ -50,8 +27,21 @@ export function createOpencodeClient(config?: Config & { directory?: string }) {
     }
   }
 
-  const client = createClient(config)
-  client.interceptors.request.use((request) => rewrite(request, config?.directory))
+  if (config?.experimental_workspaceID) {
+    config.headers = {
+      ...config.headers,
+      "x-graphagent-workspace": config.experimental_workspaceID,
+    }
+  }
+
+  const client = createFetchClient(config)
+  client.interceptors.response.use((response) => {
+    const contentType = response.headers.get("content-type")
+    if (contentType === "text/html")
+      throw new Error("Request is not supported by this version of GraphAgent Server (Server responded with text/html)")
+
+    return response
+  })
   client.interceptors.error.use(wrapClientError)
-  return new OpencodeClient({ client })
+  return new Client({ client })
 }

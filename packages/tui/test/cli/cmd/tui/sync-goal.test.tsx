@@ -5,11 +5,13 @@
 import { describe, expect, test } from "bun:test"
 import { tmpdir } from "../../../fixture/fixture"
 import { directory, mount, wait } from "./sync-fixture"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
 
 const sid = "ses_goal_1"
 
-function goalUpdated(overrides: Partial<{ goal: string; status: "active" | "paused" | "done"; turnsUsed: number; maxTurns: number }> = {}): GlobalEvent {
+function goalUpdated(
+  overrides: Partial<{ goal: string; status: "active" | "paused" | "done"; turnsUsed: number; maxTurns: number }> = {},
+): GlobalEvent {
   return {
     directory,
     project: "proj_test",
