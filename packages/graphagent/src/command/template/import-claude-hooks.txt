@@ -55,13 +55,13 @@ hook definition does not copy a Claude plugin or make an OpenCode destination
 exist. Keep a working source path, or copy the required assets into the chosen
 OpenCode location under the user's migration authorization and verify them.
 
-`${CLAUDE_PLUGIN_ROOT}` is the directory containing the declaring hooks file.
-`${CLAUDE_PLUGIN_DATA}` is a data path under `${Global.Path.data}/hooks/`, with
-an identifier derived from that directory; it is not inside the source folder.
-The script may need to create its data directory. Preserve the placeholder
-syntax; verify script paths and dependency assets before rewriting them.
-Do not author `__sourceDir`: OpenCode stamps that metadata when loading the
-file. Never blindly replace `.claude/` with `.agents/` and assume the script
+OpenCode does not load Claude plugins, so hooks.json entries have neither
+`${CLAUDE_PLUGIN_ROOT}` nor `${CLAUDE_PLUGIN_DATA}`: templates are left
+verbatim and the variables are not set in the child environment. Rewrite any
+command that relies on them to a working path, or copy the required assets
+into the chosen OpenCode location under the user's migration authorization.
+Do not author `__sourceDir` or `__source`: OpenCode stamps the source metadata
+itself. Never blindly replace `.claude/` with `.agents/` and assume the script
 has moved.
 
 Example migration:
@@ -76,19 +76,19 @@ Example migration:
   }
 }
 
-// Migrated (hooks.json)
+// Migrated (hooks.json), with the script copied to .agents/validate.sh
 {
   "PreToolUse": [
     {
       "matcher": "*",
       "hooks": [
-        { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/validate.sh", "inputFormat": "claude-code" }
+        { "type": "command", "command": "bash .agents/validate.sh", "inputFormat": "claude-code" }
       ]
     }
   ]
 }
 ```
-`${CLAUDE_PLUGIN_ROOT}` is a runtime placeholder. OpenCode expands it from the hook's location. After migration to `.agents/`, it points there; this example therefore requires `validate.sh` and its dependencies to exist there.
+The migrated command must not keep `${CLAUDE_PLUGIN_ROOT}`: hooks.json does not provide plugin variables, so the placeholder would reach the shell literally. This example therefore requires `validate.sh` and its dependencies to exist at `.agents/validate.sh`.
 
 #### Command-envelope compatibility (`inputFormat`)
 

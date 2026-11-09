@@ -89,6 +89,8 @@ describe("§4.1 loadChain reads hooks.json from correct paths (global + project 
       const matchers = merged.hooks?.SessionStart ?? []
       expect(matchers.length).toBe(3)
       expect(matchers.map((m) => m.hooks[0].command)).toEqual(["global", "project", "local"])
+      // Each entry carries the layer it was loaded from, not just folder metadata.
+      expect(matchers.map((m) => m.hooks[0].__source?.scope)).toEqual(["global", "project", "local"])
     } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),
@@ -122,7 +124,11 @@ describe("§4.2 merge order is global → project → local concat-append (not o
     const g: Settings = { hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "g" }] }] } }
     const p: Settings = { hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "p" }] }] } }
     const l: Settings = { hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "l" }] }] } }
-    const out = mergeSettings([g, p, l])
+    const out = mergeSettings([
+      { scope: "global", settings: g },
+      { scope: "project", settings: p },
+      { scope: "local", settings: l },
+    ])
     // Three distinct matchers appended — NOT collapsed to a single matcher.
     expect(out.hooks?.SessionStart?.length).toBe(3)
     expect(out.hooks?.SessionStart?.[0].hooks[0].command).toBe("g")
@@ -169,7 +175,7 @@ describe("retired trust options are ignored in every layer", () => {
 })
 
 describe("§4.3 top-level events format (no wrapper) parses correctly", () => {
-  test("readJSON parses {PreToolUse: [...]} and stamps __sourceDir to the hooks.json dir", async () => {
+  test("readJSON parses {PreToolUse: [...]} and stamps __source, never __sourceDir", async () => {
     const dir = await mktmp("fmt")
     try {
       const file = await writeHooksJson(dir, {
@@ -178,11 +184,58 @@ describe("§4.3 top-level events format (no wrapper) parses correctly", () => {
       const settings = readJSON(file)
       expect(settings?.hooks?.PreToolUse?.length).toBe(1)
       expect(settings?.hooks?.PreToolUse?.[0].matcher).toBe("Bash")
-      // __sourceDir must point at the directory containing hooks.json (the .agents dir).
-      expect(settings?.hooks?.PreToolUse?.[0].hooks[0].__sourceDir).toBe(path.dirname(file))
+      // The loader names the layer and file it parsed; hooks.json never grants
+      // plugin provenance (`__sourceDir`) or the plugin variables it would set.
+      expect(settings?.hooks?.PreToolUse?.[0].hooks[0].__source).toEqual({ scope: "global", file })
+      expect(settings?.hooks?.PreToolUse?.[0].hooks[0].__sourceDir).toBeUndefined()
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("§11 allowlist merge: global ceiling with project/local intersection", () => {
+  const layer = (scope: "global" | "project" | "local", urls?: string[], envVars?: string[]) => ({
+    scope,
+    settings: {
+      ...(urls !== undefined ? { allowedHttpHookUrls: urls } : {}),
+      ...(envVars !== undefined ? { httpHookAllowedEnvVars: envVars } : {}),
+    } satisfies Settings,
+  })
+
+  test("a global definition is a ceiling the project layer narrows by intersection", () => {
+    const out = mergeSettings([
+      layer("global", ["https://a.example/*", "https://b.example/*"]),
+      layer("project", ["https://b.example/*", "https://c.example/*"]),
+    ])
+    expect(out.allowedHttpHookUrls).toEqual(["https://b.example/*"])
+  })
+
+  test("without a global definition the project list restricts instead of allowing all", () => {
+    const out = mergeSettings([layer("project", ["https://only.example/*"])])
+    expect(out.allowedHttpHookUrls).toEqual(["https://only.example/*"])
+  })
+
+  test("an explicit empty list denies everything and survives later definitions", () => {
+    const out = mergeSettings([
+      layer("global", ["https://a.example/*"]),
+      layer("project", []),
+      layer("local", ["https://a.example/*"]),
+    ])
+    expect(out.allowedHttpHookUrls).toEqual([])
+  })
+
+  test("layers that do not define an allowlist do not participate", () => {
+    const out = mergeSettings([
+      layer("global"),
+      layer("project", ["https://p.example/*"], ["TOKEN"]),
+      layer("local"),
+    ])
+    expect(out.allowedHttpHookUrls).toEqual(["https://p.example/*"])
+    expect(out.httpHookAllowedEnvVars).toEqual(["TOKEN"])
+    const none = mergeSettings([layer("global"), layer("project")])
+    expect(none.allowedHttpHookUrls).toBeUndefined()
+    expect(none.httpHookAllowedEnvVars).toBeUndefined()
   })
 })
 

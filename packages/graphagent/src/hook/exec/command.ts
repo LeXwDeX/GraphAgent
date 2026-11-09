@@ -32,9 +32,14 @@ function computeDataDir(sourceDir: string): string {
 /**
  * Expand CC-compatible template variables in `entry.command`.
  *
- *   ${CLAUDE_PLUGIN_ROOT}  → entry.__sourceDir
- *   ${CLAUDE_PLUGIN_DATA}  → computeDataDir(entry.__sourceDir)
+ *   ${CLAUDE_PLUGIN_ROOT}  → entry.__sourceDir (plugin/scoped sources only)
+ *   ${CLAUDE_PLUGIN_DATA}  → computeDataDir(entry.__sourceDir) (plugin/scoped sources only)
  *   ${user_config.<key>}   → entry.options?.[key] (string passthrough; non-string → JSON.stringify)
+ *
+ * The hooks.json chain stamps only `__source`, never `__sourceDir`, so a
+ * handler declared in hooks.json has neither plugin variable and its
+ * `${CLAUDE_PLUGIN_ROOT}` template stays verbatim. `__sourceDir` is reserved
+ * for a future plugin/scoped source.
  *
  * Unknown / unresolvable templates are left verbatim so the shell's own env
  * expansion (or the user's escape strategy) still has a chance to handle them.

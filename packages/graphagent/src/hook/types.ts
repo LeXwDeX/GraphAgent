@@ -77,6 +77,29 @@ export const VALID_HOOK_EVENTS = new Set<string>([
   "MessageDisplay",
 ])
 
+/** Layer of the hooks.json chain that declared an entry. */
+export type HookSourceScope = "global" | "project" | "local"
+
+/** Loader metadata naming the layer and file a hook entry came from. */
+export interface HookSource {
+  readonly scope: HookSourceScope
+  readonly file: string
+}
+
+/**
+ * Identity of the Stop-continuation chain that produced an async rewake.
+ *
+ * `epoch` is the session-cancellation epoch (`SessionCancellation.epoch`); it
+ * advances on every cancel. `generation` advances whenever the session's
+ * rewake chain resets: a real (non-rewake) UserPromptSubmit, SessionEnd,
+ * clearSession, or a user cancel. A callback whose token no longer matches
+ * either value must never wake the session.
+ */
+export interface RewakeToken {
+  readonly epoch: number
+  readonly generation: number
+}
+
 export interface HookCommand {
   /**
    * Hook execution kind.
@@ -147,9 +170,17 @@ export interface HookCommand {
    */
   options?: Record<string, unknown>
   /**
-   * Runtime metadata injected by `loadChain` — absolute directory of the settings file that
-   * declared this hook. Drives `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PLUGIN_DATA`. The `__` prefix
-   * keeps it out of any future schema-validation pass.
+   * Runtime metadata naming the hooks.json layer that declared this hook.
+   * Injected by the chain loader, never authored by users, and excluded from
+   * handler identity so the same handler dedups across layers. The `__` prefix
+   * marks it as loader-owned.
+   */
+  __source?: HookSource
+  /**
+   * Runtime metadata reserved for a plugin/scoped source: absolute directory
+   * driving `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PLUGIN_DATA`. The hooks.json chain
+   * does not stamp it (there is no plugin source), so a hooks.json handler is
+   * never given those variables. The `__` prefix marks it loader-owned.
    */
   __sourceDir?: string
 }
@@ -183,7 +214,7 @@ export interface Settings {
  */
 export interface HookSummary {
   event: HookEvent
-  scope: "global" | "project" | "local"
+  scope: HookSourceScope
   type: HookCommand["type"]
   descriptor: string
   matcher?: string
@@ -329,7 +360,13 @@ export type HookPayload =
       permissionSuggestions?: PermissionUpdate[]
     }
   | { event: "Notification"; message: string; title?: string; notificationType?: string }
-  | { event: "UserPromptSubmit"; prompt: string; sessionTitle?: string }
+  | {
+      event: "UserPromptSubmit"
+      prompt: string
+      sessionTitle?: string
+      /** DAG mode of the top-level session; omitted for child sessions and when unset. */
+      dagMode?: "on" | "off"
+    }
   | {
       event: "Stop"
       stopHookActive: boolean
@@ -372,6 +409,8 @@ export type HookPayload =
       model?: string
       agentType?: string
       sessionTitle?: string
+      /** DAG mode of the top-level session; omitted for child sessions and when unset. */
+      dagMode?: "on" | "off"
       contextTokens?: number
       secondsSinceLastResponse?: number
       promptCacheLikelyExpired?: boolean

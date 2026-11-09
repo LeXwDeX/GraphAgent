@@ -47,6 +47,9 @@ export type {
   HookPayload,
   HookSpecificOutput,
   HookSummary,
+  HookSource,
+  HookSourceScope,
+  RewakeToken,
   Settings,
   ToolHookContext,
   TriggerContext,
@@ -59,6 +62,7 @@ export type { StdoutClass } from "./exec/output"
 export { agentToPermissionMode } from "./match"
 export { detectUnsupportedFields, readJSON, warnUnsupportedFields } from "./config/load"
 export { loadChain, loadChainWithSummaries, mergeSettings, summarizeChain } from "./config/chain"
+export type { HookLayer } from "./config/chain"
 export { chainCandidates as __chainCandidates } from "./config/chain"
 export { landSystemMessages } from "./trigger-result"
 export type { TriggerResult } from "./trigger-result"

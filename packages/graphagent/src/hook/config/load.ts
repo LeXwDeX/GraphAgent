@@ -4,11 +4,10 @@
  * Pure-move extraction from the former monolithic settings module (D1 PR1).
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
-import path from "path"
 import { existsSync, readFileSync } from "fs"
 import * as Log from "@/util/log"
 import { HookCommandSchema } from "../schema"
-import type { HookCommand, HookEvent, HookMatcher, Settings } from "../types"
+import type { HookCommand, HookEvent, HookMatcher, HookSourceScope, Settings } from "../types"
 import { isRecord, VALID_HOOK_EVENTS } from "../types"
 
 const log = Log.create({ service: "hook.settings" })
@@ -20,12 +19,20 @@ export function isHookEvent(value: string): value is HookEvent {
 }
 
 // Exported for unit testing only; not part of the public surface.
-export function readJSON(filepath: string): Settings | null {
-  return readJSONFile(filepath).settings ?? null
+export function readJSON(filepath: string, scope: HookSourceScope = "global"): Settings | null {
+  return readJSONFile(filepath, scope).settings ?? null
 }
 
-/** A missing file is an empty layer; a file that exists but cannot be parsed is invalid. */
-export function readJSONFile(filepath: string): { settings?: Settings; invalid?: true } {
+/**
+ * A missing file is an empty layer; a file that exists but cannot be parsed is
+ * invalid. Every parsed entry is tagged with `__source` naming the chain layer
+ * (`scope`) and its absolute file; the hooks.json chain never stamps
+ * `__sourceDir`, so it injects no plugin variables into handlers.
+ */
+export function readJSONFile(
+  filepath: string,
+  scope: HookSourceScope = "global",
+): { settings?: Settings; invalid?: true } {
   if (!existsSync(filepath)) return {}
   try {
     const parsed: unknown = JSON.parse(readFileSync(filepath, "utf8"))
@@ -38,7 +45,6 @@ export function readJSONFile(filepath: string): { settings?: Settings; invalid?:
     const rawHooks = obj && isRecord(obj.hooks) ? undefined : obj
 
     const hooks: Settings["hooks"] = {}
-    const sourceDir = path.dirname(filepath)
     if (rawHooks) {
       for (const [key, value] of Object.entries(rawHooks)) {
         if (!isHookEvent(key)) {
@@ -69,7 +75,7 @@ export function readJSONFile(filepath: string): { settings?: Settings; invalid?:
               log.warn("invalid hook command skipped", { path: filepath, event: key, error: parsed.error.message })
               continue
             }
-            commands.push({ ...parsed.data, __sourceDir: sourceDir })
+            commands.push({ ...parsed.data, __source: { scope, file: filepath } })
           }
           if (commands.length) groups.push({ matcher: group.matcher, hooks: commands })
         }
