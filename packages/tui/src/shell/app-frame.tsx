@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { RGBA } from "@opentui/core"
 import { createMemo, Show, type JSX } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
-import { BottomZone } from "./bottom-zone"
 import { Drawer } from "./drawer"
 import { Footer, type FooterHint, type FooterMeta } from "./footer"
 import { StatusBand } from "./status-band"
@@ -38,6 +38,8 @@ export type AppFrameProps = {
   bottomZone?: JSX.Element
   /** Right-edge overlay between the top bar and the bottom zone (F4). */
   drawer?: JSX.Element
+  /** Dims the main area while a bottom-zone panel or ask surface is open. */
+  dimmed?: () => boolean
   children?: JSX.Element
 }
 
@@ -73,13 +75,21 @@ export function AppFrame(props: AppFrameProps) {
           <Show when={props.statusBand}>
             <StatusBand>{props.statusBand}</StatusBand>
           </Show>
+          <Show when={props.dimmed?.()}>
+            <box
+              position="absolute"
+              left={0}
+              top={0}
+              right={0}
+              bottom={0}
+              backgroundColor={RGBA.fromInts(0, 0, 0, 120)}
+            />
+          </Show>
           <Show when={props.drawer}>
             <Drawer>{props.drawer}</Drawer>
           </Show>
         </box>
-        <Show when={props.bottomZone}>
-          <BottomZone>{props.bottomZone}</BottomZone>
-        </Show>
+        <Show when={props.bottomZone}>{props.bottomZone}</Show>
         <Footer
           agent={props.footer?.agent}
           agentAction={props.footer?.agentAction}
