@@ -1,8 +1,4 @@
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
-import { EventV2 } from "@graphagent/core/event"
-import { EventManifest } from "@/event-manifest"
-import { ConfigUpdated, InstanceDisposed } from "@/server/event"
-import "@/server/event"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { described } from "./metadata"
@@ -11,41 +7,6 @@ const GlobalHealth = Schema.Struct({
   healthy: Schema.Literal(true),
   version: Schema.String,
 })
-
-const SyncEventSchemas = EventManifest.Latest.values()
-  .flatMap((definition) => {
-    if (!definition.durable) return []
-    return [
-      Schema.Struct({
-        type: Schema.Literal("sync"),
-        id: EventV2.ID,
-        syncEvent: Schema.Struct({
-          type: Schema.Literal(EventV2.versionedType(definition.type, definition.durable.version)),
-          id: EventV2.ID,
-          seq: Schema.Finite,
-          aggregateID: Schema.String,
-          data: definition.data,
-        }),
-      }).annotate({ identifier: `SyncEvent.${definition.type}` }),
-    ]
-  })
-  .toArray()
-
-const GlobalEventSchema = Schema.Struct({
-  directory: Schema.String,
-  project: Schema.optional(Schema.String),
-  workspace: Schema.optional(Schema.String),
-  payload: Schema.Union([
-    ...EventManifest.Latest.values()
-      .map((definition) =>
-        Schema.Struct({ id: EventV2.ID, type: Schema.Literal(definition.type), properties: definition.data }),
-      )
-      .toArray(),
-    InstanceDisposed,
-    ConfigUpdated,
-    ...SyncEventSchemas,
-  ]),
-}).annotate({ identifier: "GlobalEvent" })
 
 export const GlobalUpgradeInput = Schema.Struct({
   target: Schema.optional(Schema.String),
@@ -64,7 +25,6 @@ const GlobalUpgradeResult = Schema.Union([
 
 export const GlobalPaths = {
   health: "/global/health",
-  event: "/global/event",
   config: "/global/config",
   dispose: "/global/dispose",
   upgrade: "/global/upgrade",
@@ -80,15 +40,6 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.health",
           summary: "Get health",
           description: "Get health information about the OpenCode server.",
-        }),
-      ),
-      HttpApiEndpoint.get("event", GlobalPaths.event, {
-        success: GlobalEventSchema,
-      }).annotateMerge(
-        OpenApi.annotations({
-          identifier: "global.event",
-          summary: "Get global events",
-          description: "Subscribe to global events from the OpenCode system using server-sent events.",
         }),
       ),
       HttpApiEndpoint.get("configGet", GlobalPaths.config, {

@@ -68,21 +68,13 @@ describe("PublicApi OpenAPI v2 errors", () => {
     )
   })
 
-  test("documents nested legacy global sync events", () => {
+  test("does not document removed global event and sync components", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
-    const schema = spec.components.schemas.SyncEventSessionCreated
+    const names = Object.keys(spec.components.schemas)
 
-    expect(schema?.required).toEqual(["type", "id", "syncEvent"])
-    expect(schema?.properties?.type?.enum).toEqual(["sync"])
-    expect(schema?.properties?.syncEvent).toMatchObject({
-      required: ["type", "id", "seq", "aggregateID", "data"],
-      properties: {
-        type: { enum: ["session.created.1"] },
-        id: { type: "string" },
-        seq: { type: "number" },
-        aggregateID: { type: "string" },
-      },
-    })
+    expect(spec.paths["/global/event"]).toBeUndefined()
+    expect(names.filter((name) => name === "GlobalEvent" || name === "EventConfigUpdated")).toEqual([])
+    expect(names.filter((name) => name.startsWith("SyncEvent"))).toEqual([])
   })
 
   test("preserves /api auth responses", () => {

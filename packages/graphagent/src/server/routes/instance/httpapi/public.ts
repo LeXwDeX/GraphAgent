@@ -154,7 +154,7 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
         normalizeLegacyErrorResponses(operation)
       }
       normalizeLegacyOperation(operation, path, method)
-      if ((path === "/event" || path === "/global/event" || path === "/api/event") && method === "get") {
+      if ((path === "/event" || path === "/api/event") && method === "get") {
         // HttpApi has no first-class SSE response schema, and these handlers are
         // raw/streaming routes. Document the actual wire protocol explicitly.
         operation.responses!["200"] = {
@@ -162,11 +162,7 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
           content: {
             "text/event-stream": {
               schema:
-                path === "/event"
-                  ? { $ref: "#/components/schemas/Event" }
-                  : path === "/global/event"
-                    ? { $ref: "#/components/schemas/GlobalEvent" }
-                    : { $ref: "#/components/schemas/V2Event" },
+                path === "/event" ? { $ref: "#/components/schemas/Event" } : { $ref: "#/components/schemas/V2Event" },
             },
           },
         }
@@ -313,8 +309,6 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   const model = schemas.ProviderConfig?.properties?.models?.additionalProperties
   const variants = typeof model === "object" ? model.properties?.variants?.additionalProperties : undefined
   if (variants && typeof variants === "object") variants.additionalProperties = {}
-  const syncInfo = schemas.SyncEventSessionUpdated?.properties?.data?.properties?.info
-  if (syncInfo?.properties) makePropertiesNullable(syncInfo.properties)
 }
 
 function normalizeComponentDescriptions(spec: OpenApiSpec) {
@@ -325,20 +319,6 @@ function normalizeComponentDescriptions(spec: OpenApiSpec) {
       continue
     }
     delete schema.description
-  }
-}
-
-function makePropertiesNullable(properties: Record<string, OpenApiSchema>) {
-  for (const [key, value] of Object.entries(properties)) {
-    if (key === "share" && value.properties?.url) {
-      value.properties.url = nullable(value.properties.url)
-      continue
-    }
-    if (key === "time" && value.properties) {
-      makePropertiesNullable(value.properties)
-      continue
-    }
-    properties[key] = nullable(value)
   }
 }
 

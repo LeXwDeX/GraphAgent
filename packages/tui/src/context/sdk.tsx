@@ -1,6 +1,5 @@
 import { createOpencodeClient } from "@graphagent/sdk/v2"
 import type { Event, GlobalEvent } from "@graphagent/sdk/v2"
-import { Flag } from "@graphagent/core/flag/flag"
 import { BoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { batch, onCleanup, onMount } from "solid-js"
@@ -160,12 +159,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       if (events.onReconnect) {
         const unsubReconnect = events.onReconnect(() => emitter.emit("reconnected"))
         onCleanup(unsubReconnect)
-      }
-
-      if (Flag.GRAPHAGENT_WORKSPACES) {
-        // Start syncing workspaces, it's important to do this after
-        // we've started listening to events
-        await sdk.sync.start().catch(() => {})
       }
     })
 

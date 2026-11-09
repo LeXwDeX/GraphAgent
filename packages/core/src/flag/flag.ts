@@ -40,7 +40,6 @@ export const Flag = {
   GRAPHAGENT_MODELS_PATH: process.env["GRAPHAGENT_MODELS_PATH"],
   GRAPHAGENT_DB: process.env["GRAPHAGENT_DB"],
 
-  GRAPHAGENT_WORKSPACE_ID: process.env["GRAPHAGENT_WORKSPACE_ID"],
   GRAPHAGENT_WORKSPACES: truthy("GRAPHAGENT_WORKSPACES"),
 
   // Evaluated at access time (not module load) because tests, the CLI, and

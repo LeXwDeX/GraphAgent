@@ -6,7 +6,6 @@ import { Database } from "@graphagent/core/database/database"
 
 import { Session } from "@/session/session"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
-import { SyncPaths } from "../../src/server/routes/instance/httpapi/groups/sync"
 import { MessageID, PartID } from "../../src/session/schema"
 import { PartTable } from "@graphagent/core/session/sql"
 import { resetDatabase } from "../fixture/db"
@@ -71,10 +70,10 @@ describe("schema-rejection wire shape", () => {
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
-        const res = yield* requestInDirectory(SyncPaths.history, test.directory, {
-          method: "POST",
+        const res = yield* requestInDirectory(SessionPaths.update.replace(":sessionID", "ses_test"), test.directory, {
+          method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ aggregate: -1 }),
+          body: JSON.stringify({ title: 123 }),
         })
         const body = yield* text(res)
         expect(res.status).toBe(400)
@@ -129,10 +128,10 @@ describe("schema-rejection wire shape", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const huge = "X".repeat(50_000)
-        const res = yield* requestInDirectory(SyncPaths.history, test.directory, {
-          method: "POST",
+        const res = yield* requestInDirectory(SessionPaths.update.replace(":sessionID", "ses_test"), test.directory, {
+          method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ aggregate: huge }),
+          body: JSON.stringify({ title: { value: huge } }),
         })
         const body = yield* text(res)
         expect(res.status).toBe(400)
