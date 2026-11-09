@@ -719,6 +719,8 @@ export const layer = Layer.effect(
                 {
                   event: "SessionStart",
                   source: "compact",
+                  // Top-level only (checked above): report the DAG mode read-only.
+                  ...(current.dagMode !== undefined ? { dagMode: current.dagMode } : {}),
                   ...(yield* HookModelMetrics.forSession({
                     source: "compact",
                     sessionID: current.id,

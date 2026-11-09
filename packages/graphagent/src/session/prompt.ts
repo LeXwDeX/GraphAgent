@@ -2422,7 +2422,16 @@ export const layer = Layer.effect(
         history,
       })
       const result = yield* settingsHook
-        .trigger({ event: "SessionStart", source: "resume", ...metrics }, { sessionID: target.id })
+        .trigger(
+          {
+            event: "SessionStart",
+            source: "resume",
+            // Child sessions never reach here (checked above): report DAG mode read-only.
+            ...(current.dagMode !== undefined ? { dagMode: current.dagMode } : {}),
+            ...metrics,
+          },
+          { sessionID: target.id },
+        )
         .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
       const instance = yield* InstanceState.context
       const skills = hookSkills
@@ -2499,6 +2508,10 @@ export const layer = Layer.effect(
               event: "UserPromptSubmit",
               prompt: promptText,
               ...(titled !== undefined ? { sessionTitle: titled } : {}),
+              // Child sessions do not report DAG mode; a top-level session reports it read-only.
+              ...(session.parentID === undefined && session.dagMode !== undefined
+                ? { dagMode: session.dagMode }
+                : {}),
             },
             { sessionID: input.sessionID, promptID: promptMessageID },
           )
