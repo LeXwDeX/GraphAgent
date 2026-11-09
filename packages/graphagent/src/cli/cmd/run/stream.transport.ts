@@ -1,6 +1,6 @@
-// Global event subscription and prompt turn coordination.
+// Event stream subscription and prompt turn coordination.
 //
-// Creates a long-lived global event stream subscription and feeds relevant
+// Creates a long-lived event stream subscription and feeds relevant
 // events for the current session tree through the reducers. The reducers
 // produce scrollback commits and footer patches, which get forwarded to the
 // footer through stream.ts.
@@ -15,7 +15,7 @@
 // The tick counter prevents stale idle events from resolving the wrong turn.
 // We also re-check live session status before resolving an idle event so a
 // delayed idle from an older turn cannot complete a newer busy turn.
-import type { Event, GlobalEvent, OpencodeClient } from "@graphagent/sdk/v2"
+import type { Event, OpencodeClient } from "@graphagent/sdk/v2"
 import { Context, Deferred, Effect, Exit, Layer, Scope, Stream } from "effect"
 import { makeRuntime } from "@/effect/run-service"
 import {
@@ -179,38 +179,8 @@ function isEvent(value: unknown): value is Event {
   return typeof type === "string" && !!properties && typeof properties === "object"
 }
 
-function isGlobalEvent(value: unknown): value is GlobalEvent {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false
-  }
-
-  const payload = Reflect.get(value, "payload")
-  return !!payload && typeof payload === "object"
-}
-
-function globalPayloadEvent(value: unknown): Event | undefined {
-  if (!isGlobalEvent(value)) {
-    return undefined
-  }
-
-  const payload = value.payload
-  if (payload.type === "sync") {
-    return undefined
-  }
-
-  return isEvent(payload) ? payload : undefined
-}
-
-function isMatchingDisposeEvent(value: unknown, directory: string | undefined): boolean {
-  if (!directory || !isGlobalEvent(value)) {
-    return false
-  }
-
-  if (value.directory !== directory) {
-    return false
-  }
-
-  return value.payload.type === "server.instance.disposed"
+function isMatchingDisposeEvent(value: unknown): boolean {
+  return isEvent(value) && value.type === "server.instance.disposed"
 }
 
 function active(event: Event, sessionID: string): boolean {
@@ -433,7 +403,7 @@ function createLayer(input: StreamInput) {
         const events = yield* Scope.provide(scope)(
           Effect.acquireRelease(
             Effect.promise(() =>
-              input.sdk.global.event({
+              input.sdk.event.subscribe(undefined, {
                 signal: abort.signal,
               }),
             ),
@@ -1190,16 +1160,17 @@ function createLayer(input: StreamInput) {
                   return
                 }
 
-                if (isMatchingDisposeEvent(item, input.directory)) {
+                if (isMatchingDisposeEvent(item)) {
                   yield* fail(new Error("instance disposed"))
                   yield* closeScope()
                   return
                 }
 
-                const event = globalPayloadEvent(item)
-                if (!event) {
+                if (!isEvent(item)) {
                   return
                 }
+
+                const event = item
 
                 const sessionID = sid(event)
                 if (booting || replaying) {
@@ -1227,7 +1198,7 @@ function createLayer(input: StreamInput) {
             Effect.ensuring(
               Effect.gen(function* () {
                 if (!abort.signal.aborted && !state.fault) {
-                  yield* fail(new Error("global event stream closed"))
+                  yield* fail(new Error("event stream closed"))
                 }
                 closeStream()
               }),

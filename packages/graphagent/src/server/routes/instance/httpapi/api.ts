@@ -20,7 +20,6 @@ import { ProjectCopyApi } from "./groups/project-copy"
 import { ProviderApi } from "./groups/provider"
 import { QuestionApi } from "./groups/question"
 import { SessionApi } from "./groups/session"
-import { SyncApi } from "./groups/sync"
 import { DagApi } from "./groups/dag"
 import { WorkspaceApi } from "./groups/workspace"
 import { makeApi } from "@graphagent/protocol/api"
@@ -64,7 +63,6 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(PermissionApi)
   .addHttpApi(ProviderApi)
   .addHttpApi(SessionApi)
-  .addHttpApi(SyncApi)
   .addHttpApi(DagApi)
   .addHttpApi(WorkspaceApi)
   .middleware(SchemaErrorMiddleware)

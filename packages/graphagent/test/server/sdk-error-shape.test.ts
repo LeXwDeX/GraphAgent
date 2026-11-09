@@ -60,7 +60,7 @@ describe("v2 SDK error shape", () => {
 
     let caught: unknown
     try {
-      await sdk.sync.history.list({ body: { aggregate: -1 } as any }, { throwOnError: true })
+      await sdk.session.update({ sessionID: "ses_test", title: 123 } as any, { throwOnError: true })
     } catch (e) {
       caught = e
     }

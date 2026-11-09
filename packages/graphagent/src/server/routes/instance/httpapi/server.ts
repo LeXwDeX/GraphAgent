@@ -99,7 +99,6 @@ import { projectCopyHandlers } from "./handlers/project-copy"
 import { providerHandlers } from "./handlers/provider"
 import { questionHandlers } from "./handlers/question"
 import { sessionHandlers } from "./handlers/session"
-import { syncHandlers } from "./handlers/sync"
 import { handlers } from "@graphagent/server/handlers"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@graphagent/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
@@ -139,7 +138,6 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     permissionHandlers,
     providerHandlers,
     sessionHandlers,
-    syncHandlers,
     dagHandlers,
     workspaceHandlers,
   ]),

@@ -5,7 +5,6 @@ import { WorkspaceAdapterRuntime } from "@/control-plane/workspace-adapter-runti
 import { Session } from "@/session/session"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute } from "@/server/shared/workspace-routing"
 import { NotFoundError } from "@/storage/storage"
-import { Flag } from "@graphagent/core/flag/flag"
 import { Context, Data, Effect, Layer, Option, Schema } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiMiddleware } from "effect/http-api"
@@ -51,10 +50,6 @@ function requestURL(request: HttpServerRequest.HttpServerRequest): URL {
   return new URL(request.url, "http://localhost")
 }
 
-function configuredWorkspaceID(): WorkspaceV2.ID | undefined {
-  return Flag.GRAPHAGENT_WORKSPACE_ID ? WorkspaceV2.ID.make(Flag.GRAPHAGENT_WORKSPACE_ID) : undefined
-}
-
 function selectedWorkspaceID(url: URL, sessionWorkspaceID?: WorkspaceV2.ID): WorkspaceV2.ID | undefined {
   const workspaceParam = url.searchParams.get("workspace")
   return sessionWorkspaceID ?? (workspaceParam ? WorkspaceV2.ID.make(workspaceParam) : undefined)
@@ -82,9 +77,8 @@ function shouldStayOnControlPlane(request: HttpServerRequest.HttpServerRequest, 
 
 function resolveWorkspace(
   id: WorkspaceV2.ID | undefined,
-  envWorkspaceID: WorkspaceV2.ID | undefined,
 ): Effect.Effect<Workspace.Info | void, never, Workspace.Service> {
-  if (!id || envWorkspaceID) return Effect.void
+  if (!id) return Effect.void
   return Workspace.Service.use((workspace) => workspace.get(id))
 }
 
@@ -98,11 +92,6 @@ function missingWorkspaceResponse(id: WorkspaceV2.ID): HttpServerResponse.HttpSe
 function planWorkspaceRequest(workspace: Workspace.Info): Effect.Effect<RequestPlan, never, Workspace.Service> {
   return Effect.gen(function* () {
     const target = yield* WorkspaceAdapterRuntime.target(workspace)
-    // Remote workspace targets were removed with the remote-workspace feature;
-    // only local adapters can provide a directory now.
-    if (target.type === "remote") {
-      return yield* Effect.die(new Error(`remote workspace targets are not supported: ${workspace.id}`))
-    }
     return RequestPlan.Local({ directory: target.directory, workspaceID: workspace.id })
   })
 }
@@ -113,24 +102,23 @@ function planRequest(
 ): Effect.Effect<RequestPlan, never, Workspace.Service> {
   return Effect.gen(function* () {
     const url = requestURL(request)
-    const envWorkspaceID = configuredWorkspaceID()
     const workspaceID = url.pathname.startsWith("/api/")
       ? selectedV2WorkspaceID(url, session?.workspaceID)
       : selectedWorkspaceID(url, session?.workspaceID)
     if (workspaceID === InvalidWorkspaceID) return RequestPlan.InvalidWorkspace()
-    const workspace = yield* resolveWorkspace(workspaceID, envWorkspaceID)
+    const workspace = yield* resolveWorkspace(workspaceID)
 
-    if (workspaceID && workspace === undefined && !envWorkspaceID) {
+    if (workspaceID && workspace === undefined) {
       return RequestPlan.MissingWorkspace({ workspaceID })
     }
 
-    if (workspace !== undefined && !envWorkspaceID && !shouldStayOnControlPlane(request, url)) {
+    if (workspace !== undefined && !shouldStayOnControlPlane(request, url)) {
       return yield* planWorkspaceRequest(workspace)
     }
 
     return RequestPlan.Local({
       directory: session?.directory || defaultDirectory(request, url),
-      workspaceID: envWorkspaceID ?? workspaceID,
+      workspaceID,
     })
   })
 }

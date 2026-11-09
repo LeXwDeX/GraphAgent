@@ -679,9 +679,6 @@ describe("HttpApi SDK", () => {
 
       expect(health.response?.status).toBe(200)
       expect(health.data).toMatchObject({ healthy: true })
-      expect(yield* firstEvent((signal) => sdk.global.event({ signal }))).toMatchObject({
-        payload: { type: "server.connected" },
-      })
       expect(log.response?.status).toBe(200)
       expect(log.data).toBe(true)
       yield* expectStatus(() => sdk.auth.set({ providerID: "test" }), 400)
@@ -757,14 +754,6 @@ describe("HttpApi SDK", () => {
         health: record(health.data).healthy,
         log: log.data,
       }
-    }),
-  )
-
-  serverPathParity("matches generated SDK global event stream", (serverPath) =>
-    Effect.gen(function* () {
-      const sdk = yield* client(serverPath)
-      const event = yield* firstEvent((signal) => sdk.global.event({ signal }))
-      return { type: record(record(event).payload).type }
     }),
   )
 

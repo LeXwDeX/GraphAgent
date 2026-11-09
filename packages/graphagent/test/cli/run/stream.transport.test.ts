@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
-import { OpencodeClient, type GlobalEvent } from "@graphagent/sdk/v2"
+import { OpencodeClient } from "@graphagent/sdk/v2"
 import { createSessionTransport } from "@/cli/cmd/run/stream.transport"
 import type { FooterApi, FooterEvent, LocalReplayRow, RunFilePart, StreamCommit } from "@/cli/cmd/run/types"
 
 type EventStream = Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>>["stream"]
-type GlobalEventStream = Awaited<ReturnType<OpencodeClient["global"]["event"]>>["stream"]
 type SdkEvent = EventStream extends AsyncGenerator<infer T, unknown, unknown> ? T : never
 type SessionMessage = NonNullable<Awaited<ReturnType<OpencodeClient["session"]["messages"]>>["data"]>[number]
 type SessionChild = NonNullable<Awaited<ReturnType<OpencodeClient["session"]["children"]>>["data"]>[number]
@@ -144,10 +143,6 @@ function eventFeed() {
   return feed<SdkEvent>()
 }
 
-function globalFeed() {
-  return feed<GlobalEvent>()
-}
-
 function emptyStream(): EventStream {
   return (async function* (): AsyncGenerator<SdkEvent> {})()
 }
@@ -163,19 +158,6 @@ function ok<T>(data: T) {
 
 function sse(stream: EventStream) {
   return Promise.resolve({ stream })
-}
-
-function globalSse(stream: GlobalEventStream) {
-  return Promise.resolve({ stream })
-}
-
-function wrapGlobalStream(stream: EventStream): GlobalEventStream {
-  return (async function* (): GlobalEventStream {
-    for await (const event of stream) {
-      yield globalEvent(event)
-    }
-    return StreamClosed
-  })()
 }
 
 function statusMap(busy: boolean): SessionStatusMap {
@@ -363,14 +345,6 @@ function child(id: string): SessionChild {
   }
 }
 
-function globalEvent(payload: GlobalEvent["payload"]): GlobalEvent {
-  return {
-    directory: "/tmp",
-    project: "project-1",
-    payload,
-  }
-}
-
 function footer(fn?: (commit: StreamCommit) => void) {
   const commits: StreamCommit[] = []
   const events: FooterEvent[] = []
@@ -416,9 +390,7 @@ function footer(fn?: (commit: StreamCommit) => void) {
 function sdk(
   input: {
     stream?: EventStream
-    globalStream?: GlobalEventStream
     subscribe?: OpencodeClient["event"]["subscribe"]
-    globalEvent?: OpencodeClient["global"]["event"]
     promptAsync?: OpencodeClient["session"]["promptAsync"]
     status?: OpencodeClient["session"]["status"]
     messages?: OpencodeClient["session"]["messages"]
@@ -430,8 +402,6 @@ function sdk(
   const client = new OpencodeClient()
 
   const subscribe: OpencodeClient["event"]["subscribe"] = input.subscribe ?? (() => sse(input.stream ?? emptyStream()))
-  const globalEvent: OpencodeClient["global"]["event"] =
-    input.globalEvent ?? (() => globalSse(input.globalStream ?? wrapGlobalStream(input.stream ?? emptyStream())))
   const promptAsync: OpencodeClient["session"]["promptAsync"] = input.promptAsync ?? (() => ok(undefined))
   const status: OpencodeClient["session"]["status"] = input.status ?? (() => ok({}))
   const messages: OpencodeClient["session"]["messages"] = input.messages ?? (() => ok([]))
@@ -440,7 +410,6 @@ function sdk(
   const questions: OpencodeClient["question"]["list"] = input.questions ?? (() => ok([]))
 
   spyOn(client.event, "subscribe").mockImplementation(subscribe)
-  spyOn(client.global, "event").mockImplementation(globalEvent)
   spyOn(client.session, "promptAsync").mockImplementation(promptAsync)
   spyOn(client.session, "status").mockImplementation(status)
   spyOn(client.session, "messages").mockImplementation(messages)
@@ -1553,13 +1522,13 @@ describe("run stream transport", () => {
   })
 
   test("replays child events buffered during bootstrap once the tab is known", async () => {
-    const global = globalFeed()
+    const global = eventFeed()
     const ui = footer()
     const gate = defer<void>()
     let transport: Awaited<ReturnType<typeof createSessionTransport>> | undefined
     const task = createSessionTransport({
       sdk: sdk({
-        globalStream: global.stream,
+        stream: global.stream,
         messages: async ({ sessionID }) => {
           if (sessionID !== "session-1") {
             return ok([])
@@ -1578,41 +1547,37 @@ describe("run stream transport", () => {
 
     try {
       await Promise.resolve()
-      global.push(globalEvent(retry("child-1", 1, "retry child")))
-      global.push(
-        globalEvent({
-          id: "evt-child-message",
-          type: "message.updated",
-          properties: {
+      global.push(retry("child-1", 1, "retry child"))
+      global.push({
+        id: "evt-child-message",
+        type: "message.updated",
+        properties: {
+          sessionID: "child-1",
+          info: assistantMessage({
             sessionID: "child-1",
-            info: assistantMessage({
-              sessionID: "child-1",
-              id: "msg-child-1",
-              parts: [],
-            }).info,
-          },
-        }),
-      )
-      global.push(globalEvent(textUpdated(textPart("txt-child-1", "msg-child-1", "", "child-1"))))
-      global.push(globalEvent(textDelta("msg-child-1", "txt-child-1", "Hello", "child-1")))
+            id: "msg-child-1",
+            parts: [],
+          }).info,
+        },
+      })
+      global.push(textUpdated(textPart("txt-child-1", "msg-child-1", "", "child-1")))
+      global.push(textDelta("msg-child-1", "txt-child-1", "Hello", "child-1"))
       global.push(
-        globalEvent(
-          toolUpdated(
-            runningTool({
-              sessionID: "session-1",
-              messageID: "msg-1",
-              id: "task-1",
-              callID: "call-1",
-              tool: "task",
-              body: {
-                description: "Explore run.ts",
-                subagent_type: "explore",
-              },
-              metadata: {
-                sessionId: "child-1",
-              },
-            }),
-          ),
+        toolUpdated(
+          runningTool({
+            sessionID: "session-1",
+            messageID: "msg-1",
+            id: "task-1",
+            callID: "call-1",
+            tool: "task",
+            body: {
+              description: "Explore run.ts",
+              subagent_type: "explore",
+            },
+            metadata: {
+              sessionId: "child-1",
+            },
+          }),
         ),
       )
       gate.resolve()
@@ -1656,11 +1621,11 @@ describe("run stream transport", () => {
   })
 
   test("streams selected subagent output from global events while it is running", async () => {
-    const global = globalFeed()
+    const global = eventFeed()
     const ui = footer()
     const transport = await createSessionTransport({
       sdk: sdk({
-        globalStream: global.stream,
+        stream: global.stream,
       }),
       sessionID: "session-1",
       thinking: true,
@@ -1669,25 +1634,23 @@ describe("run stream transport", () => {
     })
 
     try {
-      global.push(globalEvent(assistant("msg-1")))
+      global.push(assistant("msg-1"))
       global.push(
-        globalEvent(
-          toolUpdated(
-            runningTool({
-              sessionID: "session-1",
-              messageID: "msg-1",
-              id: "task-1",
-              callID: "call-1",
-              tool: "task",
-              body: {
-                description: "Explore run.ts",
-                subagent_type: "explore",
-              },
-              metadata: {
-                sessionId: "child-1",
-              },
-            }),
-          ),
+        toolUpdated(
+          runningTool({
+            sessionID: "session-1",
+            messageID: "msg-1",
+            id: "task-1",
+            callID: "call-1",
+            tool: "task",
+            body: {
+              description: "Explore run.ts",
+              subagent_type: "explore",
+            },
+            metadata: {
+              sessionId: "child-1",
+            },
+          }),
         ),
       )
 
@@ -1700,21 +1663,19 @@ describe("run stream transport", () => {
 
       transport.selectSubagent("child-1")
 
-      global.push(
-        globalEvent({
-          id: "evt-child-message",
-          type: "message.updated",
-          properties: {
+      global.push({
+        id: "evt-child-message",
+        type: "message.updated",
+        properties: {
+          sessionID: "child-1",
+          info: assistantMessage({
             sessionID: "child-1",
-            info: assistantMessage({
-              sessionID: "child-1",
-              id: "msg-child-1",
-              parts: [],
-            }).info,
-          },
-        }),
-      )
-      global.push(globalEvent(textUpdated(textPart("txt-child-1", "msg-child-1", "hello", "child-1"))))
+            id: "msg-child-1",
+            parts: [],
+          }).info,
+        },
+      })
+      global.push(textUpdated(textPart("txt-child-1", "msg-child-1", "hello", "child-1")))
 
       expect(
         await waitFor(() => {
@@ -1734,7 +1695,7 @@ describe("run stream transport", () => {
         ],
       })
 
-      global.push(globalEvent(textUpdated(textPart("txt-child-1", "msg-child-1", "hello world", "child-1"))))
+      global.push(textUpdated(textPart("txt-child-1", "msg-child-1", "hello world", "child-1")))
 
       expect(
         await waitFor(() => {
@@ -2292,11 +2253,11 @@ describe("run stream transport", () => {
 
     const transport = await createSessionTransport({
       sdk: sdk({
-        globalEvent: () =>
-          globalSse(
-            (async function* (): AsyncGenerator<GlobalEvent> {
+        subscribe: () =>
+          sse(
+            (async function* (): AsyncGenerator<SdkEvent> {
               await ready.promise
-              yield globalEvent(busy())
+              yield busy()
               throw new Error("boom")
             })(),
           ),
@@ -2334,17 +2295,17 @@ describe("run stream transport", () => {
 
     const transport = await createSessionTransport({
       sdk: sdk({
-        globalEvent: () =>
-          globalSse(
-            (async function* (): AsyncGenerator<GlobalEvent> {
+        subscribe: () =>
+          sse(
+            (async function* (): AsyncGenerator<SdkEvent> {
               await ready.promise
-              yield globalEvent({
+              yield {
                 id: "evt-disposed",
                 type: "server.instance.disposed",
                 properties: {
                   directory: "/tmp",
                 },
-              })
+              }
             })(),
           ),
         promptAsync: async () => {

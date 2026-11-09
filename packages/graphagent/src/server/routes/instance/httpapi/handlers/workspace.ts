@@ -1,13 +1,12 @@
 import { listAdapters } from "@/control-plane/adapters"
 import { Workspace } from "@/control-plane/workspace"
 import * as InstanceState from "@/effect/instance-state"
-import { Vcs } from "@/project/vcs"
 import { Cause, Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { notFound } from "../errors"
 import { ApiVcsApplyError } from "../groups/instance"
-import { ApiWorkspaceCreateError, ApiWorkspaceWarpError, CreatePayload, WarpPayload } from "../groups/workspace"
+import { ApiWorkspaceCreateError, CreatePayload, WarpPayload } from "../groups/workspace"
 
 export const workspaceHandlers = HttpApiBuilder.group(InstanceHttpApi, "workspace", (handlers) =>
   Effect.gen(function* () {
@@ -71,19 +70,11 @@ export const workspaceHandlers = HttpApiBuilder.group(InstanceHttpApi, "workspac
         .pipe(
           Effect.mapError((error) => {
             if (error instanceof Workspace.WorkspaceNotFoundError) return notFound(error.message)
-            if (error instanceof Vcs.PatchApplyError) {
-              return new ApiVcsApplyError({
-                name: "VcsApplyError",
-                data: {
-                  message: error.message,
-                  reason: error.reason,
-                },
-              })
-            }
-            return new ApiWorkspaceWarpError({
-              name: "WorkspaceWarpError",
+            return new ApiVcsApplyError({
+              name: "VcsApplyError",
               data: {
                 message: error.message,
+                reason: error.reason,
               },
             })
           }),

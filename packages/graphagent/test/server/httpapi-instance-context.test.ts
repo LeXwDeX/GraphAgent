@@ -7,7 +7,6 @@ import * as Socket from "effect/socket/Socket"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { registerAdapter } from "../../src/control-plane/adapters"
-import { WorkspaceV2 } from "@graphagent/core/workspace"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import type { WorkspaceAdapter } from "../../src/control-plane/types"
 import { Workspace } from "../../src/control-plane/workspace"
@@ -27,7 +26,6 @@ import {
 } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
-import { withFixedWorkspaceID } from "../fixture/flag"
 import { workspaceLayerWithRuntimeFlags } from "../fixture/workspace"
 import { waitGlobalBusEvent } from "./global-bus"
 import { testEffect } from "../lib/effect"
@@ -239,94 +237,6 @@ describe("HttpApi instance context middleware", () => {
       expect(yield* response.json).toMatchObject({
         directory: workspaceDir,
         workspaceID: workspace.id,
-      })
-    }),
-  )
-
-  it.live("uses configured workspace id instead of routing to the requested workspace", () =>
-    Effect.gen(function* () {
-      const fixedWorkspaceID = WorkspaceV2.ID.ascending()
-      yield* withFixedWorkspaceID(fixedWorkspaceID)
-
-      const dir = yield* tmpdirScoped({ git: true })
-      const project = yield* Project.use.fromDirectory(dir)
-      const workspaceDir = path.join(dir, ".workspace-local")
-      const workspace = yield* createLocalWorkspace({
-        projectID: project.project.id,
-        type: "instance-context-fixed-workspace-ref",
-        directory: workspaceDir,
-      })
-      yield* serveProbe()
-
-      const response = yield* HttpClientRequest.get(`/probe?workspace=${workspace.id}`).pipe(
-        HttpClientRequest.setHeader("x-graphagent-directory", dir),
-        HttpClient.execute,
-      )
-
-      expect(response.status).toBe(200)
-      expect(yield* response.json).toMatchObject({
-        directory: dir,
-        workspaceID: fixedWorkspaceID,
-      })
-    }),
-  )
-
-  it.live("falls through to local instead of MissingWorkspace when configured workspace id is set", () =>
-    Effect.gen(function* () {
-      const fixedWorkspaceID = WorkspaceV2.ID.ascending()
-      yield* withFixedWorkspaceID(fixedWorkspaceID)
-
-      const dir = yield* tmpdirScoped({ git: true })
-      yield* Project.use.fromDirectory(dir)
-      yield* serveProbe()
-
-      // Reference a workspace id that is not registered locally. Without the
-      // configured env override, this would short-circuit to a 500
-      // MissingWorkspace response. With the env set, planRequest must skip the
-      // MissingWorkspace branch and fall through to Local with the configured
-      // workspace id.
-      const unknownWorkspaceID = WorkspaceV2.ID.ascending()
-      const response = yield* HttpClientRequest.get(`/probe?workspace=${unknownWorkspaceID}`).pipe(
-        HttpClientRequest.setHeader("x-graphagent-directory", dir),
-        HttpClient.execute,
-      )
-
-      expect(response.status).toBe(200)
-      expect(yield* response.json).toMatchObject({
-        directory: dir,
-        workspaceID: fixedWorkspaceID,
-      })
-    }),
-  )
-
-  it.live("keeps configured workspace id on control-plane routes without remote routing", () =>
-    Effect.gen(function* () {
-      const fixedWorkspaceID = WorkspaceV2.ID.ascending()
-      yield* withFixedWorkspaceID(fixedWorkspaceID)
-
-      const dir = yield* tmpdirScoped({ git: true })
-      const project = yield* Project.use.fromDirectory(dir)
-      const workspaceDir = path.join(dir, ".workspace-local")
-      const workspace = yield* createLocalWorkspace({
-        projectID: project.project.id,
-        type: "instance-context-fixed-workspace-control-plane",
-        directory: workspaceDir,
-      })
-      // /session is matched by isLocalWorkspaceRoute, so shouldStayOnControlPlane
-      // is true. Combined with the env override, the route must stay Local with
-      // the configured workspace id (not divert to the requested workspace's
-      // local directory).
-      yield* serveProbe()
-
-      const response = yield* HttpClientRequest.get(`/session?workspace=${workspace.id}`).pipe(
-        HttpClientRequest.setHeader("x-graphagent-directory", dir),
-        HttpClient.execute,
-      )
-
-      expect(response.status).toBe(200)
-      expect(yield* response.json).toMatchObject({
-        directory: dir,
-        workspaceID: fixedWorkspaceID,
       })
     }),
   )

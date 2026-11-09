@@ -65,19 +65,6 @@ const scenarios: Scenario[] = [
       object(body)
       check(body.healthy === true, "server should report healthy")
     }),
-  http.protected
-    .get("/global/event", "global.event")
-    .global()
-    .stream()
-    .status(
-      200,
-      (_ctx, result) =>
-        Effect.sync(() => {
-          check(result.contentType.includes("text/event-stream"), "global event should be an SSE stream")
-          check(result.text.includes("server.connected"), "global event should emit initial connection event")
-        }),
-      "status",
-    ),
   http.protected.get("/global/config", "global.config.get").global().json(),
   http.protected
     .patch("/global/config", "global.config.update")
@@ -585,25 +572,6 @@ const scenarios: Scenario[] = [
       check(body === false, "background route should be a no-op without running subagents")
     }),
   http.protected.get("/experimental/resource", "experimental.resource.list").json(),
-  http.protected
-    .post("/sync/history", "sync.history.list")
-    .at((ctx) => ({ path: "/sync/history", headers: ctx.headers(), body: {} }))
-    .json(200, array),
-  http.protected
-    .post("/sync/replay", "sync.replay")
-    .at((ctx) => ({ path: "/sync/replay", headers: ctx.headers(), body: { directory: ctx.directory, events: [] } }))
-    .status(400),
-  http.protected
-    .post("/sync/steal", "sync.steal.invalid")
-    .at((ctx) => ({ path: "/sync/steal", headers: ctx.headers(), body: {} }))
-    .status(400, undefined, "status"),
-  http.protected
-    .post("/sync/start", "sync.start")
-    .mutating()
-    .preserveDatabase()
-    .json(200, (body) => {
-      check(body === true, "sync start should return true when no workspace sessions exist")
-    }),
   http.protected
     .post("/instance/dispose", "instance.dispose")
     .mutating()

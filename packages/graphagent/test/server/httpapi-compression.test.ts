@@ -132,20 +132,5 @@ describe("HttpApi compression", () => {
         await response.body?.cancel().catch(() => {})
       }
     })
-
-    test("/global/event SSE is not compressed", async () => {
-      const controller = new AbortController()
-      const response = await app().request("/global/event", {
-        headers: { "accept-encoding": "gzip" },
-        signal: controller.signal,
-      })
-      try {
-        expect(response.status).toBe(200)
-        expect(response.headers.get("content-encoding")).toBeNull()
-      } finally {
-        controller.abort()
-        await response.body?.cancel().catch(() => {})
-      }
-    })
   })
 })
