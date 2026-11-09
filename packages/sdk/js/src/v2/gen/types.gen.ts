@@ -1994,6 +1994,7 @@ export type GlobalEvent = {
         properties: unknown
       }
     | EventServerInstanceDisposed
+    | EventConfigUpdated
     | SyncEventSessionCreated
     | SyncEventSessionUpdated
     | SyncEventSessionDeleted
@@ -4654,6 +4655,14 @@ export type SyncEventSessionCreated = {
       sessionID: string
       info: Session
     }
+  }
+}
+
+export type EventConfigUpdated = {
+  id: string
+  type: "config.updated"
+  properties: {
+    keys: Array<string>
   }
 }
 

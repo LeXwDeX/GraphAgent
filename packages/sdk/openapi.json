@@ -18180,6 +18180,9 @@
                 "$ref": "#/components/schemas/EventServerInstanceDisposed"
               },
               {
+                "$ref": "#/components/schemas/EventConfigUpdated"
+              },
+              {
                 "$ref": "#/components/schemas/SyncEventSessionCreated"
               },
               {
@@ -26540,6 +26543,33 @@
           }
         },
         "required": ["type", "id", "syncEvent"],
+        "additionalProperties": false
+      },
+      "EventConfigUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["config.updated"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "keys": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["keys"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
         "additionalProperties": false
       },
       "MoveSessionDestination": {

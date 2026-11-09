@@ -1,4 +1,5 @@
 import { Config } from "@/config/config"
+import { ConfigHotReload } from "@/config/hot-reload"
 import { GlobalBus, type GlobalEvent as GlobalBusEvent } from "@/bus/global"
 import { EffectBridge } from "@/effect/bridge"
 import { EventV2 } from "@graphagent/core/event"
@@ -86,7 +87,24 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       const result = yield* config
         .updateGlobal(ctx.payload)
         .pipe(Effect.catchTag("ConfigChangeBlocked", () => Effect.fail(new HttpApiError.BadRequest({}))))
-      if (result.changed) bridge.fork(disposeAllInstancesAndEmitGlobalDisposed({ swallowErrors: true }))
+      if (result.changed) {
+        if (ConfigHotReload.isHotReloadOnly(result.changedKeys)) {
+          // #1013 (C1 PR5): hot-read keys apply to the next workflow run, so
+          // keep every instance (and its in-flight nodes) alive and report the
+          // changed keys instead.
+          yield* Effect.sync(() =>
+            GlobalBus.emit("event", {
+              directory: "global",
+              payload: {
+                type: ConfigHotReload.CONFIG_UPDATED_EVENT,
+                properties: { keys: result.changedKeys },
+              },
+            }),
+          )
+        } else {
+          bridge.fork(disposeAllInstancesAndEmitGlobalDisposed({ swallowErrors: true }))
+        }
+      }
       return result.info
     })
 

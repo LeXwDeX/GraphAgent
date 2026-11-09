@@ -1,7 +1,7 @@
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { EventV2 } from "@graphagent/core/event"
 import { EventManifest } from "@/event-manifest"
-import { InstanceDisposed } from "@/server/event"
+import { ConfigUpdated, InstanceDisposed } from "@/server/event"
 import "@/server/event"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
@@ -42,6 +42,7 @@ const GlobalEventSchema = Schema.Struct({
       )
       .toArray(),
     InstanceDisposed,
+    ConfigUpdated,
     ...SyncEventSchemas,
   ]),
 }).annotate({ identifier: "GlobalEvent" })
