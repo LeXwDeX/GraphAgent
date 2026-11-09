@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // Runtime-initiated session cancellations carry a named reason and actor.
 // SessionPrompt stores the reason in-process before interrupting the run, and

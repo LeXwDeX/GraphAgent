@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * How a provider carries a reasoning part when it is replayed, decided by the engine that defines the metadata.
  *

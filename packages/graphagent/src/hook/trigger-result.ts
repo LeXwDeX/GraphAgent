@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Cycle-free home for the `TriggerResult` type and the `landSystemMessages`
  * pure helper.

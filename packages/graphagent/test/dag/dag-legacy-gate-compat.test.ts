@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Compatibility regression: the strict condition grammar and the evaluated
 // diff-review PASS gate apply to definitions a mutation authors. A workflow
 // persisted before those checks — a bare multi-word condition value

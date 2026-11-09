@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import { Database } from "@graphagent/core/database/database"

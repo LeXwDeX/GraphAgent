@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- mock dag
 // layers and row fixtures use `as unknown as DagStore.Interface` shims that
 // implement only the interface slice each scenario exercises.

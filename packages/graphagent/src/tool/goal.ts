@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Effect, Option, Schema } from "effect"
 import * as Tool from "./tool"
 import DESCRIPTION from "./goal.txt"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect } from "bun:test"
 import { DateTime, Deferred, Effect, Layer } from "effect"
 import { eq } from "drizzle-orm"

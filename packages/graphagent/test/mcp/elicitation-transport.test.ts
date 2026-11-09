@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Sibling MCP tests register `mock.module("@modelcontextprotocol/client", ...)`
 // with reduced MockClient implementations (no transport, no `callTool`), and
 // Bun keeps those mocks for the rest of the process. Use the real SDK Client

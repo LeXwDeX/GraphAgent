@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { afterAll, describe, expect, test } from "bun:test"
 import { Flag } from "@graphagent/core/flag/flag"
 import path from "path"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Runs the real v2 client against the fixture servers in a fresh process.
 // Sibling test files mock.module("@modelcontextprotocol/client") in the shared
 // bun test process, so real-transport coverage must not import the SDK there.

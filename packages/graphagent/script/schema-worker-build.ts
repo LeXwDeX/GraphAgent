@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { fileURLToPath } from "node:url"
 
 export const NODE_SCHEMA_WORKER_NAME = "schema-validation-worker.mjs"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as RemoteLkg from "./remote-lkg"
 
 import { Global } from "@graphagent/core/global"

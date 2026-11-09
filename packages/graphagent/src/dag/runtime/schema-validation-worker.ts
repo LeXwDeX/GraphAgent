@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 import { parentPort } from "node:worker_threads"
 import { validateAgainstSchema } from "./schema-validator.ts"

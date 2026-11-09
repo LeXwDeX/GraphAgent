@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Rpc } from "../../../src/util/rpc"
 const worker = new Worker(new URL("../../../src/cli/tui/worker.ts", import.meta.url).href)
 const client = Rpc.client<typeof import("../../../src/cli/tui/worker").rpc>(worker)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, test } from "bun:test"
 import { CANCELLABLE_POSTS, isCancellableRequest } from "@/cli/tui/rpc-contract"
 import { listen } from "@/util/rpc"

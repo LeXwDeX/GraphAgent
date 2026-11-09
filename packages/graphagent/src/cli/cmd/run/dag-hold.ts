@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // Consumer-only DAG hold for the non-interactive `opencode run` loop (issue 614).
 //

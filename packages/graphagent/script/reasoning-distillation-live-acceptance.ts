@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** Explicit, opt-in synthetic acceptance. Never loads or edits user conversations. */
 import { mkdir } from "node:fs/promises"
 import path from "node:path"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, test } from "bun:test"
 import { Schema } from "effect"
 import { mkdtemp, rm } from "node:fs/promises"

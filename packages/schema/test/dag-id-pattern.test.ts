@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { test, expect } from "bun:test"
 import { Schema } from "effect"
 import { DagEvent } from "../src/dag-event"

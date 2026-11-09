@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Reasoning-rewrite policy constants. Pure data; hosts supply live model availability and usage observations.
  */

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Cause, Context, Effect, Layer, Schema } from "effect"
 import path from "node:path"
 import { PROJECT_DIR } from "@graphagent/core/brand"

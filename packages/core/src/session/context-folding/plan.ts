@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Hash } from "../../util/hash"
 import { normalizeParameters, type NormalizedParameters } from "./normalize"
 import { ContextFoldingPolicy } from "./policy"

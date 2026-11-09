@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // brand-guard: legacy-name-negative-test
 import { describe, expect, test } from "bun:test"
 import path from "path"

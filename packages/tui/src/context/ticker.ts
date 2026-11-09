@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { createEffect, createMemo, createSignal, type Accessor } from "solid-js"
 
 /** Animation frame interval. Matches the design prototype, about 11 fps. */

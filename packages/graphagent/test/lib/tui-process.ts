@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { spawn } from "./pty.bun"
 import { Ghostty } from "ghostty-web"
 import { mkdir, writeFile } from "node:fs/promises"

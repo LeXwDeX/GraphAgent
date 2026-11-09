@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Effect } from "effect"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"

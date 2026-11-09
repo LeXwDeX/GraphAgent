@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, test } from "bun:test"
 import { NO_USEFUL_REASONING_TEXT } from "@graphagent/core/session/reasoning-distillation"
 import { checkFixtureSemantics } from "../../script/reasoning-distillation-quality"

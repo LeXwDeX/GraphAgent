@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Dual-era fixture: the SAME factory serves 2026-07-28 (server/discover) and
 // legacy (initialize) clients — serveStdio owns the era decision per connection.
 import { spawn } from "node:child_process"

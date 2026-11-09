@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { DagStore } from "@graphagent/core/dag/store"
 
 export function makeWorkflowRow(overrides: Partial<DagStore.WorkflowRow> = {}): DagStore.WorkflowRow {

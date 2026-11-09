@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- The incident
 // harness deliberately mirrors dag-loop-guards.test.ts: mocked service layers
 // and seeded row fixtures use `as never` type shims (mock objects implement

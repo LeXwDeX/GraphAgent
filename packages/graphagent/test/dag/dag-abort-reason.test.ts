@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Issue #955 — runtime-initiated child interruption must name its reason and actor.
 //
 // The DAG runtime cannot infer why a child stopped after the fact: a deadline

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Global } from "@graphagent/core/global"
 import { APP_NAME } from "@graphagent/core/brand"
 import fs from "fs/promises"

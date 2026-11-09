@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Issue #777 — acceptance criterion 1: a real PreToolUse hook DENIAL must not
 // terminate the worker; the model sees the denial as an ordinary tool result,
 // corrects course, and finishes its report.

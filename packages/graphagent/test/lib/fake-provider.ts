@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash } from "node:crypto"
 import { Global } from "@graphagent/core/global"
 import { LLM, type StreamInput } from "@/session/llm"

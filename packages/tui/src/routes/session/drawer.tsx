@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { AssistantMessage } from "@graphagent/sdk/v2"
 import { InstallationChannel } from "@graphagent/core/installation/version"
 import { createMemo, createSignal, For, Match, Show, Switch, type Accessor, type JSX } from "solid-js"

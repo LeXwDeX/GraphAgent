@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Shell } from "@graphagent/core/shell"
 import { NamedError } from "@graphagent/core/util/error"

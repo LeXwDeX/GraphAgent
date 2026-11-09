@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect } from "bun:test"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProjectV2 } from "@graphagent/core/project"

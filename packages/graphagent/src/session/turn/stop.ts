@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { DagMessages } from "@graphagent/core/dag/messages"
 import type { DagStore } from "@graphagent/core/dag/store"
 import type { SessionV1 } from "@graphagent/core/v1/session"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { isRecord } from "@/util/record"
 export * as HookTurnContext from "./turn-context"
 

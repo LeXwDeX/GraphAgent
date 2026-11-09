@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as GoalLoop from "./loop"
 
 import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration, Schedule } from "effect"

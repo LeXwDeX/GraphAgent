@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { ReasoningCarrier } from "@graphagent/llm"
 import { Hash } from "../../util/hash"
 import { assessRewriteControl, detectToolCallEnvelope } from "./control-markup"

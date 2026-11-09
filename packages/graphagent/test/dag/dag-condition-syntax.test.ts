@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression: the condition evaluator supports one comparison. `===`, `!==`,
 // `&&` and `||` used to lex into a malformed operand and silently mis-route:
 // `review.output.verdict !== "REJECT"` parsed as `!= '= "REJECT"'` and was

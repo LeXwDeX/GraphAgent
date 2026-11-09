@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** Read-only tools for model-driven hooks. Every operation observes the hook abort signal. */
 import path from "path"
 import { Effect, Stream } from "effect"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { SettingsHook } from "@/hook"
 import { $ } from "bun"
 import { describe, expect, it } from "bun:test"

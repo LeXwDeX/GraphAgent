@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Effect } from "effect"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "@/session/session"

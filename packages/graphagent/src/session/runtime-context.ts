@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash } from "crypto"
 import type { ModelMessage } from "ai"
 import { METADATA_NAMESPACE } from "@graphagent/core/brand"

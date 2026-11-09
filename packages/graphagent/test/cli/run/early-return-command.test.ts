@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression test for #409: run mode hangs forever on early-return commands.
 //
 // Early-return command dispatches (/memory, /goal non-kick at

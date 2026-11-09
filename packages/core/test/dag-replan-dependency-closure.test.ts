@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it } from "bun:test"
 import { planReplan } from "../src/dag/core/replan"
 import { NodeStatus } from "../src/dag/core/types"

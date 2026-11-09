@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 type JsonObject = Record<string, unknown>
 
 const path = process.argv[2]

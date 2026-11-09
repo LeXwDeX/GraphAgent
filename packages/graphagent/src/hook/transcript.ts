@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { isRecord } from "@/util/record"
 import { InstanceRef } from "@/effect/instance-ref"
 import { execFile } from "node:child_process"

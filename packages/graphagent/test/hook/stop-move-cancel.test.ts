@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, spyOn, test } from "bun:test"
 import { $ } from "bun"
 import { rm, writeFile } from "node:fs/promises"

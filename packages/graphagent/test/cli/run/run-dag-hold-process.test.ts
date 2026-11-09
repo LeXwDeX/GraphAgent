@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Subprocess integration tests for the consumer-only DAG hold (issue 614).
 // Each test drives the real `opencode run` CLI binary against the in-process
 // TestLLMServer (same harness as run-process.test.ts): a scripted provider

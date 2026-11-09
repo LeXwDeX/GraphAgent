@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 const args = process.argv.slice(2)
 const value = (name: string) => {
   const index = args.indexOf(name)

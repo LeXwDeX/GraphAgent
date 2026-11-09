@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, test } from "bun:test"
 import { Deferred, Effect, Exit, Fiber, Option, Scope } from "effect"
 import { TrackCoordinator } from "../../src/snapshot/track-coordinator"

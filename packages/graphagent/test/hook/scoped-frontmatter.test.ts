@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // brand-guard: legacy-name-negative-test
 import { afterEach, describe, expect } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"

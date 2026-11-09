@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** Shared model-facing question contract for the V1 and V2 tool paths. */
 export interface Prompt {
   readonly question: string

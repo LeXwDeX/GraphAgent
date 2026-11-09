@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { basename, join } from "node:path"
 
 const tagPrefix = "graphagent-v"

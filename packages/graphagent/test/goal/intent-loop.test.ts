@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- mocked service slices use `as never` shims.
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Option } from "effect"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, test } from "bun:test"
 import { materializeBodiesV3, V3_MAX_PROVIDER_REQUESTS, V3_TASKS, V3_TASK_IDS } from "./task-spec-v3"
 

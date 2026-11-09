@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect } from "bun:test"
 import { Deferred, Effect, Layer } from "effect"
 import * as TestClock from "effect/testing/TestClock"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { CounterKey, Counters } from "../lib/engine-probe"
 import { COUNTER_KEYS } from "../lib/engine-probe"
 import type { BaselineRequest } from "./fingerprint"

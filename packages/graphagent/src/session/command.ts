@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { SessionAdmission } from "@graphagent/core/session/admission"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { NamedError } from "@graphagent/core/util/error"

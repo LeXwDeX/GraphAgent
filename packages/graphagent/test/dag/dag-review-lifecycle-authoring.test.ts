@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Regressions for the deep-mode review-lifecycle authoring check.
 // 1. The final-gate check read `node.required` raw, ignoring
 //    `node_defaults.required`, so a valid deep graph whose final gate inherits

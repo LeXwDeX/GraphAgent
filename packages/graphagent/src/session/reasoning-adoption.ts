@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Database } from "@graphagent/core/database/database"
 import { Cause, Effect } from "effect"
 import { isDeepStrictEqual } from "node:util"

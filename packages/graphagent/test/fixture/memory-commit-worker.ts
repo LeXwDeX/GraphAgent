@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { FSUtil } from "@graphagent/core/fs-util"
 import { ProjectV2 } from "@graphagent/core/project"
 import { EffectFlock } from "@graphagent/core/util/effect-flock"

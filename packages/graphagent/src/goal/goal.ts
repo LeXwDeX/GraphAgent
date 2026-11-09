@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as Goal from "./goal"
 
 import { Effect, Layer, Context, Schema, Fiber, Cause, Exit } from "effect"

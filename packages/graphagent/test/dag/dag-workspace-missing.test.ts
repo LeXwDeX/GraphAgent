@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- durable row fixtures use branded-column shims.
 /**
  * #948: a workflow whose execution directory is missing or empty must

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 process.env.AGENT = "1"
 process.env.OPENCODE = "1"
 // Tests assert failure reporting through `stderrTail()`, so the host must

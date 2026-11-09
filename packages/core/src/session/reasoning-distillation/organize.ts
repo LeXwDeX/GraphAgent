@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ReasoningReplacement } from "./adoption"
 import { detectToolCallEnvelope } from "./control-markup"
 import { ReasoningDistillationPolicy } from "./policy"

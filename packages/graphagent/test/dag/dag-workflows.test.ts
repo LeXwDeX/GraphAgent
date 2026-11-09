@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { Effect, Layer } from "effect"
 import { DagWorkflows } from "@/dag/workflows"

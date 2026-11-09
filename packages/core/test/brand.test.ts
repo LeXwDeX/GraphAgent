@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, test } from "bun:test"
 import { APP_NAME, PROJECT_DIR } from "../src/brand"
 import { artifactPrefix } from "../../script/src/brand"

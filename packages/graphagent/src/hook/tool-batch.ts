@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** Raw provider boundary used only to decide whether a deferred call is the sole call. */
 export interface ToolBatch {
   readonly add: (id: string) => void

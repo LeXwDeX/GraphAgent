@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Hash } from "@graphagent/core/util/hash"
 import type { ToolSourceIdentity, ToolSourceKind } from "@graphagent/core/session/context-folding"
 import { InstanceState } from "@/effect/instance-state"

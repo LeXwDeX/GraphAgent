@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookFileWatch } from "@/hook/file-watch"
 import { HookConfigChange } from "@/hook/config-change"

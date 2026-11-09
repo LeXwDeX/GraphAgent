@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Simplified Chinese message table. Every key added here must also exist in
  * `en.ts` with the same placeholder set; `test/i18n.test.ts` enforces both.

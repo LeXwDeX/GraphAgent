@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Effect, Option } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { LegacyEvent } from "@graphagent/schema/legacy-event"

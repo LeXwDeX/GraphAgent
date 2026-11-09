@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Runs in a fresh bun process so the real @modelcontextprotocol transports are
 // used even when the surrounding test run has mock.module overrides active
 // (Bun's module registry is process-global across the suite). Drives

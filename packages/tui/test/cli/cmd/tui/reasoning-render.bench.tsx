@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** @jsxImportSource @opentui/solid */
 // Run from packages/tui: bun test/cli/cmd/tui/reasoning-render.bench.tsx
 // Measures signal update through a visible frame in OpenTUI's 100x30 test renderer.

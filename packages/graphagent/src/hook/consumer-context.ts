@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { TriggerContext } from "./types"
 import { Effect, Option } from "effect"
 import { Database } from "@graphagent/core/database/database"

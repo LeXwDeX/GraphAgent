@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** @jsxImportSource @opentui/solid */
 // Run from packages/tui: bun test/cli/cmd/tui/interaction-render.bench.tsx [baseline|bounded]
 // Fixed budget: p95 input/scroll-to-frame <=100ms; 7500-line diff <=512 mounted source lines.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export const ContextFoldingPolicy = {
   version: "strict-duplicate-v2",
   allowedTools: ["read", "grep", "glob"] as const,

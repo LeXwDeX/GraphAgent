@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Token } from "../../util/token"
 import type { BudgetSkipReason, ContextFoldingBudget, PreparedRequestBudgetInput } from "./types"
 import { serializeWireValue } from "./wire-value"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 const boot = performance.now()
 const phase = (name: string) => console.error(JSON.stringify({ phase: name, elapsed: performance.now() - boot }))
 phase("boot")

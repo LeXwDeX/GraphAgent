@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Rpc } from "../../../../src/util/rpc"
 import fs from "node:fs/promises"
 import path from "node:path"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Mirrors the
 // dag-structured-output.test.ts harness idiom (and dag-location-guards.test.ts
 // suppression precedent): mocked Agent/Session/prompt layers and the typed

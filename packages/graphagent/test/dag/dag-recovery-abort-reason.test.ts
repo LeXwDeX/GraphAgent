@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Issue #777 — diagnostic-loss regression (confirmed part only).
 //
 // A child assistant turn that persists an error (most importantly the

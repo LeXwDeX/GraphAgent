@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect } from "bun:test"
 import { Cause, Context, Effect, Exit, Layer, Option } from "effect"
 import { eq, inArray } from "drizzle-orm"

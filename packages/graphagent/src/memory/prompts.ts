@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as MemoryPrompts from "./prompts"
 
 export const MATCH_SYSTEM = `# Task
