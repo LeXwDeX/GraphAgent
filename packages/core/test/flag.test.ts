@@ -48,7 +48,9 @@ async function readFlagValues(overrides: Record<string, string>) {
 describe("Flag", () => {
   test("every key uses the GraphAgent or OTEL namespace", () => {
     const keys = Object.keys(Flag)
-    expect(keys.length).toBeGreaterThan(30)
+    expect(keys.length).toBeGreaterThanOrEqual(30)
+    // #1013 PR6 removed the remote-workspace variable; keep it gone.
+    expect(keys).not.toContain("GRAPHAGENT_WORKSPACE_ID")
     for (const key of keys) expect({ key, ok: key.startsWith("GRAPHAGENT_") || key.startsWith("OTEL_") }).toEqual({
       key,
       ok: true,
