@@ -14,7 +14,7 @@ for (const { move } of [{ move: false }, { move: true }])
     await fs.mkdir(path.join(tmp.path, ".config/graphagent"), { recursive: true })
     await fs.writeFile(
       hook,
-      `const input=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:input.hook_event_name,session:input.session_id,reason:input.reason,cwd:input.cwd})+"\\n")`,
+      `const input=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:input.hook_event_name,session:input.session_id,reason:input.reason,cwd:input.cwd})+"\\n")`,
     )
     const entry = { type: "command", command: process.execPath, args: [hook] }
     await fs.writeFile(
