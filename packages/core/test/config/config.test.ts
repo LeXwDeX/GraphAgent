@@ -1,13 +1,15 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Arbitrary, Effect, Layer, Schema, Exit } from "effect"
+import { Arbitrary, Cause, Effect, Layer, Schema, Exit } from "effect"
 import { Config } from "@graphagent/core/config"
+import { ConfigEngine } from "@graphagent/core/config/engine"
 import { ConfigMCP } from "@graphagent/core/config/mcp"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { ConfigProvider } from "@graphagent/core/config/provider"
 import { ConfigMigrateV1 } from "@graphagent/core/v1/config/migrate"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { ConfigErrorV1 } from "@graphagent/core/v1/config/error"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Global } from "@graphagent/core/global"
 import { Location } from "@graphagent/core/location"
@@ -106,8 +108,9 @@ describe("Config", () => {
       expect(
         message(() => ConfigMCP.rejectRemovedSettings({ experimental: { mcp_timeout: 5000 } }, "config.json")),
       ).toMatch(/"experimental\.mcp_timeout" was removed/)
-      expect(() => ConfigMCP.rejectRemovedSettings({ mcpServers: { mcp: { type: "local", command: ["x"] } } }, "mcp.json"))
-        .not.toThrow()
+      expect(() =>
+        ConfigMCP.rejectRemovedSettings({ mcpServers: { mcp: { type: "local", command: ["x"] } } }, "mcp.json"),
+      ).not.toThrow()
       expect(() => ConfigMCP.rejectRemovedSettings(undefined, "config.json")).not.toThrow()
     }),
   )
@@ -181,6 +184,123 @@ describe("Config", () => {
       }
       expect(() => decode({ engine: { cache: { staggerSiblings: "true" } } })).toThrow()
     }),
+  )
+
+  it.effect("rejects unknown engine keys with their full path but keeps the ignore policy elsewhere", () =>
+    Effect.sync(() => {
+      const message = ConfigV1.ENGINE_UNEXPECTED_KEY_MESSAGE
+      const issues = (input: unknown) => {
+        try {
+          ConfigEngine.rejectUnknownKeys(input, "config.json")
+        } catch (error) {
+          if (!(error instanceof ConfigErrorV1.InvalidError)) throw error
+          const decoded = Schema.decodeUnknownExit(ConfigErrorV1.InvalidError.Schema)(error.toObject())
+          if (Exit.isFailure(decoded)) throw error
+          return decoded.value.data.issues
+        }
+        return undefined
+      }
+
+      expect(() => ConfigEngine.rejectUnknownKeys(undefined, "config.json")).not.toThrow()
+      expect(() => ConfigEngine.rejectUnknownKeys([], "config.json")).not.toThrow()
+      expect(() => ConfigEngine.rejectUnknownKeys({}, "config.json")).not.toThrow()
+      expect(() => ConfigEngine.rejectUnknownKeys({ unknownTopLevel: true }, "config.json")).not.toThrow()
+      expect(() =>
+        ConfigEngine.rejectUnknownKeys(
+          {
+            engine: {
+              concurrency: { global: 24, perProvider: 12, childGlobal: 16, taskReserve: 2 },
+              cache: { staggerSiblings: true },
+              memory: { selectTimeoutMs: 3000 },
+            },
+          },
+          "config.json",
+        ),
+      ).not.toThrow()
+      // Invalid values are reported by the regular decoder, not this check.
+      expect(() =>
+        ConfigEngine.rejectUnknownKeys({ engine: { cache: { staggerSiblings: "true" } } }, "config.json"),
+      ).not.toThrow()
+
+      expect(issues({ engine: { unknown: true } })).toEqual([{ message, path: ["engine", "unknown"] }])
+      expect(issues({ engine: { concurrency: { gblal: 24 } } })).toEqual([
+        { message, path: ["engine", "concurrency", "gblal"] },
+      ])
+
+      const nested = issues({ engine: { cache: { staggerSiblingz: true }, memory: { extra: 2 } } })
+      expect(nested).toHaveLength(2)
+      expect(nested).toEqual(
+        expect.arrayContaining([
+          { message, path: ["engine", "cache", "staggerSiblingz"] },
+          { message, path: ["engine", "memory", "extra"] },
+        ]),
+      )
+    }),
+  )
+
+  it.live("rejects a config file with an unknown engine key while ignoring top-level extras", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
+          yield* Effect.promise(() => fs.mkdir(global, { recursive: true }))
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(global, "graphagent.json"),
+              JSON.stringify({ unknownTopLevel: true, engine: { cache: { staggerSiblingz: true } } }),
+            ),
+          )
+
+          const exit = yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            return yield* config.entries()
+          }).pipe(Effect.provide(testLayer(tmp.path)), Effect.exit)
+          expect(Exit.isFailure(exit)).toBe(true)
+          const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+          expect(error).toMatchObject({
+            data: {
+              path: path.join(global, "graphagent.json"),
+              issues: [
+                {
+                  message: ConfigV1.ENGINE_UNEXPECTED_KEY_MESSAGE,
+                  path: ["engine", "cache", "staggerSiblingz"],
+                },
+              ],
+            },
+          })
+        }),
+      ),
+    ),
+  )
+
+  it.live("ignores unknown top-level keys in a config file", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const global = path.join(tmp.path, "global")
+          yield* Effect.promise(() => fs.mkdir(global, { recursive: true }))
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(global, "graphagent.json"),
+              JSON.stringify({ unknownTopLevel: true, engine: { cache: { staggerSiblings: true } } }),
+            ),
+          )
+
+          const documents = yield* Effect.gen(function* () {
+            const config = yield* Config.Service
+            return (yield* config.entries()).filter((entry) => entry.type === "document")
+          }).pipe(Effect.provide(testLayer(tmp.path)))
+          expect(documents).toHaveLength(1)
+          expect(documents[0]?.info).toBeInstanceOf(Config.Info)
+        }),
+      ),
+    ),
   )
 
   it.effect("returns the latest defined scalar from priority-ordered documents", () =>

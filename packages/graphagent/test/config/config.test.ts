@@ -644,6 +644,50 @@ it.instance("rejects the removed experimental.mcp_timeout setting", () =>
   ),
 )
 
+it.instance("accepts known engine limits and still ignores unknown top-level keys", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeProjectConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      engine: {
+        concurrency: { global: 24, perProvider: 12, childGlobal: 16, taskReserve: 2 },
+        cache: { staggerSiblings: true },
+        memory: { selectTimeoutMs: 3000 },
+      },
+      notAConfigKey: true,
+    })
+    const config = yield* Config.use.get()
+    expect(config.engine).toEqual({
+      concurrency: { global: 24, perProvider: 12, childGlobal: 16, taskReserve: 2 },
+      cache: { staggerSiblings: true },
+      memory: { selectTimeoutMs: 3000 },
+    })
+  }),
+)
+
+it.instance("rejects unknown engine keys with their full path", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeProjectConfigEffect(test.directory, {
+      engine: { concurrency: { global: 24, gblal: 12 } },
+    })
+    const exit = yield* Config.use.get().pipe(Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+    expect(error).toMatchObject({
+      data: {
+        path: projectSettingsFile(test.directory),
+        issues: [
+          {
+            message: ConfigV1.ENGINE_UNEXPECTED_KEY_MESSAGE,
+            path: ["engine", "concurrency", "gblal"],
+          },
+        ],
+      },
+    })
+  }),
+)
+
 it.instance("handles agent configuration", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

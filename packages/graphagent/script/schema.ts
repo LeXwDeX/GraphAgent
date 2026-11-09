@@ -10,7 +10,12 @@ type JsonSchema = Record<string, unknown>
 const MODEL_REF = "https://models.dev/model-schema.json#/$defs/Model"
 
 function generateEffect(schema: Schema.Top) {
-  const document = Schema.toJsonSchemaDocument(schema)
+  // The decoder ignores excess properties by default, so generated objects stay
+  // open. A schema may close a specific object by annotating it with
+  // `additionalProperties: false`; only that annotation is emitted.
+  const document = Schema.toJsonSchemaDocument(schema, {
+    includeAnnotationKey: (key) => key === "additionalProperties",
+  })
   const normalized = normalize({
     $schema: "https://json-schema.org/draft/2020-12/schema",
     ...document.schema,

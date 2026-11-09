@@ -932,7 +932,7 @@
                   "description": "Child-run slots reserved for the task tool inside childGlobal (draft default: 2, subject to measurement)."
                 }
               },
-              "additionalProperties": true,
+              "additionalProperties": false,
               "description": "Draft concurrency limits for the session engine; values are provisional."
             },
             "cache": {
@@ -943,7 +943,7 @@
                   "description": "Release sibling child runs sharing a cache group one at a time until the first reports a token (default: true)."
                 }
               },
-              "additionalProperties": true,
+              "additionalProperties": false,
               "description": "Draft prompt-cache scheduling options; defaults are provisional."
             },
             "memory": {
@@ -956,12 +956,12 @@
                   "description": "Deadline for selecting project memory before a request (draft default: 3000 ms)."
                 }
               },
-              "additionalProperties": true,
+              "additionalProperties": false,
               "description": "Draft memory selection options; defaults are provisional."
             }
           },
-          "additionalProperties": true,
-          "description": "Draft session-engine limits. Defaults are provisional and subject to measurement."
+          "additionalProperties": false,
+          "description": "Draft session-engine limits. Defaults are provisional and subject to measurement. Unknown keys under engine are rejected when the configuration loads."
         },
         "mode": {
           "type": "object",
