@@ -8,6 +8,9 @@ import { DialogVariant } from "./dialog-variant"
 import * as fuzzysort from "fuzzysort"
 import { useConnected } from "./use-connected"
 import { useSync } from "../context/sync"
+import { sortModelOptions } from "../util/model-options"
+
+export { sortModelOptions } from "../util/model-options"
 
 export function DialogModel(props: { providerID?: string }) {
   const local = useLocal()
@@ -180,18 +183,5 @@ export function DialogModel(props: { providerID?: string }) {
       title={title()}
       current={local.model.current()}
     />
-  )
-}
-
-export function sortModelOptions<T extends { footer?: string; releaseDate: string | number; title: string }>(
-  options: T[],
-  newestFirst: boolean,
-) {
-  if (newestFirst) return sortBy(options, [(option) => option.releaseDate, "desc"], (option) => option.title)
-  return sortBy(
-    options,
-    (option) => option.footer !== "Free",
-    [(option) => option.releaseDate, "desc"],
-    (option) => option.title,
   )
 }

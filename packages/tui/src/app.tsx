@@ -22,6 +22,7 @@ import {
   batch,
   Show,
   on,
+  type JSX,
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
@@ -34,14 +35,9 @@ import { SDKProvider, useSDK } from "./context/sdk"
 import { SyncProvider, useSync } from "./context/sync"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
-import { DialogModel } from "./component/dialog-model"
-import { DialogMcp } from "./component/dialog-mcp"
 import { DialogStatus } from "./component/dialog-status"
-import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
-import { DialogAgent } from "./component/dialog-agent"
 import { DialogSessionList } from "./component/dialog-session-list"
-import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { HomeSessionDestinationProvider } from "./routes/home/session-destination"
@@ -51,6 +47,12 @@ import { Diff } from "./routes/diff"
 import { useDiffNavigation } from "./routes/diff/route"
 import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
+import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
+import { AgentPanel } from "./panel/agent"
+import { McpPanel } from "./panel/mcp"
+import { ModelPanel } from "./panel/model"
+import { ThemePanel } from "./panel/theme"
+import { WorkspacesPanel } from "./panel/workspaces"
 import { useDrawer } from "./shell/drawer"
 import { useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
@@ -365,6 +367,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
   const footerStatus = useFooterStatus()
+  const bottomZone = createBottomZoneState()
   const homeMeta = useHomeFooterMeta()
   const drawer = useDrawer()
   const diffFooterHints = useDiffFooterHints()
@@ -513,13 +516,23 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     route.navigate({ type: "home" })
     dialog.clear()
   }
-  const openWorkspaceList = () => dialog.replace(() => <DialogWorkspaceList />)
-  const openModelList = () => dialog.replace(() => <DialogModel />)
-  const openAgentList = () => dialog.replace(() => <DialogAgent />)
-  const openMcpList = () => dialog.replace(() => <DialogMcp />)
+  const openPanel = (id: string, render: () => JSX.Element) => {
+    if (bottomZone.host.top()?.id === id) return
+    bottomZone.host.push({ id, render })
+  }
+  const openWorkspaceList = () => openPanel("workspaces", () => <WorkspacesPanel />)
+  const openModelList = () =>
+    openPanel("model", () => (
+      <ModelPanel
+        onConnectProvider={() => dialog.replace(() => <DialogProviderList />)}
+        onVariant={() => dialog.replace(() => <DialogVariant />)}
+      />
+    ))
+  const openAgentList = () => openPanel("agent", () => <AgentPanel />)
+  const openMcpList = () => openPanel("mcp", () => <McpPanel />)
   const connectProvider = () => dialog.replace(() => <DialogProviderList />)
   const openStatus = () => dialog.replace(() => <DialogStatus />)
-  const openThemeList = () => dialog.replace(() => <DialogThemeList />)
+  const openThemeList = () => openPanel("theme", () => <ThemePanel />)
   const openHelp = () => dialog.replace(() => <DialogHelp />)
   const openDiff = () => {
     const sessionID =
@@ -995,47 +1008,53 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   return (
-    <box
-      width={dimensions().width}
-      height={dimensions().height}
-      flexDirection="column"
-      backgroundColor={theme.background}
-      onMouseDown={(evt) => {
-        if (!Flag.GRAPHAGENT_DISABLE_COPY_ON_SELECT) return
-        if (evt.button !== MouseButton.RIGHT) return
+    <BottomZoneProvider state={bottomZone}>
+      <box
+        width={dimensions().width}
+        height={dimensions().height}
+        flexDirection="column"
+        backgroundColor={theme.background}
+        onMouseDown={(evt) => {
+          if (!Flag.GRAPHAGENT_DISABLE_COPY_ON_SELECT) return
+          if (evt.button !== MouseButton.RIGHT) return
 
-        if (!Selection.copy(renderer, toast, clipboard)) return
-        evt.preventDefault()
-        evt.stopPropagation()
-      }}
-      onMouseUp={!Flag.GRAPHAGENT_DISABLE_COPY_ON_SELECT ? () => Selection.copy(renderer, toast, clipboard) : undefined}
-    >
-      <Show when={Flag.GRAPHAGENT_SHOW_TTFD}>
-        <TimeToFirstDraw />
-      </Show>
-      <AppFrame
-        topBar={topBar()}
-        footer={{
-          agent: local.agent.current()?.name,
-          agentAction: footerKeys().agent,
-          hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
-          meta: route.data.type === "home" ? homeMeta() : undefined,
-          right: footerStatus(),
+          if (!Selection.copy(renderer, toast, clipboard)) return
+          evt.preventDefault()
+          evt.stopPropagation()
         }}
-        drawer={drawerContent()}
+        onMouseUp={
+          !Flag.GRAPHAGENT_DISABLE_COPY_ON_SELECT ? () => Selection.copy(renderer, toast, clipboard) : undefined
+        }
       >
-        <Switch>
-          <Match when={route.data.type === "home"}>
-            <Home />
-          </Match>
-          <Match when={route.data.type === "session"}>
-            <Main />
-          </Match>
-          <Match when={route.data.type === "diff"}>
-            <Diff />
-          </Match>
-        </Switch>
-      </AppFrame>
-    </box>
+        <Show when={Flag.GRAPHAGENT_SHOW_TTFD}>
+          <TimeToFirstDraw />
+        </Show>
+        <AppFrame
+          topBar={topBar()}
+          footer={{
+            agent: local.agent.current()?.name,
+            agentAction: footerKeys().agent,
+            hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
+            meta: route.data.type === "home" ? homeMeta() : undefined,
+            right: footerStatus(),
+          }}
+          bottomZone={<BottomZone state={bottomZone} composer={<></>} />}
+          dimmed={bottomZone.dimmed}
+          drawer={drawerContent()}
+        >
+          <Switch>
+            <Match when={route.data.type === "home"}>
+              <Home />
+            </Match>
+            <Match when={route.data.type === "session"}>
+              <Main />
+            </Match>
+            <Match when={route.data.type === "diff"}>
+              <Diff />
+            </Match>
+          </Switch>
+        </AppFrame>
+      </box>
+    </BottomZoneProvider>
   )
 }
