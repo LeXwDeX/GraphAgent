@@ -40,7 +40,7 @@ export function readJSONFile(
   try {
     const parsed: unknown = JSON.parse(readFileSync(filepath, "utf8"))
     // hooks.json uses top-level event keys. A legacy {"hooks": {...}} wrapper is
-    // rejected: Claude's settings.json is converted by /import-claude-hooks, which
+    // rejected: Claude's settings.json is converted by /import-claude, which
     // writes top-level event keys, so no loader compatibility is needed.
     const obj = isRecord(parsed) ? parsed : undefined
     if (obj && isRecord(obj.hooks))

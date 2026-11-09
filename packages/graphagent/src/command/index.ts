@@ -8,7 +8,7 @@ import { MCP } from "../mcp"
 import { Skill } from "../skill"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
-import PROMPT_IMPORT_HOOKS from "./template/import-claude-hooks.txt"
+import PROMPT_IMPORT_CLAUDE from "./template/import-claude.txt"
 import PROMPT_CREATE_HOOK from "./template/create-hook.txt"
 import { LegacyEvent } from "@graphagent/schema/legacy-event"
 import { CommandPlugin } from "@graphagent/core/plugin/command"
@@ -52,7 +52,7 @@ export const Default = {
   SUBGOAL: "subgoal",
   MEMORY: "memory",
   DAG_AUTO: "dag-auto",
-  IMPORT_HOOKS: "import-claude-hooks",
+  IMPORT_CLAUDE: "import-claude",
   CREATE_HOOK: "create-hook",
 } as const
 
@@ -122,13 +122,12 @@ export const layer = Layer.effect(
         template: CommandPlugin.DagAutoContent,
         hints: hints(CommandPlugin.DagAutoContent),
       }
-      commands[Default.IMPORT_HOOKS] = {
-        name: Default.IMPORT_HOOKS,
-        description: "Import hooks from Claude Code config to OpenCode hooks.json",
+      commands[Default.IMPORT_CLAUDE] = {
+        name: Default.IMPORT_CLAUDE,
+        description: "Review Claude Code config and convert it into .agents/",
         source: "command",
-        template: PROMPT_IMPORT_HOOKS,
-        subtask: true,
-        hints: [],
+        template: PROMPT_IMPORT_CLAUDE,
+        hints: hints(PROMPT_IMPORT_CLAUDE),
       }
       commands[Default.CREATE_HOOK] = {
         name: Default.CREATE_HOOK,

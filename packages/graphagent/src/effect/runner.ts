@@ -1,10 +1,28 @@
 import { Cause, Deferred, Effect, Exit, Fiber, Latch, Option, Schema, Scope, SynchronizedRef } from "effect"
 
+/**
+ * How `ensureRunningHandleClassified` treated the request.
+ *
+ * - `started`: the runner was idle and this work now runs.
+ * - `queued`: a shell is running; this work is queued and will run after it.
+ *   Unlike `joined`, the caller's own work is not discarded, so its side
+ *   effects (a durable turn row) still happen.
+ * - `joined`: the request attached to running work and its own work is
+ *   discarded (an executing run, or another request's queued run).
+ */
+export type AdmissionKind = "started" | "queued" | "joined"
+
+export interface RunningHandle<A, E> {
+  readonly kind: AdmissionKind
+  readonly result: Effect.Effect<A, E>
+}
+
 export interface Runner<A, E = never> {
   readonly state: State<A, E>
   readonly busy: boolean
   readonly ensureRunning: (work: Effect.Effect<A, E>) => Effect.Effect<A, E>
   readonly ensureRunningHandle: (work: Effect.Effect<A, E>) => Effect.Effect<Effect.Effect<A, E>>
+  readonly ensureRunningHandleClassified: (work: Effect.Effect<A, E>) => Effect.Effect<RunningHandle<A, E>>
   readonly startIfIdle: (work: Effect.Effect<A, E>) => Effect.Effect<Option.Option<Effect.Effect<A, E>>>
   readonly startShellHandle: (
     work: Effect.Effect<A, E>,
@@ -147,6 +165,41 @@ export const make = <A, E = never>(
 
   const ensureRunning = (work: Effect.Effect<A, E>) => ensureRunningHandle(work).pipe(Effect.flatten)
 
+  // Same admission decisions as `ensureRunningHandle`, but tells the caller
+  // which work will actually run: this request's own work (idle or queued
+  // behind a shell) or a turn that was already running. Turns use it to report
+  // `started`/`joined` without racing the work fiber.
+  const ensureRunningHandleClassified = (work: Effect.Effect<A, E>) =>
+    SynchronizedRef.modifyEffect(ref, (st): Effect.Effect<readonly [RunningHandle<A, E>, State<A, E>]> =>
+      Effect.gen(function* () {
+        switch (st._tag) {
+          case "Running":
+          case "ShellThenRun":
+            return [{ kind: "joined", result: awaitDone(st.run.done) }, st] as const
+          case "Shell": {
+            const run = {
+              id: next(),
+              done: yield* Deferred.make<A, E | Cancelled>(),
+              work,
+            } satisfies PendingHandle<A, E>
+            return [
+              { kind: "queued", result: awaitDone(run.done) },
+              { _tag: "ShellThenRun", shell: st.shell, run },
+            ] as const
+          }
+          case "Idle": {
+            yield* onBusy
+            const done = yield* Deferred.make<A, E | Cancelled>()
+            const run = yield* startRun(work, done)
+            return [
+              { kind: "started", result: awaitDone(done) },
+              { _tag: "Running", run },
+            ] as const
+          }
+        }
+      }),
+    )
+
   const startIfIdle = (work: Effect.Effect<A, E>) =>
     SynchronizedRef.modifyEffect(
       ref,
@@ -259,6 +312,7 @@ export const make = <A, E = never>(
     },
     ensureRunning,
     ensureRunningHandle,
+    ensureRunningHandleClassified,
     startIfIdle,
     startShell,
     startShellHandle,
