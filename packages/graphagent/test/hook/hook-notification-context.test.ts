@@ -33,7 +33,7 @@ cliIt.live(
         )
         await fs.writeFile(
           hook,
-          `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:i.hook_event_name,mode:i.permission_mode,agent:i.agent_type,path:i.transcript_path,readable:await Bun.file(i.transcript_path).exists()})+"\\n")`,
+          `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,mode:i.permission_mode,agent:i.agent_type,path:i.transcript_path,readable:await Bun.file(i.transcript_path).exists()})+"\\n")`,
         )
         const command = { type: "command", command: process.execPath, args: [hook] }
         await fs.writeFile(

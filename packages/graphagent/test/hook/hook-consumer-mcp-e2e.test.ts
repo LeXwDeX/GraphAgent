@@ -29,7 +29,7 @@ for (const { event, action } of [
           )
           await fs.writeFile(
             hookScript,
-            `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:i.hook_event_name,type:i.notification_type,session:i.session_id,server:i.mcp_server_name,path:i.transcript_path,transcript:await Bun.file(i.transcript_path).text()})+"\\n");if(i.hook_event_name===${JSON.stringify(event)})process.stdout.write(JSON.stringify({continue:false,systemMessage:"IGNORED_ELICITATION_MESSAGE",hookSpecificOutput:{hookEventName:i.hook_event_name,action:${JSON.stringify(action)},content:${action === "accept" ? JSON.stringify({ color: event === "Elicitation" ? "blue" : "green" }) : "undefined"}}}));`,
+            `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,type:i.notification_type,session:i.session_id,server:i.mcp_server_name,path:i.transcript_path,transcript:await Bun.file(i.transcript_path).text()})+"\\n");if(i.hook_event_name===${JSON.stringify(event)})process.stdout.write(JSON.stringify({continue:false,systemMessage:"IGNORED_ELICITATION_MESSAGE",hookSpecificOutput:{hookEventName:i.hook_event_name,action:${JSON.stringify(action)},content:${action === "accept" ? JSON.stringify({ color: event === "Elicitation" ? "blue" : "green" }) : "undefined"}}}));`,
           )
           const handler = { type: "command", command: process.execPath, args: [hookScript] }
           await fs.writeFile(
