@@ -17,7 +17,7 @@ cliIt.live(
       yield* Effect.promise(async () => {
         await fs.writeFile(
           script,
-          `const input=JSON.parse(await Bun.stdin.text());const transcript=await Bun.file(input.transcript_path).text();await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:input.hook_event_name,session:input.session_id,source:input.source,reason:input.reason,model:input.model,title:input.session_title,context:input.context_tokens,warm:input.prompt_cache_warm,estimate:input.estimated_cache_write_usd,transcript})+"\\n");`,
+          `const input=JSON.parse(await Bun.stdin.text());const transcript=await Bun.file(input.transcript_path).text();await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:input.hook_event_name,session:input.session_id,source:input.source,reason:input.reason,model:input.model,title:input.session_title,context:input.context_tokens,warm:input.prompt_cache_warm,estimate:input.estimated_cache_write_usd,transcript})+"\\n");`,
         )
         // The CLI exit path bounds SessionEnd to 1.5s by default. CI is slower than a local run and can exceed it
         // while starting the hook process, so this fixture declares a longer explicit budget.

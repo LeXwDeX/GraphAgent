@@ -96,7 +96,7 @@ import {
 } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
-import { isQueuedMessage, orderedBefore } from "./queued-message"
+import { isQueuedMessage, orderedBefore } from "../../prompt/queued-message"
 
 addDefaultParsers(parsers.parsers)
 

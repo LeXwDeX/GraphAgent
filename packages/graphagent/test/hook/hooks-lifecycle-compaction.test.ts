@@ -17,7 +17,7 @@ for (const block of [false, true]) {
         yield* Effect.promise(async () => {
           await fs.writeFile(
             script,
-            `const i=JSON.parse(await Bun.stdin.text());const transcript=await Bun.file(i.transcript_path).text();await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({...i,transcript})+"\\n");if(${block}&&i.hook_event_name==='PreCompact')process.stdout.write(JSON.stringify({decision:'block',reason:'fixture precompact veto'}));`,
+            `const i=JSON.parse(await Bun.stdin.text());const transcript=await Bun.file(i.transcript_path).text();await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({...i,transcript})+"\\n");if(${block}&&i.hook_event_name==='PreCompact')process.stdout.write(JSON.stringify({decision:'block',reason:'fixture precompact veto'}));`,
           )
           const hook = { type: "command", command: process.execPath, args: [script] }
           await fs.writeFile(

@@ -20,7 +20,7 @@ cliIt.live(
         )
         await fs.writeFile(
           script,
-          `const i=JSON.parse(await Bun.stdin.text());if(i.hook_event_name==="SessionStart")process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"SessionStart",watchPaths:[${JSON.stringify(home)}+"/watch-"+i.session_id+".txt"]}}));else await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({session:i.session_id,event:i.hook_event_name,mode:i.permission_mode,path:i.file_path,readable:await Bun.file(i.transcript_path).exists()})+"\\n");`,
+          `const i=JSON.parse(await Bun.stdin.text());if(i.hook_event_name==="SessionStart")process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"SessionStart",watchPaths:[${JSON.stringify(home)}+"/watch-"+i.session_id+".txt"]}}));else await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({session:i.session_id,event:i.hook_event_name,mode:i.permission_mode,path:i.file_path,readable:await Bun.file(i.transcript_path).exists()})+"\\n");`,
         )
         const entry = { type: "command", command: process.execPath, args: [script] }
         await fs.writeFile(
