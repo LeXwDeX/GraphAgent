@@ -143,6 +143,23 @@ export const zhCN = {
   "diff.help.expandAll.description": "展开文件树中的每个文件夹",
   "diff.help.markReviewed.action": "标记已审阅",
   "diff.help.markReviewed.description": "切换选中文件的审阅状态",
+  "panel.hint.previous": "上移",
+  "panel.hint.next": "下移",
+  "panel.hint.activate": "选择",
+  "panel.hint.change": "修改",
+  "panel.hint.edit": "编辑",
+  "panel.hint.submit": "提交",
+  "panel.hint.cancel": "取消",
+  "panel.hint.tab": "切换标签",
+  "panel.hint.close": "关闭",
+  "panel.list.filter": "筛选…",
+  "panel.list.empty": "没有可选项",
+  "panel.list.loading": "加载中…",
+  "panel.input.placeholder": "输入…",
+  "panel.setting.on": "开",
+  "panel.setting.off": "关",
+  "panel.setting.empty": "未设置",
+  "panel.setting.masked": "已设置",
 } as const
 
 export type MessageKey = keyof typeof zhCN
