@@ -19,8 +19,7 @@ RUN set -euo pipefail; \
   node_arch=x64; \
   if [ "$arch" = "aarch64" ]; then node_arch=arm64; fi; \
   curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-  | tar -xJf - -C /usr/local --strip-components=1; \
-  corepack enable
+  | tar -xJf - -C /usr/local --strip-components=1
 
 RUN set -euo pipefail; \
   curl -fsSL https://bun.sh/install | bash -s -- "bun-v${BUN_VERSION}"; \
