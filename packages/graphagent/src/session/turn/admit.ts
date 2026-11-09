@@ -2,7 +2,6 @@ import type { Database } from "@graphagent/core/database/database"
 import type { DagMessages } from "@graphagent/core/dag/messages"
 import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Logging } from "@graphagent/core/observability/logging"
-import type { SessionAdmission } from "@graphagent/core/session/admission"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { SessionV1 } from "@graphagent/core/v1/session"
@@ -29,6 +28,7 @@ import type { SessionRunState } from "../run-state"
 import type { SessionStatus } from "../status"
 import type { AdmissionCommit, AdmissionOptions, IdleAdmission, ModelBaseline } from "../turns"
 import type { Interface, PromptError, PromptInput } from "../prompt"
+import type { CreateUserMessage, PrepareApi } from "./prepare"
 
 export interface AdmitDeps {
   readonly sessions: Session.Interface
@@ -52,20 +52,12 @@ export interface AdmitDeps {
   readonly goal: Goal.Interface | undefined
   readonly agentMessages: DagMessages.Interface | undefined
   readonly activateAgentHooks: (session: Session.Info, name?: string) => Effect.Effect<void>
-  readonly createUserMessage: (
-    input: PromptInput,
-    persistAdmission?: Effect.Effect<void>,
-    commitAdmission?: AdmissionCommit,
-    modelBaseline?: ModelBaseline,
-  ) => Effect.Effect<
-    { readonly info: SessionV1.User; readonly parts: SessionV1.Part[] },
-    PromptError | SessionAdmission.Blocked
-  >
+  readonly createUserMessage: CreateUserMessage
   readonly budgetState: (sessionID: SessionID) => Effect.Effect<{
     active?: ToolBudget.Budget
     pending: Map<MessageID, ToolBudget.Budget>
   }>
-  readonly restoreModelContext: (sessionID: SessionID) => Effect.Effect<void>
+  readonly restoreModelContext: PrepareApi["restoreModelContext"]
   readonly resume: Interface["resume"]
   readonly runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
   readonly lastAssistant: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
