@@ -83,6 +83,12 @@ export interface LoopDeps {
   readonly toolSources: ToolSourceLedger.Interface
   readonly settingsHook: SettingsHook.Interface | undefined
   readonly agentMessages: DagMessages.Interface | undefined
+  /** H2 seam (#1021 PR3): `false` means this process saw no queued agent
+   * message for the session, so the byte-verified mailbox freeze read may be
+   * skipped. False positives are allowed (the freeze still governs delivery).
+   * E1 installs no provider — the SessionInbox claim protocol that supplies the
+   * hint and the "not a node session" exclusion lands with H2. */
+  readonly agentInputHint?: (sessionID: SessionID) => boolean
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly database: Database.Interface
   readonly db: Database.Interface["db"]
@@ -160,7 +166,17 @@ function makeAgentInputGate(deps: LoopDeps) {
   return Effect.fnUntraced(function* (input: AgentInputGateInput): Effect.fn.Return<AgentInputGateResult> {
     let state = input.state
     let agentSnapshot: DagMessages.Snapshot | undefined
-    if (!agentMessages || state.agentInput === "blocked" || !Decide.shouldFreezeAgentInput(state, input.completed)) {
+    // H2 seam: a denied hint skips the freeze query for sessions this process
+    // observed with no queued agent message. No provider is installed in E1,
+    // so the hint is `undefined` and the freeze path below is unchanged; only
+    // the transition hook plus the SessionInbox in H2 may narrow it further.
+    const hinted = deps.agentInputHint?.(input.sessionID)
+    if (
+      !agentMessages ||
+      state.agentInput === "blocked" ||
+      hinted === false ||
+      !Decide.shouldFreezeAgentInput(state, input.completed)
+    ) {
       return { state, snapshot: { messages: input.messages, budget: input.budget }, agentSnapshot }
     }
     // Agent input cannot outrun the Stop decision for a completed model turn.
