@@ -143,6 +143,7 @@ export const SessionPaths = {
   goal: `${root}/:sessionID/goal`,
   hook: `${root}/:sessionID/hook`,
   hookRemove: `${root}/:sessionID/hook/:hookID`,
+  hookCancel: `${root}/:sessionID/hook/:hookID/cancel`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
   message: `${root}/:sessionID/message/:messageID`,
@@ -278,6 +279,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.hook.remove",
             summary: "Remove a session-scoped hook",
             description: "Remove a session hook entry by id. Idempotent — deleting a non-existent id succeeds.",
+          }),
+        ),
+        HttpApiEndpoint.post("hookCancel", SessionPaths.hookCancel, {
+          params: { sessionID: SessionID, hookID: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Struct({ cancelled: Schema.Boolean }), "Whether a running handler was cancelled"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.hook.cancel",
+            summary: "Cancel a running hook",
+            description:
+              "Interrupt the foreground hook handler currently running under this handler digest for the session. Returns cancelled:false when no matching handler is running.",
           }),
         ),
         HttpApiEndpoint.get("diff", SessionPaths.diff, {

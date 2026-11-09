@@ -20,7 +20,7 @@ import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { Goal } from "@/goal/goal"
 import { SessionHooks, type SessionHookCommand } from "@/hook/session-hooks"
-import { type HookEvent } from "@/hook"
+import { SettingsHook, type HookEvent } from "@/hook"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@graphagent/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
@@ -73,6 +73,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todoSvc = yield* Todo.Service
     const goalSvc = yield* Goal.Service
     const sessionHooks = yield* SessionHooks.Service
+    const settingsHooks = yield* SettingsHook.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
@@ -537,6 +538,16 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       yield* sessionHooks.remove(ctx.params.sessionID, ctx.params.hookID)
     })
 
+    const hookCancel = Effect.fn("SessionHttpApi.hookCancel")(function* (ctx: {
+      params: { sessionID: SessionID; hookID: string }
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      const cancelled = settingsHooks.cancel
+        ? yield* settingsHooks.cancel(ctx.params.sessionID, ctx.params.hookID)
+        : false
+      return { cancelled }
+    })
+
     return handlers
       .handle("list", list)
       .handle("status", status)
@@ -547,6 +558,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("hookAdd", hookAdd)
       .handle("hookList", hookList)
       .handle("hookRemove", hookRemove)
+      .handle("hookCancel", hookCancel)
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)

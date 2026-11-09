@@ -33,6 +33,12 @@ export interface Interface {
   readonly hookCall?: (payload: HookPayload, ctx: ToolHookContext) => Effect.Effect<TriggerResult>
   /** Deliver completed background command output on the next turn only. */
   readonly drainAsync?: (sessionID: SessionID | string) => Effect.Effect<TriggerResult>
+  /**
+   * Interrupt the foreground handlers currently running a given hook digest for
+   * a session. The handler reduces as a non-blocking failure (`onFailure:
+   * "block"` still blocks); returns false when no matching handler is running.
+   */
+  readonly cancel?: (sessionID: SessionID | string, hookID: string) => Effect.Effect<boolean>
   /** Drop pending output and interrupt background commands owned by this session. */
   readonly clearSession?: (sessionID: SessionID | string) => Effect.Effect<void>
   readonly fileWatchPaths?: () => Effect.Effect<readonly string[]>

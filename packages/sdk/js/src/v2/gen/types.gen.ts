@@ -1773,8 +1773,13 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           hookID: string
-          statusMessage: string
-          phase: "started" | "finished"
+          event: string
+          descriptor: string
+          statusMessage?: string
+          phase: "started" | "finished" | "cancelled" | "timeout"
+          timeoutMs: number | "Infinity" | "-Infinity" | "NaN"
+          cancellable: boolean
+          startedAt: number | "Infinity" | "-Infinity" | "NaN"
         }
       }
     | {
@@ -2608,8 +2613,13 @@ export type EventSessionHookStatus = {
   properties: {
     sessionID: string
     hookID: string
-    statusMessage: string
-    phase: "started" | "finished"
+    event: string
+    descriptor: string
+    statusMessage?: string
+    phase: "started" | "finished" | "cancelled" | "timeout"
+    timeoutMs: number | "Infinity" | "-Infinity" | "NaN"
+    cancellable: boolean
+    startedAt: number | "Infinity" | "-Infinity" | "NaN"
   }
 }
 
@@ -3475,8 +3485,13 @@ export type V2EventSessionHookStatus = {
   data: {
     sessionID: string
     hookID: string
-    statusMessage: string
-    phase: "started" | "finished"
+    event: string
+    descriptor: string
+    statusMessage?: string
+    phase: "started" | "finished" | "cancelled" | "timeout"
+    timeoutMs: number | "Infinity" | "-Infinity" | "NaN"
+    cancellable: boolean
+    startedAt: number | "Infinity" | "-Infinity" | "NaN"
   }
 }
 
@@ -7025,6 +7040,43 @@ export type SessionHookRemoveResponses = {
 }
 
 export type SessionHookRemoveResponse = SessionHookRemoveResponses[keyof SessionHookRemoveResponses]
+
+export type SessionHookCancelData = {
+  body?: never
+  path: {
+    sessionID: string
+    hookID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/hook/{hookID}/cancel"
+}
+
+export type SessionHookCancelErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionHookCancelError = SessionHookCancelErrors[keyof SessionHookCancelErrors]
+
+export type SessionHookCancelResponses = {
+  /**
+   * Whether a running handler was cancelled
+   */
+  200: {
+    cancelled: boolean
+  }
+}
+
+export type SessionHookCancelResponse = SessionHookCancelResponses[keyof SessionHookCancelResponses]
 
 export type SessionDiffData = {
   body?: never

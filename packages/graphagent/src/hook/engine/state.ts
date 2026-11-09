@@ -7,10 +7,22 @@
 import type { Fiber } from "effect"
 import type { HookCommand, HookSummary, Settings } from "../types"
 import type { TriggerResult } from "../trigger-result"
+import type { HookExecution } from "../handlers/shared"
 
 export interface StopRewakeChain {
   count: number
   unregister?: () => void
+}
+
+/**
+ * One running foreground handler per (session, hook digest). Several fibers may
+ * share a digest when the same handler runs concurrently in parallel triggers;
+ * `cancelled` names the fibers a `Hooks.cancel` call actually interrupted so an
+ * unrelated interruption is never misreported as a user cancellation.
+ */
+export interface RunningHook {
+  readonly fibers: Set<Fiber.Fiber<HookExecution>>
+  readonly cancelled: Set<Fiber.Fiber<HookExecution>>
 }
 
 export function removeStopChain(state: State, key: string, expected?: StopRewakeChain): boolean {
@@ -40,6 +52,8 @@ export interface State {
   stopRewakeChains: Map<string, StopRewakeChain>
   asyncResults: Map<string, TriggerResult>
   asyncFibers: Map<string, Set<Fiber.Fiber<unknown, unknown>>>
+  /** Running foreground handlers keyed by `${sessionID}:${hookID}`; backs `Hooks.cancel`. */
+  runningHooks: Map<string, RunningHook>
   /**
    * Async SessionEnd commands. Their session is gone by design, so ending it must not
    * interrupt them; they run for their side effects and stop only with the instance.

@@ -5437,6 +5437,102 @@
         ]
       }
     },
+    "/session/{sessionID}/hook/{hookID}/cancel": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.hook.cancel",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          },
+          {
+            "name": "hookID",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether a running handler was cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "cancelled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["cancelled"],
+                  "additionalProperties": false,
+                  "description": "Whether a running handler was cancelled"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/EffectHttpApiErrorBadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        },
+        "description": "Interrupt the foreground hook handler currently running under this handler digest for the session. Returns cancelled:false when no matching handler is running.",
+        "summary": "Cancel a running hook",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@graphagent/sdk\"\n\nconst client = createOpencodeClient()\nawait client.session.hook.cancel({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/session/{sessionID}/diff": {
       "get": {
         "tags": ["session"],
@@ -17203,15 +17299,55 @@
                       "hookID": {
                         "type": "string"
                       },
+                      "event": {
+                        "type": "string"
+                      },
+                      "descriptor": {
+                        "type": "string"
+                      },
                       "statusMessage": {
                         "type": "string"
                       },
                       "phase": {
                         "type": "string",
-                        "enum": ["started", "finished"]
+                        "enum": ["started", "finished", "cancelled", "timeout"]
+                      },
+                      "timeoutMs": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string",
+                            "enum": ["Infinity", "-Infinity", "NaN"]
+                          }
+                        ]
+                      },
+                      "cancellable": {
+                        "type": "boolean"
+                      },
+                      "startedAt": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string",
+                            "enum": ["Infinity", "-Infinity", "NaN"]
+                          }
+                        ]
                       }
                     },
-                    "required": ["sessionID", "hookID", "statusMessage", "phase"],
+                    "required": [
+                      "sessionID",
+                      "hookID",
+                      "event",
+                      "descriptor",
+                      "phase",
+                      "timeoutMs",
+                      "cancellable",
+                      "startedAt"
+                    ],
                     "additionalProperties": false
                   }
                 },
@@ -19865,15 +20001,55 @@
               "hookID": {
                 "type": "string"
               },
+              "event": {
+                "type": "string"
+              },
+              "descriptor": {
+                "type": "string"
+              },
               "statusMessage": {
                 "type": "string"
               },
               "phase": {
                 "type": "string",
-                "enum": ["started", "finished"]
+                "enum": ["started", "finished", "cancelled", "timeout"]
+              },
+              "timeoutMs": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ]
+              },
+              "cancellable": {
+                "type": "boolean"
+              },
+              "startedAt": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ]
               }
             },
-            "required": ["sessionID", "hookID", "statusMessage", "phase"],
+            "required": [
+              "sessionID",
+              "hookID",
+              "event",
+              "descriptor",
+              "phase",
+              "timeoutMs",
+              "cancellable",
+              "startedAt"
+            ],
             "additionalProperties": false
           }
         },
@@ -22543,15 +22719,55 @@
               "hookID": {
                 "type": "string"
               },
+              "event": {
+                "type": "string"
+              },
+              "descriptor": {
+                "type": "string"
+              },
               "statusMessage": {
                 "type": "string"
               },
               "phase": {
                 "type": "string",
-                "enum": ["started", "finished"]
+                "enum": ["started", "finished", "cancelled", "timeout"]
+              },
+              "timeoutMs": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ]
+              },
+              "cancellable": {
+                "type": "boolean"
+              },
+              "startedAt": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["Infinity", "-Infinity", "NaN"]
+                  }
+                ]
               }
             },
-            "required": ["sessionID", "hookID", "statusMessage", "phase"],
+            "required": [
+              "sessionID",
+              "hookID",
+              "event",
+              "descriptor",
+              "phase",
+              "timeoutMs",
+              "cancellable",
+              "startedAt"
+            ],
             "additionalProperties": false
           }
         },

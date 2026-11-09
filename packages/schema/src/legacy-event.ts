@@ -19,9 +19,15 @@ export const HookStatus = define({
   type: "session.hook.status",
   schema: {
     sessionID: SessionID,
+    /** sha256 of the handler identity; never the command or HTTP headers. */
     hookID: Schema.String,
-    statusMessage: Schema.String,
-    phase: Schema.Literals(["started", "finished"]),
+    event: Schema.String,
+    descriptor: Schema.String,
+    statusMessage: Schema.optional(Schema.String),
+    phase: Schema.Literals(["started", "finished", "cancelled", "timeout"]),
+    timeoutMs: Schema.Number,
+    cancellable: Schema.Boolean,
+    startedAt: Schema.Number,
   },
 })
 

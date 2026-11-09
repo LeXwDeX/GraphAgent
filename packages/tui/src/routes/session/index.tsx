@@ -277,18 +277,18 @@ export function Main() {
         return
       }
       const { hookID, statusMessage, phase } = evt.properties
-      if (typeof hookID !== "string" || typeof statusMessage !== "string") return
+      if (typeof hookID !== "string") return
       if (phase === "started") {
+        if (typeof statusMessage !== "string") return
         setHookStatus((current) => ({ ...current, [hookID]: statusMessage }))
         return
       }
-      if (phase === "finished") {
-        setHookStatus((current) => {
-          const next = { ...current }
-          delete next[hookID]
-          return next
-        })
-      }
+      // finished, cancelled and timeout are all terminal for the footer row.
+      setHookStatus((current) => {
+        const next = { ...current }
+        delete next[hookID]
+        return next
+      })
     }),
   )
 
