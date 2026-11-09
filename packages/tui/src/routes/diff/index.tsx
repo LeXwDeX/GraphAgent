@@ -17,7 +17,8 @@ import { createEffect, createMemo, createResource, createSignal, For, Match, onC
 import { t } from "../../i18n"
 import { DiffViewerFileTree } from "./file-tree"
 import { Panel, PanelGroup, Separator } from "./ui"
-import { DialogSelect } from "../../ui/dialog-select"
+import { DiffSourcePanel } from "../../panel/diff-source"
+import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import { getScrollAcceleration } from "../../util/scroll"
 import { PatchDiff, type PatchDiffRef } from "../../component/patch-diff"
 import {
@@ -100,6 +101,7 @@ export function Diff() {
   const kv = useKV()
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
+  const bottomZone = useBottomZoneOptional()
   const params = () => route.params
   const mode = () => params()?.mode ?? "git"
   const diffInput = createMemo(() => {
@@ -629,7 +631,7 @@ export function Diff() {
       title: t("diff.command.switchSource"),
       category: "VCS",
       run() {
-        openSwitchDiffDialog()
+        openSwitchDiffPanel()
       },
     },
     {
@@ -658,47 +660,47 @@ export function Diff() {
     const vcs = sync.data.vcs
     return [
       {
+        mode: "git" as const,
         title: t("diff.switch.git.title"),
-        value: "git" as const,
         description: t("diff.switch.git.description"),
       },
       ...(vcs?.branch && vcs.default_branch && vcs.branch !== vcs.default_branch
         ? [
             {
+              mode: "branch" as const,
               title: t("diff.switch.branch.title"),
-              value: "branch" as const,
               description: t("diff.switch.branch.description"),
             },
           ]
         : []),
       {
+        mode: "last-turn" as const,
         title: t("diff.switch.lastTurn.title"),
-        value: "last-turn" as const,
         description: t("diff.switch.lastTurn.description"),
       },
     ]
   })
 
-  const openSwitchDiffDialog = () => {
-    dialog.replace(() => (
-      <DialogSelect
-        title={t("diff.switch.title")}
-        skipFilter={true}
-        renderFilter={false}
-        current={mode()}
-        options={switchDiffOptions().map((option) => ({
-          ...option,
-          onSelect(dialog) {
-            dialog.clear()
+  const openSwitchDiffPanel = () => {
+    const host = bottomZone?.host
+    if (!host) return
+    if (host.top()?.id === "diff-source") return
+    host.push({
+      id: "diff-source",
+      render: () => (
+        <DiffSourcePanel
+          current={mode()}
+          options={switchDiffOptions()}
+          onSelect={(next) =>
             navigation.open({
-              mode: option.value,
+              mode: next,
               sessionID: params()?.sessionID,
               messageID: params()?.messageID,
             })
-          },
-        }))}
-      />
-    ))
+          }
+        />
+      ),
+    })
   }
 
   const openHelpDialog = () => {
