@@ -25,9 +25,9 @@ const it = testEffect(testLayer)
 
 const writeHooks = (hooks: unknown) => (dir: string) =>
   Effect.promise(() =>
-    fs.mkdir(path.join(dir, ".agents"), { recursive: true }).then(() =>
-      fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooks)),
-    ),
+    fs
+      .mkdir(path.join(dir, ".agents"), { recursive: true })
+      .then(() => fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooks))),
   )
 
 // Unique marker so pgrep only matches this test's grandchild.
@@ -54,7 +54,7 @@ describe("SettingsHook execShell pipe-holding grandchild (#500)", () => {
         const startedAt = Date.now()
         const r = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "test" },
-          { sessionID: "sess-500-1", transcriptPath: "" },
+          { sessionID: "sess-500-1", transcript: () => Effect.succeed("") },
         )
         const elapsed = Date.now() - startedAt
         // Must resolve far below the 597s the grandchild would hold the pipe.
@@ -77,7 +77,7 @@ describe("SettingsHook execShell pipe-holding grandchild (#500)", () => {
         const hook = yield* SettingsHook.Service
         const r = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "test" },
-          { sessionID: "sess-500-2", transcriptPath: "" },
+          { sessionID: "sess-500-2", transcript: () => Effect.succeed("") },
         )
         expect(r.additionalContexts).toEqual(["fast-ok-500"])
       }),

@@ -124,8 +124,8 @@ describe("MCP hook stdout and once ownership", () => {
           return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("{}", { status: 200 })))
         }),
       )
-      yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(http))
-      yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(http))
+      yield* hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") }).pipe(Effect.provide(http))
+      yield* hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") }).pipe(Effect.provide(http))
       expect(calls).toBe(1)
     }),
   )
@@ -159,8 +159,12 @@ describe("MCP hook stdout and once ownership", () => {
           hooks: { PreToolUse: [{ once: true, hooks: [{ type, prompt: "Return ok true" }] }] },
         })
         const services = modelLayer(model)
-        yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(services))
-        yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(services))
+        yield* hooks
+          .trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
+          .pipe(Effect.provide(services))
+        yield* hooks
+          .trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
+          .pipe(Effect.provide(services))
         expect(model.doGenerateCalls).toHaveLength(1)
       }),
     )
@@ -181,8 +185,8 @@ describe("MCP hook stdout and once ownership", () => {
         calls++
         return { content: [{ type: "text", text: "{}" }] }
       })
-      yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(mcp))
-      yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(mcp))
+      yield* hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") }).pipe(Effect.provide(mcp))
+      yield* hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") }).pipe(Effect.provide(mcp))
       expect(calls).toBe(1)
       expect(yield* store.list(sessionID, "PreToolUse")).toHaveLength(0)
     }),
@@ -212,11 +216,11 @@ describe("MCP hook stdout and once ownership", () => {
         })
       })
       const first = yield* hooks
-        .trigger(preTool, { sessionID, transcriptPath: "" })
+        .trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
         .pipe(Effect.provide(mcp), Effect.forkChild)
       yield* Effect.promise(() => running)
       yield* Fiber.interrupt(first)
-      yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(mcp))
+      yield* hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") }).pipe(Effect.provide(mcp))
       expect(calls).toBe(2)
     }),
   )
@@ -252,7 +256,7 @@ describe("MCP hook stdout and once ownership", () => {
             ],
           },
         })
-        const run = () => hooks.trigger(preTool, { sessionID, transcriptPath: "" })
+        const run = () => hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
         const first = yield* run().pipe(Effect.forkChild)
         yield* Deferred.await(gate.entered)
         const cancellation = yield* Fiber.interrupt(first).pipe(Effect.forkChild)
@@ -286,8 +290,8 @@ describe("MCP hook stdout and once ownership", () => {
           ? { isError: true, content: [{ type: "text", text: "failed" }] }
           : { content: [{ type: "text", text: "{}" }] }
       })
-      yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(mcp))
-      yield* hooks.trigger(preTool, { sessionID, transcriptPath: "" }).pipe(Effect.provide(mcp))
+      yield* hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") }).pipe(Effect.provide(mcp))
+      yield* hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") }).pipe(Effect.provide(mcp))
       expect(calls).toBe(2)
     }),
   )
@@ -317,7 +321,7 @@ describe("MCP hook stdout and once ownership", () => {
           ],
         },
       })
-      const run = () => hooks.trigger(preTool, { sessionID, transcriptPath: "" })
+      const run = () => hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
       yield* run()
       yield* pollWithTimeout(
         Effect.promise(() =>
@@ -359,7 +363,7 @@ describe("MCP hook stdout and once ownership", () => {
         },
       }
       yield* hooks.registerScoped!(sessionID, first)
-      const run = () => hooks.trigger(preTool, { sessionID, transcriptPath: "" })
+      const run = () => hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
       yield* run()
       yield* pollWithTimeout(
         Effect.promise(() =>
@@ -410,7 +414,7 @@ describe("MCP hook stdout and once ownership", () => {
             ],
           },
         })
-        const run = () => hooks.trigger(preTool, { sessionID, transcriptPath: "" })
+        const run = () => hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
         yield* run()
         yield* pollWithTimeout(
           Effect.promise(() =>
@@ -479,7 +483,7 @@ describe("MCP hook stdout and once ownership", () => {
             ],
           },
         })
-        const run = () => hooks.trigger(preTool, { sessionID, transcriptPath: "" })
+        const run = () => hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
         yield* run()
         yield* pollWithTimeout(
           Effect.promise(() =>
@@ -571,7 +575,7 @@ describe("MCP hook stdout and once ownership", () => {
             ],
           },
         })
-        const run = () => hooks.trigger(preTool, { sessionID, transcriptPath: "" })
+        const run = () => hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
         yield* run()
         yield* pollWithTimeout(
           Effect.promise(() =>
@@ -616,7 +620,7 @@ describe("MCP hook stdout and once ownership", () => {
         origin,
         hooks: { PreToolUse: [{ once: true, hooks: [slow("a"), slow("b")] }] },
       })
-      const run = () => hooks.trigger(preTool, { sessionID, transcriptPath: "" })
+      const run = () => hooks.trigger(preTool, { sessionID, transcript: () => Effect.succeed("") })
       yield* run()
       yield* pollWithTimeout(
         Effect.promise(() =>
@@ -672,7 +676,9 @@ describe("MCP hook stdout and once ownership", () => {
                   event: "SessionStart" as const,
                   source: event.endsWith("compact") ? ("compact" as const) : ("clear" as const),
                 }
-        const result = yield* hooks.trigger(payload, { sessionID, transcriptPath: "" }).pipe(Effect.provide(mcp))
+        const result = yield* hooks
+          .trigger(payload, { sessionID, transcript: () => Effect.succeed("") })
+          .pipe(Effect.provide(mcp))
         expect(result.additionalContexts).toEqual(["MCP_PLAIN_CONTEXT"])
       }
     }),
@@ -689,7 +695,7 @@ describe("MCP hook stdout and once ownership", () => {
       })
       const mcp = tool(async () => ({ content: [{ type: "text", text: process.cwd() }] }))
       const result = yield* hooks
-        .trigger({ event: "WorktreeCreate", name: "test" }, { sessionID, transcriptPath: "" })
+        .trigger({ event: "WorktreeCreate", name: "test" }, { sessionID, transcript: () => Effect.succeed("") })
         .pipe(Effect.provide(mcp))
       expect(result.worktreePath).toBe(process.cwd())
       expect(result.blocked).toBeUndefined()

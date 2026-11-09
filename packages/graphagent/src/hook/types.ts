@@ -4,6 +4,7 @@
  * Pure-move extraction from the former monolithic settings module (D1 PR1). Runtime
  * behavior is unchanged; see `hook/index.ts` for the public surface.
  */
+import type { Effect } from "effect"
 import type { PermissionUpdate } from "./schema"
 
 // ── Hook protocol types ────────────────────────────────────────
@@ -468,15 +469,26 @@ export type HookPayload =
     }
   | { event: "MessageDisplay"; turnID: string; messageID: string; index: number; final: boolean; delta: string }
 
-// Callers provide truthful session/transcript identifiers. Tool-event cwd follows
-// a Bash call's workdir; all other events use the current instance directory.
+// Callers provide truthful session identifiers. Tool-event cwd follows a Bash
+// call's workdir; all other events use the current instance directory.
 export interface TriggerContext {
   sessionID: string
-  /** Absolute path to the live JSONL transcript exported by the lifecycle owner. */
-  transcriptPath: string
-  /** Temporary file sourced after SessionStart to load hook-defined environment. */
+  /**
+   * Lazily materialize this session's JSONL transcript. The engine evaluates it
+   * at most once per trigger, immediately before the first handler starts, and
+   * only when a handler will actually run; sessionless triggers omit it (and
+   * the stdin envelope then omits `transcript_path`). Callers that already hold
+   * a stable snapshot may return it directly instead of re-materializing.
+   */
+  transcript?: () => Effect.Effect<string>
+  /**
+   * Which environment file `CLAUDE_ENV_FILE` names. `session` (default) is the
+   * SessionStart layer; `directory` is the overlay a CwdChanged hook writes.
+   */
+  environmentLifetime?: "session" | "directory"
+  /** Explicit override for the environment file the engine would derive lazily. */
   environmentFile?: string
-  /** Session-scoped variables exported by SessionStart for later local commands and Bash tools. */
+  /** Explicit override for the session environment the engine would load lazily. */
   environment?: Record<string, string | undefined>
   /** CC envelope: "plan" | "default"（fork 通过 agentToPermissionMode 映射 agent name 得出）。其他模式（acceptEdits/bypassPermissions）fork 暂不支持。 */
   permissionMode?: string
@@ -518,6 +530,16 @@ export interface TriggerContext {
   /** CC envelope `scratchpad_dir`: per-session scratch directory, created lazily by `trigger`. */
   scratchpadDir?: string
 }
+
+/**
+ * Narrow trigger context for tool-lifecycle calls (`SettingsHook.Interface.hookCall`).
+ * The engine fills transcript, environment, prompt identity and permission mode
+ * lazily; tool call sites only provide the real session and tool/MCP identity.
+ */
+export type ToolHookContext = Pick<
+  TriggerContext,
+  "sessionID" | "canonicalToolName" | "mcpServer" | "agentID" | "agentType" | "isSubAgent"
+>
 
 /** CC's effort levels (the `level` reported inside the `effort` envelope object). */
 export type HookEffort = "low" | "medium" | "high" | "xhigh" | "max"

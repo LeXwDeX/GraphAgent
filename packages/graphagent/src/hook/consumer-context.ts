@@ -1,7 +1,6 @@
 import type { TriggerContext } from "./types"
 import { Effect, Option } from "effect"
 import { Database } from "@graphagent/core/database/database"
-import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { HookTranscript, type Message } from "./transcript"
 import { promptIdentity, variantToEffort, withPromptIdentity } from "./prompt-identity"
@@ -18,7 +17,6 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
    */
   promptID?: string,
 ): Effect.fn.Return<TriggerContext, unknown> {
-  const directory = (yield* InstanceRef)?.directory ?? process.cwd()
   const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
   let messages: Message[] = []
   if (database) {
@@ -61,8 +59,6 @@ export const consumerContext = Effect.fn("Hook.consumerContext")(function* (
     agentType: agent,
     ...identity,
     ...(effort ? { effort } : {}),
-    transcriptPath: yield* HookTranscript.materialize({ sessionID, directory, messages }),
-    environment: yield* HookTranscript.environment(sessionID),
     permissionMode: permissionMode === "manual" ? "default" : (permissionMode ?? "default"),
   }
 })

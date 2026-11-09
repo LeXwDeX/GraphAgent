@@ -25,7 +25,7 @@ const it = testEffect(
 // effort. Capture the real stdin envelope through a session-registered hook.
 const capture = (
   payload: HookPayload,
-  context: Omit<TriggerContext, "sessionID" | "transcriptPath"> = {},
+  context: Omit<TriggerContext, "sessionID" | "transcript"> = {},
   options: { sessionID?: SessionID; run?: string } = {},
 ) =>
   Effect.gen(function* () {
@@ -40,7 +40,7 @@ const capture = (
       await fs.appendFile(${JSON.stringify(audit)}, JSON.stringify(input) + '\\n');
     `)
     yield* store.add(id, { event: payload.event, matcher: "*", hooks: [{ type: "command", command }] })
-    yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "", ...context })
+    yield* hooks.trigger(payload, { sessionID: id, transcript: () => Effect.succeed(""), ...context })
     return yield* Effect.promise(async () =>
       (await fs.readFile(audit, "utf8"))
         .trim()
@@ -81,7 +81,7 @@ describe("prompt_id / scratchpad_dir / effort envelope fields", () => {
       yield* hooks
         .trigger(
           { event: "PreToolUse", toolName: "Bash", toolInput: { command: "ls" }, toolUseID: "toolu_effort" },
-          { sessionID: id, transcriptPath: "", promptID: "msg_prompt_1", effort: "high" },
+          { sessionID: id, transcript: () => Effect.succeed(""), promptID: "msg_prompt_1", effort: "high" },
         )
         .pipe(
           Effect.ensuring(
@@ -155,7 +155,7 @@ describe("sessionless Notification", () => {
       )
       yield* hooks.trigger(
         { event: "Notification", message: "auth required" },
-        { sessionID: "", transcriptPath: "", promptID: "msg_ignored", effort: "high" },
+        { sessionID: "", transcript: () => Effect.succeed(""), promptID: "msg_ignored", effort: "high" },
       )
       const envelope = yield* Effect.promise(async () =>
         JSON.parse((await fs.readFile(audit, "utf8")).trim().split("\n")[0]),

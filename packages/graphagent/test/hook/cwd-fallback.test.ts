@@ -45,7 +45,7 @@ describe("hook working directory fallback", () => {
 
         const result = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "hi" },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(result.additionalContexts).toEqual(["HOOK_RAN"])
         const recorded = JSON.parse(yield* Effect.promise(() => fs.readFile(marker, "utf8"))) as { cwd: string }

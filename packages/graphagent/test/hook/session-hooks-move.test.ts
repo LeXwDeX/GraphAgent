@@ -31,9 +31,7 @@ const adapter = HookCwd.layer.pipe(
   Layer.provide(HookConfigChange.defaultLayer),
 )
 const moveSession = MoveSession.defaultLayer.pipe(Layer.provide(MoveSessionLookup.layer), Layer.provide(adapter))
-const it = testEffect(
-  Layer.mergeAll(adapter, moveSession, SessionProjector.defaultLayer, HookFileWatch.defaultLayer),
-)
+const it = testEffect(Layer.mergeAll(adapter, moveSession, SessionProjector.defaultLayer, HookFileWatch.defaultLayer))
 
 const node = (script: string): HookCommand => ({ type: "command", command: process.execPath, args: ["-e", script] })
 
@@ -93,7 +91,10 @@ it.instance(
       expect(yield* inNew(store.listAll(session.id))).toHaveLength(2)
 
       const result = yield* inNew(
-        settings.trigger({ event: "UserPromptSubmit", prompt: "hi" }, { sessionID: session.id, transcriptPath: "" }),
+        settings.trigger(
+          { event: "UserPromptSubmit", prompt: "hi" },
+          { sessionID: session.id, transcript: () => Effect.succeed("") },
+        ),
       )
       expect(result.additionalContexts).toEqual(["MOVED_HOOK_RAN"])
     }),

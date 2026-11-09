@@ -96,7 +96,7 @@ describe("retired workspace trust compatibility", () => {
             const result = yield* hooks
               .trigger(
                 { event: "PostToolUse", toolName: "bash", toolInput: { command: "true" }, toolResponse: {} },
-                { sessionID, transcriptPath: "" },
+                { sessionID, transcript: () => Effect.succeed("") },
               )
               .pipe(
                 Effect.provide(

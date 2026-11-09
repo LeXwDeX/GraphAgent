@@ -62,7 +62,10 @@ describe("cross-audit: exec form placeholders and shell selection", () => {
           },
         ],
       })
-      const result = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "go" }, { sessionID, transcriptPath: "" })
+      const result = yield* hook.trigger(
+        { event: "UserPromptSubmit", prompt: "go" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
       expect(result.additionalContexts).toEqual([`${instance.directory}/a b|x`])
     }),
   )
@@ -90,7 +93,7 @@ describe("cross-audit: exec form placeholders and shell selection", () => {
         })
         const result = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "go" },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         return JSON.parse(result.additionalContexts[0])
       }).pipe(provideInstance(sub))
@@ -155,7 +158,7 @@ describe("cross-audit: onFailure exemptions and exit 2", () => {
       const hook = yield* SettingsHook.Service
       const sessionID = SessionID.descending()
       yield* store.add(sessionID, { event, hooks })
-      return yield* hook.trigger(payload, { sessionID, transcriptPath: "" })
+      return yield* hook.trigger(payload, { sessionID, transcript: () => Effect.succeed("") })
     })
 
   const exempt: [HookEvent, HookPayload][] = [
@@ -251,7 +254,10 @@ describe("cross-audit: stdout classification", () => {
         event: "UserPromptSubmit",
         hooks: [node("process.stdout.write('{\"hookSpecificOutput\": ')")],
       })
-      const plain = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "p" }, { sessionID, transcriptPath: "" })
+      const plain = yield* hook.trigger(
+        { event: "UserPromptSubmit", prompt: "p" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
       expect(plain.additionalContexts).toEqual(['{"hookSpecificOutput":'])
 
       const other = SessionID.descending()
@@ -261,7 +267,7 @@ describe("cross-audit: stdout classification", () => {
       })
       const invalid = yield* hook.trigger(
         { event: "UserPromptSubmit", prompt: "p" },
-        { sessionID: other, transcriptPath: "" },
+        { sessionID: other, transcript: () => Effect.succeed("") },
       )
       expect(invalid.additionalContexts).toEqual([])
       expect(invalid.preventContinuation).toBeUndefined()
@@ -278,12 +284,18 @@ describe("cross-audit: stdout classification", () => {
         once: true,
         hooks: [node(stdoutJSON({ continue: "yes" }))],
       })
-      yield* hook.trigger({ event: "UserPromptSubmit", prompt: "p" }, { sessionID, transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "UserPromptSubmit", prompt: "p" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
       expect(yield* store.list(sessionID, "UserPromptSubmit")).toHaveLength(1)
 
       const good = SessionID.descending()
       yield* store.add(good, { event: "UserPromptSubmit", once: true, hooks: [node(stdoutJSON({}))] })
-      yield* hook.trigger({ event: "UserPromptSubmit", prompt: "p" }, { sessionID: good, transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "UserPromptSubmit", prompt: "p" },
+        { sessionID: good, transcript: () => Effect.succeed("") },
+      )
       expect(yield* store.list(good, "UserPromptSubmit")).toHaveLength(0)
     }),
   )
@@ -308,7 +320,7 @@ describe("cross-audit: stdout classification", () => {
         hooks: [{ type: "mcp_tool", server: "audit", tool: "check" }],
       })
       const result = yield* hook
-        .trigger({ event: "UserPromptSubmit", prompt: "p" }, { sessionID, transcriptPath: "" })
+        .trigger({ event: "UserPromptSubmit", prompt: "p" }, { sessionID, transcript: () => Effect.succeed("") })
         .pipe(Effect.provide(mcp))
       expect(result.additionalContexts).toEqual([])
       expect(yield* store.list(sessionID, "UserPromptSubmit")).toHaveLength(1)
@@ -325,7 +337,7 @@ describe("cross-audit: PreToolUse decision precedence", () => {
       yield* store.add(sessionID, { event: "PreToolUse", hooks })
       return yield* hook.trigger(
         { event: "PreToolUse", toolName: "Bash", toolInput: { command: "pwd" } },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
     })
   const pre = (permissionDecision: string, reason?: string, extra: Record<string, unknown> = {}) =>
@@ -412,7 +424,10 @@ describe("cross-audit: PermissionRequest decisions from MCP hooks", () => {
       ] as const) {
         yield* store.add(sessionID, { event: "PermissionRequest", hooks: [entry] })
         const result = yield* hook
-          .trigger({ event: "PermissionRequest", toolName: "Bash", toolInput: {} }, { sessionID, transcriptPath: "" })
+          .trigger(
+            { event: "PermissionRequest", toolName: "Bash", toolInput: {} },
+            { sessionID, transcript: () => Effect.succeed("") },
+          )
           .pipe(Effect.provide(mcp))
         expect(result.permissionRequestDecision).toEqual({ behavior: "allow" })
         yield* store.clear(sessionID)
@@ -440,7 +455,7 @@ describe("cross-audit: grandchild holding the output pipe", () => {
         })
         const result = yield* hook.trigger(
           { event: "PreToolUse", toolName: "Bash", toolInput: {} },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(result.blocked?.reason).toContain("suspect capture")
         expect(result.permissionDecision).toBe("deny")
@@ -466,7 +481,7 @@ describe("cross-audit: grandchild holding the output pipe", () => {
         })
         const result = yield* hook.trigger(
           { event: "PreToolUse", toolName: "Bash", toolInput: {} },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(result.blocked).toBeUndefined()
         expect(result.permissionDecision).toBe("allow")
@@ -491,7 +506,7 @@ describe("cross-audit: canonical tool identity", () => {
       const sessionID = SessionID.descending()
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
       yield* store.add(sessionID, { event: payload.event as "PostToolUse", matcher, hooks: [entry] })
-      const result = yield* hook.trigger(payload, { sessionID, transcriptPath: "", ...ctx })
+      const result = yield* hook.trigger(payload, { sessionID, transcript: () => Effect.succeed(""), ...ctx })
       return result.additionalContexts[0] ? JSON.parse(result.additionalContexts[0]) : undefined
     })
   const post = (toolName: string): HookPayload => ({
@@ -565,7 +580,7 @@ describe("cross-audit: canonical tool identity", () => {
       })
       yield* hook.trigger(
         { event: "ConfigChange", source: "project_settings", configPath: "/x/hooks.json" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       const stdin = JSON.parse(yield* Effect.promise(() => fs.readFile(dump, "utf8")))
       expect(stdin.file_path).toBe("/x/hooks.json")
@@ -586,7 +601,7 @@ describe("cross-audit: context delivery", () => {
       const sessionID = SessionID.descending()
       yield* store.add(sessionID, { event: "UserPromptSubmit", hooks: [context("UserPromptSubmit")] })
       yield* store.add(sessionID, { event: "PostToolBatch", hooks: [context("PostToolBatch")] })
-      const ctx = { sessionID, transcriptPath: "" }
+      const ctx = { sessionID, transcript: () => Effect.succeed("") }
       for (let turn = 0; turn < 2; turn++) {
         expect((yield* hook.trigger({ event: "UserPromptSubmit", prompt: "p" }, ctx)).additionalContexts).toEqual([
           "SAME",
@@ -604,7 +619,7 @@ describe("cross-audit: context delivery", () => {
       const hook = yield* SettingsHook.Service
       const parent = SessionID.descending()
       yield* store.add(parent, { event: "SubagentStart", hooks: [context("SubagentStart")] })
-      const ctx = { sessionID: parent, transcriptPath: "" }
+      const ctx = { sessionID: parent, transcript: () => Effect.succeed("") }
       const start = (agentID: string) =>
         hook
           .trigger({ event: "SubagentStart", agentID, agentType: "general" }, ctx)
@@ -624,7 +639,10 @@ describe("cross-audit: context delivery", () => {
         event: "UserPromptSubmit",
         hooks: [node("process.stdout.write('plain async text')", { async: true })],
       })
-      yield* hook.trigger({ event: "UserPromptSubmit", prompt: "p" }, { sessionID, transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "UserPromptSubmit", prompt: "p" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
       yield* Effect.sleep("300 millis")
       expect((yield* hook.drainAsync!(sessionID)).additionalContexts).toEqual([])
     }),

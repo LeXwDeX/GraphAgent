@@ -49,6 +49,7 @@ export type {
   HookSpecificOutput,
   HookSummary,
   Settings,
+  ToolHookContext,
   TriggerContext,
 } from "./types"
 export { VALID_HOOK_EVENTS } from "./types"

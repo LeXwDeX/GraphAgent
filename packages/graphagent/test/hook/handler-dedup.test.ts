@@ -27,7 +27,7 @@ describe("identical hook handlers are deduplicated per trigger", () => {
         const hook = yield* SettingsHook.Service
         yield* hook.trigger(
           { event: "PreToolUse", toolName: "bash", toolInput: { command: "ls" } },
-          { sessionID: "ses_handler_dedup", transcriptPath: "" },
+          { sessionID: "ses_handler_dedup", transcript: () => Effect.succeed("") },
         )
         const log = yield* Effect.promise(() => fs.readFile(path.join(dir, "count.log"), "utf8"))
         expect(log.trim().split("\n").length).toBe(1)
@@ -57,7 +57,7 @@ describe("identical hook handlers are deduplicated per trigger", () => {
         const hook = yield* SettingsHook.Service
         yield* hook.trigger(
           { event: "PreToolUse", toolName: "bash", toolInput: { command: "ls" } },
-          { sessionID: "ses_handler_dedup_2", transcriptPath: "" },
+          { sessionID: "ses_handler_dedup_2", transcript: () => Effect.succeed("") },
         )
         const log = yield* Effect.promise(() => fs.readFile(path.join(dir, "count.log"), "utf8"))
         expect(log.trim().split("\n").sort()).toEqual(["a", "b"])
@@ -87,7 +87,7 @@ describe("identical hook handlers are deduplicated per trigger", () => {
         const hook = yield* SettingsHook.Service
         yield* hook.trigger(
           { event: "PreToolUse", toolName: "bash", toolInput: { command: "ls" } },
-          { sessionID: "ses_handler_dedup_options", transcriptPath: "" },
+          { sessionID: "ses_handler_dedup_options", transcript: () => Effect.succeed("") },
         )
         const log = yield* Effect.promise(() => fs.readFile(path.join(dir, "count.log"), "utf8"))
         expect(log.trim().split("\n").length).toBe(2)

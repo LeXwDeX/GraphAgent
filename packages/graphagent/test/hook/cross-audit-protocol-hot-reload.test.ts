@@ -81,7 +81,7 @@ const startContexts = (hook: SettingsHook.Interface) =>
   hook
     .trigger(
       { event: "SessionStart", source: "startup" },
-      { sessionID: `sess-cross-gate-${++counter}`, transcriptPath: "" },
+      { sessionID: `sess-cross-gate-${++counter}`, transcript: () => Effect.succeed("") },
     )
     .pipe(Effect.map((result) => result.additionalContexts))
 const waitFor = (hook: SettingsHook.Interface, context: string) =>
@@ -119,7 +119,7 @@ describe("hooks.json hot reload candidate gate", () => {
         const denied = hook
           .trigger(
             { event: "PreToolUse", toolName: "Bash", toolInput: {} },
-            { sessionID: "sess-guard", transcriptPath: "" },
+            { sessionID: "sess-guard", transcript: () => Effect.succeed("") },
           )
           .pipe(Effect.map((result) => result.blocked !== undefined))
         expect(yield* denied).toBe(true)
@@ -207,7 +207,7 @@ describe("hooks.json hot reload candidate gate", () => {
           hook
             .trigger(
               { event: "ConfigChange", source: change.source, configPath: change.path },
-              { sessionID: "ses_real_gate", transcriptPath: "" },
+              { sessionID: "ses_real_gate", transcript: () => Effect.succeed("") },
             )
             .pipe(Effect.map((result) => ({ blocked: result.blocked }))),
         )

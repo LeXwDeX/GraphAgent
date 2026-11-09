@@ -3,7 +3,6 @@ import { HookFileWatch } from "@/hook/file-watch"
 import { HookConfigChange } from "@/hook/config-change"
 import { HookSessionContext } from "@/hook/session-context"
 import { HookTranscript } from "@/hook/transcript"
-import { promptIdentity } from "@/hook/prompt-identity"
 import { Skill } from "@/skill"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { HookStartContext } from "@/hook/start-context"
@@ -685,23 +684,9 @@ export const layer: Layer.Layer<
         // A deletion ends only the attached top-level client session; child lifetime uses SubagentStop.
         if (!session.parentID && callSettings) {
           const finish = Effect.gen(function* () {
-            // Materialize before claiming: a failed transcript read must not consume the one SessionEnd attempt.
-            const messages = yield* api.messages({ sessionID }).pipe(Effect.orDie)
-            const transcriptPath = yield* HookTranscript.materialize({
-              sessionID,
-              directory: session.directory,
-              messages,
-            }).pipe(Effect.orDie)
+            // The engine materializes the transcript only when a SessionEnd handler matches.
             if (hookLifecycle && !(yield* hookLifecycle.claimEnd(sessionID))) return
-            const result = yield* callSettings.trigger(
-              { event: "SessionEnd", reason: "other" },
-              {
-                sessionID,
-                ...promptIdentity(messages),
-                transcriptPath,
-                environment: yield* HookTranscript.environment(sessionID).pipe(Effect.orDie),
-              },
-            )
+            const result = yield* callSettings.trigger({ event: "SessionEnd", reason: "other" }, { sessionID })
             yield* landSystemMessages(result, { sessionID })
             if (callSettings.settleSessionEnd) yield* callSettings.settleSessionEnd()
           })
@@ -990,11 +975,6 @@ export const layer: Layer.Layer<
         .pipe(Effect.orDie)
       if (callSettings) {
         const snapshot = yield* messages({ sessionID: session.id }).pipe(Effect.orDie)
-        const transcriptPath = yield* HookTranscript.materialize({
-          sessionID: session.id,
-          directory: ctx.directory,
-          messages: snapshot,
-        }).pipe(Effect.orDie)
         const result = yield* callSettings.trigger(
           {
             event: "SessionStart",
@@ -1009,12 +989,7 @@ export const layer: Layer.Layer<
               history: snapshot,
             })),
           },
-          {
-            sessionID: session.id,
-            ...promptIdentity(snapshot),
-            transcriptPath,
-            environmentFile: yield* HookTranscript.environmentFile(session.id).pipe(Effect.orDie),
-          },
+          { sessionID: session.id },
         )
         yield* landSystemMessages(result, { sessionID: session.id })
         let apply = HookSessionContext.applyStart({

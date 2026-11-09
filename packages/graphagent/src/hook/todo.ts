@@ -7,8 +7,6 @@ import { Session } from "@/session/session"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
-import { HookTranscript } from "./transcript"
-import { promptIdentity } from "./prompt-identity"
 
 export const layer = Layer.effect(
   SessionTodoHooks.Service,
@@ -23,20 +21,11 @@ export const layer = Layer.effect(
           const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
           const instance = yield* instances.load({ directory: current.directory })
           return yield* Effect.gen(function* () {
-            const messages = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-            const transcriptPath = yield* HookTranscript.materialize({
-              sessionID,
-              directory: current.directory,
-              messages,
-            }).pipe(Effect.orDie)
+            // The engine derives transcript, identity and environment lazily,
+            // only when a handler matches this event.
             const result = yield* settings.trigger(
               { event: change.event, source: "task_update", taskID: change.taskID, taskTitle: change.subject },
-              {
-                sessionID,
-                ...promptIdentity(messages),
-                transcriptPath,
-                environment: yield* HookTranscript.environment(sessionID).pipe(Effect.orDie),
-              },
+              { sessionID },
             )
             yield* SettingsHook.landSystemMessages(result, { sessionID })
             return { blocked: result.blocked }

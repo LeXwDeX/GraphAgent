@@ -33,7 +33,7 @@ const run = (entry: HookCommand, event: RunEvent = "PreToolUse") =>
       event === "TaskCreated" || event === "TaskCompleted"
         ? { event, taskID: "task-1", taskTitle: "audit task" }
         : { event, toolName: "bash", toolInput: {}, ...(event === "PostToolUse" ? { toolResponse: "done" } : {}) }
-    return yield* settings.trigger(payload as any, { sessionID: id, transcriptPath: "" })
+    return yield* settings.trigger(payload as any, { sessionID: id, transcript: () => Effect.succeed("") })
   })
 const usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },

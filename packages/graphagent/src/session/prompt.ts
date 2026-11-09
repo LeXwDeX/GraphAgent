@@ -150,9 +150,7 @@ import { Filesystem } from "@/util/filesystem"
 import { HookTurnContext } from "@/hook/turn-context"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTranscript } from "@/hook/transcript"
-import { promptIdentity, withPromptIdentity } from "@/hook/prompt-identity"
 import { Skill } from "@/skill"
-import { HookRewake } from "@/hook/rewake"
 import { Goal } from "@/goal/goal"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Memory } from "@/memory/memory"
@@ -506,65 +504,10 @@ export const layer = Layer.effect(
     const workflowStore = yield* DagStore.Service
     const agentMessages = Option.getOrUndefined(yield* Effect.serviceOption(DagMessages.Service))
     const { db } = database
-    const rawSettingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
-    const rewake = Context.make(
-      HookRewake.Service,
-      HookRewake.bind(({ sessionID, text, stopChain }) =>
-        prompt({ sessionID, parts: [{ type: "text", text }] }, { continueToolBudget: true, stopChainToken: stopChain }),
-      ),
-    )
-    const hasSettingsEvent = Effect.fnUntraced(function* (
-      event: HookPayload["event"],
-      sessionID: string,
-      childSessionID?: string,
-    ) {
-      if (!rawSettingsHook?.hasEvent) return true
-      if (yield* rawSettingsHook.hasEvent(event, sessionID)) return true
-      return event === "SubagentStop" && !!childSessionID && (yield* rawSettingsHook.hasEvent(event, childSessionID))
-    })
-    const settingsHook: SettingsHook.Interface | undefined = rawSettingsHook && {
-      ...rawSettingsHook,
-      trigger: (payload, context) =>
-        Effect.gen(function* () {
-          const configured = yield* hasSettingsEvent(
-            payload.event,
-            context.sessionID,
-            payload.event === "SubagentStop" ? payload.agentID : undefined,
-          )
-          // The raw trigger also owns lifecycle cleanup when no hook matches.
-          if (!configured) return yield* rawSettingsHook.trigger(payload, context)
-          const instance = yield* InstanceState.context
-          const messages = yield* sessions.messages({ sessionID: SessionID.make(context.sessionID) }).pipe(Effect.orDie)
-          const transcriptPath = yield* HookTranscript.materialize({
-            sessionID: context.sessionID,
-            directory: instance.directory,
-            messages,
-          }).pipe(Effect.orDie)
-          const environmentFile = yield* HookTranscript.environmentFile(context.sessionID).pipe(Effect.orDie)
-          const policy = yield* permission.hookPolicy(context.sessionID)
-          const permissionMode = policy.mode === "manual" ? "default" : policy.mode
-          // CC's prompt-scoped envelope fields. An explicit promptID from the
-          // caller wins (UserPromptSubmit names the prompt it is about to
-          // persist); everything else derives from the newest user message.
-          const identity = withPromptIdentity(
-            context,
-            promptIdentity(messages as unknown as readonly HookTranscript.Message[]),
-          )
-          return yield* rawSettingsHook.trigger(payload, {
-            ...identity,
-            transcriptPath,
-            environmentFile,
-            environment: yield* HookTranscript.environment(context.sessionID).pipe(Effect.orDie),
-            ...(permissionMode ? { permissionMode } : {}),
-          })
-        }).pipe(
-          // The V1 loop's own rewake must win over the ambient HookRewakeLive. That one asks the V2
-          // bridge first, and the V2 store also returns legacy sessions, so a V1 callback would run
-          // as a hidden V2 turn that the V1 transcript (and the TUI) never shows. Context.merge keeps
-          // the second argument on conflict.
-          Effect.updateContext((current: Context.Context<never>) => Context.merge(current, rewake)),
-        ),
-    }
+    // The hook engine derives transcript, environment, prompt identity and
+    // permission mode lazily for every trigger (D1 PR2): callers only name the
+    // session, and a trigger that matches no handler touches no session state.
+    const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     // PostToolBatch for one assistant message's settled tool calls. Returns true when a hook stopped the turn.
     // Feedback is hidden model context attached to the turn's user message as synthetic parts.
     const postToolBatch = Effect.fnUntraced(function* (input: {
@@ -588,7 +531,7 @@ export const layer = Layer.effect(
                   : "",
           })),
         },
-        { sessionID: input.sessionID, transcriptPath: "" },
+        { sessionID: input.sessionID },
       )
       yield* SettingsHook.landSystemMessages(afterBatch, { sessionID: input.sessionID })
       const feedback = [...afterBatch.additionalContexts]
@@ -672,7 +615,7 @@ export const layer = Layer.effect(
         if (!request.current()) return
         const fiber = yield* Effect.suspend(() =>
           request.current()
-            ? settingsHook.trigger({ ...payload, event: "PostModelSwitch" }, { sessionID, transcriptPath: "" })
+            ? settingsHook.trigger({ ...payload, event: "PostModelSwitch" }, { sessionID })
             : Effect.interrupt,
         ).pipe(
           Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
@@ -1847,7 +1790,7 @@ export const layer = Layer.effect(
         }
       }
       if (changed && current?.model && settingsHook && source !== "auto") {
-        const result = yield* settingsHook.trigger(payload, { sessionID: input.sessionID, transcriptPath: "" })
+        const result = yield* settingsHook.trigger(payload, { sessionID: input.sessionID })
         yield* SettingsHook.landSystemMessages(result, { sessionID: input.sessionID })
         const reason =
           result.modelSwitchDecisionReason ??
@@ -2468,7 +2411,7 @@ export const layer = Layer.effect(
         history,
       })
       const result = yield* settingsHook
-        .trigger({ event: "SessionStart", source: "resume", ...metrics }, { sessionID: target.id, transcriptPath: "" })
+        .trigger({ event: "SessionStart", source: "resume", ...metrics }, { sessionID: target.id })
         .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
       const instance = yield* InstanceState.context
       const skills = hookSkills
@@ -2546,7 +2489,7 @@ export const layer = Layer.effect(
               prompt: promptText,
               ...(titled !== undefined ? { sessionTitle: titled } : {}),
             },
-            { sessionID: input.sessionID, transcriptPath: "", promptID: promptMessageID },
+            { sessionID: input.sessionID, promptID: promptMessageID },
           )
           .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
         hookAdditionalContexts = hookResult.additionalContexts ?? []
@@ -3096,13 +3039,6 @@ export const layer = Layer.effect(
                           workflows: workflowStore,
                         }),
                         sessionCrons: [],
-                        agentTranscriptPath: (yield* hasSettingsEvent("SubagentStop", session.parentID, sessionID))
-                          ? yield* HookTranscript.materialize({
-                              sessionID,
-                              directory: ctx.directory,
-                              messages: msgs,
-                            }).pipe(Effect.orDie)
-                          : undefined,
                       } as const)
                     : ({
                         event: "Stop",
@@ -3117,7 +3053,6 @@ export const layer = Layer.effect(
                 const stopResult = yield* settingsHook
                   .trigger(stopPayload, {
                     sessionID: session.parentID && !turnError ? session.parentID : sessionID,
-                    transcriptPath: "",
                   })
                   .pipe(
                     Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)),
@@ -3427,7 +3362,7 @@ export const layer = Layer.effect(
                             messageID: displayMessageID,
                             ...batch,
                           },
-                          { sessionID, transcriptPath: "" },
+                          { sessionID },
                         )
                         .pipe(Effect.map((result) => result.displayContent ?? batch.delta)),
                   }
@@ -3518,12 +3453,6 @@ export const layer = Layer.effect(
               prune: foldingConfig?.prune,
             })
 
-            const transcriptPath =
-              settingsHook && (yield* hasSettingsEvent("InstructionsLoaded", sessionID))
-                ? yield* HookTranscript.materialize({ sessionID, directory: ctx.directory, messages: msgs }).pipe(
-                    Effect.orDie,
-                  )
-                : undefined
             // Permission.ask evaluates native rules before configured rules. Use
             // that same split for everything advertised to the model.
             const [
@@ -3542,7 +3471,7 @@ export const layer = Layer.effect(
                 sys.skills(agent, session.permission, nativePermission),
                 sys.environment(model),
                 sys.language(configured.language),
-                instruction.system({ sessionID, transcriptPath }).pipe(Effect.orDie),
+                instruction.system({ sessionID }).pipe(Effect.orDie),
                 sys.mcp(agent, session.permission, nativePermission),
                 sys.goal(sessionID),
                 sys.hooks(),
@@ -4347,7 +4276,7 @@ export const layer = Layer.effect(
               expansionType: cmd.source === "mcp" ? "mcp_prompt" : "slash_command",
               prompt: `/${input.command}${input.arguments ? ` ${input.arguments}` : ""}`,
             },
-            { sessionID: input.sessionID, transcriptPath: "" },
+            { sessionID: input.sessionID },
           )
         : undefined
       if (expansion?.blocked || expansion?.preventContinuation) {

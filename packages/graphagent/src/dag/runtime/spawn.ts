@@ -36,7 +36,6 @@ import { HookTurnContext } from "@/hook/turn-context"
 import { BackgroundJob } from "@/background/job"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { SettingsHook } from "@/hook"
-import { HookTranscript } from "@/hook/transcript"
 import { HookStartContext } from "@/hook/start-context"
 import { Logging } from "@graphagent/core/observability/logging"
 import { Effect, Semaphore, Scope, Fiber, Option, Clock, Cause, Exit } from "effect"
@@ -62,12 +61,7 @@ import {
 import type { DagStore } from "@graphagent/core/dag/store"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
-import {
-  registerCaptureSlot,
-  clearCaptureSlot,
-  settleCapturedOutput,
-  settlePlainTextOutput,
-} from "./capture"
+import { registerCaptureSlot, clearCaptureSlot, settleCapturedOutput, settlePlainTextOutput } from "./capture"
 import { captureFinalResponse, finalAssistantText, outputLimitReason, repairPrompt } from "./final-response"
 import { commitOutputFileRef, reportAreaDirective, verifyOutputFileRef, type ManagedOutputFileRef } from "./output-ref"
 import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
@@ -1114,14 +1108,9 @@ export function spawnNode(
           if (hookLifecycle) yield* hookLifecycle.delegateChildStop(childSession.id)
           const hookAttempt = DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts)
           if (hooks && (!hookLifecycle || (yield* hookLifecycle.claimChildStart(childSession.id, hookAttempt)))) {
-            const transcriptPath = yield* HookTranscript.materialize({
-              sessionID: parent.id,
-              directory: parent.directory,
-              messages: yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie),
-            }).pipe(Effect.orDie)
             const started = yield* hooks.trigger(
               { event: "SubagentStart", agentID: childSession.id, agentType: agent.name },
-              { sessionID: parent.id, transcriptPath },
+              { sessionID: parent.id },
             )
             yield* SettingsHook.landSystemMessages(started, { sessionID: childSession.id })
             if (hookStart) for (const text of started.additionalContexts) yield* hookStart.append(childSession.id, text)
@@ -1176,17 +1165,7 @@ export function spawnNode(
                   child: true,
                 })
               const messages = yield* sessions.messages({ sessionID: childSession.id }).pipe(Effect.orDie)
-              const agentTranscriptPath = yield* HookTranscript.materialize({
-                sessionID: childSession.id,
-                directory: parent.directory,
-                messages,
-              }).pipe(Effect.orDie)
               const backgroundJobs = yield* Effect.serviceOption(BackgroundJob.Service)
-              const transcriptPath = yield* HookTranscript.materialize({
-                sessionID: parent.id,
-                directory: parent.directory,
-                messages: yield* sessions.messages({ sessionID: parent.id }).pipe(Effect.orDie),
-              }).pipe(Effect.orDie)
               const stopped: TriggerResult = yield* hooks
                 .trigger(
                   {
@@ -1194,7 +1173,6 @@ export function spawnNode(
                     stopHookActive: false,
                     agentID: childSession.id,
                     agentType: agent.name,
-                    agentTranscriptPath,
                     lastAssistantMessage:
                       result.parts
                         .filter((p) => p.type === "text")
@@ -1208,7 +1186,7 @@ export function spawnNode(
                       : [],
                     sessionCrons: [],
                   },
-                  { sessionID: parent.id, transcriptPath },
+                  { sessionID: parent.id },
                 )
                 .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
               yield* SettingsHook.landSystemMessages(

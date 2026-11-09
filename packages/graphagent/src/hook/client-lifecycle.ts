@@ -4,7 +4,6 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
 import { HookLifecycle } from "./lifecycle"
 import { HookTranscript } from "./transcript"
-import { promptIdentity } from "./prompt-identity"
 import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
 
@@ -25,28 +24,13 @@ export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(
     if (attention) yield* attention.clear(input.sessionID)
     const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
     const { SettingsHook } = yield* Effect.promise(() => import("./index"))
-    const { Session } = yield* Effect.promise(() => import("@/session/session"))
     const settings = yield* SettingsHook.Service
-    const session = yield* Session.Service
     const id = SessionID.make(input.sessionID)
     const finish = Effect.gen(function* () {
-      // Materialize before claiming: a failed transcript read must not consume the one SessionEnd attempt.
-      const messages = yield* session.messages({ sessionID: id }).pipe(Effect.orDie)
-      const transcriptPath = yield* HookTranscript.materialize({
-        sessionID: id,
-        directory: input.directory,
-        messages,
-      }).pipe(Effect.orDie)
+      // The engine materializes the transcript only when a SessionEnd handler
+      // actually matches, so a no-op event consumes no session state.
       if (lifecycle && !(yield* lifecycle.claimEnd(input.sessionID))) return
-      const result = yield* settings.trigger(
-        { event: "SessionEnd", reason: input.reason },
-        {
-          sessionID: id,
-          ...promptIdentity(messages),
-          transcriptPath,
-          environment: yield* HookTranscript.environment(id).pipe(Effect.orDie),
-        },
-      )
+      const result = yield* settings.trigger({ event: "SessionEnd", reason: input.reason }, { sessionID: id })
       yield* SettingsHook.landSystemMessages(result, { sessionID: id })
       if (settings.settleSessionEnd) yield* settings.settleSessionEnd()
     })

@@ -1,8 +1,6 @@
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
 import { Skill } from "@/skill"
-import { HookTranscript } from "@/hook/transcript"
-import { promptIdentity } from "@/hook/prompt-identity"
 import { Instruction } from "./instruction"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
@@ -404,23 +402,12 @@ export const layer = Layer.effect(
             })
           : []
 
-      let transcriptPath = yield* HookTranscript.materialize({
-        sessionID: input.sessionID,
-        directory: yield* InstanceState.directory,
-        messages: input.messages,
-      }).pipe(Effect.orDie)
       // Current compaction entry points supply no custom instructions; the wire value is null.
       if (settingsHook) {
         const preResult = yield* settingsHook
           .trigger(
             { event: "PreCompact", trigger: input.auto ? "auto" : "manual", customInstructions: null },
-            {
-              sessionID: input.sessionID,
-              ...promptIdentity(input.messages),
-              transcriptPath,
-              environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
-              environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
-            },
+            { sessionID: input.sessionID },
           )
           .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
         yield* SettingsHook.landSystemMessages(preResult, { sessionID: input.sessionID })
@@ -709,11 +696,6 @@ export const layer = Layer.effect(
         // PostCompact sees the committed compacted conversation, not the pre-compaction snapshot.
         if (settingsHook) {
           const postMessages = yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-          transcriptPath = yield* HookTranscript.materialize({
-            sessionID: input.sessionID,
-            directory: yield* InstanceState.directory,
-            messages: postMessages,
-          }).pipe(Effect.orDie)
           const pcResult = yield* settingsHook
             .trigger(
               {
@@ -721,13 +703,7 @@ export const layer = Layer.effect(
                 trigger: input.auto ? "auto" : "manual",
                 compactSummary: summary ?? "",
               } as any,
-              {
-                sessionID: input.sessionID,
-                ...promptIdentity(postMessages),
-                transcriptPath,
-                environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
-                environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
-              },
+              { sessionID: input.sessionID },
             )
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
           yield* SettingsHook.landSystemMessages(pcResult, { sessionID: input.sessionID })
@@ -753,13 +729,7 @@ export const layer = Layer.effect(
                     history: postMessages,
                   })),
                 },
-                {
-                  sessionID: input.sessionID,
-                  ...promptIdentity(postMessages),
-                  transcriptPath,
-                  environmentFile: yield* HookTranscript.environmentFile(input.sessionID).pipe(Effect.orDie),
-                  environment: yield* HookTranscript.environment(input.sessionID).pipe(Effect.orDie),
-                },
+                { sessionID: input.sessionID },
               )
               .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
             yield* SettingsHook.landSystemMessages(ssResult, { sessionID: input.sessionID })

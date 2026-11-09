@@ -265,7 +265,7 @@ it.live(
         messages[0].info.sessionID = sessionID
         const events: string[] = []
         const program = Effect.gen(function* () {
-          yield* svc.system({ sessionID, transcriptPath: "unused-no-handler-path" })
+          yield* svc.system({ sessionID })
           const nested = yield* svc.resolve(messages, path.join(dir, "subdir/file.ts"), MessageID.ascending())
           expect(nested).toHaveLength(1)
         }).pipe(

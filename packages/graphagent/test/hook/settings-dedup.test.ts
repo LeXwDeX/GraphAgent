@@ -40,9 +40,9 @@ const hooksJson = {
 // SessionStart matcher participates in the trigger pipeline.
 const writeSettings = (dir: string) =>
   Effect.promise(() =>
-    fs.mkdir(path.join(dir, ".agents"), { recursive: true }).then(() =>
-      fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooksJson)),
-    ),
+    fs
+      .mkdir(path.join(dir, ".agents"), { recursive: true })
+      .then(() => fs.writeFile(path.join(dir, ".agents", "hooks.json"), JSON.stringify(hooksJson))),
   )
 
 describe("SettingsHook additionalContext dedup — per-session (F2)", () => {
@@ -56,11 +56,11 @@ describe("SettingsHook additionalContext dedup — per-session (F2)", () => {
 
         const r1 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f2-a", transcriptPath: "" },
+          { sessionID: "sess-f2-a", transcript: () => Effect.succeed("") },
         )
         const r2 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f2-b", transcriptPath: "" },
+          { sessionID: "sess-f2-b", transcript: () => Effect.succeed("") },
         )
 
         expect(r1.additionalContexts).toEqual([CONTEXT])
@@ -78,11 +78,11 @@ describe("SettingsHook additionalContext dedup — per-session (F2)", () => {
 
         const r1 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f2-dedup", transcriptPath: "" },
+          { sessionID: "sess-f2-dedup", transcript: () => Effect.succeed("") },
         )
         const r2 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f2-dedup", transcriptPath: "" },
+          { sessionID: "sess-f2-dedup", transcript: () => Effect.succeed("") },
         )
 
         expect(r1.additionalContexts).toEqual([CONTEXT])
@@ -102,7 +102,7 @@ describe("SettingsHook additionalContext dedup — per-session (F2)", () => {
 
         const r1 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f2-evict", transcriptPath: "" },
+          { sessionID: "sess-f2-evict", transcript: () => Effect.succeed("") },
         )
         expect(r1.additionalContexts).toEqual([CONTEXT])
 
@@ -111,13 +111,13 @@ describe("SettingsHook additionalContext dedup — per-session (F2)", () => {
         // SessionEnd hook configured.)
         yield* hook.trigger(
           { event: "SessionEnd", reason: "other" },
-          { sessionID: "sess-f2-evict", transcriptPath: "" },
+          { sessionID: "sess-f2-evict", transcript: () => Effect.succeed("") },
         )
 
         // Same session ID again — bucket was cleared, so the context re-surfaces.
         const r2 = yield* hook.trigger(
           { event: "SessionStart", source: "startup" },
-          { sessionID: "sess-f2-evict", transcriptPath: "" },
+          { sessionID: "sess-f2-evict", transcript: () => Effect.succeed("") },
         )
         expect(r2.additionalContexts).toEqual([CONTEXT])
       }),
@@ -146,7 +146,10 @@ describe("SettingsHook SessionEnd — clears the dynamic SessionHooks store (F2)
         const before = yield* sessionHooks.list(sid, "Stop")
         expect(before.length).toBe(1)
 
-        yield* hook.trigger({ event: "SessionEnd", reason: "other" }, { sessionID: "sess-f2-hookclear", transcriptPath: "" })
+        yield* hook.trigger(
+          { event: "SessionEnd", reason: "other" },
+          { sessionID: "sess-f2-hookclear", transcript: () => Effect.succeed("") },
+        )
 
         const after = yield* sessionHooks.list(sid, "Stop")
         expect(after.length).toBe(0)

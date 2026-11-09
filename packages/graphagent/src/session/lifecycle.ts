@@ -3,7 +3,6 @@ import { HookFileWatch } from "@/hook/file-watch"
 import { HookConfigChange } from "@/hook/config-change"
 import { HookSessionContext } from "@/hook/session-context"
 import { Skill } from "@/skill"
-import { HookTranscript } from "@/hook/transcript"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Session } from "@/session/session"
@@ -57,11 +56,6 @@ export const layer = Layer.effect(
       // else-branch (log.warn about missing service) is removed as dead code.
       if (settingsHook) {
         log.info("SessionStart hook: firing trigger", { sessionID: result.id })
-        const transcriptPath = yield* HookTranscript.materialize({
-          sessionID: result.id,
-          directory: result.directory,
-          messages: [],
-        }).pipe(Effect.orDie)
         const exit = yield* settingsHook
           .trigger(
             {
@@ -77,11 +71,7 @@ export const layer = Layer.effect(
                 history: [],
               })),
             },
-            {
-              sessionID: result.id,
-              transcriptPath,
-              environmentFile: yield* HookTranscript.environmentFile(result.id).pipe(Effect.orDie),
-            },
+            { sessionID: result.id },
           )
           .pipe(Effect.exit)
         if (exit._tag === "Success") {

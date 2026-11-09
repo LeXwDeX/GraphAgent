@@ -40,12 +40,12 @@ describe("hook command executor protocol", () => {
         })
         const payload: HookPayload =
           event === "Stop" ? { event, stopHookActive: false } : { event, stopHookActive: false, agentID: childID }
-        expect((yield* hook.trigger(payload, { sessionID, transcriptPath: "" })).additionalContexts).toEqual([
-          "continue",
-        ])
-        expect((yield* hook.trigger(payload, { sessionID, transcriptPath: "" })).additionalContexts).toEqual([
-          "continue",
-        ])
+        expect(
+          (yield* hook.trigger(payload, { sessionID, transcript: () => Effect.succeed("") })).additionalContexts,
+        ).toEqual(["continue"])
+        expect(
+          (yield* hook.trigger(payload, { sessionID, transcript: () => Effect.succeed("") })).additionalContexts,
+        ).toEqual(["continue"])
       }
     }),
   )
@@ -72,7 +72,7 @@ describe("hook command executor protocol", () => {
       })
       const result = yield* hook.trigger(
         { event: "UserPromptSubmit", prompt: "hello" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(result.additionalContexts).toEqual([literal])
     }),
@@ -98,7 +98,11 @@ describe("hook command executor protocol", () => {
       })
       const result = yield* hook.trigger(
         { event: "UserPromptSubmit", prompt: "hello" },
-        { sessionID, transcriptPath: "", environment: { PATH: undefined, HOOK_TEST_DELTA: "applied" } },
+        {
+          sessionID,
+          transcript: () => Effect.succeed(""),
+          environment: { PATH: undefined, HOOK_TEST_DELTA: "applied" },
+        },
       )
       expect(result.additionalContexts).toEqual(["unset:applied"])
     }),
@@ -150,7 +154,10 @@ describe("hook command executor protocol", () => {
               },
             ],
           })
-          yield* hook.trigger({ event: "UserPromptSubmit", prompt: "go" }, { sessionID, transcriptPath: "" })
+          yield* hook.trigger(
+            { event: "UserPromptSubmit", prompt: "go" },
+            { sessionID, transcript: () => Effect.succeed("") },
+          )
           if (!hook.drainAsync) throw new Error("async hook drain is unavailable")
           if (fixture.expected.length === 0) {
             const token = yield* pollWithTimeout(store.claim(sessionID, id), "failed async command did not settle")
@@ -199,7 +206,7 @@ describe("hook command executor protocol", () => {
       })
       const result = yield* hook.trigger(
         { event: "PreToolUse", toolName: "Read", toolInput: {} },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(yield* Effect.promise(() => fs.readFile(marker, "utf8"))).toBe("started")
       expect(result.blocked?.reason).toContain("onFailure")
@@ -233,7 +240,10 @@ describe("hook command executor protocol", () => {
           },
         ],
       })
-      yield* hook.trigger({ event: "UserPromptSubmit", prompt: "go" }, { sessionID, transcriptPath: "" })
+      yield* hook.trigger(
+        { event: "UserPromptSubmit", prompt: "go" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
       yield* pollWithTimeout(
         store
           .list(sessionID, "UserPromptSubmit")
@@ -257,7 +267,7 @@ describe("hook command executor protocol", () => {
         })
         const blocked = yield* hook.trigger(
           { event: "PreToolUse", toolName: "Bash", toolInput: { command: "pwd" } },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(blocked.blocked?.reason).toContain("onFailure")
 
@@ -267,7 +277,7 @@ describe("hook command executor protocol", () => {
         })
         const permission = yield* hook.trigger(
           { event: "PermissionRequest", toolName: "Bash", toolInput: { command: "pwd" } },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(permission.blocked).toBeUndefined()
         expect(permission.permissionRequestDecision).toBeUndefined()
@@ -294,7 +304,7 @@ describe("hook command executor protocol", () => {
       })
       const result = yield* hook.trigger(
         { event: "PostToolUse", toolName: "Read", toolInput: {}, toolResponse: "old" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(Object.hasOwn(result, "updatedToolOutput")).toBe(true)
       expect(result.updatedToolOutput).toBeNull()
@@ -322,7 +332,7 @@ describe("hook command executor protocol", () => {
       })
       const immediate = yield* hook.trigger(
         { event: "PostToolUse", toolName: "Read", toolInput: {}, toolResponse: "ok" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(immediate.additionalContexts).toEqual([])
       expect(immediate.systemMessages).toEqual([])
@@ -363,7 +373,7 @@ describe("hook command executor protocol", () => {
             },
           ],
         })
-        const result = yield* hook.trigger(payload, { sessionID, transcriptPath: "" })
+        const result = yield* hook.trigger(payload, { sessionID, transcript: () => Effect.succeed("") })
         expect(result.blocked).toBeUndefined()
         expect(result.preventContinuation).toBeUndefined()
         expect(result.systemMessages).toEqual([])
@@ -391,7 +401,7 @@ describe("hook command executor protocol", () => {
         })
         const pre = yield* hook.trigger(
           { event: "PreToolUse", toolName: "Bash", toolInput: { command: "pwd" } },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(pre.blocked).toBeUndefined()
 
@@ -410,7 +420,7 @@ describe("hook command executor protocol", () => {
         })
         const elicitation = yield* hook.trigger(
           { event: "ElicitationResult", action: "decline", serverName: "test" },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(elicitation.preventContinuation).toBeUndefined()
         expect(elicitation.systemMessages).toEqual([])
@@ -429,7 +439,7 @@ describe("hook command executor protocol", () => {
       })
       const result = yield* hook.trigger(
         { event: "PreModelSwitch", fromModel: "old", toModel: "new" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(result.blocked?.reason).toContain("timed out")
     }),
@@ -452,7 +462,7 @@ describe("hook command executor protocol", () => {
       })
       const allowed = yield* hook.trigger(
         { event: "Notification", message: "Ready" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(allowed.terminalSequences).toEqual(["\u001b]777;notify;Ready\u0007"])
 
@@ -466,7 +476,10 @@ describe("hook command executor protocol", () => {
           },
         ],
       })
-      const denied = yield* hook.trigger({ event: "Notification", message: "Ready" }, { sessionID, transcriptPath: "" })
+      const denied = yield* hook.trigger(
+        { event: "Notification", message: "Ready" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
       expect(denied.terminalSequences).toEqual(["\u001b]777;notify;Ready\u0007"])
     }),
   )
@@ -489,7 +502,7 @@ describe("hook command executor protocol", () => {
       })
       const result = yield* hook.trigger(
         { event: "UserPromptSubmit", prompt: "hello" },
-        { sessionID, transcriptPath: "" },
+        { sessionID, transcript: () => Effect.succeed("") },
       )
       expect(result.additionalContexts).toEqual(["first", "second"])
       yield* Effect.promise(() => Promise.all([fs.rm(first, { force: true }), fs.rm(second, { force: true })]))
@@ -516,7 +529,7 @@ describe("hook command executor protocol", () => {
           })
           const created = yield* hook.trigger(
             { event: "WorktreeCreate", name: "example" },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(created.worktreePath).toBe(directory)
           expect(created.blocked).toBeUndefined()
@@ -526,7 +539,7 @@ describe("hook command executor protocol", () => {
           })
           const missing = yield* hook.trigger(
             { event: "WorktreeCreate", name: "example" },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(missing.blocked?.reason).toContain("no path")
         }),
@@ -548,7 +561,7 @@ describe("hook command executor protocol", () => {
           })
           const retained = yield* hook.trigger(
             { event: "WorktreeRemove", worktreePath: directory },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(retained.worktreeRemoveFailed).toBe(true)
           expect(retained.blocked?.reason).toContain("failed")
@@ -570,7 +583,7 @@ describe("hook command executor protocol", () => {
           })
           const removed = yield* hook.trigger(
             { event: "WorktreeRemove", worktreePath: directory },
-            { sessionID, transcriptPath: "" },
+            { sessionID, transcript: () => Effect.succeed("") },
           )
           expect(removed.worktreeRemoveFailed).toBeUndefined()
           expect(removed.blocked).toBeUndefined()

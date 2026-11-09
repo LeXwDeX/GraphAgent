@@ -45,7 +45,7 @@ describe("`if` conditions gate hooks on real tool inputs", () => {
           const hook = yield* SettingsHook.Service
           const r = yield* hook.trigger(
             { event: "PreToolUse", toolName: tool, toolInput: { ...input } },
-            { sessionID: "ses_if_condition", transcriptPath: "" },
+            { sessionID: "ses_if_condition", transcript: () => Effect.succeed("") },
           )
           expect(r.permissionDecision).toBe("deny")
         }),
@@ -75,7 +75,7 @@ describe("`if` conditions gate hooks on real tool inputs", () => {
             toolName: "edit",
             toolInput: { path: "/repo/src/a.ts", oldString: "a", newString: "b" },
           },
-          { sessionID: "ses_if_condition_path", transcriptPath: "" },
+          { sessionID: "ses_if_condition_path", transcript: () => Effect.succeed("") },
         )
         expect(r.permissionDecision).toBeUndefined()
       }),

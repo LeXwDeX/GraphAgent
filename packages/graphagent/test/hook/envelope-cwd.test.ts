@@ -52,7 +52,7 @@ const capture = (payload: HookPayload) =>
         { type: "command", command, inputFormat: "claude-code" },
       ],
     })
-    yield* hooks.trigger(payload, { sessionID: id, transcriptPath: "" })
+    yield* hooks.trigger(payload, { sessionID: id, transcript: () => Effect.succeed("") })
     return yield* Effect.promise(async () =>
       (await fs.readFile(audit, "utf8"))
         .trim()
@@ -127,7 +127,7 @@ describe("hook envelope cwd follows bash workdir", () => {
       yield* store.add(id, { event: "UserPromptSubmit", hooks: [{ type: "command", command: nativeHookCommand }] })
       const result = yield* hooks.trigger(
         { event: "UserPromptSubmit", prompt: "hi" },
-        { sessionID: id, transcriptPath: "" },
+        { sessionID: id, transcript: () => Effect.succeed("") },
       )
       expect(JSON.parse(result.additionalContexts[0].slice("NATIVE_CONTEXT:".length)).cwd).toBe(test.directory)
     }),

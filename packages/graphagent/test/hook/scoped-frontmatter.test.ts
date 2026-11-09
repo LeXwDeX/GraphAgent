@@ -37,7 +37,10 @@ describe("scoped frontmatter hooks", () => {
         })
       }
       expect(yield* store.list(sessionID, "UserPromptSubmit")).toHaveLength(2)
-      const result = yield* hook.trigger({ event: "UserPromptSubmit", prompt: "go" }, { sessionID, transcriptPath: "" })
+      const result = yield* hook.trigger(
+        { event: "UserPromptSubmit", prompt: "go" },
+        { sessionID, transcript: () => Effect.succeed("") },
+      )
       expect(result.additionalContexts).toEqual(["agent", "skill"])
     }),
   )
@@ -55,7 +58,10 @@ describe("scoped frontmatter hooks", () => {
         yield* hook.registerScoped!(sessionID, { kind: "skill", origin: "skill:/a/SKILL.md", hooks })
         yield* hook.registerScoped!(sessionID, { kind: "skill", origin: "skill:/a/SKILL.md", hooks })
         yield* hook.registerScoped!(sessionID, { kind: "skill", origin: "skill:/b/SKILL.md", hooks })
-        yield* hook.trigger({ event: "UserPromptSubmit", prompt: "hello" }, { sessionID, transcriptPath: "" })
+        yield* hook.trigger(
+          { event: "UserPromptSubmit", prompt: "hello" },
+          { sessionID, transcript: () => Effect.succeed("") },
+        )
         expect(readFileSync(output, "utf8")).toBe("xx")
       } finally {
         rmSync(dir, { recursive: true, force: true })
@@ -110,7 +116,7 @@ describe("scoped frontmatter hooks", () => {
       })
       const result = yield* hook.trigger(
         { event: "SubagentStop", stopHookActive: false, agentID: childID },
-        { sessionID: parentID, transcriptPath: "" },
+        { sessionID: parentID, transcript: () => Effect.succeed("") },
       )
       expect(result.additionalContexts).toEqual(["matching child"])
     }),
@@ -138,11 +144,14 @@ describe("scoped frontmatter hooks", () => {
         }
         yield* hook.registerScoped!(sessionID, { kind: "skill", origin: "skill:/once/SKILL.md", hooks })
         const store = yield* SessionHooks.Service
-        yield* hook.trigger({ event: "UserPromptSubmit", prompt: "first" }, { sessionID, transcriptPath: "" })
+        yield* hook.trigger(
+          { event: "UserPromptSubmit", prompt: "first" },
+          { sessionID, transcript: () => Effect.succeed("") },
+        )
         expect(yield* store.list(sessionID, "UserPromptSubmit")).toHaveLength(1)
         const second = yield* hook.trigger(
           { event: "UserPromptSubmit", prompt: "second" },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(second.additionalContexts).toContain("success")
         expect(yield* store.list(sessionID, "UserPromptSubmit")).toHaveLength(0)
@@ -173,7 +182,7 @@ describe("scoped frontmatter hooks", () => {
         })
         yield* Effect.all(
           ["first", "second"].map((prompt) =>
-            hook.trigger({ event: "UserPromptSubmit", prompt }, { sessionID, transcriptPath: "" }),
+            hook.trigger({ event: "UserPromptSubmit", prompt }, { sessionID, transcript: () => Effect.succeed("") }),
           ),
           { concurrency: "unbounded" },
         )
@@ -203,12 +212,12 @@ describe("scoped frontmatter hooks", () => {
         })
         yield* hook.trigger(
           { event: "PreModelSwitch", fromModel: "old", toModel: "anthropic/claude-opus-4-6-20260901[1m]" },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(readFileSync(output, "utf8")).toBe("o")
         yield* hook.trigger(
           { event: "PreModelSwitch", fromModel: "old", toModel: "qwen/qwen-custom" },
-          { sessionID, transcriptPath: "" },
+          { sessionID, transcript: () => Effect.succeed("") },
         )
         expect(readFileSync(output, "utf8").slice(1).split("").sort().join("")).toBe("os")
       } finally {
@@ -234,7 +243,10 @@ describe("scoped frontmatter hooks", () => {
           },
         })
         for (let index = 0; index < 2; index++)
-          yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcriptPath: "" })
+          yield* hook.trigger(
+            { event: "Stop", stopHookActive: false },
+            { sessionID, transcript: () => Effect.succeed("") },
+          )
         expect(yield* store.list(sessionID, "Stop")).toHaveLength(1)
         expect(readFileSync(output, "utf8")).toBe("xx")
       } finally {
