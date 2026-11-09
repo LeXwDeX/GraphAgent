@@ -4,7 +4,7 @@ import { Schema, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { ProjectCopyError } from "../errors"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
+import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 
 export const GenerateNamePayload = Schema.Struct({
   context: Schema.optional(Schema.String),
@@ -19,7 +19,6 @@ export const ProjectCopyApi = HttpApi.make("projectCopyName").add(
     .add(
       HttpApiEndpoint.post("generateName", `${root}/generate-name`, {
         params: { projectID: ProjectV2.ID },
-        query: WorkspaceRoutingQuery,
         payload: GenerateNamePayload,
         success: Schema.Struct({ name: Schema.String }),
       }).annotateMerge(
@@ -61,7 +60,6 @@ export const ProjectCopyApi = HttpApi.make("projectCopyName").add(
     .add(
       HttpApiEndpoint.post("refresh", `${root}/refresh`, {
         params: { projectID: ProjectV2.ID },
-        query: WorkspaceRoutingQuery,
         success: HttpApiSchema.NoContent,
         error: ProjectCopyError,
       }).annotateMerge(

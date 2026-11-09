@@ -8,7 +8,7 @@ import { ChildProcessSpawner } from "effect/process"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Flag } from "@graphagent/core/flag/flag"
-import { createOpencodeClient } from "@graphagent/sdk/v2"
+import { createClient } from "@graphagent/sdk"
 import { validateSession } from "../../src/cli/tui/validate-session"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
@@ -47,7 +47,7 @@ const original = {
 }
 
 type ServerPath = "default" | "raw"
-type Sdk = ReturnType<typeof createOpencodeClient>
+type Sdk = ReturnType<typeof createClient>
 type SdkResult = { response?: Response; data?: unknown; error?: unknown }
 type Captured = { status: number | undefined; data?: unknown; error?: unknown }
 type ProjectFixture = { sdk: Sdk; directory: string }
@@ -69,7 +69,7 @@ function client(
 ) {
   return serverFetch(serverPath, input).pipe(
     Effect.map((fetch) =>
-      createOpencodeClient({
+      createClient({
         baseUrl: "http://localhost",
         directory,
         experimental_workspaceID: input?.workspaceID,
@@ -732,7 +732,8 @@ describe("HttpApi SDK", () => {
         expect(found.data).toContainEqual({ path: "hello.txt", type: "file" })
         expect(url.pathname).toBe("/find/file")
         expect(url.searchParams.get("query")).toBe("hello")
-        expect(url.searchParams.get("directory")).toBe(directory)
+        expect(url.searchParams.get("directory")).toBeNull()
+        expect(decodeURIComponent(request!.headers.get("x-graphagent-directory") ?? "")).toBe(directory)
       }),
     ),
   )
@@ -754,7 +755,7 @@ describe("HttpApi SDK", () => {
 
   serverPathParity("matches generated SDK instance event stream", (serverPath) =>
     withStandardProject(serverPath, ({ sdk }) =>
-      firstEvent((signal) => sdk.event.subscribe(undefined, { signal })).pipe(
+      firstEvent((signal) => sdk.event.subscribe({ signal })).pipe(
         Effect.map((event) => ({ type: record(record(event).payload).type })),
       ),
     ),
@@ -1004,7 +1005,7 @@ describe("HttpApi SDK", () => {
 
         const controller = new AbortController()
         yield* Effect.addFinalizer(() => Effect.sync(() => controller.abort()))
-        const events = yield* call(() => sdk.event.subscribe(undefined, { signal: controller.signal }))
+        const events = yield* call(() => sdk.event.subscribe({ signal: controller.signal }))
         yield* Effect.addFinalizer(() =>
           call(async () => void (await events.stream.return?.(undefined))).pipe(Effect.ignore),
         )

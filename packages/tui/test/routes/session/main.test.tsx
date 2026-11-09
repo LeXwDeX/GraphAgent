@@ -5,7 +5,7 @@
 import { expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import type { Session } from "@graphagent/sdk/v2"
+import type { Session } from "@graphagent/sdk"
 import type { TuiPluginApi } from "@graphagent/tui/plugin-api"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { ArgsProvider } from "../../../src/context/args"
@@ -108,7 +108,8 @@ async function mountMain(initialPrompt?: string) {
       return Bun.sleep(SLOW_SESSION_MS).then(() => json(sessions[sessionA]))
     }
     if (url.pathname === `/session/${sessionB}`) return json(sessions[sessionB])
-    if (url.pathname === `/session/${sessionA}/message` || url.pathname === `/session/${sessionB}/message`) return json([])
+    if (url.pathname === `/session/${sessionA}/message` || url.pathname === `/session/${sessionB}/message`)
+      return json([])
     if (/^\/session\/[^/]+\/(todo|diff)$/.test(url.pathname)) return json([])
     if (/^\/session\/[^/]+\/goal$/.test(url.pathname)) return json(undefined)
     return undefined
@@ -169,12 +170,7 @@ async function mountMain(initialPrompt?: string) {
                       >
                         <TuiConfigProvider config={config}>
                           <PluginRuntimeProvider value={runtime}>
-                            <SDKProvider
-                              url="http://test"
-                              directory={directory}
-                              events={events.source}
-                              fetch={fetch}
-                            >
+                            <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
                               <ProjectProvider>
                                 <SyncProvider>
                                   <ThemeProvider mode="dark">

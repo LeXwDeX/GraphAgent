@@ -7,7 +7,7 @@ import { createMemo, createResource, createEffect, onMount, onCleanup, Index, Sh
 import { createStore } from "solid-js/store"
 import { useEditorContext } from "../../context/editor"
 import { useProject } from "../../context/project"
-import { useSDK } from "../../context/sdk"
+import { useSDK, locationHeaders } from "../../context/sdk"
 import { useSync } from "../../context/sync"
 import { getScrollAcceleration } from "../../util/scroll"
 import { useTuiPaths } from "../../context/runtime"
@@ -21,7 +21,7 @@ import type { PromptInfo } from "../../prompt/history"
 import { useFrecency } from "../../prompt/frecency"
 import { EscapePriority, useBindings, useCommandSlashes, useGraphagentModeStack } from "../../keymap"
 import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
-import type { FileSystemEntry } from "@graphagent/sdk/v2"
+import type { FileSystemEntry } from "@graphagent/sdk"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -320,12 +320,18 @@ export function Autocomplete(props: {
       const { lineRange, baseQuery } = extractLineRange(input.query ?? "")
 
       // Get files from SDK
-      const result = await sdk.client.find.files({
-        query: baseQuery,
-        limit: 20,
-        directory: input.location?.directory,
-        workspace: input.location?.workspaceID ?? project.workspace.current(),
-      })
+      const result = await sdk.client.find.files(
+        {
+          query: baseQuery,
+          limit: 20,
+        },
+        {
+          headers: locationHeaders({
+            directory: input.location?.directory,
+            workspace: input.location?.workspaceID ?? project.workspace.current(),
+          }),
+        },
+      )
 
       const options: AutocompleteOption[] = []
 

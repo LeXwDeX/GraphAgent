@@ -3,7 +3,7 @@
 
 /** Pure wave computation for DAG node lists. No rendering or SDK access. */
 
-import type { DagNode } from "@graphagent/sdk/v2"
+import type { DagNode } from "@graphagent/sdk"
 
 /**
  * Group nodes into topological "waves": wave N contains every node whose

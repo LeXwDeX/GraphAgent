@@ -15,7 +15,7 @@
 // The tick counter prevents stale idle events from resolving the wrong turn.
 // We also re-check live session status before resolving an idle event so a
 // delayed idle from an older turn cannot complete a newer busy turn.
-import type { Event, OpencodeClient } from "@graphagent/sdk/v2"
+import type { Event, Client } from "@graphagent/sdk"
 import { Context, Deferred, Effect, Exit, Layer, Scope, Stream } from "effect"
 import { makeRuntime } from "@/effect/run-service"
 import {
@@ -74,7 +74,7 @@ const StreamClosed = undefined as never
 const IDLE_ESCAPE_TICKS = 40
 
 type StreamInput = {
-  sdk: OpencodeClient
+  sdk: Client
   directory?: string
   sessionID: string
   thinking: boolean
@@ -403,7 +403,7 @@ function createLayer(input: StreamInput) {
         const events = yield* Scope.provide(scope)(
           Effect.acquireRelease(
             Effect.promise(() =>
-              input.sdk.event.subscribe(undefined, {
+              input.sdk.event.subscribe({
                 signal: abort.signal,
               }),
             ),
@@ -526,9 +526,7 @@ function createLayer(input: StreamInput) {
             return agent
           }
 
-          const list = yield* Effect.promise(() =>
-            input.sdk.app.agents(input.directory ? { directory: input.directory } : undefined, { throwOnError: true }),
-          ).pipe(
+          const list = yield* Effect.promise(() => input.sdk.app.agents({ throwOnError: true })).pipe(
             Effect.map((item) => item.data ?? []),
             Effect.orElseSucceed(() => []),
           )

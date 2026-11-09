@@ -20,7 +20,7 @@ import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { Spinner } from "../spinner"
-import { useSDK } from "../../context/sdk"
+import { useSDK, locationHeaders } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
@@ -36,7 +36,7 @@ import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import type { AssistantMessage, FilePart, UserMessage } from "@graphagent/sdk/v2"
+import type { AssistantMessage, FilePart, UserMessage } from "@graphagent/sdk"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -1208,16 +1208,18 @@ export function Prompt(props: PromptProps) {
       }
       finishMoveProgress = Boolean(move.progress())
 
-      const res = await sdk.client.session.create({
-        directory,
-        workspace: workspaceID,
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          id: selectedModel.modelID,
-          variant,
+      const res = await sdk.client.session.create(
+        {
+          workspaceID,
+          agent: agent.name,
+          model: {
+            providerID: selectedModel.providerID,
+            id: selectedModel.modelID,
+            variant,
+          },
         },
-      })
+        { headers: locationHeaders({ directory }) },
+      )
 
       if (res.error) {
         failed(res.error)
@@ -1661,9 +1663,7 @@ export function Prompt(props: PromptProps) {
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
                   {(agent) => (
                     <>
-                      <text fg={highlight()}>
-                        {store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}
-                      </text>
+                      <text fg={highlight()}>{store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}</text>
                       <Show when={store.mode === "normal"}>
                         <box flexDirection="row" gap={1}>
                           <text fg={theme.textMuted}>·</text>

@@ -95,7 +95,7 @@ describe("schema-rejection wire shape", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         // /find/file?limit=999999 violates the limit constraint check.
-        const url = `/find/file?query=foo&limit=999999&directory=${encodeURIComponent(test.directory)}`
+        const url = `/find/file?query=foo&limit=999999`
         const res = yield* requestInDirectory(url, test.directory)
         const body = yield* text(res)
         expect(res.status).toBe(400)
@@ -135,7 +135,7 @@ describe("schema-rejection wire shape", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const sessionID = yield* seedCorruptStepFinishPart
-        const url = `${SessionPaths.messages.replace(":sessionID", sessionID)}?limit=80&directory=${encodeURIComponent(test.directory)}`
+        const url = `${SessionPaths.messages.replace(":sessionID", sessionID)}?limit=80`
         const res = yield* requestInDirectory(url, test.directory)
         const body = yield* text(res)
         expect(res.status).toBe(400)

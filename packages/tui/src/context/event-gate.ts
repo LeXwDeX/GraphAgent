@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Event } from "@graphagent/sdk/v2"
+import type { Event } from "@graphagent/sdk"
 
 /**
  * Client-side mirror of the worker's event table (#1013 5.6, #886 5.1).

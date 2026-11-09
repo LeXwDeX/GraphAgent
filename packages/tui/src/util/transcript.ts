@@ -1,4 +1,4 @@
-import type { AssistantMessage, Part, Provider, UserMessage } from "@graphagent/sdk/v2"
+import type { AssistantMessage, Part, Provider, UserMessage } from "@graphagent/sdk"
 import { Locale } from "./locale"
 import * as Model from "./model"
 

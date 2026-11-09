@@ -3,7 +3,7 @@
 
 import { expect } from "bun:test"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
-import { createOpencodeClient } from "@graphagent/sdk/v2"
+import { createClient } from "@graphagent/sdk"
 import { Effect } from "effect"
 import { mkdir } from "node:fs/promises"
 import path from "path"
@@ -21,7 +21,7 @@ import { cliIt } from "../lib/cli-process"
 import { raw, reply, type Item, type TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 
-type Sdk = ReturnType<typeof createOpencodeClient>
+type Sdk = ReturnType<typeof createClient>
 type Arm = "enabled" | "disabled"
 type Host = Readonly<{ url: string; logs: string[]; stop: () => Promise<void> }>
 
@@ -278,7 +278,7 @@ function runArm(input: { task: V3TaskID; arm: Arm; llm: TestLLMServer["Service"]
         }
       })
       const host = yield* startHost(input.home, providerConfig(input.llm.url), input.arm)
-      const sdk = createOpencodeClient({ baseUrl: host.url, directory })
+      const sdk = createClient({ baseUrl: host.url, directory })
       const created = yield* Effect.promise(() =>
         sdk.session.create({
           title: `S09 v3 ${input.task} ${input.arm}`,

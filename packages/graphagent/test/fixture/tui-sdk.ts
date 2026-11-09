@@ -1,4 +1,4 @@
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
 import type { EventSource } from "@graphagent/tui/context/sdk"
 
 export const worktree = "/tmp/opencode"

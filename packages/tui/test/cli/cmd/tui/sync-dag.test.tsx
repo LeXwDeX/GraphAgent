@@ -6,8 +6,8 @@ import { describe, expect, test } from "bun:test"
 import { tmpdir } from "../../../fixture/fixture"
 import { directory, mount, wait, json } from "./sync-fixture"
 import { produce } from "solid-js/store"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
-import type { DagWorkflowSummary } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
+import type { DagWorkflowSummary } from "@graphagent/sdk"
 
 const sid = "ses_dag_1"
 
@@ -180,7 +180,12 @@ describe("tui sync dag slice", () => {
       // Remove the visible session's empty store.dag entry so it is genuinely
       // NOT tracked at reconnect time — simulating a session with no workflows
       // that the user never opened a DAG view for.
-      sync.set("dag", produce((draft) => { delete draft[sidVisibleUntracked] }))
+      sync.set(
+        "dag",
+        produce((draft) => {
+          delete draft[sidVisibleUntracked]
+        }),
+      )
       expect(sync.data.dag[sidVisibleUntracked]).toBeUndefined()
 
       // Populate store.dag with two sessions via summary events.

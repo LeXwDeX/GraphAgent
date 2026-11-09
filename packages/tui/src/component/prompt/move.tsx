@@ -3,7 +3,7 @@ import path from "path"
 import { useTuiPaths } from "../../context/runtime"
 import { errorMessage } from "../../util/error"
 import { useDialog } from "../../ui/dialog"
-import { useSDK } from "../../context/sdk"
+import { useSDK, locationHeaders } from "../../context/sdk"
 import { useSync } from "../../context/sync"
 import { useToast } from "../../ui/toast"
 import { DialogMoveSession, type MoveSessionSelection } from "../dialog-move-session"
@@ -51,7 +51,7 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
 
       // Call a location-based route to make sure it's bootstrapped
       // before moving on
-      await sdk.client.path.get({ directory }, { throwOnError: true })
+      await sdk.client.path.get({ throwOnError: true, headers: locationHeaders({ directory }) })
 
       setProgress("Creating session")
       return directory
@@ -115,7 +115,9 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
 
   async function moveExistingSession(sessionID: string, selection: MoveSessionSelection) {
     const session = sync.session.get(sessionID)
-    const status = await sdk.client.vcs.status({ directory: session?.directory }).catch(() => undefined)
+    const status = await sdk.client.vcs
+      .status({ headers: locationHeaders({ directory: session?.directory }) })
+      .catch(() => undefined)
     const choice = status?.data?.length ? await DialogWorkspaceFileChanges.show(dialog, status.data) : "no"
     if (!choice) return
     dialog.clear()
@@ -136,18 +138,20 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
         { throwOnError: true },
       )
       await sdk.client.session
-        .promptAsync({
-          sessionID,
-          directory,
-          noReply: true,
-          parts: [
-            {
-              type: "text",
-              text: moveReminderText(directory),
-              synthetic: true,
-            },
-          ],
-        })
+        .promptAsync(
+          {
+            sessionID,
+            noReply: true,
+            parts: [
+              {
+                type: "text",
+                text: moveReminderText(directory),
+                synthetic: true,
+              },
+            ],
+          },
+          { headers: locationHeaders({ directory }) },
+        )
         .catch(() => undefined)
       dialog.clear()
     } catch (error) {

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Event } from "@graphagent/sdk/v2"
+import type { Event } from "@graphagent/sdk"
 import type { TuiAttentionSoundName } from "@graphagent/tui/plugin-api"
 import { t } from "../i18n"
 

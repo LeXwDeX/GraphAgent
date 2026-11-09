@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { Session, SessionStatus } from "@graphagent/sdk/v2"
+import type { Session, SessionStatus } from "@graphagent/sdk"
 
 /** #886 5.4: base number of hydrated sessions, excluding the protected parent chain. */
 export const HYDRATED_MAX = 4
@@ -52,11 +52,7 @@ export function summaryStatus(status: SessionStatus | undefined): SessionSummary
   return "busy"
 }
 
-export function createSummary(
-  session: SessionLike,
-  status?: SessionStatus,
-  previous?: SessionSummary,
-): SessionSummary {
+export function createSummary(session: SessionLike, status?: SessionStatus, previous?: SessionSummary): SessionSummary {
   return {
     id: session.id,
     parentID: session.parentID,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { QuestionRequest } from "@graphagent/sdk/v2"
+import type { QuestionRequest } from "@graphagent/sdk"
 import {
   createQuestionBodyState,
   questionConfirm,

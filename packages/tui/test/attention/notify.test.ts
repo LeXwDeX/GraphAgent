@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { createTuiNotifications } from "../../src/attention/notify"
 import { setLanguage } from "../../src/i18n"
-import type { Event, PermissionRequest, QuestionRequest, Session } from "@graphagent/sdk/v2"
+import type { Event, PermissionRequest, QuestionRequest, Session } from "@graphagent/sdk"
 
 function setup() {
   const notifications: {

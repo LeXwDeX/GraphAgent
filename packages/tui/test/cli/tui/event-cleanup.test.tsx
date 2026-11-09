@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { Event, GlobalEvent } from "@graphagent/sdk/v2"
+import type { Event, GlobalEvent } from "@graphagent/sdk"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { Prompt } from "../../../src/component/prompt"
 import { TuiConfigProvider } from "../../../src/config"
@@ -273,38 +273,38 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
                             >
                               <ProjectProvider>
                                 <SyncProvider>
-                                    <ThemeProvider mode="dark">
-                                      <LocalProvider>
-                                        <PromptStashProvider>
-                                          <DialogProvider>
-                                            <FrecencyProvider>
-                                              <PromptHistoryProvider>
-                                                <PromptRefProvider>
-                                                  <EditorContextProvider integration={{}}>
-                                                    <LocationProvider>
-                                                      <BusCounter
-                                                        onReady={(count) => {
-                                                          counter = count
-                                                          resolveReady()
-                                                        }}
-                                                      />
-                                                      <SyncProbe onSync={(value) => (sync = value)} />
-                                                      <Show when={mounted()}>
-                                                        {view === "session" ? (
-                                                          <Main />
-                                                        ) : (
-                                                          <Prompt sessionID={routeSessionID} />
-                                                        )}
-                                                      </Show>
-                                                    </LocationProvider>
-                                                  </EditorContextProvider>
-                                                </PromptRefProvider>
-                                              </PromptHistoryProvider>
-                                            </FrecencyProvider>
-                                          </DialogProvider>
-                                        </PromptStashProvider>
-                                      </LocalProvider>
-                                    </ThemeProvider>
+                                  <ThemeProvider mode="dark">
+                                    <LocalProvider>
+                                      <PromptStashProvider>
+                                        <DialogProvider>
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider integration={{}}>
+                                                  <LocationProvider>
+                                                    <BusCounter
+                                                      onReady={(count) => {
+                                                        counter = count
+                                                        resolveReady()
+                                                      }}
+                                                    />
+                                                    <SyncProbe onSync={(value) => (sync = value)} />
+                                                    <Show when={mounted()}>
+                                                      {view === "session" ? (
+                                                        <Main />
+                                                      ) : (
+                                                        <Prompt sessionID={routeSessionID} />
+                                                      )}
+                                                    </Show>
+                                                  </LocationProvider>
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
+                                        </DialogProvider>
+                                      </PromptStashProvider>
+                                    </LocalProvider>
+                                  </ThemeProvider>
                                 </SyncProvider>
                               </ProjectProvider>
                             </SDKProvider>

@@ -5,7 +5,7 @@
 import { expect, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { AssistantMessage, GlobalEvent, ToolPart } from "@graphagent/sdk/v2"
+import type { AssistantMessage, GlobalEvent, ToolPart } from "@graphagent/sdk"
 import { onCleanup } from "solid-js"
 import { TuiConfigProvider } from "../../../src/config"
 import { ArgsProvider } from "../../../src/context/args"
@@ -134,8 +134,7 @@ test("the Task row renders the child summary without hydrating the child session
     if (url.pathname === "/session") return json([session, child])
     if (url.pathname === `/session/${sessionID}`) return json(session)
     if (url.pathname === `/session/${sessionID}/message`) return json([{ info: assistant, parts: [taskPart] }])
-    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`)
-      return json([])
+    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`) return json([])
     if (url.pathname === `/session/${sessionID}/goal`) return json(undefined)
     if (url.pathname.startsWith(`/session/${childID}/`)) {
       if (url.pathname === `/session/${childID}/message`) childMessageFetches++
@@ -169,7 +168,12 @@ test("the Task row renders the child summary without hydrating the child session
                         <RouteProvider initialRoute={{ type: "session", sessionID }}>
                           <TuiConfigProvider config={config}>
                             <PluginRuntimeProvider value={createPluginRuntime()}>
-                              <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+                              <SDKProvider
+                                url="http://test"
+                                directory={directory}
+                                events={events.source}
+                                fetch={calls.fetch}
+                              >
                                 <ProjectProvider>
                                   <SyncProvider>
                                     <ThemeProvider mode="dark">

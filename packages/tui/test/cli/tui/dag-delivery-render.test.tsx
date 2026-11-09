@@ -5,7 +5,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { AssistantMessage, TextPart, UserMessage } from "@graphagent/sdk/v2"
+import type { AssistantMessage, TextPart, UserMessage } from "@graphagent/sdk"
 import { onCleanup } from "solid-js"
 import { TuiConfigProvider } from "../../../src/config"
 import { ArgsProvider } from "../../../src/context/args"
@@ -177,26 +177,26 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                               >
                                 <ProjectProvider>
                                   <SyncProvider>
-                                      <ThemeProvider mode="dark">
-                                        <LocalProvider>
-                                          <PromptStashProvider>
-                                            <DialogProvider>
-                                              <FrecencyProvider>
-                                                <PromptHistoryProvider>
-                                                  <PromptRefProvider>
-                                                    <EditorContextProvider integration={{}}>
-                                                      <LocationProvider>
-                                                        <Probe />
-                                                        <FooterStatusView />
-                                                      </LocationProvider>
-                                                    </EditorContextProvider>
-                                                  </PromptRefProvider>
-                                                </PromptHistoryProvider>
-                                              </FrecencyProvider>
-                                            </DialogProvider>
-                                          </PromptStashProvider>
-                                        </LocalProvider>
-                                      </ThemeProvider>
+                                    <ThemeProvider mode="dark">
+                                      <LocalProvider>
+                                        <PromptStashProvider>
+                                          <DialogProvider>
+                                            <FrecencyProvider>
+                                              <PromptHistoryProvider>
+                                                <PromptRefProvider>
+                                                  <EditorContextProvider integration={{}}>
+                                                    <LocationProvider>
+                                                      <Probe />
+                                                      <FooterStatusView />
+                                                    </LocationProvider>
+                                                  </EditorContextProvider>
+                                                </PromptRefProvider>
+                                              </PromptHistoryProvider>
+                                            </FrecencyProvider>
+                                          </DialogProvider>
+                                        </PromptStashProvider>
+                                      </LocalProvider>
+                                    </ThemeProvider>
                                   </SyncProvider>
                                 </ProjectProvider>
                               </SDKProvider>

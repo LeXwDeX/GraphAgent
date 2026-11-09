@@ -1,8 +1,8 @@
 import { batch } from "solid-js"
-import type { Path, Workspace } from "@graphagent/sdk/v2"
+import type { Path, Workspace } from "@graphagent/sdk"
 import { createStore, reconcile } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { useSDK } from "./sdk"
+import { useSDK, locationHeaders } from "./sdk"
 
 type WorkspaceStatus = "connected" | "connecting" | "disconnected" | "error"
 
@@ -37,12 +37,13 @@ export const { use: useProject, provider: ProjectProvider } = createSimpleContex
 
     async function sync() {
       const workspace = store.workspace.current
+      const headers = locationHeaders({ workspace })
       const [instancePath, project] = await Promise.all([
-        sdk.client.path.get({ workspace }),
-        sdk.client.project.current({ workspace }),
+        sdk.client.path.get({ headers }),
+        sdk.client.project.current({ headers }),
       ])
       const directories = project.data?.id
-        ? await sdk.client.project.directories({ projectID: project.data.id, workspace })
+        ? await sdk.client.project.directories({ projectID: project.data.id }, { headers })
         : undefined
       batch(() => {
         setStore("instance", "path", reconcile(instancePath.data || defaultPath))

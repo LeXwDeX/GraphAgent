@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
-import { type SessionAttentionUpdate, OpencodeClient } from "@graphagent/sdk/v2"
+import { type SessionAttentionUpdate, Client } from "@graphagent/sdk"
 import { runInteractiveLocalMode, runInteractiveMode } from "@/cli/cmd/run/runtime"
 import type { FooterApi, RunPrompt, RunProvider } from "@/cli/cmd/run/types"
 
-type SessionMessage = NonNullable<Awaited<ReturnType<OpencodeClient["session"]["messages"]>>["data"]>[number]
+type SessionMessage = NonNullable<Awaited<ReturnType<Client["session"]["messages"]>>["data"]>[number]
 
 const provider: RunProvider = {
   id: "openai",
@@ -140,7 +140,7 @@ describe("run interactive runtime", () => {
     const providersStarted = defer<void>()
     const providers = defer<void>()
 
-    const sdk = new OpencodeClient()
+    const sdk = new Client()
     spyOn(sdk.config, "providers").mockImplementation(async () => {
       providersStarted.resolve()
       await providers.promise
@@ -371,7 +371,7 @@ for (const ignoresSignal of [false, true]) {
         fetch: localFetch,
         resolveAgent: async () => "build",
         session: async () => ({ id: "ses_stalled_runtime" }),
-          agent: "build",
+        agent: "build",
         model: undefined,
         variant: undefined,
         files: [],

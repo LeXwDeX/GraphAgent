@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
-import type { DagNode } from "@graphagent/sdk/v2"
+import type { DagNode } from "@graphagent/sdk"
 import { computeWaves } from "../../src/dag/waves"
 
 const node = (id: string, depends_on: string[] = [], name = id): DagNode => ({

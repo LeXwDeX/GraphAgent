@@ -1,4 +1,4 @@
-import type { Event, Message, Part, PermissionRequest, QuestionRequest, ToolPart } from "@graphagent/sdk/v2"
+import type { Event, Message, Part, PermissionRequest, QuestionRequest, ToolPart } from "@graphagent/sdk"
 import * as Locale from "@/util/locale"
 import {
   bootstrapSessionData,

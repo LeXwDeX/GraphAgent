@@ -1,6 +1,6 @@
 import type {
   AgentPart,
-  OpencodeClient,
+  Client,
   Event,
   FilePart,
   Goal,
@@ -16,7 +16,7 @@ import type {
   SessionStatus,
   TextPart,
   Config as SdkConfig,
-} from "@graphagent/sdk/v2"
+} from "@graphagent/sdk"
 import type { CliRenderer, KeyEvent, RGBA, Renderable, SlotMode } from "@opentui/core"
 import type { Binding, Keymap } from "@opentui/keymap"
 import {
@@ -589,7 +589,7 @@ export type TuiPluginApi = {
   kv: TuiKV
   state: TuiState
   theme: TuiTheme
-  client: OpencodeClient
+  client: Client
   event: TuiEventBus
   renderer: CliRenderer
   slots: TuiSlots

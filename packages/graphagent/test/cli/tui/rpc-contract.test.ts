@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { expect, test } from "bun:test"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
 import type { WorkerEvents, WorkerMethods } from "@/cli/tui/rpc-contract"
 import { Rpc } from "@/util/rpc"
 

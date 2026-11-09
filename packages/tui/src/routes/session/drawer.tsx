@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { AssistantMessage } from "@graphagent/sdk/v2"
+import type { AssistantMessage } from "@graphagent/sdk"
 import { InstallationChannel } from "@graphagent/core/installation/version"
 import { createMemo, createSignal, For, Match, Show, Switch, type Accessor, type JSX } from "solid-js"
 import { TodoItem } from "../../component/todo-item"
@@ -255,12 +255,7 @@ function DrawerLsp() {
 
   return (
     <box>
-      <SectionHeader
-        title="LSP"
-        collapsible={collapsible()}
-        open={open}
-        onToggle={() => setOpen((value) => !value)}
-      />
+      <SectionHeader title="LSP" collapsible={collapsible()} open={open} onToggle={() => setOpen((value) => !value)} />
       <Show when={!collapsible() || open()}>
         <Show when={list().length === 0}>
           <text fg={theme.textMuted}>{off() ? t("drawer.lsp.disabled") : t("drawer.lsp.waiting")}</text>

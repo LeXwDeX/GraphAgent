@@ -97,7 +97,7 @@ const layer = Layer.effect(
     ) {
       const connected = yield* Effect.promise(() =>
         sdk.config
-          .providers({ directory })
+          .providers()
           .then((item) => item.data?.providers)
           .catch(() => undefined),
       )

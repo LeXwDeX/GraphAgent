@@ -16,7 +16,7 @@
 import type { TextareaRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
-import type { QuestionRequest } from "@graphagent/sdk/v2"
+import type { QuestionRequest } from "@graphagent/sdk"
 import {
   createQuestionBodyState,
   questionConfirm,
@@ -605,9 +605,7 @@ export function RunQuestionBody(props: {
         <Show when={remaining() !== undefined}>
           <text fg={props.theme.warning}>Timeout in {remaining()}s</text>
         </Show>
-        <Show when={interaction().error}>
-          {(error) => <text fg={props.theme.error}>{error()}</text>}
-        </Show>
+        <Show when={interaction().error}>{(error) => <text fg={props.theme.error}>{error()}</text>}</Show>
       </box>
 
       <box

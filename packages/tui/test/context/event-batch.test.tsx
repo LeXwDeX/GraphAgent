@@ -4,7 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
-import type { GlobalEvent } from "@graphagent/sdk/v2"
+import type { GlobalEvent } from "@graphagent/sdk"
 import { onMount } from "solid-js"
 import { SDKProvider, useSDK, type EventSource } from "../../src/context/sdk"
 import { createFetch, directory } from "../fixture/tui-sdk"

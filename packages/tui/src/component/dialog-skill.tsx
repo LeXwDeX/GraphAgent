@@ -20,7 +20,7 @@ export function DialogSkill(props: DialogSkillProps) {
 
   const [skills] = createResource(() =>
     sdk.client.app
-      .skills({}, { throwOnError: true })
+      .skills({ throwOnError: true })
       .then((result) => result.data ?? [])
       // Catch so the rejected resource never reaches the memo below: reading
       // skills() in an errored state re-throws and tears down the dialog.

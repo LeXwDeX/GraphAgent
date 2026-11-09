@@ -4,7 +4,7 @@ import { BoxRenderable, RGBA, type RootRenderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import type { QuestionRequest } from "@graphagent/sdk/v2"
+import type { QuestionRequest } from "@graphagent/sdk"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "@graphagent/tui/keymap"
 import {
   RUN_COMMAND_PANEL_ROWS,

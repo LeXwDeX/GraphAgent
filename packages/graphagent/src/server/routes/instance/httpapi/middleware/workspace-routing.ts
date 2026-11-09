@@ -5,22 +5,13 @@ import { WorkspaceAdapterRuntime } from "@/control-plane/workspace-adapter-runti
 import { Session } from "@/session/session"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute } from "@/server/shared/workspace-routing"
 import { NotFoundError } from "@/storage/storage"
-import { Context, Data, Effect, Layer, Schema } from "effect"
+import { Context, Data, Effect, Layer } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiMiddleware } from "effect/http-api"
 
-// Query fields this middleware reads from the URL. Spread into every
-// endpoint query schema in groups that apply WorkspaceRoutingMiddleware,
-// otherwise HttpApi rejects requests carrying these params with 400.
-// HttpApiMiddleware in effect-smol cannot declare query params today —
-// remove this once upstream supports middleware-declared query schemas.
-export const WorkspaceRoutingQueryFields = {
-  directory: Schema.optional(Schema.String),
-  workspace: Schema.optional(Schema.String),
-}
-
-export const WorkspaceRoutingQuery = Schema.Struct(WorkspaceRoutingQueryFields)
-
+// Directory and workspace addressing is header-only. Requests carrying the
+// retired `directory` / `workspace` query parameters are still accepted by
+// HttpApi (unknown query fields are ignored) but never select a location.
 type RequestPlan = Data.TaggedEnum<{
   MissingWorkspace: { readonly workspaceID: WorkspaceV2.ID }
   Local: { readonly directory: string; readonly workspaceID?: WorkspaceV2.ID }
@@ -47,13 +38,16 @@ function requestURL(request: HttpServerRequest.HttpServerRequest): URL {
   return new URL(request.url, "http://localhost")
 }
 
-function selectedWorkspaceID(url: URL, sessionWorkspaceID?: WorkspaceV2.ID): WorkspaceV2.ID | undefined {
-  const workspaceParam = url.searchParams.get("workspace")
-  return sessionWorkspaceID ?? (workspaceParam ? WorkspaceV2.ID.make(workspaceParam) : undefined)
+function selectedWorkspaceID(
+  request: HttpServerRequest.HttpServerRequest,
+  sessionWorkspaceID?: WorkspaceV2.ID,
+): WorkspaceV2.ID | undefined {
+  const workspaceHeader = request.headers[`${HEADER_PREFIX}workspace`]
+  return sessionWorkspaceID ?? (workspaceHeader ? WorkspaceV2.ID.make(workspaceHeader) : undefined)
 }
 
-function defaultDirectory(request: HttpServerRequest.HttpServerRequest, url: URL): string {
-  return url.searchParams.get("directory") || request.headers[`${HEADER_PREFIX}directory`] || process.cwd()
+function defaultDirectory(request: HttpServerRequest.HttpServerRequest): string {
+  return request.headers[`${HEADER_PREFIX}directory`] || process.cwd()
 }
 
 function shouldStayOnControlPlane(request: HttpServerRequest.HttpServerRequest, url: URL): boolean {
@@ -87,7 +81,7 @@ function planRequest(
 ): Effect.Effect<RequestPlan, never, Workspace.Service> {
   return Effect.gen(function* () {
     const url = requestURL(request)
-    const workspaceID = selectedWorkspaceID(url, session?.workspaceID)
+    const workspaceID = selectedWorkspaceID(request, session?.workspaceID)
     const workspace = yield* resolveWorkspace(workspaceID)
 
     if (workspaceID && workspace === undefined) {
@@ -99,7 +93,7 @@ function planRequest(
     }
 
     return RequestPlan.Local({
-      directory: session?.directory || defaultDirectory(request, url),
+      directory: session?.directory || defaultDirectory(request),
       workspaceID,
     })
   })

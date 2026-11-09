@@ -6,7 +6,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api
 import { DagSummary } from "@graphagent/schema/dag-summary"
 import { NonNegativeInt } from "@graphagent/schema/schema"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
+import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { ApiNotFoundError } from "../errors"
 import { described } from "./metadata"
 
@@ -99,7 +99,6 @@ export const DagApi = HttpApi.make("dag").add(
   HttpApiGroup.make("dag")
     .add(
       HttpApiEndpoint.get("list", DagPaths.list, {
-        query: WorkspaceRoutingQuery,
         success: described(DagListResponse, "All workflows"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.list", summary: "List all DAG workflows" })),
@@ -107,7 +106,6 @@ export const DagApi = HttpApi.make("dag").add(
     .add(
       HttpApiEndpoint.get("bySession", DagPaths.bySession, {
         params: { sessionID: Schema.String },
-        query: WorkspaceRoutingQuery,
         success: described(DagListResponse, "Workflows for a session"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.bySession", summary: "List workflows by session" })),
@@ -115,7 +113,6 @@ export const DagApi = HttpApi.make("dag").add(
     .add(
       HttpApiEndpoint.get("summary", DagPaths.summary, {
         params: { sessionID: Schema.String },
-        query: WorkspaceRoutingQuery,
         success: described(
           DagSummaryListResponse,
           "Aggregated per-workflow progress summaries for a session (server-side aggregation)",
@@ -128,7 +125,6 @@ export const DagApi = HttpApi.make("dag").add(
     .add(
       HttpApiEndpoint.get("detail", DagPaths.detail, {
         params: { dagID: Schema.String },
-        query: WorkspaceRoutingQuery,
         success: described(WorkflowResponse, "Workflow detail"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.detail", summary: "Get workflow by ID" })),
@@ -136,7 +132,6 @@ export const DagApi = HttpApi.make("dag").add(
     .add(
       HttpApiEndpoint.get("nodes", DagPaths.nodes, {
         params: { dagID: Schema.String },
-        query: WorkspaceRoutingQuery,
         success: described(DagNodeListResponse, "Nodes for a workflow"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.nodes", summary: "List nodes for a workflow" })),
@@ -144,7 +139,6 @@ export const DagApi = HttpApi.make("dag").add(
     .add(
       HttpApiEndpoint.get("nodeDetail", DagPaths.nodeDetail, {
         params: { dagID: Schema.String, nodeID: Schema.String },
-        query: WorkspaceRoutingQuery,
         success: described(NodeResponse, "Node detail"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.nodeDetail", summary: "Get node by ID" })),

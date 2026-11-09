@@ -272,7 +272,15 @@ describe("workspace HttpApi", () => {
       const url = new URL(`http://localhost${InstancePaths.path}`)
       url.searchParams.set("workspace", workspace.id)
 
-      const response = yield* request(url.toString(), dir)
+      // The retired query parameter is ignored; only the workspace header
+      // routes the request through the adapter target directory.
+      const ignored = yield* request(url.toString(), dir)
+      expect(ignored.status).toBe(200)
+      expect(yield* ignored.json).toMatchObject({ directory: dir })
+
+      const response = yield* request(url.toString(), dir, {
+        headers: { "x-graphagent-workspace": workspace.id },
+      })
 
       expect(response.status).toBe(200)
       expect(yield* response.json).toMatchObject({ directory: workspaceDir })

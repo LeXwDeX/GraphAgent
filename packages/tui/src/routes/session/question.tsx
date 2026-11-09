@@ -3,8 +3,8 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show }
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
-import type { QuestionAnswer, QuestionRequest } from "@graphagent/sdk/v2"
-import { useSDK } from "../../context/sdk"
+import type { QuestionAnswer, QuestionRequest } from "@graphagent/sdk"
+import { useSDK, locationHeaders } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { EscapePriority, useBindings, useGraphagentModeStack } from "../../keymap"
@@ -100,10 +100,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     if (store.interacting || Date.now() - lastInteractionSentAt < INTERACTION_HEARTBEAT_MILLIS) return
     setStore("interacting", true)
     try {
-      const result = await sdk.client.question.interact({
-        requestID: id,
-        directory: props.directory,
-      })
+      const result = await sdk.client.question.interact(
+        { requestID: id },
+        { headers: locationHeaders({ directory: props.directory }) },
+      )
       if (props.request.id !== id) return
       if (result.error && !notFound(result.error, result.response)) {
         toast.error(interactionError(result.error))
@@ -161,18 +161,17 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
 
   function submit() {
     const answers = questions().map((_, i) => store.answers[i] ?? [])
-    void sdk.client.question.reply({
-      requestID: props.request.id,
-      directory: props.directory,
-      answers,
-    })
+    void sdk.client.question.reply(
+      { requestID: props.request.id, answers },
+      { headers: locationHeaders({ directory: props.directory }) },
+    )
   }
 
   function reject() {
-    void sdk.client.question.reject({
-      requestID: props.request.id,
-      directory: props.directory,
-    })
+    void sdk.client.question.reject(
+      { requestID: props.request.id },
+      { headers: locationHeaders({ directory: props.directory }) },
+    )
   }
 
   function pick(answer: string, custom: boolean = false) {
@@ -185,11 +184,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
       setStore("custom", inputs)
     }
     if (single()) {
-      void sdk.client.question.reply({
-        requestID: props.request.id,
-        directory: props.directory,
-        answers: [[answer]],
-      })
+      void sdk.client.question.reply(
+        { requestID: props.request.id, answers: [[answer]] },
+        { headers: locationHeaders({ directory: props.directory }) },
+      )
       return
     }
     setStore("tab", store.tab + 1)

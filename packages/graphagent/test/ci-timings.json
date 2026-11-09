@@ -141,7 +141,6 @@
     "test/provider/amazon-bedrock.test.ts": 661,
     "test/server/httpapi-goalloop-wiring.test.ts": 647,
     "test/config/tui.test.ts": 634,
-    "test/server/sdk-v1-smoke.test.ts": 583,
     "test/project/migrate-global.test.ts": 570,
     "test/server/httpapi-promptasync-context.test.ts": 565,
     "test/tool/task.test.ts": 541,

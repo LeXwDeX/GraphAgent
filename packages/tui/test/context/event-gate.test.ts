@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
-import type { Event } from "@graphagent/sdk/v2"
+import type { Event } from "@graphagent/sdk"
 import { createEventGate, eventScope, scopeOf } from "../../src/context/event-gate"
 
 function event(type: string, properties: Record<string, unknown> = {}): Event {

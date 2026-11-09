@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { GlobalEvent, Message, Part, Session } from "@graphagent/sdk/v2"
+import type { GlobalEvent, Message, Part, Session } from "@graphagent/sdk"
 import { directory } from "../fixture/tui-sdk"
 
 export const SESSION_ID = "ses_perf_main"
@@ -31,7 +31,13 @@ function toolOutput(index: number, size: FixtureSize) {
   return body.slice(0, size === "L" && index % 9 === 0 ? 10_000 : 2_000)
 }
 
-function message(id: string, sessionID: string, role: "user" | "assistant", created: number, parentID?: string): Message {
+function message(
+  id: string,
+  sessionID: string,
+  role: "user" | "assistant",
+  created: number,
+  parentID?: string,
+): Message {
   if (role === "user") {
     return {
       id,

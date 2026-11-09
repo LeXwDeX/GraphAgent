@@ -23,7 +23,7 @@ import type {
   DagWorkflowSummary,
   ReferenceInfo,
   Event as SdkEvent,
-} from "@graphagent/sdk/v2"
+} from "@graphagent/sdk"
 
 export type { DagWorkflowSummary }
 import { createStore, produce, reconcile } from "solid-js/store"
@@ -44,7 +44,7 @@ import {
 import { initLanguage } from "../i18n"
 import { useProject } from "./project"
 import { useEvent } from "./event"
-import { useSDK } from "./sdk"
+import { useSDK, locationHeaders } from "./sdk"
 import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
 import { useExit } from "./exit"
@@ -470,7 +470,7 @@ export const {
           .filter((session) => !onlyMissing || !(session.id in store.dag))
           .map((session) =>
             sdk.client.dag
-              .summary({ sessionID: session.id, workspace })
+              .summary({ sessionID: session.id }, { headers: locationHeaders({ workspace }) })
               .then((x) => setStore("dag", session.id, reconcile(x.data ?? [])))
               .catch(() => {}),
           ),
@@ -820,7 +820,9 @@ export const {
 
         case "lsp.updated": {
           const workspace = project.workspace.current()
-          void sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", x.data ?? []))
+          void sdk.client.lsp
+            .status({ headers: locationHeaders({ workspace }) })
+            .then((x) => setStore("lsp", x.data ?? []))
           break
         }
 
@@ -844,14 +846,15 @@ export const {
       const sessionListPromise = projectPromise.then(() => listSessions())
 
       // blocking - include session.list when continuing a session
-      const providersPromise = sdk.client.config.providers({ workspace }, { throwOnError: true })
-      const providerListPromise = sdk.client.provider.list({ workspace }, { throwOnError: true })
+      const headers = locationHeaders({ workspace })
+      const providersPromise = sdk.client.config.providers({ throwOnError: true, headers })
+      const providerListPromise = sdk.client.provider.list({ throwOnError: true, headers })
       const capabilitiesPromise = sdk.client.experimental.capabilities
-        .get({ workspace }, { throwOnError: true })
+        .get({ throwOnError: true, headers })
         .then((x) => x.data)
         .catch(() => undefined)
-      const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
-      const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
+      const agentsPromise = sdk.client.app.agents({ throwOnError: true, headers })
+      const configPromise = sdk.client.config.get({ throwOnError: true, headers })
       await Promise.all([
         providersPromise,
         providerListPromise,
@@ -903,22 +906,22 @@ export const {
           // non-blocking
           void Promise.all([
             ...(args.continue ? [] : [sessionListPromise.then((sessions) => applySessionList(sessions))]),
-            sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
-            sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
-            sdk.client.mcp.status({ workspace }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
+            sdk.client.command.list({ headers }).then((x) => setStore("command", reconcile(x.data ?? []))),
+            sdk.client.lsp.status({ headers }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
+            sdk.client.mcp.status({ headers }).then((x) => setStore("mcp", reconcile(x.data ?? {}))),
             sdk.client.experimental.resource
-              .list({ workspace })
+              .list({ headers })
               .then((x) => setStore("mcp_resource", reconcile(x.data ?? {}))),
-            sdk.client.formatter.status({ workspace }).then((x) => setStore("formatter", reconcile(x.data ?? []))),
-            sdk.client.session.status({ workspace }).then((x) => {
+            sdk.client.formatter.status({ headers }).then((x) => setStore("formatter", reconcile(x.data ?? []))),
+            sdk.client.session.status({ headers }).then((x) => {
               setStore("session_status", reconcile(x.data ?? {}))
               seedSummaries(store.session)
             }),
-            sdk.client.provider.auth({ workspace }).then((x) => setStore("provider_auth", reconcile(x.data ?? {}))),
-            sdk.client.vcs.get({ workspace }).then((x) => setStore("vcs", reconcile(x.data))),
+            sdk.client.provider.auth({ headers }).then((x) => setStore("provider_auth", reconcile(x.data ?? {}))),
+            sdk.client.vcs.get({ headers }).then((x) => setStore("vcs", reconcile(x.data))),
             // #886 5.7: the @alias list now comes from the sync store.
             sdk.client.reference
-              .list({ workspace })
+              .list({ headers })
               .then((x) => setStore("reference", reconcile(x.data ?? [])))
               .catch(() => {}),
             project.workspace.sync(),
@@ -958,7 +961,7 @@ export const {
       return Promise.all(
         sessionIDs.map((sessionID) =>
           sdk.client.dag
-            .summary({ sessionID, workspace })
+            .summary({ sessionID }, { headers: locationHeaders({ workspace }) })
             .then((x) => setStore("dag", sessionID, reconcile(x.data ?? [])))
             .catch(() => {}),
         ),

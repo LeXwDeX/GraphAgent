@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import type { VcsFileStatus } from "@graphagent/sdk/v2"
+import type { VcsFileStatus } from "@graphagent/sdk"
 import { createMemo, For } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Locale } from "../util/locale"

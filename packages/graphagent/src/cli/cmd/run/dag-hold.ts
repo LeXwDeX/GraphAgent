@@ -46,7 +46,7 @@
 // known. Idle polling also covers receipts committed by another process whose
 // events do not reach this subscription. Engine stalls remain watchdog-bounded.
 
-import type { Event, OpencodeClient, TextPart } from "@graphagent/sdk/v2"
+import type { Event, Client, TextPart } from "@graphagent/sdk"
 import { reportIdentity } from "@/dag/report-identity"
 import { isRecord } from "@/util/record"
 
@@ -251,7 +251,7 @@ function responseStatus(response: unknown): number | undefined {
  * session-scoped, project-ownership enforced server-side). A completed final
  * response remains pending until its exact answer receipt is visible. */
 export async function dagWorkflowsBySession(
-  client: OpencodeClient,
+  client: Client,
   sessionID: string,
   verifiedReceipts: Set<string> = new Set(),
   observation?: ReportObservation,
@@ -329,7 +329,7 @@ export async function dagWorkflowsBySession(
 
 /** Cache only verified receipts for this one CLI run. New completion seqs are
  * still read, while historic completions cost one read at most. */
-export function makeDagWorkflowPoll(client: OpencodeClient, sessionID: string): DagHoldPoll {
+export function makeDagWorkflowPoll(client: Client, sessionID: string): DagHoldPoll {
   const verifiedReceipts = new Set<string>()
   return () => dagWorkflowsBySession(client, sessionID, verifiedReceipts)
 }
@@ -338,7 +338,7 @@ const STARTUP_BASELINE_ATTEMPTS = 5
 const STARTUP_BASELINE_TIMEOUT_MS = 3_000
 const STARTUP_BASELINE_RETRY_DELAYS_MS = [100, 200, 400, 800] as const
 
-async function startupBaseline(client: OpencodeClient, sessionID: string): Promise<Set<string>> {
+async function startupBaseline(client: Client, sessionID: string): Promise<Set<string>> {
   let lastFailure: unknown
   for (let attempt = 0; attempt < STARTUP_BASELINE_ATTEMPTS; attempt++) {
     const verifiedReceipts = new Set<string>()
@@ -369,7 +369,7 @@ async function startupBaseline(client: OpencodeClient, sessionID: string): Promi
  * historic answer already present at startup need not be replayed by the
  * current stream; every later completion must both persist and be emitted. */
 export async function createDagRunHold(
-  client: OpencodeClient,
+  client: Client,
   sessionID: string,
   requestedMessageID?: string,
   render?: (part: TextPart) => void,

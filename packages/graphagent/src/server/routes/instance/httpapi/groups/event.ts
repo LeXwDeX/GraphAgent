@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
-import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
+import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 
 export const EventPaths = {
   event: "/event",
@@ -11,7 +11,6 @@ export const EventApi = HttpApi.make("event").add(
   HttpApiGroup.make("event")
     .add(
       HttpApiEndpoint.get("subscribe", EventPaths.event, {
-        query: WorkspaceRoutingQuery,
         success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "text/event-stream" })),
       }).annotateMerge(
         OpenApi.annotations({

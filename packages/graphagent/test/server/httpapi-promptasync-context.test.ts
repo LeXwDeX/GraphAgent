@@ -11,7 +11,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Layer, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
-import { HttpClient, HttpRouter, HttpServerResponse } from "effect/http"
+import { HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http"
 import * as Socket from "effect/socket/Socket"
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api"
 import { mkdir } from "node:fs/promises"
@@ -29,7 +29,6 @@ import {
 } from "../../src/server/routes/instance/httpapi/middleware/instance-context"
 import {
   WorkspaceRoutingMiddleware,
-  WorkspaceRoutingQuery,
   workspaceRoutingLayer,
 } from "../../src/server/routes/instance/httpapi/middleware/workspace-routing"
 import { resetDatabase } from "../fixture/db"
@@ -101,13 +100,11 @@ const captureInstance = Effect.gen(function* () {
 const ProbeApi = HttpApi.make("handler-context-probe").add(
   HttpApiGroup.make("probe")
     .add(
-      HttpApiEndpoint.post("fork", "/fork-probe", { query: WorkspaceRoutingQuery, success: Schema.Boolean }),
+      HttpApiEndpoint.post("fork", "/fork-probe", { success: Schema.Boolean }),
       HttpApiEndpoint.post("streamWithout", "/stream-probe-without", {
-        query: WorkspaceRoutingQuery,
         success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/json" })),
       }),
       HttpApiEndpoint.post("streamWith", "/stream-probe-with", {
-        query: WorkspaceRoutingQuery,
         success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/json" })),
       }),
     )
@@ -157,8 +154,10 @@ describe("HttpApi handler context inheritance", () => {
         }),
       })
 
-      const response = yield* HttpClient.post(
-        `/fork-probe?directory=${encodeURIComponent(dir)}&workspace=${encodeURIComponent(workspace.id)}`,
+      const response = yield* HttpClientRequest.post("/fork-probe").pipe(
+        HttpClientRequest.setHeader("x-graphagent-directory", dir),
+        HttpClientRequest.setHeader("x-graphagent-workspace", workspace.id),
+        HttpClient.execute,
       )
       expect(response.status).toBe(200)
 
@@ -205,10 +204,19 @@ describe("HttpApi handler context inheritance", () => {
         }),
       })
 
-      const queryString = `directory=${encodeURIComponent(dir)}&workspace=${encodeURIComponent(workspace.id)}`
-      const responseWithout = yield* HttpClient.post(`/stream-probe-without?${queryString}`)
+      const headers = {
+        "x-graphagent-directory": dir,
+        "x-graphagent-workspace": workspace.id,
+      }
+      const responseWithout = yield* HttpClientRequest.post("/stream-probe-without").pipe(
+        HttpClientRequest.setHeaders(headers),
+        HttpClient.execute,
+      )
       yield* responseWithout.text
-      const responseWith = yield* HttpClient.post(`/stream-probe-with?${queryString}`)
+      const responseWith = yield* HttpClientRequest.post("/stream-probe-with").pipe(
+        HttpClientRequest.setHeaders(headers),
+        HttpClient.execute,
+      )
       yield* responseWith.text
 
       const without = yield* Deferred.await(withoutCapture).pipe(Effect.timeout("2 seconds"))

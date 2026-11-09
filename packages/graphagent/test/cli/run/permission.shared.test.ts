@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { PermissionRequest } from "@graphagent/sdk/v2"
+import type { PermissionRequest } from "@graphagent/sdk"
 import {
   createPermissionBodyState,
   permissionAlwaysLines,
