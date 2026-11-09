@@ -892,7 +892,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
             if (decision.stopReason)
               return {
                 title: "",
-                output: decision.stopReason,
+                output: `[Hook stopped] ${decision.stopReason}`,
                 metadata: { hookStopped: true, stopReason: decision.stopReason },
               }
             args = decision.effectiveArgs

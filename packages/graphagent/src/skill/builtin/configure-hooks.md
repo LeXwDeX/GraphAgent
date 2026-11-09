@@ -25,7 +25,7 @@ Workspace trust gating and the built-in `/trust` command have been removed. Hook
 
 ## Events (31 total)
 
-Claude Code's `PermissionDenied` and `TeammateIdle` events are not provided; declaring either event in configuration produces a warning and is skipped. The table below lists all 31 supported events.
+Events not listed in this table are not provided. Declaring one in configuration produces a warning and is skipped. The table below lists all 31 supported events.
 
 | Events                                            | Boundary and principal input                                                                                          | Matcher                |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------- |

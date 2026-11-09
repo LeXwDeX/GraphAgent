@@ -203,6 +203,13 @@ const discoverSkills = Effect.fnUntraced(function* (
   for (const item of cfg.skills?.paths ?? []) {
     const expanded = item.startsWith("~/") ? path.join(global.home, item.slice(2)) : item
     const dir = path.isAbsolute(expanded) ? expanded : path.join(root, expanded)
+    // A configured path must not reintroduce what the runtime stopped reading:
+    // `~/.claude/...`, a project `.claude/...`, or any absolute path with a
+    // `.claude` segment is skipped with a warning.
+    if (dir.split(/[\\/]/).includes(".claude")) {
+      yield* Effect.logWarning("`.claude` skill paths are no longer scanned", { path: dir })
+      continue
+    }
     if (!(yield* fsys.isDir(dir))) {
       yield* Effect.logWarning("skill path not found", { path: dir })
       continue

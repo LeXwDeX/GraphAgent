@@ -1,7 +1,12 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Logger } from "effect"
 import { Skill } from "../../src/skill"
+import { Config } from "../../src/config/config"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
+import { Discovery } from "../../src/skill/discovery"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
 import { provideInstance, provideTmpdirInstance, testInstanceStoreLayer, tmpdir } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import path from "path"
@@ -10,6 +15,28 @@ import fs from "fs/promises"
 const node = CrossSpawnSpawner.defaultLayer
 
 const it = testEffect(Layer.mergeAll(Skill.defaultLayer, node, testInstanceStoreLayer))
+
+let pulledUrls: string[] = []
+let pulledSkillDirs: (url: string) => string[] = () => []
+
+// Inject Discovery so the URL source is asserted without a network call or a
+// shared download cache.
+const urlSkillLayer = Skill.layer.pipe(
+  Layer.provide(
+    Layer.succeed(Discovery.Service, {
+      pull: (url: string) =>
+        Effect.sync(() => {
+          pulledUrls.push(url)
+          return pulledSkillDirs(url)
+        }),
+    }),
+  ),
+  Layer.provide(Config.defaultLayer),
+  Layer.provide(EventV2Bridge.defaultLayer),
+  Layer.provide(FSUtil.defaultLayer),
+  Layer.provide(Global.layer),
+)
+const urlIt = testEffect(Layer.mergeAll(urlSkillLayer, node, testInstanceStoreLayer))
 
 async function createClaudeGlobalSkill(homeDir: string) {
   const skillDir = path.join(homeDir, ".claude", "skills", "global-test-skill")
@@ -558,6 +585,89 @@ description: A second skill in the .agents/skills directory.
         }),
       { git: true },
     ),
+  )
+
+  it.live("skips .claude segments in skills.paths while loading ordinary configured paths", () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir({ git: true })),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const extra = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+
+      yield* withHome(
+        home.path,
+        provideTmpdirInstance(
+          (dir) =>
+            Effect.gen(function* () {
+              yield* writeSkill(
+                path.join(dir, "x", ".claude", "skills", "hidden-relative", "SKILL.md"),
+                "hidden-relative",
+              )
+              yield* writeSkill(path.join(home.path, ".claude", "skills", "hidden-home", "SKILL.md"), "hidden-home")
+              yield* writeSkill(path.join(extra.path, ".claude", "hidden-absolute", "SKILL.md"), "hidden-absolute")
+              yield* writeSkill(path.join(extra.path, "visible", "SKILL.md"), "visible-path")
+              yield* writeSkill(path.join(dir, ".agents", "skills", "project-visible", "SKILL.md"), "project-visible")
+
+              const skill = yield* Skill.Service
+              // Ordinary project and configured paths are unaffected.
+              expect(yield* skill.get("project-visible")).toBeDefined()
+              expect(yield* skill.get("visible-path")).toBeDefined()
+              // A `.claude` segment is skipped however the path was written.
+              expect(yield* skill.get("hidden-relative")).toBeUndefined()
+              expect(yield* skill.get("hidden-home")).toBeUndefined()
+              expect(yield* skill.get("hidden-absolute")).toBeUndefined()
+            }),
+          {
+            git: true,
+            config: {
+              skills: {
+                paths: [
+                  "./x/.claude/skills",
+                  "~/.claude/skills",
+                  path.join(extra.path, ".claude"),
+                  path.join(extra.path, "visible"),
+                ],
+              },
+            },
+          },
+        ),
+      )
+    }),
+  )
+
+  urlIt.live("discovers skills.urls after skills.paths and lets the later source win", () =>
+    Effect.gen(function* () {
+      pulledUrls = []
+      const extra = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const url = "https://skills.example.test/index.json"
+      const urlRoot = path.join(extra.path, "url-source")
+
+      yield* provideTmpdirInstance(
+        (dir) =>
+          Effect.gen(function* () {
+            yield* writeSkill(path.join(dir, "configured", "shared-name", "SKILL.md"), "shared-name")
+            yield* writeSkill(path.join(urlRoot, "from-url", "SKILL.md"), "from-url")
+            yield* writeSkill(path.join(urlRoot, "shared-name", "SKILL.md"), "shared-name")
+            pulledSkillDirs = (requested) => (requested === url ? [urlRoot] : [])
+
+            const skill = yield* Skill.Service
+            expect(yield* skill.get("from-url")).toMatchObject({
+              location: path.join(urlRoot, "from-url", "SKILL.md"),
+            })
+            // urls are discovered after skills.paths, so their copy overrides.
+            expect((yield* skill.require("shared-name")).location).toBe(path.join(urlRoot, "shared-name", "SKILL.md"))
+            expect(pulledUrls).toEqual([url])
+          }),
+        { git: true, config: { skills: { paths: ["./configured"], urls: [url] } } },
+      )
+    }),
   )
 
   it.live("merges skill sources in priority order", () =>
