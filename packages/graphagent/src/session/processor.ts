@@ -60,6 +60,12 @@ export interface Handle {
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
   ) => Effect.Effect<SessionV1.ToolPart | undefined>
+  /**
+   * Non-durable running preview (#1016 HS4a): publishes the output tail for a
+   * live tool call without writing the part. State transitions and final
+   * results still go through `updateToolCall` / `completeToolCall`.
+   */
+  readonly previewToolCall: (toolCallID: string, preview: { tail: string; totalLength: number }) => Effect.Effect<void>
   readonly completeToolCall: (
     toolCallID: string,
     output: {
@@ -222,6 +228,9 @@ export const layer = Layer.effect(
         attemptRetryBlockingSuppressedActivity: false,
         stepToolActivity: false,
       }
+      // Per-call preview sequence; the TUI applies previews latest-wins within
+      // a frame, and the sequence lets it discard an older frame.
+      const previewSeqs = new Map<string, number>()
       let aborted = false
       let deferred = false
       let displayPending = ""
@@ -270,6 +279,7 @@ export const layer = Layer.effect(
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
         delete ctx.toolcalls[toolCallID]
+        previewSeqs.delete(toolCallID)
         if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
       })
 
@@ -302,6 +312,24 @@ export const layer = Layer.effect(
           sessionID: part.sessionID,
         }
         return part
+      })
+
+      const previewToolCall = Effect.fnUntraced(function* (
+        toolCallID: string,
+        preview: { tail: string; totalLength: number },
+      ) {
+        const call = ctx.toolcalls[toolCallID]
+        if (!call) return
+        const seq = (previewSeqs.get(toolCallID) ?? 0) + 1
+        previewSeqs.set(toolCallID, seq)
+        yield* events.publish(MessageV2.Event.PartPreview, {
+          sessionID: call.sessionID,
+          messageID: call.messageID,
+          partID: call.partID,
+          tail: preview.tail,
+          totalLength: preview.totalLength,
+          seq,
+        })
       })
 
       const completeToolCall = Effect.fn("SessionProcessor.completeToolCall")(function* (
@@ -1237,6 +1265,7 @@ export const layer = Layer.effect(
         },
         resumeToolCall,
         updateToolCall,
+        previewToolCall,
         completeToolCall,
         process,
       } satisfies Handle

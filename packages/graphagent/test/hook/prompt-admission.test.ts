@@ -16,7 +16,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { HookNotification } from "@/hook/notifications"
 import { SessionSummary } from "@/session/summary"
 import { Database } from "@graphagent/core/database/database"
-import { EventTable } from "@graphagent/core/event/sql"
+import { EventV2 } from "@graphagent/core/event"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { eq } from "drizzle-orm"
 import { SessionProjector } from "@graphagent/core/session/projector"
@@ -1759,34 +1759,31 @@ it.live("successive commands use the model selection current when each one start
   ),
 )
 
-it.live("a no-op model write appends no ModelSwitched event and uses the versioned type", () =>
+it.live("a no-op model write publishes no second ModelSwitched event", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* () {
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const { db } = yield* Database.Service
       const session = yield* sessions.create({ title: "No-op model switch", permission: [] })
-      const types = () =>
-        db.select({ type: EventTable.type }).from(EventTable).where(eq(EventTable.aggregate_id, session.id))
-      yield* prompt.setModel({
+      // Session-aggregate events do not append event-log rows, but every
+      // published event still advances the aggregate sequence. The sequence is
+      // the observable witness that the first write published once and an
+      // identical second write published nothing.
+      const seq = () => EventV2.latestSequence(db, session.id)
+      const input = {
         sessionID: session.id,
         model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
         variant: "high",
         source: "picker",
         hookMode: "interactive",
-      })
-      const before = yield* types()
-      expect(before.filter((row) => row.type.startsWith("session.model.switched"))).toHaveLength(1)
-      yield* prompt.setModel({
-        sessionID: session.id,
-        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") },
-        variant: "high",
-        source: "picker",
-        hookMode: "interactive",
-      })
-      const after = yield* types()
-      expect(after.filter((row) => row.type.startsWith("session.model.switched"))).toHaveLength(1)
-      expect(after.every((row) => !row.type.endsWith("."))).toBe(true)
+      } as const
+      const baseline = yield* seq()
+      yield* prompt.setModel(input)
+      expect(yield* seq()).toBe(baseline + 1)
+      expect((yield* sessions.get(session.id)).model?.variant).toBe("high")
+      yield* prompt.setModel(input)
+      expect(yield* seq()).toBe(baseline + 1)
     }),
     { git: true, config: providerCfg },
   ),
@@ -1881,10 +1878,7 @@ it.live("UserPromptSubmit receives dag_mode and hook output cannot change the se
       const sessions = yield* Session.Service
       const { db } = yield* Database.Service
       const session = yield* sessions.create({ title: "DAG mode payload", permission: [] })
-      yield* db
-        .update(SessionTable)
-        .set({ dag_mode: "on" })
-        .where(eq(SessionTable.id, session.id))
+      yield* db.update(SessionTable).set({ dag_mode: "on" }).where(eq(SessionTable.id, session.id))
       const audit = path.join(dir, "dag-mode-input.json")
       const script = path.join(dir, "dag-mode-hook.ts")
       yield* Effect.promise(async () => {

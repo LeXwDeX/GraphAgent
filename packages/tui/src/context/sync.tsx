@@ -800,6 +800,32 @@ export const {
           break
         }
 
+        case "message.part.preview": {
+          if (!storesMessages(event.properties.sessionID)) break
+          const { messageID, partID, tail, totalLength } = event.properties
+          const parts = store.part[messageID]
+          if (!parts) break
+          const result = search(parts, partID, (p) => p.id)
+          if (!result.found) break
+          touchPart(event.properties.sessionID, partID)
+          // Non-durable running preview (#1016 HS4a): replace the tool output
+          // in place. The next durable part snapshot supersedes it.
+          setStore(
+            "part",
+            messageID,
+            produce((draft) => {
+              const part = draft.find((item) => item.id === partID)
+              if (!part || part.type !== "tool" || part.state.status !== "running") return
+              part.state.metadata = {
+                ...(part.state.metadata ?? {}),
+                output: tail,
+                previewTotalLength: totalLength,
+              }
+            }),
+          )
+          break
+        }
+
         case "message.part.removed": {
           if (!storesMessages(event.properties.sessionID)) break
           touchPart(event.properties.sessionID, event.properties.partID)

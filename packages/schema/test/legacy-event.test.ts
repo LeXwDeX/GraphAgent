@@ -18,6 +18,7 @@ describe("legacy public event schemas", () => {
       "session.agent.switched",
       "session.model.switched",
       "message.part.delta",
+      "message.part.preview",
       "session.diff",
       "session.error",
     ])

@@ -626,6 +626,7 @@ export function makePrepare(deps: PrepareDeps) {
             part = yield* sessions.updatePart(update(part))
             return part
           }),
+        previewToolCall: () => Effect.void,
         completeToolCall: (_id, result) =>
           Effect.gen(function* () {
             if (part.state.status !== "running") return

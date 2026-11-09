@@ -664,6 +664,23 @@ export const PartDelta = define({
   },
 })
 
+/**
+ * Non-durable running preview (#1016 HS4a). Only the tail of the output is
+ * transferred, never persisted: a reconnecting client loses intermediate
+ * output, while state transitions and final results stay durable.
+ */
+export const PartPreview = define({
+  type: "message.part.preview",
+  schema: {
+    sessionID: SessionID,
+    messageID: MessageID,
+    partID: PartID,
+    tail: Schema.String,
+    totalLength: Schema.Finite,
+    seq: Schema.Finite,
+  },
+})
+
 export const Diff = define({
   type: "session.diff",
   schema: {
@@ -683,6 +700,7 @@ export const Error = define({
 export const Event = {
   ...events,
   PartDelta,
+  PartPreview,
   Diff,
   Error,
   Definitions: inventory(
@@ -696,6 +714,7 @@ export const Event = {
     events.AgentSwitched,
     events.ModelSwitched,
     PartDelta,
+    PartPreview,
     Diff,
     Error,
   ),
