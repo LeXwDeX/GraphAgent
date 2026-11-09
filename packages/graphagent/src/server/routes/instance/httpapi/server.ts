@@ -79,8 +79,6 @@ import { Ripgrep } from "@graphagent/core/ripgrep"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { lazy } from "@/util/lazy"
 import { InstanceHttpApi, RootHttpApi } from "./api"
-import { Authorization as ProtocolAuthorization } from "@graphagent/protocol/middleware/authorization"
-import { Api } from "@graphagent/server/api"
 import { PublicApi } from "./public"
 import { EventApi } from "./groups/event"
 import { eventHandlers } from "./handlers/event"
@@ -98,9 +96,8 @@ import { projectHandlers } from "./handlers/project"
 import { projectCopyHandlers } from "./handlers/project-copy"
 import { providerHandlers } from "./handlers/provider"
 import { questionHandlers } from "./handlers/question"
+import { referenceHandlers } from "./handlers/reference"
 import { sessionHandlers } from "./handlers/session"
-import { handlers } from "@graphagent/server/handlers"
-import { schemaErrorLayer as v2SchemaErrorLayer } from "@graphagent/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
@@ -137,6 +134,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     questionHandlers,
     permissionHandlers,
     providerHandlers,
+    referenceHandlers,
     sessionHandlers,
     dagHandlers,
     workspaceHandlers,
@@ -145,16 +143,6 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
 
 const instanceRoutes = instanceApiRoutes.pipe(
   Layer.provide([workspaceRoutingLive, instanceContextLayer, schemaErrorLayer]),
-)
-// The V2 server API still declares its protocol authorization middleware. This
-// process no longer authenticates: local in-process requests bypass it.
-const serverAuthorizationLayer = Layer.succeed(
-  ProtocolAuthorization,
-  ProtocolAuthorization.of((effect) => effect),
-)
-const serverRoutes = HttpApiBuilder.layer(Api).pipe(
-  Layer.provide(handlers),
-  Layer.provide([serverAuthorizationLayer, v2SchemaErrorLayer]),
 )
 
 type RouteRequirements =
@@ -294,7 +282,7 @@ export function createRoutes(options?: {
   readonly replacements?: readonly LayerNode.Replacement[]
 }): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   const moveSession = MoveSession.defaultLayer.pipe(Layer.provide(MoveSessionLookup.layer))
-  return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, serverRoutes, afterResponseLayer).pipe(
+  return Layer.mergeAll(rootApiRoutes, eventApiRoutes, instanceRoutes, afterResponseLayer).pipe(
     Layer.provide([errorLayer, compressionLayer, moveSession, HttpServer.layerServices]),
     Layer.provide(LayerNode.buildLayer(app, options)),
     Layer.provideMerge(Observability.layer),

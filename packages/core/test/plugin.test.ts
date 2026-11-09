@@ -1,11 +1,29 @@
 import { describe, expect } from "bun:test"
-import { Effect, Exit, Fiber } from "effect"
+import { Effect, Exit, Fiber, Layer } from "effect"
+import { FetchHttpClient } from "effect/http"
 import { define } from "@graphagent/core/plugin/context/index"
-import { SourceProvenance } from "@graphagent/core/session/source-provenance"
-import { AgentV2 } from "@graphagent/core/agent"
 import { PluginV2 } from "@graphagent/core/plugin"
+import { Reference } from "@graphagent/core/reference"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { EventV2 } from "../src/event"
+import { FSUtil } from "../src/fs-util"
+import { Global } from "../src/global"
+import { RepositoryCache } from "../src/repository-cache"
 import { testEffect } from "./lib/effect"
-import { PluginTestLayer } from "./plugin/fixture"
+import { tempLocationLayer } from "./fixture/location"
+
+const PluginTestLayer = PluginV2.locationLayer.pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(
+      EventV2.defaultLayer,
+      FetchHttpClient.layer,
+      FSUtil.defaultLayer,
+      Global.defaultLayer,
+      RepositoryCache.defaultLayer,
+      tempLocationLayer,
+    ),
+  ),
+)
 
 const it = testEffect(PluginTestLayer)
 
@@ -41,56 +59,34 @@ describe("PluginV2", () => {
   it.effect("adds, replaces, and removes plugins", () =>
     Effect.gen(function* () {
       const plugins = yield* PluginV2.Service
-      const agents = yield* AgentV2.Service
+      const references = yield* Reference.Service
       let description = "first"
 
       const managed = () =>
         define({
           id: "managed",
           effect: (ctx) =>
-            ctx.agent
-              .transform((agents) =>
-                agents.update("configured", (agent) => {
-                  agent.description = description
-                }),
-              )
+            ctx.reference
+              .transform((reference) => {
+                reference.add("docs", {
+                  type: "local",
+                  path: AbsolutePath.make("/repo/docs"),
+                  description,
+                })
+              })
               .pipe(Effect.asVoid),
         })
 
       yield* plugins.add(PluginV2.ID.make("managed"), managed().effect)
 
-      expect((yield* agents.get(AgentV2.ID.make("configured")))?.description).toBe("first")
+      expect(yield* references.list()).toMatchObject([{ name: "docs", description: "first" }])
 
       description = "second"
       yield* plugins.add(PluginV2.ID.make("managed"), managed().effect)
-      expect((yield* agents.get(AgentV2.ID.make("configured")))?.description).toBe("second")
+      expect(yield* references.list()).toMatchObject([{ name: "docs", description: "second" }])
 
       yield* plugins.remove(PluginV2.ID.make("managed"))
-      expect(yield* agents.get(AgentV2.ID.make("configured"))).toBeUndefined()
+      expect(yield* references.list()).toEqual([])
     }),
   )
 })
-
-it.effect("records hook provenance from the actual contributor execution boundary", () =>
-  Effect.gen(function* () {
-    const plugins = yield* PluginV2.Service
-    const agents = yield* AgentV2.Service
-    const id = PluginV2.ID.make("actual-hook-owner")
-    yield* plugins.add(id, (ctx) =>
-      ctx.agent
-        .transform((draft) => {
-          draft.update("scoped", (agent) =>
-            Object.assign(agent, { hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } }),
-          )
-        })
-        .pipe(Effect.asVoid),
-    )
-    expect((yield* agents.get(AgentV2.ID.make("scoped")))?.hooks).toBeDefined()
-    expect(SourceProvenance.agent(agents, "scoped")).toEqual({
-      source: "builtin",
-      origin: "actual-hook-owner:agent:scoped",
-    })
-    yield* agents.reload()
-    expect(SourceProvenance.agent(agents, "scoped")?.source).toBe("builtin")
-  }),
-)

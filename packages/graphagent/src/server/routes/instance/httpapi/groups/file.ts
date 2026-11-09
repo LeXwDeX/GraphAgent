@@ -116,7 +116,7 @@ export const FileApi = HttpApi.make("file")
         ),
         HttpApiEndpoint.get("findFile", FilePaths.findFile, {
           query: FindFileQuery,
-          success: described(Schema.Array(Schema.String), "File paths"),
+          success: described(Schema.Array(FileSystem.Entry), "Files and directories"),
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "find.files",
@@ -172,7 +172,7 @@ export const FileApi = HttpApi.make("file")
         }),
       )
       .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
+      .middleware(WorkspaceRoutingMiddleware),
   )
   .annotateMerge(
     OpenApi.annotations({

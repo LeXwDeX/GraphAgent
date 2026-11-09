@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test"
 import { OpenApi } from "effect/http-api"
 import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 
-type Method = "get" | "post" | "put" | "delete" | "patch"
 type OpenApiSchema = {
   readonly $ref?: string
   readonly anyOf?: ReadonlyArray<OpenApiSchema>
@@ -26,25 +25,10 @@ type OpenApiOperation = {
   readonly requestBody?: { readonly required?: boolean }
   readonly security?: unknown
 }
-type OpenApiPathItem = Partial<Record<Method, OpenApiOperation>>
+type OpenApiPathItem = Partial<Record<"get" | "post" | "put" | "delete" | "patch", OpenApiOperation>>
 type OpenApiSpec = {
   readonly paths: Record<string, OpenApiPathItem>
   readonly components: { readonly schemas: Record<string, OpenApiSchema> }
-}
-
-const methods = ["get", "post", "put", "delete", "patch"] as const
-
-const allowedV2BuiltInEndpointErrors: string[] = []
-
-function v2Operations(spec: OpenApiSpec) {
-  return Object.entries(spec.paths).flatMap(([path, item]) =>
-    path.startsWith("/api/")
-      ? methods.flatMap((method) => {
-          const operation = item[method]
-          return operation ? [{ method, path, operation }] : []
-        })
-      : [],
-  )
 }
 
 function responseRef(response: OpenApiResponse | undefined) {
@@ -55,16 +39,18 @@ function componentName(ref: string) {
   return ref.replace("#/components/schemas/", "")
 }
 
-function isBuiltInEndpointError(name: string) {
-  return name.startsWith("EffectHttpApiError") || name.startsWith("effect_HttpApiError_")
-}
-
-describe("PublicApi OpenAPI v2 errors", () => {
-  test("includes plugin-facing core schemas", () => {
+describe("PublicApi OpenAPI errors", () => {
+  test("merges the former v2 routes into the instance API", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
 
+    expect(Object.keys(spec.paths).filter((path) => path.startsWith("/api/"))).toEqual([])
+    expect(spec.paths["/reference"]?.get).toBeDefined()
+    expect(spec.paths["/find/file"]?.get).toBeDefined()
+    expect(spec.paths["/experimental/project/{projectID}/copy"]?.post).toBeDefined()
+    expect(spec.paths["/experimental/project/{projectID}/copy"]?.delete).toBeDefined()
+    expect(spec.paths["/experimental/project/{projectID}/copy/refresh"]?.post).toBeDefined()
     expect(Object.keys(spec.components.schemas)).toEqual(
-      expect.arrayContaining(["CredentialValue", "IntegrationInputs", "IntegrationMethod", "IntegrationRef"]),
+      expect.arrayContaining(["ReferenceInfo", "FileSystemEntry", "ProjectCopyCopy"]),
     )
   })
 
@@ -75,98 +61,6 @@ describe("PublicApi OpenAPI v2 errors", () => {
     expect(spec.paths["/global/event"]).toBeUndefined()
     expect(names.filter((name) => name === "GlobalEvent" || name === "EventConfigUpdated")).toEqual([])
     expect(names.filter((name) => name.startsWith("SyncEvent"))).toEqual([])
-  })
-
-  test("preserves /api auth responses", () => {
-    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
-
-    for (const route of v2Operations(spec)) {
-      expect(route.operation.responses?.["401"], `${route.method.toUpperCase()} ${route.path}`).toBeDefined()
-      expect(route.operation.security, `${route.method.toUpperCase()} ${route.path}`).toEqual([])
-    }
-  })
-
-  test("documents references separately from filesystem routes", () => {
-    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
-
-    for (const path of ["/api/fs/read/*", "/api/fs/list"]) {
-      expect(spec.paths[path]?.get?.parameters, path).not.toContainEqual(expect.objectContaining({ name: "reference" }))
-    }
-    expect(spec.paths["/api/reference"]?.get).toBeDefined()
-  })
-
-  test("documents integration discovery and connection routes", () => {
-    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
-
-    for (const [method, path] of [
-      ["get", "/api/integration"],
-      ["get", "/api/integration/{integrationID}"],
-      ["post", "/api/integration/{integrationID}/connect/key"],
-      ["post", "/api/integration/{integrationID}/connect/oauth"],
-      ["get", "/api/integration/attempt/{attemptID}"],
-      ["post", "/api/integration/attempt/{attemptID}/complete"],
-      ["delete", "/api/integration/attempt/{attemptID}"],
-      ["delete", "/api/credential/{credentialID}"],
-      ["patch", "/api/credential/{credentialID}"],
-    ] as const) {
-      expect(spec.paths[path]?.[method], `${method.toUpperCase()} ${path}`).toBeDefined()
-    }
-
-    for (const path of [
-      "/api/integration/{integrationID}/connect/key",
-      "/api/integration/{integrationID}/connect/oauth",
-      "/api/integration/attempt/{attemptID}/complete",
-    ]) {
-      expect(spec.paths[path]?.post?.requestBody?.required, path).toBe(true)
-    }
-  })
-
-  test("does not rewrite /api endpoint errors to legacy error components", () => {
-    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
-    const refs = v2Operations(spec)
-      .flatMap((route) =>
-        Object.entries(route.operation.responses ?? {}).flatMap(([status, response]) => {
-          const ref = responseRef(response)
-          return ref ? [`${route.method.toUpperCase()} ${route.path} ${status} ${componentName(ref)}`] : []
-        }),
-      )
-      .filter((entry) => entry.endsWith(" BadRequestError") || entry.endsWith(" NotFoundError"))
-
-    expect(refs).toEqual([])
-  })
-
-  test("new /api endpoint errors cannot use built-in components without an explicit allowlist", () => {
-    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
-    const builtInEndpointErrors = v2Operations(spec)
-      .flatMap((route) =>
-        Object.entries(route.operation.responses ?? {}).flatMap(([status, response]) => {
-          if (status === "401") return []
-          const ref = responseRef(response)
-          if (!ref) return []
-          const name = componentName(ref)
-          return isBuiltInEndpointError(name) ? [`${route.method.toUpperCase()} ${route.path} ${status} ${name}`] : []
-        }),
-      )
-      .sort()
-
-    expect(builtInEndpointErrors).toEqual(allowedV2BuiltInEndpointErrors)
-  })
-
-  test("documents v2 provider and model catalog errors", () => {
-    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
-
-    expect(componentName(responseRef(spec.paths["/api/provider"]?.get?.responses?.["503"]) ?? "")).toBe(
-      "ServiceUnavailableError",
-    )
-    expect(componentName(responseRef(spec.paths["/api/model"]?.get?.responses?.["503"]) ?? "")).toBe(
-      "ServiceUnavailableError",
-    )
-    expect(componentName(responseRef(spec.paths["/api/provider/{providerID}"]?.get?.responses?.["404"]) ?? "")).toBe(
-      "ProviderNotFoundError",
-    )
-    expect(componentName(responseRef(spec.paths["/api/provider/{providerID}"]?.get?.responses?.["503"]) ?? "")).toBe(
-      "ServiceUnavailableError",
-    )
   })
 
   test("documents session busy errors", () => {

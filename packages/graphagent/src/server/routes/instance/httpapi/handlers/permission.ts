@@ -27,8 +27,11 @@ export const permissionHandlers = HttpApiBuilder.group(InstanceHttpApi, "permiss
           Effect.catchTag("Permission.NotFoundError", (error) =>
             Effect.fail(
               new PermissionNotFoundError({
-                requestID: String(error.requestID),
-                message: `Permission request not found: ${error.requestID}`,
+                name: "PermissionNotFoundError",
+                data: {
+                  requestID: String(error.requestID),
+                  message: `Permission request not found: ${error.requestID}`,
+                },
               }),
             ),
           ),

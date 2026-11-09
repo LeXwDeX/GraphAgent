@@ -3,7 +3,7 @@
   "name": "@graphagent/protocol",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "exports": {
     "./*": "./src/*.ts"
   },

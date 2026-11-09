@@ -5,10 +5,9 @@ import { WorkspaceAdapterRuntime } from "@/control-plane/workspace-adapter-runti
 import { Session } from "@/session/session"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute } from "@/server/shared/workspace-routing"
 import { NotFoundError } from "@/storage/storage"
-import { Context, Data, Effect, Layer, Option, Schema } from "effect"
+import { Context, Data, Effect, Layer, Schema } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiMiddleware } from "effect/http-api"
-import { InvalidRequestError } from "../errors"
 
 // Query fields this middleware reads from the URL. Spread into every
 // endpoint query schema in groups that apply WorkspaceRoutingMiddleware,
@@ -23,12 +22,10 @@ export const WorkspaceRoutingQueryFields = {
 export const WorkspaceRoutingQuery = Schema.Struct(WorkspaceRoutingQueryFields)
 
 type RequestPlan = Data.TaggedEnum<{
-  InvalidWorkspace: {}
   MissingWorkspace: { readonly workspaceID: WorkspaceV2.ID }
   Local: { readonly directory: string; readonly workspaceID?: WorkspaceV2.ID }
 }>
 const RequestPlan = Data.taggedEnum<RequestPlan>()
-const InvalidWorkspaceID = Symbol("InvalidWorkspaceID")
 
 export class WorkspaceRouteContext extends Context.Service<
   WorkspaceRouteContext,
@@ -53,18 +50,6 @@ function requestURL(request: HttpServerRequest.HttpServerRequest): URL {
 function selectedWorkspaceID(url: URL, sessionWorkspaceID?: WorkspaceV2.ID): WorkspaceV2.ID | undefined {
   const workspaceParam = url.searchParams.get("workspace")
   return sessionWorkspaceID ?? (workspaceParam ? WorkspaceV2.ID.make(workspaceParam) : undefined)
-}
-
-function selectedV2WorkspaceID(
-  url: URL,
-  sessionWorkspaceID?: WorkspaceV2.ID,
-): WorkspaceV2.ID | typeof InvalidWorkspaceID | undefined {
-  if (sessionWorkspaceID) return sessionWorkspaceID
-  const workspaceParam = url.searchParams.get("workspace")
-  if (!workspaceParam) return undefined
-  const workspaceID = Schema.decodeUnknownOption(WorkspaceV2.ID)(workspaceParam)
-  if (Option.isNone(workspaceID)) return InvalidWorkspaceID
-  return workspaceID.value
 }
 
 function defaultDirectory(request: HttpServerRequest.HttpServerRequest, url: URL): string {
@@ -102,10 +87,7 @@ function planRequest(
 ): Effect.Effect<RequestPlan, never, Workspace.Service> {
   return Effect.gen(function* () {
     const url = requestURL(request)
-    const workspaceID = url.pathname.startsWith("/api/")
-      ? selectedV2WorkspaceID(url, session?.workspaceID)
-      : selectedWorkspaceID(url, session?.workspaceID)
-    if (workspaceID === InvalidWorkspaceID) return RequestPlan.InvalidWorkspace()
+    const workspaceID = selectedWorkspaceID(url, session?.workspaceID)
     const workspace = yield* resolveWorkspace(workspaceID)
 
     if (workspaceID && workspace === undefined) {
@@ -128,17 +110,6 @@ function routeWorkspace<E>(
   plan: RequestPlan,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, Workspace.Service> {
   return RequestPlan.$match(plan, {
-    InvalidWorkspace: () =>
-      Effect.succeed(
-        HttpServerResponse.jsonUnsafe(
-          new InvalidRequestError({
-            message: "Invalid workspace query parameter",
-            kind: "Query",
-            field: "workspace",
-          }),
-          { status: 400 },
-        ),
-      ),
     MissingWorkspace: ({ workspaceID }) => Effect.succeed(missingWorkspaceResponse(workspaceID)),
     Local: ({ directory, workspaceID }) =>
       effect.pipe(Effect.provideService(WorkspaceRouteContext, WorkspaceRouteContext.of({ directory, workspaceID }))),

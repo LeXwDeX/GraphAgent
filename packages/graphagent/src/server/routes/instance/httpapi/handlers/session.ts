@@ -60,7 +60,7 @@ import * as SessionError from "./session-errors"
 
 const promptError = (error: unknown) =>
   error instanceof SessionPrompt.ModelSwitchBlocked || error instanceof SessionPrompt.NoPendingHookInput
-    ? new InvalidRequestError({ message: error.message })
+    ? new InvalidRequestError({ name: "InvalidRequestError", data: { message: error.message } })
     : new HttpApiError.BadRequest({})
 
 const tryParseJson = (text: string) =>
@@ -279,7 +279,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       const approved = LocalPermissionStartup.take(ctx.request.source)
       const localGrant =
-        approved && permissionSvc.grantHookBypass ? LocalPermissionStartup.once(permissionSvc.grantHookBypass) : undefined
+        approved && permissionSvc.grantHookBypass
+          ? LocalPermissionStartup.once(permissionSvc.grantHookBypass)
+          : undefined
       const createLocal = (payload?: Session.CreateInput) => create(payload, { localGrant })
       const body = yield* Effect.orDie(ctx.request.text)
       if (body.trim().length === 0) return yield* createLocal()
@@ -517,8 +519,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         Effect.catchTag("Permission.NotFoundError", (error) =>
           Effect.fail(
             new PermissionNotFoundError({
-              requestID: String(error.requestID),
-              message: `Permission request not found: ${error.requestID}`,
+              name: "PermissionNotFoundError",
+              data: {
+                requestID: String(error.requestID),
+                message: `Permission request not found: ${error.requestID}`,
+              },
             }),
           ),
         ),
@@ -538,7 +543,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const mapQueuedMessageError = (error: SessionPrompt.QueuedMessageError) => {
       if (error._tag === "QueuedMessageNotFound") return notFound(`Message not found: ${error.messageID}`)
       if (error._tag === "QueuedMessageInvalid") return new HttpApiError.BadRequest({})
-      return new ConflictError({ message: error.message, resource: error.kind })
+      return new ConflictError({ name: "ConflictError", data: { message: error.message, resource: error.kind } })
     }
 
     const editQueuedMessage = Effect.fn("SessionHttpApi.editQueuedMessage")(function* (ctx: {

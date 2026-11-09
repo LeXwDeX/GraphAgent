@@ -74,8 +74,8 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     () => (props.initialRemoving ? undefined : props.projectID),
     async (projectID, info): Promise<ProjectDirectory[] | undefined> => {
       try {
-        await sdk.client.v2.projectCopy.refresh(
-          { projectID, location: { directory: sdk.directory } },
+        await sdk.client.experimental.projectCopy.refresh(
+          { projectID, directory: sdk.directory },
           { throwOnError: true },
         )
         const directories = await sdk.client.project.directories({ projectID }, { throwOnError: true })
@@ -221,10 +221,9 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     setToDelete(undefined)
     setRemoving(selected.directory)
     setWorking(true)
-    const result = await sdk.client.v2.projectCopy
+    const result = await sdk.client.experimental.projectCopy
       .remove({
         projectID: props.projectID,
-        location: { directory: sdk.directory },
         directory: selected.directory,
         force: false,
       })
@@ -243,10 +242,9 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
           return
         }
         reopen(selected.directory)
-        const forced = await sdk.client.v2.projectCopy
+        const forced = await sdk.client.experimental.projectCopy
           .remove({
             projectID: props.projectID,
-            location: { directory: sdk.directory },
             directory: selected.directory,
             force: true,
           })

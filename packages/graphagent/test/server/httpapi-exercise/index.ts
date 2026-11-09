@@ -41,22 +41,6 @@ import { startProgressWatchdog } from "./watchdog"
 
 enterExerciseWorkingDirectory()
 
-function data(validate: (value: any) => void) {
-  return (body: any) => {
-    object(body)
-    validate(body.data)
-  }
-}
-
-function locationData(validate: (value: any) => void) {
-  return (body: any) => {
-    object(body)
-    object(body.location)
-    object(body.location.project)
-    validate(body.data)
-  }
-}
-
 const scenarios: Scenario[] = [
   http.protected
     .get("/global/health", "global.health")
@@ -617,113 +601,7 @@ const scenarios: Scenario[] = [
         check(auth.test === undefined, "auth remove should delete provider from isolated auth file")
       }),
     ),
-  http.protected.get("/api/health", "v2.health.get").json(200, (body) => {
-    object(body)
-    check(body.healthy === true, "v2 server should report healthy")
-  }),
-  http.protected.get("/api/location", "v2.location.get").json(200, object),
-  http.protected.get("/api/agent", "v2.agent.list").json(200, locationData(array)),
-  http.protected.get("/api/model", "v2.model.list").json(200, locationData(array)),
-  http.protected.get("/api/provider", "v2.provider.list").json(200, locationData(array)),
-  http.protected.get("/api/integration", "v2.integration.list").json(200, locationData(array)),
-  http.protected
-    .get("/api/integration/{integrationID}", "v2.integration.get")
-    .at((ctx) => ({
-      path: route("/api/integration/{integrationID}", { integrationID: "missing" }),
-      headers: ctx.headers(),
-    }))
-    .json(200, object),
-  http.protected
-    .post("/api/integration/{integrationID}/connect/key", "v2.integration.connect.key")
-    .at((ctx) => ({
-      path: route("/api/integration/{integrationID}/connect/key", { integrationID: "missing" }),
-      headers: ctx.headers(),
-      body: { key: "test" },
-    }))
-    .status(500, undefined, "status"),
-  http.protected
-    .post("/api/integration/{integrationID}/connect/oauth", "v2.integration.connect.oauth")
-    .at((ctx) => ({
-      path: route("/api/integration/{integrationID}/connect/oauth", { integrationID: "missing" }),
-      headers: ctx.headers(),
-      body: { methodID: "missing", inputs: {} },
-    }))
-    .status(500, undefined, "status"),
-  http.protected
-    .get("/api/integration/attempt/{attemptID}", "v2.integration.attempt.status")
-    .at((ctx) => ({
-      path: route("/api/integration/attempt/{attemptID}", { attemptID: "con_missing" }),
-      headers: ctx.headers(),
-    }))
-    .status(500, undefined, "status"),
-  http.protected
-    .post("/api/integration/attempt/{attemptID}/complete", "v2.integration.attempt.complete")
-    .at((ctx) => ({
-      path: route("/api/integration/attempt/{attemptID}/complete", { attemptID: "con_missing" }),
-      headers: ctx.headers(),
-      body: {},
-    }))
-    .status(500, undefined, "status"),
-  http.protected
-    .delete("/api/integration/attempt/{attemptID}", "v2.integration.attempt.cancel")
-    .at((ctx) => ({
-      path: route("/api/integration/attempt/{attemptID}", { attemptID: "con_missing" }),
-      headers: ctx.headers(),
-    }))
-    .status(204, undefined, "status"),
-  http.protected
-    .delete("/api/credential/{credentialID}", "v2.credential.remove")
-    .at((ctx) => ({
-      path: route("/api/credential/{credentialID}", { credentialID: "cred_missing" }),
-      headers: ctx.headers(),
-    }))
-    .status(204, undefined, "status"),
-  http.protected
-    .patch("/api/credential/{credentialID}", "v2.credential.update")
-    .at((ctx) => ({
-      path: route("/api/credential/{credentialID}", { credentialID: "cred_missing" }),
-      headers: ctx.headers(),
-      body: { label: "Work" },
-    }))
-    .status(204, undefined, "status"),
-  http.protected.get("/api/command", "v2.command.list").json(200, locationData(array)),
-  http.protected
-    .get("/api/event", "v2.event.subscribe")
-    .stream()
-    .status(
-      200,
-      (_ctx, result) =>
-        Effect.sync(() => {
-          check(result.contentType.includes("text/event-stream"), "v2 event should be an SSE stream")
-          check(result.text.includes("server.connected"), "v2 event should emit initial connection event")
-          check(!result.text.includes('"location"'), "v2 connection event should not be scoped to a location")
-        }),
-      "status",
-    ),
-  http.protected
-    .get("/api/fs/read/*", "v2.fs.read")
-    .seeded((ctx) => ctx.file("hello.txt", "hello\n"))
-    .at((ctx) => ({ path: "/api/fs/read/hello.txt", headers: ctx.headers() }))
-    .status(
-      200,
-      (_ctx, result) =>
-        Effect.sync(() => {
-          check(result.text === "hello\n", "v2 fs read should return the file body")
-          check(result.contentType.includes("text/plain"), "v2 fs read should return the file content type")
-        }),
-      "status",
-    ),
-  http.protected.get("/api/fs/list", "v2.fs.list").json(200, locationData(array)),
-  http.protected
-    .get("/api/fs/find", "v2.fs.find")
-    .seeded((ctx) => ctx.file("hello.txt", "hello\n"))
-    .at((ctx) => ({ path: "/api/fs/find?query=hello&type=file", headers: ctx.headers() }))
-    .json(200, locationData(array)),
-  http.protected.get("/api/reference", "v2.reference.list").json(200, object),
-  http.protected
-    .get("/api/provider/{providerID}", "v2.provider.get")
-    .at((ctx) => ({ path: route("/api/provider/{providerID}", { providerID: "missing" }), headers: ctx.headers() }))
-    .json(404, object, "status"),
+  http.protected.get("/reference", "reference.list").json(200, array),
   http.protected
     .get("/session", "session.list")
     .seeded((ctx) => ctx.session({ title: "List me" }))
@@ -1223,7 +1101,10 @@ const scenarios: Scenario[] = [
     }))
     .json(409, (body) => {
       object(body)
-      check(body._tag === "ConflictError" && body.resource === "not_queued", "edit should reject a non-queued message")
+      check(
+        body.name === "ConflictError" && isRecord(body.data) && body.data.resource === "not_queued",
+        "edit should reject a non-queued message",
+      )
     }),
   http.protected
     .delete("/session/{sessionID}/message/{messageID}/queued", "session.deleteQueuedMessage")
@@ -1250,7 +1131,7 @@ const scenarios: Scenario[] = [
     .json(409, (body) => {
       object(body)
       check(
-        body._tag === "ConflictError" && body.resource === "not_queued",
+        body.name === "ConflictError" && isRecord(body.data) && body.data.resource === "not_queued",
         "delete should reject a non-queued message",
       )
     }),

@@ -97,11 +97,10 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
     for (const method of ["get", "post", "put", "delete", "patch"] as const) {
       const operation = item[method]
       if (!operation) continue
-      const isV2Api = isV2ApiPath(path)
       if (operation.requestBody) {
         // The legacy OpenAPI surface never marked request bodies as required.
         // Keep that SDK surface stable while the HttpApi spec is tightened.
-        if (!isV2Api) delete operation.requestBody.required
+        delete operation.requestBody.required
         const body = operation.requestBody.content?.["application/json"]
         if (body?.schema) body.schema = stripOptionalNull(structuredClone(body.schema))
         if (path === "/experimental/workspace" && method === "post") {
@@ -145,24 +144,21 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
           if (content.schema) content.schema = stripOptionalNull(structuredClone(content.schema))
         }
       }
-      if (!isV2Api) {
-        // Auth is still runtime middleware outside the legacy public OpenAPI
-        // metadata, so the legacy SDK should not expose auth schemes or
-        // generated 401 error unions.
-        delete operation.security
-        delete operation.responses?.["401"]
-        normalizeLegacyErrorResponses(operation)
-      }
+      // Auth is still runtime middleware outside the legacy public OpenAPI
+      // metadata, so the legacy SDK should not expose auth schemes or
+      // generated 401 error unions.
+      delete operation.security
+      delete operation.responses?.["401"]
+      normalizeLegacyErrorResponses(operation)
       normalizeLegacyOperation(operation, path, method)
-      if ((path === "/event" || path === "/api/event") && method === "get") {
-        // HttpApi has no first-class SSE response schema, and these handlers are
-        // raw/streaming routes. Document the actual wire protocol explicitly.
+      if (path === "/event" && method === "get") {
+        // HttpApi has no first-class SSE response schema, and this handler is a
+        // raw/streaming route. Document the actual wire protocol explicitly.
         operation.responses!["200"] = {
           description: "Event stream",
           content: {
             "text/event-stream": {
-              schema:
-                path === "/event" ? { $ref: "#/components/schemas/Event" } : { $ref: "#/components/schemas/V2Event" },
+              schema: { $ref: "#/components/schemas/Event" },
             },
           },
         }
@@ -173,10 +169,6 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
   }
   deleteUnusedLegacyErrorComponents(spec)
   return input
-}
-
-function isV2ApiPath(path: string) {
-  return path === "/api" || path.startsWith("/api/")
 }
 
 function addLegacyErrorSchemas(spec: OpenApiSpec) {
@@ -300,8 +292,7 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   if (schemas.Session?.properties?.dagBudgetTokens)
     schemas.Session.properties.dagBudgetTokens = nullable(schemas.Session.properties.dagBudgetTokens)
   const dagModeStatus = schemas.SessionDagMode?.properties
-  if (dagModeStatus?.unavailableReason)
-    dagModeStatus.unavailableReason = nullable(dagModeStatus.unavailableReason)
+  if (dagModeStatus?.unavailableReason) dagModeStatus.unavailableReason = nullable(dagModeStatus.unavailableReason)
   if (dagModeStatus?.budget?.properties?.tokens)
     dagModeStatus.budget.properties.tokens = nullable(dagModeStatus.budget.properties.tokens)
   const providerOptions = schemas.ProviderConfig?.properties?.options

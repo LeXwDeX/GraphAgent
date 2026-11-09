@@ -73,7 +73,6 @@ Commands:
   graphagent debug snapshot      snapshot debugging utilities
   graphagent debug startup       print startup timing
   graphagent debug agent <name>  show agent configuration details
-  graphagent debug v2            debug v2 catalog and built-in provider adapters
   graphagent debug info          show debug information
   graphagent debug paths         show global paths (data, config, cache, state)
   graphagent debug wait          wait indefinitely (for debugging)

@@ -113,21 +113,18 @@ describe("instance HttpApi", () => {
 
       expect(permission.status).toBe(404)
       expect(yield* Effect.promise(() => permission.json())).toEqual({
-        _tag: "PermissionNotFoundError",
-        requestID: permissionID,
-        message: `Permission request not found: ${permissionID}`,
+        name: "PermissionNotFoundError",
+        data: { requestID: permissionID, message: `Permission request not found: ${permissionID}` },
       })
       expect(questionReply.status).toBe(404)
       expect(yield* Effect.promise(() => questionReply.json())).toEqual({
-        _tag: "QuestionNotFoundError",
-        requestID: questionReplyID,
-        message: `Question request not found: ${questionReplyID}`,
+        name: "QuestionNotFoundError",
+        data: { requestID: questionReplyID, message: `Question request not found: ${questionReplyID}` },
       })
       expect(questionReject.status).toBe(404)
       expect(yield* Effect.promise(() => questionReject.json())).toEqual({
-        _tag: "QuestionNotFoundError",
-        requestID: questionRejectID,
-        message: `Question request not found: ${questionRejectID}`,
+        name: "QuestionNotFoundError",
+        data: { requestID: questionRejectID, message: `Question request not found: ${questionRejectID}` },
       })
     }),
   )
@@ -149,9 +146,8 @@ describe("instance HttpApi", () => {
 
       expect(response.status).toBe(404)
       expect(yield* Effect.promise(() => response.json())).toEqual({
-        _tag: "ProjectNotFoundError",
-        projectID,
-        message: `Project not found: ${projectID}`,
+        name: "ProjectNotFoundError",
+        data: { projectID, message: `Project not found: ${projectID}` },
       })
     }),
   )

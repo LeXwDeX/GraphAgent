@@ -60,7 +60,12 @@ describe("F1 data layer", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const fetched: string[] = []
-    const rows = [row("ses_root_new", 100), row("ses_new_child", 90, "ses_root_new"), row("ses_root_old", 50), row("ses_old_child", 40, "ses_root_old")]
+    const rows = [
+      row("ses_root_new", 100),
+      row("ses_new_child", 90, "ses_root_new"),
+      row("ses_root_old", 50),
+      row("ses_old_child", 40, "ses_root_old"),
+    ]
     const routes = sessionRoutes(rows, {})
     const { app, sync } = await mount((url) => {
       const match = url.pathname.match(/^\/dag\/session\/([^/]+)\/summary$/)
@@ -90,7 +95,12 @@ describe("F1 data layer", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const fetched: string[] = []
-    const rows = [row("ses_root_new", 100), row("ses_new_child", 90, "ses_root_new"), row("ses_root_old", 50), row("ses_old_child", 40, "ses_root_old")]
+    const rows = [
+      row("ses_root_new", 100),
+      row("ses_new_child", 90, "ses_root_new"),
+      row("ses_root_old", 50),
+      row("ses_old_child", 40, "ses_root_old"),
+    ]
     const routes = sessionRoutes(rows, {
       ses_old_child: [{ info: message("msg_child", "ses_old_child"), parts: [] }],
     })
@@ -135,9 +145,7 @@ describe("F1 data layer", () => {
     const rows = Array.from({ length: 5 }, (_, index) => row(`ses_h${index + 1}`, 100 - index))
     const routes = sessionRoutes(
       rows,
-      Object.fromEntries(
-        rows.map((item) => [item.id, [{ info: message(`msg_${item.id}`, item.id), parts: [] }]]),
-      ),
+      Object.fromEntries(rows.map((item) => [item.id, [{ info: message(`msg_${item.id}`, item.id), parts: [] }]])),
     )
     const { app, sync } = await mount(routes, tmp.path)
 
@@ -167,9 +175,7 @@ describe("F1 data layer", () => {
     ]
     const routes = sessionRoutes(
       rows,
-      Object.fromEntries(
-        rows.map((item) => [item.id, [{ info: message(`msg_${item.id}`, item.id), parts: [] }]]),
-      ),
+      Object.fromEntries(rows.map((item) => [item.id, [{ info: message(`msg_${item.id}`, item.id), parts: [] }]])),
     )
     const { app, sync } = await mount(routes, tmp.path)
 
@@ -318,7 +324,13 @@ describe("F1 data layer", () => {
         global({
           id: "evt_delta",
           type: "message.part.delta",
-          properties: { sessionID: "ses_live", messageID: "msg_live", partID: "prt_live", field: "text", delta: "streamed" },
+          properties: {
+            sessionID: "ses_live",
+            messageID: "msg_live",
+            partID: "prt_live",
+            field: "text",
+            delta: "streamed",
+          },
         }),
       )
       const part = sync.data.part.msg_live[0]
@@ -345,8 +357,7 @@ describe("F1 data layer", () => {
     }
     const routes = sessionRoutes([row("ses_a", 100)], {})
     const { app, sync } = await mount((url) => {
-      if (url.pathname === "/api/reference")
-        return json({ location: { directory: worktree, project: { id: "proj_test", directory } }, data: [reference] })
+      if (url.pathname === "/reference") return json([reference])
       return routes(url)
     }, tmp.path)
 

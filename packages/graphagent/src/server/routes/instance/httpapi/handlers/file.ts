@@ -58,7 +58,7 @@ export const fileHandlers = HttpApiBuilder.group(InstanceHttpApi, "file", (handl
         results: found.length,
         duration: Math.round(performance.now() - started),
       })
-      return found.map((item) => item.path)
+      return found
     })
 
     const findSymbol = Effect.fn("FileHttpApi.findSymbol")(function* () {

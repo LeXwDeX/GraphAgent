@@ -1,18 +1,13 @@
-import fs from "fs/promises"
-import path from "path"
 import { describe, expect } from "bun:test"
 import { Effect, Equal, Hash, Layer, Schema } from "effect"
 import { define } from "@graphagent/core/plugin/context/index"
-import { AgentV2 } from "@graphagent/core/agent"
-import { Catalog } from "@graphagent/core/catalog"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Location } from "@graphagent/core/location"
 import { PluginV2 } from "@graphagent/core/plugin"
-import { ProviderV2 } from "@graphagent/core/provider"
+import { Reference } from "@graphagent/core/reference"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
-import { Credential } from "../src/credential"
 import { Database } from "../src/database/database"
 import { EventV2 } from "../src/event"
 import { FSUtil } from "../src/fs-util"
@@ -29,7 +24,6 @@ const it = testEffect(
         Layer.mergeAll(
           Project.defaultLayer,
           EventV2.defaultLayer,
-          Credential.defaultLayer.pipe(Layer.fresh),
           Npm.defaultLayer,
           ModelsDev.defaultLayer,
           FSUtil.defaultLayer,
@@ -65,43 +59,6 @@ describe("LocationServiceMap", () => {
     ),
   )
 
-  it.live("isolates location state while sharing location policy with catalog", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
-      (dirs) => Effect.promise(() => Promise.all(dirs.map((dir) => dir[Symbol.asyncDispose]())).then(() => undefined)),
-    ).pipe(
-      Effect.flatMap(([blocked, allowed]) =>
-        Effect.gen(function* () {
-          yield* Effect.promise(async () => {
-            const settings = path.join(blocked.path, ".agents", "settings.json")
-            await fs.mkdir(path.dirname(settings), { recursive: true })
-            await fs.writeFile(
-              settings,
-              JSON.stringify({
-                experimental: { policies: [{ effect: "deny", action: "provider.use", resource: "test" }] },
-              }),
-            )
-          })
-
-          const update = (directory: string) =>
-            Effect.gen(function* () {
-              const catalog = yield* Catalog.Service
-              yield* catalog.transform((editor) => editor.provider.update(ProviderV2.ID.make("test"), () => {}))
-              return { providers: yield* catalog.provider.all() }
-            }).pipe(
-              Effect.scoped,
-              Effect.provide(LocationServiceMap.get(Location.Ref.make({ directory: AbsolutePath.make(directory) }))),
-            )
-
-          const blockedState = yield* update(blocked.path)
-          expect(blockedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(false)
-          const allowedState = yield* update(allowed.path)
-          expect(allowedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(true)
-        }),
-      ),
-    ),
-  )
-
   it.live("installs public plugins into a location", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
@@ -110,24 +67,20 @@ describe("LocationServiceMap", () => {
       Effect.flatMap((dir) =>
         Effect.gen(function* () {
           const plugins = yield* PluginV2.Service
-          const reviewer = define({
-            id: "reviewer",
+          const contributor = define({
+            id: "reference-owner",
             effect: (ctx) =>
-              ctx.agent
-                .transform((agent) => {
-                  agent.update("reviewer", (item) => {
-                    item.description = "Reviews code"
-                    item.mode = "subagent"
-                  })
+              ctx.reference
+                .transform((reference) => {
+                  reference.add("guide", { type: "local", path: AbsolutePath.make(dir.path), description: "Docs" })
                 })
                 .pipe(Effect.asVoid),
           })
-          yield* plugins.add(PluginV2.ID.make(reviewer.id), reviewer.effect)
+          yield* plugins.add(PluginV2.ID.make(contributor.id), contributor.effect)
 
-          expect(yield* (yield* AgentV2.Service).get(AgentV2.ID.make("reviewer"))).toMatchObject({
-            description: "Reviews code",
-            mode: "subagent",
-          })
+          expect(yield* (yield* Reference.Service).list()).toContainEqual(
+            expect.objectContaining({ name: "guide", description: "Docs" }),
+          )
         }).pipe(
           Effect.scoped,
           Effect.provide(LocationServiceMap.get(Location.Ref.make({ directory: AbsolutePath.make(dir.path) }))),

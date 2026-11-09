@@ -41,8 +41,11 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
         Effect.catchTag("Project.NotFoundError", (error) =>
           Effect.fail(
             new ProjectNotFoundError({
-              projectID: error.projectID,
-              message: `Project not found: ${error.projectID}`,
+              name: "ProjectNotFoundError",
+              data: {
+                projectID: error.projectID,
+                message: `Project not found: ${error.projectID}`,
+              },
             }),
           ),
         ),
