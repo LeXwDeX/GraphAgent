@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // #1013 (C1 PR5): read-only DAG mode status exposed as
 // `GET /session/:sessionID/dag-mode`. The wire shape is fixed by the Issue;
 // the availability rules mirror E4's degradation conditions.

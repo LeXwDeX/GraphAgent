@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { afterAll, beforeEach, describe, expect } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -25,8 +28,7 @@ const it = testEffect(httpApiLayer)
 
 // #1013 (C1 PR5): the handler maps a hook veto to a 400 without writing.
 const blockedConfig = TestConfig.layer({
-  updateGlobal: () =>
-    Effect.fail(new HookConfigChange.ConfigChangeBlocked({ message: "blocked by the test hook" })),
+  updateGlobal: () => Effect.fail(new HookConfigChange.ConfigChangeBlocked({ message: "blocked by the test hook" })),
 })
 const blockedIt = testEffect(httpApiLayerWith([LayerNode.replace(Config.node, blockedConfig)]))
 
@@ -78,7 +80,9 @@ describe("global config HttpApi", () => {
       })
       expect(events.some((event) => payloadOf(event)?.type === "global.disposed")).toBe(false)
 
-      const written = JSON.parse(yield* Effect.promise(() => fs.readFile(path.join(configDir, "graphagent.jsonc"), "utf8")))
+      const written = JSON.parse(
+        yield* Effect.promise(() => fs.readFile(path.join(configDir, "graphagent.jsonc"), "utf8")),
+      )
       expect(written).toMatchObject({ dag: { mode: "on" } })
     }),
   )

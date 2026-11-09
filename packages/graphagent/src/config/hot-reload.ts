@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // #1013 (C1 PR5): global configuration keys that take effect without
 // recreating directory instances.
 //

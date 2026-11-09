@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import { DagModeStatus } from "@/dag/mode-status"
@@ -17,16 +20,16 @@ describe("DAG mode availability", () => {
   test("reports workflow_tool_disabled before the deny rule it produces", () => {
     expect(DagModeStatus.unavailableReason({ ...facts, workflowToolDisabled: true })).toBe("workflow_tool_disabled")
     // tools.workflow=false is converted into a deny rule, so both flags are set.
-    expect(
-      DagModeStatus.unavailableReason({ ...facts, workflowToolDisabled: true, startDenied: true }),
-    ).toBe("workflow_tool_disabled")
+    expect(DagModeStatus.unavailableReason({ ...facts, workflowToolDisabled: true, startDenied: true })).toBe(
+      "workflow_tool_disabled",
+    )
   })
 
   test("reports start_denied when the workflow tool is denied", () => {
     expect(DagModeStatus.unavailableReason({ ...facts, startDenied: true })).toBe("start_denied")
-    expect(
-      DagModeStatus.unavailableReason({ ...facts, startDenied: true, modelToolCalling: false }),
-    ).toBe("start_denied")
+    expect(DagModeStatus.unavailableReason({ ...facts, startDenied: true, modelToolCalling: false })).toBe(
+      "start_denied",
+    )
   })
 
   test("reports model_no_tool_calling when the resolved model cannot call tools", () => {
@@ -72,12 +75,7 @@ describe("DAG mode status schema", () => {
   })
 
   test("decodes every unavailable reason and rejects unknown ones", () => {
-    for (const reason of [
-      "start_denied",
-      "workflow_tool_disabled",
-      "model_no_tool_calling",
-      "no_worker",
-    ] as const) {
+    for (const reason of ["start_denied", "workflow_tool_disabled", "model_no_tool_calling", "no_worker"] as const) {
       expect(
         Schema.decodeUnknownSync(DagModeStatus.Status)({
           ...status,
