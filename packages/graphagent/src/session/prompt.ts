@@ -142,13 +142,7 @@ import { TodoReminders } from "./todo-reminders"
 import { SessionTools } from "./tools"
 import { ToolSourceLedger } from "./tool-source-ledger"
 import { LLMEvent } from "@graphagent/llm"
-import {
-  SettingsHook,
-  HOOK_REWAKE_SENTINEL,
-  type TriggerResult,
-  type HookPayload,
-  type RewakeToken,
-} from "@/hook"
+import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult, type HookPayload, type RewakeToken } from "@/hook"
 import { TaskSubagents } from "@/hook/task-subagents"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -1022,8 +1016,7 @@ export const layer = Layer.effect(
       // The cancellation epoch already invalidates pending Stop rewakes; the
       // generation bump is the second half of the same reset and also clears
       // the continuation budget for the next real prompt.
-      if (settingsHook?.bumpRewakeGeneration)
-        yield* settingsHook.bumpRewakeGeneration(sessionID).pipe(Effect.ignore)
+      if (settingsHook?.bumpRewakeGeneration) yield* settingsHook.bumpRewakeGeneration(sessionID).pipe(Effect.ignore)
       const abort = options?.reason
       let transferred = false
       let waiters: Array<Fiber.Fiber<void>> = []
@@ -2509,9 +2502,7 @@ export const layer = Layer.effect(
               prompt: promptText,
               ...(titled !== undefined ? { sessionTitle: titled } : {}),
               // Child sessions do not report DAG mode; a top-level session reports it read-only.
-              ...(session.parentID === undefined && session.dagMode !== undefined
-                ? { dagMode: session.dagMode }
-                : {}),
+              ...(session.parentID === undefined && session.dagMode !== undefined ? { dagMode: session.dagMode } : {}),
             },
             { sessionID: input.sessionID, promptID: promptMessageID },
           )
@@ -3083,8 +3074,7 @@ export const layer = Layer.effect(
                   )
                 agentContinuationPrevented = stopResult.preventContinuation === true
                 // `continue:false` ends the turn, so its stopReason can never be
-                // model feedback. Land it as a user-visible notice, as v2-turn.ts
-                // already does for the same result.
+                // model feedback. Land it as a user-visible notice.
                 if (
                   agentContinuationPrevented &&
                   stopResult.stopReason &&
