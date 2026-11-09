@@ -73,8 +73,7 @@ import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
-import { PermissionPrompt } from "./permission"
-import { QuestionPrompt } from "./question"
+import { useAskSurfaceRequests } from "./ask-surface"
 import { showExportOptions } from "../../panel/export"
 import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import * as Model from "../../util/model"
@@ -209,16 +208,9 @@ export function Main() {
         )
       : [],
   )
-  const permissions = createMemo(() => {
-    if (session()?.parentID) return []
-    return children().flatMap((x) => sync.data.permission[x.id] ?? [])
-  })
-  const questions = createMemo(() => {
-    if (session()?.parentID) return []
-    return children().flatMap((x) => sync.data.question[x.id] ?? [])
-  })
-  const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
-  const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
+  const askRequests = useAskSurfaceRequests()
+  const visible = createMemo(() => !session()?.parentID)
+  const disabled = createMemo(() => askRequests().length > 0)
 
   const pending = createMemo(() => {
     const completed = messages().findLast((x) => x.role === "assistant" && x.time.completed)
@@ -313,7 +305,7 @@ export function Main() {
   let prompt: PromptRef | undefined
   const bind = (r: PromptRef | undefined) => {
     prompt = r
-    promptRef.set(r)
+    promptRef.set(r, route.sessionID)
     if (seeded || !route.prompt || !r) return
     seeded = true
     r.set(route.prompt)
@@ -408,6 +400,13 @@ export function Main() {
   const dialog = useDialog()
   const bottomZone = useBottomZoneOptional()
   const renderer = useRenderer()
+
+  // The bottom zone renders the head of the shared root-tree ask queue; local
+  // confirm/choice entries are appended separately and survive replacement.
+  createEffect(() => {
+    bottomZone?.setAsk(askRequests())
+  })
+  onCleanup(() => bottomZone?.setAsk([]))
 
   function openBottomPanel(id: string, render: () => JSX.Element) {
     if (!bottomZone) return
@@ -1335,18 +1334,6 @@ export function Main() {
                 </For>
               </scrollbox>
               <box flexShrink={0}>
-                <Show when={permissions().length > 0}>
-                  <PermissionPrompt
-                    request={permissions()[0]}
-                    directory={sync.session.get(permissions()[0].sessionID)?.directory}
-                  />
-                </Show>
-                <Show when={permissions().length === 0 && questions().length > 0}>
-                  <QuestionPrompt
-                    request={questions()[0]}
-                    directory={sync.session.get(questions()[0].sessionID)?.directory}
-                  />
-                </Show>
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
                 </Show>
@@ -1359,7 +1346,7 @@ export function Main() {
                     )}
                   </Show>
                   <Prompt
-                    visible={visible()}
+                    visible={visible() && !disabled()}
                     ref={bind}
                     disabled={disabled()}
                     onSubmit={() => {

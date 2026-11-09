@@ -12,6 +12,7 @@ import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
 import { ExitProvider } from "../../src/context/exit"
 import { LocalProvider, useLocal } from "../../src/context/local"
+import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider, useProject } from "../../src/context/project"
 import { RouteProvider, useRoute } from "../../src/context/route"
 import { SDKProvider } from "../../src/context/sdk"
@@ -19,6 +20,8 @@ import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider, useTheme } from "../../src/context/theme"
 import { TuiConfigProvider } from "../../src/config"
 import { KVProvider } from "../../src/context/kv"
+import { TickerProvider } from "../../src/context/ticker-context"
+import type { Ticker } from "../../src/context/ticker"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { PanelHost, PanelHostProvider, createPanelHost, type PanelHostApi, type PanelSpec } from "../../src/panel/host"
 import { PromptStashProvider, usePromptStash } from "../../src/component/prompt/stash"
@@ -118,6 +121,8 @@ export interface AppPanelContextsProps extends ParentProps<{
   onReady?: () => void
   /** Extra endpoint responses layered over the shared fixture defaults. */
   handler?: FetchHandler
+  /** Injected ticker so countdown tests control the one-second signal. */
+  ticker?: Ticker
 }> {}
 
 /**
@@ -149,7 +154,7 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
           <ArgsProvider>
             <KVProvider>
               <ToastProvider>
-                <ClipboardProvider>
+<ClipboardProvider>
                   <RouteProvider>
                     <TuiConfigProvider config={createTuiResolvedConfig()}>
                       <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
@@ -157,17 +162,19 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
                           <SyncProvider>
                             <ThemeProvider mode="dark">
                               <LocalProvider>
-                                <PromptStashProvider>
-                                  <DialogProvider>
-                                    <AppPanelSetup
-                                      language={props.language}
-                                      setup={props.setup}
-                                      onReady={props.onReady}
-                                    >
-                                      {props.children}
-                                    </AppPanelSetup>
-                                  </DialogProvider>
-                                </PromptStashProvider>
+                                <LocationProvider>
+                                  <PromptStashProvider>
+                                    <DialogProvider>
+                                      <AppPanelSetup
+                                        language={props.language}
+                                        setup={props.setup}
+                                        onReady={props.onReady}
+                                      >
+                                        <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
+                                      </AppPanelSetup>
+                                    </DialogProvider>
+                                  </PromptStashProvider>
+                                </LocationProvider>
                               </LocalProvider>
                             </ThemeProvider>
                           </SyncProvider>
@@ -224,13 +231,20 @@ export async function renderAppPanel(
     state: string
     setup?: (context: AppPanelTestContext) => void | Promise<void>
     handler?: FetchHandler
+    ticker?: Ticker
   },
 ) {
   let ready!: () => void
   const settled = new Promise<void>((resolve) => (ready = resolve))
   const app = await testRender(
     () => (
-      <AppPanelContexts state={options.state} setup={options.setup} handler={options.handler} onReady={ready}>
+      <AppPanelContexts
+        state={options.state}
+        setup={options.setup}
+        handler={options.handler}
+        ticker={options.ticker}
+        onReady={ready}
+      >
         {element()}
       </AppPanelContexts>
     ),

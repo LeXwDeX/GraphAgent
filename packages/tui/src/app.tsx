@@ -63,6 +63,7 @@ import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { ToastProvider, useToast } from "./ui/toast"
+import { TickerProvider } from "./context/ticker-context"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
@@ -300,7 +301,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                             <EditorContextProvider>
                                                               <LocationProvider>
                                                                 <HomeSessionDestinationProvider>
-                                                                  <App onSnapshot={input.onSnapshot} />
+                                                                  <TickerProvider>
+                                                                    <App onSnapshot={input.onSnapshot} />
+                                                                  </TickerProvider>
                                                                 </HomeSessionDestinationProvider>
                                                               </LocationProvider>
                                                             </EditorContextProvider>
