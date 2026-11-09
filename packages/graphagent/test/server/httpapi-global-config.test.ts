@@ -2,13 +2,18 @@ import { afterAll, beforeEach, describe, expect } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Effect, Fiber } from "effect"
+import { Config } from "@/config/config"
 import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { ConfigHotReload } from "@/config/hot-reload"
+import { HookConfigChange } from "@/hook/config-change"
 import { isRecord } from "@/util/record"
+import { TestConfig } from "../fixture/config"
+import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { waitGlobalBusEvent } from "./global-bus"
-import { httpApiLayer, request } from "./httpapi-layer"
+import { httpApiLayer, httpApiLayerWith, request, requestInDirectory } from "./httpapi-layer"
 
 // #1013 (C1 PR5): the global config PATCH writes the global layer and decides
 // between hot-read application and instance disposal.
@@ -17,6 +22,13 @@ const configDir = path.join(os.tmpdir(), `graphagent-global-config-${process.pid
 process.env.GRAPHAGENT_TEST_CONFIG_DIR = configDir
 
 const it = testEffect(httpApiLayer)
+
+// #1013 (C1 PR5): the handler maps a hook veto to a 400 without writing.
+const blockedConfig = TestConfig.layer({
+  updateGlobal: () =>
+    Effect.fail(new HookConfigChange.ConfigChangeBlocked({ message: "blocked by the test hook" })),
+})
+const blockedIt = testEffect(httpApiLayerWith([LayerNode.replace(Config.node, blockedConfig)]))
 
 beforeEach(async () => {
   await fs.rm(configDir, { recursive: true, force: true })
@@ -93,6 +105,51 @@ describe("global config HttpApi", () => {
       yield* Fiber.join(disposed)
 
       expect(events.some(isConfigUpdated)).toBe(false)
+    }),
+  )
+
+  it.live(
+    "writes only the global config layer",
+    Effect.gen(function* () {
+      const root = yield* tmpdirScoped()
+      const project = path.join(root, "project")
+      const projectFile = path.join(project, ".agents", "settings.json")
+      const projectConfig = JSON.stringify({ $schema: "https://opencode.ai/config.json", formatter: false }, null, 2)
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.dirname(projectFile), { recursive: true })
+        await fs.writeFile(projectFile, projectConfig)
+      })
+
+      const patch = yield* requestInDirectory("/global/config", project, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dag: { mode: "on", concurrency: 3 } }),
+      })
+      expect(patch.status).toBe(200)
+      expect(yield* patch.json).toMatchObject({ dag: { mode: "on", concurrency: 3 } })
+
+      const globalFile = path.join(configDir, "graphagent.jsonc")
+      const globalConfig = JSON.parse(yield* Effect.promise(() => fs.readFile(globalFile, "utf8")))
+      expect(globalConfig).toMatchObject({ dag: { mode: "on", concurrency: 3 } })
+      expect(yield* Effect.promise(() => fs.readFile(projectFile, "utf8"))).toBe(projectConfig)
+
+      // The merged view reads the DAG policy from the global layer; the project
+      // layer must keep resolving the same file it had before the write.
+      const merged = yield* requestInDirectory("/config", project)
+      expect(merged.status).toBe(200)
+      expect(yield* merged.json).toMatchObject({ dag: { mode: "on", concurrency: 3 } })
+    }),
+  )
+
+  blockedIt.live(
+    "returns 400 when a hook blocks the global config change",
+    Effect.gen(function* () {
+      const response = yield* request("/global/config", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dag: { mode: "on" } }),
+      })
+      expect(response.status).toBe(400)
     }),
   )
 })
