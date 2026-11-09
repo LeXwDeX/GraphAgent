@@ -47,7 +47,7 @@ it.instance("raw permission and DirectoryAdded hooks receive actual JSONL, envir
     yield* Effect.promise(() =>
       fs.writeFile(
         script,
-        `const i=JSON.parse(await Bun.stdin.text()); const text=await Bun.file(i.transcript_path).text();await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:i.hook_event_name,source:i.source,path:i.transcript_path,rows:text.trim().split("\\n").map(JSON.parse),env:process.env.FIXTURE_HOOK_CONTEXT,mode:i.permission_mode})+"\\n"); if(i.hook_event_name==="PermissionRequest") process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:i.hook_event_name,decision:{behavior:"allow"}}}));`,
+        `const i=JSON.parse(await Bun.stdin.text()); const text=await Bun.file(i.transcript_path).text();await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,source:i.source,path:i.transcript_path,rows:text.trim().split("\\n").map(JSON.parse),env:process.env.FIXTURE_HOOK_CONTEXT,mode:i.permission_mode})+"\\n"); if(i.hook_event_name==="PermissionRequest") process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:i.hook_event_name,decision:{behavior:"allow"}}}));`,
       ),
     )
     const hooks = yield* SessionHooks.Service

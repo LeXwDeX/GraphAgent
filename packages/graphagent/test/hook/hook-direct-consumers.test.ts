@@ -17,7 +17,7 @@ cliIt.live("direct shell validates replacement, asks permission, and uses replac
     yield* Effect.promise(async () => {
       await fs.writeFile(
         script,
-        `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+i.hook_event_name+"\\n");const event=i.hook_event_name;process.stdout.write(JSON.stringify(event==="PreToolUse"?{hookSpecificOutput:{hookEventName:event,permissionDecision:"ask",updatedInput:{command:"printf pre"}}}:event==="PermissionRequest"?{hookSpecificOutput:{hookEventName:event,decision:{behavior:"allow",updatedInput:{command:${JSON.stringify("printf executed > '" + replacement + "'")}}}}}:{hookSpecificOutput:{hookEventName:event,updatedToolOutput:{title:"replacement",output:"POST_REPLACED",metadata:{fixture:true}}}}));`,
+        `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},i.hook_event_name+"\\n");const event=i.hook_event_name;process.stdout.write(JSON.stringify(event==="PreToolUse"?{hookSpecificOutput:{hookEventName:event,permissionDecision:"ask",updatedInput:{command:"printf pre"}}}:event==="PermissionRequest"?{hookSpecificOutput:{hookEventName:event,decision:{behavior:"allow",updatedInput:{command:${JSON.stringify("printf executed > '" + replacement + "'")}}}}}:{hookSpecificOutput:{hookEventName:event,updatedToolOutput:{title:"replacement",output:"POST_REPLACED",metadata:{fixture:true}}}}));`,
       )
       const hooks = [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }]
       await fs.writeFile(

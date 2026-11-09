@@ -19,7 +19,7 @@ for (const command of [false, true]) {
         yield* Effect.promise(async () => {
           await fs.writeFile(
             script,
-            `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:i.hook_event_name,id:i.tool_use_id})+"\\n");if(i.hook_event_name==='SessionStart'&&i.source==='startup')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',initialUserMessage:'INITIAL_DEFERRED_WRITE'}}));if(i.hook_event_name==='PreToolUse')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:await Bun.file(${JSON.stringify(allow)}).exists()?'allow':'defer'}}));`,
+            `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,id:i.tool_use_id})+"\\n");if(i.hook_event_name==='SessionStart'&&i.source==='startup')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',initialUserMessage:'INITIAL_DEFERRED_WRITE'}}));if(i.hook_event_name==='PreToolUse')process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:await Bun.file(${JSON.stringify(allow)}).exists()?'allow':'defer'}}));`,
           )
           const hook = { type: "command", command: process.execPath, args: [script] }
           await fs.writeFile(
