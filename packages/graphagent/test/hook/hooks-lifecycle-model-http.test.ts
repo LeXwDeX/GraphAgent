@@ -45,8 +45,8 @@ cliIt.live("legacy HTTP preserves model-hook refusal and pending-resume reasons"
     })
     expect(denied.status).toBe(400)
     expect(yield* Effect.promise(() => denied.json())).toMatchObject({
-      _tag: "InvalidRequestError",
-      message: "MODEL_CHANGE_NEEDS_APPROVAL",
+      name: "InvalidRequestError",
+      data: { message: "MODEL_CHANGE_NEEDS_APPROVAL" },
     })
     const noPending = yield* request(`/session/${id}/resume`, {})
     expect(noPending.status).toBe(400)
