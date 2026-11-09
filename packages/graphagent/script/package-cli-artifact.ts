@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import fs from "node:fs/promises"
 import path from "node:path"
 
@@ -15,8 +18,7 @@ const repoRoot = path.resolve(import.meta.dir, "..", "..", "..")
 const distributionFiles = [
   "NOTICE",
   "LICENSE",
-  "packages/core/src/dag/LICENSE",
-  "packages/graphagent/src/dag/LICENSE",
+  "LICENSE-APACHE",
   "third_party/mattpocock-skills/LICENSE",
   "third_party/mattpocock-skills/SOURCE.md",
 ] as const

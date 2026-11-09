@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "fs/promises"
 import os from "os"
@@ -21,7 +24,6 @@ const GUARDED_ROOTS = [
   "tsconfig.json",
   "flake.nix",
   ".gitignore",
-  "LICENSE-SCOPE.json",
   "NOTICE",
   "docs",
   "AGENTS.md",
