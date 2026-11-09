@@ -3539,7 +3539,11 @@ export const layer = Layer.effect(
               toolBudget: budget,
               toolBatch,
               model,
-              toolChoice: toolsDisabled ? "none" : format.type === "json_schema" ? "required" : undefined,
+              toolChoice: toolsDisabled
+                ? "none"
+                : format.type === "json_schema" && Provider.supportsForcedToolChoice(model)
+                  ? "required"
+                  : undefined,
               purpose: "conversation",
               contextFolding: contextFoldingHistory,
             }

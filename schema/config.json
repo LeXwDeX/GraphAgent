@@ -312,6 +312,10 @@
               "tool_call": {
                 "type": "boolean"
               },
+              "tool_choice": {
+                "type": "boolean",
+                "description": "Whether this model accepts a forced tool choice. When true, json_schema turns send tool_choice \"required\"; false means the model does not support it and the parameter is omitted. When unset, the capability is unknown and the parameter is also omitted."
+              },
               "interleaved": {
                 "anyOf": [
                   {

@@ -620,13 +620,23 @@ const cfg = {
   },
 }
 
-function providerCfg(url: string) {
+// `toolChoice` declares the model's forced tool_choice capability in config:
+// true means the model accepts "required", false means it rejects it, and
+// "unknown" leaves the capability unset. Most tests exercise a capable model.
+function providerCfg(url: string, toolChoice: boolean | "unknown" = true) {
   return {
     ...cfg,
     provider: {
       ...cfg.provider,
       test: {
         ...cfg.provider.test,
+        models: {
+          ...cfg.provider.test.models,
+          "test-model": {
+            ...cfg.provider.test.models["test-model"],
+            ...(toolChoice === "unknown" ? {} : { tool_choice: toolChoice }),
+          },
+        },
         options: {
           ...cfg.provider.test.options,
           baseURL: url,
@@ -4131,6 +4141,48 @@ for (const [runtime, runner] of [
       expect((yield* llm.inputs)[0].tool_choice).toBe("required")
     }),
   )
+
+  for (const toolChoice of [true, false, "unknown"] as const) {
+    runner.instance(
+      `json_schema sends tool_choice only for a model declaring forced tool choice (${String(toolChoice)}, ${runtime})`,
+      () =>
+        Effect.gen(function* () {
+          const { llm } = yield* useServerConfig((url) => providerCfg(url, toolChoice))
+          const prompt = yield* SessionPrompt.Service
+          const sessions = yield* Session.Service
+          const chat = yield* sessions.create({ title: "Tool choice capability" })
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            noReply: true,
+            format: new SessionV1.OutputFormatJsonSchema({
+              type: "json_schema",
+              schema: { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] },
+              retryCount: 0,
+            }),
+            parts: [{ type: "text", text: "Return 4 as the answer." }],
+          })
+          yield* llm.tool("StructuredOutput", { answer: 4 })
+
+          const result = yield* prompt.loop({ sessionID: chat.id })
+
+          const request = (yield* llm.inputs)[0]
+          if (toolChoice === true) {
+            expect(request.tool_choice).toBe("required")
+          } else {
+            // The AI SDK transport materializes its own non-forcing default
+            // ("auto") when the request has no toolChoice; the native transport
+            // omits the field. Neither may force tool use.
+            expect(request.tool_choice).not.toBe("required")
+            if (runtime === "native") expect(request.tool_choice).toBeUndefined()
+          }
+          expect(result.info.role).toBe("assistant")
+          if (result.info.role !== "assistant") throw new Error("Expected an assistant response")
+          expect(result.info.error).toBeUndefined()
+          expect(result.info.structured).toEqual({ answer: 4 })
+        }),
+    )
+  }
 
   for (const language of ["zh-CN", "en"] as const) {
     runner.instance(`sends the configured reply language in the system prompt (${language}, ${runtime})`, () =>
