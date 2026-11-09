@@ -12,6 +12,14 @@ import { SessionStatus } from "./status"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
 
+/** `skipped` means the admission request was invalidated before it reached the runner. */
+export type EnsureRunningKind = Runner.AdmissionKind | "skipped"
+
+export interface EnsureRunningAdmission {
+  readonly kind: EnsureRunningKind
+  readonly result: Effect.Effect<SessionV1.WithParts>
+}
+
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
@@ -27,6 +35,12 @@ export interface Interface {
     work: Effect.Effect<SessionV1.WithParts>,
     request?: ReturnType<typeof SessionCancellation.request>,
   ) => Effect.Effect<Effect.Effect<SessionV1.WithParts>>
+  readonly ensureRunningHandleClassified: (
+    sessionID: SessionID,
+    onInterrupt: Effect.Effect<SessionV1.WithParts>,
+    work: Effect.Effect<SessionV1.WithParts>,
+    request?: ReturnType<typeof SessionCancellation.request>,
+  ) => Effect.Effect<EnsureRunningAdmission>
   readonly startIfIdle: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
@@ -269,6 +283,22 @@ export const layer = Layer.effect(
       )
     })
 
+    const ensureRunningHandleClassified = Effect.fn("SessionRunState.ensureRunningHandleClassified")(function* (
+      sessionID: SessionID,
+      onInterrupt: Effect.Effect<SessionV1.WithParts>,
+      work: Effect.Effect<SessionV1.WithParts>,
+      request?: ReturnType<typeof SessionCancellation.request>,
+    ) {
+      return yield* start<EnsureRunningAdmission, never>(
+        sessionID,
+        onInterrupt,
+        { kind: "skipped", result: onInterrupt },
+        (runner, guarded) => runner.ensureRunningHandleClassified(guarded),
+        work,
+        request,
+      )
+    })
+
     const startIfIdle = Effect.fn("SessionRunState.startIfIdle")(function* (
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
@@ -309,6 +339,7 @@ export const layer = Layer.effect(
       cancelBackground: (sessionID, skipCoordinated) => cancelBackgroundJobs(background, sessionID, skipCoordinated),
       ensureRunning,
       ensureRunningHandle,
+      ensureRunningHandleClassified,
       startIfIdle,
       startShell,
       startShellHandle,

@@ -95,7 +95,16 @@ import { Settle } from "./turn/settle"
 import { Loop } from "./turn/loop"
 import { Stop } from "./turn/stop"
 import type { QueuedMessageDeleteInput, QueuedMessageEditInput, QueuedMessageError } from "./turn/prepare"
-import type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
+import {
+  dropReverted,
+  makeTurns,
+  type AdmissionCommit,
+  type AdmissionOptions,
+  type IdleAdmission,
+  type Interface as TurnsInterface,
+  type TurnExecution,
+  type TurnOrigin,
+} from "./turns"
 
 export type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
 export {
@@ -150,7 +159,7 @@ export interface Interface {
   ) => Effect.Effect<SessionV1.WithParts | null, PromptError | NoPendingHookInput>
   /** Read-only diagnostic: followup admission owners still registered for a session. */
   readonly followupAdmissionOwnerCount: (sessionID: SessionID) => Effect.Effect<number>
-  readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
+  readonly loop: (input: LoopInput, origin?: TurnOrigin) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, PromptError>
   /** Parses `/command` text, grants a one-shot local startup permission, and routes to command or prompt. */
@@ -598,6 +607,14 @@ export const layer = Layer.effect(
       workflowStore,
     })
 
+    // Late-bound so admission can call the turns service while turns calls
+    // admission back. Both exist before any runtime entry point runs.
+    let turnsRef: TurnsInterface | undefined
+    const turns = (): TurnsInterface => {
+      if (!turnsRef) throw new Error("session turns are not initialized")
+      return turnsRef
+    }
+
     const admit = Admit.makeAdmit({
       sessions,
       status,
@@ -608,7 +625,6 @@ export const layer = Layer.effect(
       db,
       promptLocks,
       followupAdmissions,
-      withRunRequest,
       settingsHook,
       startContext,
       hookSkills,
@@ -620,8 +636,7 @@ export const layer = Layer.effect(
       budgetState: (sessionID) => budgetState(sessionID),
       restoreModelContext: prepareFns.restoreModelContext,
       resume: (input, options) => resume(input, options),
-      runLoop: (sessionID) => runLoop(sessionID),
-      lastAssistant: (sessionID) => lastAssistant(sessionID),
+      turns,
     })
 
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
@@ -673,14 +688,47 @@ export const layer = Layer.effect(
       readScopedAgents: () => InstanceState.get(scopedAgents),
     })
 
-    const runLoop = (sessionID: SessionID): Effect.Effect<SessionV1.WithParts> => loopFns.runLoop(sessionID)
+    const runTurn = (sessionID: SessionID): Effect.Effect<TurnExecution> => loopFns.runTurn(sessionID)
 
-    const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
-      input: LoopInput,
-    ) {
+    turnsRef = makeTurns({
+      db,
+      sessions,
+      state,
+      scope,
+      promptLocks,
+      withRunRequest,
+      goal,
+      settingsHook,
+      admitPrompt: admit.admitPrompt,
+      fenceRewake: admit.fenceRewake,
+      runLoop: runTurn,
+      lastAssistant: (sessionID) => lastAssistant(sessionID),
+      cancel: (sessionID, options) => admit.cancel(sessionID, options),
+    })
+
+    const loop: (input: LoopInput, origin?: TurnOrigin) => Effect.Effect<SessionV1.WithParts> = Effect.fn(
+      "SessionPrompt.loop",
+    )(function* (input: LoopInput, origin: TurnOrigin = { kind: "user", via: "command" }) {
+      // Register the runner under the prompt lock, then wait outside it: the
+      // loop machine claims the same lock for its snapshot.
       const result = yield* withRunRequest(input.sessionID, (request) =>
         promptLocks.withLock(input.sessionID)(
-          state.ensureRunningHandle(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID), request),
+          Effect.gen(function* () {
+            const handle = turns().begin(input.sessionID, origin)
+            const tracked = turns()
+              .track(handle, runTurn(input.sessionID))
+              .pipe(Effect.map((turn) => turn.message))
+            const result = yield* state.ensureRunningHandle(
+              input.sessionID,
+              lastAssistant(input.sessionID),
+              tracked,
+              request,
+            )
+            // A join can discard this request's work before `track`; settle
+            // the handle so it does not stay `running` forever.
+            yield* turns().watch(handle, result)
+            return result
+          }),
         ),
       )
       return yield* result
@@ -877,14 +925,28 @@ export const layer = Layer.effect(
                   if (!initialTurn && !deferred) return lastAssistant(input.sessionID)
                   // Fork the runner under the same commit lock as the owner check:
                   // a cancel cannot land between the check and the fork. Wait outside
-                  // the prompt lock; runLoop claims it for its snapshot.
+                  // the prompt lock; the loop machine claims it for its snapshot.
+                  const origin: TurnOrigin = options?.internalDelegation
+                    ? { kind: "child_run" }
+                    : input.followup?.kind === "command"
+                      ? { kind: "user", via: "command" }
+                      : { kind: "user", via: "prompt" }
+                  const handle = turns().begin(input.sessionID, origin)
                   return yield* commit(
-                    state.ensureRunningHandle(
-                      input.sessionID,
-                      lastAssistant(input.sessionID),
-                      runLoop(input.sessionID),
-                      request,
-                    ),
+                    Effect.gen(function* () {
+                      const result = yield* state.ensureRunningHandle(
+                        input.sessionID,
+                        lastAssistant(input.sessionID),
+                        turns()
+                          .track(handle, runTurn(input.sessionID))
+                          .pipe(Effect.map((turn) => turn.message)),
+                        request,
+                      )
+                      // Same settlement as `loop`: a join drops this request's
+                      // tracked work before it can write or settle a row.
+                      yield* turns().watch(handle, result)
+                      return result
+                    }),
                   )
                 }),
               ),
@@ -903,6 +965,7 @@ export const layer = Layer.effect(
       sessions,
       agents,
       config,
+      db,
       revert,
       events,
       settingsHook,
@@ -966,6 +1029,8 @@ export const layer = Layer.effect(
 
     const summarize: Interface["summarize"] = Effect.fn("SessionPrompt.summarize")(function* (input) {
       const current = yield* sessions.get(input.sessionID)
+      // Drop the reverted turns before their anchor messages disappear.
+      yield* dropReverted({ db, sessions }, current)
       yield* revert.cleanup(current)
       const messages = yield* sessions.messages({ sessionID: input.sessionID })
       const defaultAgent = yield* agents.defaultAgent()

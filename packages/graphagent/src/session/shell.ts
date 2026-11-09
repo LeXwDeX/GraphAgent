@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
+import type { Database } from "@graphagent/core/database/database"
 import { Shell } from "@graphagent/core/shell"
 import { NamedError } from "@graphagent/core/util/error"
 import type { SessionV1 } from "@graphagent/core/v1/session"
@@ -31,12 +32,14 @@ import { Session } from "./session"
 import { SessionTools } from "./tools"
 import type { ToolSourceLedger } from "./tool-source-ledger"
 import type { PrepareApi } from "./turn/prepare"
+import { dropReverted } from "./turns"
 import type { ShellInput } from "./prompt"
 
 export interface ShellDeps {
   readonly sessions: Session.Interface
   readonly agents: Agent.Interface
   readonly config: Config.Interface
+  readonly db: Database.Interface["db"]
   readonly revert: SessionRevert.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly settingsHook: SettingsHook.Interface | undefined
@@ -63,6 +66,7 @@ export function makeShell(deps: ShellDeps) {
     sessions,
     agents,
     config,
+    db,
     revert,
     events,
     settingsHook,
@@ -88,6 +92,7 @@ export function makeShell(deps: ShellDeps) {
           const ctx = yield* InstanceState.context
           const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
           if (session.revert) {
+            yield* dropReverted({ db, sessions }, session)
             yield* revert.cleanup(session)
           }
           const agent = yield* agents.get(input.agent)

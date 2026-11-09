@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { SettingsHook } from "@/hook"
+import { SettingsHook, HOOK_REWAKE_SENTINEL } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { HookRewakeLive } from "@/hook/rewake-live"
 import { HookFileWatch } from "@/hook/file-watch"
@@ -1907,6 +1907,183 @@ it.live("UserPromptSubmit receives dag_mode and hook output cannot change the se
       expect(received).toMatchObject({ hook_event_name: "UserPromptSubmit", dag_mode: "on" })
       // The hook echoed `dag_mode: "off"`; the runtime ignores it entirely.
       expect((yield* sessions.get(session.id)).dagMode).toBe("on")
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
+/**
+ * Issue #1019 PR8: UserPromptSubmit gates on admission kind, not on "is this
+ * a user tab". Automation entries that still submit a prompt through admission
+ * (DAG wake, goal continuation, DAG agent messages, child results) must run
+ * hooks; entries that never enter admission (child-run loops, hook rewake,
+ * internal delegation) must not. The check lives in `admit.ts` next to the
+ * `isRewake`/`internalDelegation` predicate; this matrix pins both sides.
+ */
+goalIt.live("UserPromptSubmit runs for automation entries and is skipped for internal re-entries", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm, dir }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const goals = yield* Goal.Service
+      const hooks = yield* SessionHooks.Service
+      const lease = yield* SessionAutomationLease.Service
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
+      const audit = (name: string) => path.join(dir, `ups-${name}.txt`)
+      const auditText = (file: string) => Effect.promise(() => fs.readFile(file, "utf8").catch(() => undefined))
+      const addHook = (sessionID: SessionID, file: string) =>
+        hooks.add(sessionID, {
+          event: "UserPromptSubmit",
+          hooks: [{ type: "command", command: `printf 'ups\\n' >> ${quote(file)}` }],
+        })
+      const dagToken = (sessionID: SessionID, id: string) =>
+        Effect.gen(function* () {
+          yield* lease.register(sessionID, { kind: "dag", id })
+          return Option.getOrThrow(yield* lease.claim(sessionID, { kind: "dag" }))
+        })
+
+      // 1. DAG wake: admission with `continueToolBudget`, dag owner.
+      {
+        const session = yield* sessions.create({ title: "ups dag wake" })
+        const file = audit("dag-wake")
+        yield* addHook(session.id, file)
+        const token = yield* dagToken(session.id, "dag_wake")
+        yield* llm.text("dag wake answer")
+        const run = yield* SessionPrompt.admitIfIdle(
+          prompt,
+          lease,
+          token,
+          {
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "DAG_WAKE_INPUT", synthetic: true }],
+          },
+          { continueToolBudget: true },
+        )
+        yield* Option.getOrThrow(run)
+        expect(yield* auditText(file)).toContain("ups")
+      }
+
+      // 2. Goal continuation: same admission shape plus a persist fence.
+      {
+        const session = yield* sessions.create({ title: "ups goal continuation" })
+        const file = audit("goal-continuation")
+        yield* addHook(session.id, file)
+        const active = yield* goals.set(session.id, "finish work", 5)
+        yield* goals.markTurnDriven(session.id)
+        const owner = { kind: "goal" as const, id: active.goal_id ?? "legacy" }
+        yield* lease.register(session.id, owner)
+        const token = Option.getOrThrow(yield* lease.claim(session.id, { kind: "goal", id: owner.id }))
+        yield* llm.text("goal continuation answer")
+        const run = yield* SessionPrompt.admitIfIdle(
+          prompt,
+          lease,
+          token,
+          {
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "GOAL_CONTINUATION_INPUT", synthetic: true }],
+          },
+          { continueToolBudget: true },
+          Effect.void,
+        )
+        yield* Option.getOrThrow(run)
+        expect(yield* auditText(file)).toContain("ups")
+      }
+
+      // 3. DAG agent message: admission without admission options.
+      {
+        const session = yield* sessions.create({ title: "ups agent message" })
+        const file = audit("agent-message")
+        yield* addHook(session.id, file)
+        const token = yield* dagToken(session.id, "dag_message")
+        yield* llm.text("agent message answer")
+        const run = yield* SessionPrompt.admitIfIdle(prompt, lease, token, {
+          sessionID: session.id,
+          agent: "build",
+          parts: [
+            {
+              type: "text",
+              text: JSON.stringify({ kind: "dag_agent_message", from: "child", content: "AGENT_MESSAGE_INPUT" }),
+              synthetic: true,
+            },
+          ],
+        })
+        yield* Option.getOrThrow(run)
+        expect(yield* auditText(file)).toContain("ups")
+      }
+
+      // 4. Child result: the parent prompt submitted by background results.
+      {
+        const session = yield* sessions.create({ title: "ups child result" })
+        const file = audit("child-result")
+        yield* addHook(session.id, file)
+        yield* llm.text("child result answer")
+        yield* prompt.prompt(
+          {
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "CHILD_RESULT_INPUT", synthetic: true }],
+          },
+          { continueToolBudget: true },
+        )
+        expect(yield* auditText(file)).toContain("ups")
+      }
+
+      // 5. Child-run loop bypasses admission entirely (DAG spawn/recovery).
+      {
+        const session = yield* sessions.create({ title: "ups child run" })
+        const file = audit("child-run")
+        yield* addHook(session.id, file)
+        yield* prompt.prompt(
+          {
+            sessionID: session.id,
+            agent: "build",
+            noReply: true,
+            parts: [{ type: "text", text: "CHILD_RUN_INPUT" }],
+          },
+          { internalDelegation: true },
+        )
+        yield* llm.text("child run answer")
+        yield* prompt.loop({ sessionID: session.id }, { kind: "child_run" })
+        expect(yield* auditText(file)).toBeUndefined()
+      }
+
+      // 6. Hook rewake re-enters the session without another UPS round trip.
+      {
+        const session = yield* sessions.create({ title: "ups rewake" })
+        const file = audit("rewake")
+        yield* addHook(session.id, file)
+        yield* llm.text("rewake answer")
+        yield* prompt.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [
+            {
+              type: "text",
+              text: `${HOOK_REWAKE_SENTINEL} (command: test, event: Stop):\nignored rewake\n</system-reminder>`,
+            },
+          ],
+        })
+        expect(yield* auditText(file)).toBeUndefined()
+      }
+
+      // 7. Internal delegation carries subagent/DAG input, not a user submit.
+      {
+        const session = yield* sessions.create({ title: "ups internal delegation" })
+        const file = audit("internal-delegation")
+        yield* addHook(session.id, file)
+        yield* llm.text("internal delegation answer")
+        yield* prompt.prompt(
+          {
+            sessionID: session.id,
+            agent: "build",
+            parts: [{ type: "text", text: "INTERNAL_DELEGATION_INPUT" }],
+          },
+          { internalDelegation: true },
+        )
+        expect(yield* auditText(file)).toBeUndefined()
+      }
     }),
     { git: true, config: providerCfg },
   ),

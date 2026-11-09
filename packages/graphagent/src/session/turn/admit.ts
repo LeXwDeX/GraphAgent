@@ -8,7 +8,7 @@ import { Logging } from "@graphagent/core/observability/logging"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { SessionV1 } from "@graphagent/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Fiber, Option, type Scope } from "effect"
+import { Deferred, Effect, Exit, Fiber, Option, type Scope } from "effect"
 import { HOOK_REWAKE_SENTINEL, SettingsHook, type TriggerResult } from "@/hook"
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
@@ -29,7 +29,15 @@ import type { Session } from "../session"
 import type { SessionRevert } from "../revert"
 import type { SessionRunState } from "../run-state"
 import type { SessionStatus } from "../status"
-import type { AdmissionCommit, AdmissionOptions, IdleAdmission, ModelBaseline } from "../turns"
+import {
+  dropReverted,
+  originFor,
+  type AdmissionCommit,
+  type AdmissionOptions,
+  type Interface as TurnsInterface,
+  type ModelBaseline,
+  type TurnOrigin,
+} from "../turns"
 import type { Interface, PromptError, PromptInput } from "../prompt"
 import type { CreateUserMessage, PrepareApi } from "./prepare"
 
@@ -43,11 +51,6 @@ export interface AdmitDeps {
   readonly db: Database.Interface["db"]
   readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly followupAdmissions: typeof SessionCancellation.admissions
-  readonly withRunRequest: <A, E, R>(
-    sessionID: SessionID,
-    use: (request: ReturnType<typeof SessionCancellation.request>) => Effect.Effect<A, E, R>,
-    admitted?: ReturnType<typeof SessionCancellation.request>,
-  ) => Effect.Effect<A, E, R>
   readonly settingsHook: SettingsHook.Interface | undefined
   readonly startContext: HookStartContext.Interface | undefined
   readonly hookSkills: Skill.Interface | undefined
@@ -62,8 +65,8 @@ export interface AdmitDeps {
   }>
   readonly restoreModelContext: PrepareApi["restoreModelContext"]
   readonly resume: Interface["resume"]
-  readonly runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
-  readonly lastAssistant: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
+  /** Late-bound so the turns service can depend on this admission layer. */
+  readonly turns: () => TurnsInterface
 }
 
 export function makeAdmit(deps: AdmitDeps) {
@@ -77,7 +80,6 @@ export function makeAdmit(deps: AdmitDeps) {
     db,
     promptLocks,
     followupAdmissions,
-    withRunRequest,
     settingsHook,
     startContext,
     hookSkills,
@@ -89,8 +91,7 @@ export function makeAdmit(deps: AdmitDeps) {
     budgetState,
     restoreModelContext,
     resume,
-    runLoop,
-    lastAssistant,
+    turns,
   } = deps
 
   // Cancellation owns the durable followup cleanup even when the target
@@ -148,11 +149,9 @@ export function makeAdmit(deps: AdmitDeps) {
     sessionID: SessionID,
     options?: { readonly reason?: SessionAbortReason.Info },
   ) {
-    const cancellation = yield* Effect.sync(() => SessionCancellation.begin(sessionID))
-    // The cancellation epoch already invalidates pending Stop rewakes; the
-    // generation bump is the second half of the same reset and also clears
-    // the continuation budget for the next real prompt.
-    if (settingsHook?.bumpRewakeGeneration) yield* settingsHook.bumpRewakeGeneration(sessionID).pipe(Effect.ignore)
+    // ESC's epoch bump and rewake-generation reset live in one place
+    // (`Turns.beginCancel`); every other cancel action stays here.
+    const cancellation = yield* turns().beginCancel(sessionID)
     const abort = options?.reason
     let transferred = false
     let waiters: Array<Fiber.Fiber<void>> = []
@@ -378,6 +377,8 @@ export function makeAdmit(deps: AdmitDeps) {
     modelBaseline?: ModelBaseline,
   ) {
     const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+    // Reverted turns disappear with the messages the cleanup removes.
+    yield* dropReverted({ db, sessions }, session)
     yield* revert.cleanup(session)
     yield* activateAgentHooks(session, input.agent)
 
@@ -552,6 +553,7 @@ export function makeAdmit(deps: AdmitDeps) {
     options?: AdmissionOptions,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
+    origin: TurnOrigin = originFor(options),
   ) {
     if (attention) yield* attention.input(input.sessionID)
     if (
@@ -575,31 +577,14 @@ export function makeAdmit(deps: AdmitDeps) {
       )
       if (initial) return initial
     }
-    const wait = yield* withRunRequest(input.sessionID, (request) =>
-      promptLocks.withLock(input.sessionID)(
-        Effect.gen(function* () {
-          if (!request.valid()) return Effect.interrupt
-          if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
-          const admitted = yield* admitPrompt(input, undefined, options, commitAdmission, modelBaseline)
-          if (!admitted.run) return Effect.succeed(admitted.message)
-          // The runner registers before this fence runs: a cancel landing
-          // after a passing fence interrupts the registered runner instead of
-          // racing a finished check, so a stale rewake can never start a turn.
-          return yield* state.ensureRunningHandle(
-            input.sessionID,
-            lastAssistant(input.sessionID),
-            Effect.gen(function* () {
-              if (!(yield* fenceRewake(input.sessionID, options, admitted.message))) {
-                return admitted.message
-              }
-              return yield* runLoop(input.sessionID)
-            }),
-            request,
-          )
-        }),
-      ),
-    )
-    return yield* wait
+    const started = yield* turns().start(input, {
+      origin,
+      when: "now",
+      admissionOptions: options,
+      commitAdmission,
+      modelBaseline,
+    })
+    return yield* started.wait
   })
   const prompt: Interface["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (input, options) {
     // Plain prompts never carry an admission commit; the internal command
@@ -619,80 +604,44 @@ export function makeAdmit(deps: AdmitDeps) {
       ),
   )
 
+  // Thin wrapper: the two-phase idle protocol lives in `Turns.prepare`, which
+  // keeps the pre-PR8 activation/abort contract used by `admitIfIdle`.
   const prepareIfIdle: Interface["prepareIfIdle"] = Effect.fn("SessionPrompt.prepareIfIdle")(function* (
     input: PromptInput,
     persistAdmission?: Effect.Effect<void>,
     options?: AdmissionOptions,
     request?: ReturnType<typeof SessionCancellation.request>,
   ) {
-    return yield* withRunRequest(
-      input.sessionID,
-      (request) =>
-        promptLocks.withLock(input.sessionID)(
-          Effect.uninterruptibleMask((restore) =>
-            Effect.gen(function* () {
-              if (!request.valid()) return Option.none<IdleAdmission>()
-              const activation = yield* Deferred.make<void>()
-              const admission =
-                yield* Deferred.make<
-                  Exit.Exit<{ readonly message: SessionV1.WithParts; readonly run: boolean }, PromptError>
-                >()
-              const wait = yield* state.startIfIdle(
-                input.sessionID,
-                lastAssistant(input.sessionID),
-                Effect.gen(function* () {
-                  yield* Deferred.await(activation)
-                  if (!request.current()) return yield* Effect.interrupt
-                  const admitted = yield* Deferred.await(admission)
-                  if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
-                  if (!admitted.value.run) return admitted.value.message
-                  // Same runner-first ordering as prompt(): a cancel landing
-                  // after a passing fence interrupts the registered runner.
-                  if (!(yield* fenceRewake(input.sessionID, options, admitted.value.message))) {
-                    return admitted.value.message
-                  }
-                  return yield* runLoop(input.sessionID)
-                }).pipe(Effect.orDie),
-                request,
-              )
-              if (Option.isNone(wait)) return Option.none<IdleAdmission>()
-
-              const admitted = yield* restore(
-                admitPrompt(input, persistAdmission, options, (body) =>
-                  Effect.suspend(() => (request.valid() ? body : Effect.interrupt)),
-                ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
-              ).pipe(Effect.exit)
-              yield* Deferred.succeed(admission, admitted)
-              if (Exit.isFailure(admitted)) {
-                yield* Deferred.succeed(activation, undefined)
-                if (!request.valid() && Cause.hasInterruptsOnly(admitted.cause)) return Option.none<IdleAdmission>()
-                return yield* Effect.failCause(admitted.cause)
-              }
-              return Option.some({
-                activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
-                result: wait.value,
-                abort: state.cancel(input.sessionID),
-              })
-            }),
-          ),
-        ),
-      request,
-    )
+    return yield* turns().prepare(input, options, persistAdmission, request)
   })
 
+  // Thin wrapper: idle admission is `Turns.start(when: "idle")`.
   const promptIfIdle: Interface["promptIfIdle"] = Effect.fn("SessionPrompt.promptIfIdle")(
     (input: PromptInput, options?: AdmissionOptions) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const prepared = yield* restore(prepareIfIdle(input, undefined, options))
-          if (Option.isNone(prepared)) return Option.none()
-          yield* prepared.value.activate.pipe(Effect.onError(() => prepared.value.abort))
-          return Option.some(yield* restore(prepared.value.result))
+          const started = yield* restore(
+            turns()
+              .start(input, { origin: originFor(options), when: "idle", admissionOptions: options })
+              .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
+          )
+          if (started.admission.kind === "skipped_busy") return Option.none()
+          return Option.some(yield* restore(started.wait))
         }),
       ),
   )
 
-  return { cancel, prompt, withIdle, prepareIfIdle, promptIfIdle, admitPrompt, resumeContexts, promptImpl }
+  return {
+    cancel,
+    prompt,
+    withIdle,
+    prepareIfIdle,
+    promptIfIdle,
+    admitPrompt,
+    resumeContexts,
+    promptImpl,
+    fenceRewake,
+  }
 }
 
 export function admitIfIdle(

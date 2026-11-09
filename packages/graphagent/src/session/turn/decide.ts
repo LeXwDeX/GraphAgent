@@ -67,6 +67,10 @@ export type TurnOutcome =
   | { readonly type: "error"; readonly code: string; readonly retryable: boolean }
   | { readonly type: "cancelled"; readonly reason: string | undefined }
   | { readonly type: "context_overflow" }
+  /** Refused before the machine ran (for example a stale Stop-hook rewake). */
+  | { readonly type: "blocked"; readonly by: string; readonly code: string }
+  /** A `running` row whose runner was gone when the instance started. */
+  | { readonly type: "interrupted" }
 
 export type Transition =
   /** Run the next model step in this loop iteration. Consumes `TurnState.continuing`. */
@@ -137,6 +141,27 @@ export function decideOverflow(state: TurnState, signals: { readonly overflow: b
   if (!signals.overflow) return { kind: "step" }
   if (state.compactions >= AUTO_COMPACTION_LIMIT) return { kind: "finish", outcome: { type: "context_overflow" } }
   return { kind: "compact" }
+}
+
+/**
+ * Outcome for a loop exit that did not pass through the Stop gate (a deferred
+ * tool resume, a finished compaction task, or a turn returned by the attempt).
+ * The completion signals are irrelevant there; only the settled error and the
+ * length finish can change the result.
+ */
+export function outcomeOfExit(state: TurnState): TurnOutcome {
+  return outcomeOf(state, {
+    assistantFinished: true,
+    userBeforeAssistant: true,
+    pendingLocalTools: false,
+    stopHook: "not_run",
+    stepInputPending: false,
+    stepInputChecked: true,
+    ownerDefersStop: false,
+    stopPolicy: { event: "Stop", enabled: false },
+    budgetExhausted: false,
+    assistantFinish: undefined,
+  })
 }
 
 function outcomeOf(state: TurnState, signals: Signals): TurnOutcome {

@@ -1503,7 +1503,7 @@ export function spawnNode(
                 )
                 break
               }
-              result = yield* nodeExecution(promptSvc.loop({ sessionID: childSession.id }))
+              result = yield* nodeExecution(promptSvc.loop({ sessionID: childSession.id }, { kind: "child_run" }))
             }
           }).pipe(Effect.ensuring(notifyStop))
         }).pipe(Effect.ensuring(semaphore.release(1)))

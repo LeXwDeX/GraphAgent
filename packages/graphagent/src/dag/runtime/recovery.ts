@@ -833,7 +833,7 @@ export function continueRecoveredMessageNode(
         // Do not replay its historical Start/Stop hooks in a new process.
         const lifecycle = yield* Effect.serviceOption(HookLifecycle.Service)
         if (Option.isSome(lifecycle)) yield* lifecycle.value.delegateChildStop(childSessionID)
-        let result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) })
+        let result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) }, { kind: "child_run" })
         for (;;) {
           if (!(yield* admit)) return
           const current = yield* dag.store.getNode(dagID, nodeID)
@@ -958,7 +958,7 @@ export function continueRecoveredMessageNode(
           }
           if (!(yield* admit)) return
           if (!(yield* dispatchable())) return
-          result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) })
+          result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) }, { kind: "child_run" })
         }
       }).pipe(
         Effect.catchCause((cause) =>

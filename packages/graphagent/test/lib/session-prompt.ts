@@ -26,6 +26,8 @@ export function withIdleAdmission<Error, Value extends object>(
       Effect.as(
         persistAdmission ?? Effect.void,
         Option.some({
+          turn: undefined,
+          run: true,
           activate: Effect.void,
           result: Effect.suspend(() => service.promptIfIdle(input)).pipe(
             Effect.flatMap(Option.match({ onNone: () => Effect.interrupt, onSome: Effect.succeed })),
