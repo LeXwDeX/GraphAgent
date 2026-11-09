@@ -70,12 +70,12 @@ export interface SettleAttemptResult {
   readonly resetStopContinuations: boolean
 }
 
-export function makeSettle(deps: SettleDeps) {
-  const { sessions, events, database, compaction, settingsHook, agentMessages } = deps
+function makePostToolBatch(deps: SettleDeps) {
+  const { sessions, settingsHook } = deps
 
   // PostToolBatch for one assistant message's settled tool calls. Returns true when a hook stopped the turn.
   // Feedback is hidden model context attached to the turn's user message as synthetic parts.
-  const postToolBatch = Effect.fnUntraced(function* (input: {
+  return Effect.fnUntraced(function* (input: {
     sessionID: SessionID
     batch: readonly SessionV1.ToolPart[]
     feedbackMessageID: MessageID
@@ -114,8 +114,10 @@ export function makeSettle(deps: SettleDeps) {
     }
     return stop
   })
+}
 
-  const finalizeInterruptedAssistant = Effect.fnUntraced(function* (sessionID: SessionID, msg: SessionV1.Assistant) {
+function makeFinalizeInterrupted(sessions: Session.Interface) {
+  return Effect.fnUntraced(function* (sessionID: SessionID, msg: SessionV1.Assistant) {
     const abort = SessionAbortReason.peek(sessionID)
     const legacyAbort =
       msg.error?.name === "MessageAbortedError" &&
@@ -144,8 +146,12 @@ export function makeSettle(deps: SettleDeps) {
     msg.time.completed = Date.now()
     yield* sessions.updateMessage(msg)
   })
+}
 
-  const finalizeFailedAssistant = Effect.fnUntraced(function* (args: FinalizeFailedInput) {
+function makeFinalizeFailed(deps: SettleDeps) {
+  const { sessions, agentMessages } = deps
+  const finalizeInterruptedAssistant = makeFinalizeInterrupted(sessions)
+  return Effect.fnUntraced(function* (args: FinalizeFailedInput) {
     const { cause, sessionID, msg, identity, modelMessageID, agentSnapshot } = args
     // `onInterrupt` handles pure interrupts. `onError` may still see a
     // mixed cause; only a closing-only remainder may use the interrupt
@@ -164,8 +170,11 @@ export function makeSettle(deps: SettleDeps) {
       yield* agentMessages.discardPending(identity, "model_error")
     }
   })
+}
 
-  const settleAttempt = Effect.fn("SessionPrompt.settleAttempt")(function* (input: SettleAttemptInput) {
+function makeSettleAttempt(deps: SettleDeps, postToolBatch: ReturnType<typeof makePostToolBatch>) {
+  const { sessions, events, database, compaction, settingsHook, agentMessages } = deps
+  return Effect.fn("SessionPrompt.settleAttempt")(function* (input: SettleAttemptInput) {
     const {
       sessionID,
       lastUser,
@@ -180,9 +189,9 @@ export function makeSettle(deps: SettleDeps) {
       identity,
     } = input
     let result = input.result
-    let agentInputBlocked = input.agentInputBlocked
     let resetStopContinuations = false
-    if (result === "deferred") return { outcome: "break" as const, agentInputBlocked, resetStopContinuations }
+    if (result === "deferred")
+      return { outcome: "break" as const, agentInputBlocked: input.agentInputBlocked, resetStopContinuations }
     const settledParts = yield* MessageV2.parts(msg.id).pipe(Effect.provideService(Database.Service, database))
     const batch = settledParts.filter(
       (part): part is SessionV1.ToolPart =>
@@ -194,7 +203,6 @@ export function makeSettle(deps: SettleDeps) {
       if (settingsHook && (yield* postToolBatch({ sessionID, batch, feedbackMessageID: lastUser.id }))) result = "stop"
     }
     if (result === "stop" || handle.message.error) {
-      agentInputBlocked = true
       const reason = handle.message.error ? "model_error" : "turn_blocked"
       if (agentMessages) {
         if (agentSnapshot) yield* agentMessages.markStopped(identity, agentSnapshot.id, reason)
@@ -210,6 +218,7 @@ export function makeSettle(deps: SettleDeps) {
         }
       }
     }
+    const agentInputBlocked = input.agentInputBlocked || result === "stop" || handle.message.error !== undefined
 
     if (handle.message.finish === "content-filter" && !handle.message.error) {
       handle.message.error = new SessionV1.ContentFilterError({
@@ -270,8 +279,13 @@ export function makeSettle(deps: SettleDeps) {
     }
     return { outcome: "continue" as const, agentInputBlocked, resetStopContinuations }
   })
+}
 
-  return { postToolBatch, finalizeFailed: finalizeFailedAssistant, settleAttempt }
+export function makeSettle(deps: SettleDeps) {
+  const postToolBatch = makePostToolBatch(deps)
+  const finalizeFailed = makeFinalizeFailed(deps)
+  const settleAttempt = makeSettleAttempt(deps, postToolBatch)
+  return { postToolBatch, finalizeFailed, settleAttempt }
 }
 
 export * as Settle from "./settle"

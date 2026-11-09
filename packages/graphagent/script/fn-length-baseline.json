@@ -10,15 +10,10 @@
     "src/session/processor.ts#handleEvent": 353,
     "src/session/turn/admit.ts#admitPrompt": 176,
     "src/session/turn/admit.ts#makeAdmit": 628,
-    "src/session/turn/loop.ts#makeLoop": 587,
-    "src/session/turn/loop.ts#runLoopImpl": 482,
     "src/session/turn/prepare.ts#buildTurnRequest": 229,
     "src/session/turn/prepare.ts#createUserMessage": 448,
     "src/session/turn/prepare.ts#handleSubtask": 187,
     "src/session/turn/prepare.ts#makePrepare": 1406,
-    "src/session/turn/prepare.ts#resolvePart": 293,
-    "src/session/turn/settle.ts#makeSettle": 203,
-    "src/session/turn/stop.ts#makeStop": 207,
-    "src/session/turn/stop.ts#stopAttempt": 201
+    "src/session/turn/prepare.ts#resolvePart": 293
   }
 }
