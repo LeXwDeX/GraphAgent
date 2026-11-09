@@ -17,7 +17,7 @@ cliIt.live(
       yield* Effect.promise(async () => {
         await fs.writeFile(
           script,
-          `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({...i,readable:await Bun.file(i.transcript_path).exists()})+"\\n");if(i.hook_event_name==='TaskCompleted'&&!await Bun.file(${JSON.stringify(allow)}).exists()){process.stderr.write('TASK_REQUIRES_REVIEW');process.exit(2)}else process.stdout.write(JSON.stringify({continue:false}));`,
+          `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({...i,readable:await Bun.file(i.transcript_path).exists()})+"\\n");if(i.hook_event_name==='TaskCompleted'&&!await Bun.file(${JSON.stringify(allow)}).exists()){process.stderr.write('TASK_REQUIRES_REVIEW');process.exit(2)}else process.stdout.write(JSON.stringify({continue:false}));`,
         )
         const hook = { type: "command", command: process.execPath, args: [script] }
         await fs.writeFile(

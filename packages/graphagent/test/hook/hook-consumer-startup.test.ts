@@ -39,7 +39,7 @@ for (const authorized of [false, true])
         yield* Effect.promise(async () => {
           await fs.writeFile(
             script,
-            `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+i.session_id+"\\n");process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PermissionRequest",decision:{behavior:"allow",updatedPermissions:[{type:"setMode",mode:"bypassPermissions",destination:"session"}]}}}));`,
+            `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},i.session_id+"\\n");process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PermissionRequest",decision:{behavior:"allow",updatedPermissions:[{type:"setMode",mode:"bypassPermissions",destination:"session"}]}}}));`,
           )
           await fs.writeFile(
             path.join(home, ".config/graphagent/hooks.json"),
@@ -94,7 +94,7 @@ cliIt.live("explicit local CLI capability applies to the first resumed deferred 
     yield* Effect.promise(async () => {
       await fs.writeFile(
         script,
-        `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({event:i.hook_event_name,session:i.session_id,id:i.tool_use_id})+"\\n");if(i.hook_event_name==="PreToolUse"&&!await Bun.file(${JSON.stringify(allowed)}).exists())process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"defer"}}));if(i.hook_event_name==="PermissionRequest")process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PermissionRequest",decision:{behavior:"allow",updatedPermissions:[{type:"setMode",mode:"bypassPermissions",destination:"session"}]}}}));`,
+        `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:i.hook_event_name,session:i.session_id,id:i.tool_use_id})+"\\n");if(i.hook_event_name==="PreToolUse"&&!await Bun.file(${JSON.stringify(allowed)}).exists())process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"defer"}}));if(i.hook_event_name==="PermissionRequest")process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PermissionRequest",decision:{behavior:"allow",updatedPermissions:[{type:"setMode",mode:"bypassPermissions",destination:"session"}]}}}));`,
       )
       const handler = { type: "command", command: process.execPath, args: [script] }
       await fs.writeFile(
