@@ -15,7 +15,7 @@ import type { Connection } from "effect/sql/SqlConnection"
 import { SqlError, classifySqliteError } from "effect/sql/SqlError"
 import * as Statement from "effect/sql/Statement"
 import * as Reactivity from "effect/reactivity/Reactivity"
-import { eq, sql } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
 import { SessionAutomationLease } from "@/session/automation-lease"
@@ -153,6 +153,7 @@ const projectorLayer = SessionProjector.layer.pipe(Layer.provide(eventV2Layer), 
 const it = testEffect(
   Layer.mergeAll(
     dbLayer,
+    eventV2Layer,
     SessionNs.layer.pipe(
       Layer.provide(Storage.defaultLayer),
       Layer.provide(dbLayer),
@@ -177,7 +178,7 @@ const userInfo = (sessionID: string, id: string) =>
     time: { created: Date.now() },
     agent: "user",
     model: { providerID: "test", modelID: "test" },
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
   }) as unknown as SessionV1.Info
 
 const assistantInfo = (sessionID: string, id: string, parentID: string) =>
@@ -194,7 +195,7 @@ const assistantInfo = (sessionID: string, id: string, parentID: string) =>
     path: { cwd: "/", root: "/" },
     cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
   }) as unknown as SessionV1.Info
 
 const textPart = (sessionID: string, messageID: string, text: string) =>
@@ -204,7 +205,7 @@ const textPart = (sessionID: string, messageID: string, text: string) =>
     messageID,
     type: "text",
     text,
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- persisted test fixture mirrors the V1 schema shape
   }) as unknown as SessionV1.Part
 
 describe("Session.fork", () => {
@@ -312,22 +313,19 @@ describe("Session.fork", () => {
       yield* session.updateMessage(userInfo(original.id, firstMessageID))
       yield* session.updatePart(textPart(original.id, firstMessageID, "copied before failure"))
       yield* session.updateMessage(userInfo(original.id, failingMessageID))
-      yield* session.updatePart(textPart(original.id, failingMessageID, "force fork copy failure"))
+      const failingPart = textPart(original.id, failingMessageID, "force fork copy failure")
+      yield* session.updatePart(failingPart)
       const sourceBefore = yield* session.messages({ sessionID: original.id })
 
-      yield* database.db
-        .run(
-          sql`
-          CREATE TRIGGER reject_fork_copy
-          BEFORE INSERT ON event
-          WHEN NEW.type = 'message.part.updated.1'
-            AND json_extract(NEW.data, '$.part.text') = 'force fork copy failure'
-          BEGIN
-            SELECT RAISE(ABORT, 'forced fork copy failure');
-          END
-        `,
-        )
-        .pipe(Effect.orDie)
+      // Session-aggregate events no longer append an event-log row, so the old
+      // SQL trigger cannot fail the copy. A projector is the durable hook that
+      // still runs inside the fork-copy transaction and can abort it. The copy
+      // assigns new part ids, so target the fork session rather than the source
+      // part id.
+      const events = yield* EventV2.Service
+      yield* events.project(SessionV1.Event.PartUpdated, (event) =>
+        event.data.sessionID === original.id ? Effect.void : Effect.die(new Error("forced fork copy failure")),
+      )
 
       counter.begins = 0
       counter.commits = 0
@@ -348,14 +346,18 @@ describe("Session.fork", () => {
       expect(yield* session.messages({ sessionID: forked.id })).toEqual([])
       expect(yield* session.messages({ sessionID: original.id })).toEqual(sourceBefore)
 
+      // The failed fork leaves the created session row but no copied message,
+      // and session-aggregate events do not append event-log rows at all.
       const durableEvents = yield* database.db
         .select({ type: EventTable.type })
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, forked.id))
-      expect(durableEvents).toEqual([{ type: "session.created.1" }])
+      expect(durableEvents).toEqual([])
 
-      expect(counter.savepoints).toBe(4)
-      expect(counter.releases).toBe(4)
+      // The copy publishes the first message, then dies on its part: two
+      // savepoints, one released and one rolled back.
+      expect(counter.savepoints).toBe(2)
+      expect(counter.releases).toBe(2)
       expect(counter.savepointRollbacks).toBe(1)
     }),
   )

@@ -21,6 +21,7 @@ export type Event =
   | EventSessionModelSwitched
   | EventSessionNextMoved
   | EventMessagePartDelta
+  | EventMessagePartPreview
   | EventSessionDiff
   | EventSessionError
   | EventInstallationUpdated
@@ -2204,6 +2205,19 @@ export type EventSessionDiff = {
   properties: {
     sessionID: string
     diff: Array<SnapshotFileDiff>
+  }
+}
+
+export type EventMessagePartPreview = {
+  id: string
+  type: "message.part.preview"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+    tail: string
+    totalLength: number
+    seq: number
   }
 }
 

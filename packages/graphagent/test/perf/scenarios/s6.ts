@@ -16,8 +16,9 @@ import type { Measurement, Scenario } from "./types"
 
 // S6: a two-minute bash command that emits one line every 200 virtual
 // milliseconds. The shell is scripted, so the scenario costs no wall-clock
-// time; the engine work is real: every preview updates the tool part and the
-// session engine persists it.
+// time; the engine work is real: every preview publishes a non-durable output
+// tail (#1016 HS4a) instead of persisting the tool part, so the turn's durable
+// event book stays flat while the ephemeral book carries the stream.
 const CHUNKS = 600
 const INTERVAL_MS = 200
 

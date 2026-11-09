@@ -114,8 +114,12 @@ describe("Claude-formatted PermissionRequest input rewrite", () => {
           processor: {
             message: { id: MessageID.ascending(), sessionID },
             updateToolCall: () => Effect.succeed(undefined),
+            previewToolCall: () => Effect.void,
             completeToolCall: () => Effect.void,
-          } as unknown as Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">,
+          } as unknown as Pick<
+            SessionProcessor.Handle,
+            "message" | "updateToolCall" | "previewToolCall" | "completeToolCall"
+          >,
           bypassAgentCheck: false,
           messages: [],
           // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
@@ -189,8 +193,12 @@ describe("Claude-formatted PermissionRequest input rewrite", () => {
         processor: {
           message: { id: MessageID.ascending(), sessionID },
           updateToolCall: () => Effect.succeed(undefined),
+          previewToolCall: () => Effect.void,
           completeToolCall: () => Effect.void,
-        } as unknown as Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">,
+        } as unknown as Pick<
+          SessionProcessor.Handle,
+          "message" | "updateToolCall" | "previewToolCall" | "completeToolCall"
+        >,
         bypassAgentCheck: false,
         messages: [],
         // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion

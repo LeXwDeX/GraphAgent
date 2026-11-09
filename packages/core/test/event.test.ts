@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import { EventV2 } from "@graphagent/core/event"
 import { Event } from "@graphagent/schema/event"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { Session } from "@graphagent/schema/session"
 import { SessionEvent } from "@graphagent/schema/session-event"
 import { SessionV1 } from "@graphagent/schema/session-v1"
@@ -70,10 +71,18 @@ const VersionedMessage = EventV2.define({
   },
 })
 
-const DurableMessage = SessionV1.Event.MessageRemoved
-const durableData = (sessionID: Session.ID, text: string) => ({
-  sessionID,
-  messageID: SessionV1.MessageID.ascending(`msg_${text}`),
+const DurableMessage = DagEvent.WorkflowPaused
+// Publish accepts decoded values; replay consumes the serialized form read
+// back from the event table (the timestamp is encoded as milliseconds).
+const durableData = (aggregateID: string, text: string) => ({
+  dagID: DagEvent.DagID.make(aggregateID),
+  timestamp: DateTime.makeUnsafe(0),
+  reason: text,
+})
+const serializedData = (aggregateID: string, text: string) => ({
+  dagID: aggregateID,
+  timestamp: 0,
+  reason: text,
 })
 
 const eventLayer = Layer.mergeAll(EventV2.layerWith().pipe(Layer.provide(Database.defaultLayer)), Database.defaultLayer)
@@ -339,9 +348,7 @@ describe("EventV2", () => {
       )
       yield* Effect.yieldNow
       yield* events.listen(() => Effect.die(new Error("listener defect")))
-      yield* events.listen((event) =>
-        Effect.sync(() => received.push(`L:${(event.data as { text: string }).text}`)),
-      )
+      yield* events.listen((event) => Effect.sync(() => received.push(`L:${(event.data as { text: string }).text}`)))
 
       yield* events.publish(Message, { text: "one" })
       yield* events.publish(Message, { text: "two" })
@@ -651,7 +658,7 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
 
       yield* events.publish(DurableMessage, durableData(aggregateID, "same"))
       yield* events.replay({
@@ -659,7 +666,7 @@ describe("EventV2", () => {
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 1,
         aggregateID,
-        data: durableData(aggregateID, "same"),
+        data: serializedData(aggregateID, "same"),
       })
       const rows = yield* db
         .select({ seq: EventTable.seq })
@@ -672,14 +679,58 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("projects session aggregate events without appending the event log", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const sessionID = Session.ID.create()
+      const data = (text: string) => ({
+        sessionID,
+        messageID: SessionV1.MessageID.ascending(`msg_${text}`),
+      })
+      const projected: string[] = []
+      yield* events.project(SessionV1.Event.MessageRemoved, (event) =>
+        Effect.sync(() => projected.push(event.data.messageID)),
+      )
+
+      const first = yield* events.publish(SessionV1.Event.MessageRemoved, data("one"))
+      const second = yield* events.publish(SessionV1.Event.MessageRemoved, data("two"))
+      yield* events.publishMany([
+        { definition: SessionV1.Event.MessageRemoved, data: data("three") },
+        { definition: SessionV1.Event.MessageRemoved, data: data("four") },
+      ])
+      const rows = yield* db
+        .select({ seq: EventTable.seq })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      const sequence = yield* db
+        .select({ seq: EventSequenceTable.seq })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+
+      expect(first.durable?.seq).toBe(0)
+      expect(second.durable?.seq).toBe(1)
+      expect(rows).toHaveLength(0)
+      expect(sequence.map((row) => row.seq)).toEqual([3])
+      expect(projected).toEqual([
+        data("one").messageID,
+        data("two").messageID,
+        data("three").messageID,
+        data("four").messageID,
+      ])
+    }),
+  )
+
   it.effect("durable readers observe only persisted events after a skipped duplicate", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.publish(DurableMessage, durableData(aggregateID, "zero"))
-      const fiber = yield* events
-        .durable({ aggregateID })
-        .pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped)
+      const fiber = yield* events.durable({ aggregateID }).pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped)
       yield* Effect.yieldNow
 
       yield* events.publish(DurableMessage, durableData(aggregateID, "zero"))
@@ -695,7 +746,7 @@ describe("EventV2", () => {
   it.effect("replays durable aggregate events after a sequence and tails new events", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.publish(DurableMessage, durableData(aggregateID, "zero"))
       yield* events.publish(DurableMessage, durableData(aggregateID, "one"))
       const fiber = yield* events
@@ -715,7 +766,7 @@ describe("EventV2", () => {
   it.effect("catches durable aggregate events published during replay handoff", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.publish(DurableMessage, durableData(aggregateID, "zero"))
       const fiber = yield* events.durable({ aggregateID }).pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped)
 
@@ -742,7 +793,7 @@ describe("EventV2", () => {
 
       yield* Effect.gen(function* () {
         const events = yield* EventV2.Service
-        const aggregateID = Session.ID.create()
+        const aggregateID = DagEvent.DagID.create()
         const fiber = yield* events.durable({ aggregateID }).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
         yield* Deferred.await(readStarted)
 
@@ -760,7 +811,7 @@ describe("EventV2", () => {
   it.effect("coalesces durable aggregate wakes while draining every committed event", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const count = 64
       const fiber = yield* events
         .durable({ aggregateID })
@@ -780,7 +831,7 @@ describe("EventV2", () => {
   it.effect("omits live-only events from durable aggregate streams", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const fiber = yield* events.durable({ aggregateID }).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
       yield* Effect.yieldNow
 
@@ -819,14 +870,14 @@ describe("EventV2", () => {
           received.push(event)
         }),
       )
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
 
       yield* events.replay({
         id: EventV2.ID.create(),
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "hello"),
+        data: serializedData(aggregateID, "hello"),
       })
 
       expect(received[0]?.type).toBe(DurableMessage.type)
@@ -838,14 +889,14 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
 
       yield* events.replay({
         id: EventV2.ID.create(),
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "replayed"),
+        data: serializedData(aggregateID, "replayed"),
       })
       const rows = yield* db
         .select()
@@ -865,8 +916,8 @@ describe("EventV2", () => {
       Effect.gen(function* () {
         const events = yield* EventV2.Service
         const { db } = yield* Database.Service
-        const envelopeAggregateID = Session.ID.create()
-        const payloadAggregateID = Session.ID.create()
+        const envelopeAggregateID = DagEvent.DagID.create()
+        const payloadAggregateID = DagEvent.DagID.create()
         const received = new Array<EventV2.Payload>()
         yield* events.publish(DurableMessage, durableData(payloadAggregateID, "seed"))
         yield* events.project(DurableMessage, (event) =>
@@ -881,7 +932,7 @@ describe("EventV2", () => {
             type: EventV2.versionedType(DurableMessage.type, 1),
             seq: 1,
             aggregateID: envelopeAggregateID,
-            data: durableData(payloadAggregateID, "replayed"),
+            data: serializedData(payloadAggregateID, "replayed"),
           })
           .pipe(Effect.exit)
         const rows = yield* db
@@ -907,14 +958,14 @@ describe("EventV2", () => {
   it.effect("replay defects on sequence mismatch", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
 
       yield* events.replay({
         id: EventV2.ID.create(),
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "first"),
+        data: serializedData(aggregateID, "first"),
       })
       const exit = yield* events
         .replay({
@@ -922,7 +973,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 5,
           aggregateID,
-          data: durableData(aggregateID, "bad"),
+          data: serializedData(aggregateID, "bad"),
         })
         .pipe(Effect.exit)
 
@@ -974,21 +1025,21 @@ describe("EventV2", () => {
   it.effect("replayAll validates contiguous aggregate events", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const source = yield* events.replayAll([
         {
           id: EventV2.ID.create(),
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 0,
           aggregateID,
-          data: durableData(aggregateID, "one"),
+          data: serializedData(aggregateID, "one"),
         },
         {
           id: EventV2.ID.create(),
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 1,
           aggregateID,
-          data: durableData(aggregateID, "two"),
+          data: serializedData(aggregateID, "two"),
         },
       ])
 
@@ -1000,7 +1051,7 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
 
       const one = yield* events.replayAll([
         {
@@ -1008,14 +1059,14 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 0,
           aggregateID,
-          data: durableData(aggregateID, "one"),
+          data: serializedData(aggregateID, "one"),
         },
         {
           id: EventV2.ID.create(),
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 1,
           aggregateID,
-          data: durableData(aggregateID, "two"),
+          data: serializedData(aggregateID, "two"),
         },
       ])
       const two = yield* events.replayAll([
@@ -1024,14 +1075,14 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 2,
           aggregateID,
-          data: durableData(aggregateID, "three"),
+          data: serializedData(aggregateID, "three"),
         },
         {
           id: EventV2.ID.create(),
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 3,
           aggregateID,
-          data: durableData(aggregateID, "four"),
+          data: serializedData(aggregateID, "four"),
         },
       ])
       const rows = yield* db
@@ -1051,7 +1102,7 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const received = new Array<EventV2.Payload>()
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
       yield* events.claim(aggregateID, "owner-a")
       yield* events.project(DurableMessage, (event) =>
@@ -1066,7 +1117,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 1,
           aggregateID,
-          data: durableData(aggregateID, "ignored"),
+          data: serializedData(aggregateID, "ignored"),
         },
         { ownerID: "owner-b" },
       )
@@ -1078,14 +1129,14 @@ describe("EventV2", () => {
   it.effect("strict owner fences exact replay", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const id = EventV2.ID.create()
       const replayed = {
         id,
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "owned"),
+        data: serializedData(aggregateID, "owned"),
       }
       yield* events.replay(replayed, { ownerID: "owner-a" })
 
@@ -1099,14 +1150,14 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const published = yield* events.publish(DurableMessage, durableData(aggregateID, "owned"))
       const replayed = {
         id: published.id,
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: published.durable!.seq,
         aggregateID,
-        data: published.data,
+        data: serializedData(aggregateID, "owned"),
       }
 
       yield* events.replay(replayed, { ownerID: "owner-a", strictOwner: true })
@@ -1120,7 +1171,7 @@ describe("EventV2", () => {
       expect(row?.ownerID).toBe("owner-a")
       const exit = yield* events
         .replay(
-          { ...replayed, id: EventV2.ID.create(), seq: 1, data: durableData(aggregateID, "conflict") },
+          { ...replayed, id: EventV2.ID.create(), seq: 1, data: serializedData(aggregateID, "conflict") },
           { ownerID: "owner-b", strictOwner: true },
         )
         .pipe(Effect.exit)
@@ -1132,7 +1183,7 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
 
       yield* events.replay(
         {
@@ -1140,7 +1191,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 0,
           aggregateID,
-          data: durableData(aggregateID, "owned"),
+          data: serializedData(aggregateID, "owned"),
         },
         { ownerID: "owner-1" },
       )
@@ -1159,7 +1210,7 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.publish(DurableMessage, durableData(aggregateID, "local"))
 
       yield* events.replay(
@@ -1168,7 +1219,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 1,
           aggregateID,
-          data: durableData(aggregateID, "claimed"),
+          data: serializedData(aggregateID, "claimed"),
         },
         { ownerID: "owner-1" },
       )
@@ -1178,7 +1229,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 2,
           aggregateID,
-          data: durableData(aggregateID, "fenced"),
+          data: serializedData(aggregateID, "fenced"),
         },
         { ownerID: "owner-2" },
       )
@@ -1203,14 +1254,14 @@ describe("EventV2", () => {
   it.effect("strict replay rejects an owner conflict instead of silently skipping it", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.replay(
         {
           id: EventV2.ID.create(),
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 0,
           aggregateID,
-          data: durableData(aggregateID, "claimed"),
+          data: serializedData(aggregateID, "claimed"),
         },
         { ownerID: "owner-1" },
       )
@@ -1222,7 +1273,7 @@ describe("EventV2", () => {
             type: EventV2.versionedType(DurableMessage.type, 1),
             seq: 1,
             aggregateID,
-            data: durableData(aggregateID, "conflict"),
+            data: serializedData(aggregateID, "conflict"),
           },
           { ownerID: "owner-2", strictOwner: true },
         )
@@ -1236,20 +1287,22 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const received = new Array<EventV2.Payload>()
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.listen((event) => Effect.sync(() => received.push(event)))
       const replayed = {
         id: EventV2.ID.create(),
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "replayed"),
+        data: serializedData(aggregateID, "replayed"),
       }
 
       yield* events.replay(replayed, { publish: true })
       yield* events.replay(replayed, { publish: true })
 
-      expect(received).toMatchObject([{ id: replayed.id, durable: { seq: 0, version: 1 }, data: replayed.data }])
+      expect(received).toMatchObject([
+        { id: replayed.id, durable: { seq: 0, version: 1 }, data: durableData(aggregateID, "replayed") },
+      ])
     }),
   )
 
@@ -1257,19 +1310,19 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const received = new Array<EventV2.Payload>()
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const replayed = {
         id: EventV2.ID.create(),
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "original"),
+        data: serializedData(aggregateID, "original"),
       }
       yield* events.listen((event) => Effect.sync(() => received.push(event)))
       yield* events.replay(replayed, { publish: true })
 
       const exit = yield* events
-        .replay({ ...replayed, data: durableData(aggregateID, "divergent") }, { publish: true })
+        .replay({ ...replayed, data: serializedData(aggregateID, "divergent") }, { publish: true })
         .pipe(Effect.exit)
 
       expect(String(exit)).toContain("Replay diverged")
@@ -1280,14 +1333,14 @@ describe("EventV2", () => {
   it.effect("rejects an event ID reused at another aggregate position", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const id = EventV2.ID.create()
       yield* events.replay({
         id,
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "first"),
+        data: serializedData(aggregateID, "first"),
       })
 
       const exit = yield* events
@@ -1296,7 +1349,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 1,
           aggregateID,
-          data: durableData(aggregateID, "second"),
+          data: serializedData(aggregateID, "second"),
         })
         .pipe(Effect.exit)
 
@@ -1308,7 +1361,7 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const { db } = yield* Database.Service
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       const received = new Array<EventV2.Payload>()
       yield* events.listen((event) => Effect.sync(() => received.push(event)))
 
@@ -1318,7 +1371,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 0,
           aggregateID,
-          data: durableData(aggregateID, "first"),
+          data: serializedData(aggregateID, "first"),
         },
         { ownerID: "owner-1" },
       )
@@ -1328,7 +1381,7 @@ describe("EventV2", () => {
           type: EventV2.versionedType(DurableMessage.type, 1),
           seq: 1,
           aggregateID,
-          data: durableData(aggregateID, "ignored"),
+          data: serializedData(aggregateID, "ignored"),
         },
         { ownerID: "owner-2", publish: true },
       )
@@ -1375,7 +1428,7 @@ describe("EventV2", () => {
     Effect.gen(function* () {
       const events = yield* EventV2.Service
       const received = new Array<EventV2.Payload>()
-      const aggregateID = Session.ID.create()
+      const aggregateID = DagEvent.DagID.create()
       yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
       yield* events.remove(aggregateID)
       yield* events.project(DurableMessage, (event) =>
@@ -1389,7 +1442,7 @@ describe("EventV2", () => {
         type: EventV2.versionedType(DurableMessage.type, 1),
         seq: 0,
         aggregateID,
-        data: durableData(aggregateID, "replayed"),
+        data: serializedData(aggregateID, "replayed"),
       })
 
       expect(received[0]?.data).toEqual(durableData(aggregateID, "replayed"))
