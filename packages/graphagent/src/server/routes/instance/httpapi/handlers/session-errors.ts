@@ -12,8 +12,11 @@ export function mapBusy<A, R>(self: Effect.Effect<A, Session.BusyError, R>) {
     Effect.catchTag("SessionBusyError", (error) =>
       Effect.fail(
         new ApiError.SessionBusyError({
-          sessionID: error.sessionID,
-          message: `Session is busy: ${error.sessionID}`,
+          name: "SessionBusyError",
+          data: {
+            sessionID: error.sessionID,
+            message: `Session is busy: ${error.sessionID}`,
+          },
         }),
       ),
     ),

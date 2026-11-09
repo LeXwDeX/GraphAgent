@@ -8,7 +8,6 @@ import type { SessionSchema } from "./schema"
 import type { MessageID, PartID, SessionV1 } from "../v1/session"
 import { WorkspaceV2 } from "../workspace"
 import { Timestamps } from "../database/schema.sql"
-import { AgentV2 } from "../agent"
 import type { Revert } from "@graphagent/schema/revert"
 import type { FileDiff } from "@graphagent/schema/file-diff"
 

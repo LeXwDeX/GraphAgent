@@ -206,9 +206,8 @@ describe("mcp HttpApi", () => {
 
           expect(response.status).toBe(404)
           expect(yield* json(response)).toEqual({
-            _tag: "McpServerNotFoundError",
-            name: "missing",
-            message: "MCP server not found: missing",
+            name: "McpServerNotFoundError",
+            data: { name: "missing", message: "MCP server not found: missing" },
           })
         }
       }),

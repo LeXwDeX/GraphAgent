@@ -1,24 +1,11 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
-import { CommandV2 } from "@graphagent/core/command"
-import { Location } from "@graphagent/core/location"
 import { CommandPlugin } from "@graphagent/core/plugin/command"
-import { AbsolutePath } from "@graphagent/core/schema"
-import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
-import { host } from "./host"
 
-const directory = AbsolutePath.make("/repo/pkg-a")
-const project = AbsolutePath.make("/repo")
-const it = testEffect(
-  CommandV2.locationLayer.pipe(
-    Layer.provide(
-      Layer.succeed(Location.Service, Location.Service.of(location({ directory }, { projectDirectory: project }))),
-    ),
-  ),
-)
+const it = testEffect(Layer.empty)
 
-describe("CommandPlugin.Plugin", () => {
+describe("CommandPlugin", () => {
   it.effect("lets the model choose orchestration by benefit rather than task category", () =>
     Effect.sync(() => {
       const content = CommandPlugin.WorkflowContent.replace(/\s+/g, " ")
@@ -73,37 +60,8 @@ describe("CommandPlugin.Plugin", () => {
     }),
   )
 
-  it.effect("registers built-in init and review commands", () =>
-    Effect.gen(function* () {
-      const command = yield* CommandV2.Service
-      yield* CommandPlugin.Plugin.effect(
-        host({
-          command: { transform: command.transform, reload: command.reload },
-        }),
-      ).pipe(
-        Effect.provideService(
-          Location.Service,
-          Location.Service.of(location({ directory }, { projectDirectory: project })),
-        ),
-      )
-
-      expect(yield* command.get("init")).toMatchObject({
-        name: "init",
-        description: "guided AGENTS.md setup",
-      })
-      expect((yield* command.get("init"))?.template).toContain("`/repo`")
-      expect(yield* command.get("review")).toMatchObject({
-        name: "review",
-        description: "review changes [commit|branch|pr], defaults to uncommitted",
-        subtask: true,
-      })
-      // The registered template renders the project's runtime artifact area,
-      // which resolves to the global project for `/repo` (not a git checkout).
-      expect(yield* command.get("dag-auto")).toMatchObject({
-        name: "dag-auto",
-        description: CommandPlugin.DagAutoDescription,
-        template: CommandPlugin.renderDagAutoContent("global"),
-      })
+  it.effect("renders the /dag-auto prompt with the project artifact area", () =>
+    Effect.sync(() => {
       expect(CommandPlugin.renderDagAutoContent("global")).toContain(CommandPlugin.dagSpecsArea("global"))
       expect(CommandPlugin.DagAutoContent).toContain("$ARGUMENTS")
       expect(CommandPlugin.DagAutoContent).toContain("ultra-flow-route")
@@ -111,26 +69,6 @@ describe("CommandPlugin.Plugin", () => {
       expect(CommandPlugin.DagAutoContent).toContain("Respect configured budgets")
       expect(CommandPlugin.DagAutoContent).toContain("explicit request for direct work or no DAG takes precedence")
       expect(CommandPlugin.DagAutoContent).toContain("Product decision checkpoint")
-    }),
-  )
-
-  it.effect("retires the platform-delivery commands", () =>
-    Effect.gen(function* () {
-      const command = yield* CommandV2.Service
-      yield* CommandPlugin.Plugin.effect(
-        host({
-          command: { transform: command.transform, reload: command.reload },
-        }),
-      ).pipe(
-        Effect.provideService(
-          Location.Service,
-          Location.Service.of(location({ directory }, { projectDirectory: project })),
-        ),
-      )
-
-      expect(yield* command.get("dag-init")).toBeUndefined()
-      expect(yield* command.get("dag-flow")).toBeUndefined()
-      expect(yield* command.get("dag-template-update")).toBeUndefined()
     }),
   )
 

@@ -26,8 +26,11 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
           Effect.catchTag("Question.NotFoundError", (error) =>
             Effect.fail(
               new QuestionNotFoundError({
-                requestID: String(error.requestID),
-                message: `Question request not found: ${error.requestID}`,
+                name: "QuestionNotFoundError",
+                data: {
+                  requestID: String(error.requestID),
+                  message: `Question request not found: ${error.requestID}`,
+                },
               }),
             ),
           ),
@@ -40,8 +43,11 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
         Effect.catchTag("Question.NotFoundError", (error) =>
           Effect.fail(
             new QuestionNotFoundError({
-              requestID: String(error.requestID),
-              message: `Question request not found: ${error.requestID}`,
+              name: "QuestionNotFoundError",
+              data: {
+                requestID: String(error.requestID),
+                message: `Question request not found: ${error.requestID}`,
+              },
             }),
           ),
         ),
@@ -54,8 +60,11 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
         Effect.catchTag("Question.NotFoundError", (error) =>
           Effect.fail(
             new QuestionNotFoundError({
-              requestID: String(error.requestID),
-              message: `Question request not found: ${error.requestID}`,
+              name: "QuestionNotFoundError",
+              data: {
+                requestID: String(error.requestID),
+                message: `Question request not found: ${error.requestID}`,
+              },
             }),
           ),
         ),

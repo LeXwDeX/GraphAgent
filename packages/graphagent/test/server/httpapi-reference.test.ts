@@ -43,20 +43,19 @@ describe("reference HttpApi", () => {
       const body = await Effect.runPromise(
         pollWithTimeout(
           Effect.promise(async () => {
-            const response = await Server.Default().app.request("/api/reference", {
+            const response = await Server.Default().app.request("/reference", {
               headers: { "x-graphagent-directory": tmp.path },
             })
             expect(response.status).toBe(200)
             const body = await response.json()
-            observed = body.data.map((item: { name: string }) => item.name)
+            observed = body.map((item: { name: string }) => item.name)
             return expected.every((name) => observed.includes(name)) ? body : undefined
           }),
           () =>
             `references were not loaded; observed=${observed.join(",") || "<none>"} missing=${expected.filter((name) => !observed.includes(name)).join(",") || "<none>"}`,
         ),
       )
-      expect(body).toMatchObject({ location: { directory: tmp.path } })
-      expect(body.data).toEqual([
+      expect(body).toEqual([
         {
           name: "docs",
           path: path.join(tmp.path, "docs"),

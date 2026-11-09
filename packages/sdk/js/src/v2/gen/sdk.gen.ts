@@ -52,8 +52,14 @@ import type {
   ExperimentalCapabilitiesGetResponses,
   ExperimentalControlPlaneMoveSessionErrors,
   ExperimentalControlPlaneMoveSessionResponses,
+  ExperimentalProjectCopyCreateErrors,
+  ExperimentalProjectCopyCreateResponses,
   ExperimentalProjectCopyGenerateNameErrors,
   ExperimentalProjectCopyGenerateNameResponses,
+  ExperimentalProjectCopyRefreshErrors,
+  ExperimentalProjectCopyRefreshResponses,
+  ExperimentalProjectCopyRemoveErrors,
+  ExperimentalProjectCopyRemoveResponses,
   ExperimentalResourceListErrors,
   ExperimentalResourceListResponses,
   ExperimentalSessionBackgroundErrors,
@@ -161,6 +167,8 @@ import type {
   QuestionRejectResponses,
   QuestionReplyErrors,
   QuestionReplyResponses,
+  ReferenceListErrors,
+  ReferenceListResponses,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionAttentionErrors,
@@ -229,55 +237,6 @@ import type {
   SessionUpdateResponses,
   SubtaskPartInput,
   TextPartInput,
-  V2AgentListErrors,
-  V2AgentListResponses,
-  V2CommandListErrors,
-  V2CommandListResponses,
-  V2CredentialRemoveErrors,
-  V2CredentialRemoveResponses,
-  V2CredentialUpdateErrors,
-  V2CredentialUpdateResponses,
-  V2EventSubscribeErrors,
-  V2EventSubscribeResponse,
-  V2EventSubscribeResponses,
-  V2FsFindErrors,
-  V2FsFindResponses,
-  V2FsListErrors,
-  V2FsListResponses,
-  V2FsReadErrors,
-  V2FsReadResponses,
-  V2HealthGetErrors,
-  V2HealthGetResponses,
-  V2IntegrationAttemptCancelErrors,
-  V2IntegrationAttemptCancelResponses,
-  V2IntegrationAttemptCompleteErrors,
-  V2IntegrationAttemptCompleteResponses,
-  V2IntegrationAttemptStatusErrors,
-  V2IntegrationAttemptStatusResponses,
-  V2IntegrationConnectKeyErrors,
-  V2IntegrationConnectKeyResponses,
-  V2IntegrationConnectOauthErrors,
-  V2IntegrationConnectOauthResponses,
-  V2IntegrationGetErrors,
-  V2IntegrationGetResponses,
-  V2IntegrationListErrors,
-  V2IntegrationListResponses,
-  V2LocationGetErrors,
-  V2LocationGetResponses,
-  V2ModelListErrors,
-  V2ModelListResponses,
-  V2ProjectCopyCreateErrors,
-  V2ProjectCopyCreateResponses,
-  V2ProjectCopyRefreshErrors,
-  V2ProjectCopyRefreshResponses,
-  V2ProjectCopyRemoveErrors,
-  V2ProjectCopyRemoveResponses,
-  V2ProviderGetErrors,
-  V2ProviderGetResponses,
-  V2ProviderListErrors,
-  V2ProviderListResponses,
-  V2ReferenceListErrors,
-  V2ReferenceListResponses,
   VcsApplyErrors,
   VcsApplyResponses,
   VcsDiffErrors,
@@ -699,6 +658,126 @@ export class ProjectCopy extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Remove project copy
+   *
+   * Remove a project copy from the requested directory.
+   */
+  public remove<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory: string
+      force: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ExperimentalProjectCopyRemoveResponses, ExperimentalProjectCopyRemoveErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "body", key: "directory" },
+            { in: "body", key: "force" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      ExperimentalProjectCopyRemoveResponses,
+      ExperimentalProjectCopyRemoveErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/project/{projectID}/copy",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Create project copy
+   *
+   * Create a project copy at the requested directory.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      strategy: string
+      directory: string
+      name?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ExperimentalProjectCopyCreateResponses, ExperimentalProjectCopyCreateErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "body", key: "strategy" },
+            { in: "body", key: "directory" },
+            { in: "body", key: "name" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalProjectCopyCreateResponses,
+      ExperimentalProjectCopyCreateErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/project/{projectID}/copy",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Refresh project copies
+   *
+   * Refresh the project copy registry for the current project.
+   */
+  public refresh<ThrowOnError extends boolean = false>(
+    parameters: {
+      projectID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ExperimentalProjectCopyRefreshResponses, ExperimentalProjectCopyRefreshErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "projectID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalProjectCopyRefreshResponses,
+      ExperimentalProjectCopyRefreshErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/project/{projectID}/copy/refresh",
+      ...options,
+      ...params,
     })
   }
 }
@@ -2631,6 +2710,38 @@ export class Provider extends HeyApiClient {
   }
 }
 
+export class Reference extends HeyApiClient {
+  /**
+   * List references
+   *
+   * List references available in the current project.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ReferenceListResponses, ReferenceListErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ReferenceListResponses, ReferenceListErrors, ThrowOnError>({
+      url: "/reference",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Hook extends HeyApiClient {
   /**
    * List session-scoped hooks
@@ -4364,849 +4475,6 @@ export class Dag extends HeyApiClient {
   }
 }
 
-export class Health extends HeyApiClient {
-  /**
-   * Check server health
-   *
-   * Check whether the API server is ready to accept requests.
-   */
-  public get<ThrowOnError extends boolean = false>(
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2HealthGetResponses, V2HealthGetErrors, ThrowOnError> {
-    return (options?.client ?? this.client).get<V2HealthGetResponses, V2HealthGetErrors, ThrowOnError>({
-      url: "/api/health",
-      ...options,
-    })
-  }
-}
-
-export class Location extends HeyApiClient {
-  /**
-   * Get location
-   *
-   * Resolve the requested location or the server default location.
-   */
-  public get<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2LocationGetResponses, V2LocationGetErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2LocationGetResponses, V2LocationGetErrors, ThrowOnError>({
-      url: "/api/location",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Agent extends HeyApiClient {
-  /**
-   * List agents
-   *
-   * Retrieve currently registered agents.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2AgentListResponses, V2AgentListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2AgentListResponses, V2AgentListErrors, ThrowOnError>({
-      url: "/api/agent",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Model extends HeyApiClient {
-  /**
-   * List models
-   *
-   * Retrieve available models ordered by release date.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2ModelListResponses, V2ModelListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2ModelListResponses, V2ModelListErrors, ThrowOnError>({
-      url: "/api/model",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Provider2 extends HeyApiClient {
-  /**
-   * List providers
-   *
-   * Retrieve active AI providers so clients can show provider availability and configuration.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2ProviderListResponses, V2ProviderListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2ProviderListResponses, V2ProviderListErrors, ThrowOnError>({
-      url: "/api/provider",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Get provider
-   *
-   * Retrieve a single AI provider so clients can inspect its availability and endpoint settings.
-   */
-  public get<ThrowOnError extends boolean = false>(
-    parameters: {
-      providerID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2ProviderGetResponses, V2ProviderGetErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "providerID" },
-            { in: "query", key: "location" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<V2ProviderGetResponses, V2ProviderGetErrors, ThrowOnError>({
-      url: "/api/provider/{providerID}",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Connect extends HeyApiClient {
-  /**
-   * Connect with key
-   *
-   * Run a key authentication method and store the resulting credential.
-   */
-  public key<ThrowOnError extends boolean = false>(
-    parameters: {
-      integrationID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      key: string
-      label?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2IntegrationConnectKeyResponses, V2IntegrationConnectKeyErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "integrationID" },
-            { in: "query", key: "location" },
-            { in: "body", key: "key" },
-            { in: "body", key: "label" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2IntegrationConnectKeyResponses,
-      V2IntegrationConnectKeyErrors,
-      ThrowOnError
-    >({
-      url: "/api/integration/{integrationID}/connect/key",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Begin OAuth connection
-   *
-   * Start an OAuth attempt and return the authorization details.
-   */
-  public oauth<ThrowOnError extends boolean = false>(
-    parameters: {
-      integrationID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      methodID: string
-      inputs: {
-        [key: string]: string
-      }
-      label?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2IntegrationConnectOauthResponses, V2IntegrationConnectOauthErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "integrationID" },
-            { in: "query", key: "location" },
-            { in: "body", key: "methodID" },
-            { in: "body", key: "inputs" },
-            { in: "body", key: "label" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2IntegrationConnectOauthResponses,
-      V2IntegrationConnectOauthErrors,
-      ThrowOnError
-    >({
-      url: "/api/integration/{integrationID}/connect/oauth",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-}
-
-export class Attempt extends HeyApiClient {
-  /**
-   * Cancel OAuth connection
-   *
-   * Cancel an OAuth attempt and release its resources.
-   */
-  public cancel<ThrowOnError extends boolean = false>(
-    parameters: {
-      attemptID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2IntegrationAttemptCancelResponses, V2IntegrationAttemptCancelErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "attemptID" },
-            { in: "query", key: "location" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).delete<
-      V2IntegrationAttemptCancelResponses,
-      V2IntegrationAttemptCancelErrors,
-      ThrowOnError
-    >({
-      url: "/api/integration/attempt/{attemptID}",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Get OAuth attempt status
-   *
-   * Poll the current status of an OAuth attempt.
-   */
-  public status<ThrowOnError extends boolean = false>(
-    parameters: {
-      attemptID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2IntegrationAttemptStatusResponses, V2IntegrationAttemptStatusErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "attemptID" },
-            { in: "query", key: "location" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<
-      V2IntegrationAttemptStatusResponses,
-      V2IntegrationAttemptStatusErrors,
-      ThrowOnError
-    >({
-      url: "/api/integration/attempt/{attemptID}",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Complete OAuth connection
-   *
-   * Complete a code-based OAuth attempt and store the resulting credential.
-   */
-  public complete<ThrowOnError extends boolean = false>(
-    parameters: {
-      attemptID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      code?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2IntegrationAttemptCompleteResponses, V2IntegrationAttemptCompleteErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "attemptID" },
-            { in: "query", key: "location" },
-            { in: "body", key: "code" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2IntegrationAttemptCompleteResponses,
-      V2IntegrationAttemptCompleteErrors,
-      ThrowOnError
-    >({
-      url: "/api/integration/attempt/{attemptID}/complete",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-}
-
-export class Integration extends HeyApiClient {
-  /**
-   * List integrations
-   *
-   * Retrieve available integrations and their authentication methods.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2IntegrationListResponses, V2IntegrationListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2IntegrationListResponses, V2IntegrationListErrors, ThrowOnError>({
-      url: "/api/integration",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Get integration
-   *
-   * Retrieve one integration and its authentication methods.
-   */
-  public get<ThrowOnError extends boolean = false>(
-    parameters: {
-      integrationID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2IntegrationGetResponses, V2IntegrationGetErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "integrationID" },
-            { in: "query", key: "location" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<V2IntegrationGetResponses, V2IntegrationGetErrors, ThrowOnError>({
-      url: "/api/integration/{integrationID}",
-      ...options,
-      ...params,
-    })
-  }
-
-  private _connect?: Connect
-  get connect(): Connect {
-    return (this._connect ??= new Connect({ client: this.client }))
-  }
-
-  private _attempt?: Attempt
-  get attempt(): Attempt {
-    return (this._attempt ??= new Attempt({ client: this.client }))
-  }
-}
-
-export class Credential extends HeyApiClient {
-  /**
-   * Remove credential
-   *
-   * Remove a stored integration credential.
-   */
-  public remove<ThrowOnError extends boolean = false>(
-    parameters: {
-      credentialID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2CredentialRemoveResponses, V2CredentialRemoveErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "credentialID" },
-            { in: "query", key: "location" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).delete<V2CredentialRemoveResponses, V2CredentialRemoveErrors, ThrowOnError>(
-      {
-        url: "/api/credential/{credentialID}",
-        ...options,
-        ...params,
-      },
-    )
-  }
-
-  /**
-   * Update credential
-   *
-   * Update a stored credential label.
-   */
-  public update<ThrowOnError extends boolean = false>(
-    parameters: {
-      credentialID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      label: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2CredentialUpdateResponses, V2CredentialUpdateErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "credentialID" },
-            { in: "query", key: "location" },
-            { in: "body", key: "label" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).patch<V2CredentialUpdateResponses, V2CredentialUpdateErrors, ThrowOnError>({
-      url: "/api/credential/{credentialID}",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-}
-
-export class Fs extends HeyApiClient {
-  /**
-   * Read file
-   *
-   * Serve one file relative to the requested location.
-   */
-  public read<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2FsReadResponses, V2FsReadErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2FsReadResponses, V2FsReadErrors, ThrowOnError>({
-      url: "/api/fs/read/*",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * List directory
-   *
-   * List direct children of one directory relative to the requested location.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      path?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2FsListResponses, V2FsListErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "location" },
-            { in: "query", key: "path" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<V2FsListResponses, V2FsListErrors, ThrowOnError>({
-      url: "/api/fs/list",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Find files
-   *
-   * Find recursively ranked filesystem entries relative to the requested location.
-   */
-  public find<ThrowOnError extends boolean = false>(
-    parameters: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      query: string
-      type?: "file" | "directory"
-      limit?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2FsFindResponses, V2FsFindErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "location" },
-            { in: "query", key: "query" },
-            { in: "query", key: "type" },
-            { in: "query", key: "limit" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<V2FsFindResponses, V2FsFindErrors, ThrowOnError>({
-      url: "/api/fs/find",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Command2 extends HeyApiClient {
-  /**
-   * List commands
-   *
-   * Retrieve currently registered commands.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2CommandListResponses, V2CommandListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2CommandListResponses, V2CommandListErrors, ThrowOnError>({
-      url: "/api/command",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class Event2 extends HeyApiClient {
-  /**
-   * Subscribe to events
-   *
-   * Subscribe to native event payloads for the server.
-   */
-  public subscribe<ThrowOnError extends boolean = false>(
-    options?: Options<never, ThrowOnError, V2EventSubscribeResponse>,
-  ): Promise<ServerSentEventsResult<V2EventSubscribeResponses>> {
-    return (options?.client ?? this.client).sse.get<V2EventSubscribeResponses, V2EventSubscribeErrors, ThrowOnError>({
-      url: "/api/event",
-      ...options,
-    })
-  }
-}
-
-export class Reference extends HeyApiClient {
-  /**
-   * List references
-   *
-   * List references available in the requested location.
-   */
-  public list<ThrowOnError extends boolean = false>(
-    parameters?: {
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2ReferenceListResponses, V2ReferenceListErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "query", key: "location" }] }])
-    return (options?.client ?? this.client).get<V2ReferenceListResponses, V2ReferenceListErrors, ThrowOnError>({
-      url: "/api/reference",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class ProjectCopy2 extends HeyApiClient {
-  public remove<ThrowOnError extends boolean = false>(
-    parameters: {
-      projectID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      directory: string
-      force: boolean
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2ProjectCopyRemoveResponses, V2ProjectCopyRemoveErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "projectID" },
-            { in: "query", key: "location" },
-            { in: "body", key: "directory" },
-            { in: "body", key: "force" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).delete<
-      V2ProjectCopyRemoveResponses,
-      V2ProjectCopyRemoveErrors,
-      ThrowOnError
-    >({
-      url: "/experimental/project/{projectID}/copy",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  public create<ThrowOnError extends boolean = false>(
-    parameters: {
-      projectID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-      strategy: string
-      directory: string
-      name?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2ProjectCopyCreateResponses, V2ProjectCopyCreateErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "projectID" },
-            { in: "query", key: "location" },
-            { in: "body", key: "strategy" },
-            { in: "body", key: "directory" },
-            { in: "body", key: "name" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<V2ProjectCopyCreateResponses, V2ProjectCopyCreateErrors, ThrowOnError>(
-      {
-        url: "/experimental/project/{projectID}/copy",
-        ...options,
-        ...params,
-        headers: {
-          "Content-Type": "application/json",
-          ...options?.headers,
-          ...params.headers,
-        },
-      },
-    )
-  }
-
-  public refresh<ThrowOnError extends boolean = false>(
-    parameters: {
-      projectID: string
-      location?: {
-        directory?: string
-        workspace?: string
-      }
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<V2ProjectCopyRefreshResponses, V2ProjectCopyRefreshErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "projectID" },
-            { in: "query", key: "location" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      V2ProjectCopyRefreshResponses,
-      V2ProjectCopyRefreshErrors,
-      ThrowOnError
-    >({
-      url: "/experimental/project/{projectID}/copy/refresh",
-      ...options,
-      ...params,
-    })
-  }
-}
-
-export class V2 extends HeyApiClient {
-  private _health?: Health
-  get health(): Health {
-    return (this._health ??= new Health({ client: this.client }))
-  }
-
-  private _location?: Location
-  get location(): Location {
-    return (this._location ??= new Location({ client: this.client }))
-  }
-
-  private _agent?: Agent
-  get agent(): Agent {
-    return (this._agent ??= new Agent({ client: this.client }))
-  }
-
-  private _model?: Model
-  get model(): Model {
-    return (this._model ??= new Model({ client: this.client }))
-  }
-
-  private _provider?: Provider2
-  get provider(): Provider2 {
-    return (this._provider ??= new Provider2({ client: this.client }))
-  }
-
-  private _integration?: Integration
-  get integration(): Integration {
-    return (this._integration ??= new Integration({ client: this.client }))
-  }
-
-  private _credential?: Credential
-  get credential(): Credential {
-    return (this._credential ??= new Credential({ client: this.client }))
-  }
-
-  private _fs?: Fs
-  get fs(): Fs {
-    return (this._fs ??= new Fs({ client: this.client }))
-  }
-
-  private _command?: Command2
-  get command(): Command2 {
-    return (this._command ??= new Command2({ client: this.client }))
-  }
-
-  private _event?: Event2
-  get event(): Event2 {
-    return (this._event ??= new Event2({ client: this.client }))
-  }
-
-  private _reference?: Reference
-  get reference(): Reference {
-    return (this._reference ??= new Reference({ client: this.client }))
-  }
-
-  private _projectCopy?: ProjectCopy2
-  get projectCopy(): ProjectCopy2 {
-    return (this._projectCopy ??= new ProjectCopy2({ client: this.client }))
-  }
-}
-
 export class OpencodeClient extends HeyApiClient {
   public static readonly __registry: HeyApiRegistry<OpencodeClient> = new HeyApiRegistry<OpencodeClient>()
 
@@ -5310,6 +4578,11 @@ export class OpencodeClient extends HeyApiClient {
     return (this._provider ??= new Provider({ client: this.client }))
   }
 
+  private _reference?: Reference
+  get reference(): Reference {
+    return (this._reference ??= new Reference({ client: this.client }))
+  }
+
   private _session?: Session2
   get session(): Session2 {
     return (this._session ??= new Session2({ client: this.client }))
@@ -5323,10 +4596,5 @@ export class OpencodeClient extends HeyApiClient {
   private _dag?: Dag
   get dag(): Dag {
     return (this._dag ??= new Dag({ client: this.client }))
-  }
-
-  private _v2?: V2
-  get v2(): V2 {
-    return (this._v2 ??= new V2({ client: this.client }))
   }
 }

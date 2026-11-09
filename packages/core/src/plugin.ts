@@ -3,11 +3,6 @@ export * as PluginV2 from "./plugin"
 import { SourceProvenance } from "./session/source-provenance"
 import { Context, Deferred, Effect, Exit, Layer, Schema, Scope } from "effect"
 import type { Plugin } from "./plugin/context/plugin"
-import { AgentV2 } from "./agent"
-import { AISDK } from "./aisdk"
-import { Catalog } from "./catalog"
-import { CommandV2 } from "./command"
-import { Integration } from "./integration"
 import { KeyedMutex } from "./effect/keyed-mutex"
 import { PluginHost } from "./plugin/host"
 import { Reference } from "./reference"
@@ -137,11 +132,4 @@ export const layer = Layer.effect(
   }),
 )
 
-export const locationLayer = layer.pipe(
-  Layer.provideMerge(AgentV2.locationLayer),
-  Layer.provideMerge(AISDK.locationLayer),
-  Layer.provideMerge(Catalog.locationLayer),
-  Layer.provideMerge(CommandV2.locationLayer),
-  Layer.provideMerge(Integration.locationLayer),
-  Layer.provideMerge(Reference.locationLayer),
-)
+export const locationLayer = layer.pipe(Layer.provideMerge(Reference.locationLayer))

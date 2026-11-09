@@ -22,20 +22,12 @@ export class SchemaErrorMiddleware extends HttpApiMiddleware.Service<SchemaError
   },
 ) {}
 
-export const schemaErrorLayer = HttpApiMiddleware.layerSchemaErrorTransform(SchemaErrorMiddleware, (error, context) => {
+export const schemaErrorLayer = HttpApiMiddleware.layerSchemaErrorTransform(SchemaErrorMiddleware, (error) => {
   const reason = truncateReason(error.cause.message)
-  const response = context.endpoint.path.startsWith("/api/")
-    ? Effect.fail(
-        new InvalidRequestError({
-          message: reason,
-          kind: error.kind,
-        }),
-      )
-    : Effect.succeed(
-        HttpServerResponse.jsonUnsafe(
-          { name: "BadRequest", data: { message: reason, kind: error.kind } },
-          { status: 400 },
-        ),
-      )
+  // Match the NamedError shape used by other 4xx/5xx so the SDK's
+  // `wrapClientError` extracts `.data.message`.
+  const response = Effect.succeed(
+    HttpServerResponse.jsonUnsafe({ name: "BadRequest", data: { message: reason, kind: error.kind } }, { status: 400 }),
+  )
   return Effect.logWarning("schema rejection", { kind: error.kind, reason }).pipe(Effect.andThen(response))
 })

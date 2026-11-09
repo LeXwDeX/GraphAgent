@@ -198,9 +198,8 @@ describe("session HttpApi", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) {
         expect(Cause.squash(exit.cause)).toMatchObject({
-          _tag: "SessionBusyError",
-          sessionID,
-          message: `Session is busy: ${sessionID}`,
+          name: "SessionBusyError",
+          data: { sessionID, message: `Session is busy: ${sessionID}` },
         })
       }
     }),
@@ -671,8 +670,8 @@ describe("session HttpApi", () => {
         })
         expect(conflict.status).toBe(409)
         expect(yield* responseJson(conflict)).toMatchObject({
-          _tag: "ConflictError",
-          resource: "already_consumed",
+          name: "ConflictError",
+          data: { resource: "already_consumed" },
         })
       }),
     { git: true, config: { formatter: false, lsp: false } },
@@ -792,9 +791,8 @@ describe("session HttpApi", () => {
         )
         expect(permission.status).toBe(404)
         expect(yield* responseJson(permission)).toEqual({
-          _tag: "PermissionNotFoundError",
-          requestID: permissionID,
-          message: `Permission request not found: ${permissionID}`,
+          name: "PermissionNotFoundError",
+          data: { requestID: permissionID, message: `Permission request not found: ${permissionID}` },
         })
       }),
     { git: true, config: { formatter: false, lsp: false } },

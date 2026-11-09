@@ -320,13 +320,11 @@ export function Autocomplete(props: {
       const { lineRange, baseQuery } = extractLineRange(input.query ?? "")
 
       // Get files from SDK
-      const result = await sdk.client.v2.fs.find({
+      const result = await sdk.client.find.files({
         query: baseQuery,
-        limit: "20",
-        location: {
-          directory: input.location?.directory,
-          workspace: input.location?.workspaceID ?? project.workspace.current(),
-        },
+        limit: 20,
+        directory: input.location?.directory,
+        workspace: input.location?.workspaceID ?? project.workspace.current(),
       })
 
       const options: AutocompleteOption[] = []
@@ -335,13 +333,10 @@ export function Autocomplete(props: {
       // score, filename bonus, etc. are already factored in).
       if (!result.error && result.data) {
         const width = props.anchor().width - 4
+        const baseDir = input.location?.directory || sync.path.directory || paths.cwd
         options.push(
-          ...result.data.data.map((item): AutocompleteOption => {
-            const { filename, part } = createFilePart(
-              item,
-              path.join(result.data.location.directory, item.path),
-              lineRange,
-            )
+          ...result.data.map((item): AutocompleteOption => {
+            const { filename, part } = createFilePart(item, path.join(baseDir, item.path), lineRange)
             return {
               display: Locale.truncateMiddle(filename, width),
               value: filename,
@@ -401,46 +396,42 @@ export function Autocomplete(props: {
   const agents = createMemo(() => {
     return sync.data.agent
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
-      .map(
-        (agent): AutocompleteOption => ({
-          display: "@" + agent.name,
-          onSelect: () => {
-            insertPart(agent.name, {
-              type: "agent",
-              name: agent.name,
-              source: {
-                start: 0,
-                end: 0,
-                value: "",
-              },
-            })
-          },
-        }),
-      )
+      .map((agent): AutocompleteOption => ({
+        display: "@" + agent.name,
+        onSelect: () => {
+          insertPart(agent.name, {
+            type: "agent",
+            name: agent.name,
+            source: {
+              start: 0,
+              end: 0,
+              value: "",
+            },
+          })
+        },
+      }))
   })
 
   const referenceAliases = createMemo(() =>
     (references() ?? [])
       .filter((reference) => !reference.hidden)
-      .map(
-        (reference): AutocompleteOption => ({
-          display: "@" + reference.name,
-          description: ` ${reference.source.type === "git" ? reference.source.repository : reference.source.path}`,
-          onSelect: () => {
-            insertPart(reference.name, {
+      .map((reference): AutocompleteOption => ({
+        display: "@" + reference.name,
+        description: ` ${reference.source.type === "git" ? reference.source.repository : reference.source.path}`,
+        onSelect: () => {
+          insertPart(reference.name, {
+            type: "file",
+            mime: "application/x-directory",
+            filename: reference.name,
+            url: pathToFileURL(reference.path).href,
+            source: {
               type: "file",
-              mime: "application/x-directory",
-              filename: reference.name,
-              url: pathToFileURL(reference.path).href,
-              source: {
-                type: "file",
-                text: { start: 0, end: 0, value: "" },
-                path: reference.name,
-              },
-            })
-          },
-        }),
-      ),
+              text: { start: 0, end: 0, value: "" },
+              path: reference.name,
+            },
+          })
+        },
+      })),
   )
 
   const commands = createMemo((): AutocompleteOption[] => {

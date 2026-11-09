@@ -2,8 +2,6 @@ import { Schema } from "effect"
 import { HttpApi } from "effect/http-api"
 import { EventV2 } from "@graphagent/core/event"
 import { EventManifest } from "@/event-manifest"
-import { Credential } from "@graphagent/core/credential"
-import { Integration } from "@graphagent/core/integration"
 import { InstanceDisposed } from "@/server/event"
 import { Question } from "@/question"
 import { ConfigApi } from "./groups/config"
@@ -19,11 +17,10 @@ import { ProjectApi } from "./groups/project"
 import { ProjectCopyApi } from "./groups/project-copy"
 import { ProviderApi } from "./groups/provider"
 import { QuestionApi } from "./groups/question"
+import { ReferenceApi } from "./groups/reference"
 import { SessionApi } from "./groups/session"
 import { DagApi } from "./groups/dag"
 import { WorkspaceApi } from "./groups/workspace"
-import { makeApi } from "@graphagent/protocol/api"
-import { LocationMiddleware } from "@graphagent/server/location"
 import { GlobalApi } from "./groups/global"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 
@@ -39,11 +36,6 @@ const EventSchema = Schema.Union([
     .toArray(),
   InstanceDisposed,
 ]).annotate({ identifier: "Event" })
-
-export const ServerApi = makeApi({
-  definitions: EventManifest.Latest.values().toArray(),
-  locationMiddleware: LocationMiddleware,
-})
 
 export const RootHttpApi = HttpApi.make("opencode-root")
   .addHttpApi(ControlApi)
@@ -62,6 +54,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(QuestionApi)
   .addHttpApi(PermissionApi)
   .addHttpApi(ProviderApi)
+  .addHttpApi(ReferenceApi)
   .addHttpApi(SessionApi)
   .addHttpApi(DagApi)
   .addHttpApi(WorkspaceApi)
@@ -71,16 +64,7 @@ export const GraphagentHttpApi = HttpApi.make("opencode")
   .addHttpApi(RootHttpApi)
   .addHttpApi(EventApi)
   .addHttpApi(InstanceHttpApi)
-  .addHttpApi(ServerApi)
-  .annotate(HttpApi.AdditionalSchemas, [
-    EventSchema,
-    Question.Replied,
-    Question.Rejected,
-    Credential.Value,
-    Integration.Inputs,
-    Integration.Method,
-    Integration.Ref,
-  ])
+  .annotate(HttpApi.AdditionalSchemas, [EventSchema, Question.Replied, Question.Rejected])
 
 export type RootHttpApiType = typeof RootHttpApi
 export type InstanceHttpApiType = typeof InstanceHttpApi

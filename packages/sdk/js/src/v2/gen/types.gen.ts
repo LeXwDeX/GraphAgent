@@ -613,70 +613,6 @@ export type PermissionRule = {
 
 export type PermissionAction = "allow" | "deny" | "ask"
 
-export type V2Event =
-  | V2EventModelsDevRefreshed
-  | V2EventModelsDevFetchFailed
-  | V2EventIntegrationUpdated
-  | V2EventIntegrationConnectionUpdated
-  | V2EventCatalogUpdated
-  | V2EventSessionCreated
-  | V2EventSessionUpdated
-  | V2EventSessionDeleted
-  | V2EventMessageUpdated
-  | V2EventMessageRemoved
-  | V2EventMessagePartUpdated
-  | V2EventMessagePartRemoved
-  | V2EventSessionAgentSwitched
-  | V2EventSessionModelSwitched
-  | V2EventSessionNextMoved
-  | V2EventMessagePartDelta
-  | V2EventSessionDiff
-  | V2EventSessionError
-  | V2EventInstallationUpdated
-  | V2EventInstallationUpdateAvailable
-  | V2EventFileEdited
-  | V2EventReferenceUpdated
-  | V2EventPermissionV2Asked
-  | V2EventPermissionV2Replied
-  | V2EventProjectDirectoriesUpdated
-  | V2EventFileWatcherUpdated
-  | V2EventQuestionV2Asked
-  | V2EventQuestionV2Replied
-  | V2EventQuestionV2Rejected
-  | V2EventQuestionV2Interacted
-  | V2EventQuestionV2TimedOut
-  | V2EventTodoUpdated
-  | V2EventDagWorkflowSummaryUpdated
-  | V2EventLspUpdated
-  | V2EventPermissionAsked
-  | V2EventPermissionReplied
-  | V2EventTuiToastShow
-  | V2EventMcpToolsChanged
-  | V2EventMcpBrowserOpenFailed
-  | V2EventCommandExecuted
-  | V2EventSessionHookStatus
-  | V2EventSessionHookTerminal
-  | V2EventSessionHookMessage
-  | V2EventProjectUpdated
-  | V2EventSessionStatus
-  | V2EventSessionIdle
-  | V2EventGoalUpdated
-  | V2EventGoalCleared
-  | V2EventQuestionAsked
-  | V2EventQuestionReplied
-  | V2EventQuestionRejected
-  | V2EventQuestionInteracted
-  | V2EventQuestionTimedOut
-  | V2EventSessionCompacted
-  | V2EventVcsBranchUpdated
-  | V2EventWorkspaceReady
-  | V2EventWorkspaceFailed
-  | V2EventWorkspaceStatus
-  | V2EventWorktreeReady
-  | V2EventWorktreeFailed
-  | V2EventServerConnected
-  | V2EventGlobalDisposed
-
 export type Workspace = {
   id: string
   type: string
@@ -1558,49 +1494,28 @@ export type ConfigV2ReferenceLocal = {
 }
 
 export type ConflictError = {
-  _tag: "ConflictError"
-  message: string
-  resource?: string
-}
-
-export type IntegrationAttempt = {
-  attemptID: string
-  url: string
-  instructions: string
-  mode: "auto" | "code"
-  time: {
-    created: number | "Infinity" | "-Infinity" | "NaN"
-    expires: number | "Infinity" | "-Infinity" | "NaN"
+  name: "ConflictError"
+  data: {
+    message: string
+    resource?: string
   }
 }
 
-export type IntegrationInfo = {
-  id: string
-  name: string
-  methods: Array<IntegrationMethod>
-  connections: Array<ConnectionInfo>
-}
-
 export type InvalidRequestError = {
-  _tag: "InvalidRequestError"
-  message: string
-  kind?: string
-  field?: string
-}
-
-export type LocationInfo = {
-  directory: string
-  workspaceID?: string
-  project: {
-    id: string
-    directory: string
+  name: "InvalidRequestError"
+  data: {
+    message: string
+    kind?: string
+    field?: string
   }
 }
 
 export type McpServerNotFoundError = {
-  _tag: "McpServerNotFoundError"
-  name: string
-  message: string
+  name: "McpServerNotFoundError"
+  data: {
+    name: string
+    message: string
+  }
 }
 
 export type McpUnsupportedOAuthError = {
@@ -1647,9 +1562,11 @@ export type PermissionConfig =
     }
 
 export type PermissionNotFoundError = {
-  _tag: "PermissionNotFoundError"
-  requestID: string
-  message: string
+  name: "PermissionNotFoundError"
+  data: {
+    requestID: string
+    message: string
+  }
 }
 
 export type ProjectCopyError = {
@@ -1661,9 +1578,11 @@ export type ProjectCopyError = {
 }
 
 export type ProjectNotFoundError = {
-  _tag: "ProjectNotFoundError"
-  projectID: string
-  message: string
+  name: "ProjectNotFoundError"
+  data: {
+    projectID: string
+    message: string
+  }
 }
 
 export type ProviderAuthAuthorization = {
@@ -1720,16 +1639,12 @@ export type ProviderAuthMethod = {
   >
 }
 
-export type ProviderNotFoundError = {
-  _tag: "ProviderNotFoundError"
-  providerID: string
-  message: string
-}
-
 export type QuestionNotFoundError = {
-  _tag: "QuestionNotFoundError"
-  requestID: string
-  message: string
+  name: "QuestionNotFoundError"
+  data: {
+    requestID: string
+    message: string
+  }
 }
 
 export type ReferenceInfo = {
@@ -1740,21 +1655,12 @@ export type ReferenceInfo = {
   source: ReferenceLocalSource | ReferenceGitSource
 }
 
-export type ServiceUnavailableError = {
-  _tag: "ServiceUnavailableError"
-  message: string
-  service?: string
-}
-
 export type SessionBusyError = {
-  _tag: "SessionBusyError"
-  sessionID: string
-  message: string
-}
-
-export type UnauthorizedError = {
-  _tag: "UnauthorizedError"
-  message: string
+  name: "SessionBusyError"
+  data: {
+    sessionID: string
+    message: string
+  }
 }
 
 export type VcsApplyError = {
@@ -1787,81 +1693,6 @@ export type WorkspaceWarpError = {
 
 export type EffectHttpApiErrorBadRequest = {
   _tag: "BadRequest"
-}
-
-export type CredentialValue = CredentialOAuth | CredentialKey
-
-export type IntegrationInputs = {
-  [key: string]: string
-}
-
-export type IntegrationMethod = IntegrationOAuthMethod | IntegrationKeyMethod | IntegrationEnvMethod
-
-export type IntegrationRef = {
-  id: string
-  name: string
-}
-
-export type IntegrationEnvMethod = {
-  type: "env"
-  names: Array<string>
-}
-
-export type IntegrationKeyMethod = {
-  type: "key"
-  label?: string
-}
-
-export type IntegrationOAuthMethod = {
-  id: string
-  type: "oauth"
-  label: string
-  prompts?: Array<IntegrationTextPrompt | IntegrationSelectPrompt>
-}
-
-export type IntegrationSelectPrompt = {
-  type: "select"
-  key: string
-  message: string
-  options: Array<{
-    label: string
-    value: string
-    hint?: string
-  }>
-  when?: IntegrationWhen
-}
-
-export type IntegrationWhen = {
-  key: string
-  op: "eq" | "neq"
-  value: string
-}
-
-export type IntegrationTextPrompt = {
-  type: "text"
-  key: string
-  message: string
-  placeholder?: string
-  when?: IntegrationWhen
-}
-
-export type CredentialKey = {
-  type: "key"
-  key: string
-  metadata?: {
-    [key: string]: unknown
-  }
-}
-
-export type CredentialOAuth = {
-  type: "oauth"
-  methodID: string
-  refresh: string
-  access: string
-  expires: number
-  metadata?: {
-    [key: string]: unknown
-  }
 }
 
 export type EventServerInstanceDisposed = {
@@ -2527,1359 +2358,6 @@ export type EventModelsDevRefreshed = {
   properties: unknown
 }
 
-export type ProjectCopyCopy = {
-  directory: string
-}
-
-export type ReferenceGitSource = {
-  type: "git"
-  repository: string
-  branch?: string
-  description?: string
-  hidden?: boolean
-}
-
-export type ReferenceLocalSource = {
-  type: "local"
-  path: string
-  description?: string
-  hidden?: boolean
-}
-
-export type V2EventGlobalDisposed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "global.disposed"
-  data: unknown
-}
-
-export type V2EventServerConnected = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "server.connected"
-  data: unknown
-}
-
-export type V2EventWorktreeFailed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "worktree.failed"
-  data: {
-    message: string
-  }
-}
-
-export type V2EventWorktreeReady = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "worktree.ready"
-  data: {
-    name: string
-    branch?: string
-  }
-}
-
-export type V2EventWorkspaceStatus = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "workspace.status"
-  data: {
-    workspaceID: string
-    status: "connected" | "connecting" | "disconnected" | "error"
-  }
-}
-
-export type V2EventWorkspaceFailed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "workspace.failed"
-  data: {
-    message: string
-  }
-}
-
-export type V2EventWorkspaceReady = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "workspace.ready"
-  data: {
-    name: string
-  }
-}
-
-export type V2EventVcsBranchUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "vcs.branch.updated"
-  data: {
-    branch?: string
-  }
-}
-
-export type V2EventSessionCompacted = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.compacted"
-  data: {
-    sessionID: string
-  }
-}
-
-export type V2EventQuestionTimedOut = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.timed_out"
-  data: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type V2EventQuestionInteracted = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.interacted"
-  data: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type V2EventQuestionRejected = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.rejected"
-  data: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type V2EventQuestionReplied = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.replied"
-  data: {
-    sessionID: string
-    requestID: string
-    answers: Array<QuestionAnswer>
-  }
-}
-
-export type V2EventQuestionAsked = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.asked"
-  data: {
-    id: string
-    sessionID: string
-    /**
-     * Questions to ask
-     */
-    questions: Array<QuestionInfo>
-    tool?: QuestionTool
-    expiresAt?: number
-  }
-}
-
-export type V2EventGoalCleared = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "goal.cleared"
-  data: {
-    sessionID: string
-  }
-}
-
-export type V2EventGoalUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "goal.updated"
-  data: {
-    sessionID: string
-    goal: Goal
-  }
-}
-
-export type V2EventSessionIdle = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.idle"
-  data: {
-    sessionID: string
-  }
-}
-
-export type V2EventSessionStatus = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.status"
-  data: {
-    sessionID: string
-    status: SessionStatus
-  }
-}
-
-export type V2EventProjectUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "project.updated"
-  data: {
-    id: string
-    worktree: string
-    vcs?: "git"
-    name?: string
-    icon?: {
-      url?: string
-      override?: string
-      color?: string
-    }
-    commands?: {
-      /**
-       * Startup script to run when creating a new workspace (worktree)
-       */
-      start?: string
-    }
-    time: {
-      created: number
-      updated: number
-      initialized?: number
-    }
-    sandboxes: Array<string>
-  }
-}
-
-export type V2EventSessionHookMessage = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.hook.message"
-  data: {
-    sessionID: string
-    message: string
-  }
-}
-
-export type V2EventSessionHookTerminal = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.hook.terminal"
-  data: {
-    sessionID: string
-    sequence: string
-  }
-}
-
-export type V2EventSessionHookStatus = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.hook.status"
-  data: {
-    sessionID: string
-    hookID: string
-    event: string
-    descriptor: string
-    statusMessage?: string
-    phase: "started" | "finished" | "cancelled" | "timeout"
-    timeoutMs: number | "Infinity" | "-Infinity" | "NaN"
-    cancellable: boolean
-    startedAt: number | "Infinity" | "-Infinity" | "NaN"
-  }
-}
-
-export type V2EventCommandExecuted = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "command.executed"
-  data: {
-    name: string
-    sessionID: string
-    arguments: string
-    messageID: string
-  }
-}
-
-export type V2EventMcpBrowserOpenFailed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "mcp.browser.open.failed"
-  data: {
-    mcpName: string
-    url: string
-  }
-}
-
-export type V2EventMcpToolsChanged = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "mcp.tools.changed"
-  data: {
-    server: string
-  }
-}
-
-export type V2EventTuiToastShow = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "tui.toast.show"
-  data: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    duration?: number
-  }
-}
-
-export type V2EventPermissionReplied = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "permission.replied"
-  data: {
-    sessionID: string
-    requestID: string
-    reply: "once" | "always" | "reject"
-  }
-}
-
-export type V2EventPermissionAsked = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "permission.asked"
-  data: {
-    id: string
-    sessionID: string
-    permission: string
-    patterns: Array<string>
-    metadata: {
-      [key: string]: unknown
-    }
-    always: Array<string>
-    tool?: {
-      messageID: string
-      callID: string
-    }
-  }
-}
-
-export type V2EventLspUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "lsp.updated"
-  data: unknown
-}
-
-export type V2EventDagWorkflowSummaryUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "dag.workflow.summary.updated"
-  data: {
-    sessionID: string
-    summaries: Array<DagWorkflowSummary>
-  }
-}
-
-export type V2EventTodoUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "todo.updated"
-  data: {
-    sessionID: string
-    todos: Array<Todo>
-  }
-}
-
-export type V2EventQuestionV2TimedOut = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.v2.timed_out"
-  data: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type V2EventQuestionV2Interacted = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.v2.interacted"
-  data: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type V2EventQuestionV2Rejected = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.v2.rejected"
-  data: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type V2EventQuestionV2Replied = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.v2.replied"
-  data: {
-    sessionID: string
-    requestID: string
-    answers: Array<QuestionV2Answer>
-  }
-}
-
-export type V2EventQuestionV2Asked = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "question.v2.asked"
-  data: {
-    id: string
-    sessionID: string
-    /**
-     * Questions to ask
-     */
-    questions: Array<QuestionV2Info>
-    tool?: QuestionV2Tool
-    expiresAt?: number
-  }
-}
-
-export type V2EventFileWatcherUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "file.watcher.updated"
-  data: {
-    file: string
-    event: "add" | "change" | "unlink"
-  }
-}
-
-export type V2EventProjectDirectoriesUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "project.directories.updated"
-  data: {
-    projectID: string
-  }
-}
-
-export type V2EventPermissionV2Replied = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "permission.v2.replied"
-  data: {
-    sessionID: string
-    requestID: string
-    reply: PermissionV2Reply
-  }
-}
-
-export type V2EventPermissionV2Asked = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "permission.v2.asked"
-  data: {
-    id: string
-    sessionID: string
-    action: string
-    resources: Array<string>
-    save?: Array<string>
-    metadata?: {
-      [key: string]: unknown
-    }
-    source?: PermissionV2Source
-  }
-}
-
-export type V2EventReferenceUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "reference.updated"
-  data: unknown
-}
-
-export type V2EventFileEdited = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "file.edited"
-  data: {
-    file: string
-  }
-}
-
-export type V2EventInstallationUpdateAvailable = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "installation.update-available"
-  data: {
-    version: string
-  }
-}
-
-export type V2EventInstallationUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "installation.updated"
-  data: {
-    version: string
-  }
-}
-
-export type V2EventSessionError = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.error"
-  data: {
-    sessionID?: string
-    error?:
-      | ProviderAuthError
-      | UnknownError
-      | MessageOutputLengthError
-      | MessageAbortedError
-      | StructuredOutputError
-      | ContextOverflowError
-      | ContentFilterError
-      | ApiError
-  }
-}
-
-export type V2EventSessionDiff = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.diff"
-  data: {
-    sessionID: string
-    diff: Array<SnapshotFileDiff>
-  }
-}
-
-export type V2EventMessagePartDelta = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "message.part.delta"
-  data: {
-    sessionID: string
-    messageID: string
-    partID: string
-    field: string
-    delta: string
-  }
-}
-
-export type V2EventSessionNextMoved = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.next.moved"
-  data: {
-    timestamp: number
-    sessionID: string
-    location: LocationRef
-    subdirectory?: string
-  }
-}
-
-export type V2EventSessionModelSwitched = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.model.switched"
-  data: {
-    sessionID: string
-    model: {
-      id: string
-      providerID: string
-      variant?: string
-    }
-    timestamp: number
-  }
-}
-
-export type V2EventSessionAgentSwitched = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.agent.switched"
-  data: {
-    sessionID: string
-    agent: string
-    timestamp: number
-  }
-}
-
-export type V2EventMessagePartRemoved = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "message.part.removed"
-  data: {
-    sessionID: string
-    messageID: string
-    partID: string
-  }
-}
-
-export type V2EventMessagePartUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "message.part.updated"
-  data: {
-    sessionID: string
-    part: Part
-    time: number
-  }
-}
-
-export type V2EventMessageRemoved = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "message.removed"
-  data: {
-    sessionID: string
-    messageID: string
-  }
-}
-
-export type V2EventMessageUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "message.updated"
-  data: {
-    sessionID: string
-    info: Message
-  }
-}
-
-export type V2EventSessionDeleted = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.deleted"
-  data: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type V2EventSessionUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.updated"
-  data: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type V2EventSessionCreated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "session.created"
-  data: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type V2EventCatalogUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "catalog.updated"
-  data: unknown
-}
-
-export type V2EventIntegrationConnectionUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "integration.connection.updated"
-  data: {
-    integrationID: string
-  }
-}
-
-export type V2EventIntegrationUpdated = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "integration.updated"
-  data: unknown
-}
-
-export type V2EventModelsDevFetchFailed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "models-dev.fetch_failed"
-  data: {
-    source: string
-  }
-}
-
-export type V2EventModelsDevRefreshed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  type: "models-dev.refreshed"
-  data: unknown
-}
-
-export type CommandV2Info = {
-  name: string
-  template: string
-  description?: string
-  agent?: string
-  model?: {
-    id: string
-    providerID: string
-    variant?: string
-  }
-  subtask?: boolean
-}
-
-export type FileSystemEntry = {
-  path: string
-  type: "file" | "directory"
-}
-
-export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
-
-export type ConnectionEnvInfo = {
-  type: "env"
-  name: string
-}
-
-export type ConnectionCredentialInfo = {
-  type: "credential"
-  id: string
-  label: string
-}
-
-export type ProviderV2Info = {
-  id: string
-  integrationID?: string
-  name: string
-  disabled?: boolean
-  api:
-    | {
-        type: "aisdk"
-        package: string
-        url?: string
-        settings?: {
-          [key: string]: unknown
-        }
-      }
-    | {
-        type: "native"
-        url?: string
-        settings: {
-          [key: string]: unknown
-        }
-      }
-  request: {
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-  }
-}
-
-export type ModelV2Info = {
-  id: string
-  providerID: string
-  family?: string
-  name: string
-  api:
-    | {
-        id: string
-        type: "aisdk"
-        package: string
-        url?: string
-        settings?: {
-          [key: string]: unknown
-        }
-      }
-    | {
-        id: string
-        type: "native"
-        url?: string
-        settings: {
-          [key: string]: unknown
-        }
-      }
-  capabilities: {
-    tools: boolean
-    input: Array<string>
-    output: Array<string>
-  }
-  request: {
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-    variant?: string
-  }
-  variants: Array<{
-    id: string
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-  }>
-  time: {
-    released: number
-  }
-  cost: Array<{
-    tier?: {
-      type: "context"
-      size: number
-    }
-    input: number
-    output: number
-    cache: {
-      read: number
-      write: number
-    }
-  }>
-  status: "alpha" | "beta" | "deprecated" | "active"
-  enabled: boolean
-  limit: {
-    context: number
-    input?: number
-    output: number
-  }
-}
-
-export type AgentV2Info = {
-  id: string
-  model?: {
-    id: string
-    providerID: string
-    variant?: string
-  }
-  request: {
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-  }
-  system?: string
-  hooks?: {
-    [key: string]: unknown
-  }
-  description?: string
-  mode: "subagent" | "primary" | "all"
-  hidden: boolean
-  color?: string | "primary" | "secondary" | "accent" | "success" | "warning" | "error" | "info"
-  steps?: number
-  permissions: PermissionV2Ruleset
-}
-
-export type PermissionV2Ruleset = Array<PermissionV2Rule>
-
-export type PermissionV2Rule = {
-  action: string
-  resource: string
-  effect: PermissionV2Effect
-}
-
-export type PermissionV2Effect = "allow" | "deny" | "ask"
-
 export type DagNode = {
   id: string
   workflow_id: string
@@ -3927,12 +2405,46 @@ export type DagWorkflow = {
   time_updated: number | "Infinity" | "-Infinity" | "NaN"
 }
 
+export type ReferenceGitSource = {
+  type: "git"
+  repository: string
+  branch?: string
+  description?: string
+  hidden?: boolean
+}
+
+export type ReferenceLocalSource = {
+  type: "local"
+  path: string
+  description?: string
+  hidden?: boolean
+}
+
+export type ProjectCopyCopy = {
+  directory: string
+}
+
 export type ProjectDirectories = Array<{
   directory: string
   strategy?: string
 }>
 
+export type FileSystemEntry = {
+  path: string
+  type: "file" | "directory"
+}
+
 export type PolicyEffect = "allow" | "deny"
+
+export type PermissionV2Ruleset = Array<PermissionV2Rule>
+
+export type PermissionV2Rule = {
+  action: string
+  resource: string
+  effect: PermissionV2Effect
+}
+
+export type PermissionV2Effect = "allow" | "deny" | "ask"
 
 export type MoveSessionDestination = {
   directory: string
@@ -4484,9 +2996,9 @@ export type FindFilesError = FindFilesErrors[keyof FindFilesErrors]
 
 export type FindFilesResponses = {
   /**
-   * File paths
+   * Files and directories
    */
-  200: Array<string>
+  200: Array<FileSystemEntry>
 }
 
 export type FindFilesResponse = FindFilesResponses[keyof FindFilesResponses]
@@ -5428,6 +3940,103 @@ export type ExperimentalProjectCopyGenerateNameResponses = {
 export type ExperimentalProjectCopyGenerateNameResponse =
   ExperimentalProjectCopyGenerateNameResponses[keyof ExperimentalProjectCopyGenerateNameResponses]
 
+export type ExperimentalProjectCopyRemoveData = {
+  body?: {
+    directory: string
+    force: boolean
+  }
+  path: {
+    projectID: string
+  }
+  query?: never
+  url: "/experimental/project/{projectID}/copy"
+}
+
+export type ExperimentalProjectCopyRemoveErrors = {
+  /**
+   * ProjectCopyError | InvalidRequestError
+   */
+  400: ProjectCopyError | InvalidRequestError
+}
+
+export type ExperimentalProjectCopyRemoveError =
+  ExperimentalProjectCopyRemoveErrors[keyof ExperimentalProjectCopyRemoveErrors]
+
+export type ExperimentalProjectCopyRemoveResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type ExperimentalProjectCopyRemoveResponse =
+  ExperimentalProjectCopyRemoveResponses[keyof ExperimentalProjectCopyRemoveResponses]
+
+export type ExperimentalProjectCopyCreateData = {
+  body?: {
+    strategy: string
+    directory: string
+    name?: string
+  }
+  path: {
+    projectID: string
+  }
+  query?: never
+  url: "/experimental/project/{projectID}/copy"
+}
+
+export type ExperimentalProjectCopyCreateErrors = {
+  /**
+   * ProjectCopyError | InvalidRequestError
+   */
+  400: ProjectCopyError | InvalidRequestError
+}
+
+export type ExperimentalProjectCopyCreateError =
+  ExperimentalProjectCopyCreateErrors[keyof ExperimentalProjectCopyCreateErrors]
+
+export type ExperimentalProjectCopyCreateResponses = {
+  /**
+   * ProjectCopy.Copy
+   */
+  200: ProjectCopyCopy
+}
+
+export type ExperimentalProjectCopyCreateResponse =
+  ExperimentalProjectCopyCreateResponses[keyof ExperimentalProjectCopyCreateResponses]
+
+export type ExperimentalProjectCopyRefreshData = {
+  body?: never
+  path: {
+    projectID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/project/{projectID}/copy/refresh"
+}
+
+export type ExperimentalProjectCopyRefreshErrors = {
+  /**
+   * ProjectCopyError | InvalidRequestError
+   */
+  400: ProjectCopyError | InvalidRequestError
+}
+
+export type ExperimentalProjectCopyRefreshError =
+  ExperimentalProjectCopyRefreshErrors[keyof ExperimentalProjectCopyRefreshErrors]
+
+export type ExperimentalProjectCopyRefreshResponses = {
+  /**
+   * <No Content>
+   */
+  204: void
+}
+
+export type ExperimentalProjectCopyRefreshResponse =
+  ExperimentalProjectCopyRefreshResponses[keyof ExperimentalProjectCopyRefreshResponses]
+
 export type QuestionListData = {
   body?: never
   path?: never
@@ -5765,6 +4374,34 @@ export type ProviderOauthCallbackResponses = {
 }
 
 export type ProviderOauthCallbackResponse = ProviderOauthCallbackResponses[keyof ProviderOauthCallbackResponses]
+
+export type ReferenceListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/reference"
+}
+
+export type ReferenceListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ReferenceListError = ReferenceListErrors[keyof ReferenceListErrors]
+
+export type ReferenceListResponses = {
+  /**
+   * References
+   */
+  200: Array<ReferenceInfo>
+}
+
+export type ReferenceListResponse = ReferenceListResponses[keyof ReferenceListResponses]
 
 export type SessionListData = {
   body?: never
@@ -7767,933 +6404,3 @@ export type ExperimentalWorkspaceWarpResponses = {
 
 export type ExperimentalWorkspaceWarpResponse =
   ExperimentalWorkspaceWarpResponses[keyof ExperimentalWorkspaceWarpResponses]
-
-export type V2HealthGetData = {
-  body?: never
-  path?: never
-  query?: never
-  url: "/api/health"
-}
-
-export type V2HealthGetErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2HealthGetError = V2HealthGetErrors[keyof V2HealthGetErrors]
-
-export type V2HealthGetResponses = {
-  /**
-   * Success
-   */
-  200: {
-    healthy: true
-  }
-}
-
-export type V2HealthGetResponse = V2HealthGetResponses[keyof V2HealthGetResponses]
-
-export type V2LocationGetData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/location"
-}
-
-export type V2LocationGetErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2LocationGetError = V2LocationGetErrors[keyof V2LocationGetErrors]
-
-export type V2LocationGetResponses = {
-  /**
-   * Location.Info
-   */
-  200: LocationInfo
-}
-
-export type V2LocationGetResponse = V2LocationGetResponses[keyof V2LocationGetResponses]
-
-export type V2AgentListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/agent"
-}
-
-export type V2AgentListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2AgentListError = V2AgentListErrors[keyof V2AgentListErrors]
-
-export type V2AgentListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<AgentV2Info>
-  }
-}
-
-export type V2AgentListResponse = V2AgentListResponses[keyof V2AgentListResponses]
-
-export type V2ModelListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/model"
-}
-
-export type V2ModelListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-  /**
-   * ServiceUnavailableError
-   */
-  503: ServiceUnavailableError
-}
-
-export type V2ModelListError = V2ModelListErrors[keyof V2ModelListErrors]
-
-export type V2ModelListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<ModelV2Info>
-  }
-}
-
-export type V2ModelListResponse = V2ModelListResponses[keyof V2ModelListResponses]
-
-export type V2ProviderListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/provider"
-}
-
-export type V2ProviderListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-  /**
-   * ServiceUnavailableError
-   */
-  503: ServiceUnavailableError
-}
-
-export type V2ProviderListError = V2ProviderListErrors[keyof V2ProviderListErrors]
-
-export type V2ProviderListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<ProviderV2Info>
-  }
-}
-
-export type V2ProviderListResponse = V2ProviderListResponses[keyof V2ProviderListResponses]
-
-export type V2ProviderGetData = {
-  body?: never
-  path: {
-    providerID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/provider/{providerID}"
-}
-
-export type V2ProviderGetErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-  /**
-   * ProviderNotFoundError
-   */
-  404: ProviderNotFoundError
-  /**
-   * ServiceUnavailableError
-   */
-  503: ServiceUnavailableError
-}
-
-export type V2ProviderGetError = V2ProviderGetErrors[keyof V2ProviderGetErrors]
-
-export type V2ProviderGetResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: ProviderV2Info
-  }
-}
-
-export type V2ProviderGetResponse = V2ProviderGetResponses[keyof V2ProviderGetResponses]
-
-export type V2IntegrationListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/integration"
-}
-
-export type V2IntegrationListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2IntegrationListError = V2IntegrationListErrors[keyof V2IntegrationListErrors]
-
-export type V2IntegrationListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<IntegrationInfo>
-  }
-}
-
-export type V2IntegrationListResponse = V2IntegrationListResponses[keyof V2IntegrationListResponses]
-
-export type V2IntegrationGetData = {
-  body?: never
-  path: {
-    integrationID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/integration/{integrationID}"
-}
-
-export type V2IntegrationGetErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2IntegrationGetError = V2IntegrationGetErrors[keyof V2IntegrationGetErrors]
-
-export type V2IntegrationGetResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: IntegrationInfo
-  }
-}
-
-export type V2IntegrationGetResponse = V2IntegrationGetResponses[keyof V2IntegrationGetResponses]
-
-export type V2IntegrationConnectKeyData = {
-  body: {
-    key: string
-    label?: string
-  }
-  path: {
-    integrationID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/integration/{integrationID}/connect/key"
-}
-
-export type V2IntegrationConnectKeyErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2IntegrationConnectKeyError = V2IntegrationConnectKeyErrors[keyof V2IntegrationConnectKeyErrors]
-
-export type V2IntegrationConnectKeyResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2IntegrationConnectKeyResponse = V2IntegrationConnectKeyResponses[keyof V2IntegrationConnectKeyResponses]
-
-export type V2IntegrationConnectOauthData = {
-  body: {
-    methodID: string
-    inputs: {
-      [key: string]: string
-    }
-    label?: string
-  }
-  path: {
-    integrationID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/integration/{integrationID}/connect/oauth"
-}
-
-export type V2IntegrationConnectOauthErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2IntegrationConnectOauthError = V2IntegrationConnectOauthErrors[keyof V2IntegrationConnectOauthErrors]
-
-export type V2IntegrationConnectOauthResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: IntegrationAttempt
-  }
-}
-
-export type V2IntegrationConnectOauthResponse =
-  V2IntegrationConnectOauthResponses[keyof V2IntegrationConnectOauthResponses]
-
-export type V2IntegrationAttemptCancelData = {
-  body?: never
-  path: {
-    attemptID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/integration/attempt/{attemptID}"
-}
-
-export type V2IntegrationAttemptCancelErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2IntegrationAttemptCancelError = V2IntegrationAttemptCancelErrors[keyof V2IntegrationAttemptCancelErrors]
-
-export type V2IntegrationAttemptCancelResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2IntegrationAttemptCancelResponse =
-  V2IntegrationAttemptCancelResponses[keyof V2IntegrationAttemptCancelResponses]
-
-export type V2IntegrationAttemptStatusData = {
-  body?: never
-  path: {
-    attemptID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/integration/attempt/{attemptID}"
-}
-
-export type V2IntegrationAttemptStatusErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2IntegrationAttemptStatusError = V2IntegrationAttemptStatusErrors[keyof V2IntegrationAttemptStatusErrors]
-
-export type V2IntegrationAttemptStatusResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data:
-      | {
-          status: "pending"
-          time: {
-            created: number | "Infinity" | "-Infinity" | "NaN"
-            expires: number | "Infinity" | "-Infinity" | "NaN"
-          }
-        }
-      | {
-          status: "complete"
-          time: {
-            created: number | "Infinity" | "-Infinity" | "NaN"
-            expires: number | "Infinity" | "-Infinity" | "NaN"
-          }
-        }
-      | {
-          status: "failed"
-          message: string
-          time: {
-            created: number | "Infinity" | "-Infinity" | "NaN"
-            expires: number | "Infinity" | "-Infinity" | "NaN"
-          }
-        }
-      | {
-          status: "expired"
-          time: {
-            created: number | "Infinity" | "-Infinity" | "NaN"
-            expires: number | "Infinity" | "-Infinity" | "NaN"
-          }
-        }
-  }
-}
-
-export type V2IntegrationAttemptStatusResponse =
-  V2IntegrationAttemptStatusResponses[keyof V2IntegrationAttemptStatusResponses]
-
-export type V2IntegrationAttemptCompleteData = {
-  body: {
-    code?: string
-  }
-  path: {
-    attemptID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/integration/attempt/{attemptID}/complete"
-}
-
-export type V2IntegrationAttemptCompleteErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2IntegrationAttemptCompleteError =
-  V2IntegrationAttemptCompleteErrors[keyof V2IntegrationAttemptCompleteErrors]
-
-export type V2IntegrationAttemptCompleteResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2IntegrationAttemptCompleteResponse =
-  V2IntegrationAttemptCompleteResponses[keyof V2IntegrationAttemptCompleteResponses]
-
-export type V2CredentialRemoveData = {
-  body?: never
-  path: {
-    credentialID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/credential/{credentialID}"
-}
-
-export type V2CredentialRemoveErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2CredentialRemoveError = V2CredentialRemoveErrors[keyof V2CredentialRemoveErrors]
-
-export type V2CredentialRemoveResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2CredentialRemoveResponse = V2CredentialRemoveResponses[keyof V2CredentialRemoveResponses]
-
-export type V2CredentialUpdateData = {
-  body: {
-    label: string
-  }
-  path: {
-    credentialID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/credential/{credentialID}"
-}
-
-export type V2CredentialUpdateErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2CredentialUpdateError = V2CredentialUpdateErrors[keyof V2CredentialUpdateErrors]
-
-export type V2CredentialUpdateResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2CredentialUpdateResponse = V2CredentialUpdateResponses[keyof V2CredentialUpdateResponses]
-
-export type V2FsReadData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/fs/read/*"
-}
-
-export type V2FsReadErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2FsReadError = V2FsReadErrors[keyof V2FsReadErrors]
-
-export type V2FsReadResponses = {
-  /**
-   * Success
-   */
-  200: Blob | File
-}
-
-export type V2FsReadResponse = V2FsReadResponses[keyof V2FsReadResponses]
-
-export type V2FsListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-    path?: string
-  }
-  url: "/api/fs/list"
-}
-
-export type V2FsListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2FsListError = V2FsListErrors[keyof V2FsListErrors]
-
-export type V2FsListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<FileSystemEntry>
-  }
-}
-
-export type V2FsListResponse = V2FsListResponses[keyof V2FsListResponses]
-
-export type V2FsFindData = {
-  body?: never
-  path?: never
-  query: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-    query: string
-    type?: "file" | "directory"
-    limit?: string
-  }
-  url: "/api/fs/find"
-}
-
-export type V2FsFindErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2FsFindError = V2FsFindErrors[keyof V2FsFindErrors]
-
-export type V2FsFindResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<FileSystemEntry>
-  }
-}
-
-export type V2FsFindResponse = V2FsFindResponses[keyof V2FsFindResponses]
-
-export type V2CommandListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/command"
-}
-
-export type V2CommandListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2CommandListError = V2CommandListErrors[keyof V2CommandListErrors]
-
-export type V2CommandListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<CommandV2Info>
-  }
-}
-
-export type V2CommandListResponse = V2CommandListResponses[keyof V2CommandListResponses]
-
-export type V2EventSubscribeData = {
-  body?: never
-  path?: never
-  query?: never
-  url: "/api/event"
-}
-
-export type V2EventSubscribeErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2EventSubscribeError = V2EventSubscribeErrors[keyof V2EventSubscribeErrors]
-
-export type V2EventSubscribeResponses = {
-  /**
-   * Event stream
-   */
-  200: V2Event
-}
-
-export type V2EventSubscribeResponse = V2EventSubscribeResponses[keyof V2EventSubscribeResponses]
-
-export type V2ReferenceListData = {
-  body?: never
-  path?: never
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/api/reference"
-}
-
-export type V2ReferenceListErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-}
-
-export type V2ReferenceListError = V2ReferenceListErrors[keyof V2ReferenceListErrors]
-
-export type V2ReferenceListResponses = {
-  /**
-   * Success
-   */
-  200: {
-    location: LocationInfo
-    data: Array<ReferenceInfo>
-  }
-}
-
-export type V2ReferenceListResponse = V2ReferenceListResponses[keyof V2ReferenceListResponses]
-
-export type V2ProjectCopyRemoveData = {
-  body?: {
-    directory: string
-    force: boolean
-  }
-  path: {
-    projectID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/experimental/project/{projectID}/copy"
-}
-
-export type V2ProjectCopyRemoveErrors = {
-  /**
-   * ProjectCopyError | InvalidRequestError
-   */
-  400: ProjectCopyError | InvalidRequestError
-}
-
-export type V2ProjectCopyRemoveError = V2ProjectCopyRemoveErrors[keyof V2ProjectCopyRemoveErrors]
-
-export type V2ProjectCopyRemoveResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2ProjectCopyRemoveResponse = V2ProjectCopyRemoveResponses[keyof V2ProjectCopyRemoveResponses]
-
-export type V2ProjectCopyCreateData = {
-  body?: {
-    strategy: string
-    directory: string
-    name?: string
-  }
-  path: {
-    projectID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/experimental/project/{projectID}/copy"
-}
-
-export type V2ProjectCopyCreateErrors = {
-  /**
-   * ProjectCopyError | InvalidRequestError
-   */
-  400: ProjectCopyError | InvalidRequestError
-}
-
-export type V2ProjectCopyCreateError = V2ProjectCopyCreateErrors[keyof V2ProjectCopyCreateErrors]
-
-export type V2ProjectCopyCreateResponses = {
-  /**
-   * ProjectCopy.Copy
-   */
-  200: ProjectCopyCopy
-}
-
-export type V2ProjectCopyCreateResponse = V2ProjectCopyCreateResponses[keyof V2ProjectCopyCreateResponses]
-
-export type V2ProjectCopyRefreshData = {
-  body?: never
-  path: {
-    projectID: string
-  }
-  query?: {
-    location?: {
-      directory?: string
-      workspace?: string
-    }
-  }
-  url: "/experimental/project/{projectID}/copy/refresh"
-}
-
-export type V2ProjectCopyRefreshErrors = {
-  /**
-   * ProjectCopyError | InvalidRequestError
-   */
-  400: ProjectCopyError | InvalidRequestError
-}
-
-export type V2ProjectCopyRefreshError = V2ProjectCopyRefreshErrors[keyof V2ProjectCopyRefreshErrors]
-
-export type V2ProjectCopyRefreshResponses = {
-  /**
-   * <No Content>
-   */
-  204: void
-}
-
-export type V2ProjectCopyRefreshResponse = V2ProjectCopyRefreshResponses[keyof V2ProjectCopyRefreshResponses]

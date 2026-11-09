@@ -54,10 +54,7 @@ describe("file HttpApi", () => {
 
   test("marks a truncated long line in findText", async () => {
     await using tmp = await tmpdir({ git: true })
-    await Bun.write(
-      path.join(tmp.path, "lines.txt"),
-      ["needle short", `needle${"a".repeat(2_500)}`].join("\n"),
-    )
+    await Bun.write(path.join(tmp.path, "lines.txt"), ["needle short", `needle${"a".repeat(2_500)}`].join("\n"))
 
     const response = await request(FilePaths.findText, tmp.path, { pattern: "needle" })
 
@@ -85,7 +82,7 @@ describe("file HttpApi", () => {
         Effect.promise(async () => {
           const response = await request(FilePaths.findFile, tmp.path, { query: "hello", type: "file" })
           const body = await response.json()
-          return body.includes("hello.txt") ? { response, body } : undefined
+          return body.some((item: { path: string }) => item.path === "hello.txt") ? { response, body } : undefined
         }),
         "file search index was not ready",
       ),
@@ -95,7 +92,7 @@ describe("file HttpApi", () => {
     expect(await text.json()).toContainEqual(expect.objectContaining({ line_number: 1 }))
 
     expect(files.response.status).toBe(200)
-    expect(files.body).toContain("hello.txt")
+    expect(files.body).toContainEqual({ path: "hello.txt", type: "file" })
 
     expect(symbols.status).toBe(200)
     expect(await symbols.json()).toEqual([])

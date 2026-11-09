@@ -226,8 +226,7 @@ export const {
       void interest.set("hydrated", [...store.hydrated]).catch(() => {})
     }
     /** Full message/part state is only kept for hydrated or hydrating sessions. */
-    const storesMessages = (sessionID: string) =>
-      hydratingSessions.has(sessionID) || store.hydrated.includes(sessionID)
+    const storesMessages = (sessionID: string) => hydratingSessions.has(sessionID) || store.hydrated.includes(sessionID)
 
     let disposed = false
     let bootstrapAttempt = 0
@@ -918,14 +917,9 @@ export const {
             sdk.client.provider.auth({ workspace }).then((x) => setStore("provider_auth", reconcile(x.data ?? {}))),
             sdk.client.vcs.get({ workspace }).then((x) => setStore("vcs", reconcile(x.data))),
             // #886 5.7: the @alias list now comes from the sync store.
-            sdk.client.v2.reference
-              .list({
-                location: {
-                  directory: project.data.instance.path.directory,
-                  workspace: project.workspace.current(),
-                },
-              })
-              .then((x) => setStore("reference", reconcile(x.data?.data ?? [])))
+            sdk.client.reference
+              .list({ workspace })
+              .then((x) => setStore("reference", reconcile(x.data ?? [])))
               .catch(() => {}),
             project.workspace.sync(),
             // #886 5.6: DAG summaries are only fetched for the current session

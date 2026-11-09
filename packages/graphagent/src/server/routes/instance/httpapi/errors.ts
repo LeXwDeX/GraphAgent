@@ -1,178 +1,229 @@
 import { Schema } from "effect"
 
-export class InvalidRequestError extends Schema.TaggedError<InvalidRequestError>()(
-  "InvalidRequestError",
+export class InvalidRequestError extends Schema.Error<InvalidRequestError>("InvalidRequestError")(
   {
-    message: Schema.String,
-    kind: Schema.optional(Schema.String),
-    field: Schema.optional(Schema.String),
+    name: Schema.Literal("InvalidRequestError"),
+    data: Schema.Struct({
+      message: Schema.String,
+      kind: Schema.optional(Schema.String),
+      field: Schema.optional(Schema.String),
+    }),
   },
   { httpApiStatus: 400 },
 ) {}
 
-export class UnauthorizedError extends Schema.TaggedError<UnauthorizedError>()(
-  "UnauthorizedError",
-  { message: Schema.String },
+export class UnauthorizedError extends Schema.Error<UnauthorizedError>("UnauthorizedError")(
+  {
+    name: Schema.Literal("UnauthorizedError"),
+    data: Schema.Struct({ message: Schema.String }),
+  },
   { httpApiStatus: 401 },
 ) {}
 
-export class ForbiddenError extends Schema.TaggedError<ForbiddenError>()(
-  "ForbiddenError",
-  { message: Schema.String },
+export class ForbiddenError extends Schema.Error<ForbiddenError>("ForbiddenError")(
+  {
+    name: Schema.Literal("ForbiddenError"),
+    data: Schema.Struct({ message: Schema.String }),
+  },
   { httpApiStatus: 403 },
 ) {}
 
-export class ConflictError extends Schema.TaggedError<ConflictError>()(
-  "ConflictError",
+export class ConflictError extends Schema.Error<ConflictError>("ConflictError")(
   {
-    message: Schema.String,
-    resource: Schema.optional(Schema.String),
+    name: Schema.Literal("ConflictError"),
+    data: Schema.Struct({
+      message: Schema.String,
+      resource: Schema.optional(Schema.String),
+    }),
   },
   { httpApiStatus: 409 },
 ) {}
 
-export class UpstreamError extends Schema.TaggedError<UpstreamError>()(
-  "UpstreamError",
+export class UpstreamError extends Schema.Error<UpstreamError>("UpstreamError")(
   {
-    message: Schema.String,
-    service: Schema.optional(Schema.String),
-    status: Schema.optional(Schema.Number),
+    name: Schema.Literal("UpstreamError"),
+    data: Schema.Struct({
+      message: Schema.String,
+      service: Schema.optional(Schema.String),
+      status: Schema.optional(Schema.Number),
+    }),
   },
   { httpApiStatus: 502 },
 ) {}
 
-export class ServiceUnavailableError extends Schema.TaggedError<ServiceUnavailableError>()(
-  "ServiceUnavailableError",
+export class ServiceUnavailableError extends Schema.Error<ServiceUnavailableError>("ServiceUnavailableError")(
   {
-    message: Schema.String,
-    service: Schema.optional(Schema.String),
+    name: Schema.Literal("ServiceUnavailableError"),
+    data: Schema.Struct({
+      message: Schema.String,
+      service: Schema.optional(Schema.String),
+    }),
   },
   { httpApiStatus: 503 },
 ) {}
 
-export class TimeoutError extends Schema.TaggedError<TimeoutError>()(
-  "TimeoutError",
+export class TimeoutError extends Schema.Error<TimeoutError>("TimeoutError")(
   {
-    message: Schema.String,
-    operation: Schema.optional(Schema.String),
+    name: Schema.Literal("TimeoutError"),
+    data: Schema.Struct({
+      message: Schema.String,
+      operation: Schema.optional(Schema.String),
+    }),
   },
   { httpApiStatus: 504 },
 ) {}
 
-export class UnknownError extends Schema.TaggedError<UnknownError>()(
-  "UnknownError",
+export class UnknownError extends Schema.Error<UnknownError>("UnknownError")(
   {
-    message: Schema.String,
-    ref: Schema.optional(Schema.String),
+    name: Schema.Literal("UnknownError"),
+    data: Schema.Struct({
+      message: Schema.String,
+      ref: Schema.optional(Schema.String),
+    }),
   },
   { httpApiStatus: 500 },
 ) {}
 
-export class ProviderNotFoundError extends Schema.TaggedError<ProviderNotFoundError>()(
-  "ProviderNotFoundError",
+export class ProviderNotFoundError extends Schema.Error<ProviderNotFoundError>("ProviderNotFoundError")(
   {
-    providerID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("ProviderNotFoundError"),
+    data: Schema.Struct({
+      providerID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class ModelNotFoundError extends Schema.TaggedError<ModelNotFoundError>()(
-  "ModelNotFoundError",
+export class ModelNotFoundError extends Schema.Error<ModelNotFoundError>("ModelNotFoundError")(
   {
-    providerID: Schema.String,
-    modelID: Schema.String,
-    suggestions: Schema.Array(Schema.String),
-    message: Schema.String,
+    name: Schema.Literal("ModelNotFoundError"),
+    data: Schema.Struct({
+      providerID: Schema.String,
+      modelID: Schema.String,
+      suggestions: Schema.Array(Schema.String),
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class SessionNotFoundError extends Schema.TaggedError<SessionNotFoundError>()(
-  "SessionNotFoundError",
+export class SessionNotFoundError extends Schema.Error<SessionNotFoundError>("SessionNotFoundError")(
   {
-    sessionID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("SessionNotFoundError"),
+    data: Schema.Struct({
+      sessionID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class MessageNotFoundError extends Schema.TaggedError<MessageNotFoundError>()(
-  "MessageNotFoundError",
+export class MessageNotFoundError extends Schema.Error<MessageNotFoundError>("MessageNotFoundError")(
   {
-    sessionID: Schema.String,
-    messageID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("MessageNotFoundError"),
+    data: Schema.Struct({
+      sessionID: Schema.String,
+      messageID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class InvalidCursorError extends Schema.TaggedError<InvalidCursorError>()(
-  "InvalidCursorError",
-  { message: Schema.String },
+export class InvalidCursorError extends Schema.Error<InvalidCursorError>("InvalidCursorError")(
+  {
+    name: Schema.Literal("InvalidCursorError"),
+    data: Schema.Struct({ message: Schema.String }),
+  },
   { httpApiStatus: 400 },
 ) {}
 
-export class SessionBusyError extends Schema.TaggedError<SessionBusyError>()(
-  "SessionBusyError",
+export class SessionBusyError extends Schema.Error<SessionBusyError>("SessionBusyError")(
   {
-    sessionID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("SessionBusyError"),
+    data: Schema.Struct({
+      sessionID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 409 },
 ) {}
 
-export class QuestionNotFoundError extends Schema.TaggedError<QuestionNotFoundError>()(
-  "QuestionNotFoundError",
+export class QuestionNotFoundError extends Schema.Error<QuestionNotFoundError>("QuestionNotFoundError")(
   {
-    requestID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("QuestionNotFoundError"),
+    data: Schema.Struct({
+      requestID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class PermissionNotFoundError extends Schema.TaggedError<PermissionNotFoundError>()(
-  "PermissionNotFoundError",
+export class PermissionNotFoundError extends Schema.Error<PermissionNotFoundError>("PermissionNotFoundError")(
   {
-    requestID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("PermissionNotFoundError"),
+    data: Schema.Struct({
+      requestID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class McpServerNotFoundError extends Schema.TaggedError<McpServerNotFoundError>()(
-  "McpServerNotFoundError",
+export class McpServerNotFoundError extends Schema.Error<McpServerNotFoundError>("McpServerNotFoundError")(
   {
-    name: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("McpServerNotFoundError"),
+    data: Schema.Struct({
+      name: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class PtyNotFoundError extends Schema.TaggedError<PtyNotFoundError>()(
-  "PtyNotFoundError",
+export class PtyNotFoundError extends Schema.Error<PtyNotFoundError>("PtyNotFoundError")(
   {
-    ptyID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("PtyNotFoundError"),
+    data: Schema.Struct({
+      ptyID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
 ) {}
 
-export class PtyForbiddenError extends Schema.TaggedError<PtyForbiddenError>()(
-  "PtyForbiddenError",
+export class PtyForbiddenError extends Schema.Error<PtyForbiddenError>("PtyForbiddenError")(
   {
-    message: Schema.String,
+    name: Schema.Literal("PtyForbiddenError"),
+    data: Schema.Struct({
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 403 },
 ) {}
 
-export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
-  "ProjectNotFoundError",
+export class ProjectNotFoundError extends Schema.Error<ProjectNotFoundError>("ProjectNotFoundError")(
   {
-    projectID: Schema.String,
-    message: Schema.String,
+    name: Schema.Literal("ProjectNotFoundError"),
+    data: Schema.Struct({
+      projectID: Schema.String,
+      message: Schema.String,
+    }),
   },
   { httpApiStatus: 404 },
+) {}
+
+export class ProjectCopyError extends Schema.Error<ProjectCopyError>("ProjectCopyError")(
+  {
+    name: Schema.Literal("ProjectCopyError"),
+    data: Schema.Struct({
+      message: Schema.String,
+      forceRequired: Schema.optional(Schema.Boolean),
+    }),
+  },
+  { httpApiStatus: 400 },
 ) {}
 
 export class ApiNotFoundError extends Schema.Error<ApiNotFoundError>("NotFoundError")(

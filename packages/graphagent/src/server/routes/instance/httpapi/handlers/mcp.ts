@@ -28,7 +28,12 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
         return yield* mcp.startAuth(ctx.params.name)
       }).pipe(
         Effect.catchTag("MCP.NotFoundError", (error) =>
-          Effect.fail(new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` })),
+          Effect.fail(
+            new McpServerNotFoundError({
+              name: "McpServerNotFoundError",
+              data: { name: error.name, message: `MCP server not found: ${error.name}` },
+            }),
+          ),
         ),
       )
     })
@@ -37,15 +42,16 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       params: { name: string }
       payload: typeof AuthCallbackPayload.Type
     }) {
-      return yield* mcp
-        .finishAuth(ctx.params.name, ctx.payload.code)
-        .pipe(
-          Effect.catchTag("MCP.NotFoundError", (error) =>
-            Effect.fail(
-              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
-            ),
+      return yield* mcp.finishAuth(ctx.params.name, ctx.payload.code).pipe(
+        Effect.catchTag("MCP.NotFoundError", (error) =>
+          Effect.fail(
+            new McpServerNotFoundError({
+              name: "McpServerNotFoundError",
+              data: { name: error.name, message: `MCP server not found: ${error.name}` },
+            }),
           ),
-        )
+        ),
+      )
     })
 
     const authAuthenticate = Effect.fn("McpHttpApi.authAuthenticate")(function* (ctx: { params: { name: string } }) {
@@ -56,7 +62,12 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
         return yield* mcp.authenticate(ctx.params.name)
       }).pipe(
         Effect.catchTag("MCP.NotFoundError", (error) =>
-          Effect.fail(new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` })),
+          Effect.fail(
+            new McpServerNotFoundError({
+              name: "McpServerNotFoundError",
+              data: { name: error.name, message: `MCP server not found: ${error.name}` },
+            }),
+          ),
         ),
       )
     })
@@ -65,36 +76,41 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       const status = yield* mcp.status()
       if (!(ctx.params.name in status))
         return yield* new McpServerNotFoundError({
-          name: ctx.params.name,
-          message: `MCP server not found: ${ctx.params.name}`,
+          name: "McpServerNotFoundError",
+          data: {
+            name: ctx.params.name,
+            message: `MCP server not found: ${ctx.params.name}`,
+          },
         })
       yield* mcp.removeAuth(ctx.params.name)
       return { success: true as const }
     })
 
     const connect = Effect.fn("McpHttpApi.connect")(function* (ctx: { params: { name: string } }) {
-      yield* mcp
-        .connect(ctx.params.name)
-        .pipe(
-          Effect.catchTag("MCP.NotFoundError", (error) =>
-            Effect.fail(
-              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
-            ),
+      yield* mcp.connect(ctx.params.name).pipe(
+        Effect.catchTag("MCP.NotFoundError", (error) =>
+          Effect.fail(
+            new McpServerNotFoundError({
+              name: "McpServerNotFoundError",
+              data: { name: error.name, message: `MCP server not found: ${error.name}` },
+            }),
           ),
-        )
+        ),
+      )
       return true
     })
 
     const disconnect = Effect.fn("McpHttpApi.disconnect")(function* (ctx: { params: { name: string } }) {
-      yield* mcp
-        .disconnect(ctx.params.name)
-        .pipe(
-          Effect.catchTag("MCP.NotFoundError", (error) =>
-            Effect.fail(
-              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
-            ),
+      yield* mcp.disconnect(ctx.params.name).pipe(
+        Effect.catchTag("MCP.NotFoundError", (error) =>
+          Effect.fail(
+            new McpServerNotFoundError({
+              name: "McpServerNotFoundError",
+              data: { name: error.name, message: `MCP server not found: ${error.name}` },
+            }),
           ),
-        )
+        ),
+      )
       return true
     })
 

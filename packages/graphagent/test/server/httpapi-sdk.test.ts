@@ -711,18 +711,16 @@ describe("HttpApi SDK", () => {
   )
 
   httpapi(
-    "routes configured SDK directory and workspace for v2 location GETs",
+    "sends the configured SDK directory with file searches",
     withProject("raw", { setup: writeStandardFiles }, ({ directory }) =>
       Effect.gen(function* () {
-        const workspaceID = "wrk_sdk"
         let request: Request | undefined
         const sdk = yield* client("raw", directory, {
-          workspaceID,
           onRequest: (value) => (request = value),
         })
         const found = yield* pollWithTimeout(
-          call(() => sdk.v2.fs.find({ query: "hello", type: "file" })).pipe(
-            Effect.map((result) => (result.data?.data.length ? result : undefined)),
+          call(() => sdk.find.files({ query: "hello", limit: 20 })).pipe(
+            Effect.map((result) => (result.data?.length ? result : undefined)),
           ),
           "SDK file search index was not ready",
         )
@@ -731,13 +729,10 @@ describe("HttpApi SDK", () => {
         expect(found.response?.status).toBe(200)
         // The fuzzy file index may also return other project files (for example
         // graphagent.json), so assert the expected hit instead of an exact set.
-        expect(found.data?.data).toContainEqual({ path: "hello.txt", type: "file" })
+        expect(found.data).toContainEqual({ path: "hello.txt", type: "file" })
+        expect(url.pathname).toBe("/find/file")
+        expect(url.searchParams.get("query")).toBe("hello")
         expect(url.searchParams.get("directory")).toBe(directory)
-        expect(url.searchParams.get("workspace")).toBe(workspaceID)
-        expect(url.searchParams.get("location[directory]")).toBe(directory)
-        expect(url.searchParams.get("location[workspace]")).toBe(workspaceID)
-        expect(request!.headers.has("x-graphagent-directory")).toBe(false)
-        expect(request!.headers.has("x-graphagent-workspace")).toBe(false)
       }),
     ),
   )
