@@ -44,13 +44,13 @@ const ROWS: readonly FlagRow[] = [
     name: "turnError",
     meaning: "Assistant error at the end of a turn; selects Stop vs StopFailure and blocks continuation",
     target: "`TurnState.error` (set by `State.afterAttempt`), `TurnOutcome.error/cancelled/...`",
-    test: "`error outcome`, `cancelled outcome`, `content-filter outcome`, `structured missing outcome`, `a turn error blocks Stop continuation`",
+    test: "`error outcome`, `cancelled outcome`, `content-filter outcome`, `structured missing -> structured_missing outcome`, `a turn error blocks Stop continuation`",
   },
   {
     name: "stopHookBlocked",
     meaning: "`stop_hook_active` anti-loop signal carried into the next Stop hook",
     target: "`TurnState.stop.active` via `State.continueFromStopBlock`",
-    test: "`Stop block within the cap continues with stop_hook_active`",
+    test: "`Stop block within the cap continues`",
   },
   {
     name: "stopContinuationCount",
@@ -91,14 +91,14 @@ const ROWS: readonly FlagRow[] = [
   {
     name: "stopHookContinuationCap",
     meaning: "Injected upper bound for Stop-block continuations (`SettingsHook.stopHookBlockCap()`)",
-    target: "`TurnState.stop.cap`, injected once through `TurnState.initial({ stopCap })`",
+    target: "`TurnState.stop.cap`, injected once through `State.initial({ stopCap })`",
     test: "`injected cap is respected`",
   },
 ]
 
 interface FlagOccurrence {
   readonly file: string
-  readonly declaration?: number
+  declaration?: number
   readonly uses: number[]
 }
 

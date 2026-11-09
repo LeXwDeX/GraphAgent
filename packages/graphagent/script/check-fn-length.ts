@@ -113,7 +113,17 @@ function keyOf(fn: Pick<MeasuredFunction, "file" | "name">) {
 
 function readBaseline(): Baseline {
   try {
-    return JSON.parse(readFileSync(BASELINE_FILE, "utf8")) as Baseline
+    const parsed: unknown = JSON.parse(readFileSync(BASELINE_FILE, "utf8"))
+    if (typeof parsed !== "object" || parsed === null) return { version: 1, functions: {} }
+    if (!("version" in parsed) || parsed.version !== 1) return { version: 1, functions: {} }
+    if (!("functions" in parsed) || typeof parsed.functions !== "object" || parsed.functions === null) {
+      return { version: 1, functions: {} }
+    }
+    const functions: Record<string, number> = {}
+    for (const [key, value] of Object.entries(parsed.functions)) {
+      if (typeof value === "number") functions[key] = value
+    }
+    return { version: 1, functions }
   } catch {
     return { version: 1, functions: {} }
   }
@@ -128,10 +138,10 @@ function main() {
   const baseline = readBaseline()
 
   if (args.writeBaseline) {
-    const entries = Object.fromEntries(
-      overLimit.map((fn) => [keyOf(fn), fn.lines]).sort(([a], [b]) => a.localeCompare(b)),
-    )
-    writeFileSync(BASELINE_FILE, `${JSON.stringify({ version: 1, functions: entries }, null, 2)}\n`)
+    const entries = overLimit
+      .map((fn): [string, number] => [keyOf(fn), fn.lines])
+      .sort(([a], [b]) => a.localeCompare(b))
+    writeFileSync(BASELINE_FILE, `${JSON.stringify({ version: 1, functions: Object.fromEntries(entries) }, null, 2)}\n`)
     console.log(`fn-length: baseline written with ${overLimit.length} historical violation(s) -> ${BASELINE_FILE}`)
     for (const fn of overLimit) console.log(`  BASE ${fn.file}:${fn.line} ${fn.name} ${fn.lines} > ${fn.limit}`)
     return 0
