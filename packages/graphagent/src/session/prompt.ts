@@ -591,7 +591,6 @@ export const layer = Layer.effect(
 
     const stopFns = Stop.makeStop({
       sessions,
-      summary,
       settingsHook,
       hookLifecycle,
       agentMessages,
