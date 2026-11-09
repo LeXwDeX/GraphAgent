@@ -498,7 +498,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       (isEmpty, wasEmpty) => {
         // only trigger when we transition into an empty-provider state
         if (!isEmpty || wasEmpty) return
-        openProviderPanel({ host: bottomZone.host, onConnected: () => openModelList() })
+        openProviderPanel({ host: bottomZone.host, onConnected: (providerID) => openModelList(providerID) })
       },
     ),
   )
@@ -521,13 +521,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     bottomZone.host.push({ id, render })
   }
   const openWorkspaceList = () => openPanel("workspaces", () => <WorkspacesPanel />)
-  const openModelList = () =>
+  const openModelList = (providerID?: string) =>
     openPanel("model", () => (
-      <ModelPanel onConnectProvider={connectProvider} onVariant={() => dialog.replace(() => <DialogVariant />)} />
+      <ModelPanel
+        providerID={providerID}
+        onConnectProvider={connectProvider}
+        onVariant={() => dialog.replace(() => <DialogVariant />)}
+      />
     ))
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
-  const connectProvider = () => openProviderPanel({ host: bottomZone.host, onConnected: () => openModelList() })
+  const connectProvider = () =>
+    openProviderPanel({ host: bottomZone.host, onConnected: (providerID) => openModelList(providerID) })
   const openStatus = () => openPanel("status", () => <StatusPanel />)
   const openThemeList = () => openPanel("theme", () => <ThemePanel />)
   const openHelp = () => openPanel("help", () => <HelpPanel />)
@@ -563,7 +568,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     "session.new": newSession,
     "session.list": openSessionList,
     "workspace.list": openWorkspaceList,
-    "model.list": openModelList,
+    "model.list": () => openModelList(),
     "agent.list": openAgentList,
     "mcp.list": openMcpList,
     "provider.connect": connectProvider,
@@ -637,7 +642,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       name: "model.list",
       title: "Switch model",
       category: "Agent",
-      run: openModelList,
+      run: () => openModelList(),
     },
     {
       name: "model.cycle_recent",
