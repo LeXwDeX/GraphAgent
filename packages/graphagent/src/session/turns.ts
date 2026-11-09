@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Database } from "@graphagent/core/database/database"
-import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import type { SessionAdmission } from "@graphagent/core/session/admission"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
@@ -13,6 +12,7 @@ import type { Goal } from "@/goal/goal"
 import type { RewakeToken, SettingsHook } from "@/hook"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
+import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
 import { MessageV2 } from "./message-v2"
 import type { PromptError, PromptInput } from "./prompt"
 import type { SessionRunState } from "./run-state"
@@ -159,11 +159,15 @@ export interface TurnDeps {
   readonly state: SessionRunState.Interface
   /** Long-lived scope that owns the admission watchers (one fiber per admission). */
   readonly scope: Scope.Scope
-  readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly withRunRequest: <A, E, R>(
     sessionID: SessionID,
-    use: (request: ReturnType<typeof SessionCancellation.request>) => Effect.Effect<A, E, R>,
-    admitted?: ReturnType<typeof SessionCancellation.request>,
+    use: (request: Request, witness: RunRequestWitness) => Effect.Effect<A, E, R>,
+    admitted?: Request,
+  ) => Effect.Effect<A, E, R>
+  readonly withPromptLock: <A, E, R>(
+    witness: RunRequestWitness,
+    sessionID: SessionID,
+    use: (witness: PromptLockWitness) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, R>
   readonly goal: Goal.Interface | undefined
   readonly settingsHook: SettingsHook.Interface | undefined
@@ -562,8 +566,8 @@ export function makeTurns(deps: TurnDeps): Interface {
   ) {
     return yield* deps.withRunRequest(
       input.sessionID,
-      (req) =>
-        deps.promptLocks.withLock(input.sessionID)(
+      (req, witness) =>
+        deps.withPromptLock(witness, input.sessionID, () =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
               if (!req.valid()) return Option.none<IdleAdmission>()
@@ -646,8 +650,8 @@ export function makeTurns(deps: TurnDeps): Interface {
       } satisfies TurnStart
     }
 
-    return yield* deps.withRunRequest(input.sessionID, (request) =>
-      deps.promptLocks.withLock(input.sessionID)(
+    return yield* deps.withRunRequest(input.sessionID, (request, witness) =>
+      deps.withPromptLock(witness, input.sessionID, () =>
         Effect.gen(function* () {
           if (!request.valid()) return yield* Effect.interrupt
           if (deps.goal && input.noReply !== true) yield* deps.goal.clearTurnDriven(input.sessionID)

@@ -2,48 +2,44 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Deferred, Effect } from "effect"
-import { SessionAdmission } from "@graphagent/core/session/admission"
-import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
+import { EngineProcess, type CancellationOwner, type CancellationSession } from "./engine-process"
 
-type Owner = {
-  readonly epoch: number
-  readonly directory?: string
-  readonly snapshot: () => Effect.Effect<void>
-}
+// All process-level state lives in `engine-process.ts`: a cancel must be
+// visible to every ManagedRuntime layer graph in this process.
+const cancellation = EngineProcess.cancellation
 
-type State = {
-  epoch: number
-  requests: number
-  aborts: number
-  goalCancels: number
-  goalReleased?: Deferred.Deferred<void>
-  owners: Set<Owner>
-  barrier?: Effect.Effect<void>
-}
+/** Publication is innermost: never wait for a cancel decision while holding it. */
+export const publication = cancellation.publication
 
-const sessions = new Map<string, State>()
-const epochs = new Map<string, number>()
-// Publication is innermost: never wait for a cancel decision while holding it.
-export const publication = KeyedMutex.makeUnsafe<string>()
-
-// The admission registry must be shared by every layer graph in this process.
-export const admissions = SessionAdmission.make()
+/** The admission registry must be shared by every layer graph in this process. */
+export const admissions = cancellation.admissions
 
 export function epoch(sessionID: string): number {
-  return epochs.get(sessionID) ?? 0
+  return cancellation.epochs.get(sessionID) ?? 0
 }
 
-function stateFor(sessionID: string) {
-  const existing = sessions.get(sessionID)
+function stateFor(sessionID: string): CancellationSession {
+  const existing = cancellation.sessions.get(sessionID)
   if (existing) return existing
-  const state: State = { epoch: epoch(sessionID), requests: 0, aborts: 0, goalCancels: 0, owners: new Set() }
-  sessions.set(sessionID, state)
+  const state: CancellationSession = {
+    epoch: epoch(sessionID),
+    requests: 0,
+    aborts: 0,
+    goalCancels: 0,
+    owners: new Set(),
+  }
+  cancellation.sessions.set(sessionID, state)
   return state
 }
 
-function releaseIfUnused(sessionID: string, state: State) {
-  if (state.requests === 0 && state.aborts === 0 && state.owners.size === 0 && sessions.get(sessionID) === state)
-    sessions.delete(sessionID)
+function releaseIfUnused(sessionID: string, state: CancellationSession) {
+  if (
+    state.requests === 0 &&
+    state.aborts === 0 &&
+    state.owners.size === 0 &&
+    cancellation.sessions.get(sessionID) === state
+  )
+    cancellation.sessions.delete(sessionID)
 }
 
 /** Register before the request's first asynchronous operation. */
@@ -53,15 +49,15 @@ export function request(sessionID: string) {
   const wait = state.barrier ?? Effect.void
   let released = false
   state.requests++
-  const current = () => sessions.get(sessionID) === state && state.epoch === epoch
+  const current = () => cancellation.sessions.get(sessionID) === state && state.epoch === epoch
   return {
     epoch,
     wait,
     current,
     valid: () => !released && current(),
     register(snapshot: () => Effect.Effect<void>, directory?: string) {
-      if (released || sessions.get(sessionID) !== state || state.epoch !== epoch) return undefined
-      const owner: Owner = { epoch, snapshot, directory }
+      if (released || cancellation.sessions.get(sessionID) !== state || state.epoch !== epoch) return undefined
+      const owner: CancellationOwner = { epoch, snapshot, directory }
       state.owners.add(owner)
       let removed = false
       return () => {
@@ -81,11 +77,11 @@ export function request(sessionID: string) {
 }
 
 export function goalCancelPending(sessionID: string): boolean {
-  return (sessions.get(sessionID)?.goalCancels ?? 0) > 0
+  return (cancellation.sessions.get(sessionID)?.goalCancels ?? 0) > 0
 }
 
 export function waitForGoalCancels(sessionID: string): Effect.Effect<void> {
-  const released = sessions.get(sessionID)?.goalReleased
+  const released = cancellation.sessions.get(sessionID)?.goalReleased
   return released ? Deferred.await(released) : Effect.void
 }
 
@@ -96,7 +92,7 @@ export function begin(sessionID: string) {
   if (state.goalCancels === 0) state.goalReleased = Deferred.makeUnsafe<void>()
   state.goalCancels++
   const epoch = ++state.epoch
-  epochs.set(sessionID, epoch)
+  cancellation.epochs.set(sessionID, epoch)
   const previous = state.barrier ?? Effect.void
   const released = Deferred.makeUnsafe<void>()
   state.aborts++

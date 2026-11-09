@@ -5,19 +5,19 @@ import { SessionAttention } from "@/notification/attention"
 import { Flag } from "@graphagent/core/flag/flag"
 import {
   assessCanonicalReasoning,
-  makeRewriteBudget,
   ReasoningDistillationPolicy,
   rewriteLogFields,
   runReasoningRewrite,
 } from "@graphagent/core/session/reasoning-distillation"
 import { ConfigReasoningDistillation } from "@graphagent/core/config/reasoning-distillation"
 import { adoptReasoning } from "./reasoning-adoption"
-import { makeReasoningQueue } from "./reasoning-queue"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionID, MessageID, PartID } from "./schema"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
+import { EngineProcess } from "./engine-process"
+import { makeSessionLocks } from "./locks"
 import { Token } from "@/util/token"
 import { SessionRevert } from "./revert"
 
@@ -47,7 +47,6 @@ import { Provider } from "@/provider/provider"
 
 import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
-import { RuntimeContext } from "./runtime-context"
 import { Instruction } from "./instruction"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
@@ -85,7 +84,6 @@ import { Goal } from "@/goal/goal"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Memory } from "@/memory/memory"
 import { DagMessages } from "@graphagent/core/dag/messages"
-import { ToolBudget } from "@graphagent/core/session/tool-budget"
 
 import { makeCommand } from "./command"
 import { makeShell } from "./shell"
@@ -212,24 +210,19 @@ export const layer = Layer.effect(
     const llm = yield* LLM.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
-    // Budgets and organizer jobs belong to the directory, independently of each turn.
-    const rewriteState = yield* InstanceState.make(() =>
-      Effect.gen(function* () {
-        const budget = makeRewriteBudget()
-        const queue = yield* makeReasoningQueue
-        yield* Effect.acquireRelease(
-          events.listen((event) => {
-            if (event.type !== Session.Event.Deleted.type) return Effect.void
-            const data = event.data
-            if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
-            const sessionID = data.sessionID
-            if (typeof sessionID !== "string") return Effect.void
-            return queue.cancel(sessionID).pipe(Effect.ensuring(Effect.sync(() => budget.forget(sessionID))))
-          }),
-          (unsubscribe) => unsubscribe,
-        )
-        return { budget, queue }
+    // Every session cache below is process-wide: one ManagedRuntime cannot
+    // see another's InstanceState, but cancellations and followups cross them.
+    const runtimes = EngineProcess.runtimes
+    yield* Effect.acquireRelease(
+      events.listen((event) => {
+        if (event.type !== Session.Event.Deleted.type) return Effect.void
+        const data = event.data
+        if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+        const sessionID = data.sessionID
+        if (typeof sessionID !== "string") return Effect.void
+        return runtimes.remove(SessionID.make(sessionID))
       }),
+      (unsubscribe) => unsubscribe,
     )
     const reasoningDistillationEnabled = (model: Provider.Model) =>
       config.get().pipe(
@@ -244,8 +237,11 @@ export const layer = Layer.effect(
       )
     const database = yield* Database.Service
     const queueReasoning = (input: { sessionID: SessionID; part: SessionV1.ReasoningPart; model: Provider.Model }) =>
-      InstanceState.useEffect(rewriteState, ({ budget, queue }) =>
-        queue.enqueue(
+      Effect.gen(function* () {
+        const directory = yield* InstanceState.directory
+        const rewrite = runtimes.directory(directory)
+        runtimes.own(input.sessionID, directory)
+        return yield* rewrite.queue.enqueue(
           input.sessionID,
           input.part.id,
           Effect.gen(function* () {
@@ -267,12 +263,12 @@ export const layer = Layer.effect(
               Token.estimate(part.text) < ReasoningDistillationPolicy.tokens.minimumInputTokens
             )
               return undefined
-            if (budget.admit(input.sessionID) !== "ok") return undefined
+            if (rewrite.budget.admit(input.sessionID) !== "ok") return undefined
             const cfg = yield* config.get()
             const organizer = yield* llm.organizer({ model: input.model })
             if (!organizer) return undefined
             const outcome = yield* runReasoningRewrite({
-              budget,
+              budget: rewrite.budget,
               sessionID: input.sessionID,
               slot: { messageID: part.messageID, partID: part.id, text: part.text },
               language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
@@ -302,8 +298,8 @@ export const layer = Layer.effect(
               Effect.provideService(EventV2Bridge.Service, events),
             )
           }),
-        ),
-      )
+        )
+      })
     const backgroundJobs = yield* BackgroundJob.Service
     const workflowStore = yield* DagStore.Service
     const agentMessages = Option.getOrUndefined(yield* Effect.serviceOption(DagMessages.Service))
@@ -318,46 +314,7 @@ export const layer = Layer.effect(
     const hookQuestions = Option.getOrUndefined(yield* Effect.serviceOption(Question.Service))
     const startContext = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     const goal = Option.getOrUndefined(yield* Effect.serviceOption(Goal.Service))
-    const modelSwitches = yield* InstanceState.make(() =>
-      Effect.gen(function* () {
-        const pending = new Map<
-          SessionID,
-          { target: string; epoch: number; fiber: Fiber.Fiber<TriggerResult>; unregister: () => void }
-        >()
-        yield* Effect.acquireRelease(
-          events.listen((event) =>
-            Effect.gen(function* () {
-              if (event.type !== Session.Event.Deleted.type) return
-              const data = event.data
-              if (typeof data !== "object" || data === null || !("info" in data)) return
-              if (
-                typeof data.info !== "object" ||
-                data.info === null ||
-                !("id" in data.info) ||
-                typeof data.info.id !== "string"
-              )
-                return
-              const id = SessionID.make(data.info.id)
-              const entry = pending.get(id)
-              pending.delete(id)
-              if (entry) {
-                entry.unregister()
-                yield* Fiber.interrupt(entry.fiber)
-              }
-            }),
-          ),
-          (unsubscribe) => unsubscribe,
-        )
-        yield* Effect.addFinalizer(() =>
-          Effect.forEach(
-            pending.values(),
-            (entry) => Effect.sync(entry.unregister).pipe(Effect.andThen(Fiber.interrupt(entry.fiber))),
-            { concurrency: "unbounded", discard: true },
-          ),
-        )
-        return pending
-      }),
-    )
+    const modelSwitches = runtimes.modelSwitches
     const queueModelSwitch = Effect.fn("SessionPrompt.queueModelSwitch")(function* (
       sessionID: SessionID,
       payload: Extract<HookPayload, { event: "PreModelSwitch" | "PostModelSwitch" }>,
@@ -365,10 +322,11 @@ export const layer = Layer.effect(
       if (!settingsHook) return
       const request = SessionCancellation.request(sessionID)
       yield* Effect.gen(function* () {
-        const pending = yield* InstanceState.get(modelSwitches)
+        const pending = modelSwitches
         const context = yield* Effect.context()
         const generation = yield* InstanceState.currentGeneration
         const directory = yield* InstanceState.directory
+        runtimes.own(sessionID, directory)
         const previous = pending.get(sessionID)
         if (previous) {
           pending.delete(sessionID)
@@ -414,7 +372,7 @@ export const layer = Layer.effect(
       sessionID: SessionID,
       apiModelID: string,
     ) {
-      const pending = yield* InstanceState.get(modelSwitches)
+      const pending = modelSwitches
       const entry = pending.get(sessionID)
       if (!entry || entry.target !== apiModelID) return [] as string[]
       const result = yield* Fiber.join(entry.fiber).pipe(Effect.timeoutOption("5 seconds"))
@@ -429,29 +387,13 @@ export const layer = Layer.effect(
       })
       return SessionCancellation.epoch(sessionID) === entry.epoch ? result.value.additionalContexts : []
     })
-    const scopedAgents = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, string>()))
+    const scopedAgents = runtimes.scopedAgents
     // The loop checks the context limit before it prepares a request, so the system text and tool schemas
     // of the request it is about to send do not exist yet. Keep the measured overhead of the previous
     // prepared request per session, and include it when provider usage cannot cover it.
-    const requestOverheads = yield* InstanceState.make(() => Effect.succeed(new Map<SessionID, number>()))
+    const requestOverheads = runtimes.requestOverheads
     // Runtime-context blocks already sent per session, so later requests re-send them at the same positions.
-    const runtimeContexts = yield* InstanceState.make(() =>
-      Effect.gen(function* () {
-        const ledgers = new Map<SessionID, readonly RuntimeContext.Entry[]>()
-        yield* Effect.acquireRelease(
-          events.listen((event) => {
-            if (event.type !== Session.Event.Deleted.type) return Effect.void
-            const data = event.data
-            if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
-            const sessionID = data.sessionID
-            if (typeof sessionID !== "string") return Effect.void
-            return Effect.sync(() => ledgers.delete(SessionID.make(sessionID)))
-          }),
-          (unsubscribe) => unsubscribe,
-        )
-        return ledgers
-      }),
-    )
+    const runtimeContexts = runtimes.runtimeContexts
     // Optional so callers that do not compose the todo reminder service keep working.
     const todoReminders = yield* Effect.serviceOption(TodoReminders.Service)
     const activateAgentHooks = Effect.fn("SessionPrompt.activateAgentHooks")(function* (
@@ -462,7 +404,9 @@ export const layer = Layer.effect(
       const selected = name ? yield* agents.get(name) : yield* agents.defaultInfo()
       if (!selected) return
       const origin = selected.hookOrigin ? `agent:${selected.hookOrigin}` : `agent-config:${selected.name}`
-      const active = yield* InstanceState.get(scopedAgents)
+      const directory = yield* InstanceState.directory
+      runtimes.own(session.id, directory)
+      const active = scopedAgents
       const previous = active.get(session.id)
       if (previous && (previous !== origin || selected.hooks === undefined) && settingsHook.unregisterScoped)
         yield* settingsHook.unregisterScoped(session.id, previous)
@@ -478,26 +422,14 @@ export const layer = Layer.effect(
       } else active.delete(session.id)
     })
     const promptLocks = KeyedMutex.makeUnsafe<SessionID>()
+    const locks = makeSessionLocks(promptLocks)
     const followupAdmissions = SessionCancellation.admissions
-    const withRunRequest = <A, E, R>(
-      sessionID: SessionID,
-      use: (request: ReturnType<typeof SessionCancellation.request>) => Effect.Effect<A, E, R>,
-      admitted?: ReturnType<typeof SessionCancellation.request>,
-    ): Effect.Effect<A, E, R> =>
-      Effect.suspend(() => {
-        if (admitted) return use(admitted)
-        const request = SessionCancellation.request(sessionID)
-        return request.wait.pipe(
-          Effect.andThen(Effect.suspend(() => use(request))),
-          Effect.ensuring(Effect.sync(() => request.release())),
-        )
-      })
+    const withRunRequest = locks.withRunRequest
     // App-layer model-write epochs for sessions with a pending command. This is
     // not directory state: one AppLayer shares it across workspaces. Entries
     // exist only while at least one command is pending and are removed on the
     // last release. No cross-process/restart claim is made.
-    type ModelWriteState = { epoch: number; refs: number }
-    const modelWrites = new Map<SessionID, ModelWriteState>()
+    const modelWrites = runtimes.modelWrites
     const modelWriteBegin = (sessionID: SessionID) => {
       const state = modelWrites.get(sessionID) ?? { epoch: 0, refs: 0 }
       state.refs++
@@ -522,37 +454,20 @@ export const layer = Layer.effect(
     }
     // A cancel also fences followups started by a different layer graph.
     const cancelEpoch = SessionCancellation.epoch
-    const toolBudgets = yield* InstanceState.make(() =>
-      Effect.gen(function* () {
-        const budgets = new Map<SessionID, { active?: ToolBudget.Budget; pending: Map<MessageID, ToolBudget.Budget> }>()
-        yield* Effect.acquireRelease(
-          events.listen((event) =>
-            Effect.sync(() => {
-              if (event.type !== Session.Event.Deleted.type) return
-              const data = event.data
-              if (typeof data !== "object" || data === null || !("sessionID" in data)) return
-              if (typeof data.sessionID === "string") budgets.delete(SessionID.make(data.sessionID))
-            }),
-          ),
-          (unsubscribe) => unsubscribe,
-        )
-        yield* Effect.addFinalizer(() => Effect.sync(() => budgets.clear()))
-        return budgets
-      }),
-    )
+    const toolBudgets = runtimes.toolBudgets
     const budgetState = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const budgets = yield* InstanceState.get(toolBudgets)
-      let state = budgets.get(sessionID)
+      const directory = yield* InstanceState.directory
+      runtimes.own(sessionID, directory)
+      let state = toolBudgets.get(sessionID)
       if (!state) {
         state = { pending: new Map() }
-        budgets.set(sessionID, state)
+        toolBudgets.set(sessionID, state)
       }
       return state
     })
 
     const dropPendingBudget = Effect.fnUntraced(function* (sessionID: SessionID, messageID: MessageID) {
-      const budgets = yield* InstanceState.get(toolBudgets)
-      budgets.get(sessionID)?.pending.delete(messageID)
+      toolBudgets.get(sessionID)?.pending.delete(messageID)
     })
     const prepareFns = Prepare.makePrepare({
       sessions,
@@ -682,10 +597,16 @@ export const layer = Layer.effect(
       queueReasoning: (input) => queueReasoning(input),
       reasoningDistillationEnabled: (model) => reasoningDistillationEnabled(model),
       getLastAssistant: (sessionID) => lastAssistant(sessionID),
-      readRequestOverheads: () => InstanceState.get(requestOverheads),
-      readRuntimeContexts: () => InstanceState.get(runtimeContexts),
-      drainRewrites: (sessionID) => InstanceState.useEffect(rewriteState, ({ queue }) => queue.drain(sessionID)),
-      readScopedAgents: () => InstanceState.get(scopedAgents),
+      readRequestOverheads: () => Effect.succeed(requestOverheads),
+      readRuntimeContexts: () => Effect.succeed(runtimeContexts),
+      drainRewrites: (sessionID) =>
+        Effect.gen(function* () {
+          const directory = yield* InstanceState.directory
+          const rewrite = runtimes.directory(directory)
+          runtimes.own(sessionID, directory)
+          yield* rewrite.queue.drain(sessionID)
+        }),
+      readScopedAgents: () => Effect.succeed(scopedAgents),
     })
 
     const runTurn = (sessionID: SessionID): Effect.Effect<TurnExecution> => loopFns.runTurn(sessionID)
@@ -695,8 +616,8 @@ export const layer = Layer.effect(
       sessions,
       state,
       scope,
-      promptLocks,
       withRunRequest,
+      withPromptLock: locks.withPromptLock,
       goal,
       settingsHook,
       admitPrompt: admit.admitPrompt,
@@ -711,8 +632,8 @@ export const layer = Layer.effect(
     )(function* (input: LoopInput, origin: TurnOrigin = { kind: "user", via: "command" }) {
       // Register the runner under the prompt lock, then wait outside it: the
       // loop machine claims the same lock for its snapshot.
-      const result = yield* withRunRequest(input.sessionID, (request) =>
-        promptLocks.withLock(input.sessionID)(
+      const result = yield* withRunRequest(input.sessionID, (request, witness) =>
+        locks.withPromptLock(witness, input.sessionID, () =>
           Effect.gen(function* () {
             const handle = turns().begin(input.sessionID, origin)
             const tracked = turns()
@@ -854,8 +775,8 @@ export const layer = Layer.effect(
         .run(
           input.sessionID,
           (commit): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionAdmission.Blocked> =>
-            withRunRequest(input.sessionID, (request) =>
-              promptLocks.withLock(input.sessionID)(
+            withRunRequest(input.sessionID, (request, witness) =>
+              locks.withPromptLock(witness, input.sessionID, () =>
                 Effect.gen(function* () {
                   if (!request.valid()) return yield* Effect.interrupt
                   const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
@@ -977,8 +898,8 @@ export const layer = Layer.effect(
       spawner,
       prepareFns,
       ops: () => ops(),
-      promptLocks,
       withRunRequest,
+      withPromptLock: locks.withPromptLock,
       state,
       lastAssistant: (sessionID) => lastAssistant(sessionID),
     })
@@ -1000,6 +921,7 @@ export const layer = Layer.effect(
       budgetState: (sessionID) => budgetState(sessionID),
       promptLocks,
       withRunRequest,
+      withPromptLock: locks.withPromptLock,
       state,
       lastAssistant: (sessionID) => lastAssistant(sessionID),
       modelWriteBegin,
