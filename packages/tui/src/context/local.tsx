@@ -113,8 +113,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         set(name: string) {
           if (!agents().some((x) => x.name === name))
             return toast.show({
-              variant: "warning",
-              message: `Agent not found: ${name}`,
+              text: `Agent not found: ${name}`,
+              level: "warning",
               duration: 3000,
             })
           setAgentStore("current", name)
@@ -172,14 +172,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         commandUncertain: Record<string, boolean | undefined>
         uncertainOwner: Record<string, number | undefined>
         uncertain: Record<string, "pending" | "stopping" | "unknown" | undefined>
-        sessionVariant: Record<string, {
-          key: string
-          model: { providerID: string; modelID: string }
-          savedModel: { providerID: string; modelID: string }
-          value: string | undefined
-          saved: string | undefined
-          dirty: boolean
-        } | undefined>
+        sessionVariant: Record<
+          string,
+          | {
+              key: string
+              model: { providerID: string; modelID: string }
+              savedModel: { providerID: string; modelID: string }
+              value: string | undefined
+              saved: string | undefined
+              dirty: boolean
+            }
+          | undefined
+        >
       }>({
         ready: false,
         model: {},
@@ -298,7 +302,16 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       function sessionState(sessionID: string) {
         let state = sessions.get(sessionID)
         if (!state) {
-          state = { tail: Promise.resolve(), revision: 0, visibleRevision: 0, pending: 0, reads: new Set(), cancel: new Set(), interrupt: new Set(), queued: new Set() }
+          state = {
+            tail: Promise.resolve(),
+            revision: 0,
+            visibleRevision: 0,
+            pending: 0,
+            reads: new Set(),
+            cancel: new Set(),
+            interrupt: new Set(),
+            queued: new Set(),
+          }
           sessions.set(sessionID, state)
         }
         return state
@@ -308,11 +321,17 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         const current = currentModel()
         if (!modelStore.sessionVariant[sessionID] && current) {
           const persisted = sync.session.get(sessionID)?.model
-          const value = persisted?.providerID === current.providerID && persisted.id === current.modelID
-            ? persisted.variant : undefined
+          const value =
+            persisted?.providerID === current.providerID && persisted.id === current.modelID
+              ? persisted.variant
+              : undefined
           setModelStore("sessionVariant", sessionID, {
-            key: `${current.providerID}/${current.modelID}`, model: snapshot(current), savedModel: snapshot(current),
-            value, saved: value, dirty: true,
+            key: `${current.providerID}/${current.modelID}`,
+            model: snapshot(current),
+            savedModel: snapshot(current),
+            value,
+            saved: value,
+            dirty: true,
           })
         }
         if (modelStore.sessionVariant[sessionID]) setModelStore("sessionVariant", sessionID, "dirty", true)
@@ -342,7 +361,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         state.cancel.add(finish)
         return { state, revision, previousVisibleRevision, previousVisibleOperation, turn, valid, finish }
       }
-      function confirmed(sessionID: string, model: Model, variant: string | undefined, revision: number, agentName?: string) {
+      function confirmed(
+        sessionID: string,
+        model: Model,
+        variant: string | undefined,
+        revision: number,
+        agentName?: string,
+      ) {
         const state = sessions.get(sessionID)
         if (!state) return
         const previous = modelStore.sessionVariant[sessionID]
@@ -352,12 +377,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         setModelStore("sessionVariant", sessionID, {
           key: `${chosen.providerID}/${chosen.modelID}`,
           model: snapshot(chosen),
-          value: visible ? value : (previous ? previous.value : value),
+          value: visible ? value : previous ? previous.value : value,
           savedModel: snapshot(model),
           saved: value,
           dirty: true,
         })
-        if (visible && agentName && route.data.type === "session" && route.data.sessionID === sessionID && agent.current()?.name === agentName)
+        if (
+          visible &&
+          agentName &&
+          route.data.type === "session" &&
+          route.data.sessionID === sessionID &&
+          agent.current()?.name === agentName
+        )
           setModelStore("model", agentName, snapshot(model))
       }
       function rollback(sessionID: string, revision: number, agentName?: string) {
@@ -373,7 +404,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           saved: previous.saved,
           dirty: true,
         })
-        if (agentName && route.data.type === "session" && route.data.sessionID === sessionID && agent.current()?.name === agentName)
+        if (
+          agentName &&
+          route.data.type === "session" &&
+          route.data.sessionID === sessionID &&
+          agent.current()?.name === agentName
+        )
           setModelStore("model", agentName, snapshot(model))
       }
       function adoptConfirmed(sessionID: string) {
@@ -459,8 +495,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
           if (!favorites.length) {
             toast.show({
-              variant: "info",
-              message: "Add a favorite model to use this shortcut",
+              text: "Add a favorite model to use this shortcut",
+              level: "info",
               duration: 3000,
             })
             return
@@ -492,7 +528,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             (route.data.type === "session" ? route.data.sessionID : undefined) === sessionID &&
             agent.current()?.name === agentName
           if (!isModelValid(model)) {
-            toast.show({ message: `Model ${model.providerID}/${model.modelID} is not valid`, variant: "warning", duration: 3000 })
+            toast.show({
+              text: `Model ${model.providerID}/${model.modelID} is not valid`,
+              level: "warning",
+              duration: 3000,
+            })
             return Promise.resolve(false)
           }
           if (!sessionID) {
@@ -527,7 +567,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             } catch (error) {
               if (operation.valid()) rollback(sessionID, operation.revision, agentName)
               if (operation.valid() && operation.state.visibleRevision === operation.revision && matchesSelection())
-                toast.show({ message: errorMessage(error), variant: "warning", duration: 5000 })
+                toast.show({
+                  text: errorMessage(error),
+                  level: "warning",
+                  duration: 5000,
+                })
               return false
             } finally {
               operation.finish()
@@ -643,19 +687,32 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                 // its old model state; just release the queue for newer work.
                 operation.finish()
               } else if (!input.command && variant !== undefined) {
-                try { confirmed(sessionID, model, variant, operation.revision, agentName) }
-                finally { operation.finish() }
+                try {
+                  confirmed(sessionID, model, variant, operation.revision, agentName)
+                } finally {
+                  operation.finish()
+                }
               } else {
                 const controller = new AbortController()
                 operation.state.reads.add(controller)
-                void sdk.client.session.get({ sessionID }, { throwOnError: true, signal: controller.signal }).then((result) => {
-                  if (!operation.valid() || !result.data?.model) return
-                  const saved = result.data.model
-                  confirmed(sessionID, { providerID: saved.providerID, modelID: saved.id }, saved.variant, operation.revision, agentName)
-                }).catch(() => {}).finally(() => {
-                  operation.state.reads.delete(controller)
-                  operation.finish()
-                })
+                void sdk.client.session
+                  .get({ sessionID }, { throwOnError: true, signal: controller.signal })
+                  .then((result) => {
+                    if (!operation.valid() || !result.data?.model) return
+                    const saved = result.data.model
+                    confirmed(
+                      sessionID,
+                      { providerID: saved.providerID, modelID: saved.id },
+                      saved.variant,
+                      operation.revision,
+                      agentName,
+                    )
+                  })
+                  .catch(() => {})
+                  .finally(() => {
+                    operation.state.reads.delete(controller)
+                    operation.finish()
+                  })
               }
             }
           }
@@ -663,37 +720,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           void operation.turn.then(() => {
             if (!operation.valid() || settled) return
             unsubscribe = sync.submission.onAccepted(messageID, complete)
-            void Promise.resolve().then(() => {
-              if (!operation.valid() || settled) return
-              unqueue()
-              sent = true
-              if (input.command) setModelStore("commandPending", sessionID, true)
-              setModelStore("uncertainOwner", sessionID, operation.revision)
-              setModelStore("uncertain", sessionID, "pending")
-              return input.send()
-            }).then(() => {
-              if (operation.valid()) complete()
-            }).catch((error) => {
-              if (settled) return
-              if (interrupted) {
-                if (!definiteRejection(error, input.command)) {
-                  uncertain()
-                  return
-                }
-                settled = true
+            void Promise.resolve()
+              .then(() => {
+                if (!operation.valid() || settled) return
                 unqueue()
-                remove()
-                clearUncertain()
-                if (input.command) {
-                  setModelStore("commandPending", sessionID, undefined)
-                  setModelStore("commandUncertain", sessionID, undefined)
-                }
-                operation.finish()
-                input.failed(error)
-                return
-              }
-              if (sent) {
-                if (definiteRejection(error, input.command)) {
+                sent = true
+                if (input.command) setModelStore("commandPending", sessionID, true)
+                setModelStore("uncertainOwner", sessionID, operation.revision)
+                setModelStore("uncertain", sessionID, "pending")
+                return input.send()
+              })
+              .then(() => {
+                if (operation.valid()) complete()
+              })
+              .catch((error) => {
+                if (settled) return
+                if (interrupted) {
+                  if (!definiteRejection(error, input.command)) {
+                    uncertain()
+                    return
+                  }
                   settled = true
                   unqueue()
                   remove()
@@ -702,21 +748,35 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                     setModelStore("commandPending", sessionID, undefined)
                     setModelStore("commandUncertain", sessionID, undefined)
                   }
-                  if (operation.valid()) rollback(sessionID, operation.revision, agentName)
                   operation.finish()
                   input.failed(error)
                   return
                 }
-                uncertain()
-                return
-              }
-              settled = true
-              unqueue()
-              remove()
-              if (operation.valid()) rollback(sessionID, operation.revision, agentName)
-              operation.finish()
-              input.failed(error)
-            })
+                if (sent) {
+                  if (definiteRejection(error, input.command)) {
+                    settled = true
+                    unqueue()
+                    remove()
+                    clearUncertain()
+                    if (input.command) {
+                      setModelStore("commandPending", sessionID, undefined)
+                      setModelStore("commandUncertain", sessionID, undefined)
+                    }
+                    if (operation.valid()) rollback(sessionID, operation.revision, agentName)
+                    operation.finish()
+                    input.failed(error)
+                    return
+                  }
+                  uncertain()
+                  return
+                }
+                settled = true
+                unqueue()
+                remove()
+                if (operation.valid()) rollback(sessionID, operation.revision, agentName)
+                operation.finish()
+                input.failed(error)
+              })
           })
         },
         interrupt(sessionID: string) {
@@ -765,35 +825,57 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               state.restoreController = controller
               state.reads.add(controller)
               state.restoreToken = token
-              void sdk.client.session.get({ sessionID }, { throwOnError: true, signal: controller.signal }).then((result) => {
-                if (disposed || sessions.get(sessionID) !== state || state.restoreToken !== token || state.revision !== revision || state.pending) return
-                const saved = result.data?.model
-                if (!saved) return
-                const fresh = { providerID: saved.providerID, modelID: saved.id }
-                if (!isModelValid(fresh)) return
-                const selected = saved.variant
-                batch(() => {
-                  setModelStore("sessionVariant", sessionID, {
-                    key: `${fresh.providerID}/${fresh.modelID}`,
-                    model: snapshot(fresh),
-                    savedModel: snapshot(fresh),
-                    value: selected,
-                    saved: selected,
-                    dirty: true,
+              void sdk.client.session
+                .get({ sessionID }, { throwOnError: true, signal: controller.signal })
+                .then((result) => {
+                  if (
+                    disposed ||
+                    sessions.get(sessionID) !== state ||
+                    state.restoreToken !== token ||
+                    state.revision !== revision ||
+                    state.pending
+                  )
+                    return
+                  const saved = result.data?.model
+                  if (!saved) return
+                  const fresh = { providerID: saved.providerID, modelID: saved.id }
+                  if (!isModelValid(fresh)) return
+                  const selected = saved.variant
+                  batch(() => {
+                    setModelStore("sessionVariant", sessionID, {
+                      key: `${fresh.providerID}/${fresh.modelID}`,
+                      model: snapshot(fresh),
+                      savedModel: snapshot(fresh),
+                      value: selected,
+                      saved: selected,
+                      dirty: true,
+                    })
+                    if (
+                      route.data.type === "session" &&
+                      route.data.sessionID === sessionID &&
+                      agent.current()?.name === a.name
+                    )
+                      setModelStore("model", a.name, snapshot(fresh))
                   })
-                  if (route.data.type === "session" && route.data.sessionID === sessionID && agent.current()?.name === a.name)
-                    setModelStore("model", a.name, snapshot(fresh))
                 })
-              }).catch(() => {}).finally(() => {
-                state.reads.delete(controller)
-                if (state.restoreController === controller) state.restoreController = undefined
-              })
+                .catch(() => {})
+                .finally(() => {
+                  state.reads.delete(controller)
+                  if (state.restoreController === controller) state.restoreController = undefined
+                })
               return
             }
             const restoredModel = { providerID: model.providerID, modelID: model.modelID }
             setModelStore("model", a.name, snapshot(restoredModel))
             if (sessionID)
-              setModelStore("sessionVariant", sessionID, { key, model: snapshot(restoredModel), savedModel: snapshot(restoredModel), value, saved: value, dirty: false })
+              setModelStore("sessionVariant", sessionID, {
+                key,
+                model: snapshot(restoredModel),
+                savedModel: snapshot(restoredModel),
+                value,
+                saved: value,
+                dirty: false,
+              })
           })
           return true
         },
@@ -801,8 +883,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           batch(() => {
             if (!isModelValid(model)) {
               toast.show({
-                message: `Model ${model.providerID}/${model.modelID} is not valid`,
-                variant: "warning",
+                text: `Model ${model.providerID}/${model.modelID} is not valid`,
+                level: "warning",
                 duration: 3000,
               })
               return
@@ -857,17 +939,23 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             }
             const previous = modelStore.sessionVariant[sessionID]
             const persisted = sync.session.get(sessionID)?.model
-            const saved =
-              previous
-                ? previous.saved
-                : persisted?.providerID === m.providerID && persisted.id === m.modelID
-                  ? persisted.variant
-                  : undefined
+            const saved = previous
+              ? previous.saved
+              : persisted?.providerID === m.providerID && persisted.id === m.modelID
+                ? persisted.variant
+                : undefined
             const operation = begin(sessionID)
             const agentName = agent.current()?.name
             const selectedModel = { providerID: m.providerID, modelID: m.modelID }
             const savedModel = previous?.savedModel ?? selectedModel
-            setModelStore("sessionVariant", sessionID, { key, model: snapshot(selectedModel), savedModel: snapshot(savedModel), value: next, saved, dirty: true })
+            setModelStore("sessionVariant", sessionID, {
+              key,
+              model: snapshot(selectedModel),
+              savedModel: snapshot(savedModel),
+              value: next,
+              saved,
+              dirty: true,
+            })
             const bypassQueue =
               Boolean(modelStore.commandPending[sessionID]) || Boolean(modelStore.commandUncertain[sessionID])
             const send = async () => {
@@ -886,8 +974,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                 if (operation.valid()) confirmed(sessionID, selectedModel, next, operation.revision, agentName)
               } catch (error) {
                 if (operation.valid()) rollback(sessionID, operation.revision, agentName)
-                if (operation.valid() && operation.state.visibleRevision === operation.revision && route.data.type === "session" && route.data.sessionID === sessionID && agent.current()?.name === agentName) {
-                  toast.show({ message: errorMessage(error), variant: "warning", duration: 5000 })
+                if (
+                  operation.valid() &&
+                  operation.state.visibleRevision === operation.revision &&
+                  route.data.type === "session" &&
+                  route.data.sessionID === sessionID &&
+                  agent.current()?.name === agentName
+                ) {
+                  toast.show({
+                    text: errorMessage(error),
+                    level: "warning",
+                    duration: 5000,
+                  })
                 }
               } finally {
                 // Bypassing the command queue must not release the commands and
@@ -1042,8 +1140,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       if (!value?.model) return
       if (isModelValid(value.model)) return
       toast.show({
-        variant: "warning",
-        message: `Agent ${value.name}'s configured model ${value.model.providerID}/${value.model.modelID} is not valid`,
+        text: `Agent ${value.name}'s configured model ${value.model.providerID}/${value.model.modelID} is not valid`,
+        level: "warning",
         duration: 3000,
       })
     })

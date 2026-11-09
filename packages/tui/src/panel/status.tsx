@@ -22,7 +22,7 @@ function lspStatusLabel(item: LspStatus): string {
 }
 
 function errorText(record: ToastRecord): string {
-  return record.title ? `${record.title}: ${record.message}` : record.message
+  return record.text
 }
 
 /** `/status`: MCP, LSP and formatter sections plus the version and recent error toasts. */
@@ -87,13 +87,13 @@ export function StatusPanel() {
 
     result.push({
       id: "section:errors",
-      cells: [t("panel.status.section.errors", { count: toast.recentErrors.length })],
+      cells: [t("panel.status.section.errors", { count: toast.recentMessages.length })],
       selectable: false,
     })
-    if (toast.recentErrors.length === 0) {
+    if (toast.recentMessages.length === 0) {
       result.push({ id: "empty:errors", cells: [t("panel.status.errors.empty")], selectable: false })
     } else {
-      for (const record of toast.recentErrors) {
+      for (const record of toast.recentMessages) {
         result.push({
           id: `error:${record.id}`,
           cells: [errorText(record)],

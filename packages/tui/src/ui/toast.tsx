@@ -1,75 +1,140 @@
 import { createContext, useContext, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 
-export type ToastOptions = {
-  title?: string
-  message: string
-  variant: "info" | "success" | "warning" | "error"
-  duration: number
-}
-type ToastInput = Omit<ToastOptions, "duration"> & { duration?: number }
+export type ToastLevel = "info" | "success" | "warning" | "error"
 
-/** Compact record kept for the status panel. */
+/**
+ * A transient footer message. Display and dismissal timing belong to the
+ * footer (the only `ticker` consumer), so this store never owns a timer.
+ */
+export type ToastOptions = {
+  text: string
+  level: ToastLevel
+  duration?: number
+  /** Click handler while the toast is visible. */
+  onActivate?: () => void
+  /** New toasts declare their key so repeats within ten seconds merge. */
+  dedupeKey?: string
+}
+
+/** Compact record kept for the status panel's recent messages. */
 export type ToastRecord = {
   id: number
-  title?: string
-  message: string
+  text: string
+  level: ToastLevel
+  at: number
 }
 
-const MAX_RECENT_ERRORS = 5
+export type CurrentToast = ToastOptions & { id: number }
+
+type Entry = { id: number; options: ToastOptions; at: number }
+
+export const TOAST_QUEUE_LIMIT = 3
+export const TOAST_RECENT_LIMIT = 20
+export const TOAST_DEDUPE_MS = 10_000
+export const TOAST_DEFAULT_MS = 4_000
+export const TOAST_ERROR_MS = 8_000
+
+export function toastDuration(options: ToastOptions): number {
+  return options.duration ?? (options.level === "error" ? TOAST_ERROR_MS : TOAST_DEFAULT_MS)
+}
 
 function init() {
   const [store, setStore] = createStore({
-    currentToast: null as ToastOptions | null,
-    recentErrors: [] as ToastRecord[],
+    current: null as Entry | null,
+    queue: [] as Entry[],
+    recent: [] as ToastRecord[],
   })
-  let errorID = 0
+  let nextID = 0
 
-  let timeoutHandle: NodeJS.Timeout | null = null
+  function record(entry: Entry) {
+    if (entry.options.level !== "error") return
+    setStore("recent", (records) =>
+      [{ id: entry.id, text: entry.options.text, level: entry.options.level, at: entry.at }, ...records].slice(
+        0,
+        TOAST_RECENT_LIMIT,
+      ),
+    )
+  }
+
+  /** Replaces an existing entry with the new options and refreshes its window. */
+  function merge(entry: Entry, options: ToastOptions): Entry {
+    return { id: entry.id, options, at: Date.now() }
+  }
+
+  function enqueue(options: ToastOptions) {
+    const now = Date.now()
+    const key = options.dedupeKey ?? options.text
+    const keyOf = (entry: Entry) => entry.options.dedupeKey ?? entry.options.text
+    const current = store.current
+    if (current && keyOf(current) === key && now - current.at < TOAST_DEDUPE_MS) {
+      const merged = merge(current, options)
+      setStore("current", merged)
+      record(merged)
+      return
+    }
+    const index = store.queue.findIndex((entry) => keyOf(entry) === key && now - entry.at < TOAST_DEDUPE_MS)
+    if (index >= 0) {
+      const merged = merge(store.queue[index]!, options)
+      setStore("queue", index, merged)
+      record(merged)
+      return
+    }
+
+    const entry: Entry = { id: ++nextID, options, at: now }
+    if (!current) {
+      setStore("current", entry)
+      record(entry)
+      return
+    }
+    const queue = [...store.queue, entry]
+    if (queue.length > TOAST_QUEUE_LIMIT) {
+      // Overflow drops the oldest info first; a queue of warnings keeps its
+      // oldest entry instead of silently discarding a more urgent message.
+      const info = queue.findIndex((item) => item.options.level === "info")
+      queue.splice(info >= 0 ? info : 0, 1)
+    }
+    setStore("queue", queue)
+    record(entry)
+  }
 
   const toast = {
-    show(options: ToastInput) {
-      const toastOptions = { ...options, duration: options.duration ?? 5000 }
-      setStore("currentToast", toastOptions)
-      if (toastOptions.variant === "error") {
-        setStore("recentErrors", (records) =>
-          [{ id: ++errorID, title: toastOptions.title, message: toastOptions.message }, ...records].slice(
-            0,
-            MAX_RECENT_ERRORS,
-          ),
-        )
-      }
-      if (timeoutHandle) clearTimeout(timeoutHandle)
-      timeoutHandle = setTimeout(() => {
-        setStore("currentToast", null)
-      }, toastOptions.duration).unref()
+    show(options: ToastOptions) {
+      enqueue(options)
     },
-    error: (err: any) => {
-      if (err instanceof Error)
-        return toast.show({
-          variant: "error",
-          message: err.message,
-        })
-      toast.show({
-        variant: "error",
-        message: "An unknown error has occurred",
-      })
+    error(err: unknown, dedupeKey = "toast.error") {
+      if (err instanceof Error) return toast.show({ text: err.message, level: "error", dedupeKey })
+      toast.show({ text: "An unknown error has occurred", level: "error", dedupeKey })
     },
-    get currentToast(): ToastOptions | null {
-      return store.currentToast
+    /** Hides the current toast and promotes the next queued entry. */
+    dismiss() {
+      setStore("current", store.queue[0] ?? null)
+      setStore("queue", store.queue.slice(1))
     },
-    get recentErrors(): readonly ToastRecord[] {
-      return store.recentErrors
+    get currentToast(): CurrentToast | null {
+      const current = store.current
+      return current ? { ...current.options, id: current.id } : null
+    },
+    get queued(): readonly ToastOptions[] {
+      return store.queue.map((entry) => entry.options)
+    },
+    get recentMessages(): readonly ToastRecord[] {
+      return store.recent
+    },
+    /** Test/escape hatch: drop everything without touching recent messages. */
+    clear() {
+      setStore("current", null)
+      setStore("queue", [])
     },
   }
   return toast
 }
 
-export type ToastContext = ReturnType<typeof init>
+export type FooterToasts = ReturnType<typeof init>
 
-const ctx = createContext<ToastContext>()
+const ctx = createContext<FooterToasts>()
 
-export function ToastProvider(props: ParentProps) {
+export function FooterToastProvider(props: ParentProps) {
   const value = init()
   return <ctx.Provider value={value}>{props.children}</ctx.Provider>
 }
@@ -77,7 +142,7 @@ export function ToastProvider(props: ParentProps) {
 export function useToast() {
   const value = useContext(ctx)
   if (!value) {
-    throw new Error("useToast must be used within a ToastProvider")
+    throw new Error("useToast must be used within a FooterToastProvider")
   }
   return value
 }

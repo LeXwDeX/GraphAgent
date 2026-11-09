@@ -1,7 +1,8 @@
 import type { ClipboardService } from "../context/clipboard"
+import type { ToastOptions } from "../ui/toast"
 
 type Toast = {
-  show: (input: { message: string; variant: "info" | "success" | "warning" | "error" }) => void
+  show: (input: ToastOptions) => void
   error: (err: unknown) => void
 }
 
@@ -36,7 +37,12 @@ export function copy(renderer: Renderer, toast: Toast, clipboard: ClipboardServi
 
   clipboard
     ?.write?.(clipboardText)
-    .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+    .then(() =>
+      toast.show({
+        text: "Copied to clipboard",
+        level: "info",
+      }),
+    )
     .catch(toast.error)
 
   renderer.clearSelection()

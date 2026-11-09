@@ -28,7 +28,8 @@ import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Main } from "../../../src/routes/session"
 import { DialogProvider } from "../../../src/ui/dialog"
-import { ToastProvider } from "../../../src/ui/toast"
+import { FooterToastProvider } from "../../../src/ui/toast"
+import { HookStatusProvider } from "../../../src/context/hook-status"
 import { tmpdir } from "../../fixture/fixture"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -163,42 +164,44 @@ test("the Task row renders the child summary without hydrating the child session
                 <GraphagentKeymapProvider keymap={keymap}>
                   <ArgsProvider>
                     <KVProvider>
-                      <ToastProvider>
-                        <RouteProvider initialRoute={{ type: "session", sessionID }}>
-                          <TuiConfigProvider config={config}>
-                            <SDKProvider
-                              url="http://test"
-                              directory={directory}
-                              events={events.source}
-                              fetch={calls.fetch}
-                            >
-                              <ProjectProvider>
-                                <SyncProvider>
-                                  <ThemeProvider mode="dark">
-                                    <LocalProvider>
-                                      <PromptStashProvider>
-                                        <DialogProvider>
-                                          <FrecencyProvider>
-                                            <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={{}}>
-                                                  <LocationProvider>
-                                                    <Probe />
-                                                  </LocationProvider>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
-                                            </PromptHistoryProvider>
-                                          </FrecencyProvider>
-                                        </DialogProvider>
-                                      </PromptStashProvider>
-                                    </LocalProvider>
-                                  </ThemeProvider>
-                                </SyncProvider>
-                              </ProjectProvider>
-                            </SDKProvider>
-                          </TuiConfigProvider>
-                        </RouteProvider>
-                      </ToastProvider>
+                      <FooterToastProvider>
+                        <HookStatusProvider>
+                          <RouteProvider initialRoute={{ type: "session", sessionID }}>
+                            <TuiConfigProvider config={config}>
+                              <SDKProvider
+                                url="http://test"
+                                directory={directory}
+                                events={events.source}
+                                fetch={calls.fetch}
+                              >
+                                <ProjectProvider>
+                                  <SyncProvider>
+                                    <ThemeProvider mode="dark">
+                                      <LocalProvider>
+                                        <PromptStashProvider>
+                                          <DialogProvider>
+                                            <FrecencyProvider>
+                                              <PromptHistoryProvider>
+                                                <PromptRefProvider>
+                                                  <EditorContextProvider integration={{}}>
+                                                    <LocationProvider>
+                                                      <Probe />
+                                                    </LocationProvider>
+                                                  </EditorContextProvider>
+                                                </PromptRefProvider>
+                                              </PromptHistoryProvider>
+                                            </FrecencyProvider>
+                                          </DialogProvider>
+                                        </PromptStashProvider>
+                                      </LocalProvider>
+                                    </ThemeProvider>
+                                  </SyncProvider>
+                                </ProjectProvider>
+                              </SDKProvider>
+                            </TuiConfigProvider>
+                          </RouteProvider>
+                        </HookStatusProvider>
+                      </FooterToastProvider>
                     </KVProvider>
                   </ArgsProvider>
                 </GraphagentKeymapProvider>

@@ -262,9 +262,8 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
           .catch((error) => ({ error }))
         if (forced.error) {
           toast.show({
-            variant: "error",
-            title: "Failed to delete project copy",
-            message: errorMessage(forced.error),
+            text: "Failed to delete project copy: " + errorMessage(forced.error),
+            level: "error",
           })
           reopen()
           return
@@ -276,9 +275,8 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
         return
       }
       toast.show({
-        variant: "error",
-        title: "Failed to delete project copy",
-        message: errorMessage(result.error),
+        text: "Failed to delete project copy: " + errorMessage(result.error),
+        level: "error",
       })
       return
     }

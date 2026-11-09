@@ -35,16 +35,18 @@ export function usePromptWorkspace(sessionID?: string) {
     } catch (err) {
       setSelection(undefined)
       setCreating(false)
-      toast.show({ title: t("panel.workspace.create.failed"), message: errorMessage(err), variant: "error" })
+      toast.show({
+        text: `${t("panel.workspace.create.failed")}: ${errorMessage(err)}`,
+        level: "error",
+      })
       return
     }
     if (result.error || !result.data) {
       setSelection(undefined)
       setCreating(false)
       toast.show({
-        title: t("panel.workspace.create.failed"),
-        message: errorMessage(result.error ?? "no response"),
-        variant: "error",
+        text: `${t("panel.workspace.create.failed")}: ${errorMessage(result.error ?? "no response")}`,
+        level: "error",
       })
       return
     }

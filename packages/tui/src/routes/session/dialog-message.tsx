@@ -58,7 +58,10 @@ export function DialogMessage(props: {
       dialog.clear()
     } catch (error) {
       dialog.clear()
-      toast.show({ title: "Queued message was not changed", message: errorMessage(error), variant: "warning" })
+      toast.show({
+        text: "Queued message was not changed: " + errorMessage(error),
+        level: "warning",
+      })
     }
   }
 
@@ -82,7 +85,10 @@ export function DialogMessage(props: {
       )
       dialog.clear()
     } catch (error) {
-      toast.show({ title: "Queued message was not deleted", message: errorMessage(error), variant: "warning" })
+      toast.show({
+        text: "Queued message was not deleted: " + errorMessage(error),
+        level: "warning",
+      })
     }
   }
 

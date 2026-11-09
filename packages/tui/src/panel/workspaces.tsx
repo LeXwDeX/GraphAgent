@@ -70,9 +70,8 @@ export function WorkspacesPanel() {
     if (result?.error) {
       setRemoving(undefined)
       toast.show({
-        variant: "error",
-        title: t("panel.workspace.delete.failed"),
-        message: errorMessage(result.error),
+        text: `${t("panel.workspace.delete.failed")}: ${errorMessage(result.error)}`,
+        level: "error",
       })
       return
     }

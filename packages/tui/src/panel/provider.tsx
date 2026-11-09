@@ -169,7 +169,10 @@ function CustomProviderForm(props: { onSubmit(providerID: string): void }) {
         onSubmit(value) {
           const providerID = normalizeCustomProviderID(value)
           if (!providerID) {
-            toast.show({ variant: "error", message: t("panel.provider.custom.invalid") })
+            toast.show({
+              text: t("panel.provider.custom.invalid"),
+              level: "error",
+            })
             return
           }
           props.onSubmit(providerID)
@@ -302,7 +305,10 @@ function MethodPanel(props: MethodPanelProps) {
     })
     if (disposed) return
     if (result.error) {
-      toast.show({ variant: "error", message: JSON.stringify(result.error) })
+      toast.show({
+        text: JSON.stringify(result.error),
+        level: "error",
+      })
       props.closeFlow()
       return
     }
@@ -326,8 +332,8 @@ function MethodPanel(props: MethodPanelProps) {
     if (result.error) {
       const failed = "name" in result.error && result.error.name === "ProviderAuthOauthCallbackFailed"
       toast.show({
-        variant: "error",
-        message: failed ? t("panel.provider.oauth.failed") : JSON.stringify(result.error),
+        text: failed ? t("panel.provider.oauth.failed") : JSON.stringify(result.error),
+        level: "error",
       })
       props.closeFlow()
       return
@@ -367,8 +373,8 @@ function MethodPanel(props: MethodPanelProps) {
     if (disposed) return
     if (props.custom && !sync.data.provider_next.all.some((provider) => provider.id === props.providerID)) {
       toast.show({
-        variant: "info",
-        message: t("panel.provider.custom.saved", { providerID: props.providerID }),
+        text: t("panel.provider.custom.saved", { providerID: props.providerID }),
+        level: "info",
       })
       props.closeFlow()
       return
@@ -383,7 +389,12 @@ function MethodPanel(props: MethodPanelProps) {
     const code = current.instructions.match(/[A-Z0-9]{4}-[A-Z0-9]{4,5}/)?.[0] ?? current.url
     void clipboard
       .write?.(code)
-      .then(() => toast.show({ message: t("panel.provider.copied"), variant: "info" }))
+      .then(() =>
+        toast.show({
+          text: t("panel.provider.copied"),
+          level: "info",
+        }),
+      )
       .catch(toast.error)
   }
 

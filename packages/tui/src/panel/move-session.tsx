@@ -213,9 +213,8 @@ export function MoveSessionPanel(props: MoveSessionPanelProps) {
       }
       setRemoving(undefined)
       toast.show({
-        variant: "error",
-        title: t("panel.move.delete.failed"),
-        message: errorMessage(result.error),
+        text: `${t("panel.move.delete.failed")}: ${errorMessage(result.error)}`,
+        level: "error",
       })
       return
     }

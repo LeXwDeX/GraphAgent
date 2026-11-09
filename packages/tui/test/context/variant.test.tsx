@@ -29,7 +29,8 @@ import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { DialogProvider } from "../../src/ui/dialog"
-import { ToastProvider } from "../../src/ui/toast"
+import { FooterToastProvider, useToast } from "../../src/ui/toast"
+import { TickerProvider } from "../../src/context/ticker-context"
 import { useFooterStatus } from "../../src/shell/footer-status"
 import { tmpdir } from "../fixture/fixture"
 import { TestTuiContexts } from "../fixture/tui-environment"
@@ -38,7 +39,13 @@ import { createEventSource, createFetch, directory, json } from "../fixture/tui-
 
 async function wait(fn: () => boolean) {
   const start = Date.now()
-  while (!fn()) {
+  while (true) {
+    try {
+      if (fn()) return
+    } catch (error) {
+      // The ticker keeps frames moving; a capture can lose the buffer lease.
+      if (!String(error).includes("OutputBusy")) throw error
+    }
     if (Date.now() - start > 2000) throw new Error("timed out")
     await Bun.sleep(10)
   }
@@ -85,12 +92,14 @@ async function mount(
   let route!: ReturnType<typeof useRoute>
   let sdk!: ReturnType<typeof useSDK>
   let prompt!: PromptRef
+  let toast!: ReturnType<typeof useToast>
   const [mounted, setMounted] = createSignal(true)
   function Content() {
     local = useLocal()
     sync = useSync()
     route = useRoute()
     sdk = useSDK()
+    toast = useToast()
     return (
       <Show when={mounted()}>
         <Prompt
@@ -120,38 +129,40 @@ async function mount(
               <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
-                    <ToastProvider>
-                      <RouteProvider initialRoute={{ type: "home" }}>
-                        <TuiConfigProvider config={config}>
-                          <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
-                            <ProjectProvider>
-                              <SyncProvider>
-                                <ThemeProvider mode="dark">
-                                  <LocalProvider>
-                                    <PromptStashProvider>
-                                      <DialogProvider>
-                                        <FrecencyProvider>
-                                          <PromptHistoryProvider>
-                                            <PromptRefProvider>
-                                              <EditorContextProvider integration={{}}>
-                                                <LocationProvider>
-                                                  <Content />
-                                                  <FooterStatusView />
-                                                </LocationProvider>
-                                              </EditorContextProvider>
-                                            </PromptRefProvider>
-                                          </PromptHistoryProvider>
-                                        </FrecencyProvider>
-                                      </DialogProvider>
-                                    </PromptStashProvider>
-                                  </LocalProvider>
-                                </ThemeProvider>
-                              </SyncProvider>
-                            </ProjectProvider>
-                          </SDKProvider>
-                        </TuiConfigProvider>
-                      </RouteProvider>
-                    </ToastProvider>
+                    <FooterToastProvider>
+                      <TickerProvider>
+                        <RouteProvider initialRoute={{ type: "home" }}>
+                          <TuiConfigProvider config={config}>
+                            <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
+                              <ProjectProvider>
+                                <SyncProvider>
+                                  <ThemeProvider mode="dark">
+                                    <LocalProvider>
+                                      <PromptStashProvider>
+                                        <DialogProvider>
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider integration={{}}>
+                                                  <LocationProvider>
+                                                    <Content />
+                                                    <FooterStatusView />
+                                                  </LocationProvider>
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
+                                        </DialogProvider>
+                                      </PromptStashProvider>
+                                    </LocalProvider>
+                                  </ThemeProvider>
+                                </SyncProvider>
+                              </ProjectProvider>
+                            </SDKProvider>
+                          </TuiConfigProvider>
+                        </RouteProvider>
+                      </TickerProvider>
+                    </FooterToastProvider>
                   </KVProvider>
                 </ArgsProvider>
               </GraphagentKeymapProvider>
@@ -227,6 +238,9 @@ async function mount(
     },
     get prompt() {
       return prompt
+    },
+    get toast() {
+      return toast
     },
     remount() {
       setMounted(false)
@@ -662,12 +676,39 @@ test.each([
     expect(sent).toEqual([])
     app.prompt.focus()
     await app.app.renderOnce()
+    // The queued-submit notice is still current; clear it so the stop failure
+    // (enqueued behind it) is the visible footer toast.
+    app.toast.clear()
     app.app.mockInput.pressKey("ESCAPE")
     app.app.mockInput.pressKey("ESCAPE")
     await wait(() => aborts === 1)
     if (!succeeds) {
-      await app.app.renderOnce()
-      await wait(() => app.app.captureCharFrame().includes("Failed to stop session"))
+      // The ticker keeps frames moving; retry short captures instead of
+      // treating a lost buffer lease as "message never appeared".
+      let framed = false
+      const start = Date.now()
+      while (Date.now() - start < 5000) {
+        const pending = app.toast.queued.some((entry) => entry.text.includes("Failed to stop session"))
+        const current = app.toast.currentToast?.text ?? ""
+        // Another interrupt toast may hold the slot; the failure is queued
+        // behind it, so expire the front entry the way the footer would.
+        if (pending && !current.includes("Failed to stop session")) app.toast.dismiss()
+        try {
+          await app.app.renderOnce()
+        } catch (error) {
+          if (!String(error).includes("OutputBusy")) throw error
+        }
+        try {
+          if (app.app.captureCharFrame().includes("Failed to stop session")) {
+            framed = true
+            break
+          }
+        } catch (error) {
+          if (!String(error).includes("OutputBusy")) throw error
+        }
+        await Bun.sleep(10)
+      }
+      expect(framed).toBe(true)
       app.sync.set("session_status", "a", { type: "idle" })
     }
     releaseModel()

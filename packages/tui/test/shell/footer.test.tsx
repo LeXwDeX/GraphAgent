@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import { afterEach, beforeEach, expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { testRender, useRenderer } from "@opentui/solid"
@@ -12,7 +12,8 @@ import { setLanguage } from "../../src/i18n"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { Footer, useFooterKeyHints, type FooterHint } from "../../src/shell/footer"
 import { useFooterStatus } from "../../src/shell/footer-status"
-import { ToastProvider, useToast } from "../../src/ui/toast"
+import { FooterToastProvider, toastDuration, useToast, type ToastOptions } from "../../src/ui/toast"
+import { TickerProvider } from "../../src/context/ticker-context"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
 import { ShellContexts, shellState } from "./contexts"
 
@@ -240,7 +241,7 @@ function FooterFromStatus() {
   const toast = useToast()
   const status = useFooterStatus()
   onMount(() => {
-    toast.show({ message: "Copied to clipboard", variant: "info", duration: 30000 })
+    toast.show({ text: "Copied to clipboard", level: "info", duration: 30000 })
   })
   return (
     <box>
@@ -251,11 +252,16 @@ function FooterFromStatus() {
 
 test("renders a toast in the footer right slot instead of idle hints", async () => {
   await using tmp = await shellState()
-  const app = await render(() => (
-    <ToastProvider>
-      <FooterFromStatus />
-    </ToastProvider>
-  ), { width: 80, state: tmp.path })
+  const app = await render(
+    () => (
+      <FooterToastProvider>
+        <TickerProvider>
+          <FooterFromStatus />
+        </TickerProvider>
+      </FooterToastProvider>
+    ),
+    { width: 80, state: tmp.path },
+  )
   await app.renderOnce()
 
   try {
@@ -270,11 +276,16 @@ test("renders a toast in the footer right slot instead of idle hints", async () 
 
 test("shows pending leader keys ahead of a toast in the shared right slot", async () => {
   await using tmp = await shellState()
-  const app = await render(() => (
-    <ToastProvider>
-      <FooterFromStatus />
-    </ToastProvider>
-  ), { width: 80, state: tmp.path })
+  const app = await render(
+    () => (
+      <FooterToastProvider>
+        <TickerProvider>
+          <FooterFromStatus />
+        </TickerProvider>
+      </FooterToastProvider>
+    ),
+    { width: 80, state: tmp.path },
+  )
   await app.renderOnce()
   expect(app.captureCharFrame()).toContain("Copied to clipboard")
 
@@ -285,6 +296,180 @@ test("shows pending leader keys ahead of a toast in the shared right slot", asyn
     expect(frame).not.toContain("Copied to clipboard")
     expect(frame).not.toContain("/ 命令")
     expectWithin(frame, 80, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+function ToastProbe(props: { onToast: (toast: ReturnType<typeof useToast>) => void }) {
+  const toast = useToast()
+  props.onToast(toast)
+  return <box />
+}
+
+async function renderToastStore() {
+  let toast!: ReturnType<typeof useToast>
+  const app = await testRender(
+    () => (
+      <FooterToastProvider>
+        <ToastProbe onToast={(value) => (toast = value)} />
+      </FooterToastProvider>
+    ),
+    { width: 40, height: 1 },
+  )
+  return { app, toast: () => toast }
+}
+
+test("keeps one toast visible, queues three more and drops the oldest info", async () => {
+  const { app, toast } = await renderToastStore()
+  try {
+    toast().show({ text: "one", level: "info" })
+    toast().show({ text: "two", level: "info" })
+    toast().show({ text: "warn", level: "warning" })
+    toast().show({ text: "three", level: "info" })
+    toast().show({ text: "four", level: "success" })
+    expect(toast().currentToast?.text).toBe("one")
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["warn", "three", "four"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("drops the oldest entry when no info toast can make room", async () => {
+  const { app, toast } = await renderToastStore()
+  try {
+    toast().show({ text: "w1", level: "warning" })
+    toast().show({ text: "e1", level: "error" })
+    toast().show({ text: "w2", level: "warning" })
+    toast().show({ text: "e2", level: "error" })
+    toast().show({ text: "w3", level: "warning" })
+    expect(toast().currentToast?.text).toBe("w1")
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["w2", "e2", "w3"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("merges a repeated dedupeKey inside ten seconds and keeps the entry id", async () => {
+  const { app, toast } = await renderToastStore()
+  const clock = spyOn(Date, "now").mockReturnValue(1_000)
+  try {
+    toast().show({ text: "first", level: "info", dedupeKey: "same" })
+    const id = toast().currentToast?.id
+    clock.mockReturnValue(5_000)
+    toast().show({ text: "second", level: "info", dedupeKey: "same" })
+    expect(toast().currentToast?.id).toBe(id)
+    expect(toast().currentToast?.text).toBe("second")
+    expect(toast().queued).toHaveLength(0)
+  } finally {
+    clock.mockRestore()
+    app.renderer.destroy()
+  }
+})
+
+test("does not merge an expired dedupeKey", async () => {
+  const { app, toast } = await renderToastStore()
+  const clock = spyOn(Date, "now").mockReturnValue(1_000)
+  try {
+    toast().show({ text: "first", level: "info", dedupeKey: "same" })
+    clock.mockReturnValue(11_000)
+    toast().show({ text: "second", level: "info", dedupeKey: "same" })
+    expect(toast().currentToast?.text).toBe("first")
+    expect(toast().queued.map((entry) => entry.text)).toEqual(["second"])
+  } finally {
+    clock.mockRestore()
+    app.renderer.destroy()
+  }
+})
+
+test("merges identical plain text even without a dedupeKey", async () => {
+  const { app, toast } = await renderToastStore()
+  try {
+    toast().show({ text: "same", level: "error" })
+    toast().show({ text: "same", level: "error" })
+    expect(toast().queued).toHaveLength(0)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("keeps the latest twenty error messages for the status panel", async () => {
+  const { app, toast } = await renderToastStore()
+  const clock = spyOn(Date, "now").mockReturnValue(1_000)
+  try {
+    for (let index = 0; index < 21; index++) toast().show({ text: `error ${index}`, level: "error" })
+    expect(toast().recentMessages).toHaveLength(20)
+    expect(toast().recentMessages[0]?.text).toBe("error 20")
+    expect(toast().recentMessages[19]?.text).toBe("error 1")
+  } finally {
+    clock.mockRestore()
+    app.renderer.destroy()
+  }
+})
+
+test("defaults to four seconds and eight seconds for errors", () => {
+  expect(toastDuration({ text: "x", level: "info" })).toBe(4_000)
+  expect(toastDuration({ text: "x", level: "error" })).toBe(8_000)
+  expect(toastDuration({ text: "x", level: "success", duration: 1_500 })).toBe(1_500)
+})
+
+function ToastFooter(props: { options: ToastOptions; expose?: (toast: ReturnType<typeof useToast>) => void }) {
+  const toast = useToast()
+  const status = useFooterStatus()
+  props.expose?.(toast)
+  onMount(() => toast.show(props.options))
+  return <Footer agent="build" agentAction="tab" hints={hints} right={status()} />
+}
+
+test("truncates an overlong error and keeps the full text in recent messages", async () => {
+  await using tmp = await shellState()
+  const long = `failure ${"x".repeat(200)}`
+  let toast!: ReturnType<typeof useToast>
+  const app = await render(
+    () => (
+      <FooterToastProvider>
+        <TickerProvider>
+          <ToastFooter options={{ text: long, level: "error", duration: 30_000 }} expose={(value) => (toast = value)} />
+        </TickerProvider>
+      </FooterToastProvider>
+    ),
+    { width: 80, state: tmp.path },
+  )
+  await app.renderOnce()
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("/status")
+    expect(frame).not.toContain(long)
+    expect(toast.recentMessages[0]?.text).toBe(long)
+    expectWithin(frame, 80, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("activates the footer toast on click", async () => {
+  await using tmp = await shellState()
+  let activations = 0
+  const app = await render(
+    () => (
+      <FooterToastProvider>
+        <TickerProvider>
+          <ToastFooter
+            options={{ text: "Activate me", level: "info", duration: 30_000, onActivate: () => activations++ }}
+          />
+        </TickerProvider>
+      </FooterToastProvider>
+    ),
+    { width: 80, state: tmp.path },
+  )
+  await app.renderOnce()
+  await app.renderOnce()
+  try {
+    const frame = app.captureCharFrame()
+    const column = frame.split("\n")[0]!.indexOf("Activate me")
+    expect(column).toBeGreaterThanOrEqual(0)
+    await app.mockMouse.click(column + 2, 0)
+    expect(activations).toBe(1)
   } finally {
     app.renderer.destroy()
   }
