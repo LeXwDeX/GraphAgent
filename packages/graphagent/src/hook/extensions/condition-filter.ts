@@ -122,8 +122,20 @@ function webFetchMatch(pattern: string, url: string): boolean {
   }
 }
 
+/**
+ * D1 PR3: glob -> RegExp compilation is pure per `(pattern, star)` and `if`
+ * conditions are config-static, so an agent idling on tool calls would
+ * otherwise rebuild the same expressions on every trigger. The cap is a safety
+ * valve for dynamically registered session hooks, not an expected size.
+ */
+const regexCache = new Map<string, RegExp>()
+const REGEX_CACHE_LIMIT = 512
+
 /** Compile a glob to an anchored regex. `*` compiles to `star`; `**` always spans separators. */
 function toRegex(pattern: string, star: string): RegExp {
+  const key = star + "\0" + pattern
+  const cached = regexCache.get(key)
+  if (cached) return cached
   let regex = "^"
   for (let i = 0; i < pattern.length; i++) {
     const c = pattern[i]
@@ -146,7 +158,13 @@ function toRegex(pattern: string, star: string): RegExp {
       regex += c
     }
   }
-  return new RegExp(regex + "$", "s")
+  const compiled = new RegExp(regex + "$", "s")
+  if (regexCache.size >= REGEX_CACHE_LIMIT) {
+    const oldest = regexCache.keys().next()
+    if (!oldest.done) regexCache.delete(oldest.value)
+  }
+  regexCache.set(key, compiled)
+  return compiled
 }
 
 const ENV_PREFIX = /^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/

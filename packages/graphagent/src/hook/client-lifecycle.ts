@@ -48,6 +48,7 @@ export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(
           if (permission) yield* permission.clearHookPolicy(id)
           yield* HookTranscript.clearEnvironment(id).pipe(Effect.ignore)
           yield* HookTranscript.clearScratchpad(id).pipe(Effect.ignore)
+          HookTranscript.clearCursor(id)
         }),
       ),
     )

@@ -44,7 +44,9 @@ import type { TriggerResult } from "../trigger-result"
 import { applyResult, PER_TRIGGER_DEDUP_EVENTS } from "./reduce"
 import { addSeen, removeStopChain, staticWatchPaths } from "./state"
 import type { State, StopRewakeChain } from "./state"
-import { entryEligible, groupMatches, handlerKey } from "./plan"
+import { entryEligible, compileGroup, groupMatches, handlerKey } from "./plan"
+import { HookIndexByEvent } from "../index-by-event"
+import type { CompiledMatcher } from "../match"
 import { onAsyncComplete, sanitizeHookContext } from "./async"
 import { commandText } from "../exec/command"
 import { isAsync } from "../types"
@@ -53,6 +55,14 @@ import { makeServiceMethods } from "./methods"
 import type { Interface } from "../service"
 
 const log = Log.create({ service: "hook.settings" })
+
+/**
+ * D1 PR3 test hook: observes the time one trigger spends preparing — matcher
+ * selection, lazy context resolution, and envelope construction — before any
+ * handler starts. Undefined in production; tests install a callback and reset
+ * it in a finalizer. Not part of the hook's public API.
+ */
+export const prepareObserver: { current?: (event: HookEvent, durationMs: number) => void } = {}
 
 export interface EngineDeps {
   sessionHooks: SessionHooks.Interface
@@ -194,6 +204,8 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       owner?: ReturnType<typeof SessionCancellation.request>,
     ) {
       using _ = log.time("trigger", { event: payload.event, sessionID: ctx.sessionID })
+      const prepareStart = performance.now()
+      const observePrepare = () => prepareObserver.current?.(payload.event, performance.now() - prepareStart)
       const s = yield* InstanceState.get(state)
       const result: TriggerResult = { additionalContexts: [], systemMessages: [] }
       if (owner && !owner.valid()) return result
@@ -271,9 +283,11 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       if (s.settings.disableAllHooks === true) {
         log.info("trigger short-circuit", { event: payload.event, reason: "disableAllHooks" })
         if (payload.event === "SessionEnd" && ctx.sessionID) yield* clearEndedSession(s, ctx.sessionID)
+        observePrepare()
         return result
       }
-      const hasFile = (s.settings.hooks?.[payload.event]?.length ?? 0) > 0
+      const fileGroups = HookIndexByEvent.groups(HookIndexByEvent.of(s.settings), payload.event)
+      const hasFile = fileGroups.length > 0
       const hasSession = ctx.sessionID
         ? yield* sessionHooks.hasForEvent(SessionID.make(ctx.sessionID), sessionEvent)
         : false
@@ -286,10 +300,26 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         if (payload.event === "SessionEnd" && ctx.sessionID) {
           yield* clearEndedSession(s, ctx.sessionID)
         }
+        observePrepare()
         return result
       }
 
-      const fileMatchers = s.settings.hooks?.[payload.event] ?? []
+      // Tag matchers with their origin so once-cleanup can remove session ones
+      // after execution. The settings chain matchers carry no _sessionEntry.
+      type RunMatcher = HookMatcher & { _sessionEntry?: SessionHookEntry; _sessionOwner?: string }
+      // Matcher predicates are compiled once per settings snapshot (file groups)
+      // or once per distinct (matcher, event) pair (session groups).
+      const tests = new Map<RunMatcher, CompiledMatcher>()
+      const sessionGroup = (entry: SessionHookEntry, owner: string | undefined): RunMatcher => {
+        const group: RunMatcher = {
+          matcher: entry.matcher,
+          hooks: entry.hooks,
+          _sessionEntry: entry,
+          _sessionOwner: owner,
+        }
+        tests.set(group, compileGroup(group, payload.event))
+        return group
+      }
 
       // ── Session-scoped hook resolution (WP-5D) ────────────────
       // Sub-agent stop semantics: if the caller marks this trigger as
@@ -309,28 +339,14 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
             )
           : []
 
-      // Tag matchers with their origin so once-cleanup can remove session ones
-      // after execution. The settings chain matchers carry no _sessionEntry.
-      type RunMatcher = HookMatcher & { _sessionEntry?: SessionHookEntry; _sessionOwner?: string }
       const matchers: RunMatcher[] = [
-        ...fileMatchers,
-        ...sessionEntries.map(
-          (e) =>
-            ({
-              matcher: e.matcher,
-              hooks: e.hooks,
-              _sessionEntry: e,
-              _sessionOwner: ctx.sessionID,
-            }) satisfies RunMatcher,
-        ),
-        ...childAgentEntries.map(
-          (e) =>
-            ({
-              matcher: e.matcher,
-              hooks: e.hooks,
-              _sessionEntry: e,
-              _sessionOwner: payload.event === "SubagentStop" ? payload.agentID : undefined,
-            }) satisfies RunMatcher,
+        ...fileGroups.map(({ group, test }) => {
+          tests.set(group, test)
+          return group
+        }),
+        ...sessionEntries.map((entry) => sessionGroup(entry, ctx.sessionID)),
+        ...childAgentEntries.map((entry) =>
+          sessionGroup(entry, payload.event === "SubagentStop" ? payload.agentID : undefined),
         ),
       ]
       if (!matchers.length) {
@@ -338,6 +354,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         if (payload.event === "SessionEnd" && ctx.sessionID) {
           yield* clearEndedSession(s, ctx.sessionID)
         }
+        observePrepare()
         return result
       }
 
@@ -418,7 +435,8 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       const plannedEntries: PlannedEntry[] = []
       const plannedKeys = new Set<string>()
       for (const group of matchers) {
-        if (!groupMatches(group, targets, payload.event)) continue
+        const test = tests.get(group)
+        if (!test || !groupMatches(test, targets)) continue
         let claimed = false
         for (const entry of group.hooks) {
           if (!entryEligible(payload, entry)) continue
@@ -478,6 +496,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       if (!plannedEntries.length) {
         log.info("trigger short-circuit", { event: payload.event, reason: "no_runnable_entries" })
         if (payload.event === "SessionEnd" && ctx.sessionID) yield* clearEndedSession(s, ctx.sessionID)
+        observePrepare()
         return result
       }
 
@@ -513,6 +532,8 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           ? { ...payload, agentTranscriptPath: resolved.agentTranscript }
           : payload
       const envelope = buildStdinEnvelope(envelopePayload, envelopeContext, s.cwd)
+      // Planning and preparation end here; handlers start below.
+      observePrepare()
       // additionalContext dedup: only within this trigger for tool events,
       // per session otherwise (see PER_TRIGGER_DEDUP_EVENTS).
       const local = new Set<string>()

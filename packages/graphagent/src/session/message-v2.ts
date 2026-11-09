@@ -26,11 +26,16 @@ import { Database } from "@graphagent/core/database/database"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { NotFoundError } from "@/storage/storage"
 import { and } from "drizzle-orm"
+import { asc } from "drizzle-orm"
+import { count } from "drizzle-orm"
 import { desc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
+import { gt } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
+import { lte } from "drizzle-orm"
 import { or } from "drizzle-orm"
+import { sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "@graphagent/core/session/sql"
 import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
@@ -111,6 +116,17 @@ const part = (row: typeof PartTable.$inferSelect) =>
 
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
+
+/** Strictly newer than `row`, the ascending mirror of `older`. */
+const newer = (row: Cursor) =>
+  or(gt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), gt(MessageTable.id, row.id)))
+
+/** At or before `row` under the `(time_created, id)` ordering. */
+const through = (row: Cursor) =>
+  or(
+    lt(MessageTable.time_created, row.time),
+    and(eq(MessageTable.time_created, row.time), lte(MessageTable.id, row.id)),
+  )
 
 function hydrate(db: Database.Interface["db"], rows: (typeof MessageTable.$inferSelect)[]) {
   const ids = rows.map((row) => row.id)
@@ -570,6 +586,89 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
     more,
     cursor: more && tail ? cursor.encode({ id: tail.id, time: tail.time_created }) : undefined,
   }
+})
+
+/**
+ * Ascending page strictly after a [`cursor`] — the forward mirror of `page`.
+ * The ordering key is exactly the same `(time_created, id)` pair, so walking a
+ * session with alternating `page`/`after` calls never skips or repeats a row.
+ *
+ * An unknown session yields an empty page instead of `NotFoundError`: transcript
+ * materialization runs for session ids that unit layers never persisted.
+ */
+export const after = Effect.fn("MessageV2.after")(function* (input: {
+  sessionID: SessionID
+  limit: number
+  after?: string
+}) {
+  const { db } = yield* Database.Service
+  const start = input.after ? cursor.decode(input.after) : undefined
+  const where = start
+    ? and(eq(MessageTable.session_id, input.sessionID), newer(start))
+    : eq(MessageTable.session_id, input.sessionID)
+  const rows = yield* db
+    .select()
+    .from(MessageTable)
+    .where(where)
+    .orderBy(asc(MessageTable.time_created), asc(MessageTable.id))
+    .limit(input.limit + 1)
+    .all()
+    .pipe(Effect.orDie)
+  const more = rows.length > input.limit
+  const slice = more ? rows.slice(0, input.limit) : rows
+  const items = yield* hydrate(db, slice)
+  const tail = slice.at(-1)
+  return {
+    items,
+    more,
+    cursor: more && tail ? cursor.encode({ id: tail.id, time: tail.time_created }) : undefined,
+  }
+})
+
+/**
+ * Number of messages at or before a cursor under the `(time_created, id)`
+ * ordering. Runs as a `COUNT(*)` without hydrating parts; transcript
+ * materialization uses it to detect deletions and inserts before the point it
+ * has already persisted.
+ */
+export const countThrough = Effect.fn("MessageV2.countThrough")(function* (input: {
+  sessionID: SessionID
+  cursor: string
+}) {
+  const at = cursor.decode(input.cursor)
+  const { db } = yield* Database.Service
+  const row = yield* db
+    .select({ count: count() })
+    .from(MessageTable)
+    .where(and(eq(MessageTable.session_id, input.sessionID), through(at)))
+    .get()
+    .pipe(Effect.orDie)
+  return row?.count ?? 0
+})
+
+/**
+ * The newest `limit` user-role messages with parts, oldest first. The role
+ * filter runs in SQLite (`json_extract`) so deriving prompt identity costs one
+ * bounded read instead of loading the whole session.
+ */
+export const recentUsers = Effect.fn("MessageV2.recentUsers")(function* (input: {
+  sessionID: SessionID
+  limit: number
+}) {
+  const { db } = yield* Database.Service
+  const rows = yield* db
+    .select()
+    .from(MessageTable)
+    .where(
+      and(eq(MessageTable.session_id, input.sessionID), sql`json_extract(${MessageTable.data}, '$.role') = 'user'`),
+    )
+    .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
+    .limit(input.limit)
+    .all()
+    .pipe(Effect.orDie)
+  const items = yield* hydrate(db, rows)
+  items.reverse()
+  return items
 })
 
 export function stream(sessionID: SessionID) {
