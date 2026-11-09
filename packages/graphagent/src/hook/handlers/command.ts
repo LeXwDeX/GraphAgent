@@ -5,7 +5,7 @@
  */
 import { Effect } from "effect"
 import * as Log from "@/util/log"
-import { isAsync, type HookJSONOutput } from "../types"
+import { isAsync, type HookEvent, type HookJSONOutput } from "../types"
 import { commandText, execShell, timeoutFor } from "../exec/command"
 import { classifyStdout, parseAsyncStdout, type StdoutClass } from "../exec/output"
 import { blocksOnFailure, MISSING_FILE_EXIT2_EVENTS, MISSING_FILE_STDERR, type HookHandler } from "./shared"
@@ -75,7 +75,7 @@ export const commandHandler: HookHandler = {
         return {
           json,
           // A blocking JSON decision supplies its own reason; allow-style fields never do.
-          exitBlock: blockingJsonReason(json) ?? reason,
+          exitBlock: blockingJsonReason(json, event) ?? reason,
           rawStdout: stdout,
           exitCode,
         }
@@ -136,10 +136,16 @@ export const commandHandler: HookHandler = {
 }
 
 /** A JSON object that itself makes a blocking decision names the reason Claude Code uses (reference 827). */
-function blockingJsonReason(json: HookJSONOutput | undefined): string | undefined {
+function blockingJsonReason(json: HookJSONOutput | undefined, event: HookEvent): string | undefined {
   if (!json) return undefined
   const hso = json.hookSpecificOutput
-  if (hso && "permissionDecision" in hso && hso.permissionDecision === "deny" && hso.permissionDecisionReason)
+  if (
+    hso &&
+    hso.hookEventName === event &&
+    "permissionDecision" in hso &&
+    hso.permissionDecision === "deny" &&
+    hso.permissionDecisionReason
+  )
     return hso.permissionDecisionReason
   if (json.decision === "block" && json.reason) return json.reason
   return undefined

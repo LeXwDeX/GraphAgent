@@ -74,13 +74,7 @@ describe("command hook Claude input naming", () => {
     )
   }
 
-  for (const event of [
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PermissionRequest",
-    "PermissionDenied",
-  ] as const) {
+  for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"] as const) {
     it.instance(`${event}: native siblings stay native, existing Claude keys win`, () =>
       Effect.gen(function* () {
         const hooks = yield* SettingsHook.Service
@@ -102,11 +96,9 @@ describe("command hook Claude input naming", () => {
             ? { ...base, event, toolResponse: "unchanged" }
             : event === "PostToolUseFailure"
               ? { ...base, event, error: "failed" }
-              : event === "PermissionDenied"
-                ? { ...base, event, reason: "denied" }
-                : { ...base, event }
+              : { ...base, event }
         const result = yield* hooks.trigger(payload, { sessionID: id, transcript: () => Effect.succeed("") })
-        if (event === "PermissionRequest" || event === "PermissionDenied") {
+        if (event === "PermissionRequest") {
           // These events do not deliver additionalContext to the model.
           expect(result.additionalContexts).toEqual([])
           return
@@ -176,7 +168,9 @@ describe("command hook Claude input naming", () => {
               type: "command",
               inputFormat: "claude-code",
               command: hookCommand(
-                `console.log(JSON.stringify(${JSON.stringify({ hookSpecificOutput: { updatedInput } })}))`,
+                `console.log(JSON.stringify(${JSON.stringify({
+                  hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput },
+                })}))`,
               ),
             },
           ],
@@ -203,7 +197,10 @@ describe("command hook Claude input naming", () => {
             inputFormat: "claude-code",
             command: hookCommand(
               `console.log(JSON.stringify(${JSON.stringify({
-                hookSpecificOutput: { updatedInput: { file_path: "new.ts", filePath: "keep.ts" } },
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  updatedInput: { file_path: "new.ts", filePath: "keep.ts" },
+                },
               })}))`,
             ),
           },
@@ -232,7 +229,10 @@ describe("command hook Claude input naming", () => {
             inputFormat: "claude-code",
             command: hookCommand(
               `console.log(JSON.stringify(${JSON.stringify({
-                hookSpecificOutput: { updatedInput: { file_path: "new.ts", filePath: "keep.ts" } },
+                hookSpecificOutput: {
+                  hookEventName: "PostToolUse",
+                  updatedInput: { file_path: "new.ts", filePath: "keep.ts" },
+                },
               })}))`,
             ),
           },
@@ -309,10 +309,19 @@ describe("command hook Claude input naming", () => {
 
   test("input format is validated for every handler", () => {
     expect(HookCommandSchema.safeParse({ type: "command", command: "true", inputFormat: "CLAUDE" }).success).toBe(false)
-    for (const type of ["mcp", "mcp_tool", "http", "prompt", "agent"]) {
-      expect(HookCommandSchema.safeParse({ type, command: "action", inputFormat: "claude-code" }).success).toBe(true)
-      expect(HookCommandSchema.safeParse({ type, command: "action" }).success).toBe(true)
+    const valid = [
+      { type: "command", command: "true" },
+      { type: "mcp_tool", server: "srv", tool: "tool" },
+      { type: "http", url: "https://example.com/hook" },
+      { type: "prompt", prompt: "check" },
+      { type: "agent", prompt: "check" },
+    ]
+    for (const entry of valid) {
+      expect(HookCommandSchema.safeParse({ ...entry, inputFormat: "claude-code" }).success).toBe(true)
+      expect(HookCommandSchema.safeParse(entry).success).toBe(true)
     }
+    // The legacy `mcp` alias is rejected; only `mcp_tool` names an MCP handler.
+    expect(HookCommandSchema.safeParse({ type: "mcp", command: "mcp__srv__tool" }).success).toBe(false)
   })
 })
 
@@ -403,34 +412,4 @@ for (const toolName of ["bash", "read", "edit", "write"]) {
       }
     }),
   )
-}
-
-for (const toolName of ["read", "write", "edit"]) {
-  for (const event of ["PreToolUse", "PermissionRequest"] as const) {
-    it.instance(`V2 ${toolName} ${event}: path adapts and rewrites return the original native path key`, () =>
-      Effect.gen(function* () {
-        const hooks = yield* SettingsHook.Service
-        const store = yield* SessionHooks.Service
-        const sessionID = SessionID.descending()
-        const input =
-          toolName === "read"
-            ? { path: "original.txt" }
-            : toolName === "write"
-              ? { path: "original.txt", content: "hello" }
-              : { path: "original.txt", oldString: "before", newString: "after" }
-        const script = `let input='';for await(const chunk of process.stdin)input+=chunk;const e=JSON.parse(input);if(e.tool_input.file_path!=='original.txt')process.exit(1);const updatedInput={...e.tool_input,file_path:'changed.txt'};console.log(JSON.stringify({hookSpecificOutput:${event === "PreToolUse" ? "{updatedInput}" : "{decision:{behavior:'allow',updatedInput}}"}}))`
-        yield* store.add(sessionID, {
-          event,
-          hooks: [{ type: "command", inputFormat: "claude-code", command: process.execPath, args: ["-e", script] }],
-        })
-        const result = yield* hooks.trigger(
-          { event, toolName, toolInput: input },
-          { sessionID, transcript: () => Effect.succeed("") },
-        )
-        const updated = event === "PreToolUse" ? result.updatedInput : result.permissionRequestDecision?.updatedInput
-        expect(updated).toEqual({ ...input, path: "changed.txt" })
-        expect(result.hookErrors).toBeUndefined()
-      }),
-    )
-  }
 }

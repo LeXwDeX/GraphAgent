@@ -79,7 +79,7 @@ export function makeEntryRunner(state: InstanceState<State>, handlers: Record<st
       const handler = handlers[entry.type]
       if (!handler) {
         // Defensive fallback: handlers table is exhaustive over the schema's 5 types
-        // (command/mcp/http/prompt/agent). This guards against future schema additions
+        // (command/mcp_tool/http/prompt/agent). This guards against future schema additions
         // that miss handler registration. Currently dead-code by construction.
         log.warn("hook type not registered (defensive fallback)", { type: entry.type, command: commandText(entry) })
         return {
@@ -118,7 +118,7 @@ export function makeEntryRunner(state: InstanceState<State>, handlers: Record<st
         .pipe(Effect.updateContext((current: Context.Context<never>) => Context.merge(handlerContext, current)))
       const hso = result.json?.hookSpecificOutput
       if (claudeName && envelope.hook_event_name === "PreToolUse" && hso && "updatedInput" in hso && hso.updatedInput)
-        hso.updatedInput = translateClaudeInput(nativeName, hso.updatedInput, false, envelope.tool_input)
+        hso.updatedInput = translateClaudeInput(nativeName, hso.updatedInput, false)
       if (
         claudeName &&
         envelope.hook_event_name === "PermissionRequest" &&
@@ -126,12 +126,7 @@ export function makeEntryRunner(state: InstanceState<State>, handlers: Record<st
         "decision" in hso &&
         hso.decision?.updatedInput
       )
-        hso.decision.updatedInput = translateClaudeInput(
-          nativeName,
-          hso.decision.updatedInput,
-          false,
-          envelope.tool_input,
-        )
+        hso.decision.updatedInput = translateClaudeInput(nativeName, hso.decision.updatedInput, false)
       return result
     })
     return runEntry

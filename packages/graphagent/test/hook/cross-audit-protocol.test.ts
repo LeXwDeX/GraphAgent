@@ -165,7 +165,6 @@ describe("cross-audit: onFailure exemptions and exit 2", () => {
     ["Stop", { event: "Stop", stopHookActive: false }],
     ["SubagentStop", { event: "SubagentStop", stopHookActive: false }],
     ["TaskCompleted", { event: "TaskCompleted", taskID: "t" }],
-    ["TeammateIdle", { event: "TeammateIdle" }],
   ]
   for (const [event, payload] of exempt) {
     it.instance(`${event}: onFailure block ignores failures but a real exit 2 still blocks`, () =>
@@ -401,7 +400,7 @@ describe("cross-audit: PreToolUse decision precedence", () => {
 })
 
 describe("cross-audit: PermissionRequest decisions from MCP hooks", () => {
-  it.instance("mcp and mcp_tool entries may return the nested decision object", () =>
+  it.instance("mcp_tool entries may return the nested decision object", () =>
     Effect.gen(function* () {
       const store = yield* SessionHooks.Service
       const hook = yield* SettingsHook.Service
@@ -418,20 +417,15 @@ describe("cross-audit: PermissionRequest decisions from MCP hooks", () => {
             }),
           }),
       })
-      for (const entry of [
-        { type: "mcp_tool", server: "audit", tool: "check" },
-        { type: "mcp", command: "mcp__audit__check" },
-      ] as const) {
-        yield* store.add(sessionID, { event: "PermissionRequest", hooks: [entry] })
-        const result = yield* hook
-          .trigger(
-            { event: "PermissionRequest", toolName: "Bash", toolInput: {} },
-            { sessionID, transcript: () => Effect.succeed("") },
-          )
-          .pipe(Effect.provide(mcp))
-        expect(result.permissionRequestDecision).toEqual({ behavior: "allow" })
-        yield* store.clear(sessionID)
-      }
+      const entry = { type: "mcp_tool", server: "audit", tool: "check" } as const
+      yield* store.add(sessionID, { event: "PermissionRequest", hooks: [entry] })
+      const result = yield* hook
+        .trigger(
+          { event: "PermissionRequest", toolName: "Bash", toolInput: {} },
+          { sessionID, transcript: () => Effect.succeed("") },
+        )
+        .pipe(Effect.provide(mcp))
+      expect(result.permissionRequestDecision).toEqual({ behavior: "allow" })
     }),
   )
 })

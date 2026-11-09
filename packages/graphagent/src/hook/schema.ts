@@ -19,7 +19,7 @@ export type PermissionUpdate = z.infer<typeof PermissionUpdateSchema>
 
 export const HookCommandSchema = z
   .object({
-    type: z.enum(["command", "mcp_tool", "mcp", "http", "prompt", "agent"]),
+    type: z.enum(["command", "mcp_tool", "http", "prompt", "agent"]),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     server: z.string().optional(),
@@ -58,11 +58,13 @@ export const HookCommandSchema = z
       ctx.addIssue({ code: "custom", message: "model is only supported for prompt and agent hooks" })
     const value =
       entry.type === "http"
-        ? (entry.url ?? entry.command)
+        ? entry.url
         : entry.type === "prompt" || entry.type === "agent"
-          ? (entry.prompt ?? entry.command)
-          : entry.type === "mcp_tool" && entry.server && entry.tool
-            ? `${entry.server}/${entry.tool}`
+          ? entry.prompt
+          : entry.type === "mcp_tool"
+            ? entry.server && entry.tool
+              ? `${entry.server}/${entry.tool}`
+              : undefined
             : entry.command
     if (!value?.trim())
       ctx.addIssue({ code: "custom", message: `${entry.type} hook requires a nonempty command, url or prompt` })
@@ -90,7 +92,6 @@ export const HookSpecificOutputSchema = z.object({
   suppressOriginalPrompt: z.boolean().optional(),
   displayContent: z.string().optional(),
   worktreePath: z.string().optional(),
-  retry: z.boolean().optional(),
   updatedMCPToolOutput: z.unknown().optional(),
   action: z.enum(["accept", "decline", "cancel"]).optional(),
   content: z.record(z.string(), z.unknown()).optional(),

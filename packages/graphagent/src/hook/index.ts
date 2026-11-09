@@ -15,11 +15,11 @@
  * Supports the Claude Code hook event surface at the protocol/schema layer.
  *
  * Hook entry types:
- *   - { type: "command", command: "<shell>", timeout?: <seconds> }
- *   - { type: "mcp",     command: "mcp__<server>__<tool>", timeout?: <seconds> }
- *   - { type: "http",    url: "<url>", command?: "<legacy-url>", timeout?: <seconds> }
- *   - { type: "prompt",  prompt: "<llm-system-prompt>", command?: "<legacy-prompt>", timeout?: <seconds> }
- *   - { type: "agent",   prompt: "<llm-task-prompt>", command?: "<legacy-prompt>", timeout?: <seconds> }
+ *   - { type: "command",   command: "<shell>", timeout?: <seconds> }
+ *   - { type: "mcp_tool",  server: "<server>", tool: "<tool>", timeout?: <seconds> }
+ *   - { type: "http",      url: "<url>", timeout?: <seconds> }
+ *   - { type: "prompt",    prompt: "<llm-system-prompt>", timeout?: <seconds> }
+ *   - { type: "agent",     prompt: "<llm-task-prompt>", timeout?: <seconds> }
  *
  * stdin JSON envelope per Claude Code spec:
  *   { hook_event_name, session_id, prompt_id, transcript_path, cwd,
@@ -40,7 +40,6 @@
  */
 
 export type {
-  ForkHooks,
   HookCommand,
   HookEffort,
   HookEvent,

@@ -1,5 +1,5 @@
 /**
- * [FORK:hook-ext] Hooks config hot reload — not in upstream
+ * Hooks config hot reload — not in upstream
  *
  * Polls the global (`~/.config/graphagent/hooks.json`) and the project's
  * `<root>/.agents/hooks.json` plus `<root>/.agents/hooks.local.json` for mtime

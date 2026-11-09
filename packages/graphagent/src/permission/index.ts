@@ -37,7 +37,7 @@ export interface AskOptions {
    */
   readonly confirmed?: boolean
   /**
-   * The tool's own arguments, merged into PermissionRequest/PermissionDenied
+   * The tool's own arguments, merged into the PermissionRequest
    * `tool_input` alongside the legacy permission fields (see hookToolInput).
    */
   readonly toolInput?: Record<string, unknown>
@@ -280,7 +280,6 @@ export const layer = Layer.effect(
               : evaluate(request.permission, pattern, ruleset, approved)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
-          // PermissionDenied belongs exclusively to an auto-mode classifier; rule denies are not that event.
           const reason = roleDenialReason({
             role: options?.role,
             permission: request.permission,

@@ -235,7 +235,7 @@ export const app = LayerNode.group([
   // (SessionPrompt, tools.ts, Permission, ShareSession, Compaction, TaskTool)
   // silently degraded to `undefined` — meaning PreToolUse / PostToolUse /
   // PostToolUseFailure / FileChanged / UserPromptSubmit / Stop /
-  // PermissionRequest / PermissionDenied / PreCompact / PostCompact /
+  // PermissionRequest / PreCompact / PostCompact /
   // SessionStart / TaskCreated / SubagentStart / TaskCompleted hooks never
   // fired in production. Listed here at the app-graph level so ALL
   // consumers see the service (per-consumer node additions would miss

@@ -4,8 +4,8 @@ import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { loadChain, mergeSettings, readJSON, type Settings } from "@/hook"
-import { watchSettings } from "@/hook/extensions"
-import { __watchedFiles } from "@/hook/extensions/hot-reload"
+import { __watchedFiles, watchSettings } from "@/hook/extensions/hot-reload"
+import * as Log from "@/util/log"
 
 // §4 unit tests for loadChain + hot-reload.
 //
@@ -31,7 +31,8 @@ const hooksJsonTopLevel = (marker: string) => ({
   SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: marker }] }],
 })
 
-// Legacy wrapper format {"hooks": {...}} — tolerated via graceful degradation.
+// Legacy wrapper format {"hooks": {...}} — rejected: hooks.json uses top-level
+// event keys and Claude settings are converted by /import-claude-hooks.
 const hooksJsonWrapped = (marker: string) => ({
   hooks: { SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: marker }] }] },
 })
@@ -185,26 +186,32 @@ describe("§4.3 top-level events format (no wrapper) parses correctly", () => {
   })
 })
 
-describe("§4.4 wrapper-detection fallback tolerates legacy {hooks: {...}}", () => {
-  test("readJSON extracts the inner object when a wrapper is present", async () => {
+describe("§4.4 legacy {hooks: {...}} wrapper is rejected with one warning", () => {
+  test("readJSON drops the wrapper content and warns once", async () => {
     const dir = await mktmp("wrap")
+    const warnings: string[] = []
+    const restore = Log.setSink((entry) => {
+      if (entry.message.includes('"hooks" wrapper')) warnings.push(entry.message)
+    })
     try {
       const file = await writeHooksJson(dir, hooksJsonWrapped("legacy"))
       const settings = readJSON(file)
-      expect(settings?.hooks?.SessionStart?.length).toBe(1)
-      expect(settings?.hooks?.SessionStart?.[0].hooks[0].command).toBe("legacy")
+      await Log.flush()
+      expect(settings?.hooks).toEqual({})
+      expect(warnings).toHaveLength(1)
     } finally {
+      restore()
       await fs.rm(dir, { recursive: true, force: true })
     }
   })
 
-  test("loadChain loads a wrapped hooks.json into the merge", async () => {
+  test("loadChain does not load a wrapped hooks.json", async () => {
     const globalDir = await mktmp("g")
     const projectDir = await mktmp("p")
     try {
       await writeHooksJson(projectDir, hooksJsonWrapped("wrapped-project"))
       const merged = loadChain(projectDir, globalDir)
-      expect(merged.hooks?.SessionStart?.[0].hooks[0].command).toBe("wrapped-project")
+      expect(merged.hooks?.SessionStart ?? []).toEqual([])
     } finally {
       await Promise.all([
         fs.rm(globalDir, { recursive: true, force: true }),

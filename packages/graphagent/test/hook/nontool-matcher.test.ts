@@ -17,9 +17,9 @@ const testLayer = SettingsHook.layer.pipe(
 )
 const it = testEffect(testLayer)
 
-const ctxHook = (marker: string) => ({
+const ctxHook = (marker: string, event: string) => ({
   type: "command",
-  command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { additionalContext: marker } })}'`,
+  command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: marker } })}'`,
 })
 
 // Claude Code matches non-tool events against an event-specific field:
@@ -33,8 +33,8 @@ const write = (dir: string) =>
       path.join(dir, ".agents", "hooks.json"),
       JSON.stringify({
         SessionStart: [
-          { matcher: "startup", hooks: [ctxHook("session-start-startup")] },
-          { matcher: "resume|compact", hooks: [ctxHook("session-start-resume")] },
+          { matcher: "startup", hooks: [ctxHook("session-start-startup", "SessionStart")] },
+          { matcher: "resume|compact", hooks: [ctxHook("session-start-resume", "SessionStart")] },
         ],
         PreCompact: [
           {
@@ -47,9 +47,9 @@ const write = (dir: string) =>
             ],
           },
         ],
-        SubagentStop: [{ matcher: "explore", hooks: [ctxHook("subagent-explore")] }],
+        SubagentStop: [{ matcher: "explore", hooks: [ctxHook("subagent-explore", "SubagentStop")] }],
         // UserPromptSubmit has no matcher support: the matcher is ignored.
-        UserPromptSubmit: [{ matcher: "anything", hooks: [ctxHook("prompt-always")] }],
+        UserPromptSubmit: [{ matcher: "anything", hooks: [ctxHook("prompt-always", "UserPromptSubmit")] }],
       }),
     )
   })
@@ -310,7 +310,9 @@ const writeModel = (dir: string) =>
       path.join(dir, ".agents", "hooks.json"),
       JSON.stringify({
         PreModelSwitch: [{ matcher: "claude-sonnet-4", hooks: [denySwitch] }],
-        PostModelSwitch: [{ matcher: "claude-opus-4|claude-haiku-4-5", hooks: [ctxHook("post-canonical")] }],
+        PostModelSwitch: [
+          { matcher: "claude-opus-4|claude-haiku-4-5", hooks: [ctxHook("post-canonical", "PostModelSwitch")] },
+        ],
       }),
     )
   })

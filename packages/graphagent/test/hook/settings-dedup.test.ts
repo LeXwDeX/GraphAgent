@@ -29,7 +29,7 @@ const it = testEffect(testLayer)
 // JSON.parses the trimmed output into HookJSONOutput. printf is POSIX, so
 // /bin/sh -c handles it on the test host.
 const CONTEXT = "ctx-F2-dedup-marker"
-const HOOK_JSON = JSON.stringify({ hookSpecificOutput: { additionalContext: CONTEXT } })
+const HOOK_JSON = JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: CONTEXT } })
 // hooks.json uses top-level event keys (D1 canonical format); loadChain reads
 // .agents/hooks.json (no longer .agents/settings.json).
 const hooksJson = {

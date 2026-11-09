@@ -167,7 +167,6 @@ it.instance(
         metadata: { hookAsk: true, reason: "migration file: confirm" },
         always: [],
       })
-      expect(triggered.find((t) => t.payload.event === "PermissionDenied")).toBeUndefined()
       expect(triggered.find((t) => t.payload.event === "Notification")).toBeUndefined()
     }),
   { git: true },

@@ -40,8 +40,7 @@ function envelopeCwd(payload: HookPayload, cwd: string): string {
     case "PreToolUse":
     case "PostToolUse":
     case "PostToolUseFailure":
-    case "PermissionRequest":
-    case "PermissionDenied": {
+    case "PermissionRequest": {
       if (payload.toolName.toLowerCase() !== "bash") return cwd
       const input = payload.toolInput
       const workdir = input !== null && typeof input === "object" ? (input as { workdir?: unknown }).workdir : undefined
@@ -66,7 +65,6 @@ const EFFORT_EVENTS: ReadonlySet<HookEvent> = new Set<HookEvent>([
   "PostToolUse",
   "PostToolUseFailure",
   "PermissionRequest",
-  "PermissionDenied",
   "Stop",
   "StopFailure",
   "SubagentStop",
@@ -108,7 +106,6 @@ export function buildStdinEnvelope(payload: HookPayload, ctx: EnvelopeContext, c
     case "PostToolUse":
     case "PostToolUseFailure":
     case "PermissionRequest":
-    case "PermissionDenied":
       // Real provenance from the runtime's MCP binding; never reconstructed from the tool name.
       if (ctx.mcpServer) base.mcp_server = { name: ctx.mcpServer.name, source: ctx.mcpServer.source }
   }
@@ -147,14 +144,6 @@ export function buildStdinEnvelope(payload: HookPayload, ctx: EnvelopeContext, c
         ...(payload.permissionSuggestions !== undefined
           ? { permission_suggestions: payload.permissionSuggestions }
           : {}),
-      }
-    case "PermissionDenied":
-      return {
-        ...base,
-        ...(payload.toolUseID !== undefined ? { tool_use_id: payload.toolUseID } : {}),
-        tool_name: payload.toolName,
-        tool_input: payload.toolInput,
-        reason: payload.reason,
       }
     case "Notification":
       return {
@@ -331,12 +320,6 @@ export function buildStdinEnvelope(payload: HookPayload, ctx: EnvelopeContext, c
           ...(call.toolUseID !== undefined ? { tool_use_id: call.toolUseID } : {}),
           tool_response: call.toolResponse,
         })),
-      }
-    case "TeammateIdle":
-      return {
-        ...base,
-        ...(payload.teammateID !== undefined ? { teammate_id: payload.teammateID } : {}),
-        ...(payload.teammateName !== undefined ? { teammate_name: payload.teammateName } : {}),
       }
     case "DirectoryAdded":
       return { ...base, directory: payload.directory, source: payload.source }

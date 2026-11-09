@@ -95,7 +95,7 @@ Example migration:
 Claude Code hook scripts read `tool_name` values such as `Bash`/`Read`/`Grep` and keys such as `file_path` from stdin. OpenCode uses `bash`/`read`/`grep` and `filePath`. Command hooks can opt into Claude Code naming:
 
 - For each approved `"type": "command"` hook, add `"inputFormat": "claude-code"` unless the user chose during editing to adapt the script to OpenCode naming.
-- Only command hooks support this field — do not add it to `mcp_tool` / `mcp` / `http` / `prompt` / `agent` entries.
+- Only command hooks support this field — do not add it to `mcp_tool` / `http` / `prompt` / `agent` entries.
 - Never modify previously existing entries already present in the target hooks.json; only entries imported in this run are tagged.
 
 Other handler types do not use the command-only naming adapter. Inspect their actual field references and MCP input templates, preserve supported definitions, and verify them with their real transport. Importing alone does not verify behavior.
@@ -146,13 +146,13 @@ After migration, report:
 
 ## Hooks.json Format Reference
 
-OpenCode accepts 33 events total for import compatibility; 31 have a local trigger. `configure-hooks` owns that actionable list, matcher targets, handler availability, input/output effects and local applicability.
+OpenCode accepts 31 events, all with a local trigger. `configure-hooks` owns that list, matcher targets, handler availability, input/output effects and local applicability.
 
-Use top-level event arrays containing `{matcher?, hooks:[...]}`. Matchers are case-sensitive and ignored on events without a target. The five handler kinds are `command`, `http`, `mcp_tool`, `prompt`, and `agent`; `mcp` is a legacy alias. Keep `mcp_tool` server/tool/input fields intact. Command `args` is an argv array, HTTP uses `url`, and evaluators use `prompt` and optional `model`. Preserve the source's event-specific timeout rather than replacing it with a universal default.
+Use top-level event arrays containing `{matcher?, hooks:[...]}`. Matchers are case-sensitive and ignored on events without a target. The five handler kinds are `command`, `http`, `mcp_tool`, `prompt`, and `agent`. Keep `mcp_tool` server/tool/input fields intact. Command `args` is an argv array, HTTP uses `url`, and evaluators use `prompt` and optional `model`. Preserve the source's event-specific timeout rather than replacing it with a universal default.
 
 `async` is command-only. Once launched, an ordinary async command has no timeout. Its completed `additionalContext` and `systemMessage` go only to the next model request, not to a user warning. Accept JSON alone on stdout (including pretty-printed multiline JSON) or one JSON object on a line among other stdout logs; discard only output fields with invalid value types. `asyncRewake:true` also runs in the background, remains subject to `timeout`, and wakes only on exit 2; successful exit-0 output waits for a real later request. Preserve this distinction. Do not rewrite it to wake on exit-0 systemMessage. SessionEnd does not rewake. Follow the bounded Stop-chain and cleanup rules in `configure-hooks`.
 
-`TeammateIdle` has no local teammate-idle producer, and `PermissionDenied` requires an automatic classifier absent from this host. Report these candidates as not applicable; do not silently discard them or substitute native permission-rule denials. Do not claim an imported event works merely because its schema parses.
+Reject an event that is not in the supported list instead of silently discarding it. Do not claim an imported event works merely because its schema parses.
 
 ## Important Notes
 

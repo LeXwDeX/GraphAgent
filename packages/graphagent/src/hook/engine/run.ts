@@ -16,20 +16,19 @@ import type { SessionHookEntry } from "../session-hooks"
 import type { HookConfigChange } from "../config-change"
 import type { HookFileWatch } from "../file-watch"
 import { HookRewake } from "../rewake"
-import { buildForkHooks, watchSettings } from "../extensions"
+import { watchSettings } from "../extensions/hot-reload"
 import { makeRunContext } from "./context"
 import { withPromptIdentity } from "../prompt-identity"
 import { chainCandidates, loadChainWithSummaries } from "../config/chain"
 import { buildStdinEnvelope, resolveWorktreeHookPath } from "../envelope"
-import { canonicalToolName, matcherTargets } from "../match"
+import { canonicalToolName, evaluateCondition, matcherTargets } from "../match"
 import { commandHandler } from "../handlers/command"
 import { httpHandler } from "../handlers/http"
-import { mcpHandler, mcpToolHandler } from "../handlers/mcp-tool"
+import { mcpToolHandler } from "../handlers/mcp-tool"
 import { promptHandler } from "../handlers/prompt"
 import { agentHandler } from "../handlers/agent"
 import type { HookExecution, HookHandler } from "../handlers/shared"
 import type {
-  ForkHooks,
   HookCommand,
   HookEvent,
   HookJSONOutput,
@@ -106,7 +105,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           ),
         )
 
-        // [FORK:hook-ext] Hot-reload hooks.json at runtime. A changed file produces a
+        // Hot-reload hooks.json at runtime. A changed file produces a
         // CANDIDATE chain. Invalid JSON never replaces a valid chain. The ConfigChange hooks
         // then run against the CURRENT (old) settings in the real sessions of this instance;
         // a block keeps the old chain. Only an accepted candidate is committed, in one
@@ -174,7 +173,6 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
     // construction), following the Todo pattern exactly.
     const handlers: Record<string, HookHandler> = {
       command: commandHandler,
-      mcp: mcpHandler,
       mcp_tool: mcpToolHandler,
       http: httpHandler,
       prompt: promptHandler,
@@ -182,10 +180,6 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
     }
 
     const runEntry = yield* makeEntryRunner(state, handlers)
-
-    // [FORK:hook-ext] Assemble fork middleware — wired from hook/extensions/index.ts
-    // When undefined, trigger() behaves identically to upstream.
-    const forkHooks: ForkHooks | undefined = buildForkHooks ? buildForkHooks({ sessionHooks }) : undefined
 
     // Background scope for async hooks. Lives as long as the SettingsHook service
     // instance; closed via finalizer when the instance is disposed.
@@ -445,8 +439,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         for (const entry of group.hooks) {
           if (!entryEligible(payload, entry)) continue
           if (
-            forkHooks?.beforeRunEntry &&
-            !forkHooks.beforeRunEntry(entry, planEnvelope, payload.event, {
+            !evaluateCondition(entry, planEnvelope, payload.event, {
               canonicalToolName: canonicalToolName(payload, ctx),
             })
           )
@@ -683,7 +676,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         // defect (null deref, OOM, native assert). Effect.catch at the tool-layer
         // call sites only catches typed Failures, so a defect would propagate and
         // kill the session. Catch defects here at the single entry-execution point
-        // (covers all handler types: command/mcp/http/prompt/agent) → silent allow,
+        // (covers all handler types: command/mcp_tool/http/prompt/agent) → silent allow,
         // log, and continue to the next entry.
         const { json, exitBlock, rawStdout, exitCode, succeeded, failureMessage } = yield* Fiber.join(fiber).pipe(
           Effect.catchDefect((defect) => {
@@ -730,9 +723,6 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           onceBucket.add(entry)
           s.once.set(owner, onceBucket)
         }
-
-        // [FORK:hook-ext] Post-dispatch observation — never modifies result
-        forkHooks?.afterRunEntry?.(entry, envelope, payload.event, { json, exitBlock })
 
         yield* applyResult({
           payload,

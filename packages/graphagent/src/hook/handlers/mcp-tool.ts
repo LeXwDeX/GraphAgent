@@ -1,5 +1,5 @@
 /**
- * `type: "mcp"` alias and `type: "mcp_tool"` hook handlers.
+ * `type: "mcp_tool"` hook handler.
  *
  * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
@@ -8,7 +8,7 @@ import * as Log from "@/util/log"
 import { MCP } from "@/mcp"
 import { mcpHookOptions } from "@/mcp/elicitation-binding"
 import type { HookCommand, HookEnvelope, HookJSONOutput } from "../types"
-import { commandText, timeoutFor } from "../exec/command"
+import { timeoutFor } from "../exec/command"
 import { classifyStdout } from "../exec/output"
 import { hookFailureText, type HookHandler } from "./shared"
 
@@ -38,37 +38,6 @@ function mcpInput(entry: HookCommand, envelope: HookEnvelope): Record<string, un
   return input && typeof input === "object" && !Array.isArray(input) ? Object.fromEntries(Object.entries(input)) : {}
 }
 
-export const mcpHandler: HookHandler = {
-  type: "mcp",
-  run: Effect.fn("SettingsHook.handler.mcp")(function* (entry, envelope, _cwd, _inHook) {
-    const mcpSvc = Option.getOrUndefined(yield* Effect.serviceOption(MCP.Service))
-    if (!mcpSvc) {
-      log.warn("mcp hook skipped: MCP service not in context", { command: commandText(entry) })
-      return { json: undefined, exitCode: 1, exitBlock: undefined }
-    }
-    const timeoutMs = timeoutFor(entry, envelope.hook_event_name)
-    const exit = yield* invokeMcpHook(
-      mcpSvc,
-      commandText(entry),
-      envelope,
-      typeof envelope.session_id === "string" ? envelope.session_id : undefined,
-    ).pipe(Effect.timeout(timeoutMs), Effect.exit)
-    if (exit._tag === "Failure") {
-      log.warn("mcp hook timed out or failed (non-blocking)", {
-        command: commandText(entry),
-        error: String(exit.cause),
-      })
-      return {
-        json: undefined,
-        exitCode: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(exit.cause))) ? null : 1,
-        failureMessage: hookFailureText(exit.cause),
-        exitBlock: undefined,
-      }
-    }
-    return { ...exit.value, succeeded: exit.value.succeeded ?? true }
-  }),
-}
-
 export const mcpToolHandler: HookHandler = {
   type: "mcp_tool",
   run: Effect.fn("SettingsHook.handler.mcpTool")(function* (entry, envelope, _cwd, _inHook) {
@@ -95,7 +64,7 @@ export const mcpToolHandler: HookHandler = {
   }),
 }
 
-// ── type:"mcp" hook execution ───────────────────────────────────
+// ── MCP hook execution ──────────────────────────────────────────
 
 /**
  * Resolve and invoke an MCP tool registered as a hook. Format follows the

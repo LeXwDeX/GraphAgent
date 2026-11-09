@@ -16,7 +16,6 @@ export type HookEvent =
   | "Notification"
   | "UserPromptSubmit"
   | "PermissionRequest"
-  | "PermissionDenied"
   | "Setup"
   | "Stop"
   | "StopFailure"
@@ -38,7 +37,6 @@ export type HookEvent =
   | "FileChanged"
   | "UserPromptExpansion"
   | "PostToolBatch"
-  | "TeammateIdle"
   | "DirectoryAdded"
   | "PreModelSwitch"
   | "PostModelSwitch"
@@ -52,7 +50,6 @@ export const VALID_HOOK_EVENTS = new Set<string>([
   "Notification",
   "UserPromptSubmit",
   "PermissionRequest",
-  "PermissionDenied",
   "Setup",
   "Stop",
   "StopFailure",
@@ -74,7 +71,6 @@ export const VALID_HOOK_EVENTS = new Set<string>([
   "FileChanged",
   "UserPromptExpansion",
   "PostToolBatch",
-  "TeammateIdle",
   "DirectoryAdded",
   "PreModelSwitch",
   "PostModelSwitch",
@@ -83,22 +79,22 @@ export const VALID_HOOK_EVENTS = new Set<string>([
 
 export interface HookCommand {
   /**
-   * Hook execution kind. `mcp` remains a local legacy alias for `mcp_tool`.
+   * Hook execution kind.
    * - `command`: shell command via stdin/stdout JSON envelope
-   * - `mcp`: invoke MCP tool via `mcp__<server>__<tool>` prefix
+   * - `mcp_tool`: invoke MCP tool `server`/`tool`
    * - `http`: POST envelope to URL, parse JSON body
    * - `prompt`: LLM call with structured output (HookJSONOutput schema)
    * - `agent`: autonomous agent loop with bash/read_file/list_dir/grep tools
    */
-  type: "command" | "mcp_tool" | "mcp" | "http" | "prompt" | "agent"
+  type: "command" | "mcp_tool" | "http" | "prompt" | "agent"
   command?: string
   args?: string[]
   server?: string
   tool?: string
   input?: Record<string, unknown>
-  /** Claude Code `type:"http"` endpoint. Legacy configs may still use `command`. */
+  /** Claude Code `type:"http"` endpoint. */
   url?: string
-  /** Claude Code `type:"prompt" | "agent"` prompt. Legacy configs may still use `command`. */
+  /** Claude Code `type:"prompt" | "agent"` prompt. */
   prompt?: string
   headers?: Record<string, string>
   allowedEnvVars?: string[]
@@ -116,9 +112,8 @@ export interface HookCommand {
   /** Per-handler compatibility adapter. Omitted or graphagent preserves the native envelope. */
   inputFormat?: "graphagent" | "claude-code"
   /**
-   * Conditional gate, evaluated by `extensions/condition-filter.ts` in
-   * `ForkHooks.beforeRunEntry` BEFORE each matched entry runs (returning false
-   * skips the entry). Syntax:
+   * Conditional gate, evaluated by `match.ts` during trigger planning BEFORE a
+   * matched entry runs (returning false skips the entry). Syntax:
    *   - `ToolName(pattern)` — e.g. `Bash(npm install *)`, `Edit(*.ts)`; the tool
    *     name is matched case-insensitively and the pattern against the tool's
    *     primary argument with Claude Code permission-rule semantics (Bash→each
@@ -220,7 +215,8 @@ export interface HookJSONOutput {
  * 仅 5 个事件有 union 分支；Stop / SubagentStop / PreCompact / SessionEnd
  * 在 CC types/hooks.ts:50-166 中无对应 case，仅消费顶层字段（continue/decision/reason 等）。
  *
- * 所有字段保持 optional 以便解析端宽松降级。`hookEventName` 用作 discriminator。
+ * `hookEventName` is the discriminator: reduce.ts ignores the whole
+ * hookSpecificOutput object when it is missing or names a different event.
  * 最后一个 fallback 分支让消费端 cast 时不会因为 hookEventName 未列出（或拼错）而报错。
  */
 export type HookSpecificOutput =
@@ -266,11 +262,6 @@ export type HookSpecificOutput =
       hookEventName: "Elicitation" | "ElicitationResult"
       action?: "accept" | "decline" | "cancel"
       content?: Record<string, unknown>
-    }
-  | {
-      hookEventName: "PermissionDenied"
-      additionalContext?: string
-      retry?: boolean
     }
   | { hookEventName: "MessageDisplay"; displayContent?: string }
   | { hookEventName: "WorktreeCreate"; worktreePath?: string }
@@ -336,13 +327,6 @@ export type HookPayload =
       toolName: string
       toolInput: Record<string, unknown>
       permissionSuggestions?: PermissionUpdate[]
-    }
-  | {
-      event: "PermissionDenied"
-      toolUseID?: string
-      toolName: string
-      toolInput: Record<string, unknown>
-      reason: string
     }
   | { event: "Notification"; message: string; title?: string; notificationType?: string }
   | { event: "UserPromptSubmit"; prompt: string; sessionTitle?: string }
@@ -453,7 +437,6 @@ export type HookPayload =
       event: "PostToolBatch"
       toolCalls: { toolName: string; toolInput: Record<string, unknown>; toolUseID?: string; toolResponse: unknown }[]
     }
-  | { event: "TeammateIdle"; teammateID?: string; teammateName?: string }
   | { event: "DirectoryAdded"; directory: string; source: string }
   | {
       event: "PreModelSwitch" | "PostModelSwitch"
@@ -543,47 +526,6 @@ export type ToolHookContext = Pick<
 
 /** CC's effort levels (the `level` reported inside the `effort` envelope object). */
 export type HookEffort = "low" | "medium" | "high" | "xhigh" | "max"
-
-// ── [FORK:hook-ext] Extension callback interface ────────────────
-//
-// All fork-specific hook processing plugs in here. The engine calls
-// these at well-defined points; implementations live in hook/extensions/
-// and are wired in the Effect layer.
-//
-// INVARIANT: Every field is optional. When undefined, behavior is
-// identical to upstream. This ensures forward-compat — if upstream
-// adds new hook features, they flow through without touching extensions.
-export interface ForkHooks {
-  /**
-   * Called BEFORE runEntry() for each matched hook entry.
-   * Return false to skip this entry (e.g., `if` condition not met).
-   * Return true (or undefined) to proceed.
-   *
-   * INTENT: Centralized pre-dispatch filtering for condition-filter,
-   * future rate-limiting, logging, etc.
-   */
-  readonly beforeRunEntry?: (
-    entry: HookCommand,
-    envelope: Record<string, unknown>,
-    event: HookEvent,
-    tool?: { canonicalToolName?: string },
-  ) => boolean
-
-  /**
-   * Called AFTER runEntry() for each executed hook entry.
-   * Receives the handler result. Used for post-dispatch tracking
-   * (batch counting, metrics, etc.).
-   *
-   * INTENT: Centralized post-dispatch observation. Never modifies
-   * the result — that's the trigger reducer's job.
-   */
-  readonly afterRunEntry?: (
-    entry: HookCommand,
-    envelope: Record<string, unknown>,
-    event: HookEvent,
-    result: { json?: HookJSONOutput; exitBlock?: string },
-  ) => void
-}
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)

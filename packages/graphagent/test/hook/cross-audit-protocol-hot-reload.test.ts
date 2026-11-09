@@ -9,7 +9,7 @@ import { HookConfigChange } from "@/hook/config-change"
 import { HookFileWatch } from "@/hook/file-watch"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
-import { watchSettings } from "@/hook/extensions"
+import { watchSettings } from "@/hook/extensions/hot-reload"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -61,7 +61,7 @@ const startHook = (context: string) => ({
           command: process.execPath,
           args: [
             "-e",
-            `process.stdout.write(${JSON.stringify(JSON.stringify({ hookSpecificOutput: { additionalContext: context } }))})`,
+            `process.stdout.write(${JSON.stringify(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } }))})`,
           ],
         },
       ],

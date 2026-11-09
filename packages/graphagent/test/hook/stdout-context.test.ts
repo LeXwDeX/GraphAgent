@@ -6,6 +6,7 @@ import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
+import * as Log from "@/util/log"
 import { testEffect } from "../lib/effect"
 
 // P1a: exit-0 plain-text stdout injection. Real SettingsHook layer (execShell
@@ -74,7 +75,58 @@ describe("SettingsHook exit-0 plain-text stdout → additionalContext (P1a)", ()
             hooks: [
               {
                 type: "command",
-                command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { additionalContext: "from-json" } })}'`,
+                command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "from-json" } })}'`,
+              },
+            ],
+          },
+        ],
+      }),
+    },
+  )
+
+  // Scenario 2b: hookSpecificOutput is only honoured when its hookEventName
+  // discriminator matches the triggering event. A missing or mismatched name
+  // drops the whole object (D1 §6.5) and leaves a debug trace; the parsed JSON
+  // must not fall back to plain-text injection.
+  it.instance(
+    "hookSpecificOutput with a missing or mismatched hookEventName is ignored",
+    () =>
+      Effect.gen(function* () {
+        const hook = yield* SettingsHook.Service
+        const seen: string[] = []
+        const previous = process.env.GRAPHAGENT_LOG_LEVEL
+        process.env.GRAPHAGENT_LOG_LEVEL = "DEBUG"
+        const restore = Log.setSink((entry) => {
+          if (entry.message === "ignored hookSpecificOutput for a different event") seen.push(entry.message)
+        })
+        try {
+          // One trigger runs both configured handlers: one reports a
+          // mismatched event name, the other omits it entirely.
+          const result = yield* hook.trigger(
+            { event: "SessionStart", source: "startup" },
+            { sessionID: "sess-hso-discriminator", transcript: () => Effect.succeed("") },
+          )
+          expect(result.additionalContexts).toEqual([])
+          yield* Effect.promise(() => Log.flush())
+          expect(seen).toHaveLength(2)
+        } finally {
+          restore()
+          if (previous === undefined) delete process.env.GRAPHAGENT_LOG_LEVEL
+          else process.env.GRAPHAGENT_LOG_LEVEL = previous
+        }
+      }),
+    {
+      init: writeHooks({
+        SessionStart: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "wrong-event" } })}'`,
+              },
+              {
+                type: "command",
+                command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: { additionalContext: "missing-event" } })}'`,
               },
             ],
           },

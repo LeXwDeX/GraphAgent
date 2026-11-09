@@ -60,7 +60,6 @@ export interface TriggerResult {
   suppressOriginalPrompt?: boolean
   watchPaths?: string[]
   displayContent?: string
-  retry?: boolean
   displayMessage?: string
   compactSummary?: string
   customSummary?: string

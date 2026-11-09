@@ -416,6 +416,44 @@ describe("hook-async-rewake", () => {
     }),
   )
 
+  // ── 4.9: Async completion enforces the hookEventName discriminator ──
+  // A background handler's hookSpecificOutput must name the event that
+  // triggered it; otherwise its additionalContext is dropped just like the
+  // synchronous reducer drops it (D1 §6.5).
+  it.instance("async hookSpecificOutput with a different event name is dropped", () =>
+    Effect.gen(function* () {
+      const hook = yield* SettingsHook.Service
+      const sessionID = SessionID.descending()
+      const output = JSON.stringify({
+        systemMessage: "async-event-matched",
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext: "wrong-async-event",
+        },
+      })
+      yield* (yield* SessionHooks.Service).add(sessionID, {
+        event: "Stop",
+        hooks: [
+          {
+            type: "command",
+            command: process.execPath,
+            args: ["-e", `process.stdout.write(${JSON.stringify(output)})`],
+            async: true,
+          },
+        ],
+      })
+      yield* hook.trigger({ event: "Stop", stopHookActive: false }, { sessionID, transcript: () => Effect.succeed("") })
+
+      const drained = yield* pollWithTimeout(
+        hook.drainAsync!(sessionID).pipe(
+          Effect.map((queued) => (queued.additionalContexts.length === 1 ? queued : undefined)),
+        ),
+        "async hook output was not delivered",
+      )
+      expect(drained.additionalContexts).toEqual(["async-event-matched"])
+    }),
+  )
+
   // ── 4.6: Loop guard — sentinel prefix ────────────────────────
   it.instance("HOOK_REWAKE_SENTINEL is a stable prefix of rewake prompts", () =>
     Effect.gen(function* () {

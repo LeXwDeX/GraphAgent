@@ -40,7 +40,7 @@ const command = (context: string, extra = {}, exitCode = 0) => ({
   command: process.execPath,
   args: [
     "-e",
-    `console.log(JSON.stringify({hookSpecificOutput:{additionalContext:${JSON.stringify(context)}}}));process.exit(${exitCode})`,
+    `console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:${JSON.stringify(context)}}}));process.exit(${exitCode})`,
   ],
   ...extra,
 })

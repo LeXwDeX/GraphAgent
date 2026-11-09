@@ -7,7 +7,7 @@ import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
-import { watchSettings } from "@/hook/extensions"
+import { watchSettings } from "@/hook/extensions/hot-reload"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -29,7 +29,8 @@ const CONTEXT_V2 = "ctx-hot-reload-v2"
 // A SessionStart command hook whose stdout JSON carries a fixed additionalContext
 // marker. `printf '%s' '<json>'` single-quotes the JSON so its inner double
 // quotes reach the shell literally; parseStdout then JSON.parses the output.
-const hookJson = (ctx: string) => JSON.stringify({ hookSpecificOutput: { additionalContext: ctx } })
+const hookJson = (ctx: string) =>
+  JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: ctx } })
 
 const settingsFor = (ctx: string) => ({
   // hooks.json uses top-level event keys (D1 canonical format).

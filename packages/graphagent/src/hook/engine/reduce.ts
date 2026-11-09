@@ -6,6 +6,7 @@
  */
 import { existsSync } from "fs"
 import { Effect } from "effect"
+import * as Log from "@/util/log"
 import { HookNotification } from "../notifications"
 import { HookSpecificOutputSchema } from "../schema"
 import { validTerminalSequence } from "../exec/output"
@@ -13,6 +14,8 @@ import { commandText } from "../exec/command"
 import type { HookCommand, HookEvent, HookJSONOutput, HookPayload, TriggerContext } from "../types"
 import type { TriggerResult } from "../trigger-result"
 import { sanitizeHookContext } from "./async"
+
+const log = Log.create({ service: "hook.settings" })
 
 const SHOW_STDERR_EVENTS = new Set<HookEvent>([
   "SessionStart",
@@ -120,10 +123,7 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
   if (payload.event === "PreModelSwitch" && exitCode === null)
     result.blocked = { reason: "Model-switch hook timed out", command: commandText(entry) }
 
-  if (
-    payload.event === "WorktreeCreate" &&
-    (entry.type === "command" || entry.type === "mcp" || entry.type === "mcp_tool")
-  ) {
+  if (payload.event === "WorktreeCreate" && (entry.type === "command" || entry.type === "mcp_tool")) {
     if (succeeded) {
       const lines = (rawStdout ?? "")
         .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
@@ -215,20 +215,26 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
   if (json.terminalSequence && validTerminalSequence(json.terminalSequence) && ctx.sessionID)
     yield* HookNotification.terminal(ctx.sessionID, json.terminalSequence)
 
-  // Missing discriminator is retained as a legacy OpenCode alias; a
-  // present but different event name cannot control this event.
-  const parsedHso = HookSpecificOutputSchema.safeParse(json.hookSpecificOutput)
+  // `hookEventName` is the discriminator. A missing or mismatched name makes
+  // the whole hookSpecificOutput object unusable: ignore it and leave a debug
+  // trace (the protocol is strict; there is no legacy alias).
+  const rawHso = json.hookSpecificOutput
+  const parsedHso = HookSpecificOutputSchema.safeParse(rawHso)
+  if (rawHso && rawHso.hookEventName !== payload.event)
+    log.debug("ignored hookSpecificOutput for a different event", {
+      event: payload.event,
+      hookEventName: rawHso.hookEventName,
+    })
   const hso =
+    rawHso?.hookEventName === payload.event &&
     (!(payload.event === "Elicitation" || payload.event === "ElicitationResult") ||
       exitCode === undefined ||
       exitCode === 0) &&
-    (!json.hookSpecificOutput?.hookEventName || json.hookSpecificOutput.hookEventName === payload.event)
-      ? parsedHso.success
-        ? parsedHso.data
-        : undefined
+    parsedHso.success
+      ? parsedHso.data
       : undefined
-  // Property-based narrowing — works across union variants without depending on
-  // hookEventName tag (which the fallback variant may also accept).
+  // Property-based narrowing: the payload event decides which fields apply,
+  // and a variable cannot narrow a discriminated union by its tag.
   if (
     hso &&
     "additionalContext" in hso &&
@@ -291,7 +297,7 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
     hso &&
     "decision" in hso &&
     hso.decision &&
-    (entry.type === "command" || entry.type === "http" || entry.type === "mcp" || entry.type === "mcp_tool")
+    (entry.type === "command" || entry.type === "http" || entry.type === "mcp_tool")
   ) {
     if (hso.decision.behavior === "deny" || result.permissionRequestDecision?.behavior !== "deny")
       result.permissionRequestDecision = hso.decision
@@ -326,7 +332,6 @@ export const applyResult = Effect.fnUntraced(function* (args: ApplyResultArgs) {
     if ("sessionTitle" in hso) result.sessionTitle = hso.sessionTitle
     if ("suppressOriginalPrompt" in hso) result.suppressOriginalPrompt = hso.suppressOriginalPrompt
   }
-  if (payload.event === "PermissionDenied" && hso && hso.retry === true) result.retry = true
   if (payload.event === "PreModelSwitch" && hso && hso.permissionDecision && hso.permissionDecision !== "defer") {
     const incoming = hso.permissionDecision
     const current = result.modelSwitchDecision

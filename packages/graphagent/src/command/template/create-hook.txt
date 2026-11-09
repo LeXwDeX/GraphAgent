@@ -11,22 +11,22 @@ Load `configure-hooks` first. Infer the event, action, destination and write aut
 Use the event list in `configure-hooks` to recognize supported events. Check local applicability before writing:
 
 - Tool: `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`
-- Permission: `PermissionRequest`, `PermissionDenied`
+- Permission: `PermissionRequest`
 - Session: `Setup`, `SessionStart`, `SessionEnd`, `Stop`, `StopFailure`
-- Subagent: `SubagentStart`, `SubagentStop`, `TeammateIdle`
+- Subagent: `SubagentStart`, `SubagentStop`
 - Prompt and compaction: `UserPromptSubmit`, `UserPromptExpansion`, `PreCompact`, `PostCompact`
 - Task: `TaskCreated`, `TaskCompleted`
 - MCP: `Elicitation`, `ElicitationResult`
 - Environment: `Notification`, `ConfigChange`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `CwdChanged`, `DirectoryAdded`, `FileChanged`
 - Model and display: `PreModelSwitch`, `PostModelSwitch`, `MessageDisplay`
 
-`TeammateIdle` requires a teammate-idle operation that this host does not have. `PermissionDenied` means an automatic classifier denial, not an ordinary rule denial; this host has no automatic classifier. Explain that limit and retain the user's intent without inventing a producer or silently dropping their request. Reject unknown names.
+Reject unknown event names; explain that they are unsupported rather than inventing a producer.
 
 Use the handler types and per-event restrictions in `configure-hooks`:
 
 - `command`: command and optional argv `args`; `shell` applies to shell execution.
 - `http`: `url`, optional headers and environment allowlist.
-- `mcp_tool`: `server`, `tool`, and optional templated `input`. `mcp` remains a legacy alias.
+- `mcp_tool`: `server`, `tool`, and optional templated `input`.
 - `prompt` or `agent`: `prompt`, optional model; evaluator output is `{ok,reason?,impossible?}`.
 
 Matchers are case-sensitive. Use the event's documented target, such as `Bash`, source, agent type, server name, command name, error category or canonical model name. Omit matchers on events without a target. Conditions are filters and grant no permissions.

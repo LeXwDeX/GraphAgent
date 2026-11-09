@@ -124,7 +124,15 @@ export const onAsyncComplete = Effect.fnUntraced(function* (
   if (result.exitBlock) parts.push(result.exitBlock)
   if (result.json?.systemMessage) parts.push(result.json.systemMessage)
   if (result.json?.decision === "block" && result.json.reason) parts.push(result.json.reason)
-  const hso = result.json?.hookSpecificOutput
+  const rawHso = result.json?.hookSpecificOutput
+  // Same discriminator rule as the synchronous reducer: a missing or
+  // mismatched hookEventName makes the object unusable for this event.
+  if (rawHso && rawHso.hookEventName !== event)
+    log.debug("ignored hookSpecificOutput for a different event", {
+      event,
+      hookEventName: rawHso.hookEventName,
+    })
+  const hso = rawHso?.hookEventName === event ? rawHso : undefined
   if (hso && "additionalContext" in hso && typeof hso.additionalContext === "string") {
     parts.push(hso.additionalContext)
   }

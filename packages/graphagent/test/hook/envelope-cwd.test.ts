@@ -19,13 +19,12 @@ const it = testEffect(
   ),
 )
 
-const EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied"] as const
+const EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"] as const
 
 const payloadFor = (event: (typeof EVENTS)[number], toolName: string, toolInput: Record<string, unknown>) => {
   const base = { toolName, toolInput }
   if (event === "PostToolUse") return { ...base, event, toolResponse: "ok" } satisfies HookPayload
   if (event === "PostToolUseFailure") return { ...base, event, error: "failed" } satisfies HookPayload
-  if (event === "PermissionDenied") return { ...base, event, reason: "denied" } satisfies HookPayload
   return { ...base, event } satisfies HookPayload
 }
 

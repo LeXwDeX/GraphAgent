@@ -52,7 +52,7 @@ export function evaluatorDecision(
 ): HookJSONOutput | undefined {
   if (answer.ok) return undefined
   if (!answer.reason) return undefined
-  if (event === "PermissionRequest" || event === "PermissionDenied") return undefined
+  if (event === "PermissionRequest") return undefined
   if ((event === "Stop" || event === "SubagentStop") && entry.type === "prompt" && answer.impossible) return undefined
   const continueOnBlock = entry.type === "agent" || entry.continueOnBlock === true
   if (event === "PreToolUse")
@@ -64,7 +64,7 @@ export function evaluatorDecision(
         permissionDecisionReason: answer.reason,
       },
     }
-  if (event === "PostToolUse" || event === "TeammateIdle")
+  if (event === "PostToolUse")
     return continueOnBlock
       ? { hookSpecificOutput: { hookEventName: event, additionalContext: answer.reason } }
       : { continue: false, stopReason: answer.reason, systemMessage: answer.reason }
@@ -81,7 +81,7 @@ export function evaluatorDecision(
 /**
  * `type: "prompt"` handler — single-turn LLM call (CC v1 protocol).
  *
- * `entry.command` is interpreted as the system prompt template; the stdin envelope
+ * `entry.prompt` is the system prompt template; the stdin envelope
  * (already shaped by buildStdinEnvelope) is JSON-stringified into the user message.
  * The model returns structured output matching HookOutputSchema (loose flat
  * shape; see definition near HookJSONOutput).
@@ -135,7 +135,7 @@ export const promptHandler: HookHandler = {
 
       // issue #286 — the header doc promises `timeout` for every hook type,
       // but promptHandler was the only executor never applying it. Honor it
-      // with the same idiom as command/mcp/http; on expiry the TimeoutException
+      // with the same idiom as command/mcp_tool/http; on expiry the TimeoutException
       // is captured by Effect.exit below and degrades to the non-blocking warn.
       const timeoutMs = timeoutFor(entry, envelope.hook_event_name)
 
