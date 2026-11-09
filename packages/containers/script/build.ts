@@ -14,7 +14,7 @@ const push = process.argv.includes("--push") || process.env.PUSH === "1"
 checkToolchain()
 const { bun, node, rust } = readToolchain()
 
-const images = ["base", "bun-node", "rust", "tauri-linux", "publish"]
+const images = ["base", "bun-node", "rust", "publish"]
 
 const setup = async () => {
   if (!push) return
