@@ -243,7 +243,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
           .catch(() => undefined)
         const choice = await showWorkspaceFileChanges({
           host: bottomZone.host,
-          dialog,
+          zone: bottomZone,
           files: status?.data ?? [],
           title: "Delete working copy?",
           message: "This working copy has file changes. Do you want to delete it anyway?",

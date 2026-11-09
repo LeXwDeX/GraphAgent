@@ -80,6 +80,10 @@ function findPrompt(root: Renderable): PromptRef | undefined {
       input.setText(current ? `${current}\n${text}` : text)
       input.focus()
     },
+    edit(request) {
+      input.setText(request.value)
+      input.focus()
+    },
     reset() {
       input.clear()
     },

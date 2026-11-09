@@ -9,7 +9,8 @@ import { locationHeaders, useSDK } from "../context/sdk"
 import { useSync } from "../context/sync"
 import { t } from "../i18n"
 import { errorMessage } from "../util/error"
-import { DialogConfirm } from "../ui/dialog-confirm"
+import { askConfirm } from "../ask/local-ask"
+import { useBottomZoneOptional, type BottomZoneStateApi } from "../shell/bottom-zone"
 import { useDialog, type DialogContext } from "../ui/dialog"
 import { useToast } from "../ui/toast"
 import { usePanelHost, type PanelHostApi } from "./host"
@@ -105,7 +106,7 @@ export function WorkspaceSelectPanel(props: {
   onSelect(selection: WorkspaceSelection): void
 }) {
   const host = usePanelHost()
-  const dialog = useDialog()
+  const bottomZone = useBottomZoneOptional()
   const project = useProject()
   const route = useRoute()
   const [confirming, setConfirming] = createSignal(false)
@@ -173,14 +174,15 @@ export function WorkspaceSelectPanel(props: {
       props.onSelect(value)
       return
     }
-    if (confirming()) return
+    if (confirming() || !bottomZone) return
     setConfirming(true)
     try {
-      const confirmed = await DialogConfirm.show(
-        dialog,
-        t("panel.workspace.select.confirm.title"),
-        t("panel.workspace.select.confirm.message", { name: value.workspaceName }),
-      )
+      const confirmed = await askConfirm(bottomZone, {
+        title: t("panel.workspace.select.confirm.title"),
+        body: t("panel.workspace.select.confirm.message", { name: value.workspaceName }),
+        confirmLabel: t("ask.confirm.confirm"),
+        cancelLabel: t("ask.confirm.cancel"),
+      })
       if (confirmed) props.onSelect(value)
     } finally {
       setConfirming(false)
@@ -300,7 +302,7 @@ export async function warpWorkspaceSession(input: {
 }
 
 export async function confirmWorkspaceFileChanges(input: {
-  dialog: DialogContext
+  zone?: BottomZoneStateApi
   host: PanelHostApi
   sdk: ReturnType<typeof useSDK>
   sourceWorkspaceID?: string
@@ -309,7 +311,7 @@ export async function confirmWorkspaceFileChanges(input: {
     .status({ headers: locationHeaders({ workspace: input.sourceWorkspaceID }) })
     .catch(() => undefined)
   const choice = status?.data?.length
-    ? await showWorkspaceFileChanges({ host: input.host, dialog: input.dialog, files: status.data })
+    ? await showWorkspaceFileChanges({ host: input.host, zone: input.zone, files: status.data })
     : "no"
   if (!choice) return
   return choice === "yes"

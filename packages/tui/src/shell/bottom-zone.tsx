@@ -70,6 +70,8 @@ export interface BottomZoneStateApi {
   setAsk(requests: readonly AskRequest[]): void
   /** Removes the head request; panels resume once the queue drains. */
   resolveAsk(): AskRequest | undefined
+  /** Removes one local request by id, whether or not it is the head. */
+  removeAsk(id: string): AskRequest | undefined
   clearAsk(): readonly AskRequest[]
 }
 
@@ -118,6 +120,16 @@ export function createBottomZoneState(options: BottomZoneOptions = {}): BottomZo
       if (declarative().length > 0) setDeclarative((current) => current.slice(1))
       else setLocal((current) => current.slice(1))
       return head
+    },
+    removeAsk(id) {
+      let removed: AskRequest | undefined
+      setLocal((current) => {
+        const index = current.findIndex((request) => request.id === id)
+        if (index === -1) return current
+        removed = current[index]
+        return [...current.slice(0, index), ...current.slice(index + 1)]
+      })
+      return removed
     },
     clearAsk() {
       const cleared = queue()

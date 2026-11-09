@@ -11,6 +11,7 @@ import { useToast } from "../ui/toast"
 import { DialogAlert } from "../ui/dialog-alert"
 import { showWorkspaceFileChanges } from "../panel/workspace-file-changes"
 import type { PanelHostApi } from "../panel/host"
+import type { BottomZoneStateApi } from "../shell/bottom-zone"
 
 type Adapter = ExperimentalWorkspaceAdapterListResponse[number]
 
@@ -168,8 +169,8 @@ export async function warpWorkspaceSession(input: {
 }
 
 export async function confirmWorkspaceFileChanges(input: {
-  dialog: ReturnType<typeof useDialog>
   host: PanelHostApi
+  zone?: BottomZoneStateApi
   sdk: ReturnType<typeof useSDK>
   sourceWorkspaceID?: string
 }) {
@@ -177,7 +178,7 @@ export async function confirmWorkspaceFileChanges(input: {
     .status({ headers: locationHeaders({ workspace: input.sourceWorkspaceID }) })
     .catch(() => undefined)
   const fileChangeChoice = status?.data?.length
-    ? await showWorkspaceFileChanges({ host: input.host, dialog: input.dialog, files: status.data })
+    ? await showWorkspaceFileChanges({ host: input.host, zone: input.zone, files: status.data })
     : "no"
   if (!fileChangeChoice) return
   return fileChangeChoice === "yes"

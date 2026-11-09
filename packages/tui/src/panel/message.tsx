@@ -8,6 +8,7 @@ import { useRoute } from "../context/route"
 import { useSDK } from "../context/sdk"
 import { useSync } from "../context/sync"
 import { t } from "../i18n"
+import type { PromptEditRequest } from "../component/prompt"
 import type { PromptInfo } from "../prompt/history"
 import { stripPromptPartIDs as strip } from "../prompt/part"
 import { queuedMessageExpected } from "../prompt/queued-message"
@@ -23,6 +24,8 @@ export interface MessagePanelProps {
   sessionID: string
   queued?: boolean
   setPrompt?: (prompt: PromptInfo) => void
+  /** Prefills the composer in edit mode (Esc restores the previous draft). */
+  editPrompt?: (request: PromptEditRequest) => void
 }
 
 /**
@@ -56,11 +59,12 @@ export function MessagePanel(props: MessagePanelProps) {
     )
   }
 
-  // Editing takes the pending prompt back into the composer. Remove it from the
-  // queue first so re-submitting the edited text cannot run it twice.
+  // Editing takes the pending prompt back into the composer in edit mode.
+  // Remove it from the queue first so re-submitting the edited text cannot run
+  // it twice; Esc restores the composer draft, not the deleted queue entry.
   async function editQueued() {
     const expected = queuedMessageExpected(parts())
-    if (!expected || !props.setPrompt) return
+    if (!expected || !props.editPrompt) return
     const prompt = promptFrom(parts(), true)
     try {
       await sdk.client.session.deleteQueuedMessage(
@@ -75,7 +79,7 @@ export function MessagePanel(props: MessagePanelProps) {
       toast.show({ title: t("panel.message.edit.failed"), message: errorMessage(error), variant: "warning" })
       return
     }
-    props.setPrompt({ input: expected.expectedText, parts: prompt.parts })
+    props.editPrompt({ label: t("prompt.edit.queued"), value: expected.expectedText, parts: prompt.parts })
     host.close()
   }
 

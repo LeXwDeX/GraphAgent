@@ -1219,3 +1219,86 @@ test("unknown slash and bare exit are submitted as normal messages", async () =>
     await route.dispose()
   }
 })
+
+test("edit mode fills the composer, commits, and restores the previous draft", async () => {
+  const route = await mountRoute("prompt")
+  try {
+    configureModel(route)
+    route.mount()
+    await wait(() => Boolean(prompt))
+    await route.app.renderOnce()
+    prompt!.set({ input: "DRAFT", parts: [] })
+    prompt!.focus()
+    const committed: string[] = []
+    prompt!.edit({
+      label: "重命名",
+      value: "旧标题",
+      commit: (value) => {
+        committed.push(value)
+      },
+    })
+    await route.app.renderOnce()
+    expect(prompt!.current.input).toBe("旧标题")
+    expect(route.app.captureCharFrame()).toContain("Editing: 重命名 · esc to cancel")
+
+    prompt!.submit()
+    await wait(() => committed.length === 1)
+    await route.app.renderOnce()
+    expect(committed).toEqual(["旧标题"])
+    expect(prompt!.current.input).toBe("DRAFT")
+    expect(route.app.captureCharFrame()).not.toContain("Editing: 重命名")
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("edit mode escape restores the draft without committing", async () => {
+  const route = await mountRoute("prompt")
+  try {
+    configureModel(route)
+    route.mount()
+    await wait(() => Boolean(prompt))
+    await route.app.renderOnce()
+    prompt!.set({ input: "DRAFT", parts: [] })
+    prompt!.focus()
+    let committed = 0
+    prompt!.edit({
+      label: "重命名",
+      value: "旧标题",
+      commit: () => {
+        committed += 1
+      },
+    })
+    await route.app.renderOnce()
+    expect(route.app.captureCharFrame()).toContain("Editing: 重命名")
+
+    route.app.mockInput.pressKey("ESCAPE")
+    await wait(() => prompt!.current.input === "DRAFT")
+    await route.app.renderOnce()
+    expect(committed).toBe(0)
+    expect(route.app.captureCharFrame()).not.toContain("Editing: 重命名")
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("edit mode without a commit sends the edited text as a plain prompt", async () => {
+  const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
+  try {
+    configureModel(route)
+    route.mount()
+    await wait(() => Boolean(prompt))
+    await route.app.renderOnce()
+    const before = sent.length
+    prompt!.set({ input: "DRAFT", parts: [] })
+    prompt!.focus()
+    prompt!.edit({ label: "重命名", value: "/not-a-command payload" })
+    await route.app.renderOnce()
+    prompt!.submit()
+    await wait(() => sent.length === before + 1)
+    expect(sent[before].parts).toContainEqual({ type: "text", text: "/not-a-command payload" })
+    expect(prompt!.current.input).toBe("")
+  } finally {
+    await route.dispose()
+  }
+})

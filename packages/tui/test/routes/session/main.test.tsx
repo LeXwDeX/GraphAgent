@@ -228,13 +228,38 @@ async function mountMain(initialPrompt?: string) {
   }
 }
 
+// The renderer can still hold its output buffer right after a key press. The
+// native lease is transient, so retry instead of failing (or treating the
+// frame as empty, which would make "content is gone" assertions pass early).
+async function captureFrame(app: Awaited<ReturnType<typeof testRender>>): Promise<string> {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    try {
+      return app.captureCharFrame()
+    } catch (error) {
+      if (!(error instanceof Error && error.message.includes("OutputBusy"))) throw error
+      await Bun.sleep(5)
+      await app.renderOnce()
+    }
+  }
+  throw new Error("renderer stayed busy while capturing a frame")
+}
+
 async function waitForFrame(app: Awaited<ReturnType<typeof testRender>>, text: string) {
   for (let attempt = 0; attempt < 100; attempt++) {
     await app.renderOnce()
-    if (app.captureCharFrame().includes(text)) return
+    if ((await captureFrame(app)).includes(text)) return
     await Bun.sleep(10)
   }
-  throw new Error(`Timed out waiting for ${text}:\n${app.captureCharFrame()}`)
+  throw new Error(`Timed out waiting for ${text}:\n${await captureFrame(app)}`)
+}
+
+async function waitForFrameGone(app: Awaited<ReturnType<typeof testRender>>, text: string) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await app.renderOnce()
+    if (!(await captureFrame(app)).includes(text)) return
+    await Bun.sleep(10)
+  }
+  throw new Error(`Timed out waiting for ${text} to disappear:\n${await captureFrame(app)}`)
 }
 
 test("switching sessions activates the new route without hydrating the stale one", async () => {
@@ -259,7 +284,7 @@ test("switching sessions clears the prompt draft", async () => {
     await harness.mount()
     await waitForFrame(harness.app, "draft from session A")
     await harness.navigate(sessionB)
-    await waitFor(() => !harness.app.captureCharFrame().includes("draft from session A"))
+    await waitForFrameGone(harness.app, "draft from session A")
   } finally {
     harness.app.renderer.destroy()
     await harness.tmp[Symbol.asyncDispose]()
@@ -275,6 +300,26 @@ test("unmounting deactivates the session and restores the event listener baselin
     await harness.unmount()
     await waitFor(() => harness.deactivations() > 0)
     await waitFor(() => harness.listeners() === baseline)
+  } finally {
+    harness.app.renderer.destroy()
+    await harness.tmp[Symbol.asyncDispose]()
+  }
+})
+
+test("/rename without a title edits the current title in the composer", async () => {
+  const harness = await mountMain()
+  try {
+    await harness.mount()
+    await waitForFrame(harness.app, "agents")
+    for (const key of "/rename") harness.app.mockInput.pressKey(key)
+    await harness.app.renderOnce()
+    harness.app.mockInput.pressEnter()
+    await waitForFrame(harness.app, "Editing: Rename")
+    expect(await captureFrame(harness.app)).toContain("Session A")
+
+    harness.app.mockInput.pressKey("ESCAPE")
+    await waitForFrameGone(harness.app, "Editing: Rename")
+    expect(await captureFrame(harness.app)).not.toContain("Session A")
   } finally {
     harness.app.renderer.destroy()
     await harness.tmp[Symbol.asyncDispose]()

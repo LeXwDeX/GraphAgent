@@ -54,10 +54,9 @@ import { useSDK, locationHeaders } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
-import { DialogAlert } from "../../ui/dialog-alert"
+import { askConfirm } from "../../ask/local-ask"
 import { TodoItem } from "../../component/todo-item"
 import type { PromptInfo } from "../../component/prompt/history"
-import { DialogConfirm } from "../../ui/dialog-confirm"
 import { ForkPanel } from "../../panel/fork"
 import { MessagePanel } from "../../panel/message"
 import { TimelinePanel } from "../../panel/timeline"
@@ -516,7 +515,7 @@ export function Main() {
       sessionID,
     })
     const status = sync.data.session_status[sessionID]
-    if (status?.type === "retry") void DialogAlert.show(dialog, "Retry Error", status.message)
+    if (status?.type === "retry") toast.show({ title: "Retry Error", message: status.message, variant: "warning" })
   }
 
   function moveFirstChild() {
@@ -1081,8 +1080,16 @@ export function Main() {
     const title = args.trim()
     if (!title) {
       const current = session()?.title ?? ""
-      prompt?.set({ input: `/rename ${current}`, parts: [] })
-      prompt?.focus()
+      prompt?.edit({
+        label: t("prompt.edit.rename"),
+        value: current,
+        commit: async (next) => {
+          await sdk.client.session.update({
+            sessionID: route.sessionID,
+            title: next,
+          })
+        },
+      })
       return
     }
     await sdk.client.session.update({
@@ -1244,18 +1251,19 @@ export function Main() {
                         {(function () {
                           const redoShortcut = useCommandShortcut("session.redo")
                           const [hover, setHover] = createSignal(false)
-                          const dialog = useDialog()
 
                           const handleUnrevert = async () => {
-                            const confirmed = await DialogConfirm.show(
-                              dialog,
-                              "Confirm Redo",
-                              "Are you sure you want to restore the reverted messages?",
-                            )
-                            if (confirmed) {
-                              keymap.dispatchCommand("session.redo")
+                              if (!bottomZone) return
+                              const confirmed = await askConfirm(bottomZone, {
+                                title: "Confirm Redo",
+                                body: "Are you sure you want to restore the reverted messages?",
+                                confirmLabel: t("ask.confirm.confirm"),
+                                cancelLabel: t("ask.confirm.cancel"),
+                              })
+                              if (confirmed) {
+                                keymap.dispatchCommand("session.redo")
+                              }
                             }
-                          }
 
                           return (
                             <box
@@ -1314,6 +1322,7 @@ export function Main() {
                                 sessionID={route.sessionID}
                                 queued={isQueuedMessage(message as UserMessage, pending())}
                                 setPrompt={(promptInfo) => prompt?.set(promptInfo)}
+                                editPrompt={(request) => prompt?.edit(request)}
                               />
                             ))
                           }}
@@ -2267,7 +2276,7 @@ function Task(props: ToolProps) {
   const { theme } = useTheme()
   const { navigate } = useRoute()
   const sync = useSync()
-  const dialog = useDialog()
+  const toast = useToast()
 
   const sessionID = createMemo(() => stringValue(props.metadata.sessionId))
   // #886 5.5: the row never loads the child session; it reads the summary that
@@ -2333,7 +2342,7 @@ function Task(props: ToolProps) {
           navigate({ type: "session", sessionID: sessionID()! })
         }
         const status = retry()
-        if (status) void DialogAlert.show(dialog, "Retry Error", status.message)
+        if (status) toast.show({ title: "Retry Error", message: status.message, variant: "warning" })
       }}
     >
       {content()}
