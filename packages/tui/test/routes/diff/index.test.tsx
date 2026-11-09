@@ -23,6 +23,7 @@ import { setLanguage } from "../../../src/i18n"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../../src/keymap"
 import { Diff } from "../../../src/routes/diff"
 import { useDiffFooterHints } from "../../../src/routes/diff/footer-hints"
+import { BottomZone, BottomZoneProvider, createBottomZoneState } from "../../../src/shell/bottom-zone"
 import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
@@ -133,6 +134,7 @@ async function renderDiff(
     const renderer = useRenderer()
     keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createTuiResolvedConfig()
+    const bottomZone = createBottomZoneState()
     onCleanup(registerGraphagentKeymap(keymap, renderer, config))
     return (
       <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
@@ -149,8 +151,11 @@ async function renderDiff(
                             <SyncProvider>
                               <ThemeProvider mode="dark">
                                 <DialogProvider>
-                                  <Probe />
-                                  <Diff />
+                                  <BottomZoneProvider state={bottomZone}>
+                                    <Probe />
+                                    <Diff />
+                                    <BottomZone state={bottomZone} composer={<></>} />
+                                  </BottomZoneProvider>
                                 </DialogProvider>
                               </ThemeProvider>
                             </SyncProvider>
@@ -339,13 +344,13 @@ test("switch source reopens the diff and keeps the original return route", async
     await waitFor(harness.app, () => Boolean(harness.sync().data.vcs?.branch === "feature"))
     runCommand(harness, "diff.switch_source")
     await waitForFrame(harness.app, "Switch source")
-    // DialogSelect resolves its initial selection in a deferred effect; let it
-    // settle before moving so the next command lands on the branch option.
+    // The source panel starts on the current source ("git"), so one move lands
+    // on the branch option.
     await Bun.sleep(30)
     await harness.app.renderOnce()
-    runCommand(harness, "dialog.select.next")
+    runCommand(harness, "panel.next")
     await harness.app.renderOnce()
-    runCommand(harness, "dialog.select.submit")
+    runCommand(harness, "panel.submit")
     await harness.app.renderOnce()
     expect(harness.route()).toEqual({
       type: "diff",

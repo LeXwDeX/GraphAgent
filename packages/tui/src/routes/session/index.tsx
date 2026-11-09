@@ -56,11 +56,11 @@ import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { TodoItem } from "../../component/todo-item"
-import { DialogMessage } from "./dialog-message"
 import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "../../ui/dialog-confirm"
-import { DialogTimeline } from "./dialog-timeline"
-import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
+import { ForkPanel } from "../../panel/fork"
+import { MessagePanel } from "../../panel/message"
+import { TimelinePanel } from "../../panel/timeline"
 import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { SubagentFooter } from "./subagent-footer.tsx"
@@ -409,6 +409,19 @@ export function Main() {
   const bottomZone = useBottomZoneOptional()
   const renderer = useRenderer()
 
+  function openBottomPanel(id: string, render: () => JSX.Element) {
+    if (!bottomZone) return
+    if (bottomZone.host.top()?.id === id) return
+    bottomZone.host.push({ id, render })
+  }
+
+  function previewMessage(messageID?: string) {
+    if (!messageID) return
+    if (!scroll || scroll.isDestroyed) return
+    const child = scroll.getChildren().find((item) => item.id === messageID)
+    if (child) scroll.scrollBy(child.y - scroll.y - 1)
+  }
+
   const attention = createSessionAttention({
     clientType: "terminal",
     send: (update, signal) => sdk.client.session.attention(update, { signal }),
@@ -545,16 +558,17 @@ export function Main() {
       value: "session.timeline",
       category: "Session",
       run: () => {
-        dialog.replace(() => (
-          <DialogTimeline
-            onMove={(messageID) => {
-              const child = scroll.getChildren().find((child) => {
-                return child.id === messageID
-              })
-              if (child) scroll.scrollBy(child.y - scroll.y - 1)
-            }}
+        if (!scroll) return
+        const origin = scroll.scrollTop
+        openBottomPanel("timeline", () => (
+          <TimelinePanel
             sessionID={route.sessionID}
-            setPrompt={(promptInfo) => prompt?.set(promptInfo)}
+            onPreview={previewMessage}
+            onRestore={() => {
+              if (!scroll || scroll.isDestroyed) return
+              scroll.scrollTo(origin)
+            }}
+            onSelect={previewMessage}
           />
         ))
       },
@@ -563,20 +577,7 @@ export function Main() {
       title: "Fork session",
       value: "session.fork",
       category: "Session",
-      run: () => {
-        dialog.replace(() => (
-          <DialogForkFromTimeline
-            onMove={(messageID) => {
-              if (!messageID) return
-              const child = scroll.getChildren().find((child) => {
-                return child.id === messageID
-              })
-              if (child) scroll.scrollBy(child.y - scroll.y - 1)
-            }}
-            sessionID={route.sessionID}
-          />
-        ))
-      },
+      run: () => openBottomPanel("fork", () => <ForkPanel sessionID={route.sessionID} onPreview={previewMessage} />),
     },
     {
       title: "Compact session",
@@ -1308,8 +1309,8 @@ export function Main() {
                           index={index()}
                           onMouseUp={() => {
                             if (renderer.getSelection()?.getSelectedText()) return
-                            dialog.replace(() => (
-                              <DialogMessage
+                            openBottomPanel("message", () => (
+                              <MessagePanel
                                 messageID={message.id}
                                 sessionID={route.sessionID}
                                 queued={isQueuedMessage(message as UserMessage, pending())}
