@@ -1,12 +1,20 @@
 /**
- * Synchronous Log shim for modules ported from v1.15.10.
+ * Buffered Log shim for modules ported from v1.15.10.
  *
  * The application still owns its Effect logger; this shim exists because those
  * call sites create loggers at module load and cannot yield the Effect service.
  * It writes the same structured lines to the graphagent log and exposes an injectable
  * sink so tests can observe records without sharing a mutable default object.
+ *
+ * Writes are buffered in memory and flushed asynchronously in batches: the hot
+ * path (every hook short-circuit) must never block on a synchronous file
+ * append. `flush()` drains the buffer for tests and normal shutdown; the exit
+ * and terminating-signal handlers drain it synchronously so a crash loses as
+ * little as possible. The formatted `Entry` shape and the redaction rules are
+ * unchanged.
  */
-import { appendFileSync } from "node:fs"
+import { closeSync, openSync, writeSync } from "node:fs"
+import { appendFile } from "node:fs/promises"
 import path from "node:path"
 import { Global } from "@graphagent/core/global"
 import { APP_NAME } from "@graphagent/core/brand"
@@ -29,6 +37,21 @@ interface Logger {
   warn(message: string, meta?: Record<string, unknown>): void
   error(message: string, meta?: Record<string, unknown>): void
   time(label: string, meta?: Record<string, unknown>): Disposable
+}
+
+/** An entry as emitted; formatting/redaction is deferred to the drain. */
+interface Pending {
+  readonly timestamp: string
+  readonly level: Level
+  readonly service: string
+  readonly message: string
+  readonly meta?: Record<string, unknown>
+}
+
+/** A drained batch is bound to the sink that was active when it was taken. */
+interface Batch {
+  readonly sink: Sink | undefined
+  readonly entries: Entry[]
 }
 
 const ranks: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 }
@@ -104,36 +127,150 @@ function formatMeta(meta: Record<string, unknown> | undefined) {
     .join(" ")
 }
 
-function fileSink(entry: Entry) {
+function toEntry(pending: Pending): Entry {
+  return {
+    timestamp: pending.timestamp,
+    level: pending.level,
+    service: pending.service,
+    message: text(pending.message),
+    meta: formatMeta(pending.meta),
+  }
+}
+
+function formatLine(entry: Entry) {
+  return `${entry.timestamp} ${entry.level} service=${entry.service} message=${entry.message}${entry.meta ? ` ${entry.meta}` : ""}\n`
+}
+
+// ── Buffered writer ─────────────────────────────────────────────
+//
+// The queue is bounded so a runaway debug-level producer cannot grow memory
+// without limit. On overflow the oldest debug/info record is dropped first
+// (warn/error are kept), and the loss count is surfaced as one summary line
+// in the next batch.
+
+const MAX_QUEUE_ENTRIES = 10_000
+
+let queue: Pending[] = []
+let dropped = 0
+let scheduled = false
+let draining: Promise<void> = Promise.resolve()
+
+/** Injected test sink. Undefined means the buffered file writer. */
+let custom: Sink | undefined
+
+const logFile = () => path.join(Global.Path.log, `${APP_NAME}.log`)
+
+function takeBatch(): Batch {
+  if (queue.length === 0) return { sink: custom, entries: [] }
+  const pending = queue
+  queue = []
+  const entries = pending.map(toEntry)
+  if (dropped > 0) {
+    entries.unshift({
+      timestamp: new Date().toISOString(),
+      level: "warn",
+      service: "log",
+      message: `dropped ${dropped} buffered log entries: queue limit ${MAX_QUEUE_ENTRIES} reached`,
+    })
+    dropped = 0
+  }
+  return { sink: custom, entries }
+}
+
+async function deliver(batch: Batch) {
+  if (batch.entries.length === 0) return
+  if (batch.sink) {
+    for (const entry of batch.entries) batch.sink(entry)
+    return
+  }
   try {
-    appendFileSync(
-      path.join(Global.Path.log, `${APP_NAME}.log`),
-      `${entry.timestamp} ${entry.level} service=${entry.service} message=${entry.message}${entry.meta ? ` ${entry.meta}` : ""}\n`,
-    )
+    await appendFile(logFile(), batch.entries.map(formatLine).join(""))
   } catch {
     // Logging must never fail the operation it describes.
   }
 }
 
-let sink: Sink = fileSink
+async function drain() {
+  const batch = takeBatch()
+  if (batch.entries.length === 0) return
+  draining = draining.then(() => deliver(batch))
+  await draining
+}
+
+function schedule() {
+  if (scheduled) return
+  scheduled = true
+  setImmediate(() => {
+    scheduled = false
+    void drain()
+  })
+}
+
+function enqueue(pending: Pending) {
+  if (queue.length >= MAX_QUEUE_ENTRIES) {
+    dropped++
+    const droppable = queue.findIndex((entry) => entry.level === "debug" || entry.level === "info")
+    if (droppable >= 0) queue.splice(droppable, 1)
+    else if (pending.level !== "warn" && pending.level !== "error") return
+    else queue.shift()
+  }
+  queue.push(pending)
+  schedule()
+}
+
+/** Synchronously write the buffered entries through the batch's sink. */
+function flushSync() {
+  const batch = takeBatch()
+  if (batch.entries.length === 0) return
+  if (batch.sink) {
+    // An injected test sink is synchronous by contract.
+    for (const entry of batch.entries) batch.sink(entry)
+    return
+  }
+  try {
+    const fd = openSync(logFile(), "a")
+    try {
+      // One synchronous write per flush; exit cannot await the async chain.
+      writeSync(fd, batch.entries.map(formatLine).join(""))
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    // Logging must never fail the operation it describes.
+  }
+}
+
+/**
+ * Drain the in-memory buffer. Tests call this before asserting on an injected
+ * sink; shutdown paths call it so the tail of the log reaches the file.
+ */
+export async function flush(): Promise<void> {
+  while (true) {
+    await draining
+    if (queue.length === 0) return
+    await drain()
+  }
+}
+
+/** Number of entries dropped by the bounded queue since the last summary line. */
+export function droppedEntries(): number {
+  return dropped
+}
 
 export function setSink(next?: Sink) {
-  const previous = sink
-  sink = next ?? fileSink
+  // Entries produced before the swap belong to the previous sink.
+  flushSync()
+  const previous = custom
+  custom = next
   return () => {
-    sink = previous
+    flushSync()
+    custom = previous
   }
 }
 
 function emit(service: string, level: Level, message: string, meta?: Record<string, unknown>) {
   if (!enabled(level)) return
-  sink({
-    timestamp: new Date().toISOString(),
-    level,
-    service,
-    message: text(message),
-    meta: formatMeta(meta),
-  })
+  enqueue({ timestamp: new Date().toISOString(), level, service, message, meta })
 }
 
 export function create(opts: { service: string }): Logger {
@@ -153,6 +290,27 @@ export function create(opts: { service: string }): Logger {
     },
   }
 }
+
+// ── Shutdown flushing ───────────────────────────────────────────
+//
+// `exit` runs synchronously and cannot await, so it uses the synchronous
+// writer. `beforeExit` may still do async work on an otherwise idle loop.
+// `uncaughtExceptionMonitor` observes a fatal exception without changing the
+// process's default crash behavior.
+
+process.on("exit", flushSync)
+process.on("beforeExit", () => {
+  void flush()
+})
+process.on("uncaughtExceptionMonitor", flushSync)
+
+const onSigterm = () => {
+  flushSync()
+  // Restore the default termination action we masked by listening.
+  process.removeListener("SIGTERM", onSigterm)
+  process.kill(process.pid, "SIGTERM")
+}
+process.on("SIGTERM", onSigterm)
 
 export function Log() {
   return Default

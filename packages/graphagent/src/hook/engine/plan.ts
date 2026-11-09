@@ -4,6 +4,7 @@
  * Pure-move extraction from the former monolithic settings module (D1 PR1).
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
+import { createHash } from "crypto"
 import { commandText, expandCommand, httpUrl } from "../exec/command"
 import { compileMatcher, type CompiledMatcher } from "../match"
 import type { HookCommand, HookEvent, HookMatcher, HookPayload } from "../types"
@@ -29,6 +30,11 @@ export function handlerKey(entry: HookCommand, origin?: string): string {
       ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
       : value,
   )
+}
+
+/** Stable progress/cancellation identity: the handler digest only, never its command or headers. */
+export function hookIDFor(entry: HookCommand, origin?: string): string {
+  return createHash("sha256").update(handlerKey(entry, origin)).digest("hex")
 }
 
 /** Per-event handler availability from the 2026-10-16 Claude Code hooks reference. */

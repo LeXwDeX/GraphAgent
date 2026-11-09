@@ -1019,6 +1019,21 @@ const scenarios: Scenario[] = [
     // DELETE is idempotent — a non-existent hookID succeeds (204 NoContent).
     .status(204),
   http.protected
+    .post("/session/{sessionID}/hook/{hookID}/cancel", "session.hook.cancel")
+    .seeded((ctx) => ctx.session({ title: "Hook cancel session" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/hook/{hookID}/cancel", {
+        sessionID: ctx.state.id,
+        hookID: "does-not-exist",
+      }),
+      headers: ctx.headers(),
+    }))
+    // A handler digest that is not running is a miss, not an error.
+    .json(200, (body) => {
+      object(body)
+      check(body.cancelled === false, "cancelling a non-running hook should report false")
+    }),
+  http.protected
     .get("/session/{sessionID}/diff", "session.diff")
     .seeded((ctx) => ctx.session({ title: "Diff session" }))
     .at((ctx) => ({ path: route("/session/{sessionID}/diff", { sessionID: ctx.state.id }), headers: ctx.headers() }))

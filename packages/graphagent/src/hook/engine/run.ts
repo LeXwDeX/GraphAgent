@@ -4,7 +4,6 @@
  * Pure-move extraction from the former monolithic settings module (D1 PR1).
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
-import { createHash } from "crypto"
 import { Effect, Option, Scope, Exit, Fiber } from "effect"
 import * as Log from "@/util/log"
 import { Global } from "@graphagent/core/global"
@@ -17,7 +16,6 @@ import type { SessionHookEntry } from "../session-hooks"
 import type { HookConfigChange } from "../config-change"
 import type { HookFileWatch } from "../file-watch"
 import { HookRewake } from "../rewake"
-import { HookNotification } from "../notifications"
 import { buildForkHooks, watchSettings } from "../extensions"
 import { makeRunContext } from "./context"
 import { withPromptIdentity } from "../prompt-identity"
@@ -52,6 +50,7 @@ import { commandText } from "../exec/command"
 import { isAsync } from "../types"
 import { makeEntryRunner } from "./entry"
 import { makeServiceMethods } from "./methods"
+import { runMonitored } from "./monitor"
 import type { Interface } from "../service"
 
 const log = Log.create({ service: "hook.settings" })
@@ -88,6 +87,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           stopRewakeChains: new Map<string, StopRewakeChain>(),
           asyncResults: new Map<string, TriggerResult>(),
           asyncFibers: new Map<string, Set<Fiber.Fiber<unknown, unknown>>>(),
+          runningHooks: new Map(),
           endFibers: new Set<Fiber.Fiber<unknown, unknown>>(),
         } satisfies State
 
@@ -96,7 +96,11 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         // every command before the instance disappears.
         yield* Effect.addFinalizer(() =>
           Effect.forEach(
-            [...stateObj.asyncFibers.values()].flatMap((fibers) => [...fibers]).concat([...stateObj.endFibers]),
+            [
+              ...[...stateObj.asyncFibers.values()].flatMap((fibers) => [...fibers]),
+              ...[...stateObj.runningHooks.values()].flatMap((running) => [...running.fibers]),
+              ...stateObj.endFibers,
+            ],
             (fiber) => Fiber.interrupt(fiber),
             { discard: true },
           ),
@@ -547,12 +551,8 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         if (!PER_TRIGGER_DEDUP_EVENTS.has(payload.event) && !addSeen(s.seen, bucket, text)) return
         result.additionalContexts.push(text)
       }
-      const runWithStatus = (entry: HookCommand, origin?: string) =>
+      const runWithStatus = (entry: HookCommand, origin: string | undefined, monitored: boolean) =>
         Effect.gen(function* () {
-          // Never publish the handler definition: commands and HTTP headers can
-          // contain private values. The stable digest only correlates spinner
-          // start and finish events for this handler.
-          const hookID = createHash("sha256").update(handlerKey(entry, origin)).digest("hex")
           // Only a command handler consumes the sourced environment; every other
           // handler type skips the shell round-trip entirely.
           let shell: { environmentFile?: string; environment?: Record<string, string | undefined> } | undefined
@@ -561,9 +561,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
               environmentFile: yield* runContext.environmentFile().pipe(Effect.orDie),
               environment: yield* runContext.environment().pipe(Effect.orDie),
             }
-          if (entry.statusMessage && ctx.sessionID)
-            yield* HookNotification.status(ctx.sessionID, hookID, entry.statusMessage, "started")
-          return yield* runEntry(
+          const execute = runEntry(
             entry,
             envelope,
             s.cwd,
@@ -574,13 +572,10 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
             s.root,
             ctx.effort,
             payload.event === "PostToolUse" ? payload.toolOutput : undefined,
-          ).pipe(
-            Effect.ensuring(
-              entry.statusMessage && ctx.sessionID
-                ? HookNotification.status(ctx.sessionID, hookID, entry.statusMessage, "finished")
-                : Effect.void,
-            ),
           )
+          if (!monitored) return yield* execute
+          const input = { state: s, sessionID: ctx.sessionID, event: payload.event, entry, origin, execute }
+          return yield* runMonitored(input)
         })
 
       const foreground: Array<{ planned: PlannedEntry; fiber: Fiber.Fiber<HookExecution> }> = []
@@ -603,7 +598,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           const entryToken = s.onceRunning.get(owner)?.get(entry)
           let fiber: Fiber.Fiber<unknown, unknown> | undefined
           let succeeded = false
-          const background = runWithStatus(entry, group._sessionEntry?.origin).pipe(
+          const background = runWithStatus(entry, group._sessionEntry?.origin, false).pipe(
             Effect.catchDefect((defect) => {
               log.warn("async hook entry defect swallowed (host protected)", {
                 event: capturedEvent,
@@ -678,7 +673,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         }
         // Foreground handlers all start together after planning; they are joined
         // below in settings order so conflicting decisions stay deterministic.
-        foreground.push({ planned, fiber: yield* runWithStatus(entry, planned.origin).pipe(Effect.forkChild) })
+        foreground.push({ planned, fiber: yield* runWithStatus(entry, planned.origin, true).pipe(Effect.forkChild) })
       }
 
       for (const { planned, fiber } of foreground) {

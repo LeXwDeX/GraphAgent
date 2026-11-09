@@ -45,8 +45,9 @@ export function httpHookUrlAllowed(url: string, allowed: readonly string[] | und
  * `type: "http"` handler. Per CC protocol, `url` (legacy: `command`) is the
  * endpoint; the envelope is POSTed once as JSON with `headers` after `$VAR` /
  * `${VAR}` interpolation restricted to `allowedEnvVars` (unlisted variables
- * become ""). Timeout comes from `timeoutFor` (600 s default; `timeout`
- * overrides).
+ * become ""). Timeout comes from `timeoutFor`: 30 s for foreground HTTP hooks,
+ * 60 s on Stop-class events, 600 s for background hooks; an explicit `timeout`
+ * (seconds) overrides.
  *
  * 2xx empty body → success with no output. 2xx JSON object → parsed with the
  * same HookOutputSchema as command stdout; a schema mismatch is a non-blocking

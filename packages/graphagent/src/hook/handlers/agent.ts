@@ -3,7 +3,7 @@
  *
  * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
-import { Effect, Option } from "effect"
+import { Cause, Effect, Option } from "effect"
 import { generateText, type ModelMessage } from "ai"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -102,6 +102,7 @@ export const agentHandler: HookHandler = {
 
       if (loopExit._tag === "Failure") {
         const cause = String(loopExit.cause)
+        const timedOut = Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(loopExit.cause)))
         const isAbort = cause.includes("AbortError") || cause.includes("aborted")
         if (isAbort) {
           log.warn("agent hook timeout / aborted (non-blocking)", {
@@ -115,7 +116,7 @@ export const agentHandler: HookHandler = {
             command: prompt.slice(0, 80),
           })
         }
-        return { json: undefined, exitBlock: undefined }
+        return { json: undefined, exitBlock: undefined, timedOut }
       }
 
       if (!loopExit.value) {

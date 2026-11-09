@@ -71,7 +71,7 @@ SessionStart and Setup allow command and MCP handlers; unavailable MCP connectio
 
 Optional fields:
 
-- `timeout`: positive seconds. Command/HTTP/MCP default to 600, except UserPromptSubmit and model-switch events (30), MessageDisplay (10), and SessionEnd (1.5; `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` may override). Prompt defaults to 30; agent to 60.
+- `timeout`: positive seconds. Foreground command/HTTP/MCP default to 30, except Stop/SubagentStop/TaskCompleted/PreCompact/PostCompact (60), MessageDisplay (10), and SessionEnd (1.5; `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` may override). UserPromptSubmit and model-switch events default to 30. Background `async`/`asyncRewake` commands keep 600. Prompt defaults to 30; agent to 60. An explicit `timeout` always wins.
 - `statusMessage`: visible progress while the handler runs.
 - `if`: tool/permission condition, using permission-rule patterns such as `Bash(npm test *)`. Non-tool events cannot satisfy a tool condition. This is a filter, not permission authorization.
 - `once`: scoped skill/session lifetime; success removes/suppresses the registration, failure releases it for retry. It has no effect in `hooks.json`, whose entries are static for the process; only session/skill-registered hooks use it. Agent hooks do not gain once semantics.

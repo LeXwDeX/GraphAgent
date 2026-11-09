@@ -49,6 +49,18 @@ export function makeServiceMethods(state: InstanceState<State>, sessionHooks: Se
     yield* sessionHooks.clear(SessionID.make(String(sessionID)))
   })
 
+  const cancel = Effect.fn("SettingsHook.cancel")(function* (sessionID: SessionID | string, hookID: string) {
+    const s = yield* InstanceState.get(state)
+    const running = s.runningHooks.get(`${sessionID}:${hookID}`)
+    if (!running || running.fibers.size === 0) return false
+    // Snapshot first: interrupting a fiber runs its finalizer, which removes it
+    // from the live set.
+    const fibers = [...running.fibers]
+    for (const fiber of fibers) running.cancelled.add(fiber)
+    yield* Effect.forEach(fibers, (fiber) => Fiber.interrupt(fiber), { concurrency: "unbounded", discard: true })
+    return true
+  })
+
   const fileWatchPaths = Effect.fn("SettingsHook.fileWatchPaths")(function* () {
     const s = yield* InstanceState.get(state)
     return s.settings.disableAllHooks === true ? [] : staticWatchPaths(s.settings)
@@ -117,6 +129,7 @@ export function makeServiceMethods(state: InstanceState<State>, sessionHooks: Se
     list,
     hasEvent,
     drainAsync,
+    cancel,
     clearSession,
     fileWatchPaths,
     sessionEndTimeout,

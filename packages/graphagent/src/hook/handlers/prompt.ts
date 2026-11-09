@@ -3,7 +3,7 @@
  *
  * Pure-move extraction from the former monolithic settings module (D1 PR1).
  */
-import { Effect, Option } from "effect"
+import { Cause, Effect, Option } from "effect"
 import { generateObject, type ModelMessage } from "ai"
 import * as Log from "@/util/log"
 import { Auth } from "@/auth"
@@ -146,7 +146,11 @@ export const promptHandler: HookHandler = {
 
       if (llmExit._tag === "Failure") {
         log.warn("prompt hook failed (non-blocking)", { error: String(llmExit.cause) })
-        return { json: undefined, exitBlock: undefined }
+        return {
+          json: undefined,
+          exitBlock: undefined,
+          timedOut: Cause.isTimeoutError(Option.getOrUndefined(Cause.findErrorOption(llmExit.cause))),
+        }
       }
       return {
         json: evaluatorDecision(entry, envelope.hook_event_name, llmExit.value),

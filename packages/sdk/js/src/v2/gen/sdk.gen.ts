@@ -192,6 +192,8 @@ import type {
   SessionGoalResponses,
   SessionHookAddErrors,
   SessionHookAddResponses,
+  SessionHookCancelErrors,
+  SessionHookCancelResponses,
   SessionHookListErrors,
   SessionHookListResponses,
   SessionHookRemoveErrors,
@@ -2820,6 +2822,40 @@ export class Hook extends HeyApiClient {
     )
     return (options?.client ?? this.client).delete<SessionHookRemoveResponses, SessionHookRemoveErrors, ThrowOnError>({
       url: "/session/{sessionID}/hook/{hookID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Cancel a running hook
+   *
+   * Interrupt the foreground hook handler currently running under this handler digest for the session. Returns cancelled:false when no matching handler is running.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      hookID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionHookCancelResponses, SessionHookCancelErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "hookID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionHookCancelResponses, SessionHookCancelErrors, ThrowOnError>({
+      url: "/session/{sessionID}/hook/{hookID}/cancel",
       ...options,
       ...params,
     })

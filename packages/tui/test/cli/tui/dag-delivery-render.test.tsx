@@ -264,7 +264,17 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
       payload: {
         id: "evt_hook_started",
         type: "session.hook.status",
-        properties: { sessionID, hookID: "policy", statusMessage: "Checking model policy", phase: "started" },
+        properties: {
+          sessionID,
+          hookID: "policy",
+          event: "PreToolUse",
+          descriptor: "policy check",
+          statusMessage: "Checking model policy",
+          phase: "started",
+          timeoutMs: 30000,
+          cancellable: true,
+          startedAt: Date.now(),
+        },
       },
     })
     await waitForFrame(app, "Checking model policy")
@@ -274,7 +284,17 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
       payload: {
         id: "evt_hook_finished",
         type: "session.hook.status",
-        properties: { sessionID, hookID: "policy", statusMessage: "Checking model policy", phase: "finished" },
+        properties: {
+          sessionID,
+          hookID: "policy",
+          event: "PreToolUse",
+          descriptor: "policy check",
+          statusMessage: "Checking model policy",
+          phase: "finished",
+          timeoutMs: 30000,
+          cancellable: false,
+          startedAt: Date.now(),
+        },
       },
     })
     events.emit({

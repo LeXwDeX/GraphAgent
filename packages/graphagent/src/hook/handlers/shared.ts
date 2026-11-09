@@ -60,6 +60,8 @@ export interface HookExecution {
   succeeded?: boolean
   /** Failure text for the user-visible `<hook name> hook error` notice; never model context. */
   failureMessage?: string
+  /** The handler's own timeout fired. Status reporting distinguishes `timeout` from an ordinary failure. */
+  timedOut?: boolean
 }
 
 /** Exit 2 on these events keeps the agent working, so a hook that cannot run must not trap it (reference 949). */
