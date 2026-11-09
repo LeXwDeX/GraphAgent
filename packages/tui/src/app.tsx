@@ -26,7 +26,7 @@ import {
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
-import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
+import { openProviderPanel } from "./panel/provider"
 import { ErrorComponent } from "./component/error-component"
 import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
@@ -498,7 +498,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       (isEmpty, wasEmpty) => {
         // only trigger when we transition into an empty-provider state
         if (!isEmpty || wasEmpty) return
-        dialog.replace(() => <DialogProviderList />)
+        openProviderPanel({ host: bottomZone.host, onConnected: () => openModelList() })
       },
     ),
   )
@@ -523,14 +523,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const openWorkspaceList = () => openPanel("workspaces", () => <WorkspacesPanel />)
   const openModelList = () =>
     openPanel("model", () => (
-      <ModelPanel
-        onConnectProvider={() => dialog.replace(() => <DialogProviderList />)}
-        onVariant={() => dialog.replace(() => <DialogVariant />)}
-      />
+      <ModelPanel onConnectProvider={connectProvider} onVariant={() => dialog.replace(() => <DialogVariant />)} />
     ))
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
-  const connectProvider = () => dialog.replace(() => <DialogProviderList />)
+  const connectProvider = () => openProviderPanel({ host: bottomZone.host, onConnected: () => openModelList() })
   const openStatus = () => openPanel("status", () => <StatusPanel />)
   const openThemeList = () => openPanel("theme", () => <ThemePanel />)
   const openHelp = () => openPanel("help", () => <HelpPanel />)

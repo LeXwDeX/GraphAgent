@@ -9,6 +9,7 @@ import { createEffect, onCleanup, type JSX, type ParentProps } from "solid-js"
 import { setLanguage } from "../../src/i18n"
 import { TuiKeybind } from "../../src/config/keybind"
 import { ArgsProvider } from "../../src/context/args"
+import { ClipboardProvider } from "../../src/context/clipboard"
 import { ExitProvider } from "../../src/context/exit"
 import { LocalProvider, useLocal } from "../../src/context/local"
 import { ProjectProvider, useProject } from "../../src/context/project"
@@ -21,6 +22,7 @@ import { KVProvider } from "../../src/context/kv"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { PanelHost, PanelHostProvider, createPanelHost, type PanelHostApi, type PanelSpec } from "../../src/panel/host"
 import { PromptStashProvider, usePromptStash } from "../../src/component/prompt/stash"
+import { DialogProvider } from "../../src/ui/dialog"
 import { ToastProvider, useToast } from "../../src/ui/toast"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
@@ -147,25 +149,33 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
           <ArgsProvider>
             <KVProvider>
               <ToastProvider>
-                <RouteProvider>
-                  <TuiConfigProvider config={createTuiResolvedConfig()}>
-                    <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
-                      <ProjectProvider>
-                        <SyncProvider>
-                          <ThemeProvider mode="dark">
-                            <LocalProvider>
-                              <PromptStashProvider>
-                                <AppPanelSetup language={props.language} setup={props.setup} onReady={props.onReady}>
-                                  {props.children}
-                                </AppPanelSetup>
-                              </PromptStashProvider>
-                            </LocalProvider>
-                          </ThemeProvider>
-                        </SyncProvider>
-                      </ProjectProvider>
-                    </SDKProvider>
-                  </TuiConfigProvider>
-                </RouteProvider>
+                <ClipboardProvider>
+                  <RouteProvider>
+                    <TuiConfigProvider config={createTuiResolvedConfig()}>
+                      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+                        <ProjectProvider>
+                          <SyncProvider>
+                            <ThemeProvider mode="dark">
+                              <LocalProvider>
+                                <PromptStashProvider>
+                                  <DialogProvider>
+                                    <AppPanelSetup
+                                      language={props.language}
+                                      setup={props.setup}
+                                      onReady={props.onReady}
+                                    >
+                                      {props.children}
+                                    </AppPanelSetup>
+                                  </DialogProvider>
+                                </PromptStashProvider>
+                              </LocalProvider>
+                            </ThemeProvider>
+                          </SyncProvider>
+                        </ProjectProvider>
+                      </SDKProvider>
+                    </TuiConfigProvider>
+                  </RouteProvider>
+                </ClipboardProvider>
               </ToastProvider>
             </KVProvider>
           </ArgsProvider>
