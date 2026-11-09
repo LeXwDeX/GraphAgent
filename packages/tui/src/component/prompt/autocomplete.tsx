@@ -19,8 +19,12 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
 import type { PromptInfo } from "../../prompt/history"
 import { useFrecency } from "../../prompt/frecency"
-import { EscapePriority, useBindings, useCommandSlashes, useGraphagentModeStack } from "../../keymap"
+import { EscapePriority, useBindings, useGraphagentModeStack } from "../../keymap"
+import { useCommands, useCommandScope } from "../../commands/context"
+import { parseServerCommandArgs } from "../../commands/server-args"
+import { slashCommandEntries, type SlashCommandEntry } from "../../commands/registry"
 import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
+import { TuiLog } from "../../util/log"
 import type { FileSystemEntry } from "@graphagent/sdk"
 
 function removeLineRange(input: string) {
@@ -68,6 +72,8 @@ export type AutocompleteOption = {
   description?: string
   isDirectory?: boolean
   onSelect?: () => void
+  /** Enter executes this instead of completing when the command needs no required argument. */
+  onRun?: () => void
   path?: string
 }
 
@@ -87,7 +93,8 @@ export function Autocomplete(props: {
   const sdk = useSDK()
   const sync = useSync()
   const project = useProject()
-  const slashes = useCommandSlashes()
+  const commandRegistry = useCommands()
+  const commandScope = useCommandScope()
   const modeStack = useGraphagentModeStack()
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
@@ -440,24 +447,44 @@ export function Autocomplete(props: {
       })),
   )
 
-  const commands = createMemo((): AutocompleteOption[] => {
-    const results: AutocompleteOption[] = [...slashes()]
+  const slashEntries = createMemo(() => slashCommandEntries(commandRegistry, commandScope()))
 
-    for (const serverCommand of sync.data.command) {
-      if (serverCommand.source === "skill") continue
-      const label = serverCommand.source === "mcp" ? ":mcp" : ""
-      results.push({
-        display: "/" + serverCommand.name + label,
-        description: serverCommand.description,
-        onSelect: () => {
-          const newText = "/" + serverCommand.name + " "
-          const cursor = props.input().logicalCursor
-          props.input().deleteRange(0, 0, cursor.row, cursor.col)
-          props.input().insertText(newText)
-          props.input().cursorOffset = Bun.stringWidth(newText)
-        },
-      })
-    }
+  const argumentContext = createMemo(() => {
+    if (store.visible !== "/") return undefined
+    return parseServerCommandArgs("/" + search())
+  })
+
+  function replaceSlashInput(text: string) {
+    hide()
+    const cursor = props.input().logicalCursor
+    props.input().deleteRange(0, 0, cursor.row, cursor.col)
+    props.input().insertText(text)
+    props.input().cursorOffset = Bun.stringWidth(text)
+  }
+
+  function completeCommand(entry: SlashCommandEntry) {
+    const name = entry.spec.slash?.name
+    if (!name) return
+    replaceSlashInput(`/${name} `)
+  }
+
+  function runCommand(entry: SlashCommandEntry) {
+    hide()
+    void commandRegistry.run(entry.spec.id, { args: "", origin: "slash" }).catch((error) => {
+      TuiLog.write("error", "Command failed", error)
+    })
+  }
+
+  const commandOptions = createMemo((): AutocompleteOption[] => {
+    const results = slashEntries().map((entry): AutocompleteOption => ({
+      display: entry.display,
+      value: entry.display,
+      aliases: entry.aliases ? [...entry.aliases] : undefined,
+      description: entry.description,
+      onSelect: () => completeCommand(entry),
+      // Enter executes no-required-arg builtins; server commands complete and wait for input.
+      onRun: entry.spec.source === "builtin" && !entry.requiresArgs ? () => runCommand(entry) : undefined,
+    }))
 
     results.sort((a, b) => a.display.localeCompare(b.display))
 
@@ -474,11 +501,20 @@ export function Autocomplete(props: {
     const referenceMatchValue = referenceMatch()
     const agentsValue = agents()
     const referenceAliasesValue = referenceAliases()
-    const commandsValue = commands()
+    const commandsValue = commandOptions()
+    const argumentContextValue = argumentContext()
     const searchValue = search()
 
     if (store.visible === "@" && referenceMatchValue) {
       return referenceAliasesValue.filter((item) => item.display === `@${referenceMatchValue.name}`)
+    }
+
+    if (argumentContextValue) {
+      return argumentContextValue.candidates.map((candidate): AutocompleteOption => ({
+        display: candidate,
+        value: candidate,
+        onSelect: () => replaceSlashInput(`/${argumentContextValue.command} ${candidate} `),
+      }))
     }
 
     // Files come from fff already fuzzy ranked and filtered
@@ -549,6 +585,10 @@ export function Autocomplete(props: {
   function select() {
     const selected = options()[store.selected]
     if (!selected) return
+    if (selected.onRun) {
+      selected.onRun()
+      return
+    }
     hide()
     selected.onSelect?.()
   }
@@ -624,6 +664,13 @@ export function Autocomplete(props: {
             return
           }
 
+          // Tab completes the slash command name instead of executing it.
+          if (store.visible === "/" && selected) {
+            hide()
+            selected.onSelect?.()
+            return
+          }
+
           select()
         },
       },
@@ -672,13 +719,17 @@ export function Autocomplete(props: {
       },
       onInput(value) {
         if (store.visible) {
+          const argument =
+            store.visible === "/" ? parseServerCommandArgs(value.slice(0, props.input().cursorOffset)) : undefined
           if (
             // Typed text before the trigger
             props.input().cursorOffset <= store.index ||
-            // There is a space between the trigger and the cursor
-            props.input().getTextRange(store.index, props.input().cursorOffset).match(/\s/) ||
-            // "/<command>" is not the sole content
-            (store.visible === "/" && value.match(/^\S+\s+\S+\s*$/))
+            // Known server-argument completion stays open after the command and a space
+            (!argument &&
+              // There is a space between the trigger and the cursor
+              (props.input().getTextRange(store.index, props.input().cursorOffset).match(/\s/) ||
+                // "/<command>" is not the sole content
+                (store.visible === "/" && value.match(/^\S+\s+\S+\s*$/))))
           ) {
             hide()
           }
@@ -710,7 +761,8 @@ export function Autocomplete(props: {
     const count = options().length || 1
     if (!store.visible) return Math.min(10, count)
     positionTick()
-    return Math.min(10, count, Math.max(1, props.anchor().y))
+    const limit = store.visible === "/" ? 8 : 10
+    return Math.min(limit, count, Math.max(1, props.anchor().y))
   })
 
   let scroll: ScrollBoxRenderable

@@ -26,9 +26,10 @@ import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
-import { useExit } from "../../context/exit"
 import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
+import { useCommands, useCommandScope } from "../../commands/context"
+import { resolveSlashInput, serverCommandSpec } from "../../commands/registry"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
@@ -158,6 +159,8 @@ export function Prompt(props: PromptProps) {
   const sync = useSync()
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
+  const commands = useCommands()
+  const commandScope = useCommandScope()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const [sending, setSending] = createSignal(false)
@@ -203,7 +206,6 @@ export function Prompt(props: PromptProps) {
   const agentShortcut = useCommandShortcut("agent.cycle")
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const renderer = useRenderer()
-  const exit = useExit()
   const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
   const kv = useKV()
@@ -363,282 +365,302 @@ export function Prompt(props: PromptProps) {
     }
   })
 
-  const promptCommands = createMemo(() =>
-    [
-      {
-        title: "Restore failed prompt",
-        name: "prompt.restore_failed",
-        category: "Prompt",
-        enabled: Boolean(failedSubmission()),
-        run: () => {
-          const failed = failedSubmission()
-          if (!failed) return
-          if (store.prompt.input || store.prompt.parts.length) stash.push(unwrap(store.prompt))
-          input.setText(failed.input)
-          setStore("prompt", structuredClone(unwrap(failed)))
-          setStore("mode", failed.mode ?? "normal")
-          restoreExtmarksFromParts(failed.parts)
-          setFailedSubmission(undefined)
-          if (props.sessionID) sync.set("failed_submission", props.sessionID, undefined)
-          dialog.clear()
-        },
-      },
-      {
-        title: "Clear prompt",
-        name: "prompt.clear",
-        category: "Prompt",
-        hidden: true,
-        run: () => {
-          clearPrompt()
-          dialog.clear()
-        },
-      },
-      {
-        title: "Submit prompt",
-        name: "prompt.submit",
-        category: "Prompt",
-        hidden: true,
-        run: async () => {
-          if (!input.focused) return
-          const handled = await submit()
-          if (!handled) return
+  async function openPromptEditor() {
+    dialog.clear()
 
-          dialog.clear()
-        },
-      },
-      {
-        title: "Remove editor context",
-        name: "prompt.editor_context.clear",
-        category: "Prompt",
-        enabled: Boolean(editorContext()),
-        run: () => {
-          dismissEditorContext()
-          dialog.clear()
-        },
-      },
-      {
-        title: "Paste",
-        name: "prompt.paste",
-        category: "Prompt",
-        hidden: true,
-        run: async (ctx: CommandContext<Renderable, KeyEvent>) => {
-          ctx.event.preventDefault()
-          ctx.event.stopPropagation()
-          const content = await clipboard.read?.()
-          if (content?.mime.startsWith("image/")) {
-            await pasteAttachment({
-              filename: "clipboard",
-              mime: content.mime,
-              content: content.data,
-            })
-            return
+    // replace summarized text parts with the actual text
+    const text = store.prompt.parts
+      .filter((p) => p.type === "text")
+      .reduce((acc, p) => {
+        if (!p.source) return acc
+        return acc.replace(p.source.text.value, p.text)
+      }, store.prompt.input)
+
+    const nonTextParts = store.prompt.parts.filter((p) => p.type !== "text")
+
+    const value = text
+    const content = await openEditor({
+      renderer,
+      value,
+      cwd:
+        (project.instance.path().worktree === "/" ? undefined : project.instance.path().worktree) ||
+        project.instance.directory() ||
+        paths.cwd,
+    })
+    if (!content) return
+    const normalized = normalizePromptContent(content)
+
+    input.setText(normalized)
+
+    // Update positions for nonTextParts based on their location in new content
+    // Filter out parts whose virtual text was deleted
+    // this handles a case where the user edits the text in the editor
+    // such that the virtual text moves around or is deleted
+    const updatedNonTextParts = nonTextParts
+      .map((part) => {
+        let virtualText = ""
+        if (part.type === "file" && part.source?.text) {
+          virtualText = part.source.text.value
+        } else if (part.type === "agent" && part.source) {
+          virtualText = part.source.value
+        }
+
+        if (!virtualText) return part
+
+        const newStart = normalized.indexOf(virtualText)
+        // if the virtual text is deleted, remove the part
+        if (newStart === -1) return null
+
+        const newEnd = newStart + virtualText.length
+
+        if (part.type === "file" && part.source?.text) {
+          return {
+            ...part,
+            source: {
+              ...part.source,
+              text: {
+                ...part.source.text,
+                start: newStart,
+                end: newEnd,
+              },
+            },
           }
-          if (content?.mime === "text/plain") {
-            await pasteInputText(content.data)
+        }
+
+        if (part.type === "agent" && part.source) {
+          return {
+            ...part,
+            source: {
+              ...part.source,
+              start: newStart,
+              end: newEnd,
+            },
           }
-        },
-      },
-      {
-        title: "Interrupt session",
-        name: "session.interrupt",
-        category: "Session",
-        hidden: true,
-        enabled: status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID)),
-        run: (ctx: CommandContext<Renderable, KeyEvent>) => {
-          if (auto()?.visible) return
-          if (!input.focused) return
-          // TODO: this should be its own command
-          if (store.mode === "shell") {
-            setStore("mode", "normal")
-            return
-          }
-          if (!props.sessionID) return
+        }
 
-          // Terminals can deliver a fast ESC double-press as a single
-          // meta-modified escape event; count it as the confirmed second
-          // press instead of losing it.
-          setStore("interrupt", store.interrupt + (ctx.event.meta ? 2 : 1))
+        return part
+      })
+      .filter((part) => part !== null)
 
-          if (interruptTimer) clearTimeout(interruptTimer)
-          interruptTimer = setTimeout(() => {
-            interruptTimer = undefined
-            setStore("interrupt", 0)
-          }, 5000)
+    setStore("prompt", {
+      input: normalized,
+      // keep only the non-text parts because the text parts were
+      // already expanded inline
+      parts: updatedNonTextParts,
+    })
+    restoreExtmarksFromParts(updatedNonTextParts)
+    input.cursorOffset = Bun.stringWidth(normalized)
+  }
 
-          if (store.interrupt >= 2) {
-            if (interruptTimer) clearTimeout(interruptTimer)
-            interruptTimer = undefined
-            if (stopping()?.sessionID === props.sessionID) return
-            const sessionID = props.sessionID
-            if (status().type === "idle") {
-              local.model.interruptQueued(sessionID)
-              setStore("interrupt", 0)
-              dialog.clear()
-              return
-            }
-            const token = ++cancelAttempt
-            setStopping({
-              sessionID,
-              token,
-              messageID: sync.data.message[sessionID]?.findLast((message) => message.role === "user")?.id,
-            })
-            local.model.interrupt(sessionID)
-            void sdk.client.session.abort({ sessionID }, { throwOnError: true }).catch((error) => {
-              if (disposed || token !== cancelAttempt || props.sessionID !== sessionID) return
-              setStopping(undefined)
-              toast.show({
-                title: "Failed to stop session",
-                message: errorMessage(error) + " · Press esc twice to retry",
-                variant: "error",
-              })
-            })
-            setStore("interrupt", 0)
-          }
-          dialog.clear()
-        },
-      },
-      {
-        title: "Open editor",
-        category: "Session",
-        name: "prompt.editor",
-        slashName: "editor",
-        run: async () => {
-          dialog.clear()
-
-          // replace summarized text parts with the actual text
-          const text = store.prompt.parts
-            .filter((p) => p.type === "text")
-            .reduce((acc, p) => {
-              if (!p.source) return acc
-              return acc.replace(p.source.text.value, p.text)
-            }, store.prompt.input)
-
-          const nonTextParts = store.prompt.parts.filter((p) => p.type !== "text")
-
-          const value = text
-          const content = await openEditor({
-            renderer,
-            value,
-            cwd:
-              (project.instance.path().worktree === "/" ? undefined : project.instance.path().worktree) ||
-              project.instance.directory() ||
-              paths.cwd,
-          })
-          if (!content) return
-          const normalized = normalizePromptContent(content)
-
-          input.setText(normalized)
-
-          // Update positions for nonTextParts based on their location in new content
-          // Filter out parts whose virtual text was deleted
-          // this handles a case where the user edits the text in the editor
-          // such that the virtual text moves around or is deleted
-          const updatedNonTextParts = nonTextParts
-            .map((part) => {
-              let virtualText = ""
-              if (part.type === "file" && part.source?.text) {
-                virtualText = part.source.text.value
-              } else if (part.type === "agent" && part.source) {
-                virtualText = part.source.value
-              }
-
-              if (!virtualText) return part
-
-              const newStart = normalized.indexOf(virtualText)
-              // if the virtual text is deleted, remove the part
-              if (newStart === -1) return null
-
-              const newEnd = newStart + virtualText.length
-
-              if (part.type === "file" && part.source?.text) {
-                return {
-                  ...part,
-                  source: {
-                    ...part.source,
-                    text: {
-                      ...part.source.text,
-                      start: newStart,
-                      end: newEnd,
-                    },
-                  },
-                }
-              }
-
-              if (part.type === "agent" && part.source) {
-                return {
-                  ...part,
-                  source: {
-                    ...part.source,
-                    start: newStart,
-                    end: newEnd,
-                  },
-                }
-              }
-
-              return part
-            })
-            .filter((part) => part !== null)
-
+  function openSkillsDialog() {
+    dialog.replace(() => (
+      <DialogSkill
+        onSelect={(skill) => {
+          input.setText(`/${skill} `)
           setStore("prompt", {
-            input: normalized,
-            // keep only the non-text parts because the text parts were
-            // already expanded inline
-            parts: updatedNonTextParts,
+            input: `/${skill} `,
+            parts: [],
           })
-          restoreExtmarksFromParts(updatedNonTextParts)
-          input.cursorOffset = Bun.stringWidth(normalized)
-        },
+          input.gotoBufferEnd()
+        }}
+      />
+    ))
+  }
+
+  const promptCommands = createMemo(() => [
+    {
+      title: "Restore failed prompt",
+      name: "prompt.restore_failed",
+      category: "Prompt",
+      enabled: Boolean(failedSubmission()),
+      run: () => {
+        const failed = failedSubmission()
+        if (!failed) return
+        if (store.prompt.input || store.prompt.parts.length) stash.push(unwrap(store.prompt))
+        input.setText(failed.input)
+        setStore("prompt", structuredClone(unwrap(failed)))
+        setStore("mode", failed.mode ?? "normal")
+        restoreExtmarksFromParts(failed.parts)
+        setFailedSubmission(undefined)
+        if (props.sessionID) sync.set("failed_submission", props.sessionID, undefined)
+        dialog.clear()
       },
-      {
-        title: "Skills",
-        name: "prompt.skills",
-        category: "Prompt",
-        slashName: "skills",
-        run: () => {
-          dialog.replace(() => (
-            <DialogSkill
-              onSelect={(skill) => {
-                input.setText(`/${skill} `)
-                setStore("prompt", {
-                  input: `/${skill} `,
-                  parts: [],
-                })
-                input.gotoBufferEnd()
-              }}
-            />
-          ))
-        },
+    },
+    {
+      title: "Clear prompt",
+      name: "prompt.clear",
+      category: "Prompt",
+      hidden: true,
+      run: () => {
+        clearPrompt()
+        dialog.clear()
       },
-      {
-        title: "Warp",
-        desc: "Change the workspace for the session",
-        name: "workspace.set",
-        category: "Session",
-        enabled: Flag.GRAPHAGENT_WORKSPACES,
-        slashName: "warp",
-        run: () => {
-          workspace.open()
-        },
+    },
+    {
+      title: "Submit prompt",
+      name: "prompt.submit",
+      category: "Prompt",
+      hidden: true,
+      run: async () => {
+        if (!input.focused) return
+        const handled = await submit()
+        if (!handled) return
+
+        dialog.clear()
       },
-      {
-        title: "Move session",
-        desc: "Move to another project dir",
-        name: "session.move",
-        category: "Session",
-        slashName: "move",
-        run: () => {
-          move.open()
-        },
+    },
+    {
+      title: "Remove editor context",
+      name: "prompt.editor_context.clear",
+      category: "Prompt",
+      enabled: Boolean(editorContext()),
+      run: () => {
+        dismissEditorContext()
+        dialog.clear()
       },
-    ].map((entry) => ({
-      namespace: "palette",
-      ...entry,
-    })),
-  )
+    },
+    {
+      title: "Paste",
+      name: "prompt.paste",
+      category: "Prompt",
+      hidden: true,
+      run: async (ctx: CommandContext<Renderable, KeyEvent>) => {
+        ctx.event.preventDefault()
+        ctx.event.stopPropagation()
+        const content = await clipboard.read?.()
+        if (content?.mime.startsWith("image/")) {
+          await pasteAttachment({
+            filename: "clipboard",
+            mime: content.mime,
+            content: content.data,
+          })
+          return
+        }
+        if (content?.mime === "text/plain") {
+          await pasteInputText(content.data)
+        }
+      },
+    },
+    {
+      title: "Interrupt session",
+      name: "session.interrupt",
+      category: "Session",
+      hidden: true,
+      enabled: status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID)),
+      run: (ctx: CommandContext<Renderable, KeyEvent>) => {
+        if (auto()?.visible) return
+        if (!input.focused) return
+        // TODO: this should be its own command
+        if (store.mode === "shell") {
+          setStore("mode", "normal")
+          return
+        }
+        if (!props.sessionID) return
+
+        // Terminals can deliver a fast ESC double-press as a single
+        // meta-modified escape event; count it as the confirmed second
+        // press instead of losing it.
+        setStore("interrupt", store.interrupt + (ctx.event.meta ? 2 : 1))
+
+        if (interruptTimer) clearTimeout(interruptTimer)
+        interruptTimer = setTimeout(() => {
+          interruptTimer = undefined
+          setStore("interrupt", 0)
+        }, 5000)
+
+        if (store.interrupt >= 2) {
+          if (interruptTimer) clearTimeout(interruptTimer)
+          interruptTimer = undefined
+          if (stopping()?.sessionID === props.sessionID) return
+          const sessionID = props.sessionID
+          if (status().type === "idle") {
+            local.model.interruptQueued(sessionID)
+            setStore("interrupt", 0)
+            dialog.clear()
+            return
+          }
+          const token = ++cancelAttempt
+          setStopping({
+            sessionID,
+            token,
+            messageID: sync.data.message[sessionID]?.findLast((message) => message.role === "user")?.id,
+          })
+          local.model.interrupt(sessionID)
+          void sdk.client.session.abort({ sessionID }, { throwOnError: true }).catch((error) => {
+            if (disposed || token !== cancelAttempt || props.sessionID !== sessionID) return
+            setStopping(undefined)
+            toast.show({
+              title: "Failed to stop session",
+              message: errorMessage(error) + " · Press esc twice to retry",
+              variant: "error",
+            })
+          })
+          setStore("interrupt", 0)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "Open editor",
+      category: "Session",
+      name: "prompt.editor",
+      run: openPromptEditor,
+    },
+    {
+      title: "Skills",
+      name: "prompt.skills",
+      category: "Prompt",
+      run: openSkillsDialog,
+    },
+    {
+      title: "Warp",
+      desc: "Change the workspace for the session",
+      name: "workspace.set",
+      category: "Session",
+      enabled: Flag.GRAPHAGENT_WORKSPACES,
+      run: () => {
+        workspace.open()
+      },
+    },
+    {
+      title: "Move session",
+      desc: "Move to another project dir",
+      name: "session.move",
+      category: "Session",
+      run: () => {
+        move.open()
+      },
+    },
+  ])
 
   useBindings(() => ({
     commands: promptCommands(),
   }))
+
+  onCleanup(commands.setHandler("prompt.editor", openPromptEditor))
+  onCleanup(commands.setHandler("prompt.skills", openSkillsDialog))
+  onCleanup(commands.setHandler("workspace.set", () => workspace.open()))
+  onCleanup(commands.setHandler("session.move", () => move.open()))
+
+  function submitServerCommand(name: string, args: string) {
+    if (!input || input.isDestroyed) return
+    const text = `/${name}${args ? " " + args : ""}`
+    input.setText(text)
+    setStore("prompt", { input: text, parts: [] })
+    input.gotoBufferEnd()
+    void submit()
+  }
+
+  createEffect(() => {
+    const disposers: Array<() => void> = []
+    for (const command of sync.data.command) {
+      const spec = serverCommandSpec(command, (ctx) => submitServerCommand(command.name, ctx.args))
+      if (spec) disposers.push(commands.register(spec))
+    }
+    onCleanup(() => {
+      for (const dispose of disposers) dispose()
+    })
+  })
 
   useBindings(() => ({
     mode: GRAPHAGENT_BASE_MODE,
@@ -824,65 +846,60 @@ export function Prompt(props: PromptProps) {
     )
   }
 
-  const stashCommands = createMemo(() =>
-    [
-      {
-        title: "Stash prompt",
-        name: "prompt.stash",
-        category: "Prompt",
-        enabled: !!store.prompt.input,
-        run: () => {
-          if (!store.prompt.input) return
-          stash.push({
-            input: store.prompt.input,
-            parts: store.prompt.parts,
-          })
-          input.extmarks.clear()
-          input.clear()
-          setStore("prompt", { input: "", parts: [] })
-          setStore("extmarkToPartIndex", new Map())
-          dialog.clear()
-        },
+  const stashCommands = createMemo(() => [
+    {
+      title: "Stash prompt",
+      name: "prompt.stash",
+      category: "Prompt",
+      enabled: !!store.prompt.input,
+      run: () => {
+        if (!store.prompt.input) return
+        stash.push({
+          input: store.prompt.input,
+          parts: store.prompt.parts,
+        })
+        input.extmarks.clear()
+        input.clear()
+        setStore("prompt", { input: "", parts: [] })
+        setStore("extmarkToPartIndex", new Map())
+        dialog.clear()
       },
-      {
-        title: "Stash pop",
-        name: "prompt.stash.pop",
-        category: "Prompt",
-        enabled: stash.list().length > 0,
-        run: () => {
-          const entry = stash.pop()
-          if (entry) {
-            input.setText(entry.input)
-            setStore("prompt", { input: entry.input, parts: entry.parts })
-            restoreExtmarksFromParts(entry.parts)
-            input.gotoBufferEnd()
-          }
-          dialog.clear()
-        },
+    },
+    {
+      title: "Stash pop",
+      name: "prompt.stash.pop",
+      category: "Prompt",
+      enabled: stash.list().length > 0,
+      run: () => {
+        const entry = stash.pop()
+        if (entry) {
+          input.setText(entry.input)
+          setStore("prompt", { input: entry.input, parts: entry.parts })
+          restoreExtmarksFromParts(entry.parts)
+          input.gotoBufferEnd()
+        }
+        dialog.clear()
       },
-      {
-        title: "Stash list",
-        name: "prompt.stash.list",
-        category: "Prompt",
-        enabled: stash.list().length > 0,
-        run: () => {
-          dialog.replace(() => (
-            <DialogStash
-              onSelect={(entry) => {
-                input.setText(entry.input)
-                setStore("prompt", { input: entry.input, parts: entry.parts })
-                restoreExtmarksFromParts(entry.parts)
-                input.gotoBufferEnd()
-              }}
-            />
-          ))
-        },
+    },
+    {
+      title: "Stash list",
+      name: "prompt.stash.list",
+      category: "Prompt",
+      enabled: stash.list().length > 0,
+      run: () => {
+        dialog.replace(() => (
+          <DialogStash
+            onSelect={(entry) => {
+              input.setText(entry.input)
+              setStore("prompt", { input: entry.input, parts: entry.parts })
+              restoreExtmarksFromParts(entry.parts)
+              input.gotoBufferEnd()
+            }}
+          />
+        ))
       },
-    ].map((entry) => ({
-      namespace: "palette",
-      ...entry,
-    })),
-  )
+    },
+  ])
 
   useBindings(() => ({
     commands: stashCommands(),
@@ -1061,9 +1078,19 @@ export function Prompt(props: PromptProps) {
     }
     const agent = local.agent.current()
     if (!agent) return false
-    const trimmed = store.prompt.input.trim()
-    if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
-      void exit()
+    const builtin = resolveSlashInput(commands, commandScope(), store.prompt.input)
+    if (builtin.kind === "builtin") {
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      void commands.run(builtin.spec.id, { args: builtin.args, origin: "slash" }).catch((error) => {
+        toast.show({
+          message: errorMessage(error),
+          variant: "error",
+        })
+      })
+      props.onSubmit?.()
       return true
     }
     const selectedModel = structuredClone(unwrap(local.model.current()))
@@ -1238,6 +1265,8 @@ export function Prompt(props: PromptProps) {
       sessionID = res.data.id
     }
 
+    const submission = resolveSlashInput(commands, commandScope(), inputText)
+
     if (currentMode === "shell") {
       move.startSubmit()
       void sdk.client.session
@@ -1259,17 +1288,9 @@ export function Prompt(props: PromptProps) {
         })
         .catch(failed)
       if (draftUnchanged()) setStore("mode", "normal")
-    } else if (
-      inputText.startsWith("/") &&
-      sync.data.command.some((x) => x.name === inputText.split("\n")[0].split(" ")[0].slice(1))
-    ) {
+    } else if (submission.kind === "server") {
       move.startSubmit()
-      // Parse command from first line, preserve multi-line content in arguments
-      const firstLineEnd = inputText.indexOf("\n")
-      const firstLine = firstLineEnd === -1 ? inputText : inputText.slice(0, firstLineEnd)
-      const [command, ...firstLineArgs] = firstLine.split(" ")
-      const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
-      const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
+      const args = submission.args
 
       sync.set("submission_attempt", sessionID, messageID)
       sync.set("pending_submission", sessionID, messageID)
@@ -1285,7 +1306,7 @@ export function Prompt(props: PromptProps) {
               sessionID,
               messageID,
               hookMode: "interactive",
-              command: command.slice(1),
+              command: submission.name,
               arguments: args,
               agent: agent.name,
               model: `${selectedModel.providerID}/${selectedModel.modelID}`,

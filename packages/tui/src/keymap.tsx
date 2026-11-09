@@ -13,7 +13,7 @@ import {
   formatKeySequence as formatKeySequenceExtra,
 } from "@opentui/keymap/extras"
 import { KeymapProvider, useKeymap, useKeymapSelector, useBindings } from "@opentui/keymap/solid"
-import { createMemo, type Accessor } from "solid-js"
+import { type Accessor } from "solid-js"
 import { useTuiConfig } from "./config"
 import { TuiKeybind } from "./config/keybind"
 
@@ -48,13 +48,6 @@ export { useBindings, useKeymapSelector }
 
 export type OpenTuiKeymap = ReturnType<typeof useKeymap>
 type GraphagentModeStack = ReturnType<typeof createGraphagentModeStack>
-type CommandSlashEntry = {
-  display: string
-  description?: string
-  aliases?: string[]
-  onSelect: () => void
-}
-type Command = ReturnType<OpenTuiKeymap["getCommands"]>[number]
 type BindingLookup = {
   get(command: string): readonly Binding<Renderable, KeyEvent>[]
   gather(name: string, commands: readonly string[]): readonly Binding<Renderable, KeyEvent>[]
@@ -63,10 +56,6 @@ type FormatConfig = { keybinds: BindingLookup }
 type ResolvedKeymapConfig = FormatConfig & { leader_timeout: number }
 
 const modeStacks = new WeakMap<OpenTuiKeymap, GraphagentModeStack>()
-
-function isVisiblePaletteCommand(command: Command) {
-  return command.hidden !== true && command.name !== COMMAND_PALETTE_COMMAND
-}
 
 export function createGraphagentModeStack(keymap: OpenTuiKeymap) {
   keymap.setData(GRAPHAGENT_MODE_KEY, GRAPHAGENT_BASE_MODE)
@@ -286,37 +275,5 @@ export function displaySequence(
   return (
     bindings?.find((binding) => binding.sequence.some((part) => part.tokenName === LEADER_TOKEN))?.sequence ??
     first?.sequence
-  )
-}
-
-export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
-  const keymap = useGraphagentKeymap()
-  const entries = useKeymapSelector((keymap: OpenTuiKeymap) =>
-    keymap.getCommandEntries({
-      visibility: "reachable",
-      namespace: "palette",
-      filter: isVisiblePaletteCommand,
-    }),
-  )
-
-  return createMemo<CommandSlashEntry[]>(() =>
-    entries().flatMap((entry) => {
-      const slashName = entry.command.slashName
-      if (typeof slashName !== "string" || !slashName) return []
-      const slashAliases = entry.command.slashAliases
-      return {
-        display: `/${slashName}`,
-        description:
-          typeof entry.command.desc === "string"
-            ? entry.command.desc
-            : typeof entry.command.title === "string"
-              ? entry.command.title
-              : undefined,
-        aliases: Array.isArray(slashAliases)
-          ? slashAliases.filter((alias): alias is string => typeof alias === "string").map((alias) => `/${alias}`)
-          : undefined,
-        onSelect: () => keymap.dispatchCommand(entry.command.name),
-      }
-    }),
   )
 }
