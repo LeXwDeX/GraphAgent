@@ -35,8 +35,6 @@ import { SDKProvider, useSDK } from "./context/sdk"
 import { SyncProvider, useSync } from "./context/sync"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
-import { DialogStatus } from "./component/dialog-status"
-import { DialogHelp } from "./ui/dialog-help"
 import { DialogSessionList } from "./component/dialog-session-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
@@ -49,8 +47,10 @@ import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
 import { AgentPanel } from "./panel/agent"
+import { HelpPanel } from "./panel/help"
 import { McpPanel } from "./panel/mcp"
 import { ModelPanel } from "./panel/model"
+import { StatusPanel } from "./panel/status"
 import { ThemePanel } from "./panel/theme"
 import { WorkspacesPanel } from "./panel/workspaces"
 import { useDrawer } from "./shell/drawer"
@@ -531,9 +531,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
   const connectProvider = () => dialog.replace(() => <DialogProviderList />)
-  const openStatus = () => dialog.replace(() => <DialogStatus />)
+  const openStatus = () => openPanel("status", () => <StatusPanel />)
   const openThemeList = () => openPanel("theme", () => <ThemePanel />)
-  const openHelp = () => dialog.replace(() => <DialogHelp />)
+  const openHelp = () => openPanel("help", () => <HelpPanel />)
   const openDiff = () => {
     const sessionID =
       route.data.type === "session"

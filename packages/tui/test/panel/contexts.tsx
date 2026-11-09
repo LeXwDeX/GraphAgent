@@ -21,7 +21,7 @@ import { KVProvider } from "../../src/context/kv"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
 import { PanelHost, PanelHostProvider, createPanelHost, type PanelHostApi, type PanelSpec } from "../../src/panel/host"
 import { PromptStashProvider, usePromptStash } from "../../src/component/prompt/stash"
-import { ToastProvider } from "../../src/ui/toast"
+import { ToastProvider, useToast } from "../../src/ui/toast"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { TestTuiContexts } from "../fixture/tui-environment"
@@ -104,6 +104,7 @@ export interface AppPanelTestContext {
   local: ReturnType<typeof useLocal>
   theme: ReturnType<typeof useTheme>
   stash: ReturnType<typeof usePromptStash>
+  toast: ReturnType<typeof useToast>
 }
 
 export interface AppPanelContextsProps extends ParentProps<{
@@ -187,6 +188,7 @@ function AppPanelSetup(
   const local = useLocal()
   const theme = useTheme()
   const stash = usePromptStash()
+  const toast = useToast()
   let seeded = false
 
   createEffect(() => {
@@ -196,7 +198,7 @@ function AppPanelSetup(
     // fixture leaves unset; pin it after the bootstrap so panel assertions do
     // not depend on the host locale.
     setLanguage(props.language ?? "zh-CN")
-    void Promise.resolve(props.setup?.({ sync, project, route, local, theme, stash })).then(() => {
+    void Promise.resolve(props.setup?.({ sync, project, route, local, theme, stash, toast })).then(() => {
       props.onReady?.()
     })
   })

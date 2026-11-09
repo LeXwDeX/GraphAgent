@@ -38,6 +38,8 @@ export interface DetailPanelProps<T = unknown> {
   body?: string | JSX.Element
   /** Single-line input, for example an API key or OAuth code. */
   input?: { placeholder?: string; secret?: boolean; onSubmit(value: string): void }
+  /** Overrides the submit hint label when `onActivate` is provided. */
+  activateLabel?: string
   /** Single-letter action hints from the owning panel. */
   hints: readonly PanelHint[]
   tone?: "default" | "warning"
@@ -188,7 +190,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
         result.push({ key: "panel.next", label: t("panel.hint.next") })
       }
       if (tabs().length > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
-      if (props.onActivate) result.push({ key: "panel.submit", label: t("panel.hint.activate") })
+      if (props.onActivate) result.push({ key: "panel.submit", label: props.activateLabel ?? t("panel.hint.activate") })
     }
     result.push(...props.hints)
     return result

@@ -75,7 +75,8 @@ import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
 import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
-import { DialogExportOptions } from "../../ui/dialog-export-options"
+import { showExportOptions } from "../../panel/export"
+import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import * as Model from "../../util/model"
 import { formatTranscript } from "../../util/transcript"
 import { sessionEpilogue } from "../../util/presentation"
@@ -405,6 +406,7 @@ export function Main() {
 
   const keymap = useGraphagentKeymap()
   const dialog = useDialog()
+  const bottomZone = useBottomZoneOptional()
   const renderer = useRenderer()
 
   const attention = createSessionAttention({
@@ -938,14 +940,17 @@ export function Main() {
 
           const defaultFilename = `session-${sessionData.id.slice(0, 8)}.md`
 
-          const options = await DialogExportOptions.show(
-            dialog,
-            defaultFilename,
-            showThinking(),
-            showDetails(),
-            showAssistantMetadata(),
-            false,
-          )
+          const options = bottomZone
+            ? await showExportOptions({
+                host: bottomZone.host,
+                dialog,
+                defaultFilename,
+                defaultThinking: showThinking(),
+                defaultToolDetails: showDetails(),
+                defaultAssistantMetadata: showAssistantMetadata(),
+                defaultOpenWithoutSaving: false,
+              })
+            : null
 
           if (options === null) return
 

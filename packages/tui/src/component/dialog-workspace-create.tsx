@@ -9,7 +9,8 @@ import { errorMessage } from "../util/error"
 import { useSDK, locationHeaders } from "../context/sdk"
 import { useToast } from "../ui/toast"
 import { DialogAlert } from "../ui/dialog-alert"
-import { DialogWorkspaceFileChanges } from "./dialog-workspace-file-changes"
+import { showWorkspaceFileChanges } from "../panel/workspace-file-changes"
+import type { PanelHostApi } from "../panel/host"
 
 type Adapter = ExperimentalWorkspaceAdapterListResponse[number]
 
@@ -168,6 +169,7 @@ export async function warpWorkspaceSession(input: {
 
 export async function confirmWorkspaceFileChanges(input: {
   dialog: ReturnType<typeof useDialog>
+  host: PanelHostApi
   sdk: ReturnType<typeof useSDK>
   sourceWorkspaceID?: string
 }) {
@@ -175,7 +177,7 @@ export async function confirmWorkspaceFileChanges(input: {
     .status({ headers: locationHeaders({ workspace: input.sourceWorkspaceID }) })
     .catch(() => undefined)
   const fileChangeChoice = status?.data?.length
-    ? await DialogWorkspaceFileChanges.show(input.dialog, status.data)
+    ? await showWorkspaceFileChanges({ host: input.host, dialog: input.dialog, files: status.data })
     : "no"
   if (!fileChangeChoice) return
   return fileChangeChoice === "yes"

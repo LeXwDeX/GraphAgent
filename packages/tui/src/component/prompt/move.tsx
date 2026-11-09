@@ -7,7 +7,8 @@ import { useSDK, locationHeaders } from "../../context/sdk"
 import { useSync } from "../../context/sync"
 import { useToast } from "../../ui/toast"
 import { DialogMoveSession, type MoveSessionSelection } from "../dialog-move-session"
-import { DialogWorkspaceFileChanges } from "../dialog-workspace-file-changes"
+import { showWorkspaceFileChanges } from "../../panel/workspace-file-changes"
+import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import { useHomeSessionDestination } from "../../routes/home/session-destination"
 import { useProject } from "../../context/project"
 
@@ -17,6 +18,7 @@ function moveReminderText(directory: string) {
 
 export function usePromptMove(input: { projectID: () => string | undefined; sessionID: () => string | undefined }) {
   const dialog = useDialog()
+  const bottomZone = useBottomZoneOptional()
   const sdk = useSDK()
   const sync = useSync()
   const toast = useToast()
@@ -118,7 +120,10 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
     const status = await sdk.client.vcs
       .status({ headers: locationHeaders({ directory: session?.directory }) })
       .catch(() => undefined)
-    const choice = status?.data?.length ? await DialogWorkspaceFileChanges.show(dialog, status.data) : "no"
+    const choice =
+      status?.data?.length && bottomZone
+        ? await showWorkspaceFileChanges({ host: bottomZone.host, dialog, files: status.data })
+        : "no"
     if (!choice) return
     dialog.clear()
     const directory = selection.type === "new" ? await create(sessionContext(sessionID)) : selection.directory

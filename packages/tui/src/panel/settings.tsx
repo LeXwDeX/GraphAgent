@@ -80,13 +80,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const activeTabId = () => props.activeTab ?? internalTab() ?? props.tabs[0]?.id
   const currentTab = () => props.tabs.find((tab) => tab.id === activeTabId()) ?? props.tabs[0]
+  // Track the id alone: rows are rebuilt when a setting changes, and observing
+  // the tab object would reset the selection after every toggle.
+  const activeTabKey = createMemo(() => currentTab()?.id)
   const rows = () => currentTab()?.rows ?? []
   const selectedRow = () => rows()[selected()]
   const valueBudget = () => Math.max(4, Math.floor((dimensions().width - 8) / 2))
 
   createEffect(
     on(
-      () => currentTab()?.id,
+      activeTabKey,
       () => {
         setSelected(0)
         setEditing(undefined)
