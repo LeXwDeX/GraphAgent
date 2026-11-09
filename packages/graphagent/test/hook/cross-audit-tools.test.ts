@@ -9,6 +9,7 @@ import { SettingsHook } from "@/hook"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { ToolRegistry, type ToolEntry } from "@/tool/registry"
+import type { DirectTool } from "@/tool/pipeline"
 import { MCP } from "@/mcp"
 import { Permission } from "@/permission"
 import { Truncate } from "@/tool/truncate"
@@ -26,7 +27,7 @@ import { QuestionTool } from "@/tool/question"
 import { Question } from "@/question"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { MCP_RESOURCE_DEFINITIONS, MCP_RESOURCE_ORDER } from "@/tool/mcp-resource"
-import { builtinEntry, mcpEntries } from "../fixture/tool-registry"
+import { builtinEntry, directShellEntry, mcpEntries } from "../fixture/tool-registry"
 
 const hookLayer = SettingsHook.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
@@ -69,8 +70,10 @@ const layers = Layer.mergeAll(
   Layer.mock(Truncate.Service, { output: (text: string) => Effect.succeed({ content: text, truncated: false }) }),
   Layer.mock(ToolRegistry.Service, {
     tools: () => Effect.succeed([writeDefinition, ...extraDefinitions]),
-    resolve: () =>
+    resolve: (input: { directTool?: DirectTool }) =>
       Effect.sync(() => {
+        // The real registry returns only the explicit shell entry for a direct tool.
+        if (input.directTool) return [directShellEntry(input.directTool)]
         const entries: ToolEntry[] = [writeDefinition, ...extraDefinitions].map((definition) =>
           builtinEntry(definition),
         )
@@ -97,8 +100,9 @@ const layers = Layer.mergeAll(
   }),
 )
 const it = testEffect(layers)
-const resolve = (id: any, dir: string) =>
+const resolve = (id: any, dir: string, directTool?: DirectTool) =>
   SessionTools.resolve({
+    ...(directTool ? { directTool } : {}),
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
     agent: { name: "build", permission: [], options: {} } as any,
     model: ProviderTest.model(),
@@ -128,24 +132,139 @@ const exit2Hook = {
   command: hookCommand(`process.stderr.write("CROSS_AUDIT_EXIT2"); process.exit(2)`),
 }
 
-describe("PreToolUse defer that the host cannot honor", () => {
-  it.instance("native tool: an unusable defer must not erase a sibling exit-2 rejection", () =>
-    Effect.gen(function* () {
-      const instance = yield* TestInstance
-      const store = yield* SessionHooks.Service
-      const id = SessionID.descending()
-      const target = path.join(instance.directory, "defer-native.txt")
-      yield* store.add(id, { event: "PreToolUse", hooks: [deferHook, exit2Hook] })
-      const tools = yield* resolve(id, instance.directory)
-      const result = yield* Effect.promise(() =>
-        Promise.resolve(tools.write.execute!({ filePath: target, content: "x" }, options("defer-native"))),
-      )
-      expect(JSON.stringify(result)).toContain("CROSS_AUDIT_EXIT2")
-      expect(yield* Effect.promise(() => Bun.file(target).exists())).toBe(false)
-    }),
-  )
+type PreparedSource = {
+  tools: Record<string, any>
+  toolName: string
+  args: Record<string, unknown>
+  executed: () => Effect.Effect<boolean>
+  cleanup?: Effect.Effect<void>
+}
 
-  it.instance("native tool: an unusable defer alone is ignored and the tool runs", () =>
+type DeferSourceCase = {
+  name: string
+  prepare: (id: any, directory: string) => Effect.Effect<PreparedSource, never, any>
+}
+
+// Every source kind reaches the same host hook pipeline. Drive the shared
+// defer/exit-2 assertions from one table instead of duplicating the body.
+const deferSourceCases: DeferSourceCase[] = [
+  {
+    name: "built-in tool",
+    prepare: (id, directory) => {
+      const target = path.join(directory, "defer-native.txt")
+      return resolve(id, directory).pipe(
+        Effect.map((tools) => ({
+          tools,
+          toolName: "write",
+          args: { filePath: target, content: "x" },
+          executed: () => Effect.promise(() => Bun.file(target).exists()),
+        })),
+      )
+    },
+  },
+  {
+    name: "MCP tool",
+    prepare: (id, directory) =>
+      Effect.gen(function* () {
+        let ran = false
+        mcpTools = {
+          fixture_probe: tool({
+            inputSchema: jsonSchema({ type: "object", properties: {} }),
+            execute: async () => {
+              ran = true
+              return { content: [{ type: "text" as const, text: "MCP_RAN" }] }
+            },
+          }),
+        }
+        const tools = yield* resolve(id, directory)
+        return {
+          tools,
+          toolName: "fixture_probe",
+          args: {},
+          executed: () => Effect.sync(() => ran),
+          cleanup: Effect.sync(() => {
+            mcpTools = {}
+          }),
+        }
+      }),
+  },
+  {
+    name: "MCP resource tool",
+    prepare: (id, directory) =>
+      Effect.gen(function* () {
+        let listed = false
+        mcpClients = {
+          fixture: {
+            getServerCapabilities: () => ({ resources: {} }),
+            listResources: async () => {
+              listed = true
+              return { resources: [] }
+            },
+          },
+        }
+        const tools = yield* resolve(id, directory)
+        return {
+          tools,
+          toolName: "list_mcp_resources",
+          args: {},
+          executed: () => Effect.sync(() => listed),
+          cleanup: Effect.sync(() => {
+            mcpClients = {}
+          }),
+        }
+      }),
+  },
+  {
+    name: "direct-shell tool",
+    prepare: (id, directory) =>
+      Effect.gen(function* () {
+        const target = path.join(directory, "defer-direct-shell.txt")
+        const directTool: DirectTool = {
+          id: "bash",
+          description: "Fixture explicit user shell command",
+          parameters: Schema.Struct({ command: Schema.String }),
+          execute: () =>
+            Effect.promise(async () => {
+              await fs.writeFile(target, "x")
+              return { title: "bash", metadata: {}, output: "DIRECT_SHELL_RAN" }
+            }),
+        }
+        const tools = yield* resolve(id, directory, directTool)
+        return {
+          tools,
+          toolName: "bash",
+          args: { command: "true" },
+          executed: () => Effect.promise(() => Bun.file(target).exists()),
+        }
+      }),
+  },
+]
+
+describe("PreToolUse defer that the host cannot honor", () => {
+  for (const source of deferSourceCases) {
+    it.instance(`${source.name}: an unusable defer must not erase a sibling exit-2 rejection`, () =>
+      Effect.gen(function* () {
+        const instance = yield* TestInstance
+        const store = yield* SessionHooks.Service
+        const id = SessionID.descending()
+        yield* store.add(id, { event: "PreToolUse", hooks: [deferHook, exit2Hook] })
+        const prepared = yield* source.prepare(id, instance.directory)
+        if (prepared.cleanup) yield* Effect.addFinalizer(() => prepared.cleanup!)
+        const result = yield* Effect.promise(() =>
+          Promise.resolve(
+            prepared.tools[prepared.toolName].execute!(
+              prepared.args,
+              options(`defer-${source.name.replaceAll(/[^a-z0-9]+/gi, "-")}`),
+            ),
+          ),
+        )
+        expect(JSON.stringify(result)).toContain("CROSS_AUDIT_EXIT2")
+        expect(yield* prepared.executed()).toBe(false)
+      }),
+    )
+  }
+
+  it.instance("built-in tool: an unusable defer alone is ignored and the tool runs", () =>
     Effect.gen(function* () {
       const instance = yield* TestInstance
       const store = yield* SessionHooks.Service
@@ -158,66 +277,6 @@ describe("PreToolUse defer that the host cannot honor", () => {
       )
       expect(JSON.stringify(result)).toContain("WRITE_COMPLETE")
       expect(yield* Effect.promise(() => Bun.file(target).exists())).toBe(true)
-    }),
-  )
-
-  it.instance("MCP tool: an unusable defer must not erase a sibling exit-2 rejection", () =>
-    Effect.gen(function* () {
-      const instance = yield* TestInstance
-      const store = yield* SessionHooks.Service
-      const id = SessionID.descending()
-      let ran = false
-      mcpTools = {
-        fixture_probe: tool({
-          inputSchema: jsonSchema({ type: "object", properties: {} }),
-          execute: async () => {
-            ran = true
-            return { content: [{ type: "text" as const, text: "MCP_RAN" }] }
-          },
-        }),
-      }
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          mcpTools = {}
-        }),
-      )
-      yield* store.add(id, { event: "PreToolUse", hooks: [deferHook, exit2Hook] })
-      const tools = yield* resolve(id, instance.directory)
-      const result = yield* Effect.promise(() =>
-        Promise.resolve(tools.fixture_probe.execute!({}, options("defer-mcp"))),
-      )
-      expect(JSON.stringify(result)).toContain("CROSS_AUDIT_EXIT2")
-      expect(ran).toBe(false)
-    }),
-  )
-
-  it.instance("MCP resource tool: an unusable defer must not erase a sibling exit-2 rejection", () =>
-    Effect.gen(function* () {
-      const instance = yield* TestInstance
-      const store = yield* SessionHooks.Service
-      const id = SessionID.descending()
-      let listed = false
-      mcpClients = {
-        fixture: {
-          getServerCapabilities: () => ({ resources: {} }),
-          listResources: async () => {
-            listed = true
-            return { resources: [] }
-          },
-        },
-      }
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          mcpClients = {}
-        }),
-      )
-      yield* store.add(id, { event: "PreToolUse", hooks: [deferHook, exit2Hook] })
-      const tools = yield* resolve(id, instance.directory)
-      const result = yield* Effect.promise(() =>
-        Promise.resolve(tools.list_mcp_resources.execute!({}, options("defer-resource"))),
-      )
-      expect(JSON.stringify(result)).toContain("CROSS_AUDIT_EXIT2")
-      expect(listed).toBe(false)
     }),
   )
 })

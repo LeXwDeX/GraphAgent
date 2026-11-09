@@ -26,7 +26,7 @@ export const BUILTIN_SKILLS: readonly BuiltinSkill[] = [
   {
     name: "configure-hooks",
     description:
-      "Use when the user wants opencode to react to a tool or lifecycle event, run a background check, or poll for a result and resume the same idle conversation. Also use for questions about hooks, hooks.json, or migrating Claude Code hooks. Explains the 33 recognized events and local applicability, 5 handler types, matching, configuration scopes, input/output protocols, synchronous decisions, async/asyncRewake continuation, and how to verify execution. Load this skill before creating or changing a lifecycle hook.",
+      "Use when the user wants opencode to react to a tool or lifecycle event, run a background check, or poll for a result and resume the same idle conversation. Also use for questions about hooks, hooks.json, or migrating Claude Code hooks. Explains the 31 supported events and local applicability, 5 handler types, matching, configuration scopes, input/output protocols, synchronous decisions, async/asyncRewake continuation, and how to verify execution. Load this skill before creating or changing a lifecycle hook.",
     content: configureHooksContent,
   },
   {

@@ -41,19 +41,27 @@ describe("hook event trigger coverage", () => {
     const migrate = readFileSync(path.join(SRC_ROOT, "command/template/import-claude-hooks.txt"), "utf8")
     const skill = readFileSync(path.join(SRC_ROOT, "skill/builtin/configure-hooks.md"), "utf8")
     const description = BUILTIN_SKILLS.find((item) => item.name === "configure-hooks")?.description ?? ""
-    expect(create).toContain(`${VALID_HOOK_EVENTS.size}-event list`)
-    expect(create).toContain(`all ${VALID_HOOK_EVENTS.size} events`)
+    // These two names are accepted for Claude-import compatibility but have no
+    // local trigger, so the authoring skill documents only the actionable set.
+    const inactive = new Set(["PermissionDenied", "TeammateIdle"])
+    const actionable = [...VALID_HOOK_EVENTS].filter((event) => !inactive.has(event))
+    expect(create).toContain("event list in `configure-hooks`")
     expect(migrate).toContain(`${VALID_HOOK_EVENTS.size} events total`)
-    expect(skill).toContain(`Events (${VALID_HOOK_EVENTS.size} total)`)
-    expect(description).toContain(`the ${VALID_HOOK_EVENTS.size} recognized events`)
+    expect(migrate).toContain(`${actionable.length} have a local trigger`)
+    expect(skill).toContain(`Events (${actionable.length} total)`)
+    expect(description).toContain(`the ${actionable.length} supported events`)
     for (const event of VALID_HOOK_EVENTS) {
       expect(create).toContain(event)
+    }
+    for (const event of actionable) {
       expect(skill).toContain(event)
+    }
+    for (const event of inactive) {
+      expect(skill).not.toContain(event)
     }
     expect(create).toContain("Matchers are case-sensitive")
     expect(skill).toContain("Matchers are case-sensitive")
     expect(migrate).toContain("do not silently discard")
-    expect(skill).toContain("no local teammate-idle producer")
   })
 
   const haystack = [...sourceFiles(SRC_ROOT), ...sourceFiles(path.resolve(SRC_ROOT, "../../core/src"))]

@@ -84,10 +84,9 @@ describe("graphagent mcp add (non-interactive subprocess)", () => {
         const project = path.join(home, "project")
         yield* Effect.promise(() => mkdir(project, { recursive: true }))
 
-        const result = yield* opencode.spawn(
-          ["mcp", "add", "project-server", "--url", "https://example.com/project"],
-          { cwd: project },
-        )
+        const result = yield* opencode.spawn(["mcp", "add", "project-server", "--url", "https://example.com/project"], {
+          cwd: project,
+        })
         opencode.expectExit(result, 0)
 
         const config = yield* readJson(path.join(project, ".agents", "mcp.json"))
@@ -99,6 +98,23 @@ describe("graphagent mcp add (non-interactive subprocess)", () => {
           Bun.file(path.join(home, ".config", "graphagent", "mcp.json")).exists(),
         )
         expect(globalExists).toBe(false)
+      }),
+    60_000,
+  )
+
+  cliIt.concurrent(
+    "refuses a project-layer write when the project root resolves to $HOME",
+    ({ home, opencode }) =>
+      Effect.gen(function* () {
+        const result = yield* opencode.spawn(["mcp", "add", "home-server", "--url", "https://example.com/home"], {
+          cwd: home,
+        })
+
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toContain("Refusing to write project files")
+        expect(result.stderr).toContain("resolves to $HOME")
+        const projectFile = yield* Effect.promise(() => Bun.file(path.join(home, ".agents", "mcp.json")).exists())
+        expect(projectFile).toBe(false)
       }),
     60_000,
   )

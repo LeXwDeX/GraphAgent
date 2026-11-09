@@ -1,4 +1,4 @@
-<!-- Built-in skill registered in packages/core/src/plugin/skill.ts. -->
+<!-- Built-in skill registered in packages/graphagent/src/skill/builtin/index.ts. -->
 
 # Configuring OpenCode hooks
 
@@ -23,14 +23,12 @@ Workspace trust gating and the built-in `/trust` command have been removed. Hook
 }
 ```
 
-## Events (33 total)
-
-These are recognized protocol names. An event requires its corresponding product operation: the host does not create a teammate system or permission classifier merely to emit a hook. `TeammateIdle` has no local teammate-idle producer; `PermissionDenied` applies to an automatic classifier denial, and this product has no such classifier. Do not reinterpret a native permission-rule denial as that event. Preserve and report these applicability limits when importing.
+## Events (31 total)
 
 | Events                                            | Boundary and principal input                                                                                          | Matcher                |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ---------------------- |
 | `PreToolUse`, `PostToolUse`, `PostToolUseFailure` | Before execution, after success, after failure; `tool_name`, `tool_input`, `tool_use_id`, plus result/error           | Tool name              |
-| `PermissionRequest`, `PermissionDenied`           | Permission dialog admission / classifier denial                                                                       | Tool name              |
+| `PermissionRequest`                               | Permission dialog admission                                                                                           | Tool name              |
 | `PostToolBatch`                                   | A completed provider batch; `tool_calls`                                                                              | None                   |
 | `UserPromptSubmit`                                | User input before admission; `prompt`                                                                                 | None                   |
 | `UserPromptExpansion`                             | Expanded slash-command content; command name/arguments/content                                                        | Command name           |
@@ -40,7 +38,6 @@ These are recognized protocol names. An event requires its corresponding product
 | `SubagentStart`, `SubagentStop`                   | Task or DAG worker lifecycle; parent `session_id`, child `agent_id`, `agent_type`                                     | Agent type             |
 | `PreCompact`, `PostCompact`                       | Before compaction / after successful summary                                                                          | `trigger`              |
 | `TaskCreated`, `TaskCompleted`                    | Actual todo/task creation and completion                                                                              | None                   |
-| `TeammateIdle`                                    | No corresponding teammate-idle business operation                                                                     | None                   |
 | `Elicitation`, `ElicitationResult`                | MCP request / response; server, request and action/content                                                            | Server name            |
 | `Setup`                                           | Local initialization or maintenance                                                                                   | `trigger`              |
 | `Notification`                                    | Host notification                                                                                                     | Notification type      |
@@ -54,11 +51,9 @@ These are recognized protocol names. An event requires its corresponding product
 
 Matchers are case-sensitive: exact names, pipe-separated alternatives, or regular expressions. Empty/omitted/`*` matches every target. Built-in tool matchers use Claude names such as `Bash`, `Read`, `Write`, and `Agent`, independently of the input naming adapter. A matcher is ignored when the event has no target. For a custom model with no canonical Claude name, model-switch hooks run without matcher filtering.
 
-All event inputs include `hook_event_name`, `session_id`, `cwd`, and a materialized JSONL `transcript_path` when a session exists. The file reflects actual persisted history, including native V2 history; a newly created session can have an empty transcript. When a session exists, the envelope also carries `prompt_id` (the persisted user message id of the prompt being processed; absent before the first user input) and `scratchpad_dir` (a lazily created, session-hashed `0700` directory under `<tmp>/hooks/scratchpad`, removed at session end). Tool-use-context events (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied`, `Stop`, `StopFailure`, `SubagentStop`) report `effort: { "level": "low" | "medium" | "high" | "xhigh" | "max" }` when the prompt's model variant maps onto that scale. Permission mode and agent metadata are included when available. `inputFormat: "claude-code"` is available on every handler and adapts built-in tool names and argument keys; native OpenCode naming remains the default. It does not translate an arbitrary custom tool schema.
+All event inputs include `hook_event_name`, `session_id`, `cwd`, and a materialized JSONL `transcript_path` when a session exists. The file reflects actual persisted history, including native V2 history; a newly created session can have an empty transcript. When a session exists, the envelope also carries `prompt_id` (the persisted user message id of the prompt being processed; absent before the first user input) and `scratchpad_dir` (a lazily created, session-hashed `0700` directory under `<tmp>/hooks/scratchpad`, removed at session end). Tool-use-context events (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Stop`, `StopFailure`, `SubagentStop`) report `effort: { "level": "low" | "medium" | "high" | "xhigh" | "max" }` when the prompt's model variant maps onto that scale. Permission mode and agent metadata are included when available. `inputFormat: "claude-code"` is available on every handler and adapts built-in tool names and argument keys; native OpenCode naming remains the default. It does not translate an arbitrary custom tool schema.
 
 Under `inputFormat: "claude-code"`, `PostToolUse.tool_response` exposes Bash `stdout`/`stderr`/`interrupted`, Read `file: { filePath, content }`, and Edit/Write/patch `filePath`/`structuredPatch`/`success`. Bash's combined capture is exposed as `stdout`, with empty `stderr`; the host cannot reconstruct separate streams. Text Read content is the returned file slice. Structured patches contain unified-diff hunks, or an empty list when no diff is available. Native mode keeps the original metadata payload unchanged. `apply_patch`, `patch`, and `multiedit` match both `Edit` and `Write` as well as their native names; Claude input includes the first `file_path` and all affected `file_paths` (including move destinations).
-
-`PermissionDenied` and `TeammateIdle` remain accepted for configuration compatibility but have no runtime producer in this build. Loading them logs a warning and marks them inactive in the Active Hooks list.
 
 ## Handler configuration
 

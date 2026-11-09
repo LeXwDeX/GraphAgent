@@ -4,6 +4,7 @@ import { McpCatalog } from "@/mcp/catalog"
 import { MCP_RESOURCE_DEFINITIONS, MCP_RESOURCE_ORDER, type McpResourceOp } from "@/tool/mcp-resource"
 import type { ToolEntry } from "@/tool/registry"
 import { ToolJsonSchema } from "@/tool/json-schema"
+import type { DirectShellEntry, DirectTool } from "@/tool/pipeline"
 import type { Tool } from "@/tool/tool"
 
 const emptyObjectSchema: JSONSchema7 = { type: "object", properties: {} }
@@ -32,6 +33,28 @@ export function builtinEntry(
     description: definition.description,
     jsonSchema,
     definition,
+  }
+}
+
+/** Registry entry for an explicit shell command; mirrors `ToolRegistry.resolve`'s direct-tool branch. */
+export function directShellEntry(definition: DirectTool): DirectShellEntry {
+  let jsonSchema = definition.jsonSchema
+  if (jsonSchema === undefined) {
+    try {
+      jsonSchema = ToolJsonSchema.fromSchema(definition.parameters)
+    } catch {
+      jsonSchema = emptyObjectSchema
+    }
+  }
+  return {
+    id: definition.id,
+    source: { kind: "direct-shell" },
+    // The command text decides the effect, so the registry never trusts a
+    // declared effect on a direct-shell definition.
+    effects: "unknown",
+    description: definition.description,
+    jsonSchema,
+    definition: definition.jsonSchema ? definition : { ...definition, jsonSchema },
   }
 }
 

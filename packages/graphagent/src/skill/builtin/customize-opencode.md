@@ -1,6 +1,6 @@
 <!--
   Built-in skill. Name and description are registered in code at
-  packages/core/src/plugin/skill.ts. The body below becomes the
+  packages/graphagent/src/skill/builtin/index.ts. The body below becomes the
   skill's content.
 -->
 
@@ -36,17 +36,19 @@ already-loaded config until then.
 
 ## Where files live
 
-| Scope                         | Path                                                                                                                      |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Scope                         | Path                                                                                                                          |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Project config                | `./graphagent.json`, `./graphagent.jsonc`, or `.agents/graphagent.json` (opencode walks up from the cwd to the worktree root) |
-| Global config                 | `~/.config/graphagent/graphagent.json` or `~/.config/graphagent/graphagent.jsonc` (NOT `~/.agents/`)                            |
-| Project agents                | `.agents/agent/<name>.md` or `.agents/agents/<name>.md`                                                               |
-| Global agents                 | `~/.config/graphagent/agent(s)/<name>.md`                                                                                   |
-| Project commands              | `.agents/command/<name>.md` or `.agents/commands/<name>.md`                                                           |
-| Global commands               | `~/.config/graphagent/command(s)/<name>.md`                                                                                 |
-| Project skills                | `.agents/skill(s)/<name>/SKILL.md`                                                                                      |
-| Global skills                 | `~/.config/graphagent/skill(s)/<name>/SKILL.md`                                                                             |
-| External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                       |
+| Global config                 | `~/.config/graphagent/graphagent.json` or `~/.config/graphagent/graphagent.jsonc` (NOT `~/.agents/`)                          |
+| Project MCP servers           | `.agents/mcp.json`                                                                                                            |
+| Global MCP servers            | `~/.config/graphagent/mcp.json` (`$GRAPHAGENT_CONFIG_DIR/mcp.json` when set)                                                  |
+| Project agents                | `.agents/agent/<name>.md` or `.agents/agents/<name>.md`                                                                       |
+| Global agents                 | `~/.config/graphagent/agent(s)/<name>.md`                                                                                     |
+| Project commands              | `.agents/command/<name>.md` or `.agents/commands/<name>.md`                                                                   |
+| Global commands               | `~/.config/graphagent/command(s)/<name>.md`                                                                                   |
+| Project skills                | `.agents/skill(s)/<name>/SKILL.md`                                                                                            |
+| Global skills                 | `~/.config/graphagent/skill(s)/<name>/SKILL.md`                                                                               |
+| External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                            |
 
 Configs from each scope are deep-merged. Project overrides global. Unknown
 top-level keys in `graphagent.json` are rejected with `ConfigInvalidError`.
@@ -106,20 +108,6 @@ Every field is optional.
   "disabled_providers": ["openai"],
   "enabled_providers": ["anthropic"],
 
-  "mcp": {
-    "playwright": {
-      "type": "local",
-      "command": ["npx", "-y", "@playwright/mcp"],
-      "enabled": true,
-      "environment": {}
-    },
-    "remote-thing": {
-      "type": "remote",
-      "url": "https://...",
-      "headers": { "Authorization": "Bearer ..." }
-    }
-  },
-
   "permission": {
     "edit": "deny",
     "bash": { "git *": "allow", "*": "ask" }
@@ -129,8 +117,7 @@ Every field is optional.
   "lsp": false,
 
   "experimental": {
-    "primary_tools": ["edit"],
-    "mcp_timeout": 30000
+    "primary_tools": ["edit"]
   },
 
   "tool_output": { "max_lines": 200, "max_bytes": 8192 },
@@ -146,7 +133,7 @@ Shape notes worth being explicit about:
 - `references` is an object keyed by alias. Each value is a local path, Git repository, or string shorthand.
 - `agent` is an object keyed by agent name, not an array.
 - `command` is an object keyed by command name, not an array.
-- `mcp[name].command` is an array of strings, never a single string. `type` is required.
+- MCP servers do not belong in this file: put them in `mcp.json` under a top-level `mcpServers` map (see MCP servers).
 - `permission` is either a string action or an object keyed by tool name.
 
 ## Skills
@@ -298,34 +285,48 @@ model: anthropic/claude-sonnet-4-6
 
 ## MCP servers
 
-`mcp:` is an object keyed by server name. Each server is discriminated by
-`type`:
+MCP servers live in their own `mcp.json`, not in `graphagent.json`. A main
+config that still contains an `mcp` key is rejected with an error pointing at
+this file. The document accepts one top-level key, `mcpServers`, plus an
+optional `$schema`:
 
 ```json
 {
-  "mcp": {
+  "mcpServers": {
     "playwright": {
       "type": "local",
       "command": ["npx", "-y", "@playwright/mcp"],
-      "enabled": true,
-      "environment": { "BROWSER": "chromium" }
+      "cwd": ".",
+      "environment": { "BROWSER": "chromium" },
+      "timeout": { "startup": 30000, "request": 30000 }
     },
     "github": {
       "type": "remote",
       "url": "https://...",
-      "enabled": true,
-      "headers": { "Authorization": "Bearer {env:GITHUB_TOKEN}" }
-    },
-    "old-server": { "enabled": false }
+      "headers": { "Authorization": "Bearer ..." },
+      "disabled": false
+    }
   }
 }
 ```
 
-`command` is an array of strings. `environment` sets environment variables for
-a local MCP server. `type` is required. Use `enabled: false` to
-disable a server inherited from a parent config. String values such as header
-tokens support `{env:VAR}` interpolation (and `{file:path}`); the shell-style
-`${VAR}` is not substituted.
+- Project layer: `.agents/mcp.json`; user layer:
+  `~/.config/graphagent/mcp.json` (`$GRAPHAGENT_CONFIG_DIR/mcp.json` when set).
+  The user file loads first, and a same-name project entry replaces the whole
+  user entry; there is no field-level merge. `$HOME/.agents/mcp.json` is not
+  read as a project layer.
+- `type` is required and is `"local"` or `"remote"`.
+- Local: `command` is an array of strings; optional `cwd`, `environment`,
+  `disabled`, and `timeout`.
+- Remote: `url` is required; optional `headers`, `oauth` (an object, or `false`
+  to disable OAuth), `disabled`, and `timeout`.
+- `timeout.startup` and `timeout.request` are milliseconds and default to
+  30000 each.
+- `disabled: true` turns a server off. The old `enabled` field is rejected.
+- `protocol` is rejected; protocol negotiation is automatic. The removed
+  `experimental.mcp_timeout` is replaced by per-server `timeout.request`.
+- MCP entries are not interpolated: `{env:VAR}`, `{file:path}`, and `${VAR}`
+  remain literal text.
 
 ## Permissions
 

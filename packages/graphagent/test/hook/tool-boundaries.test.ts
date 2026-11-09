@@ -38,7 +38,8 @@ import { Instruction } from "@/session/instruction"
 import { LSP } from "@/lsp/lsp"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { claudeHookCommand, nativeHookCommand, hookCommand } from "../fixture/claude-hook"
-import { builtinEntry, mcpEntries, mcpResourceEntries } from "../fixture/tool-registry"
+import { builtinEntry, directShellEntry, mcpEntries, mcpResourceEntries } from "../fixture/tool-registry"
+import type { DirectTool } from "@/tool/pipeline"
 
 const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'"
 const jsonCommand = (json: unknown) => "printf '%s' " + quote(JSON.stringify(json))
@@ -69,8 +70,10 @@ const layers = Layer.mergeAll(
     tools: () => Effect.succeed([writeDefinition]),
     // Resolve reads MCP tools from the runtime service so tests that override
     // MCP.Service per case receive their tools through the registry entries.
-    resolve: (() =>
+    resolve: ((input: { directTool?: DirectTool }) =>
       Effect.gen(function* () {
+        // The real registry returns only the explicit shell entry for a direct tool.
+        if (input.directTool) return [directShellEntry(input.directTool)]
         const mcp = yield* MCP.Service
         const entries: ToolEntry[] = [builtinEntry(writeDefinition), ...mcpEntries(yield* mcp.tools())]
         const hasResourceServer = Object.values(yield* mcp.clients()).some(
@@ -82,8 +85,9 @@ const layers = Layer.mergeAll(
   }),
 )
 const it = testEffect(layers)
-const resolve = (id: any, dir: string) =>
+const resolve = (id: any, dir: string, directTool?: DirectTool) =>
   SessionTools.resolve({
+    ...(directTool ? { directTool } : {}),
     agent: { name: "build", permission: [], options: {} } as any,
     model: ProviderTest.model(),
     session: { id, directory: dir, permission: [] } as any,
@@ -862,6 +866,146 @@ describe("ElicitationResult real command output replacement", () => {
           Effect.provide(Layer.mock(Question.Service, { ask: () => Effect.succeed([["submitted"], ["original"]]) })),
         )
         expect(response).toEqual(expected)
+      }),
+    )
+  }
+})
+
+const deniedByHook = {
+  type: "command" as const,
+  command: jsonCommand({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "BOUNDARY_DENIED",
+    },
+  }),
+}
+
+type PreparedDenySource = {
+  tools: Record<string, any>
+  toolName: string
+  args: Record<string, unknown>
+  executed: () => Effect.Effect<boolean>
+}
+
+type DenySourceCase = {
+  name: string
+  prepare: (id: any, directory: string) => Effect.Effect<PreparedDenySource, never, any>
+}
+
+// The deny boundary is source-independent: drive it from one table so a new
+// source kind cannot silently skip PreToolUse enforcement.
+const denySourceCases: DenySourceCase[] = [
+  {
+    name: "built-in",
+    prepare: (id, directory) => {
+      const target = path.join(directory, "boundary-builtin.txt")
+      return resolve(id, directory).pipe(
+        Effect.map((tools) => ({
+          tools,
+          toolName: "write",
+          args: { filePath: target, content: "x" },
+          executed: () => Effect.promise(() => Bun.file(target).exists()),
+        })),
+      )
+    },
+  },
+  {
+    name: "MCP tool",
+    prepare: (id, directory) =>
+      Effect.gen(function* () {
+        const mcp = yield* MCP.Service
+        let ran = false
+        const tools = yield* resolve(id, directory).pipe(
+          Effect.provideService(MCP.Service, {
+            ...mcp,
+            tools: () =>
+              Effect.succeed({
+                fixture_probe: tool({
+                  inputSchema: jsonSchema({ type: "object", properties: {} }),
+                  execute: async () => {
+                    ran = true
+                    return { content: [{ type: "text" as const, text: "MCP_RAN" }] }
+                  },
+                }),
+              }),
+          }),
+        )
+        return { tools, toolName: "fixture_probe", args: {}, executed: () => Effect.sync(() => ran) }
+      }),
+  },
+  {
+    name: "MCP resource tool",
+    prepare: (id, directory) =>
+      Effect.gen(function* () {
+        const mcp = yield* MCP.Service
+        let listed = false
+        const tools = yield* resolve(id, directory).pipe(
+          Effect.provideService(MCP.Service, {
+            ...mcp,
+            clients: () =>
+              Effect.succeed({
+                fixture: Object.assign(new Client({ name: "boundary-resource", version: "0" }), {
+                  getServerCapabilities: () => ({ resources: {} }),
+                }),
+              }),
+            resources: () =>
+              Effect.sync(() => {
+                listed = true
+                return { fixture: { client: "fixture", name: "original", uri: "fixture://original" } }
+              }),
+          }),
+        )
+        return { tools, toolName: "list_mcp_resources", args: {}, executed: () => Effect.sync(() => listed) }
+      }),
+  },
+  {
+    name: "direct-shell",
+    prepare: (id, directory) =>
+      Effect.gen(function* () {
+        const target = path.join(directory, "boundary-direct-shell.txt")
+        const directTool: DirectTool = {
+          id: "bash",
+          description: "Fixture explicit user shell command",
+          parameters: Schema.Struct({ command: Schema.String }),
+          execute: () =>
+            Effect.promise(async () => {
+              await fs.writeFile(target, "x")
+              return { title: "bash", metadata: {}, output: "DIRECT_SHELL_RAN" }
+            }),
+        }
+        const tools = yield* resolve(id, directory, directTool)
+        return {
+          tools,
+          toolName: "bash",
+          args: { command: "true" },
+          executed: () => Effect.promise(() => Bun.file(target).exists()),
+        }
+      }),
+  },
+]
+
+describe("PreToolUse deny blocks every tool source before execution", () => {
+  for (const source of denySourceCases) {
+    it.instance(`${source.name}: denial prevents the tool from running`, () =>
+      Effect.gen(function* () {
+        const instance = yield* TestInstance
+        const store = yield* SessionHooks.Service
+        const id = SessionID.descending()
+        yield* store.add(id, { event: "PreToolUse", hooks: [deniedByHook] })
+        const prepared = yield* source.prepare(id, instance.directory)
+        const result = yield* Effect.promise(() =>
+          Promise.resolve(
+            prepared.tools[prepared.toolName].execute!(prepared.args, {
+              toolCallId: `boundary-${source.name.replaceAll(/[^a-z0-9]+/gi, "-")}`,
+              messages: [],
+              abortSignal: new AbortController().signal,
+            }),
+          ),
+        )
+        expect(JSON.stringify(result)).toContain("BOUNDARY_DENIED")
+        expect(yield* prepared.executed()).toBe(false)
       }),
     )
   }
