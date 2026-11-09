@@ -4,7 +4,7 @@
   "version": "1.17.11",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "scripts": {
     "bench:tui": "bun test/perf/run.ts",
     "bench:tui:pty": "bun test/perf/pty.ts",

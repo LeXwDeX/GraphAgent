@@ -74,6 +74,8 @@ jobs:
         displayName: Run typecheck
       - bash: bun run --cwd packages/core migration --check
         displayName: Check database baseline
+      - bash: bun run check:license
+        displayName: Check license boundaries
       - bash: bun run test:dag-core
         displayName: Run DAG core behavior and coverage gate
         workingDirectory: packages/graphagent

@@ -3,7 +3,7 @@
   "version": "1.17.11",
   "name": "@graphagent/effect-drizzle-sqlite",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "private": true,
   "scripts": {
     "test": "bun test --timeout 30000 --only-failures",

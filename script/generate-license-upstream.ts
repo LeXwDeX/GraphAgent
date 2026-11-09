@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regenerates LICENSE-UPSTREAM.txt, the authoritative list of files inherited
  * from the upstream opencode project that stay under the MIT license.

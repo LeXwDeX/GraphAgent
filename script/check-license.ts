@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Enforces the two-rule license model:
  *

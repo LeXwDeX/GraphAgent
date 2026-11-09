@@ -151,6 +151,17 @@ With that said, you may want to try these methods, as they might work for you.
 - Use `Fixes #123` or `Closes #123` in your PR description to link the issue
 - For small fixes, a brief issue is fine - just enough context for maintainers to understand the problem
 
+### License of Your Contribution
+
+Contributions follow the same two-rule license model as the repository:
+
+- Changes to files listed in [`LICENSE-UPSTREAM.txt`](./LICENSE-UPSTREAM.txt) are contributed under the upstream MIT license.
+- New files and changes to fork-authored files are contributed under Apache-2.0. New source files must start with the two-line SPDX header used in the repository.
+
+All code in this project is authored by human contributors. AI tools are used only as assistants and are not authors. Historical `Co-Authored-By: Claude` lines in commits record that a tool was used; they are not an authorship claim and grant no rights. Future commits, pull requests, issues, and release notes must not include AI attribution or "Generated with" statements.
+
+本项目全部代码的作者是人类贡献者，AI 工具仅作为辅助工具使用。历史提交中的 `Co-Authored-By: Claude` 等署名行只表示使用过该工具，不代表作者身份，也不构成任何权利主张。今后的提交、PR、Issue 与发布说明不得包含 AI 署名或 "Generated with" 类说明。
+
 ### General Requirements
 
 - Keep pull requests small and focused

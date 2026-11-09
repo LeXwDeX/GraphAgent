@@ -8,7 +8,7 @@
 > 面向长程、多步骤编码工作的 opencode fork：可持久化的子智能体 DAG 工作流、思考自动塑形、项目 Memory、自主目标和兼容 Claude Code 的 hooks，全部能在终端里查看和控制。
 
 GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，是 MIT 许可的
-[opencode](https://github.com/anomalyco/opencode) 终端 AI 智能体的 fork，在其之上加了 DAG 工作流引擎和下文列出的功能。**与 OpenCode 团队无任何隶属或背书关系。**
+[opencode](https://github.com/anomalyco/opencode) 终端 AI 智能体的 fork，在其之上加了 DAG 工作流引擎和下文列出的功能。源自上游 opencode 的代码保持 MIT，本 fork 自研的代码为 Apache-2.0。**与 OpenCode 团队无任何隶属或背书关系。**
 
 > [!IMPORTANT]
 > **GraphAgent v1 现进入聚焦维护阶段。**维护范围限定为 DAG 配置、精选工作流模板，以及通过
@@ -366,15 +366,14 @@ bun dev serve        # headless API 服务（端口 4096）
 
 ## 许可证
 
-混合许可证模型：
+两条许可证规则：
 
-| 内容                           | 许可证            | 文本                                                                                                                                               |
-| ------------------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 上游 opencode 代码（绝大多数） | MIT               | [`LICENSE`](./LICENSE)                                                                                                                             |
-| DAG 工作流引擎（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE)、[`packages/graphagent/src/dag/LICENSE`](./packages/graphagent/src/dag/LICENSE) |
-| 便携运行时资源（fork 自研）    | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE)                                                             |
+| 内容                          | 许可证     | 文本                                 |
+| ----------------------------- | ---------- | ------------------------------------ |
+| 上游 opencode 代码            | MIT        | [`LICENSE`](./LICENSE)               |
+| fork 自研代码（其余全部文件） | Apache-2.0 | [`LICENSE-APACHE`](./LICENSE-APACHE) |
 
-精确的文件边界列在 [`NOTICE`](./NOTICE) 中。AGPL 覆盖这些模块及其衍生品，包括网络服务部署；其他文件保持原有许可证。
+精确的文件边界列在 [`LICENSE-UPSTREAM.txt`](./LICENSE-UPSTREAM.txt) 中，[`NOTICE`](./NOTICE) 提供摘要。源自上游 opencode 的文件（含被 fork 修改过的上游文件）保持 MIT；其余为本 fork 编写的文件一律为 Apache-2.0。再分发时必须保留 [`NOTICE`](./NOTICE) 中的版权与归属声明。
 
 ## 文档
 

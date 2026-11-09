@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, unlink } from "fs/promises"
 import os from "os"

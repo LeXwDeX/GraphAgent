@@ -3,7 +3,7 @@
   "version": "1.17.11",
   "name": "@graphagent/core",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "private": true,
   "scripts": {
     "db": "bun drizzle-kit",
