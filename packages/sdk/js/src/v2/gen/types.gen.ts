@@ -663,7 +663,7 @@ export type Session = {
     diff?: string
   }
   dagMode?: "on" | "off"
-  dagBudgetTokens?: number
+  dagBudgetTokens?: number | null
 }
 
 export type PermissionRuleset = Array<PermissionRule>
@@ -797,6 +797,25 @@ export type TextPartInput = {
   metadata?: {
     [key: string]: unknown
   }
+}
+
+export type SessionDagMode = {
+  mode: "on" | "off"
+  defaultMode: "on" | "off"
+  availability: "available" | "unavailable"
+  unavailableReason: "start_denied" | "workflow_tool_disabled" | "model_no_tool_calling" | "no_worker" | null
+  budget: {
+    tokens: number | null
+    used: number
+    usedCacheRead: number
+    warnRatio: number
+  }
+  limits: {
+    concurrency: number
+    maxTotalNodes: number
+    running: number
+  }
+  quality: null
 }
 
 export type Provider = {
@@ -6544,6 +6563,7 @@ export type SessionCreateData = {
     }
     permission?: PermissionRuleset
     workspaceID?: string
+    dagMode?: "on" | "off"
   }
   path?: never
   query?: {
@@ -6711,6 +6731,40 @@ export type SessionUpdateResponses = {
 }
 
 export type SessionUpdateResponse = SessionUpdateResponses[keyof SessionUpdateResponses]
+
+export type SessionDagModeData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/dag-mode"
+}
+
+export type SessionDagModeErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionDagModeError = SessionDagModeErrors[keyof SessionDagModeErrors]
+
+export type SessionDagModeResponses = {
+  /**
+   * Read-only DAG mode status
+   */
+  200: SessionDagMode
+}
+
+export type SessionDagModeResponse = SessionDagModeResponses[keyof SessionDagModeResponses]
 
 export type SessionChildrenData = {
   body?: never

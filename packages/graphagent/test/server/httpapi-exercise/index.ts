@@ -807,6 +807,35 @@ const scenarios: Scenario[] = [
     }))
     .status(404),
   http.protected
+    .get("/session/{sessionID}/dag-mode", "session.dagMode")
+    .seeded((ctx) => ctx.session({ title: "DAG status" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/dag-mode", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.mode === "off", "seeded session should report the default DAG mode")
+      check(body.defaultMode === "off", "global default DAG mode should be off")
+      check(body.availability === "available" || body.availability === "unavailable", "availability should be an enum")
+      check(
+        body.availability === "unavailable"
+          ? typeof body.unavailableReason === "string"
+          : body.unavailableReason === null,
+        "unavailableReason should be set exactly when unavailable",
+      )
+      object(body.budget)
+      check(body.budget.tokens === null, "unset budget should be null")
+      check(body.budget.used === 0, "a fresh session should have no DAG usage")
+      check(body.budget.usedCacheRead === 0, "a fresh session should have no cache-read usage")
+      check(body.budget.warnRatio === 0.8, "warnRatio should default to 0.8")
+      object(body.limits)
+      check(typeof body.limits.concurrency === "number", "concurrency limit should be numeric")
+      check(typeof body.limits.maxTotalNodes === "number", "node limit should be numeric")
+      check(body.limits.running === 0, "no workflow nodes should be running")
+      check(body.quality === null, "quality summary is null until E2 D6 lands")
+    }),
+  http.protected
     .patch("/session/{sessionID}", "session.update")
     .mutating()
     .seeded((ctx) => ctx.session({ title: "Before rename" }))

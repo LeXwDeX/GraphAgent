@@ -174,6 +174,8 @@ import type {
   SessionCommandResponses,
   SessionCreateErrors,
   SessionCreateResponses,
+  SessionDagModeErrors,
+  SessionDagModeResponses,
   SessionDeleteErrors,
   SessionDeleteMessageErrors,
   SessionDeleteMessageResponses,
@@ -2925,6 +2927,7 @@ export class Session2 extends HeyApiClient {
       }
       permission?: PermissionRuleset
       workspaceID?: string
+      dagMode?: "on" | "off"
     },
     options?: Options<never, ThrowOnError>,
   ): RequestResult<SessionCreateResponses, SessionCreateErrors, ThrowOnError> {
@@ -2942,6 +2945,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "metadata" },
             { in: "body", key: "permission" },
             { in: "body", key: "workspaceID" },
+            { in: "body", key: "dagMode" },
           ],
         },
       ],
@@ -3098,6 +3102,38 @@ export class Session2 extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Get DAG mode status
+   *
+   * Read the session's effective DAG mode, its global default, availability, budget usage, process-wide limits, and quality summary.
+   */
+  public dagMode<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionDagModeResponses, SessionDagModeErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionDagModeResponses, SessionDagModeErrors, ThrowOnError>({
+      url: "/session/{sessionID}/dag-mode",
+      ...options,
+      ...params,
     })
   }
 

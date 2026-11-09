@@ -11,6 +11,14 @@ import { Permission } from "@/permission"
 import { SessionLifecycle } from "@/session/lifecycle"
 import { ClientSessions } from "@/session/client-sessions"
 import { Session } from "@/session/session"
+import { Config } from "@/config/config"
+import { Agent } from "@/agent/agent"
+import { Provider } from "@/provider/provider"
+import { ProviderV2 } from "@graphagent/core/provider"
+import { ModelV2 } from "@graphagent/core/model"
+import { DagStore } from "@graphagent/core/dag/store"
+import { DEFAULT_WORKFLOW_CONFIG } from "@/dag/dag"
+import { DagModeStatus } from "@/dag/mode-status"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
@@ -76,6 +84,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const settingsHooks = yield* SettingsHook.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
+    const configSvc = yield* Config.Service
+    const agents = yield* Agent.Service
+    const providers = yield* Provider.Service
+    const dagStore = yield* DagStore.Service
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -105,6 +117,83 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const children = Effect.fn("SessionHttpApi.children")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
       return yield* session.children(ctx.params.sessionID)
+    })
+
+    // #1013 (C1 PR5): read-only DAG mode status for the session. Availability
+    // mirrors E4's degradation conditions; usage follows E4's accounting
+    // (input + cache write + output + reasoning, cache read reported apart).
+    const dagMode = Effect.fn("SessionHttpApi.dagMode")(function* (ctx: { params: { sessionID: SessionID } }) {
+      const info = yield* requireSession(ctx.params.sessionID)
+      const [globalConfig, mergedConfig] = yield* Effect.all([configSvc.getGlobal(), configSvc.get()])
+
+      const agentInfo = info.agent
+        ? yield* agents.get(info.agent)
+        : yield* agents.defaultInfo().pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const policy = agentInfo ? yield* agents.permissionPolicy(agentInfo.name) : undefined
+      const startDenied = policy
+        ? Permission.disabledByPolicy(
+            ["workflow"],
+            policy.native,
+            Permission.merge(policy.rules, info.permission ?? []),
+          ).has("workflow")
+        : false
+
+      let modelRef: { providerID: ProviderV2.ID; modelID: ModelV2.ID } | undefined
+      if (info.model) modelRef = { providerID: info.model.providerID, modelID: info.model.id }
+      else if (agentInfo?.model) modelRef = { providerID: agentInfo.model.providerID, modelID: agentInfo.model.modelID }
+      else modelRef = yield* providers.defaultModel().pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const model = modelRef
+        ? yield* providers
+            .getModel(modelRef.providerID, modelRef.modelID)
+            .pipe(Effect.catch(() => Effect.succeed(undefined)))
+        : undefined
+
+      const workerCatalog = yield* agents.list().pipe(Effect.catch(() => Effect.succeed([])))
+      const unavailableReason = DagModeStatus.unavailableReason({
+        workflowToolDisabled: mergedConfig.tools?.workflow === false,
+        startDenied,
+        modelToolCalling: model?.capabilities.toolcall,
+        hasWorker: workerCatalog.some((agent) => agent.mode === "subagent" || agent.mode === "all"),
+      })
+
+      const childSessionIDs = new Set<string>()
+      for (const workflow of yield* dagStore.listBySession(info.id)) {
+        for (const node of yield* dagStore.getNodes(workflow.id)) {
+          if (node.childSessionId) childSessionIDs.add(node.childSessionId)
+        }
+      }
+      const usages: DagModeStatus.TokenUsage[] = []
+      for (const childSessionID of childSessionIDs) {
+        const child = yield* session
+          .get(SessionID.make(childSessionID))
+          .pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (child?.tokens) usages.push(child.tokens)
+      }
+      const usage = DagModeStatus.sumUsage(usages)
+
+      let running = 0
+      for (const workflow of yield* dagStore.listWorkflows()) {
+        running += (yield* dagStore.getRunningNodes(workflow.id)).length
+      }
+
+      return {
+        mode: info.dagMode ?? "off",
+        defaultMode: globalConfig.dag?.mode ?? "off",
+        availability: unavailableReason ? ("unavailable" as const) : ("available" as const),
+        unavailableReason,
+        budget: {
+          tokens: info.dagBudgetTokens ?? globalConfig.dag?.budget?.tokens ?? null,
+          used: usage.used,
+          usedCacheRead: usage.usedCacheRead,
+          warnRatio: globalConfig.dag?.budget?.warn_ratio ?? DagModeStatus.DEFAULT_BUDGET_WARN_RATIO,
+        },
+        limits: {
+          concurrency: globalConfig.dag?.concurrency ?? DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
+          maxTotalNodes: globalConfig.dag?.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+          running,
+        },
+        quality: null,
+      }
     })
 
     const todo = Effect.fn("SessionHttpApi.todo")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -552,6 +641,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("list", list)
       .handle("status", status)
       .handle("get", get)
+      .handle("dagMode", dagMode)
       .handle("children", children)
       .handle("todo", todo)
       .handle("goal", goal)
