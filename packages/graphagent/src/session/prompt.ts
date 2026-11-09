@@ -2,12 +2,10 @@ import { SessionAdmission } from "@graphagent/core/session/admission"
 import { randomUUID } from "node:crypto"
 import { Question } from "@/question"
 import { HookToolBatch } from "@/hook/tool-batch"
-import { HookSessionContext } from "@/hook/session-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { SessionAttention } from "@/notification/attention"
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { ModelsDev } from "@graphagent/core/models-dev"
-import { Logging } from "@graphagent/core/observability/logging"
 import { Flag } from "@graphagent/core/flag/flag"
 import {
   assessCanonicalReasoning,
@@ -20,7 +18,6 @@ import { ConfigReasoningDistillation } from "@graphagent/core/config/reasoning-d
 import { adoptReasoning } from "./reasoning-adoption"
 import { makeReasoningQueue } from "./reasoning-queue"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
-import { PermissionV1 } from "@graphagent/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import os from "os"
@@ -109,23 +106,8 @@ import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
 import { Process } from "@/util/process"
-import {
-  Cause,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Latch,
-  Layer,
-  Option,
-  Scope,
-  Context,
-  Schema,
-  Struct,
-  Types,
-} from "effect"
+import { Cause, Effect, Exit, Fiber, Latch, Layer, Option, Scope, Context, Schema, Struct, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { InstanceRef } from "@/effect/instance-ref"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -142,11 +124,10 @@ import { TodoReminders } from "./todo-reminders"
 import { SessionTools } from "./tools"
 import { ToolSourceLedger } from "./tool-source-ledger"
 import { LLMEvent } from "@graphagent/llm"
-import { SettingsHook, HOOK_REWAKE_SENTINEL, type TriggerResult, type HookPayload, type RewakeToken } from "@/hook"
+import { SettingsHook, type TriggerResult, type HookPayload } from "@/hook"
 import { TaskSubagents } from "@/hook/task-subagents"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
-import { Filesystem } from "@/util/filesystem"
 import { HookTurnContext } from "@/hook/turn-context"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTranscript } from "@/hook/transcript"
@@ -154,9 +135,13 @@ import { Skill } from "@/skill"
 import { Goal } from "@/goal/goal"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Memory } from "@/memory/memory"
-import { SessionAutomationLease } from "./automation-lease"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
+
+import { Admit } from "./turn/admit"
+import type { AdmissionCommit, AdmissionOptions, IdleAdmission, ModelBaseline } from "./turns"
+
+export type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
 
 export type PromptModelSelection = {
   providerID: ProviderV2.ID
@@ -235,33 +220,6 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   // They are not pending work and must not trigger an assistant-prefill request.
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
-
-export interface AdmissionOptions {
-  /** Internal follow-ups retain the current input's tool budget. */
-  readonly continueToolBudget?: boolean
-  /** A previously persisted followup is already past initial-hook admission. */
-  readonly skipHookStart?: boolean
-  /**
-   * Task and DAG runtimes feeding their own child session (initial prompt, Stop continuation, nudge, recovery).
-   * Such input is not a user submission, so UserPromptSubmit does not run. Never part of a public body: only
-   * runtime callers set it, and a persisted hook followup carries it in `HookPendingInput.internalDelegation`.
-   * A report back to a parent session, a DAG wake, a goal continuation and agent messages are not delegation.
-   */
-  readonly internalDelegation?: true
-  /**
-   * SettingsHook rewake token riding on an async Stop-hook rewake. When set,
-   * admission re-validates the chain before commit and the run path
-   * re-validates before runLoop, refusing callbacks whose chain was reset
-   * (cancel, newer prompt, SessionEnd) after their completion check. Only the
-   * hook rewake paths set this; plain user prompts never do.
-   */
-  readonly rewakeToken?: RewakeToken
-}
-
-/** Admission-guarded commit: fails with Blocked when the session was cancelled first. */
-export type AdmissionCommit = <B, E, R>(
-  body: Effect.Effect<B, E, R>,
-) => Effect.Effect<B, E | SessionAdmission.Blocked, R>
 
 export interface Interface {
   readonly cancel: (
@@ -356,12 +314,6 @@ export class QueuedMessageConflict extends Schema.TaggedError<QueuedMessageConfl
 }) {}
 
 export type QueuedMessageError = QueuedMessageNotFound | QueuedMessageInvalid | QueuedMessageConflict
-
-export interface IdleAdmission {
-  readonly activate: Effect.Effect<void>
-  readonly result: Effect.Effect<SessionV1.WithParts>
-  readonly abort: Effect.Effect<void>
-}
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionPrompt") {}
 
@@ -948,216 +900,12 @@ export const layer = Layer.effect(
 
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
-        cancel: (sessionID: SessionID) => cancel(sessionID),
+        cancel: (sessionID: SessionID) => admit.cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
         prompt: (input: PromptInput, options?: AdmissionOptions) =>
-          prompt(input, options).pipe(Effect.catch(Effect.die)),
+          admit.prompt(input, options).pipe(Effect.catch(Effect.die)),
       } satisfies TaskPromptOps
     })
-
-    // Cancellation owns the durable followup cleanup even when the target
-    // instance is not loaded: the session row is global, so this must not be
-    // skipped by the instance-routing no-op.
-    const clearPendingHookInput = Effect.fnUntraced(function* (sessionID: SessionID, snapshot: string | undefined) {
-      if (snapshot === undefined) return
-      yield* db
-        .transaction(
-          () =>
-            Effect.gen(function* () {
-              const target = yield* sessions.get(sessionID).pipe(Effect.option)
-              if (Option.isNone(target) || JSON.stringify(target.value.metadata?.hookPendingInput) !== snapshot) return
-              const metadata = { ...target.value.metadata }
-              delete metadata.hookPendingInput
-              yield* sessions.setMetadata(
-                { sessionID, metadata },
-                (current) => JSON.stringify(current.metadata?.hookPendingInput) === snapshot,
-              )
-            }),
-          { behavior: "immediate" },
-        )
-        .pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("session cancel followup cleanup failed", { sessionID, cause }),
-          ),
-        )
-    })
-
-    const pauseGoalForCancel = Effect.fnUntraced(function* (sessionID: SessionID) {
-      // GOAL-TURN-SCOPE (ESC semantics): ESC on a goal-driven turn means "stop
-      // working on the goal", not just "stop this turn". Without this, the idle
-      // event after cancel re-enters afterIdle, shouldPreempt returns false (the
-      // last user message is the /goal command itself, necessarily older than
-      // this turn's assistant output), and the judge auto-resurrects the goal
-      // with a continuation the user just tried to abort. Pause instead.
-      if (goal && (yield* goal.isTurnDriven(sessionID))) {
-        yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
-      }
-    })
-
-    const cancelImpl = Effect.fnUntraced(function* (sessionID: SessionID) {
-      yield* Logging.backgroundDebug("lifecycle.session.cancel", { source: "session.prompt.cancel", sessionID })
-      yield* Effect.logInfo("cancel", { "session.id": sessionID })
-      if (agentMessages) {
-        const context = yield* InstanceState.context
-        const identity = { projectID: context.project.id, directory: context.directory, sessionID }
-        const input = yield* agentMessages.revisions(identity)
-        if (input.ok && input.value.snapshotID)
-          yield* agentMessages.markStopped(identity, input.value.snapshotID, "cancelled")
-        yield* agentMessages.discardPending(identity, "cancelled")
-      }
-      yield* state.cancelBackground(sessionID, true)
-    })
-
-    const cancel = Effect.fn("SessionPrompt.cancel")(function* (
-      sessionID: SessionID,
-      options?: { readonly reason?: SessionAbortReason.Info },
-    ) {
-      const cancellation = yield* Effect.sync(() => SessionCancellation.begin(sessionID))
-      // The cancellation epoch already invalidates pending Stop rewakes; the
-      // generation bump is the second half of the same reset and also clears
-      // the continuation budget for the next real prompt.
-      if (settingsHook?.bumpRewakeGeneration) yield* settingsHook.bumpRewakeGeneration(sessionID).pipe(Effect.ignore)
-      const abort = options?.reason
-      let transferred = false
-      let waiters: Array<Fiber.Fiber<void>> = []
-      const release = () => {
-        if (abort) SessionAbortReason.clear(sessionID, abort)
-        cancellation.finish()
-      }
-      return yield* Effect.uninterruptible(
-        Effect.gen(function* () {
-          const pendingSnapshot = Deferred.makeUnsafe<string | undefined>()
-          const action = cancellation.previous.pipe(
-            Effect.andThen(
-              followupAdmissions.cancel(
-                sessionID,
-                Effect.gen(function* () {
-                  const pending = yield* Deferred.await(pendingSnapshot)
-                  yield* clearPendingHookInput(sessionID, pending)
-                  if (abort) SessionAbortReason.set(sessionID, abort)
-                  const target = yield* sessions.get(sessionID).pipe(Effect.option)
-                  const current = yield* InstanceRef
-                  const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
-                  const store = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
-                  const provideIfLoaded = store?.provideIfLoaded
-                  const pause =
-                    Option.isSome(target) && current && provideIfLoaded
-                      ? provideIfLoaded({ directory: target.value.directory }, pauseGoalForCancel(sessionID)).pipe(
-                          Effect.asVoid,
-                        )
-                      : pauseGoalForCancel(sessionID)
-                  const pauseExit = yield* pause.pipe(Effect.exit)
-                  cancellation.finishGoalCancel()
-                  if (Exit.isFailure(pauseExit))
-                    yield* Effect.logWarning("session cancel goal pause failed", { sessionID })
-                  const local =
-                    Option.isSome(target) && current && provideIfLoaded
-                      ? provideIfLoaded({ directory: target.value.directory }, cancelImpl(sessionID)).pipe(
-                          Effect.asVoid,
-                        )
-                      : cancelImpl(sessionID)
-                  const owners = Effect.forEach(
-                    cancellation.targets,
-                    (owner) =>
-                      Effect.gen(function* () {
-                        const stop =
-                          owner.directory && provideIfLoaded
-                            ? provideIfLoaded({ directory: owner.directory }, owner.cancel).pipe(
-                                Effect.tap((result) =>
-                                  Option.isNone(result)
-                                    ? Effect.logWarning("session cancel owner unavailable", {
-                                        sessionID,
-                                        directory: owner.directory,
-                                      })
-                                    : Effect.void,
-                                ),
-                                Effect.asVoid,
-                              )
-                            : owner.cancel
-                        const fiber = yield* stop.pipe(Effect.forkIn(scope, { startImmediately: true }))
-                        const result = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("3 seconds"))
-                        if (Option.isNone(result) || Exit.isFailure(result.value))
-                          yield* Effect.logWarning("session cancel owner did not settle", {
-                            sessionID,
-                            directory: owner.directory,
-                          })
-                        return Option.isNone(result) ? fiber : undefined
-                      }),
-                    { concurrency: "unbounded" },
-                  )
-                  const origin =
-                    Option.isSome(target) &&
-                    current &&
-                    Filesystem.resolve(current.directory) !== Filesystem.resolve(target.value.directory)
-                      ? state.cancelBackground(sessionID, true)
-                      : Effect.void
-                  const [localExit, originExit, pendingOwners] = yield* Effect.all(
-                    [local.pipe(Effect.exit), origin.pipe(Effect.exit), owners],
-                    {
-                      concurrency: "unbounded",
-                    },
-                  )
-                  if (Exit.isFailure(localExit) || Exit.isFailure(originExit))
-                    yield* Effect.logWarning("session cancel local cleanup failed", { sessionID })
-                  const unsettled = pendingOwners.filter((fiber) => fiber !== undefined)
-                  waiters = unsettled
-                }),
-              ),
-            ),
-          )
-          const { InstanceStore: Store } = yield* Effect.promise(() => import("@/project/instance-store"))
-          const store = Option.getOrUndefined(yield* Effect.serviceOption(Store.Service))
-          const fiber = yield* action.pipe(Effect.forkIn(scope, { startImmediately: true }))
-          const read = yield* sessions.get(sessionID).pipe(Effect.option, Effect.exit)
-          if (Exit.isFailure(read)) {
-            yield* Deferred.succeed(pendingSnapshot, undefined)
-            yield* Fiber.await(fiber)
-            return yield* read
-          }
-          const target = read.value
-          yield* Deferred.succeed(
-            pendingSnapshot,
-            Option.isSome(target) ? JSON.stringify(target.value.metadata?.hookPendingInput) : undefined,
-          )
-          if (Option.isSome(target) && store?.provideIfLoaded) {
-            const loaded = yield* store.provideIfLoaded({ directory: target.value.directory }, Effect.void)
-            if (Option.isNone(loaded) && InstanceState.isClosing(Filesystem.resolve(target.value.directory))) {
-              yield* clearPendingHookInput(sessionID, JSON.stringify(target.value.metadata?.hookPendingInput))
-              const completed = yield* Fiber.await(fiber).pipe(Effect.timeoutOption("1 second"))
-              if (Option.isNone(completed)) {
-                yield* Fiber.await(fiber).pipe(
-                  Effect.andThen(
-                    Effect.suspend(() =>
-                      Effect.forEach(waiters, Fiber.await, { concurrency: "unbounded", discard: true }),
-                    ),
-                  ),
-                  Effect.ensuring(Effect.sync(release)),
-                  Effect.forkIn(scope, { startImmediately: false }),
-                )
-                transferred = true
-                return
-              }
-            }
-          }
-          yield* Fiber.join(fiber)
-          if (waiters.length) {
-            yield* Effect.forEach(waiters, Fiber.await, { concurrency: "unbounded", discard: true }).pipe(
-              Effect.ensuring(Effect.sync(release)),
-              Effect.forkIn(scope, { startImmediately: false }),
-            )
-            transferred = true
-          }
-        }).pipe(
-          Effect.onInterrupt(() => Effect.forEach(waiters, Fiber.await, { concurrency: "unbounded", discard: true })),
-        ),
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (!transferred) release()
-          }),
-        ),
-      )
-    }, Effect.uninterruptible)
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
       const ctx = yield* InstanceState.context
@@ -1867,13 +1615,6 @@ export const layer = Layer.effect(
         variant: row?.model?.variant,
       } as const
     })
-    type ModelSelection = {
-      readonly providerID: string | undefined
-      readonly modelID: string | undefined
-      readonly variant: string | undefined
-    }
-    type ModelBaseline = ModelSelection & { readonly epoch: number | undefined }
-
     const applyModelSwitch = Effect.fn("SessionPrompt.applyModelSwitch")(function* (
       input: Omit<SetModelInput, "source"> & { source?: "command" | "picker" | "sdk" | "auto" | "resume" },
       options?: { readonly bump?: boolean },
@@ -2362,404 +2103,32 @@ export const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
-    // Re-validates the rewake token carried by an async Stop-hook rewake.
-    // Returns false when the chain was reset (session cancel, newer user
-    // prompt, SessionEnd) after the callback's own completion check; the
-    // committed message parts are then marked ignored so nothing stale stays
-    // model-visible, and the caller must not run the turn. No-op for plain
-    // prompts and non-Stop async rewakes (no token).
-    const fenceRewake = Effect.fn("SessionPrompt.fenceRewake")(function* (
-      sessionID: SessionID,
-      options: AdmissionOptions | undefined,
-      message: SessionV1.WithParts,
-    ) {
-      if (!settingsHook?.validateRewakeToken || options?.rewakeToken === undefined) return true
-      if (yield* settingsHook.validateRewakeToken(sessionID, options.rewakeToken)) return true
-      yield* Effect.logWarning("rewake token stale after commit", { "session.id": sessionID })
-      for (const part of message.parts) {
-        if (part.type === "text" && !part.ignored) {
-          yield* sessions.updatePart({ ...part, ignored: true } satisfies SessionV1.TextPart)
-        }
-      }
-      yield* sessions.touch(sessionID)
-      return false
+    const admit = Admit.makeAdmit({
+      sessions,
+      status,
+      state,
+      revert,
+      config,
+      scope,
+      db,
+      promptLocks,
+      followupAdmissions,
+      withRunRequest,
+      settingsHook,
+      startContext,
+      hookSkills,
+      attention,
+      goal,
+      agentMessages,
+      activateAgentHooks,
+      createUserMessage: (input, persistAdmission, commitAdmission, modelBaseline) =>
+        createUserMessage(input, persistAdmission, commitAdmission, modelBaseline),
+      budgetState: (sessionID) => budgetState(sessionID),
+      restoreModelContext: (sessionID) => restoreModelContext(sessionID),
+      resume: (input, options) => resume(input, options),
+      runLoop: (sessionID) => runLoop(sessionID),
+      lastAssistant: (sessionID) => lastAssistant(sessionID),
     })
-
-    // SessionStart(source: "resume"): fires once, on the first prompt admission of a top-level
-    // session this instance did not create (SessionLifecycle.create marks created sessions as
-    // started) that already has earlier messages — e.g. a session reopened after a restart.
-    // Empty sessions and child sessions never fire. Returns the contexts to inject; hook failures
-    // never fail the prompt. No hook configured → trigger short-circuits, so cost is one Set lookup
-    // plus a one-row message read per session per instance.
-    const resumeContexts = Effect.fn("SessionPrompt.resumeContexts")(function* (target: {
-      id: SessionID
-      parentID?: SessionID
-    }) {
-      if (!startContext || !settingsHook || target.parentID) return [] as string[]
-      if (!(yield* startContext.claimResume(target.id))) return [] as string[]
-      const prior = yield* sessions.messages({ sessionID: target.id, limit: 1 }).pipe(Effect.orDie)
-      if (prior.length === 0) return [] as string[]
-      const current = yield* sessions.get(target.id).pipe(Effect.orDie)
-      yield* restoreModelContext(target.id)
-      const history = yield* HookTranscript.history(
-        target.id,
-        yield* sessions.messages({ sessionID: target.id }).pipe(Effect.orDie),
-      )
-      const metrics = yield* HookModelMetrics.forSession({
-        source: "resume",
-        sessionID: target.id,
-        title: current.title,
-        titleSource: current.metadata?.hookTitleSource,
-        model: current.model,
-        agent: current.agent,
-        history,
-      })
-      const result = yield* settingsHook
-        .trigger(
-          {
-            event: "SessionStart",
-            source: "resume",
-            // Child sessions never reach here (checked above): report DAG mode read-only.
-            ...(current.dagMode !== undefined ? { dagMode: current.dagMode } : {}),
-            ...metrics,
-          },
-          { sessionID: target.id },
-        )
-        .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
-      const instance = yield* InstanceState.context
-      const skills = hookSkills
-      yield* HookSessionContext.applyStart({
-        session: { id: target.id, directory: instance.directory },
-        sessions,
-        settings: settingsHook,
-        result,
-        reloadSkills: skills?.reload(),
-      })
-      yield* SettingsHook.landSystemMessages(result, { sessionID: target.id })
-      return (result.additionalContexts ?? []).filter((ctx) => ctx.length > 0)
-    })
-
-    const admitPrompt = Effect.fn("SessionPrompt.admitPrompt")(function* (
-      input: PromptInput,
-      persistAdmission?: Effect.Effect<void>,
-      options?: AdmissionOptions,
-      commitAdmission?: AdmissionCommit,
-      modelBaseline?: ModelBaseline,
-    ) {
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-      yield* revert.cleanup(session)
-      yield* activateAgentHooks(session, input.agent)
-
-      // SettingsHook: UserPromptSubmit — gives hooks a chance to block or modify the turn.
-      // Runs BEFORE the prompt is persisted: a blocked prompt (e.g. a secret scanner)
-      // must never be stored as model-visible history (Claude Code erases it from
-      // context). Loop guard (hook-async-rewake): skip hooks for rewake prompts (those
-      // whose text starts with HOOK_REWAKE_SENTINEL) to prevent hook → rewake → hook loops.
-      let hookAdditionalContexts: string[] = []
-      let hookResult: TriggerResult | undefined
-      const promptText = input.parts.map((p: any) => (p.type === "text" ? p.text : "")).join("\n")
-      const isRewake = promptText.startsWith(HOOK_REWAKE_SENTINEL)
-      // Refuse a stale rewake before anything is committed. Cancel stays
-      // lock-free; the post-commit fence below covers cancels that land while
-      // admission is suspended inside hook callbacks.
-      if (settingsHook?.validateRewakeToken && isRewake && options?.rewakeToken !== undefined) {
-        const tokenValid = yield* settingsHook.validateRewakeToken(input.sessionID, options.rewakeToken)
-        if (!tokenValid) {
-          yield* Effect.logWarning("rewake token stale before admission", { "session.id": input.sessionID })
-          // Record the discard in the transcript (`ignored` keeps it out of
-          // model input) so the refusal is observable, then stop without work.
-          const message = yield* createUserMessage(
-            {
-              ...input,
-              parts: [
-                {
-                  type: "text",
-                  text: "[Hook stopped] async hook result discarded (session cancelled or superseded)",
-                  ignored: true,
-                },
-              ],
-            },
-            persistAdmission,
-            commitAdmission,
-            modelBaseline,
-          )
-          yield* sessions.touch(input.sessionID)
-          return { message, run: false as const }
-        }
-      }
-      // CC's `prompt_id` names the prompt being submitted, but the message row is
-      // only persisted after UserPromptSubmit has run. Allocate the identity now
-      // and reuse it below, so the envelope and the transcript name the same
-      // message. A caller-supplied id (queued/follow-up prompts) wins.
-      const promptMessageID = input.messageID ?? MessageID.ascending()
-      if (settingsHook && !isRewake && options?.internalDelegation !== true) {
-        // session_title is present only for a title the user or a hook chose, never for a generated one.
-        const titled = session.metadata?.hookTitleSource === "custom" && session.title ? session.title : undefined
-        hookResult = yield* settingsHook
-          .trigger(
-            {
-              event: "UserPromptSubmit",
-              prompt: promptText,
-              ...(titled !== undefined ? { sessionTitle: titled } : {}),
-              // Child sessions do not report DAG mode; a top-level session reports it read-only.
-              ...(session.parentID === undefined && session.dagMode !== undefined ? { dagMode: session.dagMode } : {}),
-            },
-            { sessionID: input.sessionID, promptID: promptMessageID },
-          )
-          .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
-        hookAdditionalContexts = hookResult.additionalContexts ?? []
-      }
-
-      if (hookResult?.sessionTitle !== undefined) {
-        yield* sessions.setTitle({ sessionID: input.sessionID, title: hookResult.sessionTitle })
-      }
-      if (hookResult && (hookResult.blocked || hookResult.preventContinuation)) {
-        const reason = hookResult.stopReason ?? hookResult.blocked?.reason ?? "Hook requested stop"
-        // The submitted parts are replaced by one user-visible notice. `ignored`
-        // keeps it out of model input (and makes the message no model work
-        // boundary); it is not synthetic so clients render it in the transcript.
-        // The block message ends with the submitted text unless the hook set suppressOriginalPrompt. This changes
-        // only the message: the text stays in local storage either way and never reaches the model.
-        const original = hookResult.suppressOriginalPrompt === true ? "" : `\n\nOriginal prompt: ${promptText}`
-        const message = yield* createUserMessage(
-          {
-            ...input,
-            messageID: promptMessageID,
-            parts: [{ type: "text", text: `[Hook stopped] ${reason}${original}`, ignored: true }],
-          },
-          persistAdmission,
-          commitAdmission,
-          modelBaseline,
-        )
-        yield* sessions.touch(input.sessionID)
-        // systemMessages are logged only: nothing about a blocked prompt reaches the model.
-        yield* SettingsHook.landSystemMessages(hookResult, { sessionID: input.sessionID })
-        if (agentMessages) {
-          const ctx = yield* InstanceState.context
-          yield* agentMessages.discardPending(
-            { projectID: ctx.project.id, directory: ctx.directory, sessionID: input.sessionID },
-            "hook_blocked",
-          )
-        }
-        return { message, run: false as const }
-      }
-
-      // Evaluated before the prompt is persisted so "earlier messages" excludes this turn.
-      // Rewake prompts are internal re-entries into a live session and never claim resume.
-      const resumeTexts = isRewake ? [] : yield* resumeContexts(session)
-
-      const message = yield* createUserMessage(
-        { ...input, messageID: promptMessageID },
-        persistAdmission,
-        commitAdmission,
-        modelBaseline,
-      )
-      yield* sessions.touch(input.sessionID)
-
-      // The token was validated before admission, but cancel can land while
-      // the hook callbacks above suspend. A committed stale rewake is
-      // stripped from model input (parts ignored) and never starts a run.
-      if (isRewake && options?.rewakeToken !== undefined) {
-        if (!(yield* fenceRewake(input.sessionID, options, message))) {
-          return { message, run: false as const }
-        }
-      }
-
-      if (hookResult) {
-        // Land UserPromptSubmit systemMessages (logged always; injected as synthetic
-        // parts so the model sees them — no silent drop).
-        yield* SettingsHook.landSystemMessages(hookResult, {
-          sessionID: input.sessionID,
-          inject: (text) =>
-            sessions.updatePart({
-              id: PartID.ascending(),
-              messageID: message.info.id,
-              sessionID: input.sessionID,
-              type: "text",
-              text,
-              synthetic: true,
-            } satisfies SessionV1.TextPart),
-        })
-      }
-
-      // SettingsHook: drain HookStartContext queued by SessionStart hooks (only if not blocked)
-      let startContextTexts: string[] = []
-      if (startContext) {
-        startContextTexts = [...(yield* startContext.consume(input.sessionID))]
-      }
-
-      for (const ctx of [...resumeTexts, ...startContextTexts, ...hookAdditionalContexts]) {
-        yield* sessions.updatePart({
-          id: PartID.ascending(),
-          messageID: message.info.id,
-          sessionID: input.sessionID,
-          type: "text",
-          text: ctx,
-          synthetic: true,
-        } satisfies SessionV1.TextPart)
-      }
-
-      const permissions: PermissionV1.Rule[] = []
-      for (const [t, enabled] of Object.entries(input.tools ?? {})) {
-        permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
-      }
-      if (permissions.length > 0) {
-        session.permission = permissions
-        yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
-      }
-
-      if (!options?.continueToolBudget) {
-        const state = yield* budgetState(input.sessionID)
-        state.pending.set(message.info.id, ToolBudget.create((yield* config.get()).maxToolCalls))
-      }
-
-      return { message, run: input.noReply !== true }
-    })
-
-    const promptImpl = Effect.fnUntraced(function* (
-      input: PromptInput,
-      options?: AdmissionOptions,
-      commitAdmission?: AdmissionCommit,
-      modelBaseline?: ModelBaseline,
-    ) {
-      if (attention) yield* attention.input(input.sessionID)
-      if (
-        !options?.skipHookStart &&
-        !options?.continueToolBudget &&
-        input.noReply !== true &&
-        input.hookMode !== "interactive"
-      ) {
-        const { sessionID, ...followup } = input
-        const initial = yield* resume(
-          {
-            sessionID,
-            model: input.model,
-            agent: input.agent,
-            variant: input.variant,
-            hookMode: "noninteractive",
-            initialOnly: true,
-            followup: { kind: "prompt", ...followup },
-          },
-          options?.internalDelegation ? { internalDelegation: true } : undefined,
-        )
-        if (initial) return initial
-      }
-      const wait = yield* withRunRequest(input.sessionID, (request) =>
-        promptLocks.withLock(input.sessionID)(
-          Effect.gen(function* () {
-            if (!request.valid()) return Effect.interrupt
-            if (goal && input.noReply !== true) yield* goal.clearTurnDriven(input.sessionID)
-            const admitted = yield* admitPrompt(input, undefined, options, commitAdmission, modelBaseline)
-            if (!admitted.run) return Effect.succeed(admitted.message)
-            // The runner registers before this fence runs: a cancel landing
-            // after a passing fence interrupts the registered runner instead of
-            // racing a finished check, so a stale rewake can never start a turn.
-            return yield* state.ensureRunningHandle(
-              input.sessionID,
-              lastAssistant(input.sessionID),
-              Effect.gen(function* () {
-                if (!(yield* fenceRewake(input.sessionID, options, admitted.message))) {
-                  return admitted.message
-                }
-                return yield* runLoop(input.sessionID)
-              }),
-              request,
-            )
-          }),
-        ),
-      )
-      return yield* wait
-    })
-    const prompt: Interface["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (input, options) {
-      // Plain prompts never carry an admission commit; the internal command
-      // path calls promptImpl directly so its cancellation fence stays typed.
-      return yield* promptImpl(input, options).pipe(
-        Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)),
-      )
-    })
-
-    const withIdle: Interface["withIdle"] = Effect.fn("SessionPrompt.withIdle")(
-      <A, E, R>(sessionID: SessionID, work: Effect.Effect<A, E, R>) =>
-        promptLocks.withLock(sessionID)(
-          Effect.gen(function* () {
-            if ((yield* status.get(sessionID)).type !== "idle") return Option.none()
-            return Option.some(yield* work)
-          }),
-        ),
-    )
-
-    const prepareIfIdle: Interface["prepareIfIdle"] = Effect.fn("SessionPrompt.prepareIfIdle")(function* (
-      input: PromptInput,
-      persistAdmission?: Effect.Effect<void>,
-      options?: AdmissionOptions,
-      request?: ReturnType<typeof SessionCancellation.request>,
-    ) {
-      return yield* withRunRequest(
-        input.sessionID,
-        (request) =>
-          promptLocks.withLock(input.sessionID)(
-            Effect.uninterruptibleMask((restore) =>
-              Effect.gen(function* () {
-                if (!request.valid()) return Option.none<IdleAdmission>()
-                const activation = yield* Deferred.make<void>()
-                const admission =
-                  yield* Deferred.make<
-                    Exit.Exit<{ readonly message: SessionV1.WithParts; readonly run: boolean }, PromptError>
-                  >()
-                const wait = yield* state.startIfIdle(
-                  input.sessionID,
-                  lastAssistant(input.sessionID),
-                  Effect.gen(function* () {
-                    yield* Deferred.await(activation)
-                    if (!request.current()) return yield* Effect.interrupt
-                    const admitted = yield* Deferred.await(admission)
-                    if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
-                    if (!admitted.value.run) return admitted.value.message
-                    // Same runner-first ordering as prompt(): a cancel landing
-                    // after a passing fence interrupts the registered runner.
-                    if (!(yield* fenceRewake(input.sessionID, options, admitted.value.message))) {
-                      return admitted.value.message
-                    }
-                    return yield* runLoop(input.sessionID)
-                  }).pipe(Effect.orDie),
-                  request,
-                )
-                if (Option.isNone(wait)) return Option.none<IdleAdmission>()
-
-                const admitted = yield* restore(
-                  admitPrompt(input, persistAdmission, options, (body) =>
-                    Effect.suspend(() => (request.valid() ? body : Effect.interrupt)),
-                  ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
-                ).pipe(Effect.exit)
-                yield* Deferred.succeed(admission, admitted)
-                if (Exit.isFailure(admitted)) {
-                  yield* Deferred.succeed(activation, undefined)
-                  if (!request.valid() && Cause.hasInterruptsOnly(admitted.cause)) return Option.none<IdleAdmission>()
-                  return yield* Effect.failCause(admitted.cause)
-                }
-                return Option.some({
-                  activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
-                  result: wait.value,
-                  abort: state.cancel(input.sessionID),
-                })
-              }),
-            ),
-          ),
-        request,
-      )
-    })
-
-    const promptIfIdle: Interface["promptIfIdle"] = Effect.fn("SessionPrompt.promptIfIdle")(
-      (input: PromptInput, options?: AdmissionOptions) =>
-        Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            const prepared = yield* restore(prepareIfIdle(input, undefined, options))
-            if (Option.isNone(prepared)) return Option.none()
-            yield* prepared.value.activate.pipe(Effect.onError(() => prepared.value.abort))
-            return Option.some(yield* restore(prepared.value.result))
-          }),
-        ),
-    )
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
@@ -3886,7 +3255,7 @@ export const layer = Layer.effect(
             return yield* (
               pending.input.kind === "command"
                 ? command({ ...pending.input, ...shared }, { skipHookStart: true })
-                : prompt(
+                : admit.prompt(
                     { ...pending.input, ...shared },
                     {
                       skipHookStart: true,
@@ -3928,7 +3297,7 @@ export const layer = Layer.effect(
                 Effect.gen(function* () {
                   if (!request.valid()) return yield* Effect.interrupt
                   const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-                  const contexts = yield* resumeContexts(target)
+                  const contexts = yield* admit.resumeContexts(target)
                   if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
                   const initial =
                     input.hookMode !== "interactive" && hookLifecycle
@@ -3974,15 +3343,17 @@ export const layer = Layer.effect(
                     )
                   }
                   if (initialTurn) {
-                    const admitted = yield* admitPrompt(
-                      {
-                        ...input,
-                        parts: [{ type: "text", text: initial }],
-                        hookMode: input.hookMode ?? "noninteractive",
-                      },
-                      undefined,
-                      options?.internalDelegation ? { internalDelegation: true } : undefined,
-                    ).pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
+                    const admitted = yield* admit
+                      .admitPrompt(
+                        {
+                          ...input,
+                          parts: [{ type: "text", text: initial }],
+                          hookMode: input.hookMode ?? "noninteractive",
+                        },
+                        undefined,
+                        options?.internalDelegation ? { internalDelegation: true } : undefined,
+                      )
+                      .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
                     if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
                   } else if (input.hookMode) {
                     const user = history.findLast((message) => message.info.role === "user")?.info
@@ -4149,7 +3520,7 @@ export const layer = Layer.effect(
           const agentName = input.agent ?? (yield* agents.defaultAgent())
           // Resume is decided before the command message exists ("earlier messages" excludes it)
           // and outside the uninterruptible commit so a slow hook stays cancellable.
-          const goalResumeTexts = yield* resumeContexts(yield* sessions.get(input.sessionID).pipe(Effect.orDie))
+          const goalResumeTexts = yield* admit.resumeContexts(yield* sessions.get(input.sessionID).pipe(Effect.orDie))
           // Persist the input and register its budget before any snapshot can
           // claim it. Run the model only after releasing the admission lock.
           yield* promptLocks.withLock(input.sessionID)(
@@ -4422,7 +3793,7 @@ export const layer = Layer.effect(
           : yield* currentModel(input.sessionID)
         : taskModel
 
-      const result = yield* promptImpl(
+      const result = yield* admit.promptImpl(
         {
           sessionID: input.sessionID,
           messageID: input.messageID,
@@ -4488,7 +3859,7 @@ export const layer = Layer.effect(
           ...(input.model ? { model: `${input.model.providerID}/${input.model.modelID}` } : {}),
         })
       }
-      return yield* prompt(input)
+      return yield* admit.prompt(input)
     })
 
     const summarize: Interface["summarize"] = Effect.fn("SessionPrompt.summarize")(function* (input) {
@@ -4507,11 +3878,11 @@ export const layer = Layer.effect(
     })
 
     return Service.of({
-      cancel,
-      prompt,
-      withIdle,
-      prepareIfIdle,
-      promptIfIdle,
+      cancel: admit.cancel,
+      prompt: admit.prompt,
+      withIdle: admit.withIdle,
+      prepareIfIdle: admit.prepareIfIdle,
+      promptIfIdle: admit.promptIfIdle,
       setModel,
       restoreModelContext,
       takeModelSwitchContext: (input) => modelSwitchContext(input.sessionID, input.apiModelID),
@@ -4782,31 +4153,6 @@ export const node = LayerNode.make(layer, [
   ToolSourceLedger.node,
 ])
 
-export function admitIfIdle(
-  service: Interface,
-  automation: SessionAutomationLease.Interface,
-  token: SessionAutomationLease.Token,
-  input: PromptInput,
-  options?: AdmissionOptions,
-  persistAdmission?: Effect.Effect<void>,
-): Effect.Effect<Option.Option<Effect.Effect<SessionV1.WithParts>>, PromptError> {
-  return Effect.suspend(() => {
-    const request = SessionCancellation.request(input.sessionID)
-    // Goal cancellation may need this lease, so wait before taking it.
-    return request.wait.pipe(
-      Effect.andThen(
-        automation.handoff(
-          token,
-          Effect.suspend(() =>
-            request.valid()
-              ? service.prepareIfIdle(input, persistAdmission, options, request)
-              : Effect.succeed(Option.none()),
-          ),
-        ),
-      ),
-      Effect.ensuring(Effect.sync(() => request.release())),
-    )
-  })
-}
+export { admitIfIdle } from "./turn/admit"
 
 export * as SessionPrompt from "./prompt"
