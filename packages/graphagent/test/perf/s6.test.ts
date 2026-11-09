@@ -10,8 +10,10 @@ import { s6Scenario } from "./scenarios/s6"
 const scenario = s6Scenario()
 const it = testEffect(scenario.layer)
 
-// One durable event per preview line, at least.
+// One non-durable preview per streamed chunk. Durable publishes are limited to
+// the shell/message lifecycle, which does not grow with the chunk count.
 const CHUNKS = 600
+const DURABLE_LIFECYCLE = 32
 
 // The #523 idempotency gate skips a consecutive duplicate event only when no
 // other event interleaves, and the preview stream does real persistence work
@@ -34,7 +36,10 @@ describe("S6 long shell command", () => {
       Effect.gen(function* () {
         const result = yield* scenario.run
 
-        expect(result.firstCounts["events.durable"]).toBeGreaterThanOrEqual(CHUNKS)
+        // Running output is a non-durable tail event (#1016 HS4a): the turn
+        // must not persist one durable event per line.
+        expect(result.firstCounts["events.durable"]).toBeLessThanOrEqual(DURABLE_LIFECYCLE)
+        expect(result.firstCounts["events.ephemeral"]).toBeGreaterThanOrEqual(CHUNKS)
         expect(result.firstCounts["sql.write"]).toBeGreaterThan(0)
         expect(result.firstCounts.commits).toBeGreaterThan(0)
         expect(result.firstCounts["json.encodeBytes"]).toBeGreaterThan(0)

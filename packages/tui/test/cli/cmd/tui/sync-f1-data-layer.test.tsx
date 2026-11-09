@@ -346,6 +346,85 @@ describe("F1 data layer", () => {
     }
   })
 
+  test("running preview tails replace tool output until the durable part settles", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const rows = [row("ses_preview", 100)]
+    const toolPart = (output: string) => ({
+      id: "prt_preview",
+      sessionID: "ses_preview",
+      messageID: "msg_preview",
+      type: "tool" as const,
+      tool: "bash",
+      callID: "call_preview",
+      state: { status: "running" as const, title: "bash", input: {}, metadata: { output } },
+    })
+    const routes = sessionRoutes(rows, {
+      ses_preview: [{ info: message("msg_preview", "ses_preview"), parts: [toolPart("")] }],
+    })
+    const { app, emit, sync } = await mount(routes, tmp.path)
+    const tool = () => {
+      const part = sync.data.part.msg_preview?.[0]
+      return part?.type === "tool" ? part : undefined
+    }
+    const output = () => {
+      const part = tool()
+      if (!part || (part.state.status !== "running" && part.state.status !== "completed")) return ""
+      return String(part.state.metadata?.output ?? "")
+    }
+
+    try {
+      await sync.session.activate("ses_preview")
+      emit(
+        global({
+          id: "evt_preview_1",
+          type: "message.part.preview",
+          properties: {
+            sessionID: "ses_preview",
+            messageID: "msg_preview",
+            partID: "prt_preview",
+            tail: "line 1\n",
+            totalLength: 7,
+            seq: 1,
+          },
+        }),
+      )
+      await wait(() => output() === "line 1\n")
+      const running = tool()
+      if (running?.state.status !== "running") throw new Error("expected a running tool part")
+      expect(running.state.metadata?.previewTotalLength).toBe(7)
+
+      emit(
+        global({
+          id: "evt_preview_done",
+          type: "message.part.updated",
+          properties: {
+            sessionID: "ses_preview",
+            time: 2,
+            part: {
+              ...toolPart("line 1\nline 2\n"),
+              state: {
+                status: "completed",
+                title: "bash",
+                input: {},
+                output: "line 1\nline 2\n",
+                metadata: { output: "line 1\nline 2\n" },
+                time: { start: 0, end: 1 },
+              },
+            },
+          },
+        }),
+      )
+      await wait(() => tool()?.state.status === "completed")
+      const settled = tool()
+      if (settled?.state.status !== "completed") throw new Error("expected a completed tool part")
+      expect(output()).toBe("line 1\nline 2\n")
+      expect(settled.state.metadata?.previewTotalLength).toBeUndefined()
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
   test("bootstrap fills the @alias reference list from the sync store", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")

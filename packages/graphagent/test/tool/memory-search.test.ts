@@ -209,7 +209,10 @@ describe("tool.memory_search", () => {
 
 function resolvedToolIDs(agent: Agent.Info, info: Session.Info) {
   const userID = MessageID.make(`msg_${info.id}`)
-  const processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall"> = {
+  const processor: Pick<
+    SessionProcessor.Handle,
+    "message" | "updateToolCall" | "previewToolCall" | "completeToolCall"
+  > = {
     message: {
       id: MessageID.make(`msg_assistant_${info.id}`),
       role: "assistant",
@@ -225,6 +228,7 @@ function resolvedToolIDs(agent: Agent.Info, info: Session.Info) {
       time: { created: 1 },
     },
     updateToolCall: () => Effect.succeed(undefined),
+    previewToolCall: () => Effect.void,
     completeToolCall: () => Effect.void,
   }
   const promptOps: TaskPromptOps = {
