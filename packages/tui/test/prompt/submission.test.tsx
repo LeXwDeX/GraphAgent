@@ -25,6 +25,7 @@ import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
+import { useCommands } from "../../src/commands/context"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
@@ -109,6 +110,11 @@ function SyncProbe(props: { onSync: (sync: ReturnType<typeof useSync>) => void }
 
 function SDKProbe(props: { ready: (value: ReturnType<typeof useSDK>) => void }) {
   props.ready(useSDK())
+  return <box />
+}
+
+function CommandProbe(props: { ready: (value: ReturnType<typeof useCommands>) => void }) {
+  props.ready(useCommands())
   return <box />
 }
 
@@ -202,6 +208,7 @@ async function mountRoute(
   let editor!: ReturnType<typeof useEditorContext>
   let sync!: ReturnType<typeof useSync>
   let sdk!: ReturnType<typeof useSDK>
+  let commands!: ReturnType<typeof useCommands>
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
   let counter!: () => number
   let resolveReady!: () => void
@@ -262,6 +269,7 @@ async function mountRoute(
                                                   />
                                                   <SyncProbe onSync={(value) => (sync = value)} />
                                                   <SDKProbe ready={(value) => (sdk = value)} />
+                                                  <CommandProbe ready={(value) => (commands = value)} />
                                                   <Show when={mounted()}>
                                                     {view === "session" ? (
                                                       <Main />
@@ -306,6 +314,7 @@ async function mountRoute(
     baseline: counter(),
     sync,
     sdk,
+    commands,
     events,
     keymap,
     editor,
@@ -1102,6 +1111,110 @@ test("session attention follows real typing, background child navigation, and un
     await Bun.sleep(150)
     expect(updates).toHaveLength(count)
     expect(updates.filter((item) => item.value.closed).every((item) => item.value.backgroundView === false)).toBe(true)
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("builtin slash commands execute locally and never reach the model", async () => {
+  const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
+  try {
+    configureModel(route)
+    const handled: string[] = []
+    route.commands.setHandler("session.new", (ctx) => {
+      handled.push(`new:${ctx.origin}:${ctx.args}`)
+    })
+    route.commands.setHandler("app.exit", (ctx) => {
+      handled.push(`exit:${ctx.origin}:${ctx.args}`)
+    })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const before = sent.length
+
+    prompt!.set({ input: "/new", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => handled.length === 1)
+    expect(prompt!.current.input).toBe("")
+
+    prompt!.set({ input: "/exit", parts: [] })
+    prompt!.submit()
+    await wait(() => handled.length === 2)
+    expect(prompt!.current.input).toBe("")
+
+    await Bun.sleep(20)
+    expect(handled).toEqual(["new:slash:", "exit:slash:"])
+    expect(sent.length).toBe(before)
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("server slash commands submit through session.command exactly once", async () => {
+  const commandBodies: Array<Record<string, unknown>> = []
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    async (url, request) => {
+      if (url.pathname === "/command") {
+        return json([
+          { name: "goal", description: "Set a goal", source: "command" },
+          { name: "goal-skill", description: "Hidden skill", source: "skill" },
+        ])
+      }
+      if (url.pathname === `/session/${routeSessionID}/command`) {
+        commandBodies.push((await request.json()) as Record<string, unknown>)
+        return json({})
+      }
+      return undefined
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    await route.local.model.set({ providerID: "test", modelID: "m" })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => route.sync.data.command.some((command) => command.name === "goal"))
+    await wait(() => Boolean(route.commands.find("goal")))
+    await wait(() => Boolean(prompt))
+    expect(route.commands.find("goal-skill")).toBeUndefined()
+    const before = sent.length
+
+    prompt!.set({ input: "/goal finish it", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => commandBodies.length === 1)
+    expect(commandBodies[0]).toMatchObject({ command: "goal", arguments: "finish it" })
+    await Bun.sleep(20)
+    expect(sent.length).toBe(before)
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("unknown slash and bare exit are submitted as normal messages", async () => {
+  const route = await mountRoute("prompt", [], false, undefined, routeSessionID)
+  try {
+    configureModel(route)
+    await route.local.model.set({ providerID: "test", modelID: "m" })
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const before = sent.length
+
+    prompt!.set({ input: "/not-a-command payload", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => sent.length === before + 1)
+    expect(sent[before].parts).toContainEqual({ type: "text", text: "/not-a-command payload" })
+
+    prompt!.set({ input: "exit", parts: [] })
+    prompt!.submit()
+    await wait(() => sent.length === before + 2)
+    expect(sent[before + 1].parts).toContainEqual({ type: "text", text: "exit" })
   } finally {
     await route.dispose()
   }

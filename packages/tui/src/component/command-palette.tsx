@@ -1,79 +1,61 @@
 import { createMemo } from "solid-js"
 import { DialogSelect, type DialogSelectRef } from "../ui/dialog-select"
 import { type DialogContext } from "../ui/dialog"
-import {
-  COMMAND_PALETTE_COMMAND,
-  formatKeyBindings,
-  type OpenTuiKeymap,
-  useKeymapSelector,
-  useGraphagentKeymap,
-} from "../keymap"
+import { formatKeyBindings, useGraphagentKeymap } from "../keymap"
 import { useTuiConfig } from "../config"
-
-type PaletteCommandEntry = ReturnType<OpenTuiKeymap["getCommandEntries"]>[number]
-
-function isVisiblePaletteCommand(command: PaletteCommandEntry["command"]) {
-  return command.hidden !== true && command.name !== COMMAND_PALETTE_COMMAND
-}
-
-function isSuggestedPaletteCommand(entry: PaletteCommandEntry) {
-  const suggested = entry.command.suggested
-  if (typeof suggested === "boolean") return suggested
-  if (typeof suggested === "function") return suggested() === true
-  return false
-}
+import { useCommands, useCommandScope } from "../commands/context"
+import { commandCategoryTitle, commandDescription, commandTitle } from "../commands/registry"
+import { paletteRows, selectPaletteCommand, suggestedCommandIds } from "../commands/palette"
+import { usePromptRef } from "../context/prompt"
+import { useRoute } from "../context/route"
+import { useSync } from "../context/sync"
+import { useConnected } from "./use-connected"
+import { t } from "../i18n"
 
 export function CommandPaletteDialog() {
   const config = useTuiConfig()
   const keymap = useGraphagentKeymap()
-  const entries = useKeymapSelector((keymap: OpenTuiKeymap) => {
-    const query = {
-      namespace: "palette",
-    }
-    const reachable = keymap.getCommandEntries({
-      ...query,
-      visibility: "reachable",
-      filter: isVisiblePaletteCommand,
-    })
-    const registeredBindings = keymap.getCommandBindings({
-      visibility: "registered",
-      commands: reachable.map((entry) => entry.command.name),
-    })
+  const registry = useCommands()
+  const commandScope = useCommandScope()
+  const prompt = usePromptRef()
+  const route = useRoute()
+  const sync = useSync()
+  const connected = useConnected()
 
-    return reachable.map((entry) => ({
-      ...entry,
-      bindings: registeredBindings.get(entry.command.name) ?? entry.bindings,
-    }))
+  const entries = createMemo(() => registry.list(commandScope()))
+  const bindings = createMemo(() => {
+    const ids = entries().map((spec) => spec.id)
+    return keymap.getCommandBindings({ visibility: "registered", commands: ids })
+  })
+  const suggested = createMemo(() =>
+    suggestedCommandIds({
+      scope: commandScope(),
+      hasSessions: sync.data.session.length > 0,
+      connected: connected(),
+    }),
+  )
+  const renameTitle = createMemo(() => {
+    if (route.data.type !== "session") return undefined
+    return sync.session.get(route.data.sessionID)?.title
   })
   const options = createMemo(() =>
-    entries().map((entry) => ({
-      title: typeof entry.command.title === "string" ? entry.command.title : entry.command.name,
-      description: typeof entry.command.desc === "string" ? entry.command.desc : undefined,
-      category: typeof entry.command.category === "string" ? entry.command.category : undefined,
-      footer: formatKeyBindings(entry.bindings, config),
-      value: entry.command.name,
-      suggested: isSuggestedPaletteCommand(entry),
-      onSelect: (dialog: DialogContext) => {
-        dialog.clear()
-        keymap.dispatchCommand(entry.command.name)
-      },
+    entries().map((spec) => ({
+      title: commandTitle(spec),
+      description: commandDescription(spec),
+      category: commandCategoryTitle(spec.category),
+      footer: formatKeyBindings(bindings().get(spec.id) ?? [], config),
+      value: spec.id,
+      suggested: suggested().has(spec.id),
+      onSelect: (dialog: DialogContext) =>
+        selectPaletteCommand({ registry, spec, dialog, prompt, renameTitle: renameTitle() }),
     })),
   )
 
   let ref: DialogSelectRef<string>
   const list = () => {
     if (ref?.filter) return options()
-    return [
-      ...options()
-        .filter((option) => option.suggested)
-        .map((option) => ({
-          ...option,
-          value: `suggested:${option.value}`,
-          category: "Suggested",
-        })),
-      ...options(),
-    ]
+    return paletteRows(options())
   }
 
-  return <DialogSelect ref={(value) => (ref = value)} title="Commands" options={list()} />
+  return <DialogSelect ref={(value) => (ref = value)} title={t("command.palette.title")} options={list()} />
 }
