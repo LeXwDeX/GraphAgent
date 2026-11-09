@@ -12,7 +12,7 @@ import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { eq } from "drizzle-orm"
-import { Deferred, Effect, Option, Scope } from "effect"
+import { Deferred, Effect, Fiber, Option, Scope } from "effect"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Runner } from "@/effect/runner"
 import { SessionCancellation } from "@/session/cancellation"
@@ -152,6 +152,7 @@ function makeHarness(db: Database.Interface["db"]) {
       db,
       sessions: mockSessions(),
       state,
+      scope,
       promptLocks: KeyedMutex.makeUnsafe<SessionID>(),
       // Keep the request current for the whole test: the real run-state layer
       // registers an owner that outlives this callback, which the stub state
@@ -297,7 +298,8 @@ describe("lastOutcome", () => {
       const sessionID = SessionID.make(`ses_outcome_${Date.now()}`)
       yield* ensureSession(db, sessionID)
       const first = userMessage(sessionID)
-      sessions.set(sessionID, { info: sessionInfo(sessionID), messages: [first] })
+      const second = userMessage(sessionID)
+      sessions.set(sessionID, { info: sessionInfo(sessionID), messages: [first, second] })
       yield* db
         .insert(SessionTurnTable)
         .values([
@@ -313,6 +315,8 @@ describe("lastOutcome", () => {
             time_started: 10,
             time_ended: 11,
           },
+          // Newest row, but its anchor message is gone: the scan must skip it
+          // instead of reporting this error.
           {
             id: "turn-missing-message",
             session_id: sessionID,
@@ -322,15 +326,29 @@ describe("lastOutcome", () => {
             user_message_id: "msg_deleted",
             steps: 1,
             runner_id: "1",
-            time_started: 20,
-            time_ended: 21,
+            time_started: 40,
+            time_ended: 41,
+          },
+          // Two valid rows with different outcomes: the newest valid row wins
+          // (a replay bug that returned the first row would report completed).
+          {
+            id: "turn-new",
+            session_id: sessionID,
+            origin: JSON.stringify({ kind: "user", via: "prompt" }),
+            state: "ended",
+            outcome: { type: "error", code: "late", retryable: true },
+            user_message_id: second.info.id,
+            steps: 1,
+            runner_id: "1",
+            time_started: 30,
+            time_ended: 31,
           },
         ])
         .run()
         .pipe(Effect.orDie)
 
       const outcome = yield* lastOutcomeOf({ db, sessions: mockSessions() }, sessionID)
-      expect(Option.getOrUndefined(outcome)).toEqual({ type: "completed" })
+      expect(Option.getOrUndefined(outcome)).toEqual({ type: "error", code: "late", retryable: true })
     }),
   )
 
@@ -537,6 +555,118 @@ describe("admission", () => {
       yield* second.wait
       const rows = yield* turnRows(db, sessionID)
       expect(rows).toHaveLength(1)
+    }),
+  )
+
+  // Live clock: the shell and the queued work run on real fibers.
+  it.live("a prompt queued behind a shell is started and owns the turn row", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(`ses_shell_queued_${Date.now()}`)
+      yield* ensureSession(db, sessionID)
+      const harness = yield* makeHarness(db)
+      const shell = Deferred.makeUnsafe<void>()
+      const user = userMessage(sessionID)
+      const assistant = assistantMessage(sessionID, user.info.id)
+      harness.setAdmit(() => Effect.succeed({ message: user, run: true }))
+      harness.setRun(() => Effect.succeed(completed(assistant, user)))
+
+      const runner = harness.runnerFor(sessionID)
+      const shellFiber = yield* runner
+        .startShell(Deferred.await(shell).pipe(Effect.as(assistantMessage(sessionID, user.info.id))))
+        .pipe(Effect.forkChild)
+
+      // Joining a shell queue must report the admission as `started`: the
+      // queued work will run `track` and insert this request's own row.
+      const started = yield* harness.turns.start(startInput(sessionID), {
+        origin: { kind: "user", via: "prompt" },
+        when: "now",
+      })
+      expect(started.admission.kind).toBe("started")
+      // The queued work has not started while the shell still owns the runner.
+      expect(yield* turnRows(db, sessionID)).toHaveLength(0)
+
+      yield* Deferred.succeed(shell, undefined)
+      yield* started.wait
+      yield* Fiber.await(shellFiber)
+      const rows = yield* turnRows(db, sessionID)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ state: "ended", outcome: { type: "completed" } })
+    }),
+  )
+
+  // Live clock: cancellation is delivered to real fibers, and the watcher
+  // settles the handle from the dropped queued work.
+  it.live("cancelling a shell-queued admission before track settles the handle as cancelled", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(`ses_shell_cancel_${Date.now()}`)
+      yield* ensureSession(db, sessionID)
+      const harness = yield* makeHarness(db)
+      const shell = Deferred.makeUnsafe<void>()
+      const user = userMessage(sessionID)
+      let ran = false
+      harness.setAdmit(() => Effect.succeed({ message: user, run: true }))
+      harness.setRun(() => {
+        ran = true
+        return Effect.succeed(completed(assistantMessage(sessionID, user.info.id), user))
+      })
+
+      const runner = harness.runnerFor(sessionID)
+      const shellFiber = yield* runner
+        .startShell(Deferred.await(shell).pipe(Effect.as(assistantMessage(sessionID, user.info.id))))
+        .pipe(Effect.forkChild)
+
+      const started = yield* harness.turns.start(startInput(sessionID), {
+        origin: { kind: "user", via: "prompt" },
+        when: "now",
+      })
+      if (started.admission.kind !== "started") throw new Error(`unexpected ${started.admission.kind}`)
+      const turn = started.admission.turn
+      expect(yield* turn.status).toBe("running")
+
+      // ESC while the admission still waits behind the shell: the runner drops
+      // the queued work without ever entering `track`.
+      yield* runner.cancel
+      const outcome = yield* turn.result
+      expect(outcome).toMatchObject({ type: "cancelled" })
+      expect(yield* turn.status).toBe("ended")
+      expect(yield* turnRows(db, sessionID)).toHaveLength(0)
+      expect(ran).toBe(false)
+
+      yield* Deferred.succeed(shell, undefined)
+      yield* Fiber.await(shellFiber)
+    }),
+  )
+
+  it.effect("idle admission activates the prepared turn and settles exactly one row", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(`ses_prepare_${Date.now()}`)
+      yield* ensureSession(db, sessionID)
+      const harness = yield* makeHarness(db)
+      const user = userMessage(sessionID)
+      const assistant = assistantMessage(sessionID, user.info.id)
+      harness.setAdmit(() => Effect.succeed({ message: user, run: true }))
+      harness.setRun(() => Effect.succeed(completed(assistant, user, 1)))
+
+      // `when: "idle"` is the DAG-wake / goal-continuation admission path:
+      // reserve the runner, commit the message, activate the work.
+      const started = yield* harness.turns.start(startInput(sessionID), {
+        origin: { kind: "user", via: "prompt" },
+        when: "idle",
+      })
+      expect(started.admission.kind).toBe("started")
+      expect((yield* started.wait).info.id).toBe(assistant.info.id)
+
+      const rows = yield* turnRows(db, sessionID)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({
+        state: "ended",
+        outcome: { type: "completed" },
+        user_message_id: user.info.id,
+        last_assistant_id: assistant.info.id,
+      })
     }),
   )
 

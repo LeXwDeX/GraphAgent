@@ -694,6 +694,7 @@ export const layer = Layer.effect(
       db,
       sessions,
       state,
+      scope,
       promptLocks,
       withRunRequest,
       goal,
@@ -717,7 +718,16 @@ export const layer = Layer.effect(
             const tracked = turns()
               .track(handle, runTurn(input.sessionID))
               .pipe(Effect.map((turn) => turn.message))
-            return yield* state.ensureRunningHandle(input.sessionID, lastAssistant(input.sessionID), tracked, request)
+            const result = yield* state.ensureRunningHandle(
+              input.sessionID,
+              lastAssistant(input.sessionID),
+              tracked,
+              request,
+            )
+            // A join can discard this request's work before `track`; settle
+            // the handle so it does not stay `running` forever.
+            yield* turns().watch(handle, result)
+            return result
           }),
         ),
       )
@@ -923,14 +933,20 @@ export const layer = Layer.effect(
                       : { kind: "user", via: "prompt" }
                   const handle = turns().begin(input.sessionID, origin)
                   return yield* commit(
-                    state.ensureRunningHandle(
-                      input.sessionID,
-                      lastAssistant(input.sessionID),
-                      turns()
-                        .track(handle, runTurn(input.sessionID))
-                        .pipe(Effect.map((turn) => turn.message)),
-                      request,
-                    ),
+                    Effect.gen(function* () {
+                      const result = yield* state.ensureRunningHandle(
+                        input.sessionID,
+                        lastAssistant(input.sessionID),
+                        turns()
+                          .track(handle, runTurn(input.sessionID))
+                          .pipe(Effect.map((turn) => turn.message)),
+                        request,
+                      )
+                      // Same settlement as `loop`: a join drops this request's
+                      // tracked work before it can write or settle a row.
+                      yield* turns().watch(handle, result)
+                      return result
+                    }),
                   )
                 }),
               ),

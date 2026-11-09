@@ -7,7 +7,7 @@ import type { SessionAdmission } from "@graphagent/core/session/admission"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { and, desc, eq } from "drizzle-orm"
-import { Cause, Deferred, Effect, Exit, Option } from "effect"
+import { Cause, Deferred, Effect, Exit, Option, type Scope } from "effect"
 import { randomUUID } from "node:crypto"
 import type { Goal } from "@/goal/goal"
 import type { RewakeToken, SettingsHook } from "@/hook"
@@ -113,10 +113,15 @@ export interface TurnHandle {
  * stale rewake refused before the machine). Those are not "busy" and must not
  * be reported as such.
  *
- * `joined` normally names the running turn handle. A join can also land on a
- * runner whose work this PR does not track (a shell command or a non-model
- * command); then `turn` is the request's own untracked handle and no row is
- * written for it.
+ * `started` means this request owns the loop machine that will write the turn
+ * row. That includes a request queued behind a running shell command: the
+ * runner starts the queued work after the shell ends, and its `track` inserts
+ * the row.
+ *
+ * `joined` means the request attached to work this call will never run: a
+ * running turn (its handle is the one named by `turn`) or another request's
+ * queued run. Its own handle is discarded before `track`, so neither a row nor
+ * a settlement is written for it.
  */
 export type TurnAdmission =
   | { readonly kind: "started"; readonly turn: TurnHandle }
@@ -152,6 +157,8 @@ export interface TurnDeps {
   readonly db: Database.Interface["db"]
   readonly sessions: Session.Interface
   readonly state: SessionRunState.Interface
+  /** Long-lived scope that owns the admission watchers (one fiber per admission). */
+  readonly scope: Scope.Scope
   readonly promptLocks: KeyedMutex.KeyedMutex<SessionID>
   readonly withRunRequest: <A, E, R>(
     sessionID: SessionID,
@@ -204,6 +211,15 @@ export interface Interface {
     work: Effect.Effect<TurnExecution>,
   ) => Effect.Effect<TurnExecution>
   readonly track: <A extends TurnExecution>(handle: TurnHandle, work: Effect.Effect<A>) => Effect.Effect<A>
+  /**
+   * Watch one admission to completion and settle its handle if `track` never
+   * ran (the runner joined or discarded the queued work). Idempotent with
+   * `track`'s own settlement. Forked on the long-lived scope so the handle
+   * settles even when its caller stops awaiting the admission result.
+   */
+  readonly watch: (handle: TurnHandle, admission: Effect.Effect<unknown>) => Effect.Effect<void>
+  /** Settle a handle once; later calls are no-ops. */
+  readonly settle: (handle: TurnHandle, outcome: TurnOutcome) => Effect.Effect<void>
   readonly begin: (sessionID: SessionID, origin: TurnOrigin, userMessageID?: MessageID) => TurnHandle
 }
 
@@ -447,6 +463,39 @@ export function makeTurns(deps: TurnDeps): Interface {
     return handle
   }
 
+  // One settlement per handle. `track` settles from the work's exit handler
+  // under its mask; `watch` settles from the admission result when the work
+  // was never tracked (cancelled in the shell queue, or joined). The status
+  // flip keeps the two paths from double-settling the deferred.
+  const settle = (turn: TurnHandle, outcome: TurnOutcome): Effect.Effect<void> => {
+    const handle = internals.get(turn)
+    if (!handle) throw new Error(`unknown turn handle ${turn.id}`)
+    return Effect.sync(() => {
+      if (handle.live.status === "ended") return false
+      handle.live.status = "ended"
+      if (currents.get(handle.sessionID) === handle) currents.delete(handle.sessionID)
+      return true
+    }).pipe(
+      Effect.flatMap((settled) => (settled ? Deferred.succeed(handle.outcome, outcome) : Effect.void)),
+      Effect.uninterruptible,
+      Effect.asVoid,
+    )
+  }
+
+  const settleCancelled = (handle: InternalHandle) =>
+    settle(handle, { type: "cancelled", reason: SessionAbortReason.peek(handle.sessionID)?.reason })
+
+  const watch = (turn: TurnHandle, admission: Effect.Effect<unknown>): Effect.Effect<void> => {
+    const handle = internals.get(turn)
+    if (!handle) throw new Error(`unknown turn handle ${turn.id}`)
+    return Effect.suspend(() => {
+      if (handle.live.status === "ended") return Effect.void
+      return Effect.forkIn(admission.pipe(Effect.exit, Effect.andThen(settleCancelled(handle))), deps.scope).pipe(
+        Effect.asVoid,
+      )
+    })
+  }
+
   const track = <A extends TurnExecution>(turn: TurnHandle, work: Effect.Effect<A>): Effect.Effect<A> => {
     const handle = internals.get(turn)
     if (!handle) throw new Error(`unknown turn handle ${turn.id}`)
@@ -490,9 +539,7 @@ export function makeTurns(deps: TurnDeps): Interface {
               Effect.logWarning("session turn end write failed", { turnID: handle.id, cause }),
             ),
           )
-        if (currents.get(handle.sessionID) === handle) currents.delete(handle.sessionID)
-        handle.live.status = "ended"
-        yield* Deferred.succeed(handle.outcome, outcome)
+        yield* settle(handle, outcome)
         return yield* exit
       }),
     )
@@ -545,6 +592,9 @@ export function makeTurns(deps: TurnDeps): Interface {
                 request,
               )
               if (Option.isNone(wait)) return Option.none<IdleAdmission>()
+              // A cancel can interrupt the forked work before it activates;
+              // the watcher keeps the reserved handle from staying `running`.
+              yield* watch(handle, wait.value)
 
               const admitted = yield* restore(
                 deps
@@ -635,6 +685,10 @@ export function makeTurns(deps: TurnDeps): Interface {
           if (classified.kind === "skipped") {
             return { admission: { kind: "skipped_busy" }, wait: classified.result } satisfies TurnStart
           }
+          // Settle a handle whose queued work is discarded before `track`
+          // (cancel while it waits behind a shell, or a join that abandoned
+          // this request's work). `track` owns the normal settlement.
+          yield* watch(handle, classified.result)
           if (classified.kind === "joined") {
             const current = currents.get(input.sessionID)
             return {
@@ -642,6 +696,8 @@ export function makeTurns(deps: TurnDeps): Interface {
               wait: classified.result,
             } satisfies TurnStart
           }
+          // `queued` (behind a shell) starts this request's own turn later, so
+          // it is reported as `started`: that work will insert the row.
           return {
             admission: { kind: "started", turn: handle },
             wait: classified.result,
@@ -670,7 +726,7 @@ export function makeTurns(deps: TurnDeps): Interface {
       return cancellation
     })
 
-  return { start, prepare, current, lastOutcome, beginCancel, run, track, begin }
+  return { start, prepare, current, lastOutcome, beginCancel, run, track, watch, settle, begin }
 }
 
 export * as Turns from "./turns"

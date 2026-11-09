@@ -32,6 +32,7 @@ import { Todo } from "../../src/session/todo"
 import { TodoReminders } from "../../src/session/todo-reminders"
 import { Session } from "@/session/session"
 import { SessionTable } from "@graphagent/core/session/sql"
+import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -1132,6 +1133,71 @@ it.instance("DAG messages enter an actual model input once and receive does not 
     expect(
       (yield* llm.hits).filter((hit) => !JSON.stringify(hit.body).includes("Generate a title for this conversation")),
     ).toHaveLength(1)
+  }),
+)
+
+it.instance("prompt.loop records one ended turn row for the DAG child-run entry", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const { db } = yield* Database.Service
+    const chat = yield* sessions.create({ title: "DAG child run turn row" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "DAG_CHILD_INPUT" }],
+    })
+    yield* llm.text("DAG_CHILD_OUTPUT")
+    const result = yield* prompt.loop({ sessionID: chat.id }, { kind: "child_run" })
+    expect(result.parts.some((part) => part.type === "text" && part.text === "DAG_CHILD_OUTPUT")).toBe(true)
+    const turns = yield* db
+      .select()
+      .from(SessionTurnTable)
+      .where(eq(SessionTurnTable.session_id, chat.id))
+      .all()
+      .pipe(Effect.orDie)
+    expect(turns).toHaveLength(1)
+    expect(turns[0]).toMatchObject({
+      state: "ended",
+      origin: JSON.stringify({ kind: "child_run" }),
+      last_assistant_id: String(result.info.id),
+    })
+    expect(turns[0].outcome).toEqual({ type: "completed" })
+    expect(turns[0].time_ended).toBeGreaterThan(0)
+  }),
+)
+
+it.instance("prompt.resume records exactly one ended turn row for a queued initial message", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const lifecycle = yield* HookLifecycle.Service
+    const { db } = yield* Database.Service
+    const chat = yield* sessions.create({ title: "Resume turn row" })
+    yield* lifecycle.queueInitial(chat.id, "RESUME_INITIAL_INPUT")
+    yield* llm.text("RESUME_INITIAL_OUTPUT")
+    const result = yield* prompt.resume({ sessionID: chat.id, hookMode: "noninteractive" })
+    expect(result?.parts.some((part) => part.type === "text" && part.text === "RESUME_INITIAL_OUTPUT")).toBe(true)
+    const history = yield* sessions.messages({ sessionID: chat.id })
+    expect(history.filter((message) => message.info.role === "user")).toHaveLength(1)
+    const turns = yield* db
+      .select()
+      .from(SessionTurnTable)
+      .where(eq(SessionTurnTable.session_id, chat.id))
+      .all()
+      .pipe(Effect.orDie)
+    expect(turns).toHaveLength(1)
+    expect(turns[0]).toMatchObject({
+      state: "ended",
+      origin: JSON.stringify({ kind: "user", via: "prompt" }),
+      user_message_id: String(history.find((message) => message.info.role === "user")?.info.id),
+      last_assistant_id: String(result?.info.id),
+    })
+    expect(turns[0].outcome).toEqual({ type: "completed" })
+    expect(turns[0].time_ended).toBeGreaterThan(0)
   }),
 )
 
