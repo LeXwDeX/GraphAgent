@@ -4,7 +4,7 @@ import { useDialog, type DialogContext } from "./dialog"
 import { createStore } from "solid-js/store"
 import { For } from "solid-js"
 import { Locale } from "../util/locale"
-import { useBindings } from "../keymap"
+import { EscapePriority, useBindings } from "../keymap"
 
 export type DialogConfirmProps = {
   title: string
@@ -24,6 +24,9 @@ export function DialogConfirm(props: DialogConfirmProps) {
   })
 
   useBindings(() => ({
+    // A confirmation can open above a panel, whose own return binding uses the
+    // modal priority; the confirm layer must win while it is visible.
+    priority: EscapePriority.modalHelp,
     bindings: [
       {
         key: "return",

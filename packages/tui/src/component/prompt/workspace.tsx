@@ -5,12 +5,13 @@ import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
+import { t } from "../../i18n"
 import {
   confirmWorkspaceFileChanges,
-  openWorkspaceSelect,
+  openWorkspacePanel,
   warpWorkspaceSession,
   type WorkspaceSelection,
-} from "../dialog-workspace-create"
+} from "../../panel/workspace-select"
 import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import type { WorkspaceStatus } from "../workspace-label"
 
@@ -34,14 +35,14 @@ export function usePromptWorkspace(sessionID?: string) {
     } catch (err) {
       setSelection(undefined)
       setCreating(false)
-      toast.show({ title: "Creating workspace failed", message: errorMessage(err), variant: "error" })
+      toast.show({ title: t("panel.workspace.create.failed"), message: errorMessage(err), variant: "error" })
       return
     }
     if (result.error || !result.data) {
       setSelection(undefined)
       setCreating(false)
       toast.show({
-        title: "Creating workspace failed",
+        title: t("panel.workspace.create.failed"),
         message: errorMessage(result.error ?? "no response"),
         variant: "error",
       })
@@ -63,7 +64,6 @@ export function usePromptWorkspace(sessionID?: string) {
   async function warp(selection: WorkspaceSelection) {
     if (!sessionID) {
       setSelection(selection)
-      dialog.clear()
       if (selection.type === "new") void create(selection)
       return
     }
@@ -78,7 +78,6 @@ export function usePromptWorkspace(sessionID?: string) {
       : undefined
     if (copyChanges === undefined) return
     setSelection(selection)
-    dialog.clear()
 
     const workspace =
       selection.type === "none"
@@ -89,12 +88,10 @@ export function usePromptWorkspace(sessionID?: string) {
     if (!workspace) return
 
     const warped = await warpWorkspaceSession({
-      dialog,
       sdk,
       sync,
       project,
       toast,
-      sourceWorkspaceID,
       workspaceID: workspace.id,
       sessionID,
       copyChanges,
@@ -103,7 +100,7 @@ export function usePromptWorkspace(sessionID?: string) {
   }
 
   function showNotice(name: string) {
-    setNotice(`Warped to ${name}`)
+    setNotice(t("panel.workspace.warped", { name }))
     setTimeout(() => setNotice(undefined), 4000)
   }
 
@@ -112,7 +109,16 @@ export function usePromptWorkspace(sessionID?: string) {
   }
 
   function open() {
-    void openWorkspaceSelect({ dialog, sdk, sync, project, toast, onSelect: warp })
+    if (!bottomZone) return
+    void openWorkspacePanel({
+      host: bottomZone.host,
+      dialog,
+      sdk,
+      sync,
+      project,
+      toast,
+      onSelect: warp,
+    })
   }
 
   createEffect(() => {

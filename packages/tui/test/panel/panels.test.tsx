@@ -71,6 +71,17 @@ function providerFixture(): Provider {
   }
 }
 
+function otherProviderFixture(): Provider {
+  const base = providerFixture()
+  const model = base.models.m1!
+  return {
+    ...base,
+    id: "other",
+    name: "Other Provider",
+    models: { o1: { ...model, id: "o1", name: "Other Model", providerID: "other" } },
+  }
+}
+
 test("agent panel selects an agent and closes", async () => {
   await using tmp = await shellState()
   let panelHost: PanelHostApi | undefined
@@ -216,6 +227,39 @@ test("model panel selects a model and closes", async () => {
     expect(ctx.local.model.current()).toEqual({ providerID: "test", modelID: "m2" } satisfies ModelRef)
     expect(panelHost?.depth()).toBe(0)
     expect(app.captureCharFrame()).not.toContain("选择模型")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("model panel scoped to a provider lists only that provider's models", async () => {
+  await using tmp = await shellState()
+  const app = await renderAppPanel(
+    () => (
+      <PanelSurface
+        spec={{
+          id: "model",
+          render: () => <ModelPanel providerID="other" onConnectProvider={() => {}} onVariant={() => {}} />,
+        }}
+      />
+    ),
+    {
+      width: 120,
+      height: 40,
+      state: tmp.path,
+      setup: (context) => {
+        context.sync.set("agent", agents)
+        context.sync.set("provider", [providerFixture(), otherProviderFixture()])
+      },
+    },
+  )
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Other Provider")
+    expect(frame).toContain("Other Model")
+    expect(frame).not.toContain("Model One")
+    expect(frame).not.toContain("Model Two")
   } finally {
     app.renderer.destroy()
   }

@@ -16,7 +16,9 @@ export interface ModelRef {
 }
 
 export interface ModelPanelProps {
-  /** Providers are connected through the legacy dialog until C3 migrates it. */
+  /** Set after connecting a provider: list only that provider's models, newest first. */
+  providerID?: string
+  /** Opens the provider panel. */
   onConnectProvider(): void
   /** Variant selection still lives in the dialog flow for now. */
   onVariant(): void
@@ -44,48 +46,55 @@ export function ModelPanel(props: ModelPanelProps) {
   const candidates = createMemo<Candidate[]>(() => {
     const favoriteList = favorites()
     const recentList = local.model.recent()
+    // After connecting, hide favorites/recents so the new provider's models lead.
+    const showExtra = connected() && !props.providerID
     const isFavorite = (ref: ModelRef) =>
       favoriteList.some((item) => item.providerID === ref.providerID && item.modelID === ref.modelID)
     const isRecent = (ref: ModelRef) =>
       recentList.some((item) => item.providerID === ref.providerID && item.modelID === ref.modelID)
 
-    const favoriteOptions: Candidate[] = favoriteList.flatMap((item) => {
-      const provider = sync.data.provider.find((entry) => entry.id === item.providerID)
-      const model = provider?.models[item.modelID]
-      if (!provider || !model) return []
-      return [
-        {
-          id: `${provider.id}/${model.id}`,
-          value: { providerID: provider.id, modelID: model.id },
-          title: model.name ?? item.modelID,
-          description: provider.name,
-          group: t("panel.model.group.favorites"),
-          releaseDate: model.release_date,
-          footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
-        },
-      ]
-    })
+    const favoriteOptions: Candidate[] = showExtra
+      ? favoriteList.flatMap((item) => {
+          const provider = sync.data.provider.find((entry) => entry.id === item.providerID)
+          const model = provider?.models[item.modelID]
+          if (!provider || !model) return []
+          return [
+            {
+              id: `${provider.id}/${model.id}`,
+              value: { providerID: provider.id, modelID: model.id },
+              title: model.name ?? item.modelID,
+              description: provider.name,
+              group: t("panel.model.group.favorites"),
+              releaseDate: model.release_date,
+              footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
+            },
+          ]
+        })
+      : []
 
-    const recentOptions: Candidate[] = recentList
-      .filter((item) => !isFavorite(item))
-      .flatMap((item) => {
-        const provider = sync.data.provider.find((entry) => entry.id === item.providerID)
-        const model = provider?.models[item.modelID]
-        if (!provider || !model) return []
-        return [
-          {
-            id: `${provider.id}/${model.id}`,
-            value: { providerID: provider.id, modelID: model.id },
-            title: model.name ?? item.modelID,
-            description: provider.name,
-            group: t("panel.model.group.recent"),
-            releaseDate: model.release_date,
-            footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
-          },
-        ]
-      })
+    const recentOptions: Candidate[] = showExtra
+      ? recentList
+          .filter((item) => !isFavorite(item))
+          .flatMap((item) => {
+            const provider = sync.data.provider.find((entry) => entry.id === item.providerID)
+            const model = provider?.models[item.modelID]
+            if (!provider || !model) return []
+            return [
+              {
+                id: `${provider.id}/${model.id}`,
+                value: { providerID: provider.id, modelID: model.id },
+                title: model.name ?? item.modelID,
+                description: provider.name,
+                group: t("panel.model.group.recent"),
+                releaseDate: model.release_date,
+                footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
+              },
+            ]
+          })
+      : []
 
     const modelOptions = sync.data.provider
+      .filter((provider) => !props.providerID || provider.id === props.providerID)
       .toSorted((left, right) => {
         const opencode = Number(left.id !== "opencode") - Number(right.id !== "opencode")
         return opencode || left.name.localeCompare(right.name)
@@ -106,8 +115,10 @@ export function ModelPanel(props: ModelPanelProps) {
                 footer: info.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
               } satisfies Candidate
             })
-            .filter((option) => !connected() || (!isFavorite(option.value) && !isRecent(option.value))),
-          false,
+            .filter(
+              (option) => !connected() || props.providerID || (!isFavorite(option.value) && !isRecent(option.value)),
+            ),
+          props.providerID !== undefined,
         ),
       )
 
@@ -135,9 +146,15 @@ export function ModelPanel(props: ModelPanelProps) {
     if (list.length > 0) props.onVariant()
   }
 
+  // A provider-scoped list is titled with the provider, matching the connect flow.
+  const title = createMemo(() => {
+    if (!props.providerID) return t("panel.model.title")
+    return sync.data.provider.find((entry) => entry.id === props.providerID)?.name ?? t("panel.model.title")
+  })
+
   return (
     <ListPanel
-      title={t("panel.model.title")}
+      title={title()}
       command="/model"
       items={items()}
       current={local.model.current()}
