@@ -11,10 +11,12 @@ import {
   warpWorkspaceSession,
   type WorkspaceSelection,
 } from "../dialog-workspace-create"
+import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import type { WorkspaceStatus } from "../workspace-label"
 
 export function usePromptWorkspace(sessionID?: string) {
   const dialog = useDialog()
+  const bottomZone = useBottomZoneOptional()
   const sdk = useSDK()
   const project = useProject()
   const sync = useSync()
@@ -66,7 +68,14 @@ export function usePromptWorkspace(sessionID?: string) {
       return
     }
     const sourceWorkspaceID = project.workspace.current()
-    const copyChanges = await confirmWorkspaceFileChanges({ dialog, sdk, sourceWorkspaceID })
+    const copyChanges = bottomZone
+      ? await confirmWorkspaceFileChanges({
+          dialog,
+          host: bottomZone.host,
+          sdk,
+          sourceWorkspaceID,
+        })
+      : undefined
     if (copyChanges === undefined) return
     setSelection(selection)
     dialog.clear()

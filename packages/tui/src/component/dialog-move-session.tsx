@@ -15,7 +15,8 @@ import { useToast } from "../ui/toast"
 import { useCommandShortcut } from "../keymap"
 import { useProject } from "../context/project"
 import { Spinner } from "./spinner"
-import { DialogWorkspaceFileChanges } from "./dialog-workspace-file-changes"
+import { showWorkspaceFileChanges } from "../panel/workspace-file-changes"
+import { useBottomZoneOptional } from "../shell/bottom-zone"
 import type { ProjectDirectories } from "@graphagent/sdk"
 import { useRoute } from "../context/route"
 
@@ -33,6 +34,7 @@ type DialogMoveSessionProps = {
 
 export function DialogMoveSession(props: DialogMoveSessionProps) {
   const dialog = useDialog()
+  const bottomZone = useBottomZoneOptional()
   const sdk = useSDK()
   const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
@@ -232,10 +234,17 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
       setRemoving(undefined)
       setWorking(false)
       if ("data" in result.error && result.error.data.forceRequired) {
+        if (!bottomZone) {
+          reopen()
+          return
+        }
         const status = await sdk.client.vcs
           .status({ headers: locationHeaders({ directory: selected.directory }) })
           .catch(() => undefined)
-        const choice = await DialogWorkspaceFileChanges.show(dialog, status?.data ?? [], {
+        const choice = await showWorkspaceFileChanges({
+          host: bottomZone.host,
+          dialog,
+          files: status?.data ?? [],
           title: "Delete working copy?",
           message: "This working copy has file changes. Do you want to delete it anyway?",
         })
