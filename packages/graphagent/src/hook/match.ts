@@ -24,6 +24,76 @@ export function agentToPermissionMode(agentName: string | undefined): "plan" | "
 }
 // ── Matcher ─────────────────────────────────────────────────────
 
+export type CompiledMatcher = (target: string) => boolean
+
+/**
+ * D1 PR3: `(event, matcher)` -> compiled predicate. Settings chains are rebuilt
+ * whole on reload, and session-scoped hooks are re-planned per trigger, so the
+ * same matcher strings are evaluated many times; compiling the RegExp once per
+ * distinct pair keeps the trigger path allocation-free. The bound is a safety
+ * valve for dynamically generated session hooks, not an expected size.
+ */
+const matcherCache = new Map<string, CompiledMatcher>()
+const MATCHER_CACHE_LIMIT = 1024
+
+/** Test-only counters; not part of the hook's public surface. */
+export const __matcherStats = {
+  regexCompiles: 0,
+  cacheHits: 0,
+  get cacheSize() {
+    return matcherCache.size
+  },
+}
+
+export function resetMatcherStats() {
+  __matcherStats.regexCompiles = 0
+  __matcherStats.cacheHits = 0
+}
+
+const alwaysTrue: CompiledMatcher = () => true
+
+function compileRegex(matcher: string, event: HookEvent | undefined): CompiledMatcher {
+  const key = `${event ?? "*"}\0${matcher}`
+  const cached = matcherCache.get(key)
+  if (cached) {
+    __matcherStats.cacheHits++
+    return cached
+  }
+  __matcherStats.regexCompiles++
+  let regex: RegExp | undefined
+  try {
+    regex = new RegExp(matcher)
+  } catch {
+    log.warn("invalid regex in hook matcher", { matcher })
+  }
+  const compiled: CompiledMatcher = regex ? (target) => regex.test(target) : () => false
+  if (matcherCache.size >= MATCHER_CACHE_LIMIT) {
+    const oldest = matcherCache.keys().next()
+    if (!oldest.done) matcherCache.delete(oldest.value)
+  }
+  matcherCache.set(key, compiled)
+  return compiled
+}
+
+/**
+ * Compile a CC matcher pattern into a predicate. Literal and pipe-list matchers
+ * never construct a RegExp; only the regex fallback is cached by
+ * `(matcher, event)`.
+ */
+export function compileMatcher(matcher: string | undefined, event?: HookEvent): CompiledMatcher {
+  if (!matcher || matcher === "*") return alwaysTrue
+  if (event === "FileChanged" || event === "StopFailure") {
+    if (/^[A-Za-z0-9_|]+$/.test(matcher)) {
+      const allowed = new Set(matcher.split("|"))
+      return (target) => allowed.has(target)
+    }
+  } else if (/^[A-Za-z0-9_\-,| ]+$/.test(matcher)) {
+    const allowed = new Set(matcher.split(/[|,]/).map((part) => part.trim()))
+    return (target) => allowed.has(target)
+  }
+  return compileRegex(matcher, event)
+}
+
 /**
  * Match a string (typically tool name) against a CC matcher pattern.
  * Supports: exact, pipe list, regex, wildcard "*"/empty.
@@ -32,22 +102,7 @@ export function agentToPermissionMode(agentName: string | undefined): "plan" | "
  * matcher should usually be undefined/"*" in those configs.
  */
 export function matches(matcher: string | undefined, target: string, event?: HookEvent): boolean {
-  if (!matcher || matcher === "*") return true
-  if (event === "FileChanged" || event === "StopFailure") {
-    if (/^[A-Za-z0-9_|]+$/.test(matcher)) return matcher.split("|").includes(target)
-  } else if (/^[A-Za-z0-9_\-,| ]+$/.test(matcher)) {
-    return matcher
-      .split(/[|,]/)
-      .map((part) => part.trim())
-      .includes(target)
-  }
-
-  try {
-    return new RegExp(matcher).test(target)
-  } catch {
-    log.warn("invalid regex in hook matcher", { matcher })
-    return false
-  }
+  return compileMatcher(matcher, event)(target)
 }
 /**
  * Decide which target string to feed the matcher for a given event (Claude

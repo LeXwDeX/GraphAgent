@@ -5,7 +5,7 @@
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import { commandText, expandCommand, httpUrl } from "../exec/command"
-import { matches } from "../match"
+import { compileMatcher, type CompiledMatcher } from "../match"
 import type { HookCommand, HookEvent, HookMatcher, HookPayload } from "../types"
 
 /**
@@ -58,13 +58,14 @@ function supportsHandler(event: HookEvent, type: HookCommand["type"]): boolean {
   return OBSERVATIONAL_HANDLER_TYPES.has(type)
 }
 
-/** A group runs when the event exposes no matcher targets or one target matches its matcher. */
-export function groupMatches(
-  group: Pick<HookMatcher, "matcher">,
-  targets: readonly string[] | undefined,
-  event: HookEvent,
-): boolean {
-  return targets === undefined || targets.some((target) => matches(group.matcher, target, event))
+/** A group runs when the event exposes no matcher targets or one target matches its compiled matcher. */
+export function groupMatches(test: CompiledMatcher, targets: readonly string[] | undefined): boolean {
+  return targets === undefined || targets.some((target) => test(target))
+}
+
+/** Compile a session-scoped group's matcher; the settings chain uses `index-by-event`. */
+export function compileGroup(group: Pick<HookMatcher, "matcher">, event: HookEvent): CompiledMatcher {
+  return compileMatcher(group.matcher, event)
 }
 
 /** Handler type support plus the startup event surface that excludes MCP handlers. */
