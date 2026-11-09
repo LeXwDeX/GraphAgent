@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionRetry } from "../retry"
 import type { TurnState } from "./state"
