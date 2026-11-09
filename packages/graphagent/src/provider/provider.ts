@@ -862,6 +862,10 @@ const ProviderCapabilities = Schema.Struct({
   reasoning: Schema.Boolean,
   attachment: Schema.Boolean,
   toolcall: Schema.Boolean,
+  // Forced tool_choice capability, declared by provider model config. Absent
+  // means unknown, and unknown is treated as unsupported: structured-output
+  // turns only send tool_choice "required" when this is "required".
+  forcedToolChoice: optionalOmitUndefined(Schema.Literals(["required", "none"])),
   input: ProviderModalities,
   output: ProviderModalities,
   interleaved: ProviderInterleaved,
@@ -918,6 +922,13 @@ export const Model = Schema.Struct({
   variants: optionalOmitUndefined(Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Any))),
 }).annotate({ identifier: "Model" })
 export type Model = Types.DeepMutable<Schema.Schema.Type<typeof Model>>
+
+// Single place that interprets the forced tool_choice capability. Only an
+// explicit "required" allows a structured-output turn to send
+// tool_choice "required"; "none" and an absent (unknown) capability omit it.
+export function supportsForcedToolChoice(model: Model): boolean {
+  return model.capabilities.forcedToolChoice === "required"
+}
 
 export const Info = Schema.Struct({
   id: ProviderV2.ID,
@@ -1327,6 +1338,12 @@ export const layer = Layer.effect(
                 reasoning: model.reasoning ?? existingModel?.capabilities.reasoning ?? false,
                 attachment: model.attachment ?? existingModel?.capabilities.attachment ?? false,
                 toolcall: model.tool_call ?? existingModel?.capabilities.toolcall ?? true,
+                forcedToolChoice:
+                  model.tool_choice === undefined
+                    ? existingModel?.capabilities.forcedToolChoice
+                    : model.tool_choice
+                      ? "required"
+                      : "none",
                 input: {
                   text: model.modalities?.input?.includes("text") ?? existingModel?.capabilities.input.text ?? true,
                   audio: model.modalities?.input?.includes("audio") ?? existingModel?.capabilities.input.audio ?? false,

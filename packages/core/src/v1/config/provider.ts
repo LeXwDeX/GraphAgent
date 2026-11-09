@@ -30,6 +30,10 @@ export const Model = Schema.Struct({
   reasoning: Schema.optional(Schema.Boolean),
   temperature: Schema.optional(Schema.Boolean),
   tool_call: Schema.optional(Schema.Boolean),
+  tool_choice: Schema.optional(Schema.Boolean).annotate({
+    description:
+      'Whether this model accepts a forced tool choice. When true, json_schema turns send tool_choice "required"; false means the model does not support it and the parameter is omitted. When unset, the capability is unknown and the parameter is also omitted.',
+  }),
   interleaved: Schema.optional(
     Schema.Union([
       Schema.Literal(true),

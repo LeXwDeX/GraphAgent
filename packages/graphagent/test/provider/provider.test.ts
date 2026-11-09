@@ -930,6 +930,46 @@ it.instance(
 )
 
 it.instance(
+  "model tool_choice config maps to the forced tool choice capability",
+  Effect.gen(function* () {
+    const models = (yield* list)[ProviderV2.ID.make("tool-choice-models")].models
+    expect(models.supported.capabilities.forcedToolChoice).toBe("required")
+    expect(Provider.supportsForcedToolChoice(models.supported)).toBe(true)
+    expect(models.unsupported.capabilities.forcedToolChoice).toBe("none")
+    expect(Provider.supportsForcedToolChoice(models.unsupported)).toBe(false)
+    expect(models.unknown.capabilities.forcedToolChoice).toBeUndefined()
+    expect(Provider.supportsForcedToolChoice(models.unknown)).toBe(false)
+  }),
+  {
+    config: {
+      provider: {
+        "tool-choice-models": {
+          name: "Tool Choice Models",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            supported: {
+              name: "Supported",
+              tool_call: true,
+              tool_choice: true,
+              limit: { context: 8000, output: 2000 },
+            },
+            unsupported: {
+              name: "Unsupported",
+              tool_call: true,
+              tool_choice: false,
+              limit: { context: 8000, output: 2000 },
+            },
+            unknown: { name: "Unknown", tool_call: true, limit: { context: 8000, output: 2000 } },
+          },
+          options: { apiKey: "test" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
   "disabled_providers and enabled_providers interaction",
   Effect.gen(function* () {
     yield* set("ANTHROPIC_API_KEY", "test-anthropic")
