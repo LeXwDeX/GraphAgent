@@ -1281,15 +1281,24 @@ export type Config = {
   username?: string
   language?: "zh-CN" | "en"
   engine?: {
+    /**
+     * Draft concurrency limits for the session engine; values are provisional.
+     */
     concurrency?: {
       global?: number
       perProvider?: number
       childGlobal?: number
       taskReserve?: number
     }
+    /**
+     * Draft prompt-cache scheduling options; defaults are provisional.
+     */
     cache?: {
       staggerSiblings?: boolean
     }
+    /**
+     * Draft memory selection options; defaults are provisional.
+     */
     memory?: {
       selectTimeoutMs?: number
     }

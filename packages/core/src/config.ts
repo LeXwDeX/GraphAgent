@@ -12,6 +12,7 @@ import { AbsolutePath, PositiveInt } from "./schema"
 import { ConfigAgent } from "./config/agent"
 import { ConfigAttachments } from "./config/attachments"
 import { ConfigCompaction } from "./config/compaction"
+import { ConfigEngine } from "./config/engine"
 import { ConfigMCP } from "./config/mcp"
 import { ConfigReasoningDistillation } from "./config/reasoning-distillation"
 import { ConfigCommand } from "./config/command"
@@ -165,6 +166,7 @@ export const layer = Layer.effect(
         return undefined
       }
       ConfigMCP.rejectRemovedSettings(input, filepath)
+      ConfigEngine.rejectUnknownKeys(input, filepath)
 
       const info = Option.getOrUndefined(
         ConfigMigrateV1.isV1(input)

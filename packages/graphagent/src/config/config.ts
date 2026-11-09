@@ -20,6 +20,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
+import { ConfigEngine } from "@graphagent/core/config/engine"
 import { ConfigMCP } from "@graphagent/core/config/mcp"
 import { InvalidError as ConfigInvalidError, RemoteAuthError } from "@graphagent/core/v1/config/error"
 import { ConfigPermissionV1 } from "@graphagent/core/v1/config/permission"
@@ -324,6 +325,7 @@ export const layer = Layer.effect(
       )
       const parsed = ConfigParse.jsonc(expanded, source)
       ConfigMCP.rejectRemovedSettings(parsed, source)
+      ConfigEngine.rejectUnknownKeys(parsed, source)
       if (flags?.projectSettings) {
         const rejection = rejectProjectSettings(parsed, source)
         if (rejection) throw rejection

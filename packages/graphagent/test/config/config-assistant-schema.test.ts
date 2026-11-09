@@ -50,6 +50,7 @@ const SectionNode = Schema.Struct({
     Schema.String,
     Schema.Struct({ description: Schema.optional(Schema.String) }),
   ),
+  additionalProperties: Schema.optional(Schema.Boolean),
 })
 const Document = Schema.Struct({
   $ref: Schema.String,
@@ -57,17 +58,22 @@ const Document = Schema.Struct({
 })
 const Engine = Schema.Struct({
   properties: Schema.Struct({ concurrency: SectionNode, cache: SectionNode, memory: SectionNode }),
+  additionalProperties: Schema.optional(Schema.Boolean),
 })
 const ConfigDocument = Schema.Struct({ properties: Schema.Struct({ engine: Engine }) })
 
 test("published config schema documents the draft engine limits", async () => {
   const document = Schema.decodeUnknownSync(Document)(await Bun.file(published.config).json())
   const engine = Schema.decodeUnknownSync(ConfigDocument)(document.$defs[document.$ref.replace("#/$defs/", "")])
-    .properties.engine.properties
-  expect(engine.concurrency.properties.global.description).toContain("draft default: 24")
-  expect(engine.concurrency.properties.perProvider.description).toContain("draft default: 12")
-  expect(engine.concurrency.properties.childGlobal.description).toContain("draft default: 16")
-  expect(engine.concurrency.properties.taskReserve.description).toContain("draft default: 2")
-  expect(engine.cache.properties.staggerSiblings.description).toContain("default: true")
-  expect(engine.memory.properties.selectTimeoutMs.description).toContain("draft default: 3000")
+    .properties.engine
+  expect(engine.additionalProperties).toBe(false)
+  expect(engine.properties.concurrency.additionalProperties).toBe(false)
+  expect(engine.properties.cache.additionalProperties).toBe(false)
+  expect(engine.properties.memory.additionalProperties).toBe(false)
+  expect(engine.properties.concurrency.properties.global.description).toContain("draft default: 24")
+  expect(engine.properties.concurrency.properties.perProvider.description).toContain("draft default: 12")
+  expect(engine.properties.concurrency.properties.childGlobal.description).toContain("draft default: 16")
+  expect(engine.properties.concurrency.properties.taskReserve.description).toContain("draft default: 2")
+  expect(engine.properties.cache.properties.staggerSiblings.description).toContain("default: true")
+  expect(engine.properties.memory.properties.selectTimeoutMs.description).toContain("draft default: 3000")
 })

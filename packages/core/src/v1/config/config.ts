@@ -88,6 +88,56 @@ export const Dag = Schema.Struct({
     "DAG workflow settings. Every key in this object is read from the global layer only: the global config directory (graphagent.json/graphagent.jsonc), managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR. Values from project-level configuration are ignored with a warning.",
 })
 
+/** Message used when an unrecognized key appears under `engine`. */
+export const ENGINE_UNEXPECTED_KEY_MESSAGE = 'Unknown "engine" configuration key:'
+
+// `engine` is a closed draft surface. The shared config decoders ignore excess
+// properties, so a misspelled limit would be dropped silently; the loaders call
+// `ConfigEngine.rejectUnknownKeys` to report the full key path instead, and the
+// published schema marks these objects with `additionalProperties: false`.
+const closedEngine = {
+  additionalProperties: false,
+  messageUnexpectedKey: ENGINE_UNEXPECTED_KEY_MESSAGE,
+} as const
+
+export const Engine = Schema.Struct({
+  concurrency: Schema.optional(
+    Schema.Struct({
+      global: Schema.optional(PositiveInt).annotate({
+        description: "Maximum concurrent model streams in this process (draft default: 24, subject to measurement).",
+      }),
+      perProvider: Schema.optional(PositiveInt).annotate({
+        description: "Maximum concurrent model streams per provider (draft default: 12, subject to measurement).",
+      }),
+      childGlobal: Schema.optional(PositiveInt).annotate({
+        description: "Maximum concurrent child runs in this process (draft default: 16, subject to measurement).",
+      }),
+      taskReserve: Schema.optional(PositiveInt).annotate({
+        description:
+          "Child-run slots reserved for the task tool inside childGlobal (draft default: 2, subject to measurement).",
+      }),
+    }).annotate({
+      description: "Draft concurrency limits for the session engine; values are provisional.",
+      ...closedEngine,
+    }),
+  ),
+  cache: Schema.optional(
+    Schema.Struct({
+      staggerSiblings: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Release sibling child runs sharing a cache group one at a time until the first reports a token (default: true).",
+      }),
+    }).annotate({ description: "Draft prompt-cache scheduling options; defaults are provisional.", ...closedEngine }),
+  ),
+  memory: Schema.optional(
+    Schema.Struct({
+      selectTimeoutMs: Schema.optional(PositiveInt).annotate({
+        description: "Deadline for selecting project memory before a request (draft default: 3000 ms).",
+      }),
+    }).annotate({ description: "Draft memory selection options; defaults are provisional.", ...closedEngine }),
+  ),
+}).annotate(closedEngine)
+
 export const Info = Schema.Struct({
   $schema: Schema.optional(Schema.String).annotate({
     description: "JSON schema reference for configuration validation",
@@ -140,43 +190,9 @@ export const Info = Schema.Struct({
     description:
       "Interface language and default assistant reply language. When unset, inferred from the system locale.",
   }),
-  engine: Schema.optional(
-    Schema.Struct({
-      concurrency: Schema.optional(
-        Schema.Struct({
-          global: Schema.optional(PositiveInt).annotate({
-            description: "Maximum concurrent model streams in this process (draft default: 24, subject to measurement).",
-          }),
-          perProvider: Schema.optional(PositiveInt).annotate({
-            description: "Maximum concurrent model streams per provider (draft default: 12, subject to measurement).",
-          }),
-          childGlobal: Schema.optional(PositiveInt).annotate({
-            description: "Maximum concurrent child runs in this process (draft default: 16, subject to measurement).",
-          }),
-          taskReserve: Schema.optional(PositiveInt).annotate({
-            description:
-              "Child-run slots reserved for the task tool inside childGlobal (draft default: 2, subject to measurement).",
-          }),
-        }),
-      ).annotate({ description: "Draft concurrency limits for the session engine; values are provisional." }),
-      cache: Schema.optional(
-        Schema.Struct({
-          staggerSiblings: Schema.optional(Schema.Boolean).annotate({
-            description:
-              "Release sibling child runs sharing a cache group one at a time until the first reports a token (default: true).",
-          }),
-        }),
-      ).annotate({ description: "Draft prompt-cache scheduling options; defaults are provisional." }),
-      memory: Schema.optional(
-        Schema.Struct({
-          selectTimeoutMs: Schema.optional(PositiveInt).annotate({
-            description: "Deadline for selecting project memory before a request (draft default: 3000 ms).",
-          }),
-        }),
-      ).annotate({ description: "Draft memory selection options; defaults are provisional." }),
-    }),
-  ).annotate({
-    description: "Draft session-engine limits. Defaults are provisional and subject to measurement.",
+  engine: Schema.optional(Engine).annotate({
+    description:
+      "Draft session-engine limits. Defaults are provisional and subject to measurement. Unknown keys under engine are rejected when the configuration loads.",
   }),
   mode: Schema.optional(
     Schema.StructWithRest(
