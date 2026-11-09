@@ -9,10 +9,21 @@ export type ToastOptions = {
 }
 type ToastInput = Omit<ToastOptions, "duration"> & { duration?: number }
 
+/** Compact record kept for the status panel. */
+export type ToastRecord = {
+  id: number
+  title?: string
+  message: string
+}
+
+const MAX_RECENT_ERRORS = 5
+
 function init() {
   const [store, setStore] = createStore({
     currentToast: null as ToastOptions | null,
+    recentErrors: [] as ToastRecord[],
   })
+  let errorID = 0
 
   let timeoutHandle: NodeJS.Timeout | null = null
 
@@ -20,6 +31,14 @@ function init() {
     show(options: ToastInput) {
       const toastOptions = { ...options, duration: options.duration ?? 5000 }
       setStore("currentToast", toastOptions)
+      if (toastOptions.variant === "error") {
+        setStore("recentErrors", (records) =>
+          [{ id: ++errorID, title: toastOptions.title, message: toastOptions.message }, ...records].slice(
+            0,
+            MAX_RECENT_ERRORS,
+          ),
+        )
+      }
       if (timeoutHandle) clearTimeout(timeoutHandle)
       timeoutHandle = setTimeout(() => {
         setStore("currentToast", null)
@@ -38,6 +57,9 @@ function init() {
     },
     get currentToast(): ToastOptions | null {
       return store.currentToast
+    },
+    get recentErrors(): readonly ToastRecord[] {
+      return store.recentErrors
     },
   }
   return toast
