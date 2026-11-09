@@ -452,7 +452,6 @@ packages/graphagent/src/patch/index.ts
 packages/graphagent/src/permission/arity.ts
 packages/graphagent/src/permission/evaluate.ts
 packages/graphagent/src/permission/index.ts
-packages/graphagent/src/plugin/tui/runtime.ts
 packages/graphagent/src/project/bootstrap-service.ts
 packages/graphagent/src/project/bootstrap.ts
 packages/graphagent/src/project/copy.ts
@@ -1201,7 +1200,6 @@ packages/tui/src/component/prompt/move.tsx
 packages/tui/src/component/prompt/stash.tsx
 packages/tui/src/component/prompt/workspace.tsx
 packages/tui/src/component/spinner.tsx
-packages/tui/src/component/startup-loading.tsx
 packages/tui/src/component/todo-item.tsx
 packages/tui/src/component/use-connected.tsx
 packages/tui/src/component/workspace-label.tsx
@@ -1233,12 +1231,6 @@ packages/tui/src/index.tsx
 packages/tui/src/keymap.tsx
 packages/tui/src/logo.ts
 packages/tui/src/parsers-config.ts
-packages/tui/src/plugin-api.ts
-packages/tui/src/plugin/adapters.tsx
-packages/tui/src/plugin/api.ts
-packages/tui/src/plugin/command-shim.ts
-packages/tui/src/plugin/runtime.tsx
-packages/tui/src/plugin/slots.tsx
 packages/tui/src/prompt/display.ts
 packages/tui/src/prompt/frecency.tsx
 packages/tui/src/prompt/history.tsx
@@ -1348,8 +1340,6 @@ packages/tui/test/fixture/tui-runtime.ts
 packages/tui/test/fixture/tui-sdk.ts
 packages/tui/test/index.test.tsx
 packages/tui/test/keymap.test.tsx
-packages/tui/test/plugin/runtime.test.ts
-packages/tui/test/plugin/slots.test.tsx
 packages/tui/test/prompt/display.test.ts
 packages/tui/test/prompt/history.test.ts
 packages/tui/test/prompt/jsonl.test.ts

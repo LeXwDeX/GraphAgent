@@ -1,15 +1,4 @@
 /// <reference path="../audio.d.ts" />
-import type {
-  TuiAttention,
-  TuiAttentionNotifyInput,
-  TuiAttentionNotifyResult,
-  TuiAttentionNotifySkipReason,
-  TuiAttentionWhen,
-  TuiKV,
-  TuiAttentionSoundName,
-  TuiAttentionSoundPack,
-  TuiAttentionSoundPackInfo,
-} from "@graphagent/tui/plugin-api"
 import { AttentionSoundName, type TuiConfig } from "../config"
 import { Schema } from "effect"
 import stripAnsi from "strip-ansi"
@@ -22,6 +11,76 @@ import doneSoundPath from "../../assets/audio/bip-bop-01.mp3" with { type: "file
 import subagentDoneSoundPath from "../../assets/audio/yup-01.mp3" with { type: "file" }
 
 type FocusState = "unknown" | "focused" | "blurred"
+
+export type TuiAttentionWhen = "always" | "focused" | "blurred"
+
+export type TuiAttentionSoundName = AttentionSoundName
+
+export type TuiAttentionSound =
+  | boolean
+  | {
+      name?: TuiAttentionSoundName
+      volume?: number
+      when?: TuiAttentionWhen
+    }
+
+export type TuiAttentionNotification =
+  | boolean
+  | {
+      when?: TuiAttentionWhen
+    }
+
+export type TuiAttentionSoundPack = {
+  id: string
+  name?: string
+  sounds: Partial<Record<TuiAttentionSoundName, string>>
+}
+
+export type TuiAttentionSoundPackInfo = {
+  id: string
+  name?: string
+  active: boolean
+  builtin: boolean
+}
+
+export type TuiAttentionSoundboardActivateOptions = {
+  persist?: boolean
+}
+
+export type TuiAttentionSoundboard = {
+  registerPack(pack: TuiAttentionSoundPack): () => void
+  activate(id: string, options?: TuiAttentionSoundboardActivateOptions): boolean
+  current(): string
+  list(): ReadonlyArray<TuiAttentionSoundPackInfo>
+}
+
+export type TuiAttentionNotifyInput = {
+  title?: string
+  message: string
+  notification?: TuiAttentionNotification
+  sound?: TuiAttentionSound
+}
+
+export type TuiAttentionNotifySkipReason =
+  "attention_disabled" | "empty_message" | "blurred" | "focused" | "focus_unknown" | "renderer_destroyed"
+
+export type TuiAttentionNotifyResult = {
+  ok: boolean
+  notification: boolean
+  sound: boolean
+  skipped?: TuiAttentionNotifySkipReason
+}
+
+export type TuiAttention = {
+  notify(input: TuiAttentionNotifyInput): Promise<TuiAttentionNotifyResult>
+  soundboard: TuiAttentionSoundboard
+}
+
+export type TuiKV = {
+  get: <Value = unknown>(key: string, fallback?: Value) => Value
+  set: (key: string, value: unknown) => void
+  readonly ready: boolean
+}
 
 type AttentionRenderer = {
   readonly isDestroyed: boolean

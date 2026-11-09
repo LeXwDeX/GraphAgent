@@ -272,7 +272,6 @@ export const TuiThreadCommand = cmd({
       try {
         const { Effect } = await import("effect")
         const { run } = await import("../tui/layer")
-        const { createBuiltinTuiHost } = await import("@/plugin/tui/runtime")
         await Effect.runPromise(
           run({
             url: transport.url,
@@ -282,7 +281,6 @@ export const TuiThreadCommand = cmd({
               return [tui, server]
             },
             config,
-            pluginHost: createBuiltinTuiHost(),
             directory: cwd,
             fetch: transport.fetch,
             events: transport.events,

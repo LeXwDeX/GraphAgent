@@ -23,7 +23,6 @@ import { SDKProvider } from "../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../../src/keymap"
-import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/runtime"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
@@ -168,39 +167,37 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                       <ToastProvider>
                         <RouteProvider initialRoute={{ type: "session", sessionID }}>
                           <TuiConfigProvider config={config}>
-                            <PluginRuntimeProvider value={createPluginRuntime()}>
-                              <SDKProvider
-                                url="http://test"
-                                directory={directory}
-                                events={events.source}
-                                fetch={calls.fetch}
-                              >
-                                <ProjectProvider>
-                                  <SyncProvider>
-                                      <ThemeProvider mode="dark">
-                                        <LocalProvider>
-                                          <PromptStashProvider>
-                                            <DialogProvider>
-                                              <FrecencyProvider>
-                                                <PromptHistoryProvider>
-                                                  <PromptRefProvider>
-                                                    <EditorContextProvider integration={{}}>
-                                                      <LocationProvider>
-                                                        <Probe />
-                                                        <FooterStatusView />
-                                                      </LocationProvider>
-                                                    </EditorContextProvider>
-                                                  </PromptRefProvider>
-                                                </PromptHistoryProvider>
-                                              </FrecencyProvider>
-                                            </DialogProvider>
-                                          </PromptStashProvider>
-                                        </LocalProvider>
-                                      </ThemeProvider>
-                                  </SyncProvider>
-                                </ProjectProvider>
-                              </SDKProvider>
-                            </PluginRuntimeProvider>
+                            <SDKProvider
+                              url="http://test"
+                              directory={directory}
+                              events={events.source}
+                              fetch={calls.fetch}
+                            >
+                              <ProjectProvider>
+                                <SyncProvider>
+                                  <ThemeProvider mode="dark">
+                                    <LocalProvider>
+                                      <PromptStashProvider>
+                                        <DialogProvider>
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider integration={{}}>
+                                                  <LocationProvider>
+                                                    <Probe />
+                                                    <FooterStatusView />
+                                                  </LocationProvider>
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
+                                        </DialogProvider>
+                                      </PromptStashProvider>
+                                    </LocalProvider>
+                                  </ThemeProvider>
+                                </SyncProvider>
+                              </ProjectProvider>
+                            </SDKProvider>
                           </TuiConfigProvider>
                         </RouteProvider>
                       </ToastProvider>
