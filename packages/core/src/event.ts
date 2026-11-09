@@ -90,11 +90,7 @@ export interface Interface {
    * graph and a default layer resolving the bus through different memo maps)
    * does not project every event twice.
    */
-  readonly project: <D extends Definition>(
-    definition: D,
-    projector: Subscriber<D>,
-    key?: string,
-  ) => Effect.Effect<void>
+  readonly project: <D extends Definition>(definition: D, projector: Subscriber<D>, key?: string) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
     options?: { readonly publish?: boolean; readonly ownerID?: string; readonly strictOwner?: boolean },
@@ -171,6 +167,11 @@ export const layerWith = (options?: LayerOptions) =>
         return Effect.gen(function* () {
           const durable = definition?.durable
           if (!durable) return undefined
+          // #1016 HS4d: the session aggregate keeps its sequence and projector
+          // writes but no longer appends the event log. Session state cannot be
+          // rebuilt from replay afterwards (docs/adr/0002); DAG aggregates keep
+          // appending and stay replayable.
+          const appendEventLog = durable.aggregate !== "sessionID"
           const aggregateID = (event.data as Record<string, unknown>)[durable.aggregate]
           if (typeof aggregateID !== "string") {
             yield* Effect.die(
@@ -208,6 +209,9 @@ export const layerWith = (options?: LayerOptions) =>
             )
           }
           if (input && input.seq <= latest) {
+            // Without an event log there is nothing to compare a replay
+            // against; treat it as already applied (no seq, no projector).
+            if (!appendEventLog) return undefined
             const stored = yield* db
               .select()
               .from(EventTable)
@@ -239,8 +243,8 @@ export const layerWith = (options?: LayerOptions) =>
           if (input && row?.ownerID && row.ownerID !== input.ownerID) {
             return undefined
           }
-          const dataHash = Hash.sha256(JSON.stringify(encoded))
-          if (!input) {
+          const dataHash = appendEventLog ? Hash.sha256(JSON.stringify(encoded)) : undefined
+          if (!input && appendEventLog) {
             // Idempotency gate (#523): a fresh append that byte-for-byte repeats
             // this aggregate's latest event with the same type and payload
             // carries zero information delta. An intervening event can change
@@ -270,12 +274,14 @@ export const layerWith = (options?: LayerOptions) =>
               }),
             )
           }
-          const stored = yield* db
-            .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
-            .from(EventTable)
-            .where(eq(EventTable.id, event.id))
-            .get()
-            .pipe(Effect.orDie)
+          const stored = appendEventLog
+            ? yield* db
+                .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
+                .from(EventTable)
+                .where(eq(EventTable.id, event.id))
+                .get()
+                .pipe(Effect.orDie)
+            : undefined
           if (stored)
             yield* Effect.die(
               new InvalidDurableEventError({
@@ -303,20 +309,21 @@ export const layerWith = (options?: LayerOptions) =>
             })
             .run()
             .pipe(Effect.orDie)
-          yield* db
-            .insert(EventTable)
-            .values([
-              {
-                id: event.id,
-                aggregate_id: aggregateID,
-                seq,
-                type: versionedType(definition.type, durable.version),
-                data: encoded,
-                data_hash: dataHash,
-              },
-            ])
-            .run()
-            .pipe(Effect.orDie)
+          if (appendEventLog)
+            yield* db
+              .insert(EventTable)
+              .values([
+                {
+                  id: event.id,
+                  aggregate_id: aggregateID,
+                  seq,
+                  type: versionedType(definition.type, durable.version),
+                  data: encoded,
+                  data_hash: dataHash,
+                },
+              ])
+              .run()
+              .pipe(Effect.orDie)
           return { aggregateID, seq }
         })
       }

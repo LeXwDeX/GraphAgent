@@ -5,7 +5,6 @@ import { createHash } from "node:crypto"
 import { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
-import { EventTable } from "@graphagent/core/event/sql"
 import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/http"
@@ -7494,6 +7493,16 @@ unix(
         parts: [{ type: "text", text: "run bash" }],
       })
 
+      // Running output is a non-durable preview now, so the part row no longer
+      // carries the streaming tail. Observe the preview event itself to prove
+      // the reader consumed the final chunk before cancelling.
+      const events = yield* EventV2Bridge.Service
+      const previews: string[] = []
+      yield* events.subscribe(SessionV1.Event.PartPreview).pipe(
+        Stream.runForEach((event) => Effect.sync(() => previews.push(event.data.tail))),
+        Effect.forkChild,
+      )
+
       yield* llm.tool("bash", {
         command:
           'i=0; while [ "$i" -lt 4000 ]; do printf "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx %05d\\n" "$i"; i=$((i + 1)); done; printf truncation-ready; sleep 30',
@@ -7504,12 +7513,7 @@ unix(
       const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
       yield* llm.wait(1)
       yield* pollWithTimeout(
-        Effect.gen(function* () {
-          const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
-          const assistant = msgs.findLast((item) => item.info.role === "assistant")
-          const tool = assistant ? toolPart(assistant.parts) : undefined
-          if (tool?.state.status === "running" && tool.state.metadata?.output.includes("truncation-ready")) return true
-        }),
+        Effect.sync(() => (previews.some((tail) => tail.includes("truncation-ready")) ? true : undefined)),
         "timed out waiting for truncated shell output",
       )
       // The poll proves the reader consumed the final chunk: chunks are
@@ -7989,10 +7993,13 @@ noLLMServer.instance(
       expect((yield* sessions.get(session.id)).model?.variant).toBe("default")
 
       const { db } = yield* Database.Service
-      const before = yield* db
-        .select({ type: EventTable.type })
-        .from(EventTable)
-        .where(eq(EventTable.aggregate_id, session.id))
+      const events = yield* EventV2Bridge.Service
+      const switches: string[] = []
+      yield* events.project(SessionV1.Event.ModelSwitched, (event) =>
+        Effect.sync(() => {
+          switches.push(String(event.data.model.variant))
+        }),
+      )
       const inheritedDefault = yield* prompt.prompt({
         sessionID: session.id,
         agent: "build",
@@ -8002,13 +8009,8 @@ noLLMServer.instance(
       if (inheritedDefault.info.role !== "user") throw new Error("expected user message")
       expect(inheritedDefault.info.model.variant).toBe("default")
       expect((yield* sessions.get(session.id)).model?.variant).toBe("default")
-      const after = yield* db
-        .select({ type: EventTable.type })
-        .from(EventTable)
-        .where(eq(EventTable.aggregate_id, session.id))
-      const switches = before.filter((event) => event.type.startsWith("session.model.switched"))
-      expect(switches.length).toBeGreaterThan(0)
-      expect(after.filter((event) => event.type.startsWith("session.model.switched"))).toHaveLength(switches.length)
+      // Inheriting the already-persisted default must not publish a switch.
+      expect(switches).toHaveLength(0)
 
       yield* prompt.prompt({
         sessionID: session.id,

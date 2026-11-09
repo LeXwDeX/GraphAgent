@@ -35,6 +35,8 @@ const shellSilenceNote = (ms: number) =>
 
 const MAX_METADATA_LENGTH = 30_000
 const METADATA_INTERVAL_MS = 200
+/** Non-durable preview payload bound (#1016 HS4a). */
+const PREVIEW_MAX_BYTES = 4 * 1024
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -230,6 +232,22 @@ function pathArgs(list: Part[], ps: boolean, cmd = false) {
 function preview(text: string) {
   if (text.length <= MAX_METADATA_LENGTH) return text
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
+}
+
+/** Keep the last whole UTF-8 code points that fit the preview byte budget. */
+function previewTail(text: string) {
+  if (Buffer.byteLength(text, "utf-8") <= PREVIEW_MAX_BYTES) return text
+  let bytes = 0
+  let index = text.length
+  while (index > 0) {
+    const low = text.charCodeAt(index - 1)
+    const size = low >= 0xdc00 && low <= 0xdfff && index >= 2 ? 2 : 1
+    const charBytes = Buffer.byteLength(text.slice(index - size, index), "utf-8")
+    if (bytes + charBytes > PREVIEW_MAX_BYTES) break
+    bytes += charBytes
+    index -= size
+  }
+  return text.slice(index)
 }
 
 function pageRanges(totalLines: number, pages: number) {
@@ -536,11 +554,12 @@ export const ShellTool = Tool.define(
         ).pipe(Effect.catch(() => Effect.void))
       })
 
-      // Each preview is a durable part update, so chunk bursts coalesce into at
-      // most one write per interval. The lock keeps the stream, the trailing
-      // flush and the silence guard from publishing out of order. Only output
-      // whose chunk was fully handled (including any spill to the truncation
-      // file) is published, so a visible preview never runs ahead of it.
+      // Each preview is a non-durable tail event (#1016 HS4a), so chunk bursts
+      // coalesce into at most one publish per interval without touching the
+      // part row. The lock keeps the stream, the trailing flush and the silence
+      // guard from publishing out of order. Only output whose chunk was fully
+      // handled (including any spill to the truncation file) is published, so a
+      // visible preview never runs ahead of it.
       const publishLock = Semaphore.makeUnsafe(1)
       let published = 0
       let pending = false
@@ -550,7 +569,10 @@ export const ShellTool = Tool.define(
           Effect.suspend(() => {
             pending = false
             published = Date.now()
-            return ctx.metadata({ metadata: { output: output ?? settled } })
+            const text = output ?? settled
+            if (ctx.preview) return ctx.preview({ tail: previewTail(text), totalLength: streamBytes })
+            // Hosts without a preview stream keep the old durable metadata path.
+            return ctx.metadata({ metadata: { output: text } })
           }),
         )
       const streamPreview = Effect.suspend(() => {

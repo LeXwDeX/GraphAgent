@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { asc, desc, eq } from "drizzle-orm"
 import { Deferred, Effect, Layer, Stream } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
-import { EventTable } from "@graphagent/core/event/sql"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -116,14 +114,22 @@ describe("Session.settle batch (HS4 c)", () => {
       } as SessionV1.Info
       const part1 = textPart(info.id, assistant.id, "first")
       const part2 = textPart(info.id, assistant.id, "second")
-      const before = yield* db
-        .select({ seq: EventTable.seq })
-        .from(EventTable)
-        .where(eq(EventTable.aggregate_id, info.id))
-        .orderBy(desc(EventTable.seq))
-        .limit(1)
-        .get()
-        .pipe(Effect.orDie)
+      // Session-aggregate events keep their sequence but do not append an
+      // event-log row. Observe the published shape through projectors and the
+      // aggregate sequence instead of the event table.
+      const events = yield* EventV2.Service
+      const published: Array<{ type: string; time?: number }> = []
+      yield* events.project(SessionV1.Event.MessageUpdated, () =>
+        Effect.sync(() => {
+          published.push({ type: "message.updated" })
+        }),
+      )
+      yield* events.project(SessionV1.Event.PartUpdated, (event) =>
+        Effect.sync(() => {
+          published.push({ type: "message.part.updated", time: event.data.time })
+        }),
+      )
+      const before = yield* EventV2.latestSequence(db, info.id)
 
       reset()
       yield* session.settle({ messages: [user], parts: [part1, part2] })
@@ -134,27 +140,19 @@ describe("Session.settle batch (HS4 c)", () => {
       // savepoints would show up here too.
       expect(counts.commits).toBe(1)
       expect(counts["events.durable"]).toBe(3)
+      expect(yield* EventV2.latestSequence(db, info.id)).toBe(before + 3)
 
-      const rows = yield* db
-        .select({ seq: EventTable.seq, type: EventTable.type, data: EventTable.data })
-        .from(EventTable)
-        .where(eq(EventTable.aggregate_id, info.id))
-        .orderBy(asc(EventTable.seq))
-        .all()
-        .pipe(Effect.orDie)
-      const batch = rows.filter((row) => row.seq > (before?.seq ?? -1))
       // Messages precede their parts inside the batch so a part projector can
       // always find its parent row.
-      expect(batch.map((row) => row.type)).toEqual([
-        "message.updated.1",
-        "message.part.updated.1",
-        "message.part.updated.1",
+      expect(published.map((entry) => entry.type)).toEqual([
+        "message.updated",
+        "message.part.updated",
+        "message.part.updated",
       ])
-      const firstSeq = batch[0]?.seq ?? -1
-      expect(batch.map((row) => row.seq)).toEqual([firstSeq, firstSeq + 1, firstSeq + 2])
       // Parts carry the single timestamp of the settle call.
-      const times = batch.slice(1).map((row) => (row.data as { time: number }).time)
-      expect(times[0]).toBe(times[1])
+      const partTimes = published.flatMap((entry) => (entry.time === undefined ? [] : [entry.time]))
+      expect(partTimes).toHaveLength(2)
+      expect(partTimes[0]).toBe(partTimes[1])
     }),
   )
 

@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { Deferred, Duration, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { DateTime, Deferred, Duration, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { EventV2 } from "@graphagent/core/event"
 import { Database } from "@graphagent/core/database/database"
 import { EventSequenceTable, EventTable } from "@graphagent/core/event/sql"
 import { Location } from "@graphagent/core/location"
 import { AbsolutePath } from "@graphagent/core/schema"
-import { Session } from "@graphagent/schema/session"
-import { SessionV1 } from "@graphagent/schema/session-v1"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { WorkspaceV2 } from "@graphagent/core/workspace"
 import { eq } from "drizzle-orm"
 import { location } from "./fixture/location"
@@ -53,8 +52,6 @@ const LiveMessage = EventV2.define({
   },
 })
 
-const DurableMessage = SessionV1.Event.MessageRemoved
-
 const eventLayer = Layer.mergeAll(EventV2.layerWith().pipe(Layer.provide(Database.defaultLayer)), Database.defaultLayer)
 const it = testEffect(eventLayer.pipe(Layer.provideMerge(locationLayer)))
 const itWithoutLocation = testEffect(eventLayer)
@@ -91,9 +88,7 @@ describe("EventV2.publishMany", () => {
       const summarize = (list: Array<{ seq: number; type: string; data: Record<string, unknown> }>) =>
         list.map(({ seq, type, data }) => ({ seq, type, text: (data as { text: string }).text }))
       expect(summarize(batchRows)).toEqual(summarize(singleRows))
-      expect(
-        batched.map((event) => [(event.data as { text: string }).text, event.durable?.seq]),
-      ).toEqual([
+      expect(batched.map((event) => [(event.data as { text: string }).text, event.durable?.seq])).toEqual([
         ["a", 0],
         ["b", 1],
         ["c", 2],
@@ -177,13 +172,21 @@ describe("EventV2.publishMany", () => {
 
       yield* events.publishMany(batch(aggregateID, ["a", "b", "c"]))
 
-      expect(Array.from(yield* Fiber.join(typed)).map((event) => [(event.data as { text: string }).text, event.durable?.seq])).toEqual([
+      expect(
+        Array.from(yield* Fiber.join(typed)).map((event) => [
+          (event.data as { text: string }).text,
+          event.durable?.seq,
+        ]),
+      ).toEqual([
         ["a", 0],
         ["b", 1],
         ["c", 2],
       ])
       expect(
-        Array.from(yield* Fiber.join(wildcard)).map((event) => [(event.data as { text: string }).text, event.durable?.seq]),
+        Array.from(yield* Fiber.join(wildcard)).map((event) => [
+          (event.data as { text: string }).text,
+          event.durable?.seq,
+        ]),
       ).toEqual([
         ["a", 0],
         ["b", 1],
@@ -198,9 +201,9 @@ describe("EventV2.publishMany", () => {
       yield* events.listen(() => Effect.never)
       const aggregateID = EventV2.ID.create()
 
-      const published = yield* events.publishMany(batch(aggregateID, ["a", "b"])).pipe(
-        Effect.timeoutOption(Duration.millis(250)),
-      )
+      const published = yield* events
+        .publishMany(batch(aggregateID, ["a", "b"]))
+        .pipe(Effect.timeoutOption(Duration.millis(250)))
 
       expect(Option.isSome(published)).toBeTrue()
       expect(yield* rows(aggregateID)).toHaveLength(2)
@@ -245,9 +248,7 @@ describe("EventV2.publishMany", () => {
   it.effect("rejects live-only definitions", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const exit = yield* events
-        .publishMany([{ definition: LiveMessage, data: { text: "live" } }])
-        .pipe(Effect.exit)
+      const exit = yield* events.publishMany([{ definition: LiveMessage, data: { text: "live" } }]).pipe(Effect.exit)
 
       expect(String(exit)).toContain("Batch events require a durable definition")
     }),
@@ -284,29 +285,23 @@ describe("EventV2.publishMany", () => {
   it.effect("keeps replay and readAfter compatible with batch-published events", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
-      const aggregateID = Session.ID.create()
-      const data = (text: string) => ({
-        sessionID: aggregateID,
-        messageID: SessionV1.MessageID.ascending(`msg_${text}`),
-      })
-      yield* events.publishMany([
-        { definition: DurableMessage, data: data("a") },
-        { definition: DurableMessage, data: data("b") },
-        { definition: DurableMessage, data: data("c") },
-      ])
+      const aggregateID = DagEvent.DagID.create()
+      const data = (text: string) => ({ dagID: aggregateID, timestamp: DateTime.makeUnsafe(0), reason: text })
+      yield* events.publishMany(
+        [data("a"), data("b"), data("c")].map((item) => ({ definition: DagEvent.WorkflowPaused, data: item })),
+      )
 
       const fiber = yield* events
         .durable({ aggregateID, after: 2 })
         .pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped)
-      yield* events.publishMany([
-        { definition: DurableMessage, data: data("d") },
-        { definition: DurableMessage, data: data("e") },
-      ])
+      yield* events.publishMany(
+        [data("d"), data("e")].map((item) => ({ definition: DagEvent.WorkflowPaused, data: item })),
+      )
       const tail = Array.from(yield* Fiber.join(fiber))
 
-      expect(tail.map((event) => [(event.data as { messageID: string }).messageID, event.durable?.seq])).toEqual([
-        [data("d").messageID, 3],
-        [data("e").messageID, 4],
+      expect(tail.map((event) => [(event.data as { reason?: string }).reason, event.durable?.seq])).toEqual([
+        ["d", 3],
+        ["e", 4],
       ])
       const replayed = yield* events.replayAll([
         ...(yield* rows(aggregateID)).map((row) => ({

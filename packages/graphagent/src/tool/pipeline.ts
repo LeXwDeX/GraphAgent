@@ -144,7 +144,7 @@ export type WrapInput = ToolSelection & {
   user?: Pick<SessionV1.User, "tools">
   /** Session rules; defaults to `session.permission`. */
   permission?: PermissionV1.Ruleset
-  processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
+  processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "previewToolCall" | "completeToolCall">
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps

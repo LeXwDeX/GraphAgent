@@ -862,6 +862,13 @@
       "scenario": "S7",
       "delta": 2,
       "reason": "H1 PR8 (#1019): each measured turn writes one session_turn INSERT and one ended UPDATE."
+    },
+    {
+      "pr": "#1016",
+      "metric": "events.ephemeral",
+      "scenario": "S6",
+      "delta": 600,
+      "reason": "H5 PR5 (#1016): running shell output publishes one non-durable preview tail per line instead of a durable event, so the ephemeral book carries the stream while durable stays flat."
     }
   ]
 }

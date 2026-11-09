@@ -261,6 +261,9 @@ export function makeShell(deps: ShellDeps) {
                     mutablePart = yield* sessions.updatePart(update(mutablePart))
                     return mutablePart
                   }),
+                // Direct shell renders into its own mutable part; it has no
+                // session-level preview stream to publish to.
+                previewToolCall: () => Effect.void,
                 completeToolCall: () => Effect.void,
               },
             }).pipe(
