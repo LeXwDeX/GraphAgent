@@ -1,10 +1,17 @@
 import { expect, mock, test } from "bun:test"
-import type { TuiPluginApi } from "@graphagent/tui/plugin-api"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
 import { Global } from "@graphagent/core/global"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
+
+async function waitFor(predicate: () => boolean, timeout = 3000) {
+  const start = Date.now()
+  while (!predicate()) {
+    if (Date.now() - start > timeout) throw new Error("timed out waiting for condition")
+    await Bun.sleep(10)
+  }
+}
 
 test("SIGHUP clears title and disposes scoped resources once", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24 })
@@ -25,11 +32,14 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
   const listeners = new Set(process.listeners("SIGHUP"))
   const events = createEventSource()
   const calls = createFetch()
-  let started!: () => void
-  const ready = new Promise<void>((resolve) => {
-    started = resolve
-  })
+  const audio = await import("../src/audio")
   let disposes = 0
+  mock.module("../src/audio", () => ({
+    ...audio,
+    dispose: () => {
+      disposes += 1
+    },
+  }))
 
   try {
     const { run } = await import("../src/app")
@@ -41,19 +51,10 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
         fetch: calls.fetch,
         events: events.source,
         args: {},
-        pluginHost: {
-          async start() {
-            started()
-          },
-          async dispose() {
-            disposes++
-          },
-        },
       }).pipe(Effect.provide(Global.defaultLayer)),
     )
-    await ready
+    await waitFor(() => titles.includes("GraphAgent"))
     await setup.renderOnce()
-    await Bun.sleep(20)
     expect(titles).toContain("GraphAgent")
     process.emit("SIGHUP")
     await task
@@ -61,6 +62,7 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
     expect(setup.renderer.isDestroyed).toBe(true)
     expect(titles.at(-1)).toBe("")
     expect(titlesAtDestroy).toBe(titles.length)
+    // The scoped finalizer must run exactly one audio teardown.
     expect(disposes).toBe(1)
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
   } finally {
@@ -80,6 +82,16 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     titles.push(title)
   }
   const events = createEventSource()
+  // Sync opens the provider dialog when no provider is configured, which
+  // pushes the keymap's `modal` mode and disables the base-layer exit binding.
+  const provider = {
+    id: "test",
+    name: "Test",
+    source: "config",
+    env: [],
+    options: {},
+    models: { "test-model": { id: "test-model", name: "Test model", capabilities: { reasoning: false } } },
+  }
   const session = {
     id: "dummy",
     title: "Demo session",
@@ -95,14 +107,11 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     if (url.pathname === "/session/dummy/message") return json([])
     if (url.pathname === "/session/dummy/todo") return json([])
     if (url.pathname === "/session/dummy/diff") return json([])
+    if (url.pathname === "/config/providers") return json({ providers: [provider], default: {} })
+    if (url.pathname === "/provider") return json({ all: [provider], default: {}, connected: ["test"] })
   })
   const originalWrite = process.stdout.write.bind(process.stdout)
   let stdout = ""
-  let api: TuiPluginApi | undefined
-  let started!: () => void
-  const ready = new Promise<void>((resolve) => {
-    started = resolve
-  })
 
   process.stdout.write = ((chunk: string | Uint8Array) => {
     stdout += String(chunk)
@@ -115,25 +124,16 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
       run({
         url: "http://test",
         directory,
-        config: createTuiResolvedConfig(),
+        config: createTuiResolvedConfig({ keybinds: { app_exit: "ctrl+y" } }),
         fetch: calls.fetch,
         events: events.source,
         args: { continue: true },
-        pluginHost: {
-          async start(input) {
-            api = input.api
-            started()
-          },
-          async dispose() {},
-        },
       }).pipe(Effect.provide(Global.defaultLayer)),
     )
 
-    await ready
+    await waitFor(() => titles.includes("GA | Demo session"))
     await setup.renderOnce()
-    await Bun.sleep(20)
-    expect(titles).toContain("GA | Demo session")
-    api?.keymap.dispatchCommand("app.exit")
+    setup.mockInput.pressKey("y", { ctrl: true })
     await task
 
     expect(stdout).toContain("Demo session")

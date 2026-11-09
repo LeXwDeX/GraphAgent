@@ -25,7 +25,6 @@ import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
-import { createPluginRuntime, PluginRuntimeProvider } from "../../src/plugin/runtime"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
@@ -124,34 +123,32 @@ async function mount(
                     <ToastProvider>
                       <RouteProvider initialRoute={{ type: "home" }}>
                         <TuiConfigProvider config={config}>
-                          <PluginRuntimeProvider value={createPluginRuntime()}>
-                            <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
-                              <ProjectProvider>
-                                <SyncProvider>
-                                  <ThemeProvider mode="dark">
-                                    <LocalProvider>
-                                      <PromptStashProvider>
-                                        <DialogProvider>
-                                          <FrecencyProvider>
-                                            <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={{}}>
-                                                  <LocationProvider>
-                                                    <Content />
-                                                    <FooterStatusView />
-                                                  </LocationProvider>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
-                                            </PromptHistoryProvider>
-                                          </FrecencyProvider>
-                                        </DialogProvider>
-                                      </PromptStashProvider>
-                                    </LocalProvider>
-                                  </ThemeProvider>
-                                </SyncProvider>
-                              </ProjectProvider>
-                            </SDKProvider>
-                          </PluginRuntimeProvider>
+                          <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
+                            <ProjectProvider>
+                              <SyncProvider>
+                                <ThemeProvider mode="dark">
+                                  <LocalProvider>
+                                    <PromptStashProvider>
+                                      <DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider integration={{}}>
+                                                <LocationProvider>
+                                                  <Content />
+                                                  <FooterStatusView />
+                                                </LocationProvider>
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
+                                      </DialogProvider>
+                                    </PromptStashProvider>
+                                  </LocalProvider>
+                                </ThemeProvider>
+                              </SyncProvider>
+                            </ProjectProvider>
+                          </SDKProvider>
                         </TuiConfigProvider>
                       </RouteProvider>
                     </ToastProvider>
