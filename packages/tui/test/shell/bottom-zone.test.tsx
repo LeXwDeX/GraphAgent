@@ -203,6 +203,33 @@ test("an ask suspends the aside and the aside returns after the answer", async (
   }
 })
 
+test("declarative asks lead, and local asks survive setAsk replacement", () => {
+  const state = createBottomZoneState()
+  const queueIDs = () => {
+    const current = state.state()
+    if (current.kind !== "ask") throw new Error(`expected an ask state, got ${current.kind}`)
+    return current.queue.map((request) => request.id)
+  }
+  const permissionA = { id: "per-a", render: () => <text>permission a</text> }
+  const permissionB = { id: "per-b", render: () => <text>permission b</text> }
+  const confirm = { id: "confirm-1", render: () => <text>confirm</text> }
+
+  state.setAsk([permissionA, permissionB])
+  state.ask(confirm)
+  expect(queueIDs()).toEqual(["per-a", "per-b", "confirm-1"])
+
+  // A store refresh replaces the declarative queue without touching local
+  // entries, even when the answered permission disappears from the store.
+  expect(state.resolveAsk()?.id).toBe("per-a")
+  state.setAsk([permissionB])
+  expect(queueIDs()).toEqual(["per-b", "confirm-1"])
+
+  state.setAsk([])
+  expect(queueIDs()).toEqual(["confirm-1"])
+  expect(state.resolveAsk()?.id).toBe("confirm-1")
+  expect(state.state().kind).toBe("composer")
+})
+
 test("the frame dims the main area only while a panel or ask surface is open", async () => {
   await using tmp = await shellState()
   let state!: BottomZoneStateApi
