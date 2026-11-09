@@ -345,7 +345,7 @@ describe("$HOME is not a project layer", () => {
   })
 })
 
-describe("§4.7 polling reload: modify hooks.json → reload fires with new settings", () => {
+describe("§4.7 fs.watch reload: modify hooks.json → reload fires with new settings", () => {
   test("project hooks.json change triggers onReload with the updated chain", async () => {
     const globalDir = await mktmp("g")
     const projectDir = await mktmp("p")
@@ -369,7 +369,7 @@ describe("§4.7 polling reload: modify hooks.json → reload fires with new sett
       await sleep(50)
       await writeHooksJson(projectDir, hooksJsonTopLevel("v2"))
 
-      // Polling runs every 2s + 500ms debounce; 4s is past one full cycle.
+      // The directory watcher debounces events; 4s covers event delivery on slow hosts.
       await sleep(4000)
 
       const cmds = (reloaded?.hooks?.SessionStart ?? []).map((m) => m.hooks[0].command)
@@ -444,7 +444,7 @@ describe("§4.8 global hooks.json IS hot-reloaded on change", () => {
       await sleep(50)
       await writeGlobalHooksJson(globalDir, hooksJsonTopLevel("global-v2"))
 
-      // Past one full poll cycle (POLL_INTERVAL_MS=2000) + debounce window.
+      // Past the watcher debounce window.
       await sleep(4000)
       expect(reloadCount).toBeGreaterThanOrEqual(1)
       expect(reloadedCommands).toContain("global-v2")
@@ -512,7 +512,7 @@ describe("P2: deleting hooks.json triggers reload (mtime from >0 to 0)", () => {
 
       // Delete the file
       await fs.unlink(hooksFile)
-      // Wait for polling: 2s interval + 500ms debounce + margin
+      // Wait for the watcher debounce window plus margin.
       await sleep(4000)
 
       // Reload should have fired, and now there are no hooks

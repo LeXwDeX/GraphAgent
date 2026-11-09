@@ -279,9 +279,10 @@ describe("ConfigChange trigger on hooks hot-reload", () => {
 
         // Modify the watched hooks.json → hot-reload → ConfigChange fires →
         // command hook touches the marker file. Explicitly bump mtime to a
-        // distinct future timestamp: on coarse-mtime filesystems (WSL2 DrvFs,
-        // some network FS) a same-resolution write may not register as changed,
-        // starving the mtime poll. utimes forces a detectable change.
+        // distinct future timestamp: on coarse-timestamp filesystems (WSL2
+        // DrvFs, some network FS) a same-resolution write may leave the
+        // ino:size:mtime:ctime signature unchanged. utimes forces a detectable
+        // change.
         yield* writeHooks(inst.directory, "v2")
         yield* Effect.promise(async () => {
           const future = new Date(Date.now() + 2000)

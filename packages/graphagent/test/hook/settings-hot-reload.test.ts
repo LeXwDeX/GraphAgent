@@ -7,7 +7,7 @@ import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
-import { watchSettings } from "@/hook/extensions/hot-reload"
+import { __setFallbackIntervalForTest, __setWatchImplForTest, watchSettings } from "@/hook/extensions/hot-reload"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -49,9 +49,9 @@ const writeSettings = (dir: string, ctx: string) =>
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 // Poll a predicate until it returns true (state reached) or the timeout elapses.
-// Replaces fragile fixed sleeps that race the watcher's 2s mtime poll + 500ms
-// debounce on slow CI hosts — wait for the observable effect instead.
-const pollFor = async (fn: () => boolean, timeoutMs = 8000, intervalMs = 100): Promise<boolean> => {
+// Wait for the observable effect instead of racing a fixed sleep against event
+// delivery + the 150ms debounce.
+const pollFor = async (fn: () => boolean, timeoutMs = 8000, intervalMs = 50): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (fn()) return true
@@ -60,11 +60,164 @@ const pollFor = async (fn: () => boolean, timeoutMs = 8000, intervalMs = 100): P
   return fn()
 }
 
+// ── Direct watcher unit tests (Issue §9) ────────────────────────
+
+const tmpDir = (prefix: string) => fs.mkdtemp(path.join(os.tmpdir(), prefix))
+const globalHooks = (globalDir: string) => path.join(globalDir, "hooks.json")
+const projectHooks = (projectDir: string) => path.join(graphagentDir(projectDir), "hooks.json")
+const projectLocalHooks = (projectDir: string) => path.join(graphagentDir(projectDir), "hooks.local.json")
+
+const writeFile = async (file: string, content = "{}") => {
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, content)
+}
+
+/** Wire a real watchSettings handle and collect the files it committed. */
+function makeWatcher(projectDir: string, globalDir?: string) {
+  const reloads: string[] = []
+  const handle = watchSettings(
+    projectDir,
+    () => Effect.sync(() => ({ hooks: {} })),
+    (_settings, changedFile) => {
+      reloads.push(changedFile)
+    },
+    globalDir,
+  )
+  return { handle, reloads }
+}
+
+const waitForReload = (reloads: string[], file: string, count = 1) =>
+  pollFor(() => reloads.filter((changed) => changed === file).length >= count, 5000)
+
+describe("watchSettings — fs.watch hot reload (Issue §9)", () => {
+  test("global hooks.json creation and modification reload", async () => {
+    const globalDir = await tmpDir("hot-reload-global-")
+    const projectDir = await tmpDir("hot-reload-global-project-")
+    const file = globalHooks(globalDir)
+    await writeFile(projectHooks(projectDir))
+    const { handle, reloads } = makeWatcher(projectDir, globalDir)
+    try {
+      // Create the global file after the watcher is attached.
+      await writeFile(file, JSON.stringify({ Stop: [] }))
+      expect(await waitForReload(reloads, file)).toBe(true)
+
+      // Modify it again — a second commit must follow.
+      await writeFile(file, JSON.stringify({ Notification: [] }))
+      expect(await waitForReload(reloads, file, 2)).toBe(true)
+    } finally {
+      handle.close()
+      await Promise.all([
+        fs.rm(globalDir, { recursive: true, force: true }),
+        fs.rm(projectDir, { recursive: true, force: true }),
+      ])
+    }
+  }, 15000)
+
+  test("project hooks.json atomic replace (temp file + rename) and deletion reload", async () => {
+    const projectDir = await tmpDir("hot-reload-project-")
+    const file = projectHooks(projectDir)
+    await writeFile(file, JSON.stringify({}))
+    const { handle, reloads } = makeWatcher(projectDir)
+    try {
+      // Temp-file churn alone must not reload: only hooks.json/hooks.local.json
+      // names are accepted.
+      const temp = path.join(path.dirname(file), ".hooks.json.tmp")
+      await fs.writeFile(temp, JSON.stringify({ Stop: [] }))
+      expect(await pollFor(() => reloads.length > 0, 500)).toBe(false)
+
+      // Editor-style atomic save: rename the temp file over the target.
+      await fs.rename(temp, file)
+      expect(await waitForReload(reloads, file)).toBe(true)
+
+      // Deleting the file is also a chain change.
+      const beforeDelete = reloads.filter((changed) => changed === file).length
+      await fs.rm(file)
+      expect(await pollFor(() => reloads.filter((changed) => changed === file).length > beforeDelete, 5000)).toBe(true)
+    } finally {
+      handle.close()
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("hooks.local.json modification and deletion reload", async () => {
+    const projectDir = await tmpDir("hot-reload-local-")
+    const file = projectLocalHooks(projectDir)
+    await writeFile(projectHooks(projectDir))
+    await writeFile(file, JSON.stringify({}))
+    const { handle, reloads } = makeWatcher(projectDir)
+    try {
+      await writeFile(file, JSON.stringify({ Stop: [] }))
+      expect(await waitForReload(reloads, file)).toBe(true)
+
+      await fs.rm(file)
+      expect(await waitForReload(reloads, file, 2)).toBe(true)
+    } finally {
+      handle.close()
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("a missing .agents directory is watched through its existing ancestor until created", async () => {
+    const projectDir = await tmpDir("hot-reload-ancestor-")
+    const file = projectHooks(projectDir)
+    const { handle, reloads } = makeWatcher(projectDir)
+    try {
+      // .agents does not exist yet: the watcher attaches to projectDir and
+      // upgrades once the directory appears.
+      await writeFile(file, JSON.stringify({ Stop: [] }))
+      expect(await waitForReload(reloads, file)).toBe(true)
+    } finally {
+      handle.close()
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("close() stops reloads", async () => {
+    const projectDir = await tmpDir("hot-reload-close-")
+    const file = projectHooks(projectDir)
+    await writeFile(file, JSON.stringify({}))
+    const { handle, reloads } = makeWatcher(projectDir)
+    try {
+      await writeFile(file, JSON.stringify({ Stop: [] }))
+      expect(await waitForReload(reloads, file)).toBe(true)
+
+      handle.close()
+      const before = reloads.length
+      await writeFile(file, JSON.stringify({ Notification: [] }))
+      // An event would be debounced and committed well inside this window.
+      expect(await pollFor(() => reloads.length > before, 800)).toBe(false)
+    } finally {
+      handle.close()
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  }, 15000)
+
+  test("fs.watch failure degrades to the stat fallback", async () => {
+    const projectDir = await tmpDir("hot-reload-fallback-")
+    const file = projectHooks(projectDir)
+    await writeFile(file, JSON.stringify({}))
+    __setWatchImplForTest(() => {
+      throw new Error("injected fs.watch failure")
+    })
+    __setFallbackIntervalForTest(100)
+    const { handle, reloads } = makeWatcher(projectDir)
+    try {
+      await writeFile(file, JSON.stringify({ Stop: [] }))
+      expect(await waitForReload(reloads, file)).toBe(true)
+    } finally {
+      handle.close()
+      __setWatchImplForTest(undefined)
+      __setFallbackIntervalForTest(undefined)
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
+  }, 15000)
+})
+
 describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
   // F3.1 integration: changing hooks.json at runtime is picked up by the
-  // next trigger after the polling debounce. The first trigger runs
+  // next trigger after the watcher debounce. The first trigger runs
   // InstanceState.get → loadChain (reads v1) AND wires watchSettings; the
-  // on-disk edit is detected by the hooks.json mtime poll, reload() re-runs
+  // on-disk edit is detected by the .agents directory watcher, reload() re-runs
   // loadChain (reads v2), and onReload mutates the cached state object's
   // .settings in place — visible to trigger without invalidating the cache.
   it.instance(
@@ -86,8 +239,8 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
 
         // Poll until the hot-reload has mutated the cached settings to v2.
         // Each poll uses a fresh session so per-session dedup never masks the
-        // new marker. The reload is driven by the 2s mtime poll + 500ms debounce,
-        // so we wait on the observable effect rather than a fixed sleep.
+        // new marker. The reload is driven by the directory event + 150ms
+        // debounce, so we wait on the observable effect rather than a fixed sleep.
         let n = 0
         yield* pollWithTimeout(
           Effect.gen(function* () {
@@ -111,77 +264,4 @@ describe("SettingsHook hot-reload — watchSettings wiring (F3)", () => {
       }),
     { init: (dir) => writeSettings(dir, CONTEXT_V1) },
   )
-
-  // F3.2 + cleanup: watchSettings polls .agents/hooks.json and
-  // .agents/hooks.local.json (project scope only) and handle.close() stops all
-  // reloads. Direct unit test of the watcher
-  // mechanism, independent of the SettingsHook layer. Fixed sleeps are justified
-  // here — this test exercises the polling/debounce/throttle timing and proves
-  // absence of reload after close().
-  test("watchSettings reloads on hooks.json change and stops after close", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hot-reload-"))
-    const file = settingsPath(dir)
-    await fs.mkdir(graphagentDir(dir), { recursive: true })
-    await fs.writeFile(file, JSON.stringify({}))
-
-    let marker: string | undefined
-    const handle = watchSettings(
-      dir,
-      () =>
-        Effect.sync(() => ({
-          hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] },
-        })),
-      () => {
-        marker = "reloaded"
-      },
-    )
-
-    // Trigger a change. The poll checks mtime every 2s; ensure a distinct mtime
-    // from the construction snapshot, then poll for the reload to fire (the
-    // debounce adds 500ms after the 2s mtime poll, so a fixed sleep races the
-    // scheduler on slow hosts — wait for the observable marker instead).
-    await sleep(50)
-    await fs.writeFile(file, JSON.stringify({ Stop: [] }))
-    expect(await pollFor(() => marker === "reloaded")).toBe(true)
-
-    // After close(), further changes must NOT reload. A positive reload would
-    // land within the 2s+500ms window; sleep past it then assert absence.
-    handle.close()
-    marker = undefined
-    await fs.writeFile(file, JSON.stringify({ Notification: [] }))
-    expect(await pollFor(() => marker !== undefined, 3500)).toBe(false)
-
-    await fs.rm(dir, { recursive: true, force: true })
-  }, 15000)
-
-  test("watchSettings reloads when mtime decreases (cp -p / touch -t)", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "hot-reload-mtime-dec-"))
-    const file = settingsPath(dir)
-    await fs.mkdir(graphagentDir(dir), { recursive: true })
-    await fs.writeFile(file, JSON.stringify({}))
-
-    let marker: string | undefined
-    const handle = watchSettings(
-      dir,
-      () => Effect.sync(() => ({ hooks: {} })),
-      () => {
-        marker = "reloaded"
-      },
-    )
-
-    // Wait for the construction-time mtime snapshot to be captured.
-    await sleep(50)
-
-    // Overwrite the file, then rewind its mtime to 60s ago — simulates
-    // `cp -p` from a backup or `touch -t`. The mtime is now LOWER than the
-    // snapshot the watcher took at construction.
-    await fs.writeFile(file, JSON.stringify({ Stop: [] }))
-    const oldTime = new Date(Date.now() - 60_000)
-    await fs.utimes(file, oldTime, oldTime)
-
-    expect(await pollFor(() => marker === "reloaded")).toBe(true)
-
-    handle.close()
-    await fs.rm(dir, { recursive: true, force: true })
-  }, 15000)
 })

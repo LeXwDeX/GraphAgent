@@ -25,7 +25,7 @@ describe("hooks.json chain candidates", () => {
 })
 
 describe("hot reload watched files", () => {
-  test("polls the global, project and local hooks files", () => {
+  test("watches the global, project and local hooks files", () => {
     expect(__watchedFiles(project, globalConfig)).toEqual([
       path.join(globalConfig, "hooks.json"),
       path.join(project, ".agents", "hooks.json"),
