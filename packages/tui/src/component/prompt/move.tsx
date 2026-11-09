@@ -6,7 +6,8 @@ import { useDialog } from "../../ui/dialog"
 import { useSDK, locationHeaders } from "../../context/sdk"
 import { useSync } from "../../context/sync"
 import { useToast } from "../../ui/toast"
-import { DialogMoveSession, type MoveSessionSelection } from "../dialog-move-session"
+import { MoveSessionPanel, type MoveSessionSelection } from "../../panel/move-session"
+import { t } from "../../i18n"
 import { showWorkspaceFileChanges } from "../../panel/workspace-file-changes"
 import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import { useHomeSessionDestination } from "../../routes/home/session-destination"
@@ -33,7 +34,7 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
     const projectID = input.projectID()
     if (!projectID) return
     setCreating(true)
-    setProgress("Creating copy")
+    setProgress(t("panel.move.progress.copy"))
     try {
       const generated = await sdk.client.experimental.projectCopy.generateName(
         { projectID, context },
@@ -55,51 +56,56 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
       // before moving on
       await sdk.client.path.get({ throwOnError: true, headers: locationHeaders({ directory }) })
 
-      setProgress("Creating session")
+      setProgress(t("panel.move.progress.session"))
       return directory
     } catch (err) {
       homeDestination?.clear()
       setProgress(undefined)
       setCreating(false)
-      toast.show({ title: "Creating workspace failed", message: errorMessage(err), variant: "error" })
+      toast.show({ title: t("panel.move.create.failed"), message: errorMessage(err), variant: "error" })
       return
     }
   }
 
   function open() {
     const projectID = input.projectID()
-    if (!projectID) return
+    const host = bottomZone?.host
+    if (!projectID || !host) return
+    if (host.top()?.id === "move-session") return
     const sessionID = input.sessionID()
     const session = sessionID ? sync.session.get(sessionID) : undefined
-    dialog.replace(() => (
-      <DialogMoveSession
-        projectID={projectID}
-        current={
-          homeDestination?.destination() ??
-          (session
-            ? {
-                type: "directory",
-                directory: session.directory,
-                subdirectory: !!session.path,
-              }
-            : {
-                type: "directory",
-                directory: project.instance.directory(),
-                subdirectory: project.instance.directory() !== project.instance.path().worktree,
-              })
-        }
-        onCurrentChange={(selection) => homeDestination?.setDestination(selection)}
-        onSelect={(selection) => {
-          const sessionID = input.sessionID()
-          if (!sessionID) {
-            homeDestination?.setDestination(selection)
-            dialog.clear()
-            return
+    host.push({
+      id: "move-session",
+      render: () => (
+        <MoveSessionPanel
+          projectID={projectID}
+          current={
+            homeDestination?.destination() ??
+            (session
+              ? {
+                  type: "directory",
+                  directory: session.directory,
+                  subdirectory: !!session.path,
+                }
+              : {
+                  type: "directory",
+                  directory: project.instance.directory(),
+                  subdirectory: project.instance.directory() !== project.instance.path().worktree,
+                })
           }
-          void moveExistingSession(sessionID, selection)
-        }}
-      />
-    ))
+          onCurrentChange={(selection) => homeDestination?.setDestination(selection)}
+          onSelect={(selection) => {
+            const sessionID = input.sessionID()
+            host.close()
+            if (!sessionID) {
+              homeDestination?.setDestination(selection)
+              return
+            }
+            void moveExistingSession(sessionID, selection)
+          }}
+        />
+      ),
+    })
   }
 
   function sessionContext(sessionID: string) {
@@ -125,14 +131,12 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
         ? await showWorkspaceFileChanges({ host: bottomZone.host, dialog, files: status.data })
         : "no"
     if (!choice) return
-    dialog.clear()
     const directory = selection.type === "new" ? await create(sessionContext(sessionID)) : selection.directory
     if (!directory) {
       setProgress(undefined)
-      dialog.clear()
       return
     }
-    setProgress("Moving session")
+    setProgress(t("panel.move.progress.moving"))
     try {
       await sdk.client.experimental.controlPlane.moveSession(
         {
@@ -158,10 +162,8 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
           { headers: locationHeaders({ directory }) },
         )
         .catch(() => undefined)
-      dialog.clear()
     } catch (error) {
       toast.error(error)
-      dialog.clear()
     } finally {
       setProgress(undefined)
       setCreating(false)
@@ -181,7 +183,7 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
   }
 
   function startSubmit() {
-    if (progress()) setProgress("Submitting prompt")
+    if (progress()) setProgress(t("panel.move.progress.submit"))
   }
 
   function finishSubmit() {
