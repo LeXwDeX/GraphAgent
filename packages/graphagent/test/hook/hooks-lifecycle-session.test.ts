@@ -20,7 +20,7 @@ cliIt.live(
         await fs.writeFile(path.join(project, "AGENTS.md"), "LOCAL_INSTRUCTION_CONTENT")
         await fs.writeFile(
           script,
-          `const i=JSON.parse(await Bun.stdin.text());await Bun.write(${JSON.stringify(audit)},(await Bun.file(${JSON.stringify(audit)}).text().catch(()=>""))+JSON.stringify({...i,transcript:await Bun.file(i.transcript_path).text()})+"\\n");if(i.hook_event_name==='SessionStart')process.stdout.write(JSON.stringify({systemMessage:'FORK_USER_NOTIFICATION'}));`,
+          `const i=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({...i,transcript:await Bun.file(i.transcript_path).text()})+'\\n');if(i.hook_event_name==='SessionStart')process.stdout.write(JSON.stringify({systemMessage:'FORK_USER_NOTIFICATION'}));`,
         )
         const hook = { type: "command", command: process.execPath, args: [script] }
         await fs.writeFile(
