@@ -61,7 +61,7 @@ import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
-import { DialogSessionRename } from "../../component/dialog-session-rename"
+import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
@@ -176,6 +176,7 @@ export function Main() {
   const kv = useKV()
   const { theme } = useTheme()
   const promptRef = usePromptRef()
+  const commands = useCommands()
   const session = createMemo(() => sync.session.get(route.sessionID))
   const location = createMemo(() => {
     const current = session()
@@ -533,20 +534,14 @@ export function Main() {
       title: "Rename session",
       value: "session.rename",
       category: "Session",
-      slash: {
-        name: "rename",
-      },
       run: () => {
-        dialog.replace(() => <DialogSessionRename session={route.sessionID} />)
+        void renameSession("")
       },
     },
     {
       title: "Jump to message",
       value: "session.timeline",
       category: "Session",
-      slash: {
-        name: "timeline",
-      },
       run: () => {
         dialog.replace(() => (
           <DialogTimeline
@@ -566,9 +561,6 @@ export function Main() {
       title: "Fork session",
       value: "session.fork",
       category: "Session",
-      slash: {
-        name: "fork",
-      },
       run: () => {
         dialog.replace(() => (
           <DialogForkFromTimeline
@@ -588,10 +580,6 @@ export function Main() {
       title: "Compact session",
       value: "session.compact",
       category: "Session",
-      slash: {
-        name: "compact",
-        aliases: ["summarize"],
-      },
       run: () => {
         const selectedModel = local.model.current()
         if (!selectedModel) {
@@ -614,9 +602,6 @@ export function Main() {
       title: "Undo previous message",
       value: "session.undo",
       category: "Session",
-      slash: {
-        name: "undo",
-      },
       run: async () => {
         const status = sync.data.session_status?.[route.sessionID]
         if (status?.type !== "idle") await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
@@ -655,9 +640,6 @@ export function Main() {
       value: "session.redo",
       category: "Session",
       enabled: !!session()?.revert?.messageID,
-      slash: {
-        name: "redo",
-      },
       run: () => {
         dialog.clear()
         const messageID = session()?.revert?.messageID
@@ -702,10 +684,6 @@ export function Main() {
       title: showTimestamps() ? "Hide timestamps" : "Show timestamps",
       value: "session.toggle.timestamps",
       category: "Session",
-      slash: {
-        name: "timestamps",
-        aliases: ["toggle-timestamps"],
-      },
       run: () => {
         setTimestamps((prev) => (prev === "show" ? "hide" : "show"))
         dialog.clear()
@@ -719,10 +697,6 @@ export function Main() {
       })(),
       value: "session.toggle.thinking",
       category: "Session",
-      slash: {
-        name: "thinking",
-        aliases: ["toggle-thinking"],
-      },
       run: () => {
         thinking.set(nextThinkingMode(thinkingMode()))
         dialog.clear()
@@ -928,9 +902,6 @@ export function Main() {
       title: "Copy session transcript",
       value: "session.copy",
       category: "Session",
-      slash: {
-        name: "copy",
-      },
       run: async () => {
         try {
           const sessionData = session()
@@ -959,9 +930,6 @@ export function Main() {
       title: "Export session transcript",
       value: "session.export",
       category: "Session",
-      slash: {
-        name: "export",
-      },
       run: async () => {
         try {
           const sessionData = session()
@@ -1098,14 +1066,49 @@ export function Main() {
 
   const sessionCommands = createMemo(() =>
     sessionCommandList().map((command) => ({
-      namespace: "palette",
       name: command.value,
       desc: "description" in command ? command.description : undefined,
-      slashName: "slash" in command ? command.slash?.name : undefined,
-      slashAliases: "slash" in command ? command.slash?.aliases : undefined,
       ...command,
     })),
   )
+
+  async function renameSession(args: string) {
+    const title = args.trim()
+    if (!title) {
+      const current = session()?.title ?? ""
+      prompt?.set({ input: `/rename ${current}`, parts: [] })
+      prompt?.focus()
+      return
+    }
+    await sdk.client.session.update({
+      sessionID: route.sessionID,
+      title,
+    })
+  }
+
+  const registryCommandIds = new Set([
+    "session.rename",
+    "session.timeline",
+    "session.fork",
+    "session.compact",
+    "session.undo",
+    "session.redo",
+    "session.drawer.toggle",
+    "session.copy",
+    "session.export",
+  ])
+
+  createEffect(() => {
+    for (const command of sessionCommandList()) {
+      if (!registryCommandIds.has(command.value)) continue
+      onCleanup(
+        commands.setHandler(command.value, (ctx) => {
+          if (command.value === "session.rename") return renameSession(ctx.args)
+          return command.run()
+        }),
+      )
+    }
+  })
 
   useBindings(() => ({
     commands: sessionCommands(),
