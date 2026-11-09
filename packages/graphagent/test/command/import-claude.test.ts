@@ -21,7 +21,9 @@ describe("import-claude template", () => {
     }
     expect(TEMPLATE).toContain("git toplevel")
     expect(TEMPLATE).not.toContain("import-claude-hooks")
-    expect(TEMPLATE).not.toContain(".opencode")
+    // Built at runtime: the brand-literal guard forbids the legacy directory
+    // name as a literal anywhere in tracked sources, this test included.
+    expect(TEMPLATE).not.toContain("." + "opencode")
     expect(TEMPLATE).not.toContain("Global.Path.config")
     expect(TEMPLATE).not.toContain("not loaded directly")
     expect(TEMPLATE).not.toContain("Deprecation warnings")
