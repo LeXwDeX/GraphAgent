@@ -6,7 +6,7 @@
 import { Effect } from "effect"
 import * as Log from "@/util/log"
 import { isAsync, type HookJSONOutput } from "../types"
-import { commandText, DEFAULT_TIMEOUT_MS, execShell } from "../exec/command"
+import { commandText, execShell, timeoutFor } from "../exec/command"
 import { classifyStdout, parseAsyncStdout, type StdoutClass } from "../exec/output"
 import { blocksOnFailure, MISSING_FILE_EXIT2_EVENTS, MISSING_FILE_STDERR, type HookHandler } from "./shared"
 
@@ -83,9 +83,13 @@ export const commandHandler: HookHandler = {
 
       // Other non-zero exits: log and continue (do not abort main flow)
       if (exitCode === null) {
+        // execShell resolves `null` when its own timeout killed the process or
+        // the caller aborted the run; report the effective timeout, not the
+        // legacy constant, so the user sees why a hook was cut off.
+        const timeoutMs = timeoutFor(entry, event)
         log.warn("hook command timed out / killed (non-blocking)", {
           command: commandText(entry),
-          timeoutMs: entry.timeout ? entry.timeout * 1000 : DEFAULT_TIMEOUT_MS,
+          timeoutMs,
         })
         // A canceled child can leave a complete-looking decision in buffered
         // stdout. The hook did not complete, so none of that output is valid.
@@ -94,7 +98,7 @@ export const commandHandler: HookHandler = {
           rawStdout: undefined,
           exitCode: null,
           succeeded: false,
-          failureMessage: `hook timed out after ${entry.timeout ?? DEFAULT_TIMEOUT_MS / 1000}s`,
+          failureMessage: `hook timed out after ${timeoutMs / 1000}s`,
           exitBlock: failureBlocks ? 'hook timed out; blocking because onFailure is "block"' : undefined,
         }
       }

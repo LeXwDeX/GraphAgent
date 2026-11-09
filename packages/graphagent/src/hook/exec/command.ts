@@ -11,7 +11,7 @@ import { createHash } from "crypto"
 import { Global } from "@graphagent/core/global"
 import * as Log from "@/util/log"
 import { Process } from "@/util/process"
-import type { HookCommand, HookEvent, HookEffort } from "../types"
+import { isAsync, type HookCommand, type HookEvent, type HookEffort } from "../types"
 
 const log = Log.create({ service: "hook.settings" })
 
@@ -151,17 +151,37 @@ export function promptText(entry: HookCommand): string {
 
 // ── Shell command runner ────────────────────────────────────────
 
-export const DEFAULT_TIMEOUT_MS = 600_000
+/**
+ * Default timeouts (D1 §5): a foreground handler may not stall a turn for
+ * minutes, so command/HTTP/MCP hooks get 30 s. Stop-class events legitimately
+ * run test suites and formatters, so they get 60 s. Background handlers do not
+ * block the turn and keep the old 10-minute ceiling. Handler-specific values
+ * (prompt/agent/SessionEnd/MessageDisplay/prompt-submission events) are
+ * unchanged, and an explicit per-handler `timeout` always wins. The source
+ * layer (global/project) never changes these values.
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000
+export const STOP_TIMEOUT_MS = 60_000
+export const BACKGROUND_TIMEOUT_MS = 600_000
+const STOP_CLASS_EVENTS: ReadonlySet<HookEvent> = new Set([
+  "Stop",
+  "SubagentStop",
+  "TaskCompleted",
+  "PreCompact",
+  "PostCompact",
+])
 export function timeoutFor(entry: HookCommand, event: HookEvent): number {
   if (entry.timeout !== undefined) return entry.timeout * 1000
   if (entry.type === "prompt") return 30_000
   if (entry.type === "agent") return 60_000
+  if (isAsync(entry)) return BACKGROUND_TIMEOUT_MS
   if (event === "SessionEnd") {
     const override = Number(process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS)
     return Number.isFinite(override) && override > 0 ? override : 1_500
   }
   if (event === "MessageDisplay") return 10_000
   if (["UserPromptSubmit", "PreModelSwitch", "PostModelSwitch"].includes(event)) return 30_000
+  if (STOP_CLASS_EVENTS.has(event)) return STOP_TIMEOUT_MS
   return DEFAULT_TIMEOUT_MS
 }
 
