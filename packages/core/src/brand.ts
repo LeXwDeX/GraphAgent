@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Single source of truth for user-visible brand identifiers.
 //
 // This module is intentionally side-effect free and dependency free so that

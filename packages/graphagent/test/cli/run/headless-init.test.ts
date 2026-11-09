@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression test for #404: headless /init never stamped project.time_initialized,
 // leaving MEMORY fail-closed inert. Root cause: `opencode run "/init"` and serve
 // text prompts deliver "/init" as a plain text part at POST /session/:id/message —

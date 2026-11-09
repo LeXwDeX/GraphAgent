@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** Default prose style. User instructions and task-specific output contracts take precedence. */
 export const DEFAULT_WRITING_STYLE = `## Clear writing defaults
 Use these defaults for prose. Follow explicit user instructions and task-specific output formats.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { createHash } from "node:crypto"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { execFile } from "node:child_process"
 import { appendFile, mkdir, readFile, realpath, stat } from "node:fs/promises"
 import path from "node:path"

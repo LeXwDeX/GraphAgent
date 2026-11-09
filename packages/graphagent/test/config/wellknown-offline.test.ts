@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect } from "bun:test"
 import { Effect, Exit, Layer, Schema } from "effect"
 import { logLines } from "effect/testing/TestConsole"

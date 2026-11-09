@@ -3,7 +3,7 @@
 // row fixtures use `as never` type shims (mock objects implement only the
 // interface slice the scenario exercises). The shims are type-only.
 // SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Issue #386 — structured-output single-authority contract.

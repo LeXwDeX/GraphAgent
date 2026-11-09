@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Process-local registry of child sessions currently driven in the foreground by
  * the task tool. task.ts fires `SubagentStop` (and drives its continuation) for

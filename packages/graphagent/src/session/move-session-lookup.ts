@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { MoveSession } from "@graphagent/core/control-plane/move-session"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { Effect, Layer } from "effect"

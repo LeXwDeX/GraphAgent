@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { createMemo, type Accessor } from "solid-js"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { useSync } from "../../context/sync"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { RequestFingerprint } from "../lib/fake-provider"
 
 // The request fingerprint recorded in `engine-baseline.json`. The gate compares

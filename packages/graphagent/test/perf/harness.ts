@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { NodeFileSystem } from "@effect/platform-node"
 import { EventV2 } from "@graphagent/core/event"
 import { FetchHttpClient } from "effect/http"

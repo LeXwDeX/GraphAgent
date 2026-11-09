@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { SessionAttention } from "./attention"
 /** Non-blocking internal hook delivery. Producers own the business timing and cancellation. */
 import { LayerNode } from "@graphagent/core/effect/layer-node"

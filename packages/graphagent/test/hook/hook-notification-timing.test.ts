@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { DagStore } from "@graphagent/core/dag/store"
 import { LegacyEvent } from "@graphagent/schema/legacy-event"
 import { decodeRecord, decodeString } from "../lib/hook-json"

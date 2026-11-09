@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** @jsxImportSource @opentui/solid */
 import { createEffect, Show, type JSX, type ParentProps } from "solid-js"
 import path from "node:path"

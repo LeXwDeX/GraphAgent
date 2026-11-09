@@ -1,15 +1,17 @@
 <!-- SPDX-FileCopyrightText: 2026 LeXwDeX -->
-<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
 # RuntimeAsset modifications
 
 This module is self-developed for the GraphAgent fork and is licensed
-under AGPL-3.0-or-later. Its full license text is in `LICENSE`.
+under Apache-2.0. Its full license text is `LICENSE-APACHE` at the repository
+root.
 
 Every TypeScript source file in this directory starts with the two lines from
 `SPDX-HEADER.txt`. Code copied or adapted from an upstream MIT file must retain
 the upstream copyright and MIT permission notice; it must not be relabeled as
-solely AGPL without a provenance review.
+Apache-2.0 without a provenance review, and it belongs in
+`LICENSE-UPSTREAM.txt`.
 
 Substantial changes are traceable through Git history and release metadata.
 Each release source archive records the exact commit and build inputs. When a

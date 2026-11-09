@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, test } from "bun:test"
 import { Deferred, Duration, Effect, Fiber, Layer, Ref, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"

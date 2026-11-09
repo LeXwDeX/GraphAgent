@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { existsSync } from "node:fs"
 
 // This is an argument parser, never a shell. Expansion and command composition

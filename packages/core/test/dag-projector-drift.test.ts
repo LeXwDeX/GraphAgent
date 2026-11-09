@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Drift guard: the projector's event→status from-guards must stay a subset of
  * the declared iron-law transition tables in core/types.ts.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -112,10 +115,7 @@ function configRepoScoped(templates: Record<string, string>) {
           await fs.mkdir(path.join(directory, "third_party", "mattpocock-skills"), { recursive: true })
           await fs.writeFile(path.join(directory, "THIRD_PARTY_NOTICES.md"), "# Third-party notices\n")
           await fs.writeFile(path.join(directory, "third_party", "mattpocock-skills", "LICENSE"), "MIT License\n")
-          await fs.writeFile(
-            path.join(directory, "third_party", "mattpocock-skills", "SOURCE.md"),
-            "# Source\n",
-          )
+          await fs.writeFile(path.join(directory, "third_party", "mattpocock-skills", "SOURCE.md"), "# Source\n")
           for (const command of [
             ["git", "init", "-q"],
             ["git", "config", "user.email", "test@example.com"],
@@ -150,8 +150,7 @@ describe("release packaging smoke test", () => {
       for (const name of [
         "NOTICE",
         "LICENSE",
-        "packages/core/src/dag/LICENSE",
-        "packages/graphagent/src/dag/LICENSE",
+        "LICENSE-APACHE",
         "third_party/mattpocock-skills/LICENSE",
         "third_party/mattpocock-skills/SOURCE.md",
       ]) {

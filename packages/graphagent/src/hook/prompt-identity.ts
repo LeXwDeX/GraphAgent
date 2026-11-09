@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Claude Code's prompt-scoped envelope fields: `prompt_id` and `effort`.
  *

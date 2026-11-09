@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { lstat, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import {

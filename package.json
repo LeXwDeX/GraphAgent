@@ -16,7 +16,8 @@
     "test": "echo 'do not run tests from root' && exit 1",
     "toolchain:check": "node script/toolchain.mjs check --go",
     "check:hosts": "bun script/check-private-hosts.ts",
-    "check:hosts:test": "cd script && bun test check-private-hosts.test.ts"
+    "check:hosts:test": "cd script && bun test check-private-hosts.test.ts",
+    "check:license": "bun script/check-license.ts"
   },
   "workspaces": {
     "packages": [
@@ -151,7 +152,7 @@
     "type": "git",
     "url": "https://github.com/anomalyco/opencode"
   },
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "prettier": {
     "semi": false,
     "printWidth": 120

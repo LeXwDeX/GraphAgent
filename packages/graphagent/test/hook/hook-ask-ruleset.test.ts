@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { decodeRecord } from "../lib/hook-json"
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Fiber, Layer, Schema } from "effect"

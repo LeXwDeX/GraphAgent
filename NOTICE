@@ -4,63 +4,34 @@ GraphAgent
 This repository is a fork of opencode (https://github.com/anomalyco/opencode),
 an AI coding agent. It is not affiliated with or endorsed by the OpenCode team.
 
-License boundaries
-------------------
+License rules
+-------------
 
-The machine-readable source of truth for these boundaries is
-`./LICENSE-SCOPE.json`. The human-readable paths below use the same values and
-are checked for consistency in CI.
+Two rules decide the license of each file:
 
-1. Upstream opencode code (the vast majority of this repository)
+1. Files inherited from the upstream opencode project are licensed under MIT.
+   This includes upstream files that the fork has modified. Their license text
+   is `./LICENSE`, with `Copyright (c) 2025 opencode`. Upstream files do not
+   carry a separate per-file license header.
 
-   License:  MIT
-   Text:     ./LICENSE
-   Copyright (c) 2025 opencode
+2. Every other file written for this fork is licensed under Apache-2.0,
+   regardless of when it was written. Their license text is
+   `./LICENSE-APACHE`, with `Copyright (c) 2026 LeXwDeX`. Source files written
+   for the fork carry these two header lines:
 
-   All code inherited from the upstream project, plus fork modifications that
-   are minor patches to upstream files (bug fixes, localization fixes, hook
-   system, tool improvements), remains under the upstream MIT license.
+   // SPDX-FileCopyrightText: 2026 LeXwDeX
+   // SPDX-License-Identifier: Apache-2.0
 
-2. Self-developed AGPL modules
+Apache-2.0 section 4 requires redistributors to retain the copyright and
+attribution notices from this repository and to include a copy of this NOTICE
+file. Modified files must carry prominent notices stating that they were
+changed. The attribution statement for the fork-authored code is
+`Copyright (c) 2026 LeXwDeX`.
 
-   License:  GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)
-   Text:     ./packages/core/src/dag/LICENSE
-             ./packages/graphagent/src/dag/LICENSE
-             ./packages/core/src/runtime-asset/LICENSE
-   Copyright (c) 2026 LeXwDeX
-
-   2.1 DAG workflow engine (active)
-
-   - packages/core/src/dag/                  DAG core: state machine, dependency
-                                             graph, scheduling, event projection,
-                                             SQLite read model
-   - packages/graphagent/src/dag/              DAG runtime: workflow service,
-                                             execution loop, node spawn,
-                                             admission, review lifecycle,
-                                             crash recovery, templates
-   - packages/graphagent/src/tool/workflow.ts  The `workflow` agent tool
-   - packages/schema/src/dag-event.ts        DAG event schema definitions
-   - packages/tui/src/dag/model.ts             TUI DAG model formatting helpers
-   - packages/tui/src/dag/waves.ts             TUI DAG wave computation
-   - packages/graphagent/src/server/routes/instance/httpapi/groups/dag.ts
-   - packages/graphagent/src/server/routes/instance/httpapi/handlers/dag.ts
-                                             DAG HTTP API routes
-   2.2 Portable runtime assets (active)
-
-   - packages/core/src/runtime-asset/        Runtime asset discovery, bundled
-                                             assets, verified cache, internal
-                                             mirrors, and public fallback
-   - packages/graphagent/script/prefetch-ripgrep.ts
-                                             Verified ripgrep release prefetch
-                                             for distributable artifacts
-   The AGPL applies to these paths and to derivative works of them, including
-   network-server deployments. Files outside the scopes recorded in
-   `LICENSE-SCOPE.json` remain under their existing licenses unless they carry
-   an explicit license notice that says otherwise.
-
-When a file under an AGPL-covered directory imports MIT-licensed upstream
-modules, the upstream modules remain MIT; only the AGPL-covered files and
-their derivatives carry AGPL obligations.
+`LICENSE-UPSTREAM.txt` lists every file inherited from upstream opencode that
+stays under MIT. Files outside `third_party/`, `patches/`, `LICENSE*` texts,
+`bun.lock`, and `*.patch` that are not listed there are Apache-2.0. The
+authoritative exclusion rules live in `script/check-license.ts`.
 
 3. Engineering workflow methodologies
 
@@ -74,3 +45,17 @@ their derivatives carry AGPL obligations.
    design, review, and synthesis methodologies are adapted into product-owned
    workflow routing and block contracts. Source metadata and adaptation scope
    are recorded in ./third_party/mattpocock-skills/SOURCE.md.
+
+Author identity statement
+-------------------------
+
+All code in this project is authored by human contributors. AI tools are used
+only as assistants and are not authors. Historical `Co-Authored-By: Claude`
+lines in commits record that a tool was used; they are not an authorship claim
+and grant no rights. Future commits, pull requests, issues, and release notes
+must not include AI attribution or "Generated with" statements.
+
+本项目全部代码的作者是人类贡献者，AI 工具仅作为辅助工具使用。历史提交中的
+`Co-Authored-By: Claude` 等署名行只表示使用过该工具，不代表作者身份，也不构成
+任何权利主张。今后的提交、PR、Issue 与发布说明不得包含 AI 署名或
+"Generated with" 类说明。

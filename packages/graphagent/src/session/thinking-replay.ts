@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { createHash } from "node:crypto"
 import type { LLMEvent } from "@graphagent/llm"
 import { METADATA_NAMESPACE } from "@graphagent/core/brand"

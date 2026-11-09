@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { CliRenderEvents, type CliRenderer, type Renderable } from "@opentui/core"
 import type { OpenTuiKeymap } from "../../src/keymap"
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { appendFileSync, mkdirSync } from "node:fs"
 import path from "node:path"
 import { formatWithOptions } from "node:util"

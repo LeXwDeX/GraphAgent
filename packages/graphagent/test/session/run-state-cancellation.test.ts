@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, spyOn } from "bun:test"
 import { Deferred, Effect, Exit, Fiber, Latch, Layer } from "effect"
 import { ModelV2 } from "@graphagent/core/model"

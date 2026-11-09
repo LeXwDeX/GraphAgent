@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@graphagent/script",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "dependencies": {},
   "devDependencies": {
     "@types/bun": "catalog:"

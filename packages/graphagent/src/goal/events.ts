@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as GoalEvent from "./events"
 
 // Re-export schema-level events — the single source of truth for event types.

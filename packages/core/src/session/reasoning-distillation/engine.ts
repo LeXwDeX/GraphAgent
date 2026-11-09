@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { LLM, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@graphagent/llm"
 import { RequestExecutor } from "@graphagent/llm/route"
 import { Duration, Effect, Stream } from "effect"

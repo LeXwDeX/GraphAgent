@@ -4,7 +4,7 @@
   "name": "@graphagent/http-recorder",
   "description": "Record and replay Effect HTTP client traffic with deterministic cassettes",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/anomalyco/opencode.git",

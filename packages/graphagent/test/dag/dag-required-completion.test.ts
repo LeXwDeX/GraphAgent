@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it } from "bun:test"
 import { type WorkflowConfig, requiredCompletionGaps } from "@/dag/dag"
 import { failingGateVerdict } from "@/dag/runtime/verdict"

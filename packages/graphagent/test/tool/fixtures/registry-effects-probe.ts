@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Standalone probe: bun's `mock.module` is process-wide, so removing the
 // built-in `invalid` tool's `effects` declaration here keeps the shared test
 // process untouched. The real ToolRegistry must then fall back to "unknown".

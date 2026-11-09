@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it } from "bun:test"
 import { Effect } from "effect"
 import { computeMergedConfig, type NodeConfig, type WorkflowConfig } from "@/dag/dag"

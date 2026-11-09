@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { consumerContext } from "./consumer-context"
 import { Effect, Option } from "effect"
 import type { Session } from "@/session/session"

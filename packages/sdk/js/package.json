@@ -4,7 +4,7 @@
   "version": "1.17.11",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "build": "bun ./script/build.ts",

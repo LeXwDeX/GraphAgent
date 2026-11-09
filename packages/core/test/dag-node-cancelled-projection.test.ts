@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression guard for the NodeCancelled projection contract (ticket A,
  * method-A: align to implementation).

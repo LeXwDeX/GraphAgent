@@ -3,7 +3,7 @@
   "name": "@graphagent/schema",
   "private": true,
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*.ts"

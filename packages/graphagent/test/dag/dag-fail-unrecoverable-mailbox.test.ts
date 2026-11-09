@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- durable row fixtures and branded IDs use `as never` shims.
 /**
  * #948 blocker: a failUnrecoverable call whose in-lock revalidation finds the

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import z from "zod"
 import { parsePatch } from "diff"
 import { CallToolResultSchema } from "@modelcontextprotocol/core"

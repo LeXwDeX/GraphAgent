@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as SessionAutomationLease from "./automation-lease"
 
 import { Context, Effect, Layer, Option, type Scope } from "effect"

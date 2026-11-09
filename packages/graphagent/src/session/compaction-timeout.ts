@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Duration, Effect, Schema, Stream } from "effect"
 
 export class CompactionTimeoutError extends Schema.TaggedError<CompactionTimeoutError>()(

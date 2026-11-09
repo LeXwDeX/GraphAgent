@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import { Database } from "../../src/database/database"

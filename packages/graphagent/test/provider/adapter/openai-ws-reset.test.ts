@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, test } from "bun:test"
 import { createServer, type Server as HttpServer, type ServerResponse } from "node:http"
 import WebSocket, { WebSocketServer } from "ws"

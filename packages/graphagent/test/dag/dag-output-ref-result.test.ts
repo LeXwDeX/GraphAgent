@@ -4,7 +4,7 @@
 // only the interface slice the scenario exercises). The shims are type-only;
 // converting them would fork the template's shape without changing behavior.
 // SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 /**
  * Train B probe B-p3 — workflow tool `result` action seam

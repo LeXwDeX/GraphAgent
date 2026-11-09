@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it } from "bun:test"
 import { Cause, Deferred, Effect, Layer, Option, Queue, Stream } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"

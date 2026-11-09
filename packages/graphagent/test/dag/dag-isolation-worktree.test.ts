@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Same harness
 // idiom as dag-spawn-pause-fence.test.ts: typed mocks implement only the
 // methods this spawn path calls.

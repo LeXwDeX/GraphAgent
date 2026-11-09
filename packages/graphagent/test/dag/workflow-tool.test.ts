@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { logLines } from "effect/testing/TestConsole"

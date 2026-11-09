@@ -3,7 +3,7 @@
   "version": "1.17.11",
   "name": "@graphagent/llm",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0 AND MIT",
   "private": true,
   "scripts": {
     "setup:recording-env": "bun run script/setup-recording-env.ts",

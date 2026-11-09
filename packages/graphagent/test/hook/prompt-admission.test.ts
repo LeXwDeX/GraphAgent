@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { SettingsHook } from "@/hook"
 import { SessionHooks } from "@/hook/session-hooks"
 import { HookRewakeLive } from "@/hook/rewake-live"

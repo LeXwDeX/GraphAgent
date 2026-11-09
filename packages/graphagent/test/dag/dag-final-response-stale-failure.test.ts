@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Narrow model service fixtures retain real DAG events and durable mailbox guards.
 import { describe, expect } from "bun:test"
 import { sql } from "drizzle-orm"

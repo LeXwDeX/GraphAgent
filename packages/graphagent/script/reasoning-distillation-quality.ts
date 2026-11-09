@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { NO_USEFUL_REASONING_TEXT } from "@graphagent/core/session/reasoning-distillation"
 
 /** Fixed-fixture semantic checks for the opt-in live acceptance harness. Not a production judge. */

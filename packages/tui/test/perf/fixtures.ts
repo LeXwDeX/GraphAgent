@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { GlobalEvent, Message, Part, Session } from "@graphagent/sdk/v2"
 import { directory } from "../fixture/tui-sdk"
 

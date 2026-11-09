@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import type { Effect, Layer, Scope } from "effect"
 import type { TestInstance } from "../../fixture/fixture"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { Session, SessionStatus } from "@graphagent/sdk/v2"
 
 /** #886 5.4: base number of hydrated sessions, excluding the protected parent chain. */

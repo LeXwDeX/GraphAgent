@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { expect, test } from "bun:test"
 import { createRoot, createSignal } from "solid-js"
 import { SECOND_MS, TICK_MS, createTicker } from "../../src/context/ticker"

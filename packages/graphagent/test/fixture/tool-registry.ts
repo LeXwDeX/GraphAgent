@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { asSchema, type Tool as AITool } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { McpCatalog } from "@/mcp/catalog"

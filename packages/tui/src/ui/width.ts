@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
 /** Width used for East Asian Ambiguous code points; configurable in the interface settings. */

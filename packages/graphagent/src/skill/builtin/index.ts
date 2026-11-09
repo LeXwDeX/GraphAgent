@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { CONFIG_BASENAME, PROJECT_DIR } from "@graphagent/core/brand"
 import customizeConfigContent from "./customize-opencode.md" with { type: "text" }
 import configureHooksContent from "./configure-hooks.md" with { type: "text" }

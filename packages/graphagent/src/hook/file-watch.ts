@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Context, Effect, Fiber, Layer } from "effect"
 import { watch, statSync, type FSWatcher } from "node:fs"
 import path from "node:path"

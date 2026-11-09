@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- This one-shot evidence script intentionally traverses provider-transformed recursive JSON Schema values. */
 // One-shot evidence capture for change repair-workflow-authoring-validation
 // (task 1.4, recaptured after the review-remediation admission change):

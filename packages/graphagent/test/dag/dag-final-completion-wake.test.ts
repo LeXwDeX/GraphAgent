@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Synthetic branded DB rows and a Session service mock exercise the real store, event, and wake services without starting a model. */
 import { expect, it } from "bun:test"
 import { Deferred, Effect, Layer, Option, Queue, Stream } from "effect"

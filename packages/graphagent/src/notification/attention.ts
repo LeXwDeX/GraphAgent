@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { realpath } from "node:fs/promises"
 import { Clock, Context, Deferred, Effect, Layer, Option } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Deferred, Effect } from "effect"
 import { SessionAdmission } from "@graphagent/core/session/admission"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"

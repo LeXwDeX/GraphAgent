@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect } from "bun:test"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { LayerNode } from "@graphagent/core/effect/layer-node"

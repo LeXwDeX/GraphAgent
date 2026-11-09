@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { decodeJsonRecord, decodeRecord, decodeString } from "../lib/hook-json"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { SessionHooks } from "@/hook/session-hooks"

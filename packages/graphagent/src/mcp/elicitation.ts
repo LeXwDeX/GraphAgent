@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { SessionAttention } from "@/notification/attention"
 /**
  * MCP elicitation adapter (spec rev with form + url modes; this change

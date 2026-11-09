@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { createSignal } from "solid-js"
 import { DEFAULT_LANGUAGE, resolveLanguage, type UiLanguage } from "@graphagent/core/config/language"
 import { en } from "./en"

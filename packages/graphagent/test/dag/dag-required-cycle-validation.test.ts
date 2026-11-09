@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression: a dependency cycle among `required: true` nodes made the shared
 // structural validator THROW (CycleError from validateRequiredNodes' addEdge)
 // instead of returning a dag.invalid diagnostic, so validate/start/draft and

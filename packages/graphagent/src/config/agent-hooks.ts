@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export type AgentHookSource = "project" | "user" | "builtin"
 export interface AgentHookProvenance {
   source: AgentHookSource

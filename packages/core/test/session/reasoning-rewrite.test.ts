@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect } from "bun:test"
 import { LLMEvent, LLMResponse, Model, type LLMClientShape, type LLMRequest } from "@graphagent/llm"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"

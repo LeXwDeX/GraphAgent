@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Synthetic branded DB rows and Session service mocks exercise transaction rollback without starting a model. */
 import { expect, it } from "bun:test"
 import { Deferred, Effect, Layer, Stream } from "effect"

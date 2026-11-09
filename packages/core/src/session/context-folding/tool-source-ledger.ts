@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as ContextFoldingToolSourceLedger from "./tool-source-ledger"
 
 import { Context, Effect, Layer } from "effect"

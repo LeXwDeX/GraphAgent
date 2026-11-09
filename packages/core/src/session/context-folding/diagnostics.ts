@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { DynamicResolution } from "../../config/compaction"
 import type { CandidateSkipReason, ContextFoldingProjectionPlan, FoldPlan } from "./types"
 import { ContextFoldingPolicy } from "./policy"

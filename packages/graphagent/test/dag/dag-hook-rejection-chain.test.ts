@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // The provider transport is scripted; hooks, tools, sessions, DAG scheduling,
 // cancellation, instance disposal and durable recovery are the real services.
 // Live model choice is validated separately; these tests pin runtime semantics.

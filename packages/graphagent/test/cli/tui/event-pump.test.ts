@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, test } from "bun:test"
 import { EventPump, eventScope, FRAME_MS, type PumpEvent } from "../../../src/cli/tui/event-pump"
 

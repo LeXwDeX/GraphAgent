@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion --
  * Branded test fixtures and Effect service mocks use the established DAG harness narrowing pattern. */
 import { describe, expect } from "bun:test"

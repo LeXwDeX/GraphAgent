@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { Schema, SchemaAST, SchemaIssue } from "effect"
 
 export interface SchemaFailure {

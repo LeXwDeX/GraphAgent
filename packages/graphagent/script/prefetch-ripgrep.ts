@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 import fs from "fs"
 import path from "path"

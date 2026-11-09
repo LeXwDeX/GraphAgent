@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Maps a filesystem stat failure on a tool's search path to an actionable
  * diagnostic. Categories come from the Effect FileSystem abstraction's

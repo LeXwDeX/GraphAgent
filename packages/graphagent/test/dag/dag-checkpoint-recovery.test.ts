@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- service mocks expose only the runtime surface exercised here
 import { describe, expect } from "bun:test"

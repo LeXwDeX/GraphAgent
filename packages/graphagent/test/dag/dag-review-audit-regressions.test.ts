@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Regression suite for the findings verified out of the DAG self-review
  * (workflow dag_04df6bfa6ffe3EO429nwGkG1VT) and fixed afterwards:

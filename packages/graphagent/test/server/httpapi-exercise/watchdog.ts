@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { spawn } from "bun"
 import fs from "node:fs"
 import os from "node:os"

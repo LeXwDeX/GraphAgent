@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { performance } from "node:perf_hooks"
 import os from "node:os"
 import path from "node:path"

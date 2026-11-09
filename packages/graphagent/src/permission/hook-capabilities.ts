@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export * as PermissionHookCapabilities from "./hook-capabilities"
 import { Effect } from "effect"
 import { InstanceState } from "@/effect/instance-state"

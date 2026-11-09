@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { afterEach, describe, expect, test } from "bun:test"
 import { BACKGROUND_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, STOP_TIMEOUT_MS, timeoutFor } from "@/hook/exec/command"
 import type { HookCommand, HookEvent } from "@/hook"

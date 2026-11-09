@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- The SDK mock exposes only the two read endpoints used by this consumer.
 // Unit tests for the consumer-only DAG hold decision rule (issue 614).
 // Table-driven over the busy/idle event orderings the run loop feeds the

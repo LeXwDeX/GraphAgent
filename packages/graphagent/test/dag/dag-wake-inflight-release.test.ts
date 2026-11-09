@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- mocked service slices use `as never` shims.
 // Regression: DagLoop.deliverWake must release its per-session `wakeInFlight`
 // reservation through an Effect finalizer. A generator `finally` does not run

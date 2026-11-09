@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ParentProps } from "solid-js"
 
 /** Status band slot: zero to two lines above the bottom zone (F4). */

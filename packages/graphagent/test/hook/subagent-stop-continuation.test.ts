@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { decodeJsonRecord } from "../lib/hook-json"
 import { SessionHooks } from "@/hook/session-hooks"
 import fs from "node:fs/promises"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // A pre-2026-07-28 MCP stdio server: it rejects the era probe (unknown method)
 // and only implements the 2025-11-25 initialize / tools flow. The client's
 // `auto` negotiation must fall back to the legacy handshake instead of failing.

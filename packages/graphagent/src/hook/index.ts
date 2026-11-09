@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Settings-based hooks with Claude Code-compatible envelopes and explicit runtime support.
  *

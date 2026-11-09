@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Foreground hook observability: debounced `session.hook.status` events and the
  * running-fiber registry behind `Hooks.cancel`.

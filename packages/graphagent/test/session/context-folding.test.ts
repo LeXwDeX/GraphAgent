@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, test } from "bun:test"
 import type { FoldRef } from "@graphagent/core/session/context-folding"
 import { SessionV1 } from "@graphagent/core/v1/session"

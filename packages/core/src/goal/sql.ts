@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
 
 export const GoalStateTable = sqliteTable(

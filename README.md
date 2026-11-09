@@ -10,8 +10,9 @@
 GraphAgent is the product name for this project; the repository is published as
 **GraphAgent**, a fork of the MIT-licensed
 [opencode](https://github.com/anomalyco/opencode) terminal AI agent that adds
-the DAG workflow engine and the features listed below. **Not affiliated with or endorsed by the OpenCode
-team.**
+the DAG workflow engine and the features listed below. Code inherited from
+upstream opencode stays MIT; code written for this fork is Apache-2.0. **Not
+affiliated with or endorsed by the OpenCode team.**
 
 > [!IMPORTANT]
 > **GraphAgent v1 is in focused maintenance.** Maintenance is limited to DAG
@@ -447,15 +448,14 @@ bun dev serve        # headless API server (port 4096)
 
 ## License
 
-Mixed license model:
+Two license rules:
 
-| Content                                    | License           | Text                                                                                                                                               |
-| ------------------------------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Upstream opencode code (the vast majority) | MIT               | [`LICENSE`](./LICENSE)                                                                                                                             |
-| DAG workflow engine (fork-authored)        | AGPL-3.0-or-later | [`packages/core/src/dag/LICENSE`](./packages/core/src/dag/LICENSE), [`packages/graphagent/src/dag/LICENSE`](./packages/graphagent/src/dag/LICENSE) |
-| Portable runtime assets (fork-authored)    | AGPL-3.0-or-later | [`packages/core/src/runtime-asset/LICENSE`](./packages/core/src/runtime-asset/LICENSE)                                                             |
+| Content                              | License    | Text                                 |
+| ------------------------------------ | ---------- | ------------------------------------ |
+| Upstream opencode code               | MIT        | [`LICENSE`](./LICENSE)               |
+| Fork-authored code (everything else) | Apache-2.0 | [`LICENSE-APACHE`](./LICENSE-APACHE) |
 
-Exact file boundaries are listed in [`NOTICE`](./NOTICE). The AGPL covers these modules and their derivatives, including network-server deployments. Other files retain their existing licenses.
+Exact file boundaries are listed in [`LICENSE-UPSTREAM.txt`](./LICENSE-UPSTREAM.txt) and summarized in [`NOTICE`](./NOTICE). Files inherited from upstream opencode stay MIT, including upstream files modified by the fork. Every other file written for this fork is Apache-2.0. Redistribution must retain the copyright and attribution notices in [`NOTICE`](./NOTICE).
 
 ## Docs
 

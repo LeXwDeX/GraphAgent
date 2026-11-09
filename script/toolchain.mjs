@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { execFileSync } from "node:child_process"
 import { readFileSync, realpathSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"

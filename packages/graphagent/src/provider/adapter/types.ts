@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import type { Payload as EventPayload } from "@graphagent/core/event"
 import type { Auth } from "@/auth"
 import type { Project } from "@/project/project"

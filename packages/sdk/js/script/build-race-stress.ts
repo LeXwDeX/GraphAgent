@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 // Regression harness for the #475 openapi.json ownership race: two full
 // `bun ./script/build.ts` processes are started simultaneously in this
 // checkout, repeated for a bounded number of rounds. The invariant under

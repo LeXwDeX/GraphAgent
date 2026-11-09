@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 export { adoptionProvenance } from "./adoption"
 export type { ReasoningReplacement } from "./adoption"
 export { assessCanonicalReasoning, reasoningForReplay, replaceCanonicalReasoning } from "./canonical"

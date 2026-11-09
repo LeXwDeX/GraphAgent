@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /** User interface and default assistant reply languages. */
 export type UiLanguage = "zh-CN" | "en"
 

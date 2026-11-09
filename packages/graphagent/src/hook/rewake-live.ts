@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Live HookRewake implementation — routes V1 hook feedback to SessionPrompt.
  *

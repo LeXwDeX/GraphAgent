@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Context, Effect, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
