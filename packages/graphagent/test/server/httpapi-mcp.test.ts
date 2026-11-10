@@ -1,5 +1,8 @@
 import { describe, expect } from "bun:test"
 import { Context, Effect, Layer } from "effect"
+import { InstanceRef } from "../../src/effect/instance-ref"
+import type { InstanceContext } from "../../src/project/instance-context"
+import { ProjectTrust } from "../../src/project/trust/service"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { McpPaths } from "../../src/server/routes/instance/httpapi/groups/mcp"
 import { Server } from "../../src/server/server"
@@ -8,11 +11,15 @@ import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const context = Context.empty() as Context.Context<unknown>
-const testStateLayer = Layer.effectDiscard(
-  Effect.gen(function* () {
-    yield* Effect.promise(() => resetDatabase())
-    yield* Effect.addFinalizer(() => Effect.promise(() => resetDatabase()).pipe(Effect.ignore))
-  }),
+const testStateLayer = Layer.mergeAll(
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      yield* Effect.promise(() => resetDatabase())
+      yield* Effect.addFinalizer(() => Effect.promise(() => resetDatabase()).pipe(Effect.ignore))
+    }),
+  ),
+  // Writes decisions to the same isolated trust file the HTTP app reads.
+  ProjectTrust.defaultLayer,
 )
 const it = testEffect(testStateLayer)
 
@@ -84,6 +91,18 @@ describe("mcp HttpApi", () => {
       Effect.gen(function* () {
         const tmp = yield* TestInstance
         const handler = HttpApiApp.webHandler()
+        // The fixture owns the project layer it writes, so trust its entries
+        // the way the /trust flow would before exercising connect. The HTTP
+        // app resolves its own instance, which does not inherit the fixture's
+        // `trustProject` boot flag. `decide` is a no-op under `--trust-project`,
+        // so submit the decisions as the ungated path would.
+        const trust = yield* ProjectTrust.Service
+        const current = yield* InstanceRef
+        if (!current) return yield* Effect.die("instance context missing")
+        const context: InstanceContext = { ...current, trustProject: false }
+        yield* trust.decide((yield* trust.list()).map((entry) => ({ id: entry.id, state: "trusted" }))).pipe(
+          Effect.provideService(InstanceRef, context),
+        )
         const added = yield* request(handler, McpPaths.status, tmp.directory, {
           method: "POST",
           headers: { "content-type": "application/json" },

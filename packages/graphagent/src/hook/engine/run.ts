@@ -8,12 +8,21 @@
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import { Effect, Option, Scope, Exit, Fiber } from "effect"
+import { readFileSync } from "node:fs"
+import path from "path"
+import { PROJECT_DIR } from "@graphagent/core/brand"
+import { ConfigMarkdown } from "@graphagent/core/config/markdown"
+import { ProjectTrust as ProjectTrustEvent } from "@graphagent/schema/project-trust"
 import * as Log from "@/util/log"
 import { Global } from "@graphagent/core/global"
 import { InstanceState } from "@/effect/instance-state"
+import type { InstanceContext } from "@/project/instance-context"
 import { EffectBridge } from "@/effect/bridge"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionID } from "@/session/schema"
 import { SessionCancellation } from "@/session/cancellation"
+import type { ProjectTrust } from "@/project/trust/service"
+import type { GateEntry, GateResult } from "@/project/trust/service"
 import type { SessionHooks } from "../session-hooks"
 import type { SessionHookEntry } from "../session-hooks"
 import type { HookConfigChange } from "../config-change"
@@ -58,7 +67,7 @@ import { onAsyncComplete, sanitizeHookContext } from "./async"
 import { commandText } from "../exec/command"
 import { isAsync } from "../types"
 import { makeEntryRunner } from "./entry"
-import { makeServiceMethods } from "./methods"
+import { makeServiceMethods, scopedHooksWithTrust } from "./methods"
 import { runMonitored } from "./monitor"
 import type { Interface } from "../service"
 
@@ -72,22 +81,113 @@ const log = Log.create({ service: "hook.settings" })
  */
 export const prepareObserver: { current?: (event: HookEvent, durationMs: number) => void } = {}
 
+/**
+ * Frontmatter hooks declared by a scoped origin's source file. Undefined when
+ * the origin is not a skill/agent path or the file no longer parses, in which
+ * case a trust change leaves the registration removed.
+ */
+function originHooks(origin: string): unknown {
+  const prefix = ["skill:", "agent:"].find((candidate) => origin.startsWith(candidate))
+  if (!prefix) return undefined
+  try {
+    return ConfigMarkdown.parse(readFileSync(origin.slice(prefix.length), "utf8")).data.hooks
+  } catch {
+    return undefined
+  }
+}
+
 export interface EngineDeps {
   sessionHooks: SessionHooks.Interface
   configChange?: HookConfigChange.Interface
   fileWatch?: HookFileWatch.Interface
+  /**
+   * Project-trust gate. Required in the real layer; absent only in partial test
+   * wiring, where every entry is allowed (the pre-trust behavior).
+   */
+  trust?: Pick<ProjectTrust.Interface, "gate" | "resetSkipped">
 }
 
 export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, Scope.Scope> = Effect.fnUntraced(
   function* (deps: EngineDeps) {
-    const { sessionHooks, configChange, fileWatch } = deps
+    const { sessionHooks, configChange, fileWatch, trust } = deps
+    // Optional only for partial test wiring; `hook/service.ts` always provides
+    // the real bridge and trust service through the default layer.
+    const events = Option.getOrUndefined(yield* Effect.serviceOption(EventV2Bridge.Service))
+
+    /**
+     * Load the hooks chain and mark project/local commands the trust gate
+     * refuses. The command list and summaries share one insertion order, so the
+     * same index addresses both.
+     */
+    const loadGated = Effect.fnUntraced(function* (root: string) {
+      const chain = loadChainWithSummaries(root)
+      const projectDirectory = path.join(root, PROJECT_DIR)
+      const gated: Array<{ command: HookCommand; entry: GateEntry }> = []
+      for (const command of chain.commands) {
+        const source = command.__source
+        if (!source || source.scope === "global") continue
+        gated.push({
+          command,
+          entry: {
+            scope: source.scope,
+            file: path.relative(projectDirectory, source.file).replaceAll("\\", "/"),
+            ...(command.__trust === undefined ? {} : { entry: command.__trust }),
+          },
+        })
+      }
+      // Clear only this loader's category: Config, MCP, skill and agent entries
+      // already recorded in the directory must survive for the run summary.
+      if (trust) yield* trust.resetSkipped(["hook"])
+      const result: GateResult =
+        trust && gated.length > 0
+          ? yield* trust.gate(gated.map((item) => item.entry))
+          : { allowed: gated.map(() => true), skipped: [] }
+      const untrusted = new WeakSet<HookCommand>()
+      gated.forEach((item, index) => {
+        if (!result.allowed[index]) untrusted.add(item.command)
+      })
+      const summaries = chain.summaries.filter((_, index) => {
+        const command = chain.commands[index]
+        return command === undefined || !untrusted.has(command)
+      })
+      return { settings: chain.settings, summaries, untrusted, invalid: chain.invalid }
+    })
+
+    // A trust change re-evaluates live scoped registrations from their source
+    // file: a revoked hook is dropped, a newly trusted one is registered again
+    // immediately. Inline `agent-config:` hooks have no file; they stay
+    // unregistered until the next prompt re-adds them from the reloaded Config.
+    const reconcileScoped = Effect.fnUntraced(function* (ctx: InstanceContext) {
+      for (const registration of yield* sessionHooks.scopedRegistrations()) {
+        if (registration.source !== "project") continue
+        yield* sessionHooks.unregisterScoped(registration.sessionID, registration.origin)
+        const hooks = yield* Effect.sync(() => originHooks(registration.origin))
+        if (hooks === undefined) continue
+        const gated = yield* scopedHooksWithTrust(
+          {
+            kind: registration.kind,
+            origin: registration.origin,
+            source: "project",
+            hooks,
+            ...(registration.child === undefined ? {} : { child: registration.child }),
+          },
+          trust,
+          ctx,
+        )
+        if (gated === undefined) continue
+        yield* sessionHooks
+          .registerScoped(registration.sessionID, gated)
+          .pipe(Effect.catchTag("InvalidHookError", () => Effect.void))
+      }
+    })
 
     const state = yield* InstanceState.make(
       Effect.fn("SettingsHook.state")(function* (instCtx) {
-        const chain = loadChainWithSummaries(instCtx.root)
+        const chain = yield* loadGated(instCtx.root)
         const stateObj = {
           settings: chain.settings,
           hooksList: chain.summaries,
+          untrusted: chain.untrusted,
           cwd: instCtx.directory,
           root: instCtx.root,
           seen: new Map<string, Set<string>>(),
@@ -125,7 +225,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         // in flight, so a disposed instance can never commit.
         const bridge = yield* EffectBridge.make()
         const reloadCandidate = Effect.fn("SettingsHook.reloadCandidate")(function* (changedFile: string) {
-          const candidate = loadChainWithSummaries(instCtx.root)
+          const candidate = yield* loadGated(instCtx.root)
           if (candidate.invalid.length > 0) {
             log.warn("hooks.json is not valid JSON; keeping the current hooks", { files: candidate.invalid })
             return undefined
@@ -156,6 +256,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           }
           stateObj.settings = candidate.settings
           stateObj.hooksList = candidate.summaries
+          stateObj.untrusted = candidate.untrusted
           if (fileWatch)
             yield* fileWatch.refreshStatic(
               candidate.settings.disableAllHooks === true ? [] : staticWatchPaths(candidate.settings),
@@ -173,6 +274,36 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
             handle.close()
           }),
         )
+        // A trust decision immediately re-evaluates this directory's chain: the
+        // gate output changes, but the files themselves did not, so the hooks
+        // watcher would not fire. Other projects' decisions are ignored.
+        if (events) {
+          const unsubscribe = yield* events.listen((event) => {
+            if (event.type !== ProjectTrustEvent.Event.Updated.type) return Effect.void
+            // The bridge attaches the routed Location.Info, which carries the
+            // directory it published from; the declared payload type only names
+            // Location.Ref, so compare that directory directly.
+            if (event.location?.directory !== instCtx.directory) return Effect.void
+            return bridge.run(
+              Effect.gen(function* () {
+                const next = yield* loadGated(instCtx.root)
+                if (next.invalid.length > 0) {
+                  log.warn("hooks.json is not valid JSON; keeping the current hooks", { files: next.invalid })
+                } else {
+                  stateObj.settings = next.settings
+                  stateObj.hooksList = next.summaries
+                  stateObj.untrusted = next.untrusted
+                  if (fileWatch)
+                    yield* fileWatch.refreshStatic(
+                      next.settings.disableAllHooks === true ? [] : staticWatchPaths(next.settings),
+                    )
+                }
+                yield* reconcileScoped(instCtx)
+              }),
+            )
+          })
+          yield* Effect.addFinalizer(() => unsubscribe)
+        }
 
         return stateObj
       }),
@@ -436,6 +567,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
         if (!test || !groupMatches(test, targets)) continue
         let claimed = false
         for (const entry of group.hooks) {
+          if (s.untrusted.has(entry)) continue
           if (!entryEligible(payload, entry)) continue
           if (
             !evaluateCondition(entry, planEnvelope, payload.event, {
@@ -777,7 +909,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
     // else lazily (so a tool call with no matching hook materializes nothing).
     const hookCall = (payload: HookPayload, ctx: ToolHookContext) => trigger(payload, ctx)
 
-    const methods = makeServiceMethods(state, sessionHooks)
+    const methods = makeServiceMethods(state, sessionHooks, trust)
 
     return { trigger, hookCall, ...methods } satisfies Interface
   },

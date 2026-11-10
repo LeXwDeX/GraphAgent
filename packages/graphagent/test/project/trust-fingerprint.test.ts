@@ -137,17 +137,16 @@ describe("fingerprint", () => {
     expect(second).toBe(first)
   })
 
-  test("key order and comments do not change the fingerprint", async () => {
+  test("key order does not change the fingerprint", async () => {
     await using tmp = await tmpdir()
     write(tmp.path, "guard.sh", "echo guard")
     const plain = `{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"./guard.sh"}]}]}`
-    const commented = `{
-      // a comment
+    const reordered = `{
       "Stop": [
         {
           "matcher": "*",
           "hooks": [
-            { "command": "./guard.sh", "type": "command" } // trailing
+            { "command": "./guard.sh", "type": "command" }
           ]
         }
       ]
@@ -157,7 +156,7 @@ describe("fingerprint", () => {
         files: [{ file: "hooks.json", text }],
         isTracked: () => false,
       }).entries[0]
-    expect(fingerprint(enumerated(commented), query(tmp.path))).toBe(fingerprint(enumerated(plain), query(tmp.path)))
+    expect(fingerprint(enumerated(reordered), query(tmp.path))).toBe(fingerprint(enumerated(plain), query(tmp.path)))
   })
 })
 

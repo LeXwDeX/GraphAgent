@@ -21,6 +21,8 @@ import { Global } from "@graphagent/core/global"
 import { ProjectTrust as ProjectTrustEvent } from "@graphagent/schema/project-trust"
 import { Context, Effect, Layer, Semaphore } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { InstanceRef } from "@/effect/instance-ref"
+import { registerDisposer } from "@/effect/instance-registry"
 import { InstanceState } from "@/effect/instance-state"
 import { Git } from "@/git"
 import type { InstanceContext } from "@/project/instance-context"
@@ -38,7 +40,13 @@ import type { TrustEntry } from "./types"
 const DIRECT_FILES = ["hooks.json", "hooks.local.json", "mcp.json", "settings.json", "settings.local.json"] as const
 
 /** Sources scanned under the project layer. */
-const GLOB_PATTERNS = ["skills/**/SKILL.md", "agents/*.md", "commands/*.md"] as const
+const GLOB_PATTERNS = [
+  "skills/**/SKILL.md",
+  "agents/*.md",
+  "agents/**/*.md",
+  "commands/*.md",
+  "commands/**/*.md",
+] as const
 
 /**
  * Synchronous filesystem adapter for the pure fingerprint function. Referenced
@@ -75,9 +83,54 @@ export interface ImportedTrustEntry {
   command?: string
 }
 
+/** Layer an entry was loaded from; `local` files are trust-relevant only when git tracks them. */
+export type GateScope = "global" | "project" | "local"
+
+/** One loaded entry offered to the gate. A missing `entry` means "not enumerated". */
+export interface GateEntry {
+  readonly scope: GateScope
+  readonly file: string
+  readonly entry?: TrustEntry
+}
+
+/** A project entry the current run refused to execute. */
+export interface SkippedEntry {
+  readonly id: string
+  readonly category?: TrustEntry["category"]
+  readonly label?: string
+  readonly file: string
+  readonly scope: GateScope
+  readonly command?: string
+}
+
+export interface GateResult {
+  /** One flag per input entry, in input order. */
+  readonly allowed: readonly boolean[]
+  readonly skipped: readonly SkippedEntry[]
+}
+
 export interface Interface {
   /** Enumerate the project layer and merge the recorded decisions. */
   readonly list: () => Effect.Effect<TrustEntryView[]>
+  /**
+   * True when this instance enforces project trust: a project layer exists and
+   * the current run did not opt into `--trust-project`.
+   */
+  readonly active: () => Effect.Effect<boolean>
+  /**
+   * Decide whether each loaded entry may execute. Global entries always pass; a
+   * missing/unrecorded/stale project entry (or a git-tracked local entry) is
+   * refused. An untracked local file is user configuration and passes.
+   */
+  readonly gate: (entries: readonly GateEntry[]) => Effect.Effect<GateResult>
+  /** Entries skipped in this directory since the last reset, for the run summary. */
+  readonly skipped: () => Effect.Effect<readonly SkippedEntry[]>
+  /**
+   * Clear skipped entries of this directory. With `categories`, only those
+   * categories are cleared, so a load point that recomputes its own chain keeps
+   * the entries other load points recorded for the final run summary.
+   */
+  readonly resetSkipped: (categories?: readonly TrustEntry["category"][]) => Effect.Effect<void>
   /** Read-only lookup for load points (PR3): a missing or stale record is `pending`. */
   readonly check: (id: string, fp: string) => Effect.Effect<TrustState>
   /** Apply user decisions; unknown ids are ignored. Publishes `project.trust.updated` when a record was written. */
@@ -115,6 +168,24 @@ const make = (options: Options = {}) =>
     // `decide` and `trustImported` are read-modify-write cycles; serialize them
     // so concurrent decisions cannot drop each other.
     const lock = Semaphore.makeUnsafe(1)
+    // Entries skipped by the current run, per directory. Load points add to the
+    // set every time they gate; the CLI summary reads it before exit.
+    const skippedByDirectory = new Map<string, Map<string, SkippedEntry>>()
+    const skippedFor = (directory: string) => {
+      const existing = skippedByDirectory.get(directory)
+      if (existing) return existing
+      const created = new Map<string, SkippedEntry>()
+      skippedByDirectory.set(directory, created)
+      return created
+    }
+    const off = registerDisposer((directory) =>
+      Effect.runPromise(
+        Effect.sync(() => {
+          skippedByDirectory.delete(directory)
+        }),
+      ),
+    )
+    yield* Effect.addFinalizer(() => Effect.sync(off))
 
     const resolve = Effect.fn("ProjectTrust.resolve")(function* () {
       const ctx = yield* InstanceState.context
@@ -224,6 +295,10 @@ const make = (options: Options = {}) =>
     })
 
     const check = Effect.fn("ProjectTrust.check")(function* (id: string, fp: string) {
+      // `--trust-project` overlays every recorded decision for this run without
+      // touching trust.json.
+      const origin = yield* InstanceRef
+      if (origin?.trustProject === true) return "trusted" as const
       const current = yield* resolve()
       if (!current) return "pending" as const
       const data = yield* store.read
@@ -232,7 +307,107 @@ const make = (options: Options = {}) =>
       return record.decision
     })
 
+    const active = Effect.fn("ProjectTrust.active")(function* () {
+      const ctx = yield* InstanceRef
+      if (!ctx) return false
+      return hasProjectLayer(ctx.root, Global.Path.home) && ctx.trustProject !== true
+    })
+
+    const gate = Effect.fn("ProjectTrust.gate")(function* (items: readonly GateEntry[]) {
+      const ctx = yield* InstanceRef
+      if (!ctx || !hasProjectLayer(ctx.root, Global.Path.home) || ctx.trustProject === true)
+        return { allowed: items.map(() => true), skipped: [] } satisfies GateResult
+      const current = yield* resolve()
+      if (!current) return { allowed: items.map(() => true), skipped: [] } satisfies GateResult
+
+      const data = yield* store.read
+      const project = data.projects[current.identity.id]
+      const tracked = new Map<string, boolean>()
+      const directorySkipped = skippedFor(ctx.directory)
+      const allowed: boolean[] = []
+      const skipped: SkippedEntry[] = []
+
+      for (const item of items) {
+        if (item.scope === "global") {
+          allowed.push(true)
+          continue
+        }
+        if (item.scope === "local") {
+          let isTracked = tracked.get(item.file)
+          if (isTracked === undefined) {
+            const result = yield* git.run(["ls-files", "--error-unmatch", "--", `${PROJECT_DIR}/${item.file}`], {
+              cwd: ctx.root,
+            })
+            isTracked = result.exitCode === 0
+            tracked.set(item.file, isTracked)
+          }
+          if (!isTracked) {
+            allowed.push(true)
+            continue
+          }
+        }
+
+        const entry = item.entry
+        if (entry === undefined) {
+          // A project entry the load point could not enumerate cannot be
+          // matched to a decision; fail closed.
+          const value: SkippedEntry = {
+            id: `${item.file}|<not-enumerated>`,
+            file: item.file,
+            scope: item.scope,
+          }
+          allowed.push(false)
+          skipped.push(value)
+          directorySkipped.set(value.id, value)
+          continue
+        }
+        const fp = fingerprint(entry, { root: ctx.root, realRoot: current.realRoot, files: nodeFiles })
+        const record = project?.entries[entry.id]
+        const trusted = record !== undefined && record.fp === fp && record.decision === "trusted"
+        allowed.push(trusted)
+        if (trusted) continue
+        const value: SkippedEntry = {
+          id: entry.id,
+          category: entry.category,
+          label: entry.label,
+          file: entry.source.file,
+          scope: item.scope,
+          command: entry.display.text,
+        }
+        skipped.push(value)
+        directorySkipped.set(entry.id, value)
+      }
+
+      return { allowed, skipped } satisfies GateResult
+    })
+
+    const skipped = Effect.fn("ProjectTrust.skipped")(function* () {
+      const ctx = yield* InstanceRef
+      if (!ctx) return []
+      return [...(skippedByDirectory.get(ctx.directory)?.values() ?? [])]
+    })
+
+    const resetSkipped = Effect.fn("ProjectTrust.resetSkipped")(
+      function* (categories?: readonly TrustEntry["category"][]) {
+        const ctx = yield* InstanceRef
+        if (!ctx) return
+        if (!categories) {
+          skippedByDirectory.delete(ctx.directory)
+          return
+        }
+        const bucket = skippedByDirectory.get(ctx.directory)
+        if (!bucket) return
+        const cleared = new Set(categories)
+        for (const [id, entry] of bucket) {
+          if (entry.category !== undefined && cleared.has(entry.category)) bucket.delete(id)
+        }
+      },
+    )
+
     const decide = Effect.fn("ProjectTrust.decide")(function* (decisions: readonly TrustDecisionInput[]) {
+      // `--trust-project` bypasses decisions entirely; trust.json stays untouched.
+      const origin = yield* InstanceRef
+      if (origin?.trustProject === true) return
       const current = yield* resolve()
       if (!current) return
       const outcome = yield* lock.withPermits(1)(
@@ -279,6 +454,8 @@ const make = (options: Options = {}) =>
     })
 
     const trustImported = Effect.fn("ProjectTrust.trustImported")(function* (imported: readonly ImportedTrustEntry[]) {
+      const origin = yield* InstanceRef
+      if (origin?.trustProject === true) return
       const current = yield* resolve()
       if (!current || imported.length === 0) return
       const outcome = yield* lock.withPermits(1)(
@@ -305,7 +482,7 @@ const make = (options: Options = {}) =>
       if (outcome) yield* events.publish(ProjectTrustEvent.Event.Updated, outcome)
     })
 
-    return Service.of({ list, check, decide, trustImported })
+    return Service.of({ list, check, active, gate, skipped, resetSkipped, decide, trustImported })
   })
 
 export const makeLayer = (options: Options = {}) => Layer.effect(Service, make(options))

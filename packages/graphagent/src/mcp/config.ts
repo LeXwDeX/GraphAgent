@@ -61,6 +61,31 @@ export function load(root: string): Servers {
   return servers
 }
 
+/** The project-layer document as written, before schema decoding. */
+export interface ProjectLayerDocument {
+  /** Path relative to `<root>/.agents`, POSIX separators. */
+  readonly relative: string
+  readonly value: unknown
+}
+
+/**
+ * The raw project-layer `mcp.json` value, for the project-trust enumeration.
+ * The decoder applies schema defaults and rejects unknown fields, so its output
+ * can never match the canonical value the enumeration fingerprinted; the gate
+ * must read exactly what the file declares. Undefined when the root has no
+ * project layer, the file is missing, or it does not parse — the loader reports
+ * the parse error when it reads the same file.
+ */
+export function projectLayer(root: string): ProjectLayerDocument | undefined {
+  if (!hasProjectLayer(root, Global.Path.home)) return undefined
+  const file = projectFile(root)
+  if (!existsSync(file)) return undefined
+  const errors: ParseError[] = []
+  const value = parse(readFileSync(file, "utf8"), errors, { allowTrailingComma: true })
+  if (errors.length) return undefined
+  return { relative: "mcp.json", value }
+}
+
 function readLayer(filepath: string): Servers {
   const text = readFileSync(filepath, "utf8")
   return decodeDocument(text, filepath)

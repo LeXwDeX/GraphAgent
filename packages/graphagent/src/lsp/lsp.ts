@@ -6,6 +6,7 @@ import path from "path"
 import { pathToFileURL, fileURLToPath } from "url"
 import * as LSPServer from "./server"
 import { Config } from "@/config/config"
+import { watchTrustState } from "@/project/trust/subscribe"
 import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
 import { Effect, Layer, Context, Schema } from "effect"
@@ -204,8 +205,15 @@ export const layer = Layer.effect(
         return s
       }),
     )
+    // Project LSP entries are trust-gated at load; a decision should start a
+    // newly trusted server, or tear down a revoked one, without a restart.
+    const trustWatch = yield* watchTrustState(state)
+    const ready = Effect.fnUntraced(function* () {
+      yield* InstanceState.get(trustWatch)
+    })
 
     const getClients = Effect.fnUntraced(function* (file: string) {
+      yield* ready()
       const ctx = yield* InstanceState.context
       if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
       const s = yield* InstanceState.get(state)
@@ -302,15 +310,18 @@ export const layer = Layer.effect(
     })
 
     const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
+      yield* ready()
       const s = yield* InstanceState.get(state)
       return yield* Effect.promise(() => Promise.all(s.clients.map((x) => fn(x))))
     })
 
     const init = Effect.fn("LSP.init")(function* () {
+      yield* ready()
       yield* InstanceState.get(state)
     })
 
     const status = Effect.fn("LSP.status")(function* () {
+      yield* ready()
       const ctx = yield* InstanceState.context
       const s = yield* InstanceState.get(state)
       const result: Status[] = []
@@ -326,6 +337,7 @@ export const layer = Layer.effect(
     })
 
     const hasClients = Effect.fn("LSP.hasClients")(function* (file: string) {
+      yield* ready()
       const ctx = yield* InstanceState.context
       // Worktrees and anything else outside the project boundary are served
       // by their own instance; never advertise or spawn a client here.

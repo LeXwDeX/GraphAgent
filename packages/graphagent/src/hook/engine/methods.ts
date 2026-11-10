@@ -8,7 +8,13 @@
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import { Effect, Fiber } from "effect"
+import path from "path"
+import { PROJECT_DIR } from "@graphagent/core/brand"
+import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceState } from "@/effect/instance-state"
+import type { InstanceContext } from "@/project/instance-context"
+import { filterFrontmatterHooks, frontmatterHookEntries } from "@/project/trust/entries"
+import type { ProjectTrust } from "@/project/trust/service"
 import { SessionID } from "@/session/schema"
 import * as Log from "@/util/log"
 import type { SessionHooks, ScopedHooksInput } from "../session-hooks"
@@ -18,7 +24,53 @@ import type { State } from "./state"
 
 const log = Log.create({ service: "hook.settings" })
 
-export function makeServiceMethods(state: InstanceState<State>, sessionHooks: SessionHooks.Interface) {
+/**
+ * Origins that name a project-layer file for a scoped hook. The suffix after
+ * the prefix is the absolute path recorded by the skill/agent loaders.
+ */
+const SCOPED_ORIGINS = {
+  "skill:": "skill-hook",
+  "agent:": "agent-hook",
+} as const
+
+/**
+ * Apply the project-trust decision to a scoped skill/agent hook registration.
+ * Returns the input unchanged when there is nothing to gate, a filtered copy
+ * when some hooks are refused, and undefined when every hook is refused.
+ * Exported so a trust change can re-evaluate existing registrations from their
+ * source file with the same rules.
+ */
+export const scopedHooksWithTrust = Effect.fnUntraced(function* (
+  input: ScopedHooksInput,
+  trust: Pick<ProjectTrust.Interface, "gate"> | undefined,
+  ctx: InstanceContext | undefined,
+) {
+  if (!trust || input.source !== "project" || !ctx || ctx.trustProject === true) return input
+  const prefix = Object.keys(SCOPED_ORIGINS).find((candidate) => input.origin.startsWith(candidate))
+  if (!prefix) return input
+  const relative = path
+    .relative(path.join(ctx.root, PROJECT_DIR), path.resolve(input.origin.slice(prefix.length)))
+    .split(path.sep)
+    .join("/")
+  if (!relative || relative === ".." || relative.startsWith("../")) return input
+  const category = SCOPED_ORIGINS[prefix as keyof typeof SCOPED_ORIGINS]
+  const entries = frontmatterHookEntries(relative, input.hooks, category)
+  if (entries.length === 0) return input
+  const result = yield* trust.gate(entries.map((entry) => ({ scope: "project", file: relative, entry })))
+  if (result.allowed.every(Boolean)) return input
+  const allowed = new Set(entries.filter((_, index) => result.allowed[index]).map((entry) => entry.id))
+  if (allowed.size === 0) return undefined
+  return {
+    ...input,
+    hooks: filterFrontmatterHooks(relative, input.hooks, category, (entry) => allowed.has(entry.id)),
+  }
+})
+
+export function makeServiceMethods(
+  state: InstanceState<State>,
+  sessionHooks: SessionHooks.Interface,
+  trust?: Pick<ProjectTrust.Interface, "gate">,
+) {
   const list = Effect.fn("SettingsHook.list")(function* () {
     const s = yield* InstanceState.get(state)
     // The kill switch disables every trigger; reporting the configured
@@ -91,14 +143,30 @@ export function makeServiceMethods(state: InstanceState<State>, sessionHooks: Se
     )
   })
 
+  // Project skills and agents carry their own frontmatter hooks. The loaders
+  // pass them through unmodified, so registration is where the project-trust
+  // decision applies: enumerate the same entries the trust list shows, drop
+  // refused hooks, and register nothing when every hook is refused.
+  const gateScoped = Effect.fn("SettingsHook.gateScoped")(function* (input: ScopedHooksInput) {
+    const ctx = yield* InstanceRef
+    return yield* scopedHooksWithTrust(input, trust, ctx)
+  })
+
   const registerScoped = Effect.fn("SettingsHook.registerScoped")(
     (sessionID: SessionID | string, input: ScopedHooksInput) =>
-      sessionHooks.registerScoped(SessionID.make(String(sessionID)), input).pipe(
-        Effect.catchTag("InvalidHookError", (error) => {
-          log.warn("invalid scoped hooks ignored", { kind: input.kind, origin: input.origin, error: error.message })
-          return Effect.void
-        }),
-      ),
+      Effect.gen(function* () {
+        const gated = yield* gateScoped(input)
+        if (gated === undefined) {
+          log.info("project scoped hooks refused", { kind: input.kind, origin: input.origin })
+          return
+        }
+        yield* sessionHooks.registerScoped(SessionID.make(String(sessionID)), gated).pipe(
+          Effect.catchTag("InvalidHookError", (error) => {
+            log.warn("invalid scoped hooks ignored", { kind: input.kind, origin: input.origin, error: error.message })
+            return Effect.void
+          }),
+        )
+      }),
   )
 
   const unregisterScoped = Effect.fn("SettingsHook.unregisterScoped")((sessionID: SessionID | string, origin: string) =>

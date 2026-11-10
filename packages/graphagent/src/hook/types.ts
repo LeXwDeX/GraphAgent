@@ -8,6 +8,7 @@
  * behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import type { Effect } from "effect"
+import type { TrustEntry } from "@/project/trust/types"
 import type { PermissionUpdate } from "./schema"
 
 // ── Hook protocol types ────────────────────────────────────────
@@ -186,6 +187,13 @@ export interface HookCommand {
    * never given those variables. The `__` prefix marks it loader-owned.
    */
   __sourceDir?: string
+  /**
+   * Trust entry this command was enumerated as. Only the project-layer
+   * hooks.json loader stamps it; the hook engine gates entries by matching it
+   * against `trust.json`. The `__` prefix marks it loader-owned and excludes it
+   * from handler identity.
+   */
+  __trust?: TrustEntry
 }
 
 export const isAsync = (entry: HookCommand) => entry.async === true || entry.asyncRewake === true

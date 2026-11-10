@@ -138,11 +138,14 @@ interface JsonDocument {
   text: string
 }
 
-function parseJson(text: string): JsonDocument | undefined {
+/** hooks.json is read with strict `JSON.parse`; settings/mcp.json are JSONC. */
+function parseJson(text: string, mode: "strict" | "jsonc"): JsonDocument | undefined {
+  const options =
+    mode === "strict" ? { allowTrailingComma: false, disallowComments: true } : { allowTrailingComma: true }
   const treeErrors: ParseError[] = []
-  const tree = parseTree(text, treeErrors, { allowTrailingComma: true })
+  const tree = parseTree(text, treeErrors, options)
   const valueErrors: ParseError[] = []
-  const value = parseJsonc(text, valueErrors, { allowTrailingComma: true })
+  const value = parseJsonc(text, valueErrors, options)
   if (!tree || treeErrors.length || valueErrors.length) return undefined
   return { value, tree, text }
 }
@@ -159,7 +162,7 @@ function lineOf(document: JsonDocument, location: JSONPath): number | undefined 
 }
 
 function collectHookFile(drafts: EntryDraft[], invalidFiles: string[], file: string, text: string) {
-  const document = parseJson(text)
+  const document = parseJson(text, "strict")
   if (!document || !isRecord(document.value)) {
     invalidFiles.push(file)
     return
@@ -173,12 +176,34 @@ function collectHookFile(drafts: EntryDraft[], invalidFiles: string[], file: str
 }
 
 function collectMcpFile(drafts: EntryDraft[], invalidFiles: string[], file: string, text: string) {
-  const document = parseJson(text)
+  const document = parseJson(text, "jsonc")
   if (!document || !isRecord(document.value) || !isRecord(document.value.mcpServers)) {
     invalidFiles.push(file)
     return
   }
-  for (const [name, candidate] of Object.entries(document.value.mcpServers)) {
+  collectMcpValue(drafts, file, document.value.mcpServers, (location) => lineOf(document, location))
+}
+
+/**
+ * Enumerate one project `mcp.json` document's servers. Exported so the MCP
+ * service can build the same entries from the raw project-layer value and let
+ * `ProjectTrust.gate` decide before a server is created. Input is the whole
+ * document (with `mcpServers`), matching what the caller parsed from disk.
+ */
+export function mcpEntries(file: string, value: unknown): TrustEntry[] {
+  const drafts: EntryDraft[] = []
+  if (isRecord(value) && isRecord(value.mcpServers))
+    collectMcpValue(drafts, file, value.mcpServers, () => undefined)
+  return assignLocations(drafts)
+}
+
+function collectMcpValue(
+  drafts: EntryDraft[],
+  file: string,
+  servers: Record<string, unknown>,
+  lineFor: (location: JSONPath) => number | undefined,
+) {
+  for (const [name, candidate] of Object.entries(servers)) {
     if (!isRecord(candidate)) continue
     const type = candidate.type
     if (type !== "local" && type !== "remote") continue
@@ -189,7 +214,7 @@ function collectMcpFile(drafts: EntryDraft[], invalidFiles: string[], file: stri
     const url = type === "remote" && typeof candidate.url === "string" ? candidate.url : undefined
     const environment = type === "local" && isRecord(candidate.environment) ? candidate.environment : undefined
     const cwd = type === "local" && typeof candidate.cwd === "string" ? candidate.cwd : undefined
-    const line = lineOf(document, ["mcpServers", name])
+    const line = lineFor(["mcpServers", name])
     drafts.push({
       category: "mcp",
       label: name,
@@ -209,20 +234,70 @@ function collectMcpFile(drafts: EntryDraft[], invalidFiles: string[], file: stri
 }
 
 function collectSettingsFile(drafts: EntryDraft[], invalidFiles: string[], file: string, text: string) {
-  const document = parseJson(text)
+  const document = parseJson(text, "jsonc")
   if (!document || !isRecord(document.value)) {
     invalidFiles.push(file)
     return
   }
-  const value = document.value
+  collectSettingsValue(drafts, file, document.value, (location) => lineOf(document, location))
+}
 
+/**
+ * Enumerate the trust-relevant entries of a project settings object. Exported
+ * so the Config loader can build the same entries from its decoded value and
+ * let `ProjectTrust.gate` decide before the project layer merges.
+ */
+export function settingsEntries(file: string, value: unknown): TrustEntry[] {
+  const drafts: EntryDraft[] = []
+  if (isRecord(value)) collectSettingsValue(drafts, file, value, () => undefined)
+  return assignLocations(drafts)
+}
+
+/**
+ * Strip every settings entry `keep` refuses from a parsed settings object. The
+ * input is cloned and the caller decodes the result as usual. Entries are
+ * enumerated with the same traversal and index assignment as the trust list,
+ * so `keep` sees the exact `TrustEntry` the gate checked. A refused formatter
+ * loses `command`/`environment` but keeps `extensions`/`disabled`; a refused
+ * LSP server is removed whole; a refused setting-level hook is removed from
+ * its group. Inline command shells are not removed — they are refused when the
+ * command runs, because the template itself is inert text.
+ */
+export function filterSettingsValue(file: string, input: unknown, keep: (entry: TrustEntry) => boolean): unknown {
+  if (!isRecord(input)) return input
+  const value = structuredClone(input)
+  const drafts: EntryDraft[] = []
+  const removals: Array<() => void> = []
+  collectSettingsValue(drafts, file, value, () => undefined, removals)
+  const entries = assignLocations(drafts)
+  entries.forEach((entry, index) => {
+    if (keep(entry)) return
+    removals[index]?.()
+  })
+  return value
+}
+
+function collectSettingsValue(
+  drafts: EntryDraft[],
+  file: string,
+  value: Record<string, unknown>,
+  lineFor: (location: JSONPath) => number | undefined,
+  /** Parallel to `drafts`: strips the entry's execution fields from `value`. */
+  removals?: Array<() => void>,
+) {
   if (isRecord(value.formatter)) {
     for (const [name, candidate] of Object.entries(value.formatter)) {
       if (!isRecord(candidate)) continue
       const command = stringArray(candidate.command)
       if (command.length === 0) continue
-      const line = lineOf(document, ["formatter", name])
+      const line = lineFor(["formatter", name])
       const environment = isRecord(candidate.environment) ? candidate.environment : undefined
+      removals?.push(() => {
+        // `extensions` and `disabled` stay: they only decide when the
+        // formatter runs, not what it runs.
+        delete candidate.command
+        delete candidate.environment
+      })
       drafts.push({
         category: "formatter",
         label: name,
@@ -244,8 +319,13 @@ function collectSettingsFile(drafts: EntryDraft[], invalidFiles: string[], file:
       if (!isRecord(candidate)) continue
       const command = stringArray(candidate.command)
       if (command.length === 0) continue
-      const line = lineOf(document, ["lsp", name])
+      const line = lineFor(["lsp", name])
       const env = isRecord(candidate.env) ? candidate.env : undefined
+      // A custom LSP entry requires `command`, so a refused server is removed
+      // whole rather than left with a missing required field.
+      removals?.push(() => {
+        delete (value.lsp as Record<string, unknown>)[name]
+      })
       drafts.push({
         category: "lsp",
         label: name,
@@ -262,13 +342,62 @@ function collectSettingsFile(drafts: EntryDraft[], invalidFiles: string[], file:
     }
   }
 
+  // Inline `command.<name>` entries run `!`shell`` segments exactly like
+  // command files, so each segment is its own trust entry.
+  if (isRecord(value.command)) {
+    for (const [name, candidate] of Object.entries(value.command)) {
+      if (!isRecord(candidate) || typeof candidate.template !== "string") continue
+      const template = candidate.template
+      const base = lineFor(["command", name])
+      for (const match of shellSegments(template)) {
+        const command = match[1]?.trim()
+        if (!command) continue
+        // Shell segments are refused at execution time (the command template
+        // stays registered as a prompt); the gate check needs a parallel entry.
+        removals?.push(() => {})
+        drafts.push({
+          category: "command-shell",
+          label: name,
+          source: { file, ...(base === undefined ? {} : { line: base }) },
+          canonical: canonicalize("command-shell", { command }),
+          references: unique(shellTokens(command).flatMap(referenceToken)),
+          display: { text: command, commands: [command], urls: [], envKeys: [] },
+        })
+      }
+    }
+  }
+
   if (isRecord(value.agent)) {
     for (const [agent, candidate] of Object.entries(value.agent)) {
       if (!isRecord(candidate) || candidate.hooks === undefined) continue
-      collectHookValue(drafts, "agent-hook", file, candidate.hooks, {
-        agent,
-        line: (event, group, hook) => lineOf(document, ["agent", agent, "hooks", event, group, "hooks", hook]),
-      })
+      collectHookValue(
+        drafts,
+        "agent-hook",
+        file,
+        candidate.hooks,
+        {
+          agent,
+          line: (event, group, hook) => lineFor(["agent", agent, "hooks", event, group, "hooks", hook]),
+          removals,
+        },
+      )
+    }
+  }
+
+  if (isRecord(value.mode)) {
+    for (const [mode, candidate] of Object.entries(value.mode)) {
+      if (!isRecord(candidate) || candidate.hooks === undefined) continue
+      collectHookValue(
+        drafts,
+        "agent-hook",
+        file,
+        candidate.hooks,
+        {
+          agent: mode,
+          line: (event, group, hook) => lineFor(["mode", mode, "hooks", event, group, "hooks", hook]),
+          removals,
+        },
+      )
     }
   }
 }
@@ -277,8 +406,13 @@ function collectSettingsFile(drafts: EntryDraft[], invalidFiles: string[], file:
 
 function collectSkillFile(drafts: EntryDraft[], invalidFiles: string[], file: string, text: string) {
   const frontmatter = parseFrontmatter(text, file, invalidFiles)
-  if (!frontmatter || frontmatter.data.hooks === undefined) return
-  collectHookValue(drafts, "skill-hook", file, frontmatter.data.hooks)
+  if (!frontmatter) return
+  if (frontmatter.data.hooks !== undefined) collectHookValue(drafts, "skill-hook", file, frontmatter.data.hooks)
+  // A skill body runs its inline `!`shell`` segments when invoked as a slash
+  // command, so it declares command-shell entries under the skill name.
+  if (typeof frontmatter.data.name === "string") {
+    collectTemplateShells(drafts, file, frontmatter.data.name, text, frontmatter.content)
+  }
 }
 
 function collectAgentFile(drafts: EntryDraft[], invalidFiles: string[], file: string, text: string) {
@@ -290,17 +424,26 @@ function collectAgentFile(drafts: EntryDraft[], invalidFiles: string[], file: st
 function collectCommandFile(drafts: EntryDraft[], invalidFiles: string[], file: string, text: string) {
   const frontmatter = parseFrontmatter(text, file, invalidFiles)
   if (!frontmatter) return
-  const template = frontmatter.content.trim()
-  const contentStart = text.indexOf(frontmatter.content)
-  const leading = frontmatter.content.length - frontmatter.content.trimStart().length
-  const name = configEntryNameFromPath(file, ["commands/"])
+  collectTemplateShells(drafts, file, configEntryNameFromPath(file, ["commands/"]), text, frontmatter.content)
+}
+
+function collectTemplateShells(
+  drafts: EntryDraft[],
+  file: string,
+  label: string,
+  text: string,
+  content: string,
+) {
+  const template = content.trim()
+  const contentStart = text.indexOf(content)
+  const leading = content.length - content.trimStart().length
   for (const match of shellSegments(template)) {
     const command = match[1]?.trim()
     if (!command) continue
     const offset = contentStart >= 0 ? contentStart + leading + (match.index ?? 0) : undefined
     drafts.push({
       category: "command-shell",
-      label: name,
+      label,
       source: { file, ...(offset === undefined ? {} : { line: lineAt(text, offset) }) },
       canonical: canonicalize("command-shell", { command }),
       references: unique(shellTokens(command).flatMap(referenceToken)),
@@ -318,11 +461,82 @@ function parseFrontmatter(text: string, file: string, invalidFiles: string[]) {
   }
 }
 
+/**
+ * Enumerate one command file's inline-shell entries. The command runner builds
+ * its command list from the same file in the same order, so index i here is the
+ * TrustEntry of the i-th declared shell segment. Exported for the execution
+ * gate in `command-shell.ts`.
+ */
+export function commandFileEntries(file: string, text: string): TrustEntry[] {
+  const drafts: EntryDraft[] = []
+  collectCommandFile(drafts, [], file, text)
+  return assignLocations(drafts)
+}
+
+/** The same entries for a project skill's body, labelled by its frontmatter name. */
+export function skillBodyEntries(file: string, text: string): TrustEntry[] {
+  const drafts: EntryDraft[] = []
+  const frontmatter = parseFrontmatter(text, file, [])
+  if (frontmatter && typeof frontmatter.data.name === "string") {
+    collectTemplateShells(drafts, file, frontmatter.data.name, text, frontmatter.content)
+  }
+  return assignLocations(drafts)
+}
+
+/**
+ * Enumerate one hooks.json object's entries. The loader builds its command list
+ * in the same insertion order, so index i here is the TrustEntry of the i-th
+ * loaded command. Exported for the hooks.json loader.
+ */
+export function hookEntries(file: string, value: unknown): TrustEntry[] {
+  const drafts: EntryDraft[] = []
+  collectHookValue(drafts, "hook", file, value)
+  return assignLocations(drafts)
+}
+
+/** Same alignment for a skill/agent frontmatter `hooks` map. */
+export function frontmatterHookEntries(
+  file: string,
+  value: unknown,
+  category: "skill-hook" | "agent-hook",
+): TrustEntry[] {
+  const drafts: EntryDraft[] = []
+  collectHookValue(drafts, category, file, value)
+  return assignLocations(drafts)
+}
+
+/**
+ * Strip every frontmatter hook `keep` refuses from a skill/agent `hooks` map.
+ * Mirrors `filterSettingsValue` for the scoped-hook registration path: the
+ * caller registers the returned value, and enumeration uses the same traversal
+ * and index assignment as the trust list.
+ */
+export function filterFrontmatterHooks(
+  file: string,
+  input: unknown,
+  category: "skill-hook" | "agent-hook",
+  keep: (entry: TrustEntry) => boolean,
+): unknown {
+  if (!isRecord(input)) return input
+  const value = structuredClone(input)
+  const drafts: EntryDraft[] = []
+  const removals: Array<() => void> = []
+  collectHookValue(drafts, category, file, value, { removals })
+  const entries = assignLocations(drafts)
+  entries.forEach((entry, index) => {
+    if (keep(entry)) return
+    removals[index]?.()
+  })
+  return value
+}
+
 // ── Hook groups ────────────────────────────────────────────────
 
 interface HookValueOptions {
   agent?: string
   line?: (event: string, group: number, hook: number) => number | undefined
+  /** Parallel to the drafts this call pushes: removes the hook from its group. */
+  removals?: Array<() => void>
 }
 
 function collectHookValue(
@@ -337,12 +551,22 @@ function collectHookValue(
     if (!VALID_HOOK_EVENTS.has(event) || !Array.isArray(groups)) continue
     groups.forEach((group, groupIndex) => {
       if (!isRecord(group) || !Array.isArray(group.hooks)) return
+      const hooks: unknown[] = group.hooks
+      // The hooks.json loader rejects a whole group whose matcher is not a
+      // string; enumeration must not count entries the loader never runs.
+      if (group.matcher !== undefined && typeof group.matcher !== "string") return
       const matcher = typeof group.matcher === "string" ? group.matcher : undefined
-      group.hooks.forEach((candidate, hookIndex) => {
+      hooks.forEach((candidate, hookIndex) => {
         const parsed = HookCommandSchema.safeParse(candidate)
         if (!parsed.success) return
         const hook = parsed.data
         const line = options.line?.(event, groupIndex, hookIndex)
+        options.removals?.push(() => {
+          // Removals run in enumeration order and earlier splices shift later
+          // indices; locate the original element by identity instead.
+          const at = hooks.indexOf(candidate)
+          if (at >= 0) hooks.splice(at, 1)
+        })
         drafts.push({
           category,
           label: event,

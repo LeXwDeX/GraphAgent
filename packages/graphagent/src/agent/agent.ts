@@ -1,6 +1,8 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Config } from "@/config/config"
+import { watchTrustState } from "@/project/trust/subscribe"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { agentHookProvenance } from "@/config/agent-hooks"
 import { serviceUse } from "@graphagent/core/effect/service-use"
 import { Provider } from "@/provider/provider"
@@ -407,21 +409,34 @@ export const layer = Layer.effect(
         } satisfies State
       }),
     )
+    // Agents and their hooks come from gated project settings; re-read the
+    // cached agent set when a trust decision changes what is visible.
+    const trustWatch = yield* watchTrustState(state)
+    const ready = Effect.fnUntraced(function* () {
+      yield* InstanceState.get(trustWatch)
+    })
 
     return Service.of({
       permissionPolicy: Effect.fn("Agent.permissionPolicy")((agent: string) =>
-        InstanceState.useEffect(state, (s) => s.permissionPolicy(agent)),
+        Effect.gen(function* () {
+          yield* ready()
+          return yield* InstanceState.useEffect(state, (s) => s.permissionPolicy(agent))
+        }),
       ),
       get: Effect.fn("Agent.get")(function* (agent: string) {
+        yield* ready()
         return yield* InstanceState.useEffect(state, (s) => s.get(agent))
       }),
       list: Effect.fn("Agent.list")(function* () {
+        yield* ready()
         return yield* InstanceState.useEffect(state, (s) => s.list())
       }),
       defaultInfo: Effect.fn("Agent.defaultInfo")(function* () {
+        yield* ready()
         return yield* InstanceState.useEffect(state, (s) => s.defaultInfo())
       }),
       defaultAgent: Effect.fn("Agent.defaultAgent")(function* () {
+        yield* ready()
         return yield* InstanceState.useEffect(state, (s) => s.defaultAgent())
       }),
       generate: Effect.fn("Agent.generate")(function* (input: {
@@ -437,6 +452,7 @@ export const layer = Layer.effect(
           : undefined
 
         const system = [PROMPT_GENERATE]
+        yield* ready()
         const existing = yield* InstanceState.useEffect(state, (s) => s.list())
 
         // TODO: clean this up so provider specific logic doesnt bleed over
@@ -500,6 +516,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Config.defaultLayer),
   Layer.provide(Skill.defaultLayer),
   Layer.provide(LocationServiceMap.layer),
+  Layer.provide(EventV2Bridge.defaultLayer),
 )
 
 const locationServiceMapNode = LayerNode.make(LocationServiceMap.layer, [])
@@ -510,6 +527,7 @@ export const node = LayerNode.make(layer, [
   Skill.node,
   Provider.node,
   locationServiceMapNode,
+  EventV2Bridge.node,
 ])
 
 export * as Agent from "./agent"

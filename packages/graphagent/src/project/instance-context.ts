@@ -10,6 +10,11 @@ export interface InstanceContext {
   /** Project root: nearest directory at or above `directory` (bounded by the git toplevel) holding `.agents/`. */
   root: string
   project: Project.Info
+  /**
+   * The run opted into `--trust-project`: project entries are allowed and
+   * `trust.json` stays untouched. Absent means trust is enforced.
+   */
+  trustProject?: boolean
 }
 
 export const context = LocalContext.create<InstanceContext>("instance")

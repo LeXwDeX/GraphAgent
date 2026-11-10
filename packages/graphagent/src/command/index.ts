@@ -6,6 +6,8 @@ import { Effect, Layer, Context, Schema } from "effect"
 import { Config } from "@/config/config"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { watchTrustState } from "@/project/trust/subscribe"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
 import PROMPT_IMPORT_CLAUDE from "./template/import-claude.txt"
@@ -204,13 +206,21 @@ export const layer = Layer.effect(
     })
 
     const state = yield* InstanceState.make<State>((ctx) => init(ctx))
+    // Command declarations come from trust-gated project files; a decision
+    // must drop the cached command map so newly trusted commands appear.
+    const trustWatch = yield* watchTrustState(state)
+    const ready = Effect.fnUntraced(function* () {
+      yield* InstanceState.get(trustWatch)
+    })
 
     const get = Effect.fn("Command.get")(function* (name: string) {
+      yield* ready()
       const s = yield* InstanceState.get(state)
       return s.commands[name]
     })
 
     const list = Effect.fn("Command.list")(function* () {
+      yield* ready()
       const s = yield* InstanceState.get(state)
       return Object.values(s.commands)
     })
@@ -223,8 +233,9 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Config.defaultLayer),
   Layer.provide(MCP.defaultLayer),
   Layer.provide(Skill.defaultLayer),
+  Layer.provide(EventV2Bridge.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [Config.node, MCP.node, Skill.node])
+export const node = LayerNode.make(layer, [Config.node, MCP.node, Skill.node, EventV2Bridge.node])
 
 export * as Command from "."

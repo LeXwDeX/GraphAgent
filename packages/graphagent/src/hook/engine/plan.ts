@@ -29,7 +29,7 @@ export function handlerKey(entry: HookCommand, origin?: string): string {
           : commandText(entry)
   // Loader metadata never distinguishes handlers: the same hook declared in two
   // layers (different `__source`, or a future plugin `__sourceDir`) must dedup.
-  const { __sourceDir: _sourceDir, __source: _source, ...identity } = entry
+  const { __sourceDir: _sourceDir, __source: _source, __trust: _trust, ...identity } = entry
   return JSON.stringify([origin ?? "settings", target, identity], (_key, value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value)
       ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))

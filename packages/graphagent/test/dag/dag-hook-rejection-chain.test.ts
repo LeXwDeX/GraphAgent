@@ -154,6 +154,14 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
             if (!response.ok) throw new Error(`${route}: HTTP ${response.status}`)
             return response.json()
           }
+          // Project-layer hooks are trust-gated. This fixture writes its own
+          // hooks.json, so record the decisions the TUI trust panel would
+          // submit before the workflow can rely on the denial.
+          const projectTrust: Row = await request("/project/trust")
+          if (projectTrust.entries.length === 0) throw new Error("project trust enumeration returned no entries")
+          await request("/project/trust", {
+            decisions: projectTrust.entries.map((entry: Row) => ({ id: entry.id, state: "trusted" })),
+          })
           const parent = await request("/session", {
             title: `Hook rejection ${mode}`,
             model: { providerID: "test", id: "test-model" },
