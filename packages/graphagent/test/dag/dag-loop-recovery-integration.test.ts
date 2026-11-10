@@ -79,7 +79,7 @@ function recoveryLayer(input: {
     ),
     // Keep wake delivery pending so tests can inspect durable unreported rows.
     prompt: () => Effect.never,
-    promptIfIdle: () => Effect.succeed(Option.none()),
+    deliver: () => Effect.succeed(Option.none()),
   }))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),

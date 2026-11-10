@@ -37,6 +37,7 @@ import {
   type Interface as TurnsInterface,
   type ModelBaseline,
   type TurnOrigin,
+  type TurnStart,
 } from "../turns"
 import type { Interface, PromptError, PromptInput } from "../prompt"
 import type { CreateUserMessage, PrepareApi } from "./prepare"
@@ -605,8 +606,8 @@ export function makeAdmit(deps: AdmitDeps) {
   )
 
   // Thin wrapper: the two-phase idle protocol lives in `Turns.prepare`, which
-  // keeps the pre-PR8 activation/abort contract used by `admitIfIdle`.
-  const prepareIfIdle: Interface["prepareIfIdle"] = Effect.fn("SessionPrompt.prepareIfIdle")(function* (
+  // keeps the pre-PR8 activation/abort contract used by `admitIdleUnderFence`.
+  const prepareTurn: Interface["prepareTurn"] = Effect.fn("SessionPrompt.prepareTurn")(function* (
     input: PromptInput,
     persistAdmission?: Effect.Effect<void>,
     options?: AdmissionOptions,
@@ -615,28 +616,26 @@ export function makeAdmit(deps: AdmitDeps) {
     return yield* turns().prepare(input, options, persistAdmission, request)
   })
 
-  // Thin wrapper: idle admission is `Turns.start(when: "idle")`.
-  const promptIfIdle: Interface["promptIfIdle"] = Effect.fn("SessionPrompt.promptIfIdle")(
-    (input: PromptInput, options?: AdmissionOptions) =>
-      Effect.uninterruptibleMask((restore) =>
-        Effect.gen(function* () {
-          const started = yield* restore(
-            turns()
-              .start(input, { origin: originFor(options), when: "idle", admissionOptions: options })
-              .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
-          )
-          if (started.admission.kind === "skipped_busy") return Option.none()
-          return Option.some(yield* restore(started.wait))
-        }),
-      ),
-  )
+  // Immediate admission for ledger-less sources (`SessionInbox.submit`): commit
+  // the user message and return the turn classification without awaiting the
+  // turn itself. The initial hook-resume branch belongs to `prompt`; a rewake
+  // carries `continueToolBudget`, so skipping it matches the old path.
+  const admitNow: Interface["admit"] = Effect.fn("SessionPrompt.admit")(function* (
+    input: PromptInput,
+    options?: AdmissionOptions,
+  ): Effect.fn.Return<TurnStart, PromptError> {
+    if (attention) yield* attention.input(input.sessionID)
+    return yield* turns()
+      .start(input, { origin: originFor(options), when: "now", admissionOptions: options })
+      .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
+  })
 
   return {
     cancel,
     prompt,
     withIdle,
-    prepareIfIdle,
-    promptIfIdle,
+    prepareTurn,
+    admit: admitNow,
     admitPrompt,
     resumeContexts,
     promptImpl,
@@ -644,7 +643,7 @@ export function makeAdmit(deps: AdmitDeps) {
   }
 }
 
-export function admitIfIdle(
+export function admitIdleUnderFence(
   service: Interface,
   automation: ExclusiveRegistry.Interface,
   token: ExclusiveRegistry.Token,
@@ -661,7 +660,7 @@ export function admitIfIdle(
           token,
           Effect.suspend(() =>
             request.valid()
-              ? service.prepareIfIdle(input, persistAdmission, options, request)
+              ? service.prepareTurn(input, persistAdmission, options, request)
               : Effect.succeed(Option.none()),
           ),
         ),

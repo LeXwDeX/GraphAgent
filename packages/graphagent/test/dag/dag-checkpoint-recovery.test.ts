@@ -104,7 +104,7 @@ function checkpointLayer(probe: Probe) {
         input.sessionID === "ses_checkpoint_parent"
           ? Deferred.succeed(probe.parentNotified, undefined).pipe(Effect.as(reply(input.sessionID)))
           : Effect.never,
-      promptIfIdle: (input: SessionPrompt.PromptInput) =>
+      deliver: (input: SessionPrompt.PromptInput) =>
         input.sessionID === "ses_checkpoint_parent"
           ? Deferred.succeed(probe.parentNotified, undefined).pipe(Effect.as(Option.some(reply(input.sessionID))))
           : Effect.never,

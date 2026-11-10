@@ -231,7 +231,7 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
   const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
     cancel: () => Effect.void,
     prompt: deliver,
-    promptIfIdle: (value: SessionPrompt.PromptInput) => deliver(value).pipe(Effect.map(Option.some)),
+    deliver: (value: SessionPrompt.PromptInput) => deliver(value).pipe(Effect.map(Option.some)),
   }))
   const agent = Layer.mock(Agent.Service, {
     get: () =>

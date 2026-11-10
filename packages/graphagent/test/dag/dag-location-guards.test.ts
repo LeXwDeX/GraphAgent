@@ -170,7 +170,7 @@ interface TwoInstanceInput {
   readonly failGetWorkflow?: { remaining: number }
   /**
    * Admit and run delivered wakes instead of returning `none` from
-   * prepareIfIdle. Used by the notification-ownership probe; default off so
+   * prepareTurn. Used by the notification-ownership probe; default off so
    * every other probe keeps its no-delivery baseline.
    */
   readonly deliverWakes?: boolean
@@ -188,11 +188,11 @@ interface TwoInstanceInput {
     readonly calls: { value: number }
   }
   /**
-   * Optional deterministic park on SessionPrompt.prepareIfIdle (the wake
-   * delivery admission seam). When present, each prepareIfIdle call bumps
+   * Optional deterministic park on SessionPrompt.prepareTurn (the wake
+   * delivery admission seam). When present, each prepareTurn call bumps
    * `calls`; before `released.value` it parks the admission's result effect
    * on `wait` so a probe can interleave Session.remove mid-delivery. After
-   * release, prepareIfIdle returns none (the call itself still proves the
+   * release, prepareTurn returns none (the call itself still proves the
    * idle subscription survived).
    */
    readonly parkWakeDelivery?: {
@@ -364,12 +364,11 @@ function twoInstanceLayer(input: TwoInstanceInput) {
         cancelsFor(dir).push(sessionID as string)
       }),
     prompt: deliver,
-    promptIfIdle: (value) => deliver(value).pipe(Effect.map(Option.some)),
     // Wake-delivery admission seam (C2). tryDeliverWake delivers through
-    // admitIfIdle → prepareIfIdle, not promptIfIdle. Without a gate this
+    // admitIdleUnderFence → prepareTurn, not deliver. Without a gate this
     // returns none (no admission); with parkWakeDelivery it parks the result
     // effect on the gate so a probe can race Session.remove mid-delivery.
-    prepareIfIdle: (value, persistAdmission) =>
+    prepareTurn: (value, persistAdmission) =>
       Effect.sync(() => {
         const gate = input.parkWakeDelivery
         if (!gate) {
@@ -1048,7 +1047,7 @@ function goalLoopLayer(input: {
     SessionPrompt.Service,
     withIdleAdmission({
       prompt: () => Effect.succeed(reply("goal-parent", "continuation dispatched")),
-      promptIfIdle: (value) =>
+      deliver: (value) =>
         Effect.gen(function* () {
           const dir = (yield* InstanceRef)?.directory ?? ""
           const list = input.continuationCalls.get(dir) ?? []
@@ -2037,14 +2036,14 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
                 .where(eq(WorkflowTable.id, id))
                 .run().pipe(Effect.orDie)
             }
-            // Idle SES_A → wake delivery parks inside prepareIfIdle.
+            // Idle SES_A → wake delivery parks inside prepareTurn.
             yield* bridge.publish(SessionStatusEvent.Status, {
               sessionID: SES_A as never,
               status: { type: "idle" },
             }).pipe(Effect.orDie)
             yield* pollWithTimeout(
               Effect.sync(() => (parked.value ? true : undefined)),
-              "wake delivery never parked in prepareIfIdle",
+              "wake delivery never parked in prepareTurn",
             )
             expect(calls.value).toBe(1)
             // Race: delete SES_A while the delivery is parked — FK cascade wipes
@@ -2055,7 +2054,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             release()
             yield* Effect.sleep("200 millis")
             // Subscription survival: an idle for a DIFFERENT session still reaches
-            // prepareIfIdle (calls bumps again) — proof the idle wake subscription
+            // prepareTurn (calls bumps again) — proof the idle wake subscription
             // is alive after the raced deletion.
             yield* bridge.publish(SessionStatusEvent.Status, {
               sessionID: SES_B as never,

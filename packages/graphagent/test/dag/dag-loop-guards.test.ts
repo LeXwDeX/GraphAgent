@@ -192,7 +192,7 @@ function guardLayer(input: {
         input.cancels.push(sessionID as string)
       }),
     prompt: deliver,
-    promptIfIdle: (value) => deliver(value).pipe(Effect.map(Option.some)),
+    deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
   }))
   const agent = Layer.mock(Agent.Service, {
     get: () => Effect.succeed({

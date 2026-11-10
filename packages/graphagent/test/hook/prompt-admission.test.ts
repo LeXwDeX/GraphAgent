@@ -12,6 +12,7 @@ import path from "node:path"
 import { Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Session } from "@/session/session"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { HookNotification } from "@/hook/notifications"
 import { SessionSummary } from "@/session/summary"
@@ -87,6 +88,7 @@ const lsp = Layer.succeed(
 
 const root = LayerNode.group([
   SessionPrompt.node,
+  SessionInbox.node,
   SettingsHook.node,
   HookRewakeLive.node,
   HookLifecycle.node,
@@ -311,7 +313,7 @@ goalIt.live("goal handoff abandons a start invalidated while holding the exclusi
             yield* Deferred.succeed(release, undefined)
           }),
         )
-        const handoff = yield* SessionPrompt.admitIfIdle(prompt, lease, token, {
+        const handoff = yield* SessionPrompt.admitIdleUnderFence(prompt, lease, token, {
           sessionID: session.id,
           parts: [{ type: "text", text: "continue", synthetic: true }],
         }).pipe(Effect.forkChild)
@@ -355,8 +357,8 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
           if (id === session.id) cancellation = result
           return result
         })
-        const prepare = prompt.prepareIfIdle
-        const prepareSpy = spyOn(prompt, "prepareIfIdle").mockImplementation((...args) =>
+        const prepare = prompt.prepareTurn
+        const prepareSpy = spyOn(prompt, "prepareTurn").mockImplementation((...args) =>
           Deferred.succeed(preparing, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
             Effect.andThen(prepare(...args)),
@@ -383,7 +385,7 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
             yield* Deferred.succeed(release, undefined)
           }),
         )
-        const handoff = yield* SessionPrompt.admitIfIdle(prompt, lease, token, {
+        const handoff = yield* SessionPrompt.admitIdleUnderFence(prompt, lease, token, {
           sessionID: session.id,
           parts: [{ type: "text", text: "CANCELLED_GOAL_HANDOFF_971", synthetic: true }],
         }).pipe(Effect.forkChild)
@@ -1943,7 +1945,7 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
         yield* addHook(session.id, file)
         const token = yield* dagToken(session.id, "dag_wake")
         yield* llm.text("dag wake answer")
-        const run = yield* SessionPrompt.admitIfIdle(
+        const run = yield* SessionPrompt.admitIdleUnderFence(
           prompt,
           lease,
           token,
@@ -1969,7 +1971,7 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
         yield* lease.register(session.id, owner)
         const token = Option.getOrThrow(yield* lease.claim(session.id, { kind: "goal", id: owner.id }))
         yield* llm.text("goal continuation answer")
-        const run = yield* SessionPrompt.admitIfIdle(
+        const run = yield* SessionPrompt.admitIdleUnderFence(
           prompt,
           lease,
           token,
@@ -1992,7 +1994,7 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
         yield* addHook(session.id, file)
         const token = yield* dagToken(session.id, "dag_message")
         yield* llm.text("agent message answer")
-        const run = yield* SessionPrompt.admitIfIdle(prompt, lease, token, {
+        const run = yield* SessionPrompt.admitIdleUnderFence(prompt, lease, token, {
           sessionID: session.id,
           agent: "build",
           parts: [

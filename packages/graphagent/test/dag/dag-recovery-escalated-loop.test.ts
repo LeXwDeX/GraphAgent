@@ -82,7 +82,7 @@ function recoveryLayer(input: { wakes: string[] }) {
   const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
     cancel: () => Effect.void,
     prompt: () => Effect.never,
-    promptIfIdle: (value) =>
+    deliver: (value) =>
       Effect.sync(() => {
         const text = value.parts.find((part) => part.type === "text")?.text
         if (text) input.wakes.push(text)

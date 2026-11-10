@@ -157,13 +157,13 @@ function harness(input: {
       })
       return Effect.succeed(assistantMessage({ id: "prompt-reply", created: Date.now() }))
     },
-    promptIfIdle: (prompt: SessionPrompt.PromptInput) =>
+    deliver: (prompt: SessionPrompt.PromptInput) =>
       Effect.suspend(() => {
         input.prompts.push({ kind: "continue" })
         admissions.push(prompt)
         return (input.onContinue?.(prompt) ?? defaultValue()).pipe(Effect.map(Option.some))
       }),
-    prepareIfIdle: (prompt: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+    prepareTurn: (prompt: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
       Effect.gen(function* () {
         if (input.onPrepare) yield* input.onPrepare
         if ((yield* status(prompt.sessionID)).type !== "idle") return Option.none()
@@ -637,7 +637,7 @@ describe("GoalLoop — #892 failed assistant turns", () => {
       yield* idle(sessionID)
       yield* pollWithTimeout(
         Effect.sync(() => (prepareReached ? true : undefined)),
-        "the retry admission never entered prepareIfIdle",
+        "the retry admission never entered prepareTurn",
         "5 seconds",
       )
       // Dedupe must remain latched after the sleep and until admission

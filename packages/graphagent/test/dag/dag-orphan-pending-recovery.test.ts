@@ -52,7 +52,7 @@ function orphanRecoveryLayer(input: { promptCalls: string[] }) {
       input.promptCalls.push("prompt")
       return Effect.never
     }),
-    promptIfIdle: () => Effect.succeed(Option.none()),
+    deliver: () => Effect.succeed(Option.none()),
   }))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),

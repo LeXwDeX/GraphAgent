@@ -9,9 +9,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 
 export function withIdleAdmission<Error, Value extends object>(
   service: Value & {
-    readonly promptIfIdle: (
-      input: SessionPrompt.PromptInput,
-    ) => Effect.Effect<Option.Option<SessionV1.WithParts>, Error>
+    readonly deliver: (input: SessionPrompt.PromptInput) => Effect.Effect<Option.Option<SessionV1.WithParts>, Error>
   },
 ) {
   return {
@@ -22,14 +20,14 @@ export function withIdleAdmission<Error, Value extends object>(
         if (Option.isSome(status) && (yield* status.value.get(sessionID)).type !== "idle") return Option.none<A>()
         return Option.some(yield* work)
       }),
-    prepareIfIdle: (input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+    prepareTurn: (input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
       Effect.as(
         persistAdmission ?? Effect.void,
         Option.some({
           turn: undefined,
           run: true,
           activate: Effect.void,
-          result: Effect.suspend(() => service.promptIfIdle(input)).pipe(
+          result: Effect.suspend(() => service.deliver(input)).pipe(
             Effect.flatMap(Option.match({ onNone: () => Effect.interrupt, onSome: Effect.succeed })),
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.die(Cause.squash(cause)),

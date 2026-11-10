@@ -2,20 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Live HookRewake implementation — routes V1 hook feedback to SessionPrompt.
+ * Live HookRewake implementation — routes V1 hook feedback through the session
+ * inbox admission port.
  *
  * Dependency graph (no cycle):
- *   rewake.ts (tag only) ← index.ts ← prompt.ts ← this file → rewake.ts
+ *   rewake.ts (tag only) ← index.ts ← prompt.ts; this file → inbox.ts
  *
- * SessionPrompt is resolved lazily from the ambient request context. The loop
- * guard in prompt.ts (UserPromptSubmit trigger skips prompts whose text starts
- * with HOOK_REWAKE_SENTINEL) IS on this path — SessionPrompt.prompt fires
- * UserPromptSubmit hooks internally, so rewake prompts are guarded.
+ * `SessionInbox` is resolved lazily from the ambient request context. The loop
+ * guard that keeps UserPromptSubmit from running on a rewake is the
+ * `isRewake` check in admission (`HOOK_REWAKE_SENTINEL`), which `submit`
+ * reaches through `SessionPrompt.admit` exactly like `prompt` did.
  */
 import { Effect, Layer, Option } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { HookRewake } from "./rewake"
-import { SessionPrompt } from "@/session/prompt"
+import { SessionInbox } from "@/session/inbox"
 import { SessionID } from "@/session/schema"
 
 export const liveLayer = Layer.effect(
@@ -24,23 +25,20 @@ export const liveLayer = Layer.effect(
     return HookRewake.Service.of({
       rewake: (input) =>
         Effect.gen(function* () {
-          const sessionPrompt = Option.getOrUndefined(yield* Effect.serviceOption(SessionPrompt.Service))
-          if (!sessionPrompt) return
-          yield* sessionPrompt
-            .prompt(
-              {
-                sessionID: SessionID.make(input.sessionID),
-                parts: [{ type: "text", text: input.text }],
-              },
+          const inbox = Option.getOrUndefined(yield* Effect.serviceOption(SessionInbox.Service))
+          if (!inbox) return
+          yield* inbox
+            .submit("hook.rewake", SessionID.make(input.sessionID), {
+              prompt: { parts: [{ type: "text", text: input.text }] },
               // A rewake continues the turn that produced it: keep the current
               // input's tool budget instead of starting a fresh one, and carry
               // the rewake token so admission and the run path can refuse a
               // callback whose chain was reset after its completion check.
-              { continueToolBudget: true, rewakeToken: input.rewakeToken },
-            )
+              admissionOptions: { continueToolBudget: true, rewakeToken: input.rewakeToken },
+            })
             .pipe(
               Effect.catch((error) =>
-                Effect.logWarning("hook rewake prompt failed", {
+                Effect.logWarning("hook rewake submit failed", {
                   sessionID: input.sessionID,
                   error: String(error),
                 }),
@@ -52,6 +50,6 @@ export const liveLayer = Layer.effect(
   }),
 )
 
-export const node = LayerNode.make(liveLayer, [])
+export const node = LayerNode.make(liveLayer, [SessionInbox.node])
 
 export * as HookRewakeLive from "./rewake-live"

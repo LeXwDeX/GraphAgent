@@ -72,7 +72,7 @@ function mailboxLayer(probe: MailboxProbe) {
     messages: () => Effect.sync(() => probe.history ?? []),
   })
   const prompt = Layer.mock(SessionPrompt.Service, {
-    prepareIfIdle: (input) =>
+    prepareTurn: (input) =>
       Effect.sync(() => {
         probe.admissions.push(input)
         return Option.some({

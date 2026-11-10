@@ -106,8 +106,7 @@ describe("DagLoop session move with a running workflow", () => {
               cancels[dir].push(sessionID as string)
             }),
           prompt: deliver,
-          promptIfIdle: (value) => deliver(value).pipe(Effect.map(Option.some)),
-          prepareIfIdle: () => Effect.succeed(Option.none()),
+          prepareTurn: () => Effect.succeed(Option.none()),
         })
         const agent = Layer.mock(Agent.Service, {
           get: () =>

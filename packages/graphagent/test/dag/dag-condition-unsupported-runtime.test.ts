@@ -81,7 +81,7 @@ describe("DagLoop unsupported condition syntax in an adopted workflow", () => {
       withIdleAdmission({
         cancel: () => Effect.void,
         prompt: never,
-        promptIfIdle: never,
+        deliver: never,
       }),
     )
     const agent = Layer.mock(Agent.Service, {

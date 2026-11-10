@@ -7,7 +7,7 @@
 
 Goal commands and GoalLoop previously loaded a row and later performed an unconditional upsert. A legal `pause` or `clear` racing a delayed judge result could therefore be overwritten or resurrected. Judge completion also persisted `done` and deleted it in a second operation, so a process failure between them left a terminal row that no loop would process.
 
-GoalLoop admitted continuation with `SessionPrompt.prompt`, while DagLoop admitted parent wakes with `promptIfIdle`. Both could observe the same idle Session and independently start automation.
+GoalLoop admitted continuation with `SessionPrompt.prompt`, while DagLoop admitted parent wakes with `promptIfIdle` (now `SessionPrompt.prepareTurn`). Both could observe the same idle Session and independently start automation.
 
 The judge also encoded blocked or unachievable work as successful completion, so presentation reported an achieved Goal without a deliverable.
 
@@ -19,7 +19,7 @@ A `done` verdict writes an immutable `goal_outcome` snapshot and deletes the cur
 
 Judge output is tri-state: `done`, `continue`, or `blocked`. `blocked` writes a paused Goal with the blocker as its reason.
 
-`ExclusiveRegistry` is the authority for Goal/DAG ownership within one built service graph. Its state is created per layer build inside `Layer.effect`; separate builds coordinate only through the process-level `EngineProcess.inbox.nudge` hook. Goal and DAG register their active identities; DAG has priority while any workflow is registered. A claim carries a generation, and the registry holds its per-Session fence through the durable transition or prompt admission; `use` and `handoff` validate generation and owner under the per-Session lock. Registration changes cannot overtake that commit. Provider execution starts after the fence is released, so a slow model turn does not block ownership transfer. When the final DAG owner releases a Session whose Goal claim a DAG blocked, the registry re-triggers that Goal exactly once through the session inbox nudge; it no longer synthesizes an idle state. `SessionPrompt.promptIfIdle` remains the final atomic idle-state admission guard. Failure at either boundary admits no Goal prompt and leaves the durable Goal available for a later idle event.
+`ExclusiveRegistry` is the authority for Goal/DAG ownership within one built service graph. Its state is created per layer build inside `Layer.effect`; separate builds coordinate only through the process-level `EngineProcess.inbox.nudge` hook. Goal and DAG register their active identities; DAG has priority while any workflow is registered. A claim carries a generation, and the registry holds its per-Session fence through the durable transition or prompt admission; `use` and `handoff` validate generation and owner under the per-Session lock. Registration changes cannot overtake that commit. Provider execution starts after the fence is released, so a slow model turn does not block ownership transfer. When the final DAG owner releases a Session whose Goal claim a DAG blocked, the registry re-triggers that Goal exactly once through the session inbox nudge; it no longer synthesizes an idle state. `SessionPrompt.prepareTurn` remains the final atomic idle-state admission guard: it prepares the admission without starting the turn, and provider execution begins only from the returned admission's `activate` step after the fence is released. Failure at either boundary admits no Goal prompt and leaves the durable Goal available for a later idle event.
 
 ## Consequences
 

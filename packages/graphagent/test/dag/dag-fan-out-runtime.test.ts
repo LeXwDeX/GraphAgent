@@ -80,7 +80,7 @@ async function run(planOutput: unknown, expectedWriters: number) {
     Effect.sync(() => prompts.push(JSON.stringify(value))).pipe(Effect.andThen(Effect.never))
   const prompt = Layer.mock(
     SessionPrompt.Service,
-    withIdleAdmission({ cancel: () => Effect.void, prompt: never, promptIfIdle: never }),
+    withIdleAdmission({ cancel: () => Effect.void, prompt: never, deliver: never }),
   )
   const agent = Layer.mock(Agent.Service, {
     get: () =>

@@ -132,7 +132,7 @@ describe("DagLoop node settling inside a paused workflow", () => {
           withIdleAdmission({
             cancel: () => Effect.void,
             prompt: deliver,
-            promptIfIdle: (value) => deliver(value).pipe(Effect.map(Option.some)),
+            deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
           }),
         )
         const agent = Layer.mock(Agent.Service, {

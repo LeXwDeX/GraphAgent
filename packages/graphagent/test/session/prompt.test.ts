@@ -1038,7 +1038,7 @@ it.instance("DAG prepared parent answers while its node is waiting without ackno
       },
     })
     yield* llm.textMatch(fromParent, "Main answered")
-    const prepared = yield* prompt.prepareIfIdle({
+    const prepared = yield* prompt.prepareTurn({
       sessionID: parent.id,
       model: ref,
       parts: [{ type: "text", text: "DAG_PREPARED_MAIN" }],
@@ -1673,7 +1673,7 @@ it.instance("idle admission rolls back its transcript and reporting mark togethe
     const session = yield* sessions.create({ title: "Atomic wake admission" })
     const messageID = MessageID.ascending()
     const attempt = yield* prompt
-      .prepareIfIdle(
+      .prepareTurn(
         {
           sessionID: session.id,
           messageID,
@@ -1691,7 +1691,7 @@ it.instance("idle admission rolls back its transcript and reporting mark togethe
       status.get(session.id).pipe(Effect.map((state) => (state.type === "idle" ? true : undefined))),
       "failed admission retained its runner",
     )
-    const next = yield* prompt.prepareIfIdle({
+    const next = yield* prompt.prepareTurn({
       sessionID: session.id,
       model: ref,
       parts: [{ type: "text", text: "Replacement admission" }],
@@ -1785,7 +1785,7 @@ for (const modelID of ["qwen-max", "glm", "deepseek"]) {
         const selectedModel = { providerID: ProviderV2.ID.make(providerID), modelID: ModelV2.ID.make(modelID) }
         const question = "LIVE_NODE_QUESTION: confirm the main update"
         const answer = "LIVE_MAIN_REPLY: update confirmed"
-        const prepared = yield* prompt.prepareIfIdle({
+        const prepared = yield* prompt.prepareTurn({
           sessionID: parent.id,
           model: selectedModel,
           parts: [
@@ -6291,8 +6291,10 @@ it.instance("idle-only synthetic admission cannot overtake a concurrent human pr
       .pipe(Effect.forkChild({ startImmediately: true }))
     yield* awaitWithTimeout(Deferred.await(admissionStarted), "human prompt did not enter admission")
 
+    // The idle admission reserves nothing while a human admission is still in
+    // flight: `prepareTurn` returns None instead of starting a turn.
     const wake = yield* prompt
-      .promptIfIdle({
+      .prepareTurn({
         sessionID: chat.id,
         agent: "build",
         model: ref,
@@ -6303,9 +6305,9 @@ it.instance("idle-only synthetic admission cannot overtake a concurrent human pr
     yield* Deferred.succeed(admissionGate, undefined)
     const wakeResult = yield* awaitWithTimeout(
       Fiber.join(wake),
-      "idle-only prompt did not reject after human admission won",
+      "idle-only admission did not reject after human admission won",
     )
-    expect(wakeResult._tag).toBe("None")
+    expect(Option.isNone(wakeResult)).toBe(true)
     expect(
       (yield* sessions.messages({ sessionID: chat.id }))
         .flatMap((message) => message.parts)
@@ -6338,7 +6340,7 @@ it.instance("interrupting idle-only admission releases the reserved runner", () 
     )
 
     const wake = yield* prompt
-      .promptIfIdle({
+      .prepareTurn({
         sessionID: chat.id,
         agent: "build",
         model: ref,
@@ -6375,20 +6377,22 @@ it.instance("idle-only prompt resolves only after the full provider turn complet
       }),
     )
 
-    const wake = yield* prompt
-      .promptIfIdle({
+    const prepared = Option.getOrThrow(
+      yield* prompt.prepareTurn({
         sessionID: chat.id,
         agent: "build",
         model: ref,
         parts: [{ type: "text", text: "synthetic DAG wake", synthetic: true }],
-      })
-      .pipe(Effect.forkChild({ startImmediately: true }))
+      }),
+    )
+    yield* prepared.activate
+    const wake = yield* prepared.result.pipe(Effect.forkChild({ startImmediately: true }))
     yield* awaitWithTimeout(llm.wait(1), "idle-only prompt did not reach the provider")
 
     // The DAG orchestrator-unresponsive net (DagLoop.tryDeliverWake) re-reads
-    // the wake batch as soon as promptIfIdle resolves and fails the workflow
+    // the wake batch as soon as deliver resolves and fails the workflow
     // if it still looks stalled. That judgement is only sound while
-    // promptIfIdle waits for the FULL provider turn (runLoop) — resolving
+    // deliver waits for the FULL provider turn (runLoop) — resolving
     // after admission alone would create a mis-kill window. Pin the contract.
     const early = yield* Fiber.join(wake).pipe(
       Effect.timeoutOrElse({ duration: "250 millis", orElse: () => Effect.succeed("still-running" as const) }),
@@ -6397,7 +6401,7 @@ it.instance("idle-only prompt resolves only after the full provider turn complet
 
     releaseTurn(undefined)
     const result = yield* awaitWithTimeout(Fiber.join(wake), "idle-only prompt did not resolve after turn completion")
-    expect(result._tag).toBe("Some")
+    expect(result.info.role).toBe("assistant")
   }),
 )
 
@@ -6416,7 +6420,7 @@ it.instance("idle-only preparation keeps the provider stopped until activation",
     )
 
     const prepared = Option.getOrThrow(
-      yield* prompt.prepareIfIdle({
+      yield* prompt.prepareTurn({
         sessionID: chat.id,
         agent: "build",
         model: ref,

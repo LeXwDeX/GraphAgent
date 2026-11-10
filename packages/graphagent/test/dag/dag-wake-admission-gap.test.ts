@@ -132,14 +132,14 @@ function restartLayer(filename: string, probe: Probe) {
     }),
   ).pipe(Layer.provide(database))
   // Stub only the model-facing admission boundary: persist the synthetic
-  // message exactly before returning the prepared handle, as prepareIfIdle
+  // message exactly before returning the prepared handle, as prepareTurn
   // does in production. The real loop, lease, wake store, DB and restart sweep
   // run unchanged. No remote model is invoked.
   const prompt = Layer.unwrap(
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       return Layer.mock(SessionPrompt.Service, {
-        prepareIfIdle: (input, persistAdmission) =>
+        prepareTurn: (input, persistAdmission) =>
           Effect.gen(function* () {
             const messageID = input.messageID ?? MessageID.ascending()
             yield* db

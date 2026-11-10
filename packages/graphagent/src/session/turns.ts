@@ -83,6 +83,8 @@ export interface IdleAdmission {
   /** Defined only when this admission will run the loop machine. */
   readonly turn: TurnHandle | undefined
   readonly run: boolean
+  /** The user message this admission committed; carries the identity `submit` reports. */
+  readonly message?: SessionV1.WithParts
   readonly activate: Effect.Effect<void>
   readonly result: Effect.Effect<SessionV1.WithParts>
   readonly abort: Effect.Effect<void>
@@ -131,6 +133,8 @@ export type TurnAdmission =
 
 export interface TurnStart {
   readonly admission: TurnAdmission
+  /** The user message this admission committed, when it committed one. */
+  readonly message?: SessionV1.WithParts
   /** The message the caller historically received from `prompt`/`loop`. */
   readonly wait: Effect.Effect<SessionV1.WithParts>
 }
@@ -197,7 +201,7 @@ export interface Interface {
     input: PromptInput,
     options: TurnStartOptions,
   ) => Effect.Effect<TurnStart, PromptError | SessionAdmission.Blocked>
-  /** Idle two-phase admission; `admitIfIdle` activates it under the exclusive registry. */
+  /** Idle two-phase admission; `admitIdleUnderFence` activates it under the exclusive registry. */
   readonly prepare: (
     input: PromptInput,
     options?: AdmissionOptions,
@@ -621,6 +625,7 @@ export function makeTurns(deps: TurnDeps): Interface {
               return Option.some({
                 turn: admitted.value.run ? handle : undefined,
                 run: admitted.value.run,
+                message: admitted.value.message,
                 activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
                 result: wait.value,
                 abort: deps.state.cancel(input.sessionID),
@@ -646,11 +651,13 @@ export function makeTurns(deps: TurnDeps): Interface {
       if (!idle.run || !idle.turn) {
         return {
           admission: { kind: "not_started", reason: "admission_declined" },
+          message: idle.message,
           wait: idle.result,
         } satisfies TurnStart
       }
       return {
         admission: { kind: "started", turn: idle.turn },
+        message: idle.message,
         wait: idle.result,
       } satisfies TurnStart
     }
@@ -670,6 +677,7 @@ export function makeTurns(deps: TurnDeps): Interface {
           if (!admitted.run) {
             return {
               admission: { kind: "not_started", reason: "admission_declined" },
+              message: admitted.message,
               wait: Effect.succeed(admitted.message),
             } satisfies TurnStart
           }
@@ -692,7 +700,11 @@ export function makeTurns(deps: TurnDeps): Interface {
             request,
           )
           if (classified.kind === "skipped") {
-            return { admission: { kind: "skipped_busy" }, wait: classified.result } satisfies TurnStart
+            return {
+              admission: { kind: "skipped_busy" },
+              message: admitted.message,
+              wait: classified.result,
+            } satisfies TurnStart
           }
           // Settle a handle whose queued work is discarded before `track`
           // (cancel while it waits behind a shell, or a join that abandoned
@@ -702,6 +714,7 @@ export function makeTurns(deps: TurnDeps): Interface {
             const current = currents.get(input.sessionID)
             return {
               admission: { kind: "joined", turn: current ?? handle, messageID: admitted.message.info.id },
+              message: admitted.message,
               wait: classified.result,
             } satisfies TurnStart
           }
@@ -709,6 +722,7 @@ export function makeTurns(deps: TurnDeps): Interface {
           // it is reported as `started`: that work will insert the row.
           return {
             admission: { kind: "started", turn: handle },
+            message: admitted.message,
             wait: classified.result,
           } satisfies TurnStart
         }),

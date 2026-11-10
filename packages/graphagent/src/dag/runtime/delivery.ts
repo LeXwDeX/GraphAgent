@@ -700,7 +700,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         const didDeliver = yield* Effect.gen(function* () {
           let wakeTurn: Effect.Effect<SessionV1.WithParts> | undefined
           if (!alreadyAdmitted) {
-            const delivered = yield* SessionPrompt.admitIfIdle(
+            const delivered = yield* SessionPrompt.admitIdleUnderFence(
               prompts,
               automation,
               wakeLease,
@@ -872,7 +872,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         return yield* Effect.gen(function* () {
           const token = yield* automation.claim(SessionID.make(sessionID), { kind: "dag" })
           if (Option.isNone(token)) return false
-          const admitted = yield* SessionPrompt.admitIfIdle(prompts, automation, token.value, {
+          const admitted = yield* SessionPrompt.admitIdleUnderFence(prompts, automation, token.value, {
             sessionID: SessionID.make(sessionID),
             messageID: MessageID.make(message.transcriptID),
             parts: [

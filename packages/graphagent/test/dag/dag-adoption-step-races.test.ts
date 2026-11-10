@@ -117,7 +117,7 @@ function raceLayer(input: {
       return reply(sessionID, yield* Deferred.await(release))
     }),
     // Keep wake delivery pending so the tests observe scheduling only.
-    promptIfIdle: () => Effect.succeed(Option.none()),
+    deliver: () => Effect.succeed(Option.none()),
   }))
   const agent = Layer.mock(Agent.Service, {
     get: () => Effect.succeed({
