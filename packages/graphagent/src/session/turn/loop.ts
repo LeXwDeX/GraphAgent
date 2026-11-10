@@ -85,11 +85,17 @@ export interface LoopDeps {
   readonly settingsHook: SettingsHook.Interface | undefined
   readonly agentMessages: DagMessages.Interface | undefined
   /** H2 seam (#1021 PR3): `false` means this process saw no queued agent
-   * message for the session, so the byte-verified mailbox freeze read may be
-   * skipped. False positives are allowed (the freeze still governs delivery).
-   * E1 installs no provider — the SessionInbox claim protocol that supplies the
-   * hint and the "not a node session" exclusion lands with H2. */
-  readonly agentInputHint?: (sessionID: SessionID) => boolean
+   * message for the session and no other connection committed since the last
+   * freeze, so the byte-verified mailbox freeze read may be skipped. False
+   * positives are allowed (the freeze still governs delivery). Node sessions
+   * always freeze. E1 installs no provider — the SessionInbox claim protocol
+   * that supplies the hint and the "not a node session" exclusion lands with
+   * H2; this process-local hint (PR6) is the interim provider. */
+  readonly agentInputHint?: (
+    sessionID: SessionID,
+  ) => Effect.Effect<{ readonly hint: boolean; readonly version: number }>
+  /** Record the data-version sample the hint decision used after a committed freeze. */
+  readonly agentInputChecked?: (sessionID: SessionID, version: number) => Effect.Effect<void>
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly database: Database.Interface
   readonly db: Database.Interface["db"]
@@ -154,6 +160,8 @@ interface AgentInputGateInput {
   readonly budget: ToolBudget.Budget
   readonly state: TurnState
   readonly completed: boolean
+  /** Node (and any other child) sessions always run the freeze read. */
+  readonly child: boolean
 }
 
 interface AgentInputGateResult {
@@ -167,15 +175,15 @@ function makeAgentInputGate(deps: LoopDeps) {
   return Effect.fnUntraced(function* (input: AgentInputGateInput): Effect.fn.Return<AgentInputGateResult> {
     let state = input.state
     let agentSnapshot: DagMessages.Snapshot | undefined
-    // H2 seam: a denied hint skips the freeze query for sessions this process
-    // observed with no queued agent message. No provider is installed in E1,
-    // so the hint is `undefined` and the freeze path below is unchanged; only
-    // the transition hook plus the SessionInbox in H2 may narrow it further.
-    const hinted = deps.agentInputHint?.(input.sessionID)
+    // H2 seam: a denied hint skips the freeze query for root sessions this
+    // process observed with no queued agent message and no external commit.
+    // Node (and other child) sessions always freeze; false positives never
+    // change delivery semantics because the freeze still governs it.
+    const hint = deps.agentInputHint ? yield* deps.agentInputHint(input.sessionID) : undefined
     if (
       !agentMessages ||
       state.agentInput === "blocked" ||
-      hinted === false ||
+      (!input.child && hint?.hint === false) ||
       !Decide.shouldFreezeAgentInput(state, input.completed)
     ) {
       return { state, snapshot: { messages: input.messages, budget: input.budget }, agentSnapshot }
@@ -184,6 +192,10 @@ function makeAgentInputGate(deps: LoopDeps) {
     state = State.clearBoundaryApproval(state)
     const frozen = yield* agentMessages.freeze(input.identity, input.modelMessageID)
     if (!frozen.ok) return { state, snapshot: { messages: input.messages, budget: input.budget }, agentSnapshot }
+    // The freeze was the authoritative read for this step: absorb the version
+    // sampled before it committed. A commit that lands during the freeze
+    // keeps the next hint true, costing one extra read but never a missed one.
+    if (hint && deps.agentInputChecked) yield* deps.agentInputChecked(input.sessionID, hint.version)
     agentSnapshot = frozen.value
     if (!agentSnapshot.messages.length) {
       return { state, snapshot: { messages: input.messages, budget: input.budget }, agentSnapshot }
@@ -992,6 +1004,7 @@ function makeTurnLoop(deps: LoopDeps) {
         messages: msgs,
         budget,
         state,
+        child: !!session.parentID,
         completed: Decide.isCompletionCandidate(state, {
           assistantFinished: !!previous.assistant?.finish && previous.assistant.finish !== "tool-calls",
           userBeforeAssistant:
