@@ -27,6 +27,18 @@ import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
 import { TuiLog } from "../../util/log"
 import type { FileSystemEntry } from "@graphagent/sdk"
 
+/**
+ * Test observation for the F2 regression: each option memo records evaluations
+ * so the test can assert the closed popup does no per-keystroke work. No
+ * production code reads these counters; they cost one increment per evaluation.
+ */
+export const autocompleteEvaluationCounts = {
+  options: 0,
+  commands: 0,
+  agents: 0,
+  referenceAliases: 0,
+}
+
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
   return hashIndex !== -1 ? input.substring(0, hashIndex) : input
@@ -320,7 +332,14 @@ export function Autocomplete(props: {
   }
 
   const [files] = createResource(
-    () => ({ query: search(), location: location() }),
+    () => {
+      // The resource source is where the fetch reruns. Keep a closed popup out
+      // of this reactive chain entirely: returning undefined skips the fetch and
+      // stops tracking the per-keystroke query.
+      if (store.visible !== "@") return undefined
+      if (referenceMatch()) return undefined
+      return { query: search(), location: location() }
+    },
     async (input) => {
       if (!store.visible || store.visible === "/") return []
       if (referenceMatch()) return []
@@ -407,6 +426,8 @@ export function Autocomplete(props: {
   })
 
   const agents = createMemo(() => {
+    autocompleteEvaluationCounts.agents++
+    if (store.visible !== "@") return []
     return sync.data.agent
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
       .map((agent): AutocompleteOption => ({
@@ -425,8 +446,10 @@ export function Autocomplete(props: {
       }))
   })
 
-  const referenceAliases = createMemo(() =>
-    (references() ?? [])
+  const referenceAliases = createMemo(() => {
+    autocompleteEvaluationCounts.referenceAliases++
+    if (store.visible !== "@") return []
+    return (references() ?? [])
       .filter((reference) => !reference.hidden)
       .map((reference): AutocompleteOption => ({
         display: "@" + reference.name,
@@ -444,8 +467,8 @@ export function Autocomplete(props: {
             },
           })
         },
-      })),
-  )
+      }))
+  })
 
   const slashEntries = createMemo(() => slashCommandEntries(commandRegistry, commandScope()))
 
@@ -476,6 +499,8 @@ export function Autocomplete(props: {
   }
 
   const commandOptions = createMemo((): AutocompleteOption[] => {
+    autocompleteEvaluationCounts.commands++
+    if (store.visible !== "/") return []
     const results = slashEntries().map((entry): AutocompleteOption => ({
       display: entry.display,
       value: entry.display,
@@ -497,6 +522,11 @@ export function Autocomplete(props: {
   })
 
   const options = createMemo((prev: AutocompleteOption[] | undefined) => {
+    autocompleteEvaluationCounts.options++
+    // Guard first: a closed popup must not subscribe to the per-keystroke
+    // search signal or build any option list. Reopening changes store.visible,
+    // which re-runs this memo and reads the inputs below.
+    if (!store.visible) return []
     const filesValue = files()
     const referenceMatchValue = referenceMatch()
     const agentsValue = agents()
