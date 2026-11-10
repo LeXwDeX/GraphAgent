@@ -195,6 +195,7 @@ function withContext<A, E>(
           worktreeRemove: (directory) =>
             run(modules.Worktree.Service.use((svc) => svc.remove({ directory })).pipe(Effect.ignore)),
           llmText: (value) => Effect.suspend(() => llm().text(value)),
+          llmHang: () => Effect.suspend(() => llm().hang),
           llmWait: (count) => Effect.suspend(() => llm().wait(count)),
           dag: (input) => run(createDagFixture(input.sessionID, input.title, input.nodes)),
           dagFailNode: (dagID, nodeID, reason, errorClass) =>

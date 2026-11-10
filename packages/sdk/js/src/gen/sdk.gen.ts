@@ -178,6 +178,10 @@ import type {
   SessionAbortResponses,
   SessionAttentionErrors,
   SessionAttentionResponses,
+  SessionBtwCancelErrors,
+  SessionBtwCancelResponses,
+  SessionBtwErrors,
+  SessionBtwResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -2214,6 +2218,38 @@ export class Hook extends HeyApiClient {
   }
 }
 
+export class Btw extends HeyApiClient {
+  /**
+   * Cancel a side question
+   *
+   * Cancel an in-flight side question. Idempotent — an unknown id also succeeds.
+   */
+  public cancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      btwID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionBtwCancelResponses, SessionBtwCancelErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "btwID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<SessionBtwCancelResponses, SessionBtwCancelErrors, ThrowOnError>({
+      url: "/session/{sessionID}/btw/{btwID}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Session2 extends HeyApiClient {
   /**
    * List sessions
@@ -2660,6 +2696,48 @@ export class Session2 extends HeyApiClient {
       url: "/session/{sessionID}/message/{messageID}",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Ask a side question
+   *
+   * Answer a read-only side question from the session history without running tools or writing to the session.
+   */
+  public btw<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      id?: string
+      question: string
+      model?: {
+        providerID: string
+        modelID: string
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionBtwResponses, SessionBtwErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "body", key: "id" },
+            { in: "body", key: "question" },
+            { in: "body", key: "model" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionBtwResponses, SessionBtwErrors, ThrowOnError>({
+      url: "/session/{sessionID}/btw",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
@@ -3279,6 +3357,11 @@ export class Session2 extends HeyApiClient {
   private _hook?: Hook
   get hook(): Hook {
     return (this._hook ??= new Hook({ client: this.client }))
+  }
+
+  private _btw?: Btw
+  get btw2(): Btw {
+    return (this._btw ??= new Btw({ client: this.client }))
   }
 }
 

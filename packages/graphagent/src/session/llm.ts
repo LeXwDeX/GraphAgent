@@ -156,6 +156,8 @@ export type StreamInput = {
   toolBudget?: ToolBudget.Budget
   toolBatch?: ToolBatch
   retries?: number
+  /** Caps the model output limit for this request, after provider adapter params. */
+  maxOutputTokens?: number
   toolChoice?: "auto" | "required" | "none"
   purpose?: RequestPurpose
   contextFolding?: ContextFoldingHistorySnapshot

@@ -5,6 +5,7 @@ import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
 import { OpenAIWebSocketPool } from "../openai-ws/ws-pool"
+import { isInternalOneShot } from "@/session/llm/internal-one-shot"
 import { escapeHtml } from "@/util/html"
 import type { AdapterContext, ProviderAdapter } from "./types"
 
@@ -663,10 +664,11 @@ export function CodexAdapter(input: AdapterContext, options: CodexAuthPluginOpti
       output.headers.originator = "opencode"
       output.headers["User-Agent"] = `${APP_NAME}/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`
       output.headers["session-id"] = input.sessionID
-      // Temporary fetch-layer hack: title generation currently shares the conversation
-      // session ID, so the OpenAI plugin marks it for HTTP fallback until transport
+      // Temporary fetch-layer hack: internal one-shot requests share the conversation
+      // session ID, so the OpenAI plugin marks them for HTTP fallback until transport
       // context can be passed directly instead of smuggled through headers.
-      if (websocketFetchInstalled && input.agent === "title") output.headers[OpenAIWebSocketPool.TITLE_HEADER] = "true"
+      if (websocketFetchInstalled && isInternalOneShot(input.agent))
+        output.headers[OpenAIWebSocketPool.TITLE_HEADER] = "true"
     },
     chatParams: async (input, output) => {
       if (input.model.providerID !== "openai") return

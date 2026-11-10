@@ -150,6 +150,36 @@ export class SessionBusyError extends Schema.Error<SessionBusyError>("SessionBus
   { httpApiStatus: 409 },
 ) {}
 
+export class BtwBusyError extends Schema.Error<BtwBusyError>("BtwBusyError")(
+  {
+    name: Schema.Literal("BtwBusy"),
+    data: Schema.Struct({
+      sessionID: Schema.String,
+      message: Schema.String,
+    }),
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class BtwCancelledError extends Schema.Error<BtwCancelledError>("BtwCancelledError")(
+  {
+    name: Schema.Literal("BtwCancelled"),
+    data: Schema.Struct({
+      sessionID: Schema.String,
+      message: Schema.String,
+    }),
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class BtwTimeoutError extends Schema.Error<BtwTimeoutError>("BtwTimeoutError")(
+  {
+    name: Schema.Literal("BtwTimeout"),
+    data: Schema.Struct({ message: Schema.String }),
+  },
+  { httpApiStatus: 504 },
+) {}
+
 export class QuestionNotFoundError extends Schema.Error<QuestionNotFoundError>("QuestionNotFoundError")(
   {
     name: Schema.Literal("QuestionNotFoundError"),

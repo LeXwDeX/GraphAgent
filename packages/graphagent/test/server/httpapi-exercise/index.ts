@@ -17,7 +17,7 @@
  * - `.json(...)` / `.jsonEffect(...)` assert response shape and optional side effects.
  * - `.mutating()` tells the runner to reset isolated state after destructive routes.
  */
-import { Effect } from "effect"
+import { Effect, Fiber } from "effect"
 import { OpenApi } from "effect/http-api"
 import { TestLLMServer } from "../../lib/llm-server"
 import path from "path"
@@ -677,6 +677,115 @@ const scenarios: Scenario[] = [
     .get("/session/status", "session.status")
     .seeded((ctx) => ctx.session({ title: "Status session" }))
     .json(200, object),
+  http.protected
+    .post("/session/{sessionID}/btw", "session.btw")
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({
+          title: "btw side question",
+          model: { id: "test-model", providerID: "test" },
+        })
+        yield* ctx.message(session.id, { text: "What did I ask you to inspect?" })
+        yield* ctx.llmText("The repository layout.")
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/btw", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { id: "httpapi-btw", question: "What did I ask about?" },
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.id === "httpapi-btw", "btw should echo the requested id")
+      check(body.answer === "The repository layout.", "btw should return the fake LLM answer")
+      check(isRecord(body.model) && body.model.modelID === "test-model", "btw should report the resolved model")
+      check(isRecord(body.context), "btw should report context statistics")
+      check(body.context?.inFlightDropped === false, "btw should not drop an in-flight turn when history is complete")
+    }),
+  http.protected
+    .post("/session/{sessionID}/btw", "session.btw.busy")
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "btw concurrent", model: { id: "test-model", providerID: "test" } })
+        yield* ctx.message(session.id, { text: "context" })
+        yield* ctx.llmHang()
+        const first = yield* ctx
+          .request({
+            method: "POST",
+            path: route("/session/{sessionID}/btw", { sessionID: session.id }),
+            headers: ctx.headers(),
+            body: { id: "first", question: "first side question" },
+          })
+          .pipe(Effect.forkDetach)
+        yield* ctx.llmWait(1)
+        return { session, first }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/btw", { sessionID: ctx.state.session.id }),
+      headers: ctx.headers(),
+      body: { id: "second", question: "second side question" },
+    }))
+    .jsonEffect(
+      409,
+      (body, ctx) =>
+        Effect.gen(function* () {
+          const cancelled = yield* ctx.request({
+            method: "DELETE",
+            path: route("/session/{sessionID}/btw/{btwID}", {
+              sessionID: ctx.state.session.id,
+              btwID: "first",
+            }),
+            headers: ctx.headers(),
+          })
+          check(
+            cancelled.status === 204,
+            `cancelling the first side question should return 204, got ${cancelled.status}`,
+          )
+          object(body)
+          check(body.name === "BtwBusy", "a concurrent side question should report BtwBusy")
+          const first = yield* Fiber.join(ctx.state.first)
+          check(
+            first.status === 409,
+            `the cancelled side question should return 409, got ${first.status}: ${first.text}`,
+          )
+          check(
+            isRecord(first.body) && first.body.name === "BtwCancelled",
+            "the cancelled side question should report BtwCancelled",
+          )
+          const again = yield* ctx.request({
+            method: "DELETE",
+            path: route("/session/{sessionID}/btw/{btwID}", {
+              sessionID: ctx.state.session.id,
+              btwID: "first",
+            }),
+            headers: ctx.headers(),
+          })
+          check(again.status === 204, "cancelling an unknown side question should be idempotent")
+        }),
+      "status",
+    ),
+  http.protected
+    .delete("/session/{sessionID}/btw/{btwID}", "session.btw.cancel")
+    .seeded((ctx) => ctx.session({ title: "btw cancel" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/btw/{btwID}", { sessionID: ctx.state.id, btwID: "unknown" }),
+      headers: ctx.headers(),
+    }))
+    .status(204),
+  http.protected
+    .delete("/session/{sessionID}/btw/{btwID}", "session.btw.cancel.missingSession")
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/btw/{btwID}", {
+        sessionID: "ses_httpapi_missing",
+        btwID: "unknown",
+      }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
   http.protected
     .post("/session", "session.create")
     .mutating()
@@ -1839,6 +1948,8 @@ const llmScenarios = new Set([
   "session.prompt_async",
   "session.command",
   "session.summarize",
+  "session.btw",
+  "session.btw.busy",
 ])
 
 const main = Effect.gen(function* () {
