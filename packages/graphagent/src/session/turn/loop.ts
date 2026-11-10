@@ -87,8 +87,11 @@ export interface LoopDeps {
   /** H2 seam (#1021 PR3): `false` means this process saw no queued agent
    * message for the session, so the byte-verified mailbox freeze read may be
    * skipped. False positives are allowed (the freeze still governs delivery).
-   * E1 installs no provider — the SessionInbox claim protocol that supplies the
-   * hint and the "not a node session" exclusion lands with H2. */
+   * PR3 registers the hint-only `dag.mailbox.step` step source and the
+   * authoritative `SessionInbox.pullForStep` port, but installs no provider
+   * here: a synchronous false negative would skip `clearBoundaryApproval`
+   * and let `check_step_input` keep resuming on queued revisions. PR4 wires
+   * the provider through the Effect-returning port. */
   readonly agentInputHint?: (sessionID: SessionID) => boolean
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly database: Database.Interface

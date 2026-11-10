@@ -20,6 +20,7 @@ import { reportingCheckpoints } from "@/dag/runtime/report-delivery"
 import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -188,13 +189,18 @@ function wakeLayer(input: {
   const truncate = Layer.mock(Truncate.Service, {
     output: (content) => Effect.succeed({ content, truncated: false }),
   })
+  // PR3: the shared inbox owns the idle subscription that drives DAG wake
+  // delivery. It must be part of DagLoop's build environment; merging the
+  // same layer object below exposes that identical instance to the test.
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
-  return Layer.mergeAll(base, loop, session, agent, provider, truncate)
+  return Layer.mergeAll(base, loop, session, agent, provider, truncate, inbox)
 }
 
 function isAnswerPart(event: EventV2.Payload) {
@@ -255,6 +261,8 @@ function runTest<A>(
         Effect.forkScoped,
       )
       yield* loop.init()
+      const inbox = yield* SessionInbox.Service
+      yield* inbox.init()
       return yield* test({ dag, store, status, childPrompts, parentPrompts, reports })
     }).pipe(
       Effect.provide(wakeLayer({ childPrompts, parentPrompts })),

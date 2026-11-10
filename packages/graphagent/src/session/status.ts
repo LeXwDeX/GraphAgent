@@ -65,10 +65,16 @@ export const layer = Layer.effect(
       const timer = data.timers.get(sessionID)
       data.timers.delete(sessionID)
       if (timer) yield* Fiber.interrupt(timer)
+      // Make the new state observable BEFORE the event is published. An
+      // event-driven consumer (the inbox idle drain, wake admission) reads
+      // `get` as soon as it receives the event; publishing first lets it
+      // observe the previous `busy` entry while the setter is still between
+      // the two publishes.
+      if (status.type === "idle") data.statuses.delete(sessionID)
+      else data.statuses.set(sessionID, status)
       yield* events.publish(Event.Status, { sessionID, status })
       if (status.type === "idle") {
         yield* events.publish(Event.Idle, { sessionID })
-        data.statuses.delete(sessionID)
         const notification =
           Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service)) ?? layerNotification
         // Only a top-level session waits on the user. A child (subagent or DAG node) returns to its parent.
@@ -97,7 +103,6 @@ export const layer = Layer.effect(
         }
         return
       }
-      data.statuses.set(sessionID, status)
     })
     const settle = (sessionID: SessionID) =>
       clear(sessionID).pipe(

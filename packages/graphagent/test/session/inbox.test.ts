@@ -36,7 +36,9 @@ const countingBridge = Layer.effect(
 // hard requirement of its layer.
 const layer = SessionInbox.layer.pipe(
   Layer.provideMerge(countingBridge),
-  Layer.provide(SessionStatus.defaultLayer),
+  // provideMerge exposes the same status instance the inbox gates with, so
+  // claim tests can move the session between idle and busy.
+  Layer.provideMerge(SessionStatus.defaultLayer),
 )
 const it = testEffect(layer)
 
@@ -200,6 +202,118 @@ describe("SessionInbox", () => {
     Effect.gen(function* () {
       const inbox = yield* SessionInbox.Service
       yield* inbox.nudge(SessionID.descending())
+    }),
+  )
+
+  it.instance("pullForStep is conservative across registered step sources", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const sessionID = SessionID.descending()
+      // No source: nothing proves emptiness.
+      expect(yield* inbox.pullForStep(sessionID)).toBe(true)
+
+      yield* inbox.registerStep({ id: "dag.mailbox.step", hint: () => false })
+      expect(yield* inbox.pullForStep(sessionID)).toBe(false)
+
+      // Any "maybe" wins over another source's explicit empty.
+      yield* inbox.registerStep({ id: "hook.async_context", hint: () => true })
+      expect(yield* inbox.pullForStep(sessionID)).toBe(true)
+
+      // A later registration for the same id replaces the previous hint.
+      yield* inbox.registerStep({ id: "hook.async_context", hint: () => false })
+      expect(yield* inbox.pullForStep(sessionID)).toBe(false)
+
+      // A throwing hint is unknown, not empty.
+      yield* inbox.registerStep({
+        id: "dag.mailbox.step",
+        hint: () => {
+          throw new Error("hint failed")
+        },
+      })
+      expect(yield* inbox.pullForStep(sessionID)).toBe(true)
+    }),
+  )
+
+  it.instance("step sources never claim or subscribe", () =>
+    Effect.gen(function* () {
+      subscribeCalls = 0
+      const inbox = yield* SessionInbox.Service
+      const claims = yield* Ref.make(0)
+      const sessionID = SessionID.descending()
+      // Loading the per-instance state arms the inbox's single idle
+      // subscription; that baseline is unrelated to step sources.
+      expect(yield* inbox.pullForStep(sessionID)).toBe(true)
+      const baseline = subscribeCalls
+      yield* inbox.registerStep({ id: "dag.mailbox.step", hint: () => true })
+      yield* inbox.register(
+        source("goal.continue", 10, () => Ref.update(claims, (n) => n + 1).pipe(Effect.as(true))),
+      )
+      yield* inbox.drain(sessionID)
+      expect(yield* Ref.get(claims)).toBe(1)
+      expect(yield* inbox.pullForStep(sessionID)).toBe(true)
+      expect(yield* Ref.get(claims)).toBe(1)
+      expect(subscribeCalls).toBe(baseline)
+    }),
+  )
+
+  it.instance("idle_only sources do not claim into a running turn", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const status = yield* SessionStatus.Service
+      const claims = yield* Ref.make(0)
+      yield* inbox.register(
+        source("goal.continue", 10, () => Ref.update(claims, (n) => n + 1).pipe(Effect.as(true))),
+      )
+      const sessionID = SessionID.descending()
+      yield* status.set(sessionID, { type: "busy" })
+      yield* inbox.drain(sessionID)
+      expect(yield* Ref.get(claims)).toBe(0)
+
+      // The idle transition itself drives the drain through the subscription;
+      // the inbox treats that event as the idle proof for the pass.
+      yield* status.set(sessionID, { type: "idle" })
+      yield* pollWithTimeout(
+        Ref.get(claims).pipe(Effect.map((n) => (n === 1 ? n : undefined))),
+        "idle transition did not claim",
+      )
+      expect(yield* Ref.get(claims)).toBe(1)
+    }),
+  )
+
+  it.effect("the forced tick still honors the idle_only gate", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const status = yield* SessionStatus.Service
+      const ctx = context(nextDirectory("idle-gate"))
+      const sessionID = SessionID.descending()
+      const claims = yield* Ref.make<ReadonlyArray<SessionID>>([])
+      yield* inbox
+        .register(
+          source(
+            "goal.continue",
+            10,
+            (sid) => Ref.update(claims, (seen) => [...seen, sid]).pipe(Effect.as(true)),
+            { scan: () => Effect.succeed([sessionID]) },
+          ),
+        )
+        .pipe(Effect.provideService(InstanceRef, ctx))
+      yield* inbox.init().pipe(Effect.provideService(InstanceRef, ctx))
+
+      yield* status.set(sessionID, { type: "busy" }).pipe(Effect.provideService(InstanceRef, ctx))
+      yield* TestClock.adjust("30 seconds")
+      yield* drainFibers
+      expect(yield* Ref.get(claims)).toEqual([])
+
+      yield* status.set(sessionID, { type: "idle" }).pipe(Effect.provideService(InstanceRef, ctx))
+      // The idle event claims once (the subscription is the primary trigger)…
+      for (let i = 0; i < 50 && (yield* Ref.get(claims)).length === 0; i++) yield* Effect.yieldNow
+      expect(yield* Ref.get(claims)).toEqual([sessionID])
+
+      // …and the next forced tick passes the gate again because the session
+      // is now idle. The busy tick above proves the gate blocks a forced pass.
+      yield* TestClock.adjust("30 seconds")
+      yield* drainFibers
+      expect(yield* Ref.get(claims)).toEqual([sessionID, sessionID])
     }),
   )
 

@@ -63,6 +63,7 @@ import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { Provider } from "@/provider/provider"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -411,11 +412,16 @@ function twoInstanceLayer(input: TwoInstanceInput) {
       hooks: {},
     }),
   })
+  // PR3: the idle wake subscription lives in SessionInbox, one per loaded
+  // directory instance. It must be in DagLoop's build environment; merging the
+  // same layer object below exposes that identical instance to the test.
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(agent),
+    Layer.provide(inbox),
   )
   const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(
     Layer.provide(base),
@@ -425,7 +431,7 @@ function twoInstanceLayer(input: TwoInstanceInput) {
   // The session mock is also surfaced to the test body (Session.remove for
   // the deletion-teardown probe); mergeAll memoizes by layer identity, so the
   // instance the loop sees is the same one the test drives.
-  return Layer.mergeAll(base, loop, session, sweep)
+  return Layer.mergeAll(base, loop, session, sweep, inbox)
 }
 
 interface TwoInstanceServices {
@@ -524,6 +530,14 @@ function runTwoInstanceGuardTest<A>(
         worktree: directoryB,
         project: { id: projectID },
       } as never
+      const inbox = yield* SessionInbox.Service
+      const boot = (ref: typeof refB | undefined) => {
+        const run = Effect.gen(function* () {
+          yield* loop.init()
+          yield* inbox.init()
+        })
+        return ref === undefined ? run : run.pipe(Effect.provideService(InstanceRef, ref))
+      }
       return yield* test({
         dag,
         loop,
@@ -534,8 +548,8 @@ function runTwoInstanceGuardTest<A>(
         session,
         // initA uses the ambient InstanceRef (directory A, provided below);
         // initB shadows it with B's InstanceRef.
-        initA: loop.init(),
-        initB: loop.init().pipe(Effect.provideService(InstanceRef, refB)),
+        initA: boot(undefined),
+        initB: boot(refB),
         childPromptsA,
         childPromptsB,
         cancelsA,

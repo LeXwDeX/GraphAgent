@@ -24,7 +24,6 @@ import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { SessionEvent } from "@graphagent/schema/session-event"
-import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Database } from "@graphagent/core/database/database"
@@ -52,6 +51,7 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
+import { SessionInbox } from "@/session/inbox"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { renderTemplate } from "../templates/resolve"
 import { sanitizeInput } from "../templates/sanitize"
@@ -148,6 +148,10 @@ const serviceLayer = Layer.effect(
     const promptSvc = yield* SessionPrompt.Service
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const statusSvc = yield* SessionStatus.Service
+    // Optional: isolated unit graphs build DagLoop.layer without an inbox and
+    // keep the transitional scans. Production graphs provide the shared
+    // default layer and get the one per-instance idle subscription.
+    const inbox = Option.getOrUndefined(yield* Effect.serviceOption(SessionInbox.Service))
     const automation = yield* ExclusiveRegistry.Service
     const database = yield* Database.Service
 
@@ -163,11 +167,7 @@ const serviceLayer = Layer.effect(
         // D7: all delivery scheduling (wake + agent mailbox) lives in
         // DagDelivery. This forward reference is assigned below, before any
         // event or recovery path can trigger it; every call site only nudges.
-        let delivery: DagDelivery.Interface = {
-          drain: () => Effect.void,
-          nudge: () => Effect.void,
-          scan: () => Effect.void,
-        }
+        let delivery: DagDelivery.Interface = DagDelivery.unavailable
 
         // Seed the commented global dag.jsonc once per instance init — the
         // per-round DagConfig.load below stays a pure read so the spawn
@@ -1982,11 +1982,11 @@ const serviceLayer = Layer.effect(
         }
 
         // D7: one delivery scheduler owns the durable wake ledger and the
-        // agent mailbox ledger (see DagDelivery). This loop only triggers it:
-        // the idle subscription, node-terminal handlers, pause recovery,
-        // escalation, moves, and the startup sweep all nudge the same
-        // in-flight reservations, and delivery keeps the fixed order — wake
-        // first, mailbox second.
+        // agent mailbox ledger (see DagDelivery). The inbox idle drain calls
+        // `deliver`; node-terminal handlers, pause recovery, escalation,
+        // moves, and the startup sweep still nudge the same in-flight
+        // reservations. Delivery keeps the fixed order — wake first, mailbox
+        // second — and returns true only when it consumed the boundary.
         delivery = yield* DagDelivery.make({
           directory: ctx.directory,
           projectID: ctx.project.id,
@@ -2000,19 +2000,13 @@ const serviceLayer = Layer.effect(
           database,
           events,
           messages: messageSvc,
+          inbox,
           entries: (dagID) => runtimes.get(dagID),
           lastAssistantMessage,
         })
-
-        // Idle-event subscription: the primary delivery trigger. The handler
-        // only nudges; DagDelivery coalesces repeats through its in-flight
-        // reservations and its guarded handler keeps this subscription alive
-        // through a defect inside a delivery attempt.
-        yield* events.subscribe(SessionStatusEvent.Status).pipe(
-          Stream.filter((evt) => evt.data.status.type === "idle"),
-          Stream.runForEach((evt) => delivery.nudge(evt.data.sessionID as string)),
-          Effect.forkScoped({ startImmediately: true }),
-        )
+        // The idle subscription lives in SessionInbox (one per instance); this
+        // delivery registers itself as the `dag.delivery` source there. The
+        // remaining event handlers below still nudge the delivery directly.
 
         // R5 session-deletion teardown: when the parent session is removed,
         // Session.remove publishes SessionV1.Event.Deleted and the FK cascade
@@ -2229,6 +2223,10 @@ const serviceLayer = Layer.effect(
 export const layer = serviceLayer.pipe(Layer.provide(ExclusiveRegistry.defaultLayer))
 
 export const defaultLayer = layer.pipe(
+  // The shared per-instance inbox owns the idle subscription. It is the
+  // innermost provide so its own EventV2Bridge/SessionStatus defaults are
+  // built in the same memoMap graph as the rest of this layer's deps.
+  Layer.provide(SessionInbox.defaultLayer),
   Layer.provide(Database.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(DagStore.defaultLayer),
