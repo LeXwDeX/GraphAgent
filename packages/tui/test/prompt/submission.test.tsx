@@ -1214,7 +1214,9 @@ test("/btw asks a side question without submitting a prompt and recalls it from 
     expect(sent.length).toBe(before)
 
     route.app.mockInput.pressKey("ARROW_UP")
-    await route.app.renderOnce()
+    // Keymap dispatch is asynchronous; under a loaded suite one render can run
+    // before the history recall lands.
+    await wait(() => prompt!.current.input === "/btw -m test/m why?")
     expect(prompt!.current.input).toBe("/btw -m test/m why?")
   } finally {
     await route.dispose()
