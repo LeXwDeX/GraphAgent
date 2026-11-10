@@ -83,6 +83,7 @@ import { sessionEpilogue } from "../../util/presentation"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { t } from "../../i18n"
+import { renderUserTextPart } from "../../i18n/receipt"
 import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
@@ -226,7 +227,7 @@ export function Main() {
 
   const dimensions = useTerminalDimensions()
   const drawer = useDrawer()
-  const [conceal, setConceal] = createSignal(true)
+  const [conceal, setConceal] = kv.signal("conceal_code", true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
   const showThinking = createMemo(() => true)
@@ -1398,11 +1399,12 @@ function UserMessage(props: {
 }) {
   const ctx = use()
   const local = useLocal()
+  const receiptShortcut = useCommandShortcut("session.dagmode.toggle")
   const text = createMemo(() => {
     const texts = props.parts
       .map((x) => {
         if (x.type === "text" && !x.synthetic) {
-          return x.text
+          return renderUserTextPart(x, { key: receiptShortcut() })
         }
         return null
       })

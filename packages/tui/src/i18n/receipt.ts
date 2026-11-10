@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { MessageKey, MessageParams } from "./index"
+import { t } from "./index"
 
 export type DagModeReceiptKind = "on" | "off" | "status" | "budget"
 
@@ -63,4 +64,39 @@ export function renderDagModeReceipt(receipt: DagModeReceipt, t: Translate, ctx:
     case "budget":
       return t("dagmode.receipt.budget", { N: value(values, "N"), k: value(values, "k") })
   }
+}
+
+const RECEIPT_KINDS: readonly string[] = ["on", "off", "status", "budget"]
+
+/**
+ * Reads `metadata.receipt` from a text part. Unknown kinds return undefined so
+ * the caller can fall back to the server-written `part.text`.
+ */
+export function parseDagModeReceipt(metadata: unknown): DagModeReceipt | undefined {
+  if (typeof metadata !== "object" || metadata === null) return
+  const receipt = (metadata as Record<string, unknown>).receipt
+  if (typeof receipt !== "object" || receipt === null) return
+  const kind = (receipt as Record<string, unknown>).kind
+  if (typeof kind !== "string" || !RECEIPT_KINDS.includes(kind)) return
+  const values = (receipt as Record<string, unknown>).values
+  return {
+    kind: kind as DagModeReceiptKind,
+    values:
+      typeof values === "object" && values !== null
+        ? (values as Record<string, string | number | boolean | undefined>)
+        : undefined,
+  }
+}
+
+/**
+ * Renders one user text part: a known DAG mode receipt is localized locally,
+ * anything else keeps the server text. Reads through `t`, so a reactive caller
+ * re-renders historical receipts after a language switch.
+ */
+export function renderUserTextPart(
+  part: { text: string; metadata?: Record<string, unknown> },
+  ctx: DagModeReceiptContext,
+): string {
+  const receipt = parseDagModeReceipt(part.metadata)
+  return receipt ? renderDagModeReceipt(receipt, t, ctx) : part.text
 }

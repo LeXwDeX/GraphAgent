@@ -47,6 +47,7 @@ import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
 import { AgentPanel } from "./panel/agent"
+import { ConfigPanel } from "./panel/config"
 import { HelpPanel } from "./panel/help"
 import { McpPanel } from "./panel/mcp"
 import { ModelPanel } from "./panel/model"
@@ -413,14 +414,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
     renderer.clearSelection()
   }
-  const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
-  const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(
-    kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary),
+  const [terminalTitleEnabled, setTerminalTitleEnabled] = kv.signal("terminal_title_enabled", true)
+  const [pasteSummaryEnabled, setPasteSummaryEnabled] = kv.signal(
+    "paste_summary_enabled",
+    !sync.data.config.experimental?.disable_paste_summary,
   )
 
   // Update terminal window title based on current route and session
   createEffect(() => {
-    if (!terminalTitleEnabled() || Flag.GRAPHAGENT_DISABLE_TERMINAL_TITLE) return
+    if (Flag.GRAPHAGENT_DISABLE_TERMINAL_TITLE) return
+    if (!terminalTitleEnabled()) {
+      renderer.setTerminalTitle("")
+      return
+    }
 
     if (route.data.type === "home") {
       renderer.setTerminalTitle(APP_TITLE)
@@ -540,6 +546,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (bottomZone.host.top()?.id === id) return
     bottomZone.host.push({ id, render })
   }
+  const [configTab, setConfigTab] = createSignal("interface")
+  const openConfig = (tab: string) => {
+    setConfigTab(tab)
+    openPanel("config", () => <ConfigPanel activeTab={configTab()} onTab={setConfigTab} />)
+  }
   const openWorkspaceList = () => openPanel("workspaces", () => <WorkspacesPanel />)
   const openModelList = (providerID?: string) =>
     openPanel("model", () => (
@@ -594,6 +605,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     "provider.connect": connectProvider,
     "graphagent.status": openStatus,
     "theme.switch": openThemeList,
+    "config.open": () => openConfig("interface"),
+    "config.permissions": () => openConfig("permissions"),
     "diff.open": openDiff,
     "help.show": openHelp,
     "app.exit": () => exit(),
@@ -850,12 +863,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       title: terminalTitleEnabled() ? "Disable terminal title" : "Enable terminal title",
       category: "System",
       run: () => {
-        setTerminalTitleEnabled((prev) => {
-          const next = !prev
-          kv.set("terminal_title_enabled", next)
-          if (!next) renderer.setTerminalTitle("")
-          return next
-        })
+        setTerminalTitleEnabled((prev) => !prev)
         dialog.clear()
       },
     },
@@ -892,11 +900,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       title: pasteSummaryEnabled() ? "Disable paste summary" : "Enable paste summary",
       category: "System",
       run: () => {
-        setPasteSummaryEnabled((prev) => {
-          const next = !prev
-          kv.set("paste_summary_enabled", next)
-          return next
-        })
+        setPasteSummaryEnabled((prev) => !prev)
         dialog.clear()
       },
     },
