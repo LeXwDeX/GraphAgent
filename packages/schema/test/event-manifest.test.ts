@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { Event, FileSystem, Integration, Permission, Project, Reference, Session, Workspace } from "../src"
+import {
+  Event,
+  FileSystem,
+  Integration,
+  Permission,
+  Project,
+  ProjectTrust,
+  Reference,
+  Session,
+  Workspace,
+} from "../src"
 import { DagEvent } from "../src/dag-event"
 import { EventManifest } from "../src/event-manifest"
 import { IdeEvent } from "../src/ide-event"
@@ -11,7 +21,7 @@ import { WorkspaceEvent } from "../src/workspace-event"
 describe("public event manifest", () => {
   test("owns the complete public event surface", () => {
     expect(EventManifest.ServerDefinitions.length).toBe(27)
-    expect(EventManifest.Definitions.length).toBe(63)
+    expect(EventManifest.Definitions.length).toBe(64)
     expect([...SessionV1.Event.Definitions]).toEqual([
       SessionV1.Event.Created,
       SessionV1.Event.Updated,
@@ -27,7 +37,7 @@ describe("public event manifest", () => {
       SessionV1.Event.Diff,
       SessionV1.Event.Error,
     ])
-    expect(EventManifest.Latest.size).toBe(63)
+    expect(EventManifest.Latest.size).toBe(64)
     expect(EventManifest.Durable.size).toBe(31)
   })
 
@@ -39,6 +49,7 @@ describe("public event manifest", () => {
     expect(EventManifest.Latest.get("session.next.moved")).toBe(SessionEvent.Moved)
     expect(EventManifest.Latest.get("todo.updated")).toBe(SessionTodo.Event.Updated)
     expect(EventManifest.Latest.get("project.updated")).toBe(Project.Event.Updated)
+    expect(EventManifest.Latest.get("project.trust.updated")).toBe(ProjectTrust.Event.Updated)
     expect(Project.Event.Definitions).toEqual([Project.Event.Updated])
     expect(FileSystem.Event.Definitions).toEqual([FileSystem.Event.Edited])
     expect(Integration.Event.Definitions).toEqual([Integration.Event.Updated, Integration.Event.ConnectionUpdated])

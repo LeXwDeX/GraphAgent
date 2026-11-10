@@ -1,4 +1,5 @@
 import { Project } from "@/project/project"
+import { TrustDecidePayloadSchema, TrustListSchema } from "@/project/trust/schema"
 import { ProjectV2 } from "@graphagent/core/project"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
@@ -55,6 +56,27 @@ export const ProjectApi = HttpApi.make("project")
             identifier: "project.update",
             summary: "Update project",
             description: "Update project properties such as name, icon, and commands.",
+          }),
+        ),
+        HttpApiEndpoint.get("trust", `${root}/trust`, {
+          success: described(TrustListSchema, "Project trust entries and their states"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "project.trust.list",
+            summary: "List project trust entries",
+            description:
+              "List the executable entries of the project layer with their fingerprint, trust state and risk notes.",
+          }),
+        ),
+        HttpApiEndpoint.post("trustDecide", `${root}/trust`, {
+          payload: TrustDecidePayloadSchema,
+          success: described(TrustListSchema, "Project trust entries after applying the decisions"),
+          error: [HttpApiError.BadRequest],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "project.trust.decide",
+            summary: "Decide project trust entries",
+            description: "Trust, decline or revoke individual project-layer entries and return the updated list.",
           }),
         ),
         HttpApiEndpoint.get("directories", `${root}/:projectID/directories`, {

@@ -244,6 +244,66 @@ const scenarios: Scenario[] = [
       body: { name: "Missing Project" },
     }))
     .json(404, object, "status"),
+  http.protected.get("/project/trust", "project.trust.list.empty").json(200, (body) => {
+    object(body)
+    check(Array.isArray(body.entries) && body.entries.length === 0, "a project without a layer should have no entries")
+  }),
+  http.protected
+    .get("/project/trust", "project.trust.list.entries")
+    .inProject({ git: true })
+    .seeded((ctx) => ctx.file(".agents/hooks.json", `{"Stop":[{"hooks":[{"type":"command","command":"./check.sh"}]}]}`))
+    .json(200, (body) => {
+      object(body)
+      const entries = body.entries
+      check(Array.isArray(entries) && entries.length === 1, "project trust should list the seeded hook")
+      const entry = entries[0]
+      check(isRecord(entry), "a trust entry should be an object")
+      if (!isRecord(entry)) return
+      check(entry.id === "hooks.json|hook|Stop||1", "trust entry should use the location id")
+      check(entry.state === "pending" && entry.change === "new", "a new entry should be pending")
+      check(entry.when === "Stop", "a hook entry should report its event as the trigger")
+      check(entry.command === "./check.sh", "trust entry should carry the full command")
+      check(
+        typeof entry.fp === "string" && /^[0-9a-f]{64}$/.test(entry.fp),
+        "trust entry should carry a sha256 fingerprint",
+      )
+      check(Array.isArray(entry.risks), "trust entry should carry risk notes")
+    }),
+  http.protected
+    .post("/project/trust", "project.trust.decide")
+    .mutating()
+    .inProject({ git: true })
+    .seeded((ctx) => ctx.file(".agents/hooks.json", `{"Stop":[{"hooks":[{"type":"command","command":"./check.sh"}]}]}`))
+    .at((ctx) => ({
+      path: "/project/trust",
+      headers: ctx.headers(),
+      body: { decisions: [{ id: "hooks.json|hook|Stop||1", state: "trusted" }] },
+    }))
+    .jsonEffect(200, (body, ctx) =>
+      Effect.gen(function* () {
+        object(body)
+        const entries = body.entries
+        check(Array.isArray(entries) && entries.length === 1, "decide should return the updated list")
+        const entry = entries[0]
+        check(isRecord(entry) && entry.state === "trusted", "decide should mark the entry trusted")
+        const followup = yield* ctx.request({ method: "GET", path: "/project/trust", headers: ctx.headers() })
+        check(followup.status === 200, `follow-up trust list should succeed: ${followup.text}`)
+        const next = followup.body
+        check(isRecord(next) && Array.isArray(next.entries), "follow-up trust list should return entries")
+        if (!isRecord(next) || !Array.isArray(next.entries)) return
+        const persisted = next.entries[0]
+        check(isRecord(persisted) && persisted.state === "trusted", "decide should persist the trust decision")
+      }),
+    ),
+  http.protected
+    .post("/project/trust", "project.trust.decide.unknown")
+    .inProject({ git: true })
+    .at((ctx) => ({
+      path: "/project/trust",
+      headers: ctx.headers(),
+      body: { decisions: [{ id: "hooks.json|hook|Stop||1", state: "trusted" }] },
+    }))
+    .status(400),
   http.protected
     .post("/project/git/init", "project.initGit")
     .mutating()

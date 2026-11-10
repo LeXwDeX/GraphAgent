@@ -1,8 +1,10 @@
 import * as InstanceState from "@/effect/instance-state"
 import { Project } from "@/project/project"
+import { ProjectTrust } from "@/project/trust/service"
+import type { TrustDecidePayload } from "@/project/trust/schema"
 import { ProjectV2 } from "@graphagent/core/project"
 import { Effect } from "effect"
-import { HttpApiBuilder } from "effect/http-api"
+import { HttpApiBuilder, HttpApiError } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { ProjectNotFoundError } from "../errors"
 import { AfterResponse } from "../lifecycle"
@@ -11,6 +13,7 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
   Effect.gen(function* () {
     const svc = yield* Project.Service
     const project = yield* ProjectV2.Service
+    const trust = yield* ProjectTrust.Service
 
     const list = Effect.fn("ProjectHttpApi.list")(function* () {
       return yield* svc.list()
@@ -56,11 +59,26 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
       project.directories({ projectID: ctx.params.projectID }),
     )
 
+    const trustList = Effect.fn("ProjectHttpApi.trustList")(function* () {
+      return { entries: yield* trust.list() }
+    })
+
+    const trustDecide = Effect.fn("ProjectHttpApi.trustDecide")(function* (ctx: { payload: TrustDecidePayload }) {
+      const known = new Set((yield* trust.list()).map((entry) => entry.id))
+      if (ctx.payload.decisions.some((decision) => !known.has(decision.id))) {
+        return yield* new HttpApiError.BadRequest({})
+      }
+      yield* trust.decide(ctx.payload.decisions)
+      return { entries: yield* trust.list() }
+    })
+
     return handlers
       .handle("list", list)
       .handle("current", current)
       .handle("initGit", initGit)
       .handle("update", update)
+      .handle("trust", trustList)
+      .handle("trustDecide", trustDecide)
       .handle("directories", directories)
   }),
 )

@@ -10,7 +10,7 @@ describe("public event manifest", () => {
     expect(EventManifest.Definitions).toBe(SchemaEventManifest.Definitions)
     expect(EventManifest.Latest).toBe(SchemaEventManifest.Latest)
     expect(EventManifest.Durable).toBe(SchemaEventManifest.Durable)
-    expect(EventManifest.Latest.size).toBe(63)
+    expect(EventManifest.Latest.size).toBe(64)
     expect(EventManifest.Latest.get("session.next.moved")).toBe(SessionEvent.Moved)
     expect(EventManifest.Latest.get("todo.updated")).toBe(Todo.Event.Updated)
     expect(EventManifest.Latest.get("goal.updated")).toBe(SessionGoal.Event.Updated)

@@ -50,6 +50,7 @@ export type Event =
   | EventSessionHookTerminal
   | EventSessionHookMessage
   | EventProjectUpdated
+  | EventProjectTrustUpdated
   | EventSessionStatus
   | EventSessionIdle
   | EventGoalUpdated
@@ -866,6 +867,58 @@ export type QuestionRequest = {
   questions: Array<QuestionInfo>
   tool?: QuestionTool
   expiresAt?: number
+}
+
+export type ProjectTrustEntry = {
+  id: string
+  category: "hook" | "mcp" | "skill-hook" | "agent-hook" | "command-shell" | "formatter" | "lsp"
+  fp: string
+  state: ProjectTrustState
+  change?: ProjectTrustChange
+  previous?: string
+  source: ProjectTrustSource
+  when: string
+  command: string
+  risks: Array<ProjectTrustRisk>
+}
+
+export type ProjectTrustRisk = {
+  code:
+    | "download-and-execute"
+    | "send-local-file"
+    | "delete-outside-project"
+    | "startup-persistence"
+    | "package-runner"
+    | "reads-environment"
+    | "external-url"
+    | "remote-mcp"
+    | "sudo"
+  level: ProjectTrustRiskLevel
+  detail?: string
+}
+
+export type ProjectTrustRiskLevel = "high" | "caution"
+
+export type ProjectTrustSource = {
+  file: string
+  line?: number | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type ProjectTrustChange = "new" | "modified"
+
+export type ProjectTrustState = "trusted" | "declined" | "pending"
+
+export type ProjectTrustDecideInput = {
+  decisions: Array<ProjectTrustDecision>
+}
+
+export type ProjectTrustDecision = {
+  id: string
+  state: "trusted" | "declined" | "revoked"
+}
+
+export type ProjectTrustList = {
+  entries: Array<ProjectTrustEntry>
 }
 
 export type Project = {
@@ -1857,6 +1910,16 @@ export type EventSessionStatus = {
   properties: {
     sessionID: string
     status: SessionStatus
+  }
+}
+
+export type EventProjectTrustUpdated = {
+  id: string
+  type: "project.trust.updated"
+  properties: {
+    projectID: string
+    entries: Array<string>
+    removed: Array<string>
   }
 }
 
@@ -3779,6 +3842,56 @@ export type ProjectUpdateResponses = {
 }
 
 export type ProjectUpdateResponse = ProjectUpdateResponses[keyof ProjectUpdateResponses]
+
+export type ProjectTrustListData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/project/trust"
+}
+
+export type ProjectTrustListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProjectTrustListError = ProjectTrustListErrors[keyof ProjectTrustListErrors]
+
+export type ProjectTrustListResponses = {
+  /**
+   * Project trust entries and their states
+   */
+  200: ProjectTrustList
+}
+
+export type ProjectTrustListResponse = ProjectTrustListResponses[keyof ProjectTrustListResponses]
+
+export type ProjectTrustDecideData = {
+  body?: ProjectTrustDecideInput
+  path?: never
+  query?: never
+  url: "/project/trust"
+}
+
+export type ProjectTrustDecideErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type ProjectTrustDecideError = ProjectTrustDecideErrors[keyof ProjectTrustDecideErrors]
+
+export type ProjectTrustDecideResponses = {
+  /**
+   * Project trust entries after applying the decisions
+   */
+  200: ProjectTrustList
+}
+
+export type ProjectTrustDecideResponse = ProjectTrustDecideResponses[keyof ProjectTrustDecideResponses]
 
 export type ProjectDirectoriesData = {
   body?: never
