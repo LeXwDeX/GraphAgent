@@ -30,6 +30,7 @@ import { Memory } from "@/memory/memory"
 import { Permission } from "@/permission"
 import { InstanceStore } from "@/project/instance-store"
 import { Project } from "@/project/project"
+import { ProjectTrust } from "@/project/trust/service"
 import { Vcs } from "@/project/vcs"
 import { ProviderAuth } from "@/provider/auth"
 import { Provider } from "@/provider/provider"
@@ -40,6 +41,7 @@ import { LLM } from "@/session/llm"
 import { SessionProcessor } from "@/session/processor"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
+import { SessionBtw } from "@/session/btw"
 import { SessionRunState } from "@/session/run-state"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
@@ -192,6 +194,7 @@ export const app = LayerNode.group([
   SessionProcessor.node,
   SessionCompaction.node,
   SessionRevert.node,
+  SessionBtw.node,
   SessionSummary.node,
   SessionPrompt.node,
   Instruction.node,
@@ -204,6 +207,7 @@ export const app = LayerNode.group([
   ToolRegistry.node,
   Format.node,
   Project.node,
+  ProjectTrust.node,
   Vcs.node,
   Workspace.node,
   Worktree.node,

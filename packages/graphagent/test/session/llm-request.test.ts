@@ -10,7 +10,10 @@ import { DEFAULT_WRITING_STYLE } from "@graphagent/core/system-context/writing-s
 import { SessionID } from "../../src/session/schema"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Provider } from "../../src/provider/provider"
+import { isInternalOneShot } from "../../src/session/llm/internal-one-shot"
 import { prepare } from "../../src/session/llm/request"
+import type { ProviderAdapters } from "../../src/provider/adapter/registry"
+import type { ChatInput, ChatParams } from "../../src/provider/adapter/types"
 import { testEffect } from "../lib/effect"
 import { jsonSchema, streamText, tool, wrapLanguageModel, type ModelMessage } from "ai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
@@ -257,6 +260,73 @@ describe("output token override", () => {
         },
       })
       expect(prepared.params.maxOutputTokens).toBe(64_000)
+    }),
+  )
+})
+
+const adapter = (chatParams: (input: ChatInput, output: ChatParams) => Effect.Effect<ChatParams>) =>
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- test stub implements only the hooks prepare calls.
+  ({
+    chatParams,
+    chatHeaders: (_input: ChatInput, output: { headers: Record<string, string> }) => Effect.succeed(output.headers),
+  }) as unknown as ProviderAdapters.Interface
+
+describe("request output cap after the adapter hook", () => {
+  it.instance("applies the cap as a minimum even when an adapter raises the limit", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        maxOutputTokens: 2_000,
+        adapters: adapter((_hookInput, output) => Effect.succeed({ ...output, maxOutputTokens: 9_000 })),
+      })
+      expect(prepared.params.maxOutputTokens).toBe(2_000)
+    }),
+  )
+
+  it.instance("uses the cap when an adapter clears the limit", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        maxOutputTokens: 2_000,
+        adapters: adapter((_hookInput, output) => Effect.succeed({ ...output, maxOutputTokens: undefined })),
+      })
+      expect(prepared.params.maxOutputTokens).toBe(2_000)
+    }),
+  )
+
+  it.instance("keeps an adapter limit below the cap", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        maxOutputTokens: 2_000,
+        adapters: adapter((_hookInput, output) => Effect.succeed({ ...output, maxOutputTokens: 1_000 })),
+      })
+      expect(prepared.params.maxOutputTokens).toBe(1_000)
+    }),
+  )
+
+  it.instance("does not touch the adapter limit when no cap is requested", () =>
+    Effect.gen(function* () {
+      const input = yield* request()
+      const prepared = yield* prepare({
+        ...input,
+        adapters: adapter((_hookInput, output) => Effect.succeed({ ...output, maxOutputTokens: 9_000 })),
+      })
+      expect(prepared.params.maxOutputTokens).toBe(9_000)
+    }),
+  )
+})
+
+describe("internal one-shot agents", () => {
+  it.instance("routes title and btw requests away from conversation transports", () =>
+    Effect.sync(() => {
+      expect(isInternalOneShot("title")).toBe(true)
+      expect(isInternalOneShot("btw")).toBe(true)
+      expect(isInternalOneShot("build")).toBe(false)
+      expect(isInternalOneShot("plan")).toBe(false)
     }),
   )
 })

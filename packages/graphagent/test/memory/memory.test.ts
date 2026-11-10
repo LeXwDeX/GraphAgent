@@ -7,6 +7,7 @@ import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect"
 import { logLines } from "effect/testing/TestConsole"
+import * as TestClock from "effect/testing/TestClock"
 import fs from "node:fs/promises"
 import path from "node:path"
 import { Config } from "@/config/config"
@@ -30,7 +31,7 @@ import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { MCP } from "@/mcp"
 import { Skill } from "@/skill"
 import { SystemPrompt } from "@/session/system"
-import { tmpdirScoped } from "../fixture/fixture"
+import { tmpdirScoped, withTmpdirInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { ProviderTest } from "../fake/provider"
 
@@ -53,6 +54,11 @@ let writtenGlobalConfig: MemorySchema.Config | undefined
 let writtenProjectConfig: MemorySchema.Config | undefined
 const emptyConfigLayer = Layer.mock(Config.Service, {
   get: () => Effect.succeed({}),
+})
+
+/** Let the TestClock runtime run the work it was just advanced past. */
+const drain = Effect.gen(function* () {
+  for (let i = 0; i < 15; i++) yield* Effect.yieldNow
 })
 let loadedProjectDirectory: string | undefined
 
@@ -408,6 +414,7 @@ function recallFixture() {
       state.parkReads = undefined
     },
     it: testEffect(layer),
+    clockIt: testEffect(layer),
     systemIt: testEffect(systemLayer),
   }
 }
@@ -1124,6 +1131,67 @@ describe("memory turn-scoped retrieval", () => {
         expect(yield* memory.context(sessionID)).toEqual([])
       }),
     { git: true },
+  )
+
+  recall.clockIt.effect(
+    "bounds the first-turn matcher at the select deadline and carries its late result to the next request",
+    withTmpdirInstance({ git: true })(
+      Effect.gen(function* () {
+        recall.reset()
+        const started = yield* Deferred.make<void>()
+        const cancelled = yield* Deferred.make<void>()
+        const released = yield* Deferred.make<void>()
+        recall.state.matcher = () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined)
+            // HS12 acceptance: a 10s matcher must not hold the request past
+            // the default 3000ms select deadline.
+            yield* Effect.sleep("10 seconds")
+            yield* Deferred.succeed(released, undefined)
+            return { topic_ids: [recall.state.topics[0]?.id ?? ""] }
+          }).pipe(Effect.onInterrupt(() => Deferred.succeed(cancelled, undefined)))
+        const memory = yield* Memory.Service
+        const sessionID = SessionID.make("ses_memory_select_deadline")
+        const messages = [user(MessageID.ascending(), sessionID, "继续之前确认的架构边界")]
+
+        const pending = yield* memory.prepare({ sessionID, messages }).pipe(Effect.forkScoped)
+        yield* Deferred.await(started)
+        yield* TestClock.adjust("3500 millis")
+        yield* drain
+        // The request was released by the deadline while the select keeps running.
+        yield* Fiber.join(pending)
+        // The bounded request proceeds without memory while the select runs on.
+        expect(yield* memory.context(sessionID)).toEqual([])
+        expect(recall.state.reads).toBe(1)
+
+        // A second request on the same session neither starts another select
+        // nor waits for the one already in flight.
+        yield* memory.prepare({ sessionID, messages })
+        expect(recall.state.queries).toEqual(["继续之前确认的架构边界"])
+        expect(recall.state.reads).toBe(1)
+
+        // The background select completes at 10s and caches its result for
+        // the next request of the same turn.
+        yield* TestClock.adjust("7 seconds")
+        yield* drain
+        expect(yield* Deferred.isDone(cancelled)).toBe(false)
+        expect(yield* Deferred.isDone(released)).toBe(true)
+        // The resumed fiber finishes its fenced markMatched commit on real
+        // filesystem locks and then writes the turn cache. Wait for the
+        // observable cache value, not the store counter: a test that stops at
+        // the counter races the fiber's cache write. Real sleeps advance that
+        // I/O without touching the TestClock.
+        const late = yield* Effect.gen(function* () {
+          for (let attempt = 0; attempt < 150; attempt++) {
+            const rendered = yield* memory.context(sessionID)
+            if (rendered.length > 0) return rendered
+            yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)))
+          }
+          throw new Error("background MEMORY select did not reach the turn cache")
+        })
+        expect(late.join("\n")).toContain("architecture-boundaries")
+      }),
+    ),
   )
 
   recall.it.instance(

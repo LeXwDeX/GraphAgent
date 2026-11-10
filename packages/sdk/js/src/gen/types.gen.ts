@@ -50,6 +50,7 @@ export type Event =
   | EventSessionHookTerminal
   | EventSessionHookMessage
   | EventProjectUpdated
+  | EventProjectTrustUpdated
   | EventSessionStatus
   | EventSessionIdle
   | EventGoalUpdated
@@ -868,6 +869,58 @@ export type QuestionRequest = {
   expiresAt?: number
 }
 
+export type ProjectTrustEntry = {
+  id: string
+  category: "hook" | "mcp" | "skill-hook" | "agent-hook" | "command-shell" | "formatter" | "lsp"
+  fp: string
+  state: ProjectTrustState
+  change?: ProjectTrustChange
+  previous?: string
+  source: ProjectTrustSource
+  when: string
+  command: string
+  risks: Array<ProjectTrustRisk>
+}
+
+export type ProjectTrustRisk = {
+  code:
+    | "download-and-execute"
+    | "send-local-file"
+    | "delete-outside-project"
+    | "startup-persistence"
+    | "package-runner"
+    | "reads-environment"
+    | "external-url"
+    | "remote-mcp"
+    | "sudo"
+  level: ProjectTrustRiskLevel
+  detail?: string
+}
+
+export type ProjectTrustRiskLevel = "high" | "caution"
+
+export type ProjectTrustSource = {
+  file: string
+  line?: number | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type ProjectTrustChange = "new" | "modified"
+
+export type ProjectTrustState = "trusted" | "declined" | "pending"
+
+export type ProjectTrustDecideInput = {
+  decisions: Array<ProjectTrustDecision>
+}
+
+export type ProjectTrustDecision = {
+  id: string
+  state: "trusted" | "declined" | "revoked"
+}
+
+export type ProjectTrustList = {
+  entries: Array<ProjectTrustEntry>
+}
+
 export type Project = {
   id: string
   worktree: string
@@ -1419,6 +1472,29 @@ export type ApiAuth = {
   }
 }
 
+export type BtwBusyError = {
+  name: "BtwBusy"
+  data: {
+    sessionID: string
+    message: string
+  }
+}
+
+export type BtwCancelledError = {
+  name: "BtwCancelled"
+  data: {
+    sessionID: string
+    message: string
+  }
+}
+
+export type BtwTimeoutError = {
+  name: "BtwTimeout"
+  data: {
+    message: string
+  }
+}
+
 export type ConfigMcpLocal = {
   type: "local"
   command: Array<string>
@@ -1664,6 +1740,15 @@ export type SessionBusyError = {
   }
 }
 
+export type UpstreamError = {
+  name: "UpstreamError"
+  data: {
+    message: string
+    service?: string
+    status?: number | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
 export type VcsApplyError = {
   name: "VcsApplyError"
   data: {
@@ -1857,6 +1942,16 @@ export type EventSessionStatus = {
   properties: {
     sessionID: string
     status: SessionStatus
+  }
+}
+
+export type EventProjectTrustUpdated = {
+  id: string
+  type: "project.trust.updated"
+  properties: {
+    projectID: string
+    entries: Array<string>
+    removed: Array<string>
   }
 }
 
@@ -3780,6 +3875,56 @@ export type ProjectUpdateResponses = {
 
 export type ProjectUpdateResponse = ProjectUpdateResponses[keyof ProjectUpdateResponses]
 
+export type ProjectTrustListData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/project/trust"
+}
+
+export type ProjectTrustListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProjectTrustListError = ProjectTrustListErrors[keyof ProjectTrustListErrors]
+
+export type ProjectTrustListResponses = {
+  /**
+   * Project trust entries and their states
+   */
+  200: ProjectTrustList
+}
+
+export type ProjectTrustListResponse = ProjectTrustListResponses[keyof ProjectTrustListResponses]
+
+export type ProjectTrustDecideData = {
+  body?: ProjectTrustDecideInput
+  path?: never
+  query?: never
+  url: "/project/trust"
+}
+
+export type ProjectTrustDecideErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type ProjectTrustDecideError = ProjectTrustDecideErrors[keyof ProjectTrustDecideErrors]
+
+export type ProjectTrustDecideResponses = {
+  /**
+   * Project trust entries after applying the decisions
+   */
+  200: ProjectTrustList
+}
+
+export type ProjectTrustDecideResponse = ProjectTrustDecideResponses[keyof ProjectTrustDecideResponses]
+
 export type ProjectDirectoriesData = {
   body?: never
   path: {
@@ -5037,6 +5182,106 @@ export type SessionMessageResponses = {
 }
 
 export type SessionMessageResponse = SessionMessageResponses[keyof SessionMessageResponses]
+
+export type SessionBtwData = {
+  body?: {
+    id?: string
+    question: string
+    model?: {
+      providerID: string
+      modelID: string
+    }
+  }
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/btw"
+}
+
+export type SessionBtwErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+  /**
+   * BtwBusyError | BtwCancelledError
+   */
+  409: BtwBusyError | BtwCancelledError
+  /**
+   * UpstreamError
+   */
+  502: UpstreamError
+  /**
+   * BtwTimeoutError
+   */
+  504: BtwTimeoutError
+}
+
+export type SessionBtwError = SessionBtwErrors[keyof SessionBtwErrors]
+
+export type SessionBtwResponses = {
+  /**
+   * Side-question answer
+   */
+  200: {
+    id: string
+    answer: string
+    model: {
+      providerID: string
+      modelID: string
+    }
+    usage?: {
+      inputTokens: number | "Infinity" | "-Infinity" | "NaN"
+      outputTokens: number | "Infinity" | "-Infinity" | "NaN"
+      cacheReadTokens?: number | "Infinity" | "-Infinity" | "NaN"
+    }
+    context: {
+      messages: number | "Infinity" | "-Infinity" | "NaN"
+      estimatedTokens: number | "Infinity" | "-Infinity" | "NaN"
+      truncated: boolean
+      inFlightDropped: boolean
+    }
+  }
+}
+
+export type SessionBtwResponse = SessionBtwResponses[keyof SessionBtwResponses]
+
+export type SessionBtwCancelData = {
+  body?: never
+  path: {
+    sessionID: string
+    btwID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/btw/{btwID}"
+}
+
+export type SessionBtwCancelErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionBtwCancelError = SessionBtwCancelErrors[keyof SessionBtwCancelErrors]
+
+export type SessionBtwCancelResponses = {
+  /**
+   * Side question cancelled
+   */
+  204: void
+}
+
+export type SessionBtwCancelResponse = SessionBtwCancelResponses[keyof SessionBtwCancelResponses]
 
 export type SessionForkData = {
   body?: {

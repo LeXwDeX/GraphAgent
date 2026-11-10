@@ -33,6 +33,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionProcessor } from "@/session/processor"
 import { SessionCompaction } from "@/session/compaction"
 import { SessionRevert } from "@/session/revert"
+import { SessionBtw } from "@/session/btw"
 import { SessionSummary } from "@/session/summary"
 import { SessionPrompt } from "@/session/prompt"
 import { Instruction } from "@/session/instruction"
@@ -46,6 +47,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { Format } from "@/format"
 import { InstanceLayer } from "@/project/instance-layer"
 import { Project } from "@/project/project"
+import { ProjectTrust } from "@/project/trust/service"
 import { Vcs } from "@/project/vcs"
 import { Workspace } from "@/control-plane/workspace"
 import { Worktree } from "@/worktree"
@@ -114,6 +116,7 @@ const BaseAppLayer = Layer.mergeAll(
     SessionProcessor.defaultLayer,
     SessionCompaction.defaultLayer,
     SessionRevert.defaultLayer,
+    SessionBtw.defaultLayer,
     SessionSummary.defaultLayer,
     SessionPrompt.defaultLayer,
     HookRewakeLive.liveLayer,
@@ -127,6 +130,7 @@ const BaseAppLayer = Layer.mergeAll(
     ToolRegistry.defaultLayer,
     Format.defaultLayer,
     Project.defaultLayer,
+    ProjectTrust.defaultLayer,
     Vcs.defaultLayer,
     Workspace.defaultLayer,
     Worktree.appLayer,

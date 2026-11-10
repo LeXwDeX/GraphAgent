@@ -49,10 +49,12 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
 
   // Definition-stage rewrites (availability, permissions, descriptions, schemas) happen in
   // the registry; this layer only wraps the resulting entries for execution.
+  const turnID = input.messages.findLast((message) => message.info.role === "user")?.info.id
   const entries = input.directTool
     ? yield* registry.resolve({
         directTool: input.directTool,
         ...(input.model ? { model: input.model } : {}),
+        ...(turnID ? { turnID } : {}),
         agent: input.agent,
         session: input.session,
         user: input.user,
@@ -60,6 +62,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
       })
     : yield* registry.resolve({
         model: input.model,
+        ...(turnID ? { turnID } : {}),
         agent: input.agent,
         session: input.session,
         user: input.user,

@@ -149,8 +149,8 @@ for (const providerID of ["relay", "openai"] as const) {
               const info = yield* provider.getProvider(ProviderV2.ID.make(providerID))
               const session = yield* Session.use.create({})
               const flags = yield* RuntimeFlags.Service
-              for (const title of [false, false, true]) {
-                const agent = title ? "title" : "build"
+              for (const agent of ["build", "build", "title", "btw"] as const) {
+                const internal = agent === "title" || agent === "btw"
                 const input = { model, provider: info, sessionID: session.id, agent }
                 const { headers } = yield* LLMRequestPrep.prepare({
                   ...input,
@@ -170,7 +170,7 @@ for (const providerID of ["relay", "openai"] as const) {
                   system: [],
                   tools: {},
                 })
-                expect(new Headers(headers).get(TITLE_HEADER)).toBe(configured === true && title ? "true" : null)
+                expect(new Headers(headers).get(TITLE_HEADER)).toBe(configured === true && internal ? "true" : null)
                 if (providerID === "relay") {
                   const params = yield* adapters.chatParams(input as never, {
                     temperature: undefined,
@@ -192,7 +192,7 @@ for (const providerID of ["relay", "openai"] as const) {
                 expect(yield* Effect.promise(() => result.text)).toBe("ok")
               }
               expect(upgrades).toBe(configured === true ? 1 : 0)
-              expect(posts).toBe(configured === true ? 1 : 3)
+              expect(posts).toBe(configured === true ? 2 : 4)
               if (configured !== true) return
 
               yield* Session.use.remove(session.id)

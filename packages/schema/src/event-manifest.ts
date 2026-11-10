@@ -16,6 +16,7 @@ import { Permission } from "./permission"
 import { PermissionV1 } from "./permission-v1"
 import { Project } from "./project"
 import { ProjectDirectories } from "./project-directories"
+import { ProjectTrust } from "./project-trust"
 import { Question } from "./question"
 import { QuestionV1 } from "./question-v1"
 import { Reference } from "./reference"
@@ -71,6 +72,7 @@ export const Definitions = Event.inventory(
   ...McpEvent.Definitions,
   ...LegacyEvent.Definitions,
   ...Project.Event.Definitions,
+  ...ProjectTrust.Event.Definitions,
   ...SessionStatusEvent.Definitions,
   ...SessionGoal.Event.Definitions,
   ...QuestionV1.Event.Definitions,
