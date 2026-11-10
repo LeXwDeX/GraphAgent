@@ -180,6 +180,14 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDefinition[] = [
     slash: { name: "mcp", args: "none" },
   },
   {
+    id: "trust.open",
+    titleKey: "command.trust.open.title",
+    descriptionKey: "command.trust.open.description",
+    category: "config",
+    scope: HS,
+    slash: { name: "trust", args: "none" },
+  },
+  {
     id: "prompt.skills",
     titleKey: "command.prompt.skills.title",
     descriptionKey: "command.prompt.skills.description",

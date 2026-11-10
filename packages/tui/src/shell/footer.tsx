@@ -49,6 +49,8 @@ export type FooterMeta = {
   directory?: string
   /** Connected MCP server count and whether any server failed. */
   mcp?: { count: number; error: boolean }
+  /** Pending project trust entries (#1040); rendered as a warning before the meta row. */
+  trust?: number
   /** Application version, shown on home. */
   version?: string
 }
@@ -96,9 +98,16 @@ export function Footer(props: FooterProps) {
     const leftWidth = agentWidth + (agent && shownAction ? GAP : 0) + (shownAction ? cellWidth(shownAction, aw) : 0)
 
     // The shared right slot replaces idle hints and leaves no room for meta.
-    if (props.right) return { agent, action: shownAction, hints: [] as FooterHint[], meta: "", metaGap: 0, spacer: 0 }
+    if (props.right)
+      return { agent, action: shownAction, trust: "", trustGap: 0, hints: [] as FooterHint[], meta: "", metaGap: 0, spacer: 0 }
 
-    const rightBudget = inner - leftWidth - (leftWidth > 0 ? GAP : 0)
+    const trustText = props.meta?.trust ? t("shell.footer.trust", { count: props.meta.trust }) : ""
+    const trustBudget = inner - leftWidth - (leftWidth > 0 ? GAP : 0)
+    const trust = trustText && trustBudget > 0 ? truncateCells(trustText, trustBudget, aw) : ""
+    const trustWidth = cellWidth(trust, aw)
+    const trustGap = leftWidth > 0 && trust ? GAP : 0
+
+    const rightBudget = inner - leftWidth - trustGap - trustWidth - (leftWidth + trustGap + trustWidth > 0 ? GAP : 0)
 
     const selected: FooterHint[] = []
     let joined = ""
@@ -116,23 +125,28 @@ export function Footer(props: FooterProps) {
       metaParts.push(`${props.meta.mcp.error ? "⊙!" : "⊙"} ${props.meta.mcp.count} MCP`)
     if (props.meta?.version) metaParts.push(props.meta.version)
     const metaText = metaParts.join(META_SEPARATOR)
+    const metaGapBase = leftWidth > 0 || trust ? GAP : 0
     const metaBudget =
       inner -
       leftWidth -
-      (leftWidth > 0 && metaText ? GAP : 0) -
+      trustGap -
+      trustWidth -
+      (metaText && metaGapBase ? GAP : 0) -
       hintsWidth -
-      (hintsWidth > 0 && (leftWidth > 0 || metaText) ? GAP : 0)
+      (hintsWidth > 0 && (leftWidth > 0 || trust || metaText) ? GAP : 0)
     const meta = metaText && metaBudget > 0 ? truncateCells(metaText, metaBudget, aw) : ""
-    const metaGap = leftWidth > 0 && meta ? GAP : 0
+    const metaGap = meta && metaGapBase ? GAP : 0
     const metaWidth = cellWidth(meta, aw)
     const spacer = Math.max(
-      leftWidth + metaGap + metaWidth > 0 && hintsWidth > 0 ? GAP : 0,
-      inner - leftWidth - metaGap - metaWidth - hintsWidth,
+      leftWidth + trustGap + trustWidth + metaGap + metaWidth > 0 && hintsWidth > 0 ? GAP : 0,
+      inner - leftWidth - trustGap - trustWidth - metaGap - metaWidth - hintsWidth,
     )
 
     return {
       agent,
       action: shownAction,
+      trust,
+      trustGap,
       hints: selected,
       meta,
       metaGap,
@@ -155,6 +169,13 @@ export function Footer(props: FooterProps) {
               {layout().action}
             </text>
           </Show>
+        </box>
+      </Show>
+      <Show when={layout().trust}>
+        <box paddingLeft={layout().trustGap}>
+          <text fg={theme.warning} wrapMode="none">
+            {layout().trust}
+          </text>
         </box>
       </Show>
       <Show when={layout().meta}>

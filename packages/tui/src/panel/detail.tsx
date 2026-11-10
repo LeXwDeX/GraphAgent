@@ -11,8 +11,28 @@ import { EscapePriority, useBindings } from "../keymap"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
+/**
+ * A checked lead owns no state: the caller passes the current value back and
+ * receives `onToggle` when the selected row is toggled.
+ */
+export type DetailCheckLead = { kind: "check"; checked: boolean; disabled?: boolean }
+export type DetailLead = DetailCheckLead | JSX.Element
+
+function checkLead(lead: DetailLead | undefined): DetailCheckLead | undefined {
+  if (!lead || typeof lead !== "object" || !("kind" in lead) || lead.kind !== "check") return undefined
+  return lead
+}
+
+/** The rendered (non-check) lead, if any. Check leads hold data instead. */
+function elementLead(lead: DetailLead | undefined): JSX.Element | undefined {
+  if (lead === undefined || checkLead(lead)) return undefined
+  return lead as JSX.Element
+}
+
 export interface DetailRow<T = unknown> {
   id: string
+  /** Rendered before the aligned columns; a check lead toggles through `onToggle`. */
+  lead?: DetailLead
   /** Aligned columns; strings are padded to the widest cell in the column. */
   cells: readonly (string | JSX.Element)[]
   value?: T
@@ -36,6 +56,8 @@ export interface DetailPanelProps<T = unknown> {
   selected?: string
   onSelect?(row: DetailRow<T>): void
   onActivate?(row: DetailRow<T>): void
+  /** Space on the selected row; check leads flip their caller-held state here. */
+  onToggle?(row: DetailRow<T>): void
   /** Scrollable text or rich content, for example a /btw answer. */
   body?: string | JSX.Element
   /** Single-line input, for example an API key or OAuth code. */
@@ -113,6 +135,14 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
     props.onActivate?.(row)
   }
 
+  function toggle() {
+    const row = selectedRow()
+    if (!row || !props.onToggle) return
+    const lead = checkLead(row.lead)
+    if (!lead || lead.disabled) return
+    props.onToggle(row)
+  }
+
   function submitInput() {
     if (!props.input) return
     if (!input || input.isDestroyed) return
@@ -133,6 +163,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
       { name: "panel.home", title: "First row", category: "Panel", run: () => move(-selectableRows().length) },
       { name: "panel.end", title: "Last row", category: "Panel", run: () => move(selectableRows().length) },
       { name: "panel.submit", title: "Activate row", category: "Panel", run: activate },
+      { name: "panel.toggle", title: "Toggle row", category: "Panel", run: toggle },
       { name: "panel.tab.next", title: "Next tab", category: "Panel", run: () => cycleTab(1) },
       { name: "panel.tab.previous", title: "Previous tab", category: "Panel", run: () => cycleTab(-1) },
     ],
@@ -144,6 +175,7 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
       { key: "home", cmd: "panel.home", desc: "First row", group: "Panel" },
       { key: "end", cmd: "panel.end", desc: "Last row", group: "Panel" },
       { key: "return", cmd: "panel.submit", desc: "Activate row", group: "Panel" },
+      { key: "space", cmd: "panel.toggle", desc: "Toggle row", group: "Panel" },
       { key: "left", cmd: "panel.tab.previous", desc: "Previous tab", group: "Panel" },
       { key: "right", cmd: "panel.tab.next", desc: "Next tab", group: "Panel" },
     ],
@@ -192,6 +224,9 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
         result.push({ key: "panel.next", label: t("panel.hint.next") })
       }
       if (tabs().length > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
+      if (props.onToggle && checkLead(selectedRow()?.lead)) {
+        result.push({ key: "panel.toggle", label: t("panel.hint.toggle") })
+      }
       if (props.onActivate) result.push({ key: "panel.submit", label: props.activateLabel ?? t("panel.hint.activate") })
     }
     result.push(...props.hints)
@@ -238,12 +273,44 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                 onMouseDown={() => select(row)}
                 onMouseUp={() => {
                   if (!selectable) return
+                  // A row with a lead owns a separate action; a click there must
+                  // not also submit the row.
+                  if (row.lead !== undefined) return
                   props.onActivate?.(row)
                 }}
               >
                 <text flexShrink={0} fg={isSelected() ? theme.primary : theme.textDim} wrapMode="none">
                   {isSelected() && selectable ? "› " : "  "}
                 </text>
+                <Show
+                  when={checkLead(row.lead)}
+                  fallback={
+                    elementLead(row.lead) ? (
+                      <box flexShrink={0} flexDirection="row">
+                        {elementLead(row.lead)}
+                      </box>
+                    ) : undefined
+                  }
+                >
+                  {(lead) => (
+                    <box
+                      flexShrink={0}
+                      flexDirection="row"
+                      onMouseDown={() => {
+                        select(row)
+                        if (lead().disabled) return
+                        props.onToggle?.(row)
+                      }}
+                    >
+                      <text
+                        wrapMode="none"
+                        fg={lead().disabled ? theme.textDim : lead().checked ? theme.success : theme.textMuted}
+                      >
+                        {lead().checked ? "[x] " : "[ ] "}
+                      </text>
+                    </box>
+                  )}
+                </Show>
                 <For each={row.cells}>
                   {(cell, index) => (
                     <Show
