@@ -18,6 +18,9 @@ import { McpOAuthProvider, OAUTH_CALLBACK_PATH } from "./oauth-provider"
 import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { ProjectTrust } from "@/project/trust/service"
+import { mcpEntries } from "@/project/trust/entries"
+import { ProjectTrust as ProjectTrustEvent } from "@graphagent/schema/project-trust"
 import { TuiEvent } from "@/server/tui-event"
 import { registerElicitationHandler } from "./elicitation"
 import open from "open"
@@ -161,6 +164,11 @@ interface State {
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+  /**
+   * Servers the user explicitly disconnected. A later trust decision that
+   * grants access must not override that choice and reconnect them.
+   */
+  manualDisabled: Set<string>
 }
 
 export interface ServerInstructions {
@@ -215,6 +223,9 @@ export const layer = Layer.effect(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
+    // `defaultLayer` always provides the trust service; the option keeps bare
+    // `MCP.layer` constructible for tests, which then run ungated.
+    const trust = Option.getOrUndefined(yield* Effect.serviceOption(ProjectTrust.Service))
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport
 
@@ -405,6 +416,52 @@ export const layer = Layer.effect(
         })
       }),
     )
+    /**
+     * Project-trust verdict for one server name whose effective configuration
+     * comes from the project `mcp.json`. Undefined when the name is not
+     * project-sourced (a global entry or a runtime-added server): no project
+     * provenance, so nothing to gate.
+     */
+    const projectVerdict = Effect.fnUntraced(function* (name: string) {
+      if (!trust) return undefined
+      const ctx = yield* InstanceState.context
+      const project = McpConfig.projectLayer(ctx.root)
+      if (!project) return undefined
+      const entry = mcpEntries(project.relative, project.value).find((candidate) => candidate.label === name)
+      if (!entry) return undefined
+      const result = yield* trust.gate([{ scope: "project", file: project.relative, entry }])
+      return result.allowed[0] === true
+    })
+
+    /**
+     * Trust verdicts for a batch of server names, keyed by name. Names absent
+     * from the project layer are omitted and stay ungated. One gate call keeps
+     * the refused ids in the directory's skipped report.
+     */
+    const projectVerdicts = Effect.fnUntraced(function* (root: string, names: readonly string[]) {
+      const verdicts = new Map<string, boolean>()
+      if (!trust || names.length === 0) return verdicts
+      const project = McpConfig.projectLayer(root)
+      if (!project) return verdicts
+      const byName = new Map(mcpEntries(project.relative, project.value).map((entry) => [entry.label, entry]))
+      const sourced = names.flatMap((name) => {
+        const entry = byName.get(name)
+        return entry === undefined ? [] : [{ name, entry }]
+      })
+      if (sourced.length === 0) return verdicts
+      const result = yield* trust.gate(
+        sourced.map(({ entry }) => ({ scope: "project" as const, file: project.relative, entry })),
+      )
+      sourced.forEach(({ name }, index) => verdicts.set(name, result.allowed[index] === true))
+      return verdicts
+    })
+
+    /** Refuse a project entry the trust gate rejected, naming the remedy. */
+    const assertProjectAllowed = Effect.fnUntraced(function* (name: string) {
+      if ((yield* projectVerdict(name)) !== false) return
+      throw new Error(`MCP server "${name}" is a project entry that is not trusted. Run /trust to review it.`)
+    })
+
     const descendants = Effect.fnUntraced(
       function* (pid: number) {
         if (process.platform === "win32") return [] as number[]
@@ -516,12 +573,21 @@ export const layer = Layer.effect(
           clients: {},
           defs: {},
           instructions: {},
+          manualDisabled: new Set(),
         }
+        // Project-layer servers must be trusted before their process starts.
+        // A refused server keeps a `disabled` status (the same surface a user
+        // sees for `disabled: true`) and is reported by the CLI's skipped count.
+        const verdicts = yield* projectVerdicts(ctx.root, Object.keys(config))
 
         yield* Effect.forEach(
           Object.entries(config),
           ([key, mcp]) =>
             Effect.gen(function* () {
+              if (verdicts.get(key) === false) {
+                s.status[key] = { status: "disabled" }
+                return
+              }
               const result = yield* create(key, mcp)
               s.status[key] = result.status
               if (result.mcpClient) {
@@ -533,6 +599,37 @@ export const layer = Layer.effect(
             }),
           { concurrency: "unbounded" },
         )
+
+        // A trust decision changes the gate output without touching mcp.json,
+        // so the state must react on its own: newly trusted servers start,
+        // revoked ones are closed. A manual disconnect wins over a later grant.
+        const reconcile = Effect.fnUntraced(function* () {
+          const next = yield* projectVerdicts(ctx.root, Object.keys(config))
+          for (const [name, allowed] of next) {
+            if (!allowed) {
+              const client = s.clients[name]
+              if (client) yield* closeClient(s, name)
+              s.status[name] = { status: "disabled" }
+              continue
+            }
+            if (s.manualDisabled.has(name)) continue
+            if (s.clients[name]) continue
+            if (s.status[name]?.status === "connected" || s.status[name]?.status === "needs_auth") continue
+            const mcp = config[name]
+            const result = yield* create(name, mcp)
+            if (!result.mcpClient) {
+              s.status[name] = result.status
+              continue
+            }
+            yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout?.request)
+          }
+        })
+        const unsubscribe = yield* events.listen((event) => {
+          if (event.type !== ProjectTrustEvent.Event.Updated.type) return Effect.void
+          if (event.location?.directory !== ctx.directory) return Effect.void
+          return bridge.run(reconcile())
+        })
+        yield* Effect.addFinalizer(() => unsubscribe)
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -628,19 +725,28 @@ export const layer = Layer.effect(
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: McpServer) {
       const s = yield* InstanceState.get(state)
+      // A runtime add is user-supplied content, but a name that the project
+      // layer also declares keeps the project entry's verdict: overriding an
+      // untrusted server by name must not start it.
+      yield* assertProjectAllowed(name)
       s.config[name] = mcp
+      s.manualDisabled.delete(name)
       yield* createAndStore(name, mcp)
       return { status: s.status }
     })
 
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
       const mcp = yield* requireMcpConfig(name)
+      yield* assertProjectAllowed(name)
+      const s = yield* InstanceState.get(state)
+      s.manualDisabled.delete(name)
       yield* createAndStore(name, { ...mcp, disabled: false })
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
       yield* requireMcpConfig(name)
       const s = yield* InstanceState.get(state)
+      s.manualDisabled.add(name)
       yield* closeClient(s, name)
       delete s.clients[name]
       s.status[name] = { status: "disabled" }
@@ -798,6 +904,7 @@ export const layer = Layer.effect(
 
     const startAuth = Effect.fn("MCP.startAuth")(function* (mcpName: string) {
       const mcpConfig = yield* requireMcpConfig(mcpName)
+      yield* assertProjectAllowed(mcpName)
       if (mcpConfig.type !== "remote") throw new Error(`MCP server ${mcpName} is not a remote server`)
       if (mcpConfig.oauth === false) throw new Error(`MCP server ${mcpName} has OAuth explicitly disabled`)
       const url = remoteURL(mcpConfig.url)
@@ -936,6 +1043,7 @@ export const layer = Layer.effect(
 
     const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
       yield* requireMcpConfig(mcpName)
+      yield* assertProjectAllowed(mcpName)
       const transport = pendingOAuthTransports.get(mcpName)
       if (!transport) throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
 
@@ -1017,10 +1125,16 @@ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 export const defaultLayer = layer.pipe(
   Layer.provide(McpAuth.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
+  Layer.provide(ProjectTrust.defaultLayer),
   Layer.provide(CrossSpawnSpawner.defaultLayer),
   Layer.provide(FSUtil.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node])
+export const node = LayerNode.make(layer, [
+  CrossSpawnSpawner.node,
+  McpAuth.node,
+  EventV2Bridge.node,
+  ProjectTrust.node,
+])
 
 export * as MCP from "."

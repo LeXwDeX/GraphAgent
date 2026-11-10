@@ -184,7 +184,10 @@ export const provideInstance =
 export const provideInstanceEffect =
   (directory: string) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | InstanceStore.Service> =>
-    InstanceStore.Service.use((store) => store.provide({ directory }, self, { detach: true }))
+    // Test fixtures own every project-layer file they write, so the whole
+    // project layer is trusted for fixture instances. Tests that exercise the
+    // trust gate provide InstanceRef and ProjectTrust directly instead.
+    InstanceStore.Service.use((store) => store.provide({ directory, trustProject: true }, self, { detach: true }))
 
 export const reloadInstance = (input: InstanceStore.LoadInput) =>
   InstanceStore.Service.use((store) => store.reload(input))
@@ -201,7 +204,9 @@ export function provideTmpdirInstance<A, E, R>(
 ) {
   return Effect.gen(function* () {
     const path = yield* tmpdirScoped(options)
-    return yield* self(path).pipe(provideInstance(path))
+    // Fixtures own every project-layer file they write, same as
+    // `provideInstanceEffect`; tests that exercise the gate do so directly.
+    return yield* self(path).pipe(provideInstance({ directory: path, trustProject: true }))
   }).pipe(Effect.provide(testInstanceStoreLayer))
 }
 

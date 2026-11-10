@@ -8,6 +8,8 @@
  * Runtime behavior is unchanged; see `hook/index.ts` for the public surface.
  */
 import { existsSync, readFileSync } from "fs"
+import { hookEntries } from "@/project/trust/entries"
+import type { TrustEntry } from "@/project/trust/types"
 import * as Log from "@/util/log"
 import { HookCommandSchema } from "../schema"
 import type { HookCommand, HookEvent, HookMatcher, HookSourceScope, Settings } from "../types"
@@ -31,10 +33,17 @@ export function readJSON(filepath: string, scope: HookSourceScope = "global"): S
  * invalid. Every parsed entry is tagged with `__source` naming the chain layer
  * (`scope`) and its absolute file; the hooks.json chain never stamps
  * `__sourceDir`, so it injects no plugin variables into handlers.
+ *
+ * `trustFile` is the path relative to `<root>/.agents`. When given, each loaded
+ * command is also tagged with the `TrustEntry` the project-trust enumeration
+ * produced for the same position, so the hook engine can gate it. User-authored
+ * `__source`/`__sourceDir`/`__trust` fields are stripped before stamping: they
+ * are loader-owned and must not be spoofable from project JSON.
  */
 export function readJSONFile(
   filepath: string,
   scope: HookSourceScope = "global",
+  trustFile?: string,
 ): { settings?: Settings; invalid?: true } {
   if (!existsSync(filepath)) return {}
   try {
@@ -46,6 +55,8 @@ export function readJSONFile(
     if (obj && isRecord(obj.hooks))
       log.warn('hooks.json must use top-level event keys; the "hooks" wrapper is ignored', { path: filepath })
     const rawHooks = obj && isRecord(obj.hooks) ? undefined : obj
+    const trust: TrustEntry[] = trustFile && rawHooks ? hookEntries(trustFile, rawHooks) : []
+    const loaded: HookCommand[] = []
 
     const hooks: Settings["hooks"] = {}
     if (rawHooks) {
@@ -78,13 +89,23 @@ export function readJSONFile(
               log.warn("invalid hook command skipped", { path: filepath, event: key, error: parsed.error.message })
               continue
             }
-            commands.push({ ...parsed.data, __source: { scope, file: filepath } })
+            const { __source: _source, __sourceDir: _sourceDir, ...rest } = parsed.data
+            const command: HookCommand = { ...rest, __source: { scope, file: filepath } }
+            commands.push(command)
+            loaded.push(command)
           }
           if (commands.length) groups.push({ matcher: group.matcher, hooks: commands })
         }
         hooks[key] = groups
       }
     }
+    // Trust entries and commands are produced by the same traversal; a count
+    // mismatch means an unenumerated command, which stays without `__trust` and
+    // fails closed at the gate.
+    if (trust.length === loaded.length)
+      loaded.forEach((command, index) => {
+        command.__trust = trust[index]
+      })
     log.info("loaded hook settings", {
       path: filepath,
       events: Object.keys(hooks),

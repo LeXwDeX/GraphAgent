@@ -16,6 +16,7 @@ import { Glob } from "@graphagent/core/util/glob"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
 import { hasProjectLayer } from "@/project/project-root"
+import { watchTrustChanges } from "@/project/trust/subscribe"
 import { BUILTIN_SKILLS } from "./builtin"
 
 // Directory sources only match this exact layout. The singular `skill/`
@@ -386,7 +387,58 @@ export const layer = Layer.effect(
       yield* InstanceState.invalidate(discovered)
       yield* InstanceState.get(state)
     })
-    return Service.of({ get, require, all, dirs, available, reload })
+    // A trust decision revokes or restores project skill hooks. Rebuild the
+    // skill set lazily so later prompts see the new registration state; the
+    // hook engine also reconciles its live scoped registrations on the event.
+    const trustWatch = yield* InstanceState.make(
+      Effect.fn("Skill.trustWatch")(function* (ctx) {
+        yield* watchTrustChanges(
+          ctx,
+          Effect.gen(function* () {
+            yield* InstanceState.invalidate(state)
+            yield* InstanceState.invalidate(discovered)
+          }),
+        )
+        return true as const
+      }),
+    )
+    const ready = Effect.fnUntraced(function* () {
+      yield* InstanceState.get(trustWatch)
+    })
+
+    return Service.of({
+      get: Effect.fn("Skill.get")(function* (name: string) {
+        yield* ready()
+        const s = yield* InstanceState.get(state)
+        return s.skills[name]
+      }),
+      require: Effect.fn("Skill.require")(function* (name: string) {
+        yield* ready()
+        const s = yield* InstanceState.get(state)
+        const info = s.skills[name]
+        if (info) return info
+        return yield* new NotFoundError({ name, available: Object.keys(s.skills).toSorted() })
+      }),
+      all: Effect.fn("Skill.all")(function* () {
+        yield* ready()
+        const s = yield* InstanceState.get(state)
+        return Object.values(s.skills)
+      }),
+      dirs: Effect.fn("Skill.dirs")(function* () {
+        yield* ready()
+        return (yield* InstanceState.get(discovered)).dirs
+      }),
+      available: Effect.fn("Skill.available")(function* (agent?: Agent.Info) {
+        yield* ready()
+        const s = yield* InstanceState.get(state)
+        const list = Object.values(s.skills).toSorted((a, b) => a.name.localeCompare(b.name))
+        if (!agent) return list
+        // Keep Skill loadable by Session without closing Session → Skill → Permission → Settings → Plugin → Session.
+        const { Permission } = yield* Effect.promise(() => import("@/permission"))
+        return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
+      }),
+      reload,
+    })
   }),
 )
 

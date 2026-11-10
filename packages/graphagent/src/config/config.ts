@@ -36,6 +36,10 @@ import { ConfigPaths } from "./paths"
 import { changedTopLevelKeys } from "./hot-reload"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
+import { filterSettingsValue, LOCAL_PROJECT_FILES, settingsEntries } from "@/project/trust/entries"
+import { ProjectTrust } from "@/project/trust/service"
+import { watchTrustState } from "@/project/trust/subscribe"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { CONFIG_BASENAME, PROJECT_DIR } from "@graphagent/core/brand"
 
@@ -214,6 +218,7 @@ export const layer = Layer.effect(
     const fs = yield* FSUtil.Service
     const authSvc = yield* Auth.Service
     const http = yield* HttpClient.HttpClient
+    const trust = Option.getOrUndefined(yield* Effect.serviceOption(ProjectTrust.Service))
 
     const configChanges = yield* HookConfigChange.Service
     const checkConfigChange = Effect.fn("Config.checkChange")(function* (
@@ -311,11 +316,32 @@ export const layer = Layer.effect(
       return { data, source: "online" as const, body }
     })
 
+    // Project settings are gated on the file as written. Fingerprinting reads
+    // the raw file, so the entries must come from the raw text; `${VAR}`
+    // substitution only rewrites string contents and leaves the entry order
+    // unchanged, so the substituted parse can be filtered by the same indices.
+    const gateSettings = Effect.fnUntraced(function* (
+      text: string,
+      parsed: unknown,
+      source: string,
+      relative: string,
+    ) {
+      if (!trust) return parsed
+      const raw = ConfigParse.jsonc(text, source)
+      const entries = settingsEntries(relative, raw)
+      if (entries.length === 0) return parsed
+      const scope = LOCAL_PROJECT_FILES.includes(relative) ? "local" : "project"
+      const result = yield* trust.gate(entries.map((entry) => ({ scope, file: relative, entry })))
+      if (result.allowed.every(Boolean)) return parsed
+      const allowed = new Set(entries.filter((_, index) => result.allowed[index]).map((entry) => entry.id))
+      return filterSettingsValue(relative, parsed, (entry) => allowed.has(entry.id))
+    })
+
     const loadConfig = Effect.fnUntraced(function* (
       text: string,
       options: { path: string } | { dir: string; source: string },
       env?: Record<string, string>,
-      flags?: { projectSettings?: boolean },
+      flags?: { projectSettings?: boolean; gate?: { relative: string } },
     ) {
       const source = "path" in options ? options.path : options.source
       const expanded = yield* Effect.promise(() =>
@@ -332,7 +358,8 @@ export const layer = Layer.effect(
         const rejection = rejectProjectSettings(parsed, source)
         if (rejection) throw rejection
       }
-      const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
+      const gated = flags?.gate ? yield* gateSettings(text, parsed, source, flags.gate.relative) : parsed
+      const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(gated), source)
       // Project settings are user-editable files; never write a generated
       // `$schema` key into them during a read.
       if (!("path" in options) || flags?.projectSettings) return data
@@ -348,7 +375,7 @@ export const layer = Layer.effect(
     const loadFile = Effect.fnUntraced(function* (
       filepath: string,
       env?: Record<string, string>,
-      flags?: { projectSettings?: boolean },
+      flags?: { projectSettings?: boolean; gate?: { relative: string } },
     ) {
       yield* Effect.logInfo("loading", { path: filepath })
       const text = yield* readConfigFile(filepath)
@@ -578,7 +605,11 @@ export const layer = Layer.effect(
 
         if (readProject) {
           for (const file of ConfigPaths.projectSettingsFiles(ctx.root)) {
-            yield* merge(file, yield* loadFile(file, authEnv, { projectSettings: true }), "project")
+            yield* merge(
+              file,
+              yield* loadFile(file, authEnv, { projectSettings: true, gate: { relative: path.basename(file) } }),
+              "project",
+            )
           }
         }
 
@@ -684,12 +715,20 @@ export const layer = Layer.effect(
         return yield* loadInstanceState(ctx).pipe(Effect.orDie)
       }),
     )
+    // A trust decision changes which project settings entries are visible;
+    // the watcher drops the cached merge on the next read.
+    const trustWatch = yield* watchTrustState(state)
+    const ready = Effect.fnUntraced(function* () {
+      yield* InstanceState.get(trustWatch)
+    })
 
     const get = Effect.fn("Config.get")(function* () {
+      yield* ready()
       return yield* InstanceState.use(state, (s) => s.config)
     })
 
     const directories = Effect.fn("Config.directories")(function* () {
+      yield* ready()
       return yield* InstanceState.use(state, (s) => s.directories)
     })
 
@@ -822,8 +861,17 @@ export const defaultLayer = layer.pipe(
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(Auth.defaultLayer),
   Layer.provide(FetchHttpClient.layer),
+  Layer.provide(ProjectTrust.defaultLayer),
+  Layer.provide(EventV2Bridge.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [FSUtil.node, Auth.node, httpClient, HookConfigChange.node])
+export const node = LayerNode.make(layer, [
+  FSUtil.node,
+  Auth.node,
+  httpClient,
+  HookConfigChange.node,
+  ProjectTrust.node,
+  EventV2Bridge.node,
+])
 
 export * as Config from "./config"

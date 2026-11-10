@@ -1,8 +1,10 @@
 import type { Argv } from "yargs"
-import { Effect, Schema } from "effect"
+import { Cause, Effect, Schema } from "effect"
 import type { AppServices } from "@/effect/app-runtime"
-import type { InstanceStore } from "@/project/instance-store"
+import type { InstanceStore, LoadInput } from "@/project/instance-store"
+import type { InstanceContext } from "@/project/instance-context"
 import { cmd, type WithDoubleDash } from "./cmd/cmd"
+import { UI } from "./ui"
 
 /**
  * User-visible command failure. Throw via `fail("...")` from an effectCmd handler
@@ -46,7 +48,44 @@ interface EffectCmdOpts<Args, A> {
   instance?: boolean | ((args: Args) => boolean)
   /** Defaults to process.cwd(). Override for commands that take a directory positional. */
   directory?: (args: Args) => string
+  /**
+   * Extra `InstanceStore.load` options, such as `{ trustProject: true }` for
+   * `run --trust-project`. The instance context carries them, so a cached
+   * context booted with another trust mode is reloaded instead of reused.
+   */
+  loadOptions?: (args: Args) => Omit<LoadInput, "directory">
   handler: (args: WithDoubleDash<Args>) => Effect.Effect<A, CliError, AppServices | InstanceStore.Service>
+}
+
+/**
+ * Report project entries the load points refused to execute. Written to stderr
+ * so `--format json` keeps stdout machine-readable; `--trust-project` and
+ * projects without a trust-relevant layer collect nothing and stay silent.
+ */
+async function reportSkipped(ctx: InstanceContext) {
+  const { AppRuntime } = await import("@/effect/app-runtime")
+  const { InstanceRef } = await import("@/effect/instance-ref")
+  const { ProjectTrust } = await import("@/project/trust/service")
+  const { Logging } = await import("@graphagent/core/observability/logging")
+  const skipped = await AppRuntime.runPromise(
+    ProjectTrust.Service.use((trust) => trust.skipped()).pipe(
+      Effect.provideService(InstanceRef, ctx),
+      Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed([]))),
+    ),
+  )
+  if (skipped.length === 0) return
+  await AppRuntime.runPromise(
+    Logging.backgroundDebug("project.trust.skipped", {
+      count: skipped.length,
+      ids: skipped.map((entry) => entry.id).join(","),
+    }),
+  )
+  UI.println(
+    UI.Style.TEXT_WARNING +
+      `Skipped ${skipped.length} untrusted project ${skipped.length === 1 ? "entry" : "entries"}. ` +
+      `Run /trust to review them.` +
+      UI.Style.TEXT_NORMAL,
+  )
 }
 
 /**
@@ -84,12 +123,14 @@ export const effectCmd = <Args, A>(opts: EffectCmdOpts<Args, A>) =>
       const { InstanceStore } = await import("@/project/instance-store")
       const { InstanceRef } = await import("@/effect/instance-ref")
       const directory = opts.directory?.(args) ?? process.cwd()
+      const loadInput: LoadInput = { directory, ...opts.loadOptions?.(args) }
       const { store, ctx } = await AppRuntime.runPromise(
-        InstanceStore.Service.use((store) => store.load({ directory }).pipe(Effect.map((ctx) => ({ store, ctx })))),
+        InstanceStore.Service.use((store) => store.load(loadInput).pipe(Effect.map((ctx) => ({ store, ctx })))),
       )
       try {
         await AppRuntime.runPromise(opts.handler(args).pipe(Effect.provideService(InstanceRef, ctx)))
       } finally {
+        await reportSkipped(ctx).catch(() => undefined)
         await AppRuntime.runPromise(store.dispose(ctx))
       }
     },

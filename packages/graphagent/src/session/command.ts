@@ -10,8 +10,11 @@ import { Effect, Option } from "effect"
 import type { Context } from "effect"
 import { ConfigMarkdown } from "@/config/markdown"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { InstanceRef } from "@/effect/instance-ref"
 import { SettingsHook } from "@/hook"
 import { Memory } from "@/memory/memory"
+import { shellVerdict } from "@/project/trust/command-shell"
+import { ProjectTrust } from "@/project/trust/service"
 import { Provider } from "@/provider/provider"
 import { Process } from "@/util/process"
 import { Shell } from "@graphagent/core/shell"
@@ -145,6 +148,18 @@ export function makeCommand(deps: CommandDeps) {
         }),
       ),
     )
+  })
+
+  // Inline `!`shell`` segments execute host commands. A project command
+  // declares them for trust review; only the exact declared segments may run,
+  // and only while trusted. User and builtin commands have no project-level
+  // declaration and are unaffected.
+  const commandShellVerdict = Effect.fnUntraced(function* (name: string, template: string) {
+    const trust = Option.getOrUndefined(yield* Effect.serviceOption(ProjectTrust.Service))
+    if (!trust) return { type: "allow" as const }
+    const ctx = yield* InstanceRef
+    if (!ctx || ctx.trustProject === true) return { type: "allow" as const }
+    return yield* shellVerdict({ root: ctx.root, command: name, template }, trust.gate)
   })
 
   const commandBody = Effect.fnUntraced(function* (
@@ -441,10 +456,21 @@ export function makeCommand(deps: CommandDeps) {
     }
 
     const templateCommand = yield* Effect.promise(async () => cmd.template)
-    let template = expandCommandTemplate(templateCommand, input.arguments)
+    // Shell segments are matched, trusted and executed on the declared
+    // template; arguments expand only afterwards, so `$ARGUMENTS` can never
+    // introduce or rewrite a command.
+    let template = templateCommand
 
     const shellMatches = ConfigMarkdown.shell(template)
     if (shellMatches.length > 0) {
+      const verdict = yield* commandShellVerdict(input.command, template)
+      if (verdict.type === "refuse") {
+        const error = new NamedError.Unknown({
+          message: `Command "/${input.command}" did not run its embedded shell: ${verdict.reason} Run /trust to review project commands.`,
+        })
+        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        throw error
+      }
       const cfg = yield* config.get()
       const sh = Shell.preferred(cfg.shell)
       const results = yield* Effect.promise(() =>
@@ -455,7 +481,7 @@ export function makeCommand(deps: CommandDeps) {
       let index = 0
       template = template.replace(bashRegex, () => results[index++])
     }
-    template = template.trim()
+    template = expandCommandTemplate(template, input.arguments).trim()
 
     const taskModel = yield* Effect.gen(function* () {
       if (cmd.model) return Provider.parseModel(cmd.model)

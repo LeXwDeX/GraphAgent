@@ -52,6 +52,8 @@ export interface SessionHookEntryInput {
   /** Frontmatter source. Absent for ordinary HTTP/session registrations. */
   origin?: string
   kind?: "skill" | "agent"
+  /** Loader provenance of a scoped registration. */
+  source?: "project" | "user" | "builtin"
   child?: boolean
 }
 
@@ -64,6 +66,15 @@ export interface ScopedHooksInput {
   source?: "project" | "user" | "builtin"
   /** Only a child agent's frontmatter Stop hook becomes SubagentStop. */
   child?: boolean
+}
+
+/** One live scoped registration, enough to re-read and re-register its source. */
+export interface ScopedRegistration {
+  readonly sessionID: SessionID
+  readonly origin: string
+  readonly kind: "skill" | "agent"
+  readonly source?: "project" | "user" | "builtin"
+  readonly child?: boolean
 }
 
 export interface SessionHookEntry extends SessionHookEntryInput {
@@ -91,6 +102,12 @@ export interface Interface {
   readonly complete: (sessionID: SessionID, id: string, token: string, succeeded: boolean) => Effect.Effect<void>
   readonly registerScoped: (sessionID: SessionID, input: ScopedHooksInput) => Effect.Effect<void, InvalidHookError>
   readonly unregisterScoped: (sessionID: SessionID, origin: string) => Effect.Effect<void>
+  /**
+   * Every scoped registration in the ambient directory, deduplicated by
+   * (session, origin). A project trust change re-evaluates these from their
+   * source file; ordinary HTTP-added hooks have no origin and stay untouched.
+   */
+  readonly scopedRegistrations: () => Effect.Effect<readonly ScopedRegistration[]>
   readonly remove: (sessionID: SessionID, id: string) => Effect.Effect<void>
   readonly list: (sessionID: SessionID, event: HookEvent) => Effect.Effect<readonly SessionHookEntry[]>
   /** All entries for a session across every event (backs the HTTP GET endpoint). */
@@ -213,6 +230,7 @@ export const layer = Layer.effect(
             once: input.kind === "skill" && item.once === true,
             origin: input.origin,
             kind: input.kind,
+            ...(input.source === undefined ? {} : { source: input.source }),
             child: input.child,
           })
         }
@@ -241,6 +259,28 @@ export const layer = Layer.effect(
       for (const entry of removed) locks.get(sessionID)?.delete(entry.id)
       const registered = yield* InstanceState.get(scopedOrigins)
       registered.get(sessionID)?.delete(origin)
+    })
+
+    const scopedRegistrations = Effect.fn("SessionHooks.scopedRegistrations")(function* () {
+      const data = yield* InstanceState.get(state)
+      const seen = new Set<string>()
+      const result: ScopedRegistration[] = []
+      for (const [sessionID, entries] of data) {
+        for (const entry of entries) {
+          if (!entry.origin || (entry.kind !== "skill" && entry.kind !== "agent")) continue
+          const key = `${sessionID}\u0000${entry.origin}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          result.push({
+            sessionID,
+            origin: entry.origin,
+            kind: entry.kind,
+            ...(entry.source === undefined ? {} : { source: entry.source }),
+            ...(entry.child === undefined ? {} : { child: entry.child }),
+          })
+        }
+      }
+      return result
     })
 
     const list = Effect.fn("SessionHooks.list")(function* (sessionID: SessionID, event: HookEvent) {
@@ -310,6 +350,7 @@ export const layer = Layer.effect(
       complete,
       registerScoped,
       unregisterScoped,
+      scopedRegistrations,
       remove,
       list,
       listAll,

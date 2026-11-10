@@ -204,12 +204,16 @@ export function chainCandidates(
 function readChain(
   root: string,
   globalConfig?: string,
-): { settings: Settings; summaries: HookSummary[]; invalid: string[] } {
+): { settings: Settings; summaries: HookSummary[]; commands: HookCommand[]; invalid: string[] } {
   const layers: HookLayer[] = []
   const summaries: HookSummary[] = []
+  const commands: HookCommand[] = []
   const invalid: string[] = []
+  const projectDirectory = path.join(root, PROJECT_DIR)
   for (const { scope, file } of chainCandidates(root, globalConfig)) {
-    const read = readJSONFile(file, scope)
+    const trustFile =
+      scope === "global" ? undefined : path.relative(projectDirectory, file).replaceAll("\\", "/")
+    const read = readJSONFile(file, scope, trustFile)
     if (read.invalid) invalid.push(file)
     const data = read.settings
     if (!data) continue
@@ -228,11 +232,12 @@ function readChain(
             ...(m.matcher && m.matcher !== "*" ? { matcher: m.matcher } : {}),
             ...(h.type === "command" && h.asyncRewake === true && canRewake(event) ? { asyncRewake: true } : {}),
           })
+          commands.push(h)
         }
       }
     }
   }
-  return { settings: mergeSettings(layers), summaries, invalid }
+  return { settings: mergeSettings(layers), summaries, commands, invalid }
 }
 
 /**
@@ -265,7 +270,7 @@ export function loadChain(root: string, globalConfig?: string): Settings {
 export function loadChainWithSummaries(
   root: string,
   globalConfig?: string,
-): { settings: Settings; summaries: HookSummary[]; invalid: string[] } {
+): { settings: Settings; summaries: HookSummary[]; commands: HookCommand[]; invalid: string[] } {
   return readChain(root, globalConfig)
 }
 

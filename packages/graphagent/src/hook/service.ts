@@ -15,6 +15,8 @@ import { MCP } from "@/mcp"
 import { Provider } from "@/provider/provider"
 import { Auth } from "@/auth"
 import { SessionID } from "@/session/schema"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { ProjectTrust } from "@/project/trust/service"
 import { SessionHooks, type ScopedHooksInput } from "./session-hooks"
 import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
@@ -88,7 +90,10 @@ export const layer = Layer.effect(
     // Optional: only a full runtime has sessions that can veto a reload and watchers to refresh.
     const configChange = Option.getOrUndefined(yield* Effect.serviceOption(HookConfigChange.Service))
     const fileWatch = Option.getOrUndefined(yield* Effect.serviceOption(HookFileWatch.Service))
-    return Service.of(yield* makeEngine({ sessionHooks, configChange, fileWatch }))
+    // `defaultLayer` always provides both; the option only keeps partial test
+    // wiring (bare `SettingsHook.layer`) constructible.
+    const trust = Option.getOrUndefined(yield* Effect.serviceOption(ProjectTrust.Service))
+    return Service.of(yield* makeEngine({ sessionHooks, configChange, fileWatch, trust }))
   }),
 )
 
@@ -103,6 +108,8 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(FSUtil.defaultLayer),
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
+    Layer.provide(ProjectTrust.defaultLayer),
+    Layer.provide(EventV2Bridge.defaultLayer),
   ),
 )
 
@@ -120,6 +127,8 @@ export const node = {
       Auth.node,
       FSUtil.node,
       CrossSpawnSpawner.node,
+      ProjectTrust.node,
+      EventV2Bridge.node,
       LayerNode.make(FetchHttpClient.layer, []),
     ]
   },

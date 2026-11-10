@@ -7,6 +7,8 @@ import { InstanceState } from "@/effect/instance-state"
 import path from "path"
 import { mergeDeep } from "remeda"
 import { Config } from "@/config/config"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { watchTrustState } from "@/project/trust/subscribe"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { errorMessage } from "@/util/error"
 import * as Formatter from "./formatter"
@@ -166,12 +168,20 @@ export const layer = Layer.effect(
         }
       }),
     )
+    // Formatter availability is gated by project trust; a decision must
+    // re-evaluate the cached formatter list without a restart.
+    const trustWatch = yield* watchTrustState(state)
+    const ready = Effect.fnUntraced(function* () {
+      yield* InstanceState.get(trustWatch)
+    })
 
     const init = Effect.fn("Format.init")(function* () {
+      yield* ready()
       yield* InstanceState.get(state)
     })
 
     const status = Effect.fn("Format.status")(function* () {
+      yield* ready()
       const { formatters, isEnabled } = yield* InstanceState.get(state)
       const result: Status[] = []
       for (const formatter of Object.values(formatters)) {
@@ -186,6 +196,7 @@ export const layer = Layer.effect(
     })
 
     const file = Effect.fn("Format.file")(function* (filepath: string) {
+      yield* ready()
       const { formatFile } = yield* InstanceState.get(state)
       return yield* formatFile(filepath)
     })
@@ -198,8 +209,9 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Config.defaultLayer),
   Layer.provide(AppProcess.defaultLayer),
   Layer.provide(RuntimeFlags.defaultLayer),
+  Layer.provide(EventV2Bridge.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [Config.node, AppProcess.node, RuntimeFlags.node])
+export const node = LayerNode.make(layer, [Config.node, AppProcess.node, RuntimeFlags.node, EventV2Bridge.node])
 
 export * as Format from "."

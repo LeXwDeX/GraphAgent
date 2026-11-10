@@ -157,6 +157,7 @@ export const RunCommand = effectCmd({
   // For --dir, load instance for the resolved target dir.
   // The handler also chdirs (preserving the legacy order: chdir → file resolution).
   directory: (args) => (args.dir ? path.resolve(process.cwd(), args.dir) : process.cwd()),
+  loadOptions: (args) => (args["trust-project"] ? { trustProject: true } : {}),
   builder: (yargs: Argv) =>
     yargs
       .positional("message", {
@@ -261,7 +262,12 @@ export const RunCommand = effectCmd({
         default: false,
         hidden: true,
         describe: "enable direct interactive demo slash commands; pass one as the message to run it immediately",
-      }),
+      })
+      .option("trust-project", {
+        type: "boolean",
+        describe: "trust every project-layer entry for this run without writing trust.json",
+      })
+      .conflicts("trust-project", "mini"),
   handler: Effect.fn("Cli.run")(function* (args) {
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
     const { RuntimeFlags } = yield* Effect.promise(() => import("@/effect/runtime-flags"))
@@ -1024,5 +1030,7 @@ export async function runMini(input: MiniCommandInput) {
     maintenance: false,
     "init-only": false,
     initOnly: false,
+    "trust-project": false,
+    trustProject: false,
   })
 }

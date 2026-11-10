@@ -26,6 +26,12 @@ export interface RunningHook {
 
 export interface State {
   settings: Settings
+  /**
+   * Chain commands the project-trust gate refused. Checked before eligibility,
+   * dedup and `once` claims so a refused entry can never run or consume a
+   * one-shot reservation. Replaced wholesale when the chain or trust changes.
+   */
+  untrusted: WeakSet<HookCommand>
   cwd: string
   /** Stable project root; survives deletion of `cwd`, so hooks can fall back to it. */
   root: string

@@ -55,7 +55,9 @@ Options:
       --maintenance                   run Setup hooks for maintenance, then continue the run
                                                                           [boolean] [default: false]
       --init-only                     run Setup and startup SessionStart hooks, then exit without
-                                      starting a conversation             [boolean] [default: false]"
+                                      starting a conversation             [boolean] [default: false]
+      --trust-project                 trust every project-layer entry for this run without writing
+                                      trust.json                                           [boolean]"
 `;
 
 exports[`graphagent CLI help-text snapshots every documented command emits stable help text: graphagent debug --help 1`] = `

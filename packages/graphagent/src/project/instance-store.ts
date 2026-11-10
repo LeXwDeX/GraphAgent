@@ -21,6 +21,8 @@ export interface LoadInput {
   directory: string
   worktree?: string
   project?: Project.Info
+  /** `--trust-project`: allow the whole project layer for this run without writing trust.json. */
+  trustProject?: boolean
 }
 
 export interface Interface {
@@ -121,7 +123,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             }
           },
         })
-        const ctx: InstanceContext = { ...resolved, root }
+        const ctx: InstanceContext = { ...resolved, root, trustProject: input.trustProject === true }
         if (ctx.project.vcs === "git" && hasProjectLayer(ctx.root, Global.Path.home)) {
           yield* Effect.promise(() => ensureLocalExcludes({ root: ctx.root, directory: ctx.directory })).pipe(
             Effect.catchCause((cause) =>
@@ -378,6 +380,13 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     const disposeEntry = (directory: string, entry: Entry, ctx: InstanceContext, options?: { waitIdle?: boolean }) =>
       withLifecycle(directory, disposeEntryLocked(directory, entry, ctx, options))
 
+    // A cached context keeps the trust mode it was booted with. An omitted flag
+    // inherits that mode: internal loads (moves, watchers, tool calls) must not
+    // reload a live instance and drop its per-directory state. Only an explicit
+    // `--trust-project` request upgrades a cached untrusted instance.
+    const sameTrustMode = (ctx: InstanceContext | undefined, input: LoadInput) =>
+      ctx !== undefined && (input.trustProject !== true || ctx.trustProject === true)
+
     const load = (input: LoadInput): Effect.Effect<InstanceContext> => {
       const directory = FSUtil.resolve(input.directory)
       // A wait bound, not a cleanup cap: a tombstone whose cleanup is still
@@ -416,7 +425,10 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
         if (cached) {
           if (cached.disposing) return yield* waitForDispose(cached)
           const ctx = yield* Deferred.await(cached.deferred)
-          if (cache.get(directory) === cached && !cached.disposing) return ctx
+          if (cache.get(directory) === cached && !cached.disposing) {
+            if (sameTrustMode(ctx, input)) return ctx
+            return yield* reload(input)
+          }
           return yield* load(input)
         }
         yield* InstanceState.waitForOpen(directory)
@@ -458,7 +470,10 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
               return yield* restore(waitForDispose(entry))
             }
             const ctx = yield* restore(Deferred.await(entry.deferred))
-            if (cache.get(directory) === entry && !entry.disposing) return ctx
+            if (cache.get(directory) === entry && !entry.disposing) {
+              if (sameTrustMode(ctx, input)) return ctx
+              return yield* restore(reload(input))
+            }
             return yield* load(input)
           }),
         ).pipe(Effect.withSpan("InstanceStore.load"))
