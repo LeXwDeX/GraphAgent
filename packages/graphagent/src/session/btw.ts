@@ -14,7 +14,7 @@ import { Provider } from "@/provider/provider"
 import { NotFoundError } from "@/storage/storage"
 import { Cause, Context, Deferred, Duration, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import { randomUUID } from "node:crypto"
-import { selectBtwContext } from "./btw-context"
+import { DEFAULT_MAX_CONTEXT_TOKENS, selectBtwContext } from "./btw-context"
 import { LLM } from "./llm"
 import { MessageID, SessionID } from "./schema"
 import { Session } from "./session"
@@ -148,12 +148,29 @@ export const layer = (options: LayerOptions = {}) =>
           if (inFlight.get(sessionID)?.id === id) inFlight.delete(sessionID)
         })
 
+      /** `provider/model`, exactly one slash and both segments non-empty. */
+      const parseConfiguredModel = (value: string) => {
+        const segments = value.split("/")
+        if (segments.length !== 2 || segments[0].length === 0 || segments[1].length === 0) return undefined
+        return { providerID: segments[0], modelID: segments[1] }
+      }
+
       const resolveModel = Effect.fn("SessionBtw.resolveModel")(function* (input: {
         session: Session.Info
         messages: SessionV1.WithParts[]
         requested: AskInput["model"]
+        configured: string | undefined
       }) {
         let ref: { providerID: string; modelID: string } | undefined = input.requested
+        if (!ref && input.configured !== undefined) {
+          const parsed = parseConfiguredModel(input.configured)
+          if (!parsed) {
+            return yield* new BtwInvalidRequestError({
+              message: `Configured side question model "${input.configured}" must be in the format provider/model.`,
+            })
+          }
+          ref = parsed
+        }
         if (!ref && input.session.model) {
           ref = { providerID: input.session.model.providerID, modelID: input.session.model.id }
         }
@@ -206,8 +223,13 @@ export const layer = (options: LayerOptions = {}) =>
             ),
           )
 
-        const model = yield* resolveModel({ session, messages, requested: input.model })
         const cfg = yield* config.get()
+        const model = yield* resolveModel({
+          session,
+          messages,
+          requested: input.model,
+          configured: cfg.btw?.model,
+        })
         const reasoningDistillationEnabled = ConfigReasoningDistillation.resolveEnabled({
           disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_REASONING_DISTILLATION,
           enabled: cfg.reasoningDistillation?.enabled,
@@ -221,7 +243,7 @@ export const layer = (options: LayerOptions = {}) =>
           cfg,
           question,
           reasoningDistillationEnabled,
-          maxContextTokens: options.maxContextTokens,
+          maxContextTokens: options.maxContextTokens ?? cfg.btw?.maxContextTokens ?? DEFAULT_MAX_CONTEXT_TOKENS,
         })
 
         const language = yield* systemPrompt.language(cfg.language)
@@ -251,7 +273,7 @@ export const layer = (options: LayerOptions = {}) =>
             retries: 1,
             messages: selected.messages,
             purpose: "auxiliary",
-            maxOutputTokens: options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+            maxOutputTokens: options.maxOutputTokens ?? cfg.btw?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
             onThinkingInvalidated: () => Effect.void,
           })
           .pipe(

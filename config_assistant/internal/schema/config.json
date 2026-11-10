@@ -1232,6 +1232,30 @@
           },
           "additionalProperties": true
         },
+        "btw": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "description": "Model for side questions in the format provider/model; defaults to the session's current model",
+              "$ref": "https://models.dev/model-schema.json#/$defs/Model"
+            },
+            "maxContextTokens": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
+              "description": "Maximum context tokens for a side question (default: 48000)"
+            },
+            "maxOutputTokens": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "exclusiveMinimum": 0,
+              "description": "Maximum output tokens for a side question answer (default: 2000)"
+            }
+          },
+          "additionalProperties": true,
+          "description": "Side question (btw) settings"
+        },
         "reasoningDistillation": {
           "$ref": "#/$defs/ConfigV2.ReasoningDistillationEncoded"
         },

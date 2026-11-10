@@ -286,6 +286,19 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
+  btw: Schema.optional(
+    Schema.Struct({
+      model: Schema.optional(Schema.String).annotate({
+        description: "Model for side questions in the format provider/model; defaults to the session's current model",
+      }),
+      maxContextTokens: Schema.optional(PositiveInt).annotate({
+        description: "Maximum context tokens for a side question (default: 48000)",
+      }),
+      maxOutputTokens: Schema.optional(PositiveInt).annotate({
+        description: "Maximum output tokens for a side question answer (default: 2000)",
+      }),
+    }),
+  ).annotate({ description: "Side question (btw) settings" }),
   reasoningDistillation: Schema.optional(ConfigReasoningDistillation.Info),
   experimental: Schema.optional(
     Schema.Struct({

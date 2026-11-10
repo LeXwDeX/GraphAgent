@@ -12490,6 +12490,25 @@
             },
             "additionalProperties": false
           },
+          "btw": {
+            "type": "object",
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "maxContextTokens": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "exclusiveMinimum": 0
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "exclusiveMinimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
           "reasoningDistillation": {
             "$ref": "#/components/schemas/ConfigV2ReasoningDistillation"
           },

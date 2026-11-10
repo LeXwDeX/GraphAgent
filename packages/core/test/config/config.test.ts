@@ -157,6 +157,22 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("accepts side question settings and rejects non-positive budgets", () =>
+    Effect.sync(() => {
+      const decode = Schema.decodeUnknownSync(ConfigV1.Info)
+      expect(decode({}).btw).toBeUndefined()
+      expect(decode({ btw: {} }).btw).toEqual({})
+      expect(
+        decode({ btw: { model: "test/test-model", maxContextTokens: 48_000, maxOutputTokens: 2_000 } }).btw,
+      ).toEqual({ model: "test/test-model", maxContextTokens: 48_000, maxOutputTokens: 2_000 })
+      for (const key of ["maxContextTokens", "maxOutputTokens"] as const) {
+        for (const invalid of [0, -1, 1.5]) {
+          expect(() => decode({ btw: { [key]: invalid } })).toThrow()
+        }
+      }
+    }),
+  )
+
   it.effect("accepts the draft engine limits and rejects invalid values", () =>
     Effect.sync(() => {
       const decode = Schema.decodeUnknownSync(ConfigV1.Info)
