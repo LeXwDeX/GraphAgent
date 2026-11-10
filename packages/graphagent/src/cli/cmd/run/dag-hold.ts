@@ -12,12 +12,13 @@
 // thin wrapper the run loop calls on the busy/idle transitions it already
 // observes.
 //
-// A session turn is NOT one busy event: the prompt loop re-emits
-// session.status=busy at the top of every model step, so the wrapper sees N
-// busy events per turn. Per-turn state therefore resets only on the FIRST busy
-// after an idle (the true idle→busy transition); later busies within the same
-// turn keep sampling the workflow snapshot and can only ever strengthen the
-// latch — never clear it mid-turn.
+// A session turn is NOT guaranteed to be one busy event: SessionStatus.set
+// dedupes repeated values, but distinct busy shapes (bare `busy`, then busy
+// with a preparation stage, etc.) still publish separately. The wrapper can
+// therefore observe multiple busy events per turn. Per-turn state resets only
+// on the FIRST busy after an idle (the true idle→busy transition); later busies
+// within the same turn keep sampling the workflow snapshot and can only ever
+// strengthen the latch — never clear it mid-turn.
 //
 // Tracked state:
 //   busyIds    — every workflow id observed by any poll so far (accumulates)

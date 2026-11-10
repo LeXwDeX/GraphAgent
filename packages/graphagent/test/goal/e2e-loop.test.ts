@@ -1235,11 +1235,13 @@ describe("GoalLoop — empty assistant text → synthetic continue, no stall (br
 
 // Branch 4 (loop.ts): the continuation dispatch fails with an INTERRUPT cause
 // (user pressed ESC mid-dispatch). The loop logs and returns WITHOUT pausing,
-// relying on the session always re-emitting idle (SessionStatus.set publishes
-// idle unconditionally) to fork a fresh afterIdle — whose shouldPreempt guard
-// handles the user's newer message. Pausing here would race that replacement
-// fiber. Asserts: no pause published, goal stays active, and a second idle
-// event re-drives the loop (proving it is not stalled by the dropped interrupt).
+// relying on a fresh idle transition to fork a new afterIdle — whose
+// shouldPreempt guard handles the user's newer message. Pausing here would race
+// that replacement fiber. SessionStatus.set dedupes repeated values, so a real
+// session only re-drives the loop after a busy turn; this test publishes the
+// idle event directly to simulate that re-drive signal. Asserts: no pause
+// published, goal stays active, and a second idle event re-drives the loop
+// (proving it is not stalled by the dropped interrupt).
 describe("GoalLoop — continuation interrupted → no pause, goal stays active (branch 4)", () => {
   let judgeCalls = 0
   const reset = () => {
@@ -1317,8 +1319,10 @@ describe("GoalLoop — continuation interrupted → no pause, goal stays active 
       expect(seen.some((e) => e.type === GoalEvent.Updated.type && e.status === "paused")).toBe(false)
 
       // Turn 2: a fresh idle event re-drives afterIdle — the contract branch 4
-      // relies on (SessionStatus always re-emits idle). The loop must NOT be
-      // stalled by the dropped interrupt; judge fires a second time.
+      // relies on. The test publishes it directly; SessionStatus.set itself
+      // dedupes repeated values, so a real session produces this signal only
+      // after its next busy turn. The loop must NOT be stalled by the dropped
+      // interrupt; judge fires a second time.
       yield* events.publish(SessionStatus.Event.Status, { sessionID: sid, status: { type: "idle" } })
       yield* pollWithTimeout(
         Effect.sync(() => (judgeCalls >= 2 ? true : undefined)),
