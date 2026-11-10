@@ -26,6 +26,8 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { ThinkingReplay } from "./thinking-replay"
+import { AgentScheduler } from "./agent-scheduler"
+import type { Lane as SchedulerLane } from "./agent-scheduler-state"
 import {
   ContextFolding,
   type HistorySnapshot as ContextFoldingHistorySnapshot,
@@ -160,6 +162,8 @@ export type StreamInput = {
   maxOutputTokens?: number
   toolChoice?: "auto" | "required" | "none"
   purpose?: RequestPurpose
+  /** Scheduling lane; derived from purpose and parent session when omitted. */
+  lane?: SchedulerLane
   contextFolding?: ContextFoldingHistorySnapshot
   /** In-process safety signal for activity that can precede or outlive stream events. */
   onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void
@@ -175,6 +179,8 @@ export type StreamRequest = StreamInput & {
 
 export type Organizer = Readonly<{
   transport: "engine" | "ai-sdk"
+  providerID: string
+  modelID: string
   model: string
   call: (signal: AbortSignal, onResponseStarted?: () => void) => OrganizeCall
 }>
@@ -192,7 +198,7 @@ export const use = serviceUse(Service)
 const live: Layer.Layer<
   Service,
   never,
-  Auth.Service | Config.Service | Provider.Service | LLMClientService | RuntimeFlags.Service
+  Auth.Service | Config.Service | Provider.Service | LLMClientService | RuntimeFlags.Service | AgentScheduler.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -202,6 +208,7 @@ const live: Layer.Layer<
     const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const scheduler = yield* AgentScheduler.Service
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
         providerID: input.model.providerID,
@@ -599,10 +606,30 @@ const live: Layer.Layer<
               Effect.sync(() => new AbortController()),
               (ctrl) => Effect.sync(() => ctrl.abort()),
             )
+            // The permit covers one provider response stream: it is held from
+            // before the request leaves the process until the stream ends,
+            // fails, or is interrupted. The AI SDK executes local tools inside
+            // that same stream, so the permit is also released as soon as a
+            // tool call is admitted — otherwise a parent whose tool waits on a
+            // child would hold the permit the child needs (the global cap may
+            // be 1). Scope release still covers tool-free streams.
+            const lane: SchedulerLane =
+              input.lane ??
+              (input.purpose === "auxiliary" ? "auxiliary" : input.parentSessionID ? "child" : "interactive")
+            const permit = yield* scheduler.request({
+              lane,
+              providerID: input.model.providerID,
+              modelID: input.model.id,
+              sessionID: input.sessionID,
+            })
+            const releaseOnToolCall = Stream.tap((event: LLMEvent) =>
+              event.type === "tool-call" ? permit.release : Effect.void,
+            ) as <E, R>(self: Stream.Stream<LLMEvent, E, R>) => Stream.Stream<LLMEvent, E, R>
 
             const result = yield* run({ ...input, abort: ctrl.signal })
 
-            if (result.type === "native") return result.stream.pipe(Stream.tap(result.observeToolCall))
+            if (result.type === "native")
+              return result.stream.pipe(releaseOnToolCall, Stream.tap(result.observeToolCall))
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
@@ -613,6 +640,7 @@ const live: Layer.Layer<
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event, input.onAttemptActivity)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
               Stream.map(result.bindThinking),
+              releaseOnToolCall,
               Stream.tap(result.observeToolCall),
             )
           }),
@@ -635,6 +663,8 @@ const live: Layer.Layer<
       if (engine.type === "supported")
         return {
           transport: "engine" as const,
+          providerID: selected.providerID,
+          modelID: selected.id,
           model: `${selected.providerID}/${selected.id}`,
           call: (signal: AbortSignal, onResponseStarted?: () => void) =>
             engineOrganizerCall({ llm: engine.llm, model: engine.model, effort, timeoutMs, signal, onResponseStarted }),
@@ -643,6 +673,8 @@ const live: Layer.Layer<
       const language = yield* provider.getLanguage(selected)
       return {
         transport: "ai-sdk" as const,
+        providerID: selected.providerID,
+        modelID: selected.id,
         model: `${selected.providerID}/${selected.id}`,
         call: (signal: AbortSignal, onResponseStarted?: () => void): OrganizeCall =>
           sdkOrganizerCall({
@@ -673,6 +705,7 @@ export const defaultLayer = Layer.suspend(() =>
       LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(RequestExecutor.defaultLayer, WebSocketExecutor.layer))),
     ),
     Layer.provide(RuntimeFlags.defaultLayer),
+    Layer.provide(AgentScheduler.defaultLayer),
   ),
 )
 
@@ -685,6 +718,7 @@ export const node = LayerNode.make(layer, [
   ProviderAdapters.node,
   llmClient,
   RuntimeFlags.node,
+  AgentScheduler.node,
 ])
 
 export * as LLM from "./llm"

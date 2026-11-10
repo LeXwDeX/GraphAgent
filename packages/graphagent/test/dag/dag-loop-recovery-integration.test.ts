@@ -21,6 +21,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 type ChildStatus = "active" | "completed" | "failed" | "unknown"
 
@@ -36,25 +37,15 @@ function node(overrides: Partial<NodeConfig> = {}): NodeConfig {
   }
 }
 
-function recoveryLayer(input: {
-  childStatuses: Map<string, ChildStatus>
-  cancelled: string[]
-  created: string[]
-}) {
+function recoveryLayer(input: { childStatuses: Map<string, ChildStatus>; cancelled: string[]; created: string[] }) {
   const database = Database.layerFromPath(":memory:")
   const events = EventV2.layer.pipe(Layer.provide(database))
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
     create: Effect.fn("test.Session.create")((_value?: unknown) =>
@@ -67,20 +58,24 @@ function recoveryLayer(input: {
     messages: Effect.fn("test.Session.messages")((value: { sessionID: string }) => {
       const status = input.childStatuses.get(value.sessionID) ?? "unknown"
       if (status === "unknown") return Effect.succeed([])
-      const message = (info: Record<string, unknown>) => [{ info: { ...info, id: "msg_recovered" }, parts: [] }] as never
+      const message = (info: Record<string, unknown>) =>
+        [{ info: { ...info, id: "msg_recovered" }, parts: [] }] as never
       if (status === "active") return Effect.succeed(message({ role: "assistant", finish: undefined }))
       if (status === "failed") return Effect.succeed(message({ role: "assistant", error: { name: "failed" } }))
       return Effect.succeed(message({ role: "assistant", finish: "stop" }))
     }),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: Effect.fn("test.SessionPrompt.cancel")((sessionID: string) =>
       Effect.sync(() => input.cancelled.push(sessionID)),
     ),
     // Keep wake delivery pending so tests can inspect durable unreported rows.
     prompt: () => Effect.never,
     deliver: () => Effect.succeed(Option.none()),
-  }))
+    }),
+  )
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
@@ -132,19 +127,27 @@ function createRunningNode(
   configOverrides: Partial<WorkflowConfig> = {},
 ) {
   return Effect.gen(function* () {
-    yield* database.db.insert(ProjectTable).values({
+    yield* database.db
+      .insert(ProjectTable)
+      .values({
       id: "project-1" as never,
       worktree: process.cwd() as never,
       sandboxes: [],
-    }).run().pipe(Effect.orDie)
-    yield* database.db.insert(SessionTable).values({
+      })
+      .run()
+      .pipe(Effect.orDie)
+    yield* database.db
+      .insert(SessionTable)
+      .values({
       id: "ses_parent1" as never,
       project_id: "project-1" as never,
       slug: "parent",
       directory: process.cwd() as never,
       title: "Parent",
       version: "test",
-    }).run().pipe(Effect.orDie)
+      })
+      .run()
+      .pipe(Effect.orDie)
     const dagID = yield* dag.create({
       projectID: "project-1",
       sessionID: "ses_parent1",
@@ -173,13 +176,7 @@ describe("DagLoop crash recovery integration", () => {
     await Effect.runPromise(
       runRecovery("active", ({ dag, database, loop, store, created }) =>
         Effect.gen(function* () {
-          const dagID = yield* createRunningNode(
-            dag,
-            database,
-            [node()],
-            undefined,
-            undefined,
-            {
+          const dagID = yield* createRunningNode(dag, database, [node()], undefined, undefined, {
               mode: "deep",
               admission: {
                 protocol_version: 1,
@@ -192,13 +189,13 @@ describe("DagLoop crash recovery integration", () => {
                 waiver_reason: "Preview recovery coverage only",
                 acknowledged_risks: ["Production rollout is unspecified"],
               },
-            },
-          )
+          })
 
           yield* loop.init()
 
           const workflow = yield* store.getWorkflow(dagID)
-          expect(Dag.parseWorkflowConfig(workflow?.config ?? "")).toEqual(expect.objectContaining({
+          expect(Dag.parseWorkflowConfig(workflow?.config ?? "")).toEqual(
+            expect.objectContaining({
             mode: "deep",
             admission: expect.objectContaining({
               state: "CONSUMED",
@@ -208,7 +205,8 @@ describe("DagLoop crash recovery integration", () => {
               waiver_reason: "Preview recovery coverage only",
               acknowledged_risks: ["Production rollout is unspecified"],
             }),
-          }))
+            }),
+          )
           expect(created).toEqual([])
         }),
       ),
@@ -251,9 +249,7 @@ describe("DagLoop crash recovery integration", () => {
           // failure to surface before unsubscribing.
           yield* pollWithTimeout(
             Effect.sync(() =>
-              failures.some(
-                (f) => f.reason === "deadline exceeded on recovery" && f.trigger === "timeout",
-              )
+              failures.some((f) => f.reason === "deadline exceeded on recovery" && f.trigger === "timeout")
                 ? failures
                 : undefined,
             ),
@@ -262,10 +258,12 @@ describe("DagLoop crash recovery integration", () => {
           yield* unsubscribe
 
           expect(cancelled).toEqual(["ses_child1"])
-          expect(failures).toContainEqual(expect.objectContaining({
+          expect(failures).toContainEqual(
+            expect.objectContaining({
             reason: "deadline exceeded on recovery",
             trigger: "timeout",
-          }))
+            }),
+          )
           expect((yield* store.getNode(dagID, "n1"))?.errorReason).toBe("deadline exceeded on recovery")
           expect((yield* store.getNode(dagID, "n1"))?.errorClass).toBe("timeout")
         }),
@@ -277,9 +275,14 @@ describe("DagLoop crash recovery integration", () => {
     await Effect.runPromise(
       runRecovery("completed", ({ dag, database, loop, store, cancelled }) =>
         Effect.gen(function* () {
-          const dagID = yield* createRunningNode(dag, database, [
-            node({ output_schema: { type: "object" } }),
-          ], undefined, undefined, {})
+          const dagID = yield* createRunningNode(
+            dag,
+            database,
+            [node({ output_schema: { type: "object" } })],
+            undefined,
+            undefined,
+            {},
+          )
           yield* store.setCapturedOutput("ses_child1", { summary: "done" })
 
           yield* loop.init()
@@ -343,10 +346,7 @@ describe("DagLoop crash recovery integration", () => {
           // pre-P2-2 behavior n2 was already skipped (terminal) and the
           // workflow already failed, so this exact replan was impossible.
           yield* dag.replan(dagID, {
-            nodes: [
-              node({ id: "n1b", name: "Node 1 retry" }),
-              node({ id: "n2", name: "Node 2", depends_on: ["n1b"] }),
-            ],
+            nodes: [node({ id: "n1b", name: "Node 1 retry" }), node({ id: "n2", name: "Node 2", depends_on: ["n1b"] })],
           })
 
           expect((yield* store.getNode(dagID, "n1b"))?.status).toBe("pending")
@@ -386,13 +386,7 @@ describe("DagLoop crash recovery integration", () => {
     await Effect.runPromise(
       runRecovery("active", ({ dag, database, loop, store }) =>
         Effect.gen(function* () {
-          const dagID = yield* createRunningNode(
-            dag,
-            database,
-            [node({ report_to_parent: true })],
-            undefined,
-            true,
-          )
+          const dagID = yield* createRunningNode(dag, database, [node({ report_to_parent: true })], undefined, true)
 
           yield* loop.init()
 

@@ -28,6 +28,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 // GOAL-FP-01-01 / GOAL-FP-01-03: the DAG exclusive-registry registration lifetime
 // must be bound to WORKFLOW STATE, not to wake delivery.
@@ -80,7 +81,9 @@ function reply(sessionID: string, text: string): SessionV1.WithParts {
       time: { created: Date.now() },
       finish: "stop",
     },
-    parts: text ? [{ id: PartID.ascending(), sessionID: SessionID.make(sessionID), messageID: id, type: "text", text }] : [],
+    parts: text
+      ? [{ id: PartID.ascending(), sessionID: SessionID.make(sessionID), messageID: id, type: "text", text }]
+      : [],
   }
 }
 
@@ -102,20 +105,20 @@ function leaseLifecycleLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const goal = Goal.layer.pipe(Layer.provide(bridge), Layer.provide(database), Layer.provide(status))
+  const base = Layer.mergeAll(
+    database,
+    events,
+    bridge,
+    store,
+    projector,
+    dag,
+    goal,
+    status,
+    AgentScheduler.defaultLayer,
   )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const goal = Goal.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(database),
-    Layer.provide(status),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, goal, status)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const session = Layer.mock(Session.Service, {
@@ -169,11 +172,14 @@ function leaseLifecycleLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>
     yield* Queue.offer(input.childPrompts, { title: childTitles.get(sessionID) ?? sessionID, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: () => Effect.void,
     prompt: deliver,
     deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({
@@ -357,18 +363,18 @@ describe("DagLoop lease lifecycle — terminal event release (GOAL-FP-01-03)", (
           // Complete the node → workflow terminalizes → terminal event handler.
           yield* Deferred.succeed(child.release, "done")
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined)),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
             "workflow did not complete",
           )
 
           // Public contract: the terminal event handler must release the dag
           // lease even though no wake delivery ever succeeded.
           yield* pollWithTimeout(
-            automation.claim(sid, { kind: "dag" }).pipe(
-              Effect.map((token) => (Option.isNone(token) ? true : undefined)),
-            ),
+            automation
+              .claim(sid, { kind: "dag" })
+              .pipe(Effect.map((token) => (Option.isNone(token) ? true : undefined))),
             "dag lease was not released after workflow terminalization without wake delivery",
           )
 
@@ -461,18 +467,16 @@ describe("DagLoop lease lifecycle — runtime-less terminal release (GOAL-FP-01-
           // that no runtime entry backs.
           yield* dag.cancel("dag-wf-ghost")
           yield* pollWithTimeout(
-            store.getWorkflow("dag-wf-ghost").pipe(
-              Effect.map((wf) => (wf?.status === "cancelled" ? wf : undefined)),
-            ),
+            store.getWorkflow("dag-wf-ghost").pipe(Effect.map((wf) => (wf?.status === "cancelled" ? wf : undefined))),
             "runtime-less workflow did not cancel",
           )
 
           // Public contract: the terminal event must release the swept
           // registration even though the workflow has no runtime entry.
           yield* pollWithTimeout(
-            automation.claim(sid, { kind: "dag" }).pipe(
-              Effect.map((token) => (Option.isNone(token) ? true : undefined)),
-            ),
+            automation
+              .claim(sid, { kind: "dag" })
+              .pipe(Effect.map((token) => (Option.isNone(token) ? true : undefined))),
             "dag lease was not released when a runtime-less workflow terminalized",
           )
 

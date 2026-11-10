@@ -20,6 +20,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 const ORPHAN_REASON = "orphan pending workflow recovered at startup"
 
@@ -29,31 +30,26 @@ function orphanRecoveryLayer(input: { promptCalls: string[] }) {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
-    create: Effect.fn("test.Session.create")((_value?: unknown) =>
-      Effect.sync(() => ({}) as never),
-    ),
+    create: Effect.fn("test.Session.create")((_value?: unknown) => Effect.sync(() => ({}) as never)),
     get: Effect.fn("test.Session.get")(() => Effect.succeed({} as never)),
     messages: Effect.fn("test.Session.messages")(() => Effect.succeed([])),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: Effect.fn("test.SessionPrompt.cancel")(() => Effect.void),
     prompt: Effect.fn("test.SessionPrompt.prompt")(() => {
       input.promptCalls.push("prompt")
       return Effect.never
     }),
     deliver: () => Effect.succeed(Option.none()),
-  }))
+    }),
+  )
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
@@ -94,19 +90,27 @@ function runOrphanRecovery<A>(
 
 function seedProjectAndSession(database: Database.Interface) {
   return Effect.gen(function* () {
-    yield* database.db.insert(ProjectTable).values({
+    yield* database.db
+      .insert(ProjectTable)
+      .values({
       id: "project-1" as never,
       worktree: process.cwd() as never,
       sandboxes: [],
-    }).run().pipe(Effect.orDie)
-    yield* database.db.insert(SessionTable).values({
+      })
+      .run()
+      .pipe(Effect.orDie)
+    yield* database.db
+      .insert(SessionTable)
+      .values({
       id: "ses_parent1" as never,
       project_id: "project-1" as never,
       slug: "parent",
       directory: process.cwd() as never,
       title: "Parent",
       version: "test",
-    }).run().pipe(Effect.orDie)
+      })
+      .run()
+      .pipe(Effect.orDie)
   })
 }
 

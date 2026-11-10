@@ -24,6 +24,7 @@ import { Provider } from "@graphagent/schema/provider"
 import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionPrompt } from "@/session/prompt"
@@ -108,7 +109,7 @@ const scenario = (mode: "none" | "expire" | "defect") =>
       const status = SessionStatus.layer.pipe(Layer.provide(bridge))
       const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
       const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-      const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+      const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
       const session = Layer.mock(Session.Service, {
         // "defect": the first durable-receipt lookup dies (any store/session
         // defect inside the delivery body has the same effect).

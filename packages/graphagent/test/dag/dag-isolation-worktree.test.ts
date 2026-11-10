@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process"
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { DateTime, Effect, Fiber, Layer, Semaphore } from "effect"
+import { DateTime, Effect, Fiber, Layer } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -38,6 +38,13 @@ import { Truncate } from "@/tool/truncate"
 import { WorkflowTool } from "@/tool/workflow"
 import { TerminalViolationError } from "@graphagent/core/dag/core/types"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 const roots: string[] = []
 
@@ -289,6 +296,7 @@ function makeHarness(
     promptLayer,
     ...(options.withWorktree === false ? [] : [worktreeLayer]),
     instanceStoreLayer,
+    AgentScheduler.defaultLayer,
   ) as never
   return harness
 }
@@ -325,8 +333,8 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const first = yield* spawnNode(Semaphore.makeUnsafe(2), a)
-          const second = yield* spawnNode(Semaphore.makeUnsafe(2), b)
+          const first = yield* spawnNode(spawnSchedule(a, 2), a)
+          const second = yield* spawnNode(spawnSchedule(b, 2), b)
           yield* Fiber.await(first.fiber)
           yield* Fiber.await(second.fiber)
         }),
@@ -369,8 +377,8 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const firstFiber = yield* spawnNode(Semaphore.makeUnsafe(2), first)
-          const secondFiber = yield* spawnNode(Semaphore.makeUnsafe(2), second)
+          const firstFiber = yield* spawnNode(spawnSchedule(first, 2), first)
+          const secondFiber = yield* spawnNode(spawnSchedule(second, 2), second)
           yield* Fiber.await(firstFiber.fiber)
           yield* Fiber.await(secondFiber.fiber)
         }),
@@ -399,7 +407,10 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness, false))
+          const result = yield* spawnNode(
+            spawnSchedule(spawnInput(target, "a", "success", harness, false), 1),
+            spawnInput(target, "a", "success", harness, false),
+          )
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
@@ -415,7 +426,10 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "failure", harness))
+          const result = yield* spawnNode(
+            spawnSchedule(spawnInput(target, "a", "failure", harness), 1),
+            spawnInput(target, "a", "failure", harness),
+          )
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
@@ -523,7 +537,10 @@ describe("spawn worktree isolation", () => {
                 timestamp: yield* DateTime.now,
               })
             })
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          const result = yield* spawnNode(
+            spawnSchedule(spawnInput(target, "a", "success", harness), 1),
+            spawnInput(target, "a", "success", harness),
+          )
           yield* Fiber.await(result.fiber)
           const status = yield* Effect.gen(function* () {
             const info = yield* WorkflowTool
@@ -587,7 +604,10 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          const result = yield* spawnNode(
+            spawnSchedule(spawnInput(target, "a", "success", harness), 1),
+            spawnInput(target, "a", "success", harness),
+          )
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
@@ -621,7 +641,7 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), input)
+          const result = yield* spawnNode(spawnSchedule(input, 1), input)
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
@@ -646,7 +666,10 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          const result = yield* spawnNode(
+            spawnSchedule(spawnInput(target, "a", "success", harness), 1),
+            spawnInput(target, "a", "success", harness),
+          )
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
@@ -666,7 +689,10 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          const result = yield* spawnNode(
+            spawnSchedule(spawnInput(target, "a", "success", harness), 1),
+            spawnInput(target, "a", "success", harness),
+          )
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
@@ -694,7 +720,7 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), input)
+          const result = yield* spawnNode(spawnSchedule(input, 1), input)
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,
@@ -714,7 +740,10 @@ describe("spawn worktree isolation", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), spawnInput(target, "a", "success", harness))
+          const result = yield* spawnNode(
+            spawnSchedule(spawnInput(target, "a", "success", harness), 1),
+            spawnInput(target, "a", "success", harness),
+          )
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.layer)) as Effect.Effect<never>,

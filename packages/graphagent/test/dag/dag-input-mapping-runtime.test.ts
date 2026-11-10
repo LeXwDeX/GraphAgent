@@ -35,6 +35,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { awaitWithTimeout, it, pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface PromptRecord {
   readonly title: string
@@ -76,14 +77,17 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag, AgentScheduler.defaultLayer)
   const titles = new Map<string, string>()
   const permissions = new Map<string, PermissionV1.Ruleset>()
   // Resolve the existing temp root before adding wildcard segments: Windows
   // realpath cannot expand RUNNER~1 through a non-existent dag-* directory.
   // The authorizer matches external_directory against the canonical source
   // (artifact capture resolves symlinks before authorizing).
-  const agentPermissions = Permission.fromConfig({ read: "allow", external_directory: { "*": "ask", [path.join(FSUtil.resolve(os.tmpdir()), "dag-*", "*")]: "allow" } })
+  const agentPermissions = Permission.fromConfig({
+    read: "allow",
+    external_directory: { "*": "ask", [path.join(FSUtil.resolve(os.tmpdir()), "dag-*", "*")]: "allow" },
+  })
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
     get: (id) => Effect.succeed({ id, permission: permissions.get(id) ?? parentPermissions, agent: "build" } as never),
@@ -101,29 +105,52 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
     const sessionID = input.sessionID as string
     if (sessionID === "ses_mapping_parent") return reply(sessionID)
     const release = yield* Deferred.make<string>()
-    const text = input.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+    const text = input.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
     const artifactPath = text.match(/^Read the committed report: (.+)$/m)?.[1]
-    const readOutput = artifactPath ? yield* Effect.gen(function* () {
+    const readOutput = artifactPath
+      ? yield* Effect.gen(function* () {
       const info = yield* ReadTool
       const read = yield* info.init()
-      const result = yield* read.execute({ filePath: artifactPath }, {
-        sessionID: SessionID.make(sessionID), messageID: MessageID.ascending(), agent: "build",
-        abort: new AbortController().signal, messages: [], metadata: () => Effect.void,
-        ask: (request) => Effect.sync(() => {
+          const result = yield* read.execute(
+            { filePath: artifactPath },
+            {
+              sessionID: SessionID.make(sessionID),
+              messageID: MessageID.ascending(),
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: (request) =>
+                Effect.sync(() => {
           for (const pattern of request.patterns) {
-            const action = Permission.evaluate(request.permission, pattern, agentPermissions, permissions.get(sessionID) ?? []).action
+                    const action = Permission.evaluate(
+                      request.permission,
+                      pattern,
+                      agentPermissions,
+                      permissions.get(sessionID) ?? [],
+                    ).action
             if (action !== "allow") throw new Error(`${action}: ${request.permission}`)
           }
         }),
-      })
+            },
+          )
       return result.output
-    }).pipe(Effect.provide(Layer.mergeAll(
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
       FSUtil.defaultLayer,
       Layer.mock(Instruction.Service, { resolve: () => Effect.succeed([]) }),
       Layer.mock(LSP.Service, { touchFile: () => Effect.void }),
       Layer.mock(Truncate.Service, { output: (content) => Effect.succeed({ content, truncated: false }) }),
       agent,
-    )), Effect.scoped) : undefined
+            ),
+          ),
+          Effect.scoped,
+        )
+      : undefined
     yield* Queue.offer(records, {
       title: titles.get(sessionID) ?? sessionID,
       text: input.parts
@@ -219,7 +246,9 @@ describe("DagLoop input_mapping execution boundary", () => {
   for (const permission of ["read", "external_directory"] as const) {
     it.live(`does not capture or complete a source denied by ${permission}`, () => {
       const parentPermissions: PermissionV1.Rule[] = [{ permission, pattern: "*", action: "deny" }]
-      return runLoopTest(({ dag, loop, store, records }) => Effect.gen(function* () {
+      return runLoopTest(
+        ({ dag, loop, store, records }) =>
+          Effect.gen(function* () {
         const directory = yield* Effect.acquireRelease(
           Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "dag-denied-capture-"))),
           (dir) => Effect.promise(() => fs.rm(dir, { recursive: true, force: true })),
@@ -228,23 +257,29 @@ describe("DagLoop input_mapping execution boundary", () => {
         yield* Effect.promise(() => fs.writeFile(source, `private capture ${directory}`))
         yield* loop.init()
         const dagID = yield* dag.create({
-          projectID: Project.ID.global, sessionID: "ses_mapping_parent", title: "Denied source",
+              projectID: Project.ID.global,
+              sessionID: "ses_mapping_parent",
+              title: "Denied source",
           config: { name: "denied-source", nodes: [node("producer")] },
         })
         const producer = yield* awaitWithTimeout(Queue.take(records), "producer did not start")
         yield* Deferred.succeed(producer.release, source)
-        const failed = yield* pollWithTimeout(store.getNode(dagID, "producer").pipe(
-          Effect.map((row) => row?.status === "failed" ? row : undefined),
-        ), "denied source did not fail producer")
+            const failed = yield* pollWithTimeout(
+              store.getNode(dagID, "producer").pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
+              "denied source did not fail producer",
+            )
         expect(failed.errorReason).toContain(`source ${permission} denied`)
         expect(failed.capturedOutput).toBeNull()
         expect(failed.output).toBeNull()
-      }), parentPermissions)
+          }),
+        parentPermissions,
+      )
     })
   }
 
   it.live("recovers only the failed verification and downstream report using committed upstream files", () =>
-    runLoopTest(({ dag, loop, store, records, created }) => Effect.gen(function* () {
+    runLoopTest(({ dag, loop, store, records, created }) =>
+      Effect.gen(function* () {
       const directory = yield* Effect.acquireRelease(
         Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "dag-recover-wave-"))),
         (dir) => Effect.promise(() => fs.rm(dir, { recursive: true, force: true })),
@@ -255,8 +290,13 @@ describe("DagLoop input_mapping execution boundary", () => {
       verify.prompt_template = { inline: "Read the committed report: {{report}}" }
       yield* loop.init()
       const dagID = yield* dag.create({
-        projectID: Project.ID.global, sessionID: "ses_mapping_parent", title: "Recover verification",
-        config: { name: "recover-verification", nodes: [node("analyze"), node("implement", ["analyze"]), verify, node("report", ["verify"])] },
+          projectID: Project.ID.global,
+          sessionID: "ses_mapping_parent",
+          title: "Recover verification",
+          config: {
+            name: "recover-verification",
+            nodes: [node("analyze"), node("implement", ["analyze"]), verify, node("report", ["verify"])],
+          },
       })
       const analyze = yield* awaitWithTimeout(Queue.take(records), "analysis did not start")
       expect(analyze.title).toBe("analyze")
@@ -268,7 +308,7 @@ describe("DagLoop input_mapping execution boundary", () => {
       expect(verification.readOutput).toContain("completed analysis")
       yield* dag.nodeFailed(dagID, "verify", "test temporarily unavailable", "exec_failed")
       const failed = yield* pollWithTimeout(
-        store.getWorkflow(dagID).pipe(Effect.map((row) => row?.status === "failed" ? row : undefined)),
+          store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
         "workflow did not become failed",
       )
       yield* Effect.promise(() => fs.rm(directory, { recursive: true, force: true }))
@@ -290,19 +330,29 @@ describe("DagLoop input_mapping execution boundary", () => {
       expect(report.title).toBe("report")
       yield* Deferred.succeed(report.release, "complete")
       yield* pollWithTimeout(
-        store.getWorkflow(dagID).pipe(Effect.map((row) => row?.status === "completed" ? row : undefined)),
+          store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "completed" ? row : undefined))),
         "recovered workflow did not complete",
       )
       expect(created).toHaveLength(5)
       expect((yield* store.getNode(dagID, "analyze"))?.childSessionId).toBe(analysis.childSessionId)
       expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
-    })),
+      }),
+    ),
   )
 
-  for (const [corrupt, deny, sourceReadDeny, targetReadDeny] of [[false, false, false, false], [true, false, false, false], [false, true, false, false], [false, false, true, false], [false, false, false, true]]) {
+  for (const [corrupt, deny, sourceReadDeny, targetReadDeny] of [
+    [false, false, false, false],
+    [true, false, false, false],
+    [false, true, false, false],
+    [false, false, true, false],
+    [false, false, false, true],
+  ]) {
     const parentPermissions: PermissionV1.Rule[] = []
-    it.live(`reads verified artifacts with scoped permissions (corrupt=${corrupt}, deny=${deny}, sourceReadDeny=${sourceReadDeny}, targetReadDeny=${targetReadDeny})`, () =>
-      runLoopTest(({ dag, loop, store, records }) =>
+    it.live(
+      `reads verified artifacts with scoped permissions (corrupt=${corrupt}, deny=${deny}, sourceReadDeny=${sourceReadDeny}, targetReadDeny=${targetReadDeny})`,
+      () =>
+        runLoopTest(
+          ({ dag, loop, store, records }) =>
         Effect.gen(function* () {
           const directory = yield* Effect.acquireRelease(
             Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "dag-file-handoff-"))),
@@ -315,7 +365,9 @@ describe("DagLoop input_mapping execution boundary", () => {
           const consumer = node("consumer", ["producer", "blocker"], { report: "producer.output" })
           consumer.prompt_template = { inline: "Read the committed report: {{report}}" }
           const dagID = yield* dag.create({
-            projectID: Project.ID.global, sessionID: "ses_mapping_parent", title: "File handoff",
+                projectID: Project.ID.global,
+                sessionID: "ses_mapping_parent",
+                title: "File handoff",
             config: { name: "file-handoff", nodes: [node("producer"), node("blocker"), consumer] },
           })
           const first = yield* awaitWithTimeout(Queue.take(records), "first source did not start")
@@ -323,19 +375,37 @@ describe("DagLoop input_mapping execution boundary", () => {
           const producer = [first, second].find((record) => record.title === "producer")!
           yield* Deferred.succeed(producer.release, source)
           const row = yield* pollWithTimeout(
-            store.getNode(dagID, "producer").pipe(Effect.map((row) => row?.status === "completed" ? row : undefined)),
+                store
+                  .getNode(dagID, "producer")
+                  .pipe(Effect.map((row) => (row?.status === "completed" ? row : undefined))),
             "producer did not commit its file",
           )
           const ref = row.capturedOutput
           expect(isManagedOutputFileRef(ref)).toBe(true)
           if (!isManagedOutputFileRef(ref)) throw new Error("missing managed receipt")
-          if (sourceReadDeny) parentPermissions.push({ permission: "read", pattern: path.relative(process.cwd(), FSUtil.normalizePath(source)), action: "deny" })
+              if (sourceReadDeny)
+                parentPermissions.push({
+                  permission: "read",
+                  pattern: path.relative(process.cwd(), FSUtil.normalizePath(source)),
+                  action: "deny",
+                })
           if (deny) parentPermissions.push({ permission: "external_directory", pattern: "*", action: "deny" })
-          if (targetReadDeny) parentPermissions.push(
-            { permission: "read", pattern: path.relative(process.cwd(), FSUtil.normalizePath(source)), action: "ask" },
-            { permission: "read", pattern: path.relative(process.cwd(), FSUtil.normalizePath(ref.path)), action: "deny" },
+              if (targetReadDeny)
+                parentPermissions.push(
+                  {
+                    permission: "read",
+                    pattern: path.relative(process.cwd(), FSUtil.normalizePath(source)),
+                    action: "ask",
+                  },
+                  {
+                    permission: "read",
+                    pattern: path.relative(process.cwd(), FSUtil.normalizePath(ref.path)),
+                    action: "deny",
+                  },
+                )
+              yield* Effect.addFinalizer(() =>
+                Effect.promise(() => fs.rm(path.dirname(ref.path), { recursive: true, force: true })),
           )
-          yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(path.dirname(ref.path), { recursive: true, force: true })))
           yield* Effect.promise(() => fs.rm(directory, { recursive: true, force: true }))
           if (corrupt) {
             yield* Effect.promise(() => fs.chmod(ref.path, 0o600))
@@ -344,10 +414,18 @@ describe("DagLoop input_mapping execution boundary", () => {
           yield* dag.nodeCompleted(dagID, "blocker", "ready")
           if (corrupt || deny || sourceReadDeny || targetReadDeny) {
             const failed = yield* pollWithTimeout(
-              store.getNode(dagID, "consumer").pipe(Effect.map((row) => row?.status === "failed" ? row : undefined)),
+                  store
+                    .getNode(dagID, "consumer")
+                    .pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
               "invalid or denied artifact did not stop consumer",
             )
-            expect(failed.errorReason).toContain(corrupt ? "Input artifact verification failed" : sourceReadDeny || targetReadDeny ? "deny: read" : "deny: external_directory")
+                expect(failed.errorReason).toContain(
+                  corrupt
+                    ? "Input artifact verification failed"
+                    : sourceReadDeny || targetReadDeny
+                      ? "deny: read"
+                      : "deny: external_directory",
+                )
             expect(Option.isNone(yield* Queue.poll(records))).toBe(true)
           } else {
             const prompt = yield* awaitWithTimeout(Queue.take(records), "consumer did not start")
@@ -355,11 +433,24 @@ describe("DagLoop input_mapping execution boundary", () => {
             expect(prompt.text).not.toContain(body)
             expect(prompt.text).not.toContain(source)
             expect(prompt.readOutput).toContain(body)
-            expect(Permission.evaluate("edit", path.relative(process.cwd(), FSUtil.normalizePath(ref.path)), prompt.permission).action).toBe("deny")
-            expect(Permission.evaluate("external_directory", path.join(path.dirname(path.dirname(ref.path)), "unrelated", "*"), prompt.permission).action).toBe("ask")
+                expect(
+                  Permission.evaluate(
+                    "edit",
+                    path.relative(process.cwd(), FSUtil.normalizePath(ref.path)),
+                    prompt.permission,
+                  ).action,
+                ).toBe("deny")
+                expect(
+                  Permission.evaluate(
+                    "external_directory",
+                    path.join(path.dirname(path.dirname(ref.path)), "unrelated", "*"),
+                    prompt.permission,
+                  ).action,
+                ).toBe("ask")
             expect(yield* Effect.promise(() => fs.readFile(ref.path, "utf8"))).toBe(body)
           }
-        }), parentPermissions,
+            }),
+          parentPermissions,
       ),
     )
   }
@@ -502,7 +593,10 @@ describe("DagLoop input_mapping execution boundary", () => {
         yield* dag.nodeFailed(dagID, "lane-a", "lane crashed", "exec_failed")
         yield* dag.nodeCompleted(dagID, "lane-b", "b findings")
 
-        const decision = yield* awaitWithTimeout(Queue.take(records), "decision did not start after an optional lane failed")
+        const decision = yield* awaitWithTimeout(
+          Queue.take(records),
+          "decision did not start after an optional lane failed",
+        )
         expect(decision.title).toBe("decision")
         expect(decision.text).toContain('"a_review": "Dependency \\"lane-a\\" failed: lane crashed"')
         expect(decision.text).toContain('"b_review": "b findings"')

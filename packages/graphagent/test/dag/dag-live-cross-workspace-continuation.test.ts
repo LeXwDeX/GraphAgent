@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { rm } from "node:fs/promises"
 import { $ } from "bun"
 import { sql } from "drizzle-orm"
-import { Effect, Fiber, Layer, Semaphore } from "effect"
+import { Effect, Fiber, Layer } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { layer as sqliteLayer } from "@graphagent/core/database/sqlite.bun"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -15,7 +15,7 @@ import { EventV2 } from "@graphagent/core/event"
 import { ProjectV2 } from "@graphagent/core/project"
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
-import { spawnNode } from "@/dag/runtime/spawn"
+import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
@@ -27,6 +27,13 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { tmpdir } from "../fixture/fixture"
 import { makeNodeRow } from "./fixtures"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 const projectID = ProjectV2.ID.make("p-cross-workspace")
 const parentID = SessionID.make("ses_cross_parent")
@@ -169,7 +176,15 @@ describe("live cross-workspace DAG continuation", () => {
         cancel: () => Effect.void,
       })
 
-      const layer = Layer.mergeAll(persistence, dag, agent, sessions, prompt, instanceStore)
+      const layer = Layer.mergeAll(
+        persistence,
+        dag,
+        agent,
+        sessions,
+        prompt,
+        instanceStore,
+        AgentScheduler.defaultLayer,
+      )
       const ambient = {
         directory: owner.path,
         worktree: owner.path,
@@ -196,7 +211,7 @@ describe("live cross-workspace DAG continuation", () => {
               sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,seq,time_created,time_updated) VALUES ('node-1','dag_cross_workspace','N','build','pending','[]',NULL,0,1,1)`,
             )
 
-            const spawned = yield* spawnNode(Semaphore.makeUnsafe(1), {
+            const input: NodeSpawnInput = {
               dagID: "dag_cross_workspace",
               nodeID: "node-1",
               node: makeNodeRow({ id: "node-1", name: "N", status: "pending" }),
@@ -204,7 +219,8 @@ describe("live cross-workspace DAG continuation", () => {
               directory: owner.path,
               executionDirectory: workspace.path,
               promptParts: [{ type: "text", text: "work" }],
-            })
+            }
+            const spawned = yield* spawnNode(spawnSchedule(input, 1), input)
             yield* Fiber.join(spawned.fiber)
 
             const finalNode = yield* (yield* Dag.Service).store.getNode("dag_cross_workspace", "node-1")

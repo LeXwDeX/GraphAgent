@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test"
 import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Fiber, Layer, Semaphore } from "effect"
+import { Effect, Fiber, Layer } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -18,11 +18,18 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
 import { continueRecoveredMessageNode, makeLastAssistantMessageReader, reconcileWorkflow } from "@/dag/runtime/recovery"
-import { spawnNode } from "@/dag/runtime/spawn"
+import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { makeNodeRow } from "./fixtures"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 function assistant(
   parts: Array<Partial<SessionV1.TextPart>>,
@@ -174,16 +181,30 @@ describe("spawn final-response protocol", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+          const input: NodeSpawnInput = {
             dagID: "wf",
             nodeID: "n",
             node: makeNodeRow({ id: "n" }),
             parentSessionID: "ses_parent",
             promptParts: [{ type: "text", text: "work" }],
             outputSchema: schema,
-          })
+          }
+          const result = yield* spawnNode(spawnSchedule(input, 1), input)
           yield* Fiber.await(result.fiber)
-        }).pipe(Effect.provide(Layer.mergeAll(dag, agent, sessions, prompt, provider, config, RuntimeFlags.layer({})))),
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              dag,
+              agent,
+              sessions,
+              prompt,
+              provider,
+              config,
+              RuntimeFlags.layer({}),
+              AgentScheduler.defaultLayer,
+            ),
+          ),
+        ),
       ) as Effect.Effect<never>,
     )
     return { events, receipt, prompts, promptSessions }

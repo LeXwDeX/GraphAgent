@@ -31,6 +31,7 @@ import { SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 const realSleep = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)))
 
@@ -57,7 +58,7 @@ async function run(planOutput: unknown, expectedWriters: number) {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
     get: () =>
@@ -175,7 +176,10 @@ async function run(planOutput: unknown, expectedWriters: number) {
 
 describe("DagLoop fan_out expansion", () => {
   it("runs disjoint packages as parallel writers joined under the original writer id", async () => {
-    const result = await run({ summary: "split", packages: [pkg("api", ["src/api"]), pkg("ui", ["src/ui"]), pkg("docs", ["docs"])] }, 3)
+    const result = await run(
+      { summary: "split", packages: [pkg("api", ["src/api"]), pkg("ui", ["src/ui"]), pkg("docs", ["docs"])] },
+      3,
+    )
     const byID = new Map(result.config.nodes.map((node) => [node.id, node]))
 
     expect(result.running).toEqual(["slices--api", "slices--docs", "slices--ui"])

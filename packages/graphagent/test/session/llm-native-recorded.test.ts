@@ -21,6 +21,7 @@ import { Env } from "@/env"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import type { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
+import { AgentScheduler } from "../../src/session/agent-scheduler"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -295,6 +296,7 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
       Layer.provide(adapters),
       Layer.provide(recordedClient),
       Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
+      Layer.provide(AgentScheduler.defaultLayer),
     ),
   )
 }

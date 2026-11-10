@@ -53,6 +53,7 @@ import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { SessionInbox } from "@/session/inbox"
 import { ExclusiveRegistry } from "@/session/engine-process"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { renderTemplate } from "../templates/resolve"
 import { sanitizeInput } from "../templates/sanitize"
 import { DagConfig } from "../config"
@@ -110,7 +111,8 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 
 interface WorkflowEntry {
   runtime: WorkflowRuntime
-  semaphore: Semaphore.Semaphore
+  /** Per-workflow child-run cap, enforced by the process-level scheduler. */
+  concurrency: number
   evalLock: Semaphore.Semaphore
   parentSessionID: string
   config: WorkflowConfig | undefined
@@ -153,6 +155,7 @@ const serviceLayer = Layer.effect(
     // default layer and get the one per-instance idle subscription.
     const inbox = Option.getOrUndefined(yield* Effect.serviceOption(SessionInbox.Service))
     const automation = yield* ExclusiveRegistry.Service
+    const scheduler = yield* AgentScheduler.Service
     const database = yield* Database.Service
 
     const state = yield* InstanceState.make(
@@ -689,56 +692,59 @@ const serviceLayer = Layer.effect(
             // rebuilt as pending can be re-admitted while its original fiber
             // is still live, and that original attempt owns the node.
             let admitted = false
-            yield* spawnNode(entry.semaphore, {
-              dagID,
-              nodeID,
-              node,
-              graphRev: entry.graphRev,
-              onAdmitted: Effect.gen(function* () {
-                admitted = true
-                entry.runtime.markRunning(nodeID)
-                const oldFiber = entry.fibers.get(nodeID)
-                const oldWatcher = entry.watchers.get(nodeID)
-                yield* abortChild(
-                  dagID,
-                  nodeID,
-                  node.childSessionId,
-                  "dag.loop.admission.replace",
-                  childAbort("attempt-replaced", "dag-loop"),
-                ).pipe(Effect.ignore)
-                if (oldFiber) yield* Fiber.interrupt(oldFiber).pipe(Effect.ignore)
-                // Interrupt the old watcher before installing a new one. The
-                // old self-renewing watcher would otherwise become unreachable
-                // after the map overwrite and keep escalating stale deadlines.
-                if (oldWatcher) yield* Fiber.interrupt(oldWatcher).pipe(Effect.ignore)
-              }),
-              parentSessionID: entry.parentSessionID,
-              directory: ctx.directory,
-              executionDirectory: nodeDirectory,
-              ...(nodeConfig?.isolation ? { isolation: nodeConfig.isolation } : {}),
-              inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
-              promptParts,
-              outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,
-              timeoutMs: nodeConfig?.worker_config?.timeout_ms,
-              reportToParent: nodeConfig?.report_to_parent,
-              reviewImplementationFingerprint: nodeConfig
-                ? reviewImplementationFingerprint(nodeConfig, resolvedMapping)
-                : undefined,
-              // #944: nodes that judge the working tree (block-compiled review
-              // lanes, verify, synthesize, or legacy review conventions) record
-              // a target fingerprint so a mid-run change marks them stale.
-              targetSensitive: targetSensitiveNode(nodeConfig, node.workerType),
-              verdictEvidence: nodesSnapshot
-                .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
-                .map((source) => ({ nodeID: source.id, output: source.output })),
-              fallbackModel: DagConfig.tierModel(nodeDagConfig, {
-                required: node.required,
-                workerType: node.workerType,
-              }),
-              variant: nodeDagConfig.thinking_depth,
-              maxTimeoutExtensions:
-                entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
-            }).pipe(
+            yield* spawnNode(
+              { limit: { kind: "workflow", workflowID: dagID }, cap: entry.concurrency },
+              {
+                dagID,
+                nodeID,
+                node,
+                graphRev: entry.graphRev,
+                onAdmitted: Effect.gen(function* () {
+                  admitted = true
+                  entry.runtime.markRunning(nodeID)
+                  const oldFiber = entry.fibers.get(nodeID)
+                  const oldWatcher = entry.watchers.get(nodeID)
+                  yield* abortChild(
+                    dagID,
+                    nodeID,
+                    node.childSessionId,
+                    "dag.loop.admission.replace",
+                    childAbort("attempt-replaced", "dag-loop"),
+                  ).pipe(Effect.ignore)
+                  if (oldFiber) yield* Fiber.interrupt(oldFiber).pipe(Effect.ignore)
+                  // Interrupt the old watcher before installing a new one. The
+                  // old self-renewing watcher would otherwise become unreachable
+                  // after the map overwrite and keep escalating stale deadlines.
+                  if (oldWatcher) yield* Fiber.interrupt(oldWatcher).pipe(Effect.ignore)
+                }),
+                parentSessionID: entry.parentSessionID,
+                directory: ctx.directory,
+                executionDirectory: nodeDirectory,
+                ...(nodeConfig?.isolation ? { isolation: nodeConfig.isolation } : {}),
+                inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
+                promptParts,
+                outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,
+                timeoutMs: nodeConfig?.worker_config?.timeout_ms,
+                reportToParent: nodeConfig?.report_to_parent,
+                reviewImplementationFingerprint: nodeConfig
+                  ? reviewImplementationFingerprint(nodeConfig, resolvedMapping)
+                  : undefined,
+                // #944: nodes that judge the working tree (block-compiled review
+                // lanes, verify, synthesize, or legacy review conventions) record
+                // a target fingerprint so a mid-run change marks them stale.
+                targetSensitive: targetSensitiveNode(nodeConfig, node.workerType),
+                verdictEvidence: nodesSnapshot
+                  .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
+                  .map((source) => ({ nodeID: source.id, output: source.output })),
+                fallbackModel: DagConfig.tierModel(nodeDagConfig, {
+                  required: node.required,
+                  workerType: node.workerType,
+                }),
+                variant: nodeDagConfig.thinking_depth,
+                maxTimeoutExtensions:
+                  entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
+              },
+            ).pipe(
               Effect.tap((result) =>
                 Effect.sync(() => {
                   if (!admitted) return
@@ -750,6 +756,7 @@ const serviceLayer = Layer.effect(
               Effect.provideService(Agent.Service, agentSvc),
               Effect.provideService(Session.Service, sessionSvc),
               Effect.provideService(SessionPrompt.Service, promptSvc),
+              Effect.provideService(AgentScheduler.Service, scheduler),
               Effect.catchCause((cause) =>
                 Cause.hasInterrupts(cause)
                   ? Effect.failCause(cause)
@@ -896,9 +903,12 @@ const serviceLayer = Layer.effect(
             // path "inside" the boundary. Derive the boundary from the instance
             // directory instead so external sources still require approval.
             const { worktree, boundary } = artifactPermissionBase(ctx.directory, ctx.worktree, executionDirectory)
-            const continuation = entry.semaphore
-              .withPermits(1)(
-                Deferred.await(registered).pipe(
+            const continuation = Effect.scoped(
+              Effect.gen(function* () {
+                yield* scheduler.childSlot({ kind: "workflow", workflowID: dagID }, entry.concurrency, {
+                  rootSessionID: entry.parentSessionID,
+                })
+                return yield* Deferred.await(registered).pipe(
                   Effect.andThen(
                     continueRecoveredMessageNode(
                       dagID,
@@ -909,39 +919,36 @@ const serviceLayer = Layer.effect(
                       executionDirectory,
                     ),
                   ),
-                ),
-              )
-              .pipe(
-                Effect.provideService(Dag.Service, dag),
-                Effect.provideService(SessionPrompt.Service, promptSvc),
-                (self) => (messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self),
-                Effect.onExit((exit) =>
-                  Effect.gen(function* () {
-                    // A finished or interrupted helper must relinquish its own
-                    // reservation before any DB read or exit classification. Never
-                    // delete a replacement attempt's fiber installed under this ID.
-                    if (ownedFiber && entry.fibers.get(nodeID) === ownedFiber) entry.fibers.delete(nodeID)
-                    if (!Exit.isSuccess(exit) || runtimes.get(dagID) !== entry) return
-                    const current = yield* store.getNode(dagID, nodeID)
-                    if (
-                      current?.childSessionId !== node.childSessionId ||
-                      current.replanAttempts !== node.replanAttempts
-                    )
-                      return
-                    if (current.status !== "running") return
-                    const phase = yield* store.getWorkflow(dagID)
-                    if (!phase || !["running", "stepping", "paused"].includes(phase.status)) return
-                    // Pause may win after the loop reserved this attempt but before
-                    // the helper's first phase read. Keep it resumable; if resume
-                    // raced this cleanup, the scoped retry rechecks the phase.
-                    entry.messageContinuations.add(nodeID)
-                    yield* entry.evalLock
-                      .withPermits(1)(startMessageContinuations(dagID, entry))
-                      .pipe(guarded("RecoveredAgentMessageRearm"), Effect.forkIn(stateScope))
-                  }),
-                ),
-                guarded("RecoveredAgentMessageContinuation"),
-              )
+                )
+              }),
+            ).pipe(
+              Effect.provideService(Dag.Service, dag),
+              Effect.provideService(SessionPrompt.Service, promptSvc),
+              (self) => (messageSvc ? Effect.provideService(self, DagMessages.Service, messageSvc) : self),
+              Effect.onExit((exit) =>
+                Effect.gen(function* () {
+                  // A finished or interrupted helper must relinquish its own
+                  // reservation before any DB read or exit classification. Never
+                  // delete a replacement attempt's fiber installed under this ID.
+                  if (ownedFiber && entry.fibers.get(nodeID) === ownedFiber) entry.fibers.delete(nodeID)
+                  if (!Exit.isSuccess(exit) || runtimes.get(dagID) !== entry) return
+                  const current = yield* store.getNode(dagID, nodeID)
+                  if (current?.childSessionId !== node.childSessionId || current.replanAttempts !== node.replanAttempts)
+                    return
+                  if (current.status !== "running") return
+                  const phase = yield* store.getWorkflow(dagID)
+                  if (!phase || !["running", "stepping", "paused"].includes(phase.status)) return
+                  // Pause may win after the loop reserved this attempt but before
+                  // the helper's first phase read. Keep it resumable; if resume
+                  // raced this cleanup, the scoped retry rechecks the phase.
+                  entry.messageContinuations.add(nodeID)
+                  yield* entry.evalLock
+                    .withPermits(1)(startMessageContinuations(dagID, entry))
+                    .pipe(guarded("RecoveredAgentMessageRearm"), Effect.forkIn(stateScope))
+                }),
+              ),
+              guarded("RecoveredAgentMessageContinuation"),
+            )
             const fiber = yield* continuation.pipe(Effect.forkIn(stateScope))
             ownedFiber = fiber
             entry.fibers.set(nodeID, fiber)
@@ -1012,9 +1019,9 @@ const serviceLayer = Layer.effect(
                   childSessionID: sid,
                 }).pipe(
                   Effect.andThen(
-                    forkCancel(
-                      promptSvc.cancel(sid as never, { reason: childAbort("recovery", "recovery") }),
-                    ).pipe(Effect.provideService(Scope.Scope, stateScope)),
+                    forkCancel(promptSvc.cancel(sid as never, { reason: childAbort("recovery", "recovery") })).pipe(
+                      Effect.provideService(Scope.Scope, stateScope),
+                    ),
                   ),
                 ),
               // null (not undefined) marks an unparseable row so recovery
@@ -1023,11 +1030,7 @@ const serviceLayer = Layer.effect(
               lastAssistantText,
               wf.executionDirectory ?? wf.directory,
               (executionDirectory) => {
-                const { worktree, boundary } = artifactPermissionBase(
-                  ctx.directory,
-                  ctx.worktree,
-                  executionDirectory,
-                )
+                const { worktree, boundary } = artifactPermissionBase(ctx.directory, ctx.worktree, executionDirectory)
                 return makeArtifactSourceAuthorizer(sessionSvc, agentSvc, worktree, permissionSvc, boundary)
               },
               lastAssistantMessage,
@@ -1107,14 +1110,13 @@ const serviceLayer = Layer.effect(
             const currentWorkflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
             const maxConcurrency = Math.max(1, config?.max_concurrency ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxConcurrency)
             const runtime = new WorkflowRuntime(toSchedulingNodes(nodes), maxConcurrency)
-            const semaphore = Semaphore.makeUnsafe(maxConcurrency)
             const isPaused = currentWorkflow?.status === "paused" || pausedForRecovery || pausedForCheckpoint
             const isStepping = currentWorkflow?.status === "stepping" && !isPaused
             if (isPaused) runtime.setPaused(true)
             if (isStepping) runtime.setStepMode(true)
             const entry: WorkflowEntry = {
               runtime,
-              semaphore,
+              concurrency: maxConcurrency,
               evalLock: Semaphore.makeUnsafe(1),
               parentSessionID: wf.sessionId,
               config,
@@ -1274,10 +1276,9 @@ const serviceLayer = Layer.effect(
                   config?.max_concurrency ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
                 )
                 const runtime = new WorkflowRuntime(toSchedulingNodes(nodes), maxConcurrency)
-                const semaphore = Semaphore.makeUnsafe(maxConcurrency)
                 const entry: WorkflowEntry = {
                   runtime,
-                  semaphore,
+                  concurrency: maxConcurrency,
                   evalLock: Semaphore.makeUnsafe(1),
                   parentSessionID: wf.sessionId,
                   config,
@@ -2227,6 +2228,7 @@ export const defaultLayer = layer.pipe(
   // innermost provide so its own EventV2Bridge/SessionStatus defaults are
   // built in the same memoMap graph as the rest of this layer's deps.
   Layer.provide(SessionInbox.defaultLayer),
+  Layer.provide(AgentScheduler.defaultLayer),
   Layer.provide(Database.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(DagStore.defaultLayer),
@@ -2248,6 +2250,7 @@ export const node = LayerNode.make(layer, [
   DagMessages.node,
   Dag.node,
   Agent.node,
+  AgentScheduler.node,
   Session.node,
   SessionPrompt.node,
   Permission.node,

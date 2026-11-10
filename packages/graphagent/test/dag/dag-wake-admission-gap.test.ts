@@ -18,6 +18,7 @@ import { MessageTable, PartTable, SessionTable } from "@graphagent/core/session/
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ModelV2 } from "@graphagent/core/model"
@@ -65,7 +66,7 @@ function restartLayer(filename: string, probe: Probe) {
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag, AgentScheduler.defaultLayer)
   const session = Layer.unwrap(
     Effect.gen(function* () {
       const { db } = yield* Database.Service
@@ -90,8 +91,7 @@ function restartLayer(filename: string, probe: Probe) {
             .pipe(
               Effect.orDie,
               Effect.map((rows) =>
-                rows.map(
-                  (row): SessionV1.WithParts => ({
+                rows.map((row): SessionV1.WithParts => ({
                     info: {
                       id: row.id,
                       sessionID: row.session_id,
@@ -101,8 +101,7 @@ function restartLayer(filename: string, probe: Probe) {
                       time: { created: row.data.time.created },
                     },
                     parts: [],
-                  }),
-                ),
+                })),
               ),
             ),
         getPart: (input) =>

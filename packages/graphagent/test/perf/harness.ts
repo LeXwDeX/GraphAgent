@@ -46,6 +46,7 @@ import { DagAgentMessages } from "@/dag/agent-messages"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Memory } from "@/memory/memory"
 import { ToolSourceLedger } from "@/session/tool-source-ledger"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { Skill } from "@/skill"
 import { Goal } from "@/goal/goal"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -233,6 +234,7 @@ const makeDeps = (hooks: Layer.Layer<SettingsHook.Service>) =>
     DagMessages.defaultLayer,
     DagStore.defaultLayer,
     ToolSourceLedger.defaultLayer,
+    AgentScheduler.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
 
 // The hook service is part of `deps`, so everything composed against it is
@@ -368,6 +370,7 @@ export function makeDagPerfLayer(provider: FakeProvider) {
     dagStore,
     dagProjector,
     ToolSourceLedger.defaultLayer,
+    AgentScheduler.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const dagQuestion = Question.layer.pipe(Layer.provideMerge(dagDeps))
   const dagTodo = Todo.layer.pipe(Layer.provideMerge(dagDeps))

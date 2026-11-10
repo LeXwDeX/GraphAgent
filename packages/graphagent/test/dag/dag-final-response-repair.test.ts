@@ -3,7 +3,7 @@
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Synthetic branded IDs and narrow Effect service mocks exercise only the runtime surface used by these tests.
 import { describe, expect, it } from "bun:test"
-import { Effect, Fiber, Layer, Semaphore } from "effect"
+import { Effect, Fiber, Layer } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { Agent } from "@/agent/agent"
@@ -16,6 +16,13 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { makeNodeRow } from "./fixtures"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 const REVIEW_SCHEMA = {
   type: "object",
@@ -177,7 +184,7 @@ async function run(
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+        const input: NodeSpawnInput = {
           dagID: "wf",
           nodeID: "n",
           node: makeNodeRow({ id: "n" }),
@@ -185,9 +192,23 @@ async function run(
           promptParts: [{ type: "text", text: "work" }],
           outputSchema: schema,
           ...overrides,
-        })
+        }
+        const result = yield* spawnNode(spawnSchedule(input, 1), input)
         yield* Fiber.await(result.fiber)
-      }).pipe(Effect.provide(Layer.mergeAll(dag, agent, sessions, prompt, provider, config, RuntimeFlags.layer({})))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            dag,
+            agent,
+            sessions,
+            prompt,
+            provider,
+            config,
+            RuntimeFlags.layer({}),
+            AgentScheduler.defaultLayer,
+          ),
+        ),
+      ),
     ) as Effect.Effect<never>,
   )
   return { events, prompts }

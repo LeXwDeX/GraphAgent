@@ -29,6 +29,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { disposeInstance } from "@/effect/instance-registry"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { SessionPrompt } from "@/session/prompt"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, SessionID } from "@/session/schema"
@@ -100,7 +101,7 @@ function supervisionLayer(input: {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const session = Layer.mock(Session.Service, {
@@ -154,15 +155,17 @@ function supervisionLayer(input: {
         hooks: {},
       }),
   })
-  const loop = DagLoop.layer.pipe(Layer.provide(base), Layer.provide(session), Layer.provide(prompt), Layer.provide(agent))
+  const loop = DagLoop.layer.pipe(
+    Layer.provide(base),
+    Layer.provide(session),
+    Layer.provide(prompt),
+    Layer.provide(agent),
+  )
   // #343: the sweep terminalizes workflows and releases their automation
   // lease after a host-level settle — give it the real (process-level) lease
   // registry so the unregister path is exercised, not a silent mock no-op.
   const automation = ExclusiveRegistry.defaultLayer
-  const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(
-    Layer.provide(base),
-    Layer.provide(prompt),
-  )
+  const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(Layer.provide(base), Layer.provide(prompt))
   return Layer.mergeAll(base, loop, sweep).pipe(Layer.provideMerge(automation))
 }
 
@@ -581,9 +584,7 @@ describe("DagSupervisionSweep cadence derivation (pure)", () => {
             yield* Effect.sleep("50 millis")
           }
           const wf = yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((row) => (row?.status === "failed" ? row : undefined)),
-            ),
+            store.getWorkflow(dagID).pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
             "sweep did not fail the workflow with a completed verifier",
             "10 seconds",
           )

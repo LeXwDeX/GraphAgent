@@ -33,6 +33,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface PromptGate {
   readonly input: SessionPrompt.PromptInput
@@ -56,7 +57,7 @@ function reply(sessionID: string, text: string): SessionV1.WithParts {
       time: { created: Date.now() },
       finish: "stop",
     },
-    parts: text ? [{ type: "text", text }] as never : [],
+    parts: text ? ([{ type: "text", text }] as never) : [],
   }
 }
 
@@ -84,7 +85,7 @@ function contractLayer(childPrompts: Queue.Queue<PromptGate>) {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
     get: () => Effect.succeed({ id: "ses_parent", permission: [], agent: "build" } as never),
@@ -98,13 +99,17 @@ function contractLayer(childPrompts: Queue.Queue<PromptGate>) {
     yield* Queue.offer(childPrompts, { input: value, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: () => Effect.void,
     prompt: deliver,
     deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
-    get: () => Effect.succeed({
+    get: () =>
+      Effect.succeed({
       name: "build",
       mode: "all",
       permission: [],
@@ -125,12 +130,14 @@ function contractLayer(childPrompts: Queue.Queue<PromptGate>) {
   return Layer.merge(base, loop)
 }
 
-function runContractTest(test: (services: {
+function runContractTest(
+  test: (services: {
   readonly dag: Dag.Interface
   readonly loop: DagLoop.Interface
   readonly store: DagStore.Interface
   readonly childPrompts: Queue.Queue<PromptGate>
-}) => Effect.Effect<void, Error>) {
+  }) => Effect.Effect<void, Error>,
+) {
   return Effect.gen(function* () {
     const childPrompts = yield* Queue.unbounded<PromptGate>()
     return yield* Effect.gen(function* () {
@@ -138,19 +145,27 @@ function runContractTest(test: (services: {
       const loop = yield* DagLoop.Service
       const store = yield* DagStore.Service
       const database = yield* Database.Service
-      yield* database.db.insert(ProjectTable).values({
+      yield* database.db
+        .insert(ProjectTable)
+        .values({
         id: "project-1" as never,
         worktree: process.cwd() as never,
         sandboxes: [],
-      }).run().pipe(Effect.orDie)
-      yield* database.db.insert(SessionTable).values({
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* database.db
+        .insert(SessionTable)
+        .values({
         id: "ses_parent" as never,
         project_id: "project-1" as never,
         slug: "parent",
         directory: process.cwd(),
         title: "Parent",
         version: "test",
-      }).run().pipe(Effect.orDie)
+        })
+        .run()
+        .pipe(Effect.orDie)
       yield* loop.init()
       return yield* test({ dag, loop, store, childPrompts })
     }).pipe(
@@ -188,7 +203,9 @@ describe("DAG schema prompt contract (issue #386)", () => {
           expect(prompt).toContain("exactly one JSON value")
           yield* Deferred.succeed(gate.release, '{"summary":"Captured from final answer."}')
           const row = yield* pollWithTimeout(
-            store.getNode(dagID, "report").pipe(Effect.map((node) => node?.status === "completed" ? node : undefined)),
+            store
+              .getNode(dagID, "report")
+              .pipe(Effect.map((node) => (node?.status === "completed" ? node : undefined))),
             "new protocol did not complete from final JSON",
           )
           expect(row.output).toEqual({ summary: "Captured from final answer." })
@@ -229,7 +246,9 @@ describe("DAG schema prompt contract (issue #386)", () => {
           expect(prompt.indexOf("Allowed values")).toBeGreaterThan(prompt.indexOf("[OUTPUT CONTRACT"))
           yield* Deferred.succeed(gate.release, '{"verdict":"ACCEPT"}')
           const row = yield* pollWithTimeout(
-            store.getNode(dagID, "review").pipe(Effect.map((node) => (node?.status === "completed" ? node : undefined))),
+            store
+              .getNode(dagID, "review")
+              .pipe(Effect.map((node) => (node?.status === "completed" ? node : undefined))),
             "verdict node did not complete",
           )
           expect(row.output).toEqual({ verdict: "ACCEPT" })

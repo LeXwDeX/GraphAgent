@@ -18,6 +18,7 @@ import { Image } from "@/image/image"
 import { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { AgentScheduler } from "../../src/session/agent-scheduler"
 import { Token } from "@/util/token"
 import { Permission } from "../../src/permission"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -321,6 +322,7 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     Layer.provide(options?.config ?? Config.defaultLayer),
     Layer.provide(RuntimeFlags.layer()),
     Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(AgentScheduler.defaultLayer),
   )
 }
 

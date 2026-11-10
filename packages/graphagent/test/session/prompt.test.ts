@@ -45,6 +45,7 @@ import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionAbortReason } from "../../src/session/abort-reason"
 import { SessionStatus } from "../../src/session/status"
+import { AgentScheduler } from "../../src/session/agent-scheduler"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { RuntimeContext } from "../../src/session/runtime-context"
@@ -389,6 +390,7 @@ function makePrompt(input?: PromptLayerOptions) {
           LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(RequestExecutor.defaultLayer, WebSocketExecutor.layer))),
         ),
         Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
+        Layer.provide(AgentScheduler.defaultLayer),
       )
     : LLM.defaultLayer
   const llmLayer = input?.organizer
@@ -445,6 +447,7 @@ function makePrompt(input?: PromptLayerOptions) {
     EventV2Bridge.defaultLayer,
     TodoReminders.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
     ToolSourceLedger.defaultLayer,
+    AgentScheduler.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
   const question = Question.layer.pipe(Layer.provideMerge(deps))
   const todo = Todo.layer.pipe(Layer.provideMerge(deps))
@@ -8506,6 +8509,8 @@ const organizedAs =
   () =>
     Effect.succeed({
       transport: "engine" as const,
+      providerID: "test",
+      modelID: "test-model",
       model: "test/small",
       call:
         () =>
@@ -8595,6 +8600,8 @@ distillationIt.instance("a stalled organizer never delays the provider stream or
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => () => {
           calls++
@@ -8647,6 +8654,8 @@ distillationIt.instance("organizes reasoning in place when the request continues
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -8697,6 +8706,8 @@ distillationIt.instance("ends a reasoning-only stop without injecting a continua
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -8757,6 +8768,8 @@ distillationIt.instance("leaves signed reasoning untouched in the same turn", ()
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -8814,6 +8827,8 @@ distillationIt.instance("does not split encrypted OpenAI reasoning", () =>
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -8872,6 +8887,8 @@ distillationIt.instance("does not split signed Gemini reasoning", () =>
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -8919,6 +8936,8 @@ distillationIt.instance("keeps the original reasoning when background organizati
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -9066,6 +9085,8 @@ distillationIt.instance("disposing the directory interrupts an in-flight rewrite
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: (signal: AbortSignal) => () => {
           Deferred.doneUnsafe(started, Effect.succeed(signal))
@@ -9301,6 +9322,8 @@ distillationIt.instance("organizes reasoning in place after visible text has sta
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -9345,6 +9368,8 @@ distillationIt.instance("organizes reasoning in place after a tool call has star
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -9389,6 +9414,8 @@ distillationIt.instance("does not split reasoning below the organizer minimum", 
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: () => async () => {
           organizerCalls++
@@ -9423,6 +9450,8 @@ distillationIt.instance("cancelling a turn preserves the organizer until session
     controlledOrganizer = () =>
       Effect.succeed({
         transport: "engine" as const,
+        providerID: "test",
+        modelID: "test-model",
         model: "test/small",
         call: (abort) => () => {
           signal = abort
