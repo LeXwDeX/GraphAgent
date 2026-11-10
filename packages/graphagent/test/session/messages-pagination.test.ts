@@ -1168,6 +1168,387 @@ describe("MessageV2.countThrough", () => {
   )
 })
 
+const addAssistantAt = Effect.fn("Test.addAssistantAt")(function* (
+  sessionID: SessionID,
+  parentID: MessageID,
+  created: number,
+  id: MessageID,
+  opts?: { summary?: boolean; finish?: string },
+) {
+  const session = yield* SessionNs.Service
+  yield* session.updateMessage({
+    id,
+    sessionID,
+    role: "assistant",
+    time: { created },
+    parentID,
+    modelID: ModelV2.ID.make("test"),
+    providerID: ProviderV2.ID.make("test"),
+    mode: "",
+    agent: "default",
+    path: { cwd: "/", root: "/" },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    summary: opts?.summary,
+    finish: opts?.finish,
+  } as unknown as SessionV1.Info)
+  return id
+})
+
+describe("MessageV2.exists", () => {
+  it.instance("reports row existence without hydrating parts", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const id = yield* addUser(sessionID, "hello")
+        expect(yield* MessageV2.exists({ sessionID, messageID: id })).toBe(true)
+        expect(yield* MessageV2.exists({ sessionID, messageID: MessageID.make("msg_missing") })).toBe(false)
+      }),
+    ),
+  )
+
+  it.instance("scopes by session id", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const first = yield* session.create({})
+      const second = yield* session.create({})
+      const id = yield* addUser(first.id, "hello")
+      expect(yield* MessageV2.exists({ sessionID: first.id, messageID: id })).toBe(true)
+      expect(yield* MessageV2.exists({ sessionID: second.id, messageID: id })).toBe(false)
+      yield* session.remove(first.id)
+      yield* session.remove(second.id)
+    }),
+  )
+})
+
+describe("Session.getMessageInfos", () => {
+  it.instance("returns only requested ids and skips missing ones", () =>
+    withSession(({ session, sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "one")
+        const a1 = yield* addAssistant(sessionID, u1)
+        const u2 = yield* addUser(sessionID, "two")
+
+        const infos = yield* session.getMessageInfos({
+          sessionID,
+          messageIDs: [u1, a1, u2, u2, "msg_missing"],
+        })
+        expect([...infos.keys()].sort()).toEqual([u1, a1, u2].sort())
+        expect(infos.get(u1)?.role).toBe("user")
+        expect(infos.get(a1)?.role).toBe("assistant")
+      }),
+    ),
+  )
+
+  it.instance("returns an empty map for a missing session", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const infos = yield* session.getMessageInfos({
+        sessionID: SessionID.make("ses_missing"),
+        messageIDs: ["msg_missing"],
+      })
+      expect(infos.size).toBe(0)
+    }),
+  )
+})
+
+describe("MessageV2.turnMessages", () => {
+  it.instance("returns the user message and its assistant replies in order", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const a1 = yield* addAssistant(sessionID, u1)
+        const a2 = yield* addAssistant(sessionID, u1)
+        const u2 = yield* addUser(sessionID, "second")
+        yield* addAssistant(sessionID, u2)
+
+        const turn = yield* MessageV2.turnMessages({ sessionID, userMessageID: u1 })
+        expect(turn.map((item) => item.info.id)).toEqual([u1, a1, a2])
+        expect(turn.map((item) => item.parts.length)).toEqual([1, 0, 0])
+      }),
+    ),
+  )
+
+  it.instance("returns empty for a session without that turn", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        yield* addUser(sessionID, "hello")
+        const turn = yield* MessageV2.turnMessages({
+          sessionID,
+          userMessageID: MessageID.make("msg_missing"),
+        })
+        expect(turn).toEqual([])
+      }),
+    ),
+  )
+
+  it.instance("fails with NotFoundError for a missing session", () =>
+    Effect.gen(function* () {
+      const result = yield* MessageV2.turnMessages({
+        sessionID: SessionID.make("ses_missing"),
+        userMessageID: MessageID.make("msg_missing"),
+      }).pipe(Effect.exit)
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") expect(String(result.cause)).toContain("Session not found")
+    }),
+  )
+})
+
+describe("MessageV2.isInReplayRange", () => {
+  const expectMatchesReplayView = Effect.fn("Test.expectMatchesReplayView")(function* (sessionID: SessionID) {
+    const all = yield* MessageV2.stream(sessionID)
+    const kept = new Set(MessageV2.filterCompacted(all).map((message) => String(message.info.id)))
+    for (const message of all) {
+      const actual = yield* MessageV2.isInReplayRange({ sessionID, messageID: message.info.id })
+      expect({ id: message.info.id, actual }).toEqual({
+        id: message.info.id,
+        actual: kept.has(String(message.info.id)),
+      })
+    }
+    return kept
+  })
+
+  it.instance("keeps every message when no compaction exists", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const ids = yield* fill(sessionID, 4)
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept).toEqual(new Set(ids.map(String)))
+      }),
+    ),
+  )
+
+  it.instance("returns false for a missing message", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        yield* addUser(sessionID, "hello")
+        expect(yield* MessageV2.isInReplayRange({ sessionID, messageID: MessageID.make("msg_missing") })).toBe(false)
+      }),
+    ),
+  )
+
+  it.instance("starts at a finished compaction boundary", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const a1 = yield* addAssistant(sessionID, u1, { finish: "end_turn" })
+        const c1 = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, c1)
+        yield* addAssistant(sessionID, c1, { summary: true, finish: "end_turn" })
+        const u2 = yield* addUser(sessionID, "second")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(false)
+        expect(kept.has(String(a1))).toBe(false)
+        expect(kept.has(String(c1))).toBe(true)
+        expect(kept.has(String(u2))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("starts at the retained tail when the boundary stores one", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const a1 = yield* addAssistant(sessionID, u1, { finish: "end_turn" })
+        const u2 = yield* addUser(sessionID, "second")
+        const a2 = yield* addAssistant(sessionID, u2, { finish: "end_turn" })
+        const c1 = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, c1, u2)
+        yield* addAssistant(sessionID, c1, { summary: true, finish: "end_turn" })
+        const u3 = yield* addUser(sessionID, "third")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(false)
+        expect(kept.has(String(a1))).toBe(false)
+        expect(kept.has(String(u2))).toBe(true)
+        expect(kept.has(String(a2))).toBe(true)
+        expect(kept.has(String(c1))).toBe(true)
+        expect(kept.has(String(u3))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("keeps full history when the stored tail points past the boundary", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const a1 = yield* addAssistant(sessionID, u1, { finish: "end_turn" })
+        const c1 = yield* addUser(sessionID)
+        yield* addAssistant(sessionID, c1, { summary: true, finish: "end_turn" })
+        const u2 = yield* addUser(sessionID, "second")
+        // Tail points at a message newer than the boundary marker.
+        yield* addCompactionPart(sessionID, c1, u2)
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.size).toBe(5)
+      }),
+    ),
+  )
+
+  it.instance("keeps full history when the stored tail is gone", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const c1 = yield* addUser(sessionID)
+        yield* addAssistant(sessionID, c1, { summary: true, finish: "end_turn" })
+        yield* addCompactionPart(sessionID, c1, MessageID.make("msg_removed_tail"))
+        const u2 = yield* addUser(sessionID, "second")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(true)
+        expect(kept.has(String(c1))).toBe(true)
+        expect(kept.has(String(u2))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("ignores summaries without finish and with errors", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const c1 = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, c1)
+        yield* addAssistant(sessionID, c1, { summary: true })
+        const u2 = yield* addUser(sessionID, "second")
+        const c2 = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, c2)
+        yield* addAssistant(sessionID, c2, {
+          summary: true,
+          finish: "end_turn",
+          error: new SessionV1.APIError({
+            message: "boom",
+            isRetryable: true,
+          }).toObject() as SessionV1.Assistant["error"],
+        })
+        yield* addUser(sessionID, "third")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(true)
+        expect(kept.has(String(u2))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("matches the replay view across repeated compactions", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        const a1 = yield* addAssistant(sessionID, u1, { finish: "end_turn" })
+        const u2 = yield* addUser(sessionID, "second")
+        const a2 = yield* addAssistant(sessionID, u2, { finish: "end_turn" })
+        const c1 = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, c1, u2)
+        yield* addAssistant(sessionID, c1, { summary: true, finish: "end_turn" })
+        const u3 = yield* addUser(sessionID, "third")
+        const a3 = yield* addAssistant(sessionID, u3, { finish: "end_turn" })
+        const c2 = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, c2, u3)
+        yield* addAssistant(sessionID, c2, { summary: true, finish: "end_turn" })
+        const u4 = yield* addUser(sessionID, "fourth")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(false)
+        expect(kept.has(String(a1))).toBe(false)
+        expect(kept.has(String(u2))).toBe(false)
+        expect(kept.has(String(a2))).toBe(false)
+        expect(kept.has(String(u3))).toBe(true)
+        expect(kept.has(String(a3))).toBe(true)
+        expect(kept.has(String(c2))).toBe(true)
+        expect(kept.has(String(u4))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("matches the replay view when compaction starts inside a turn", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUser(sessionID, "first")
+        yield* addAssistant(sessionID, u1, { finish: "end_turn" })
+        const u2 = yield* addUser(sessionID, "second")
+        yield* addAssistant(sessionID, u2, { finish: "end_turn" })
+        const a3 = yield* addAssistant(sessionID, u2, { finish: "end_turn" })
+        const c1 = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, c1, a3)
+        yield* addAssistant(sessionID, c1, { summary: true, finish: "end_turn" })
+        const u3 = yield* addUser(sessionID, "third")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(false)
+        expect(kept.has(String(u2))).toBe(false)
+        expect(kept.has(String(a3))).toBe(true)
+        expect(kept.has(String(c1))).toBe(true)
+        expect(kept.has(String(u3))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("breaks (time_created, id) ties by id", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUserAt(sessionID, 2000, MessageID.make("msg_aaa_old"), "old")
+        const tail = yield* addUserAt(sessionID, 2001, MessageID.make("msg_bbb_tail"), "tail")
+        const c1 = yield* addUserAt(sessionID, 2001, MessageID.make("msg_ddd_marker"))
+        yield* addCompactionPart(sessionID, c1, tail)
+        yield* addAssistantAt(sessionID, c1, 2001, MessageID.make("msg_eee_summary"), {
+          summary: true,
+          finish: "end_turn",
+        })
+        const u2 = yield* addUserAt(sessionID, 2002, MessageID.make("msg_fff_new"), "new")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(false)
+        expect(kept.has(String(c1))).toBe(true)
+        expect(kept.has(String(tail))).toBe(true)
+        expect(kept.has(String(u2))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("does not count a summary at the same timestamp with a smaller id", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u1 = yield* addUserAt(sessionID, 2000, MessageID.make("msg_aaa_old"), "old")
+        const c1 = yield* addUserAt(sessionID, 2001, MessageID.make("msg_ddd_marker"))
+        yield* addCompactionPart(sessionID, c1)
+        yield* addAssistantAt(sessionID, c1, 2001, MessageID.make("msg_bbb_summary"), {
+          summary: true,
+          finish: "end_turn",
+        })
+        const u2 = yield* addUserAt(sessionID, 2002, MessageID.make("msg_eee_new"), "new")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u1))).toBe(true)
+        expect(kept.has(String(c1))).toBe(true)
+        expect(kept.has(String(u2))).toBe(true)
+      }),
+    ),
+  )
+
+  it.instance("applies the reorder trim for an unfinished summary", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const u0 = yield* addUserAt(sessionID, 1000, MessageID.make("msg_aaa_old"), "old")
+        const a0 = yield* addAssistantAt(sessionID, u0, 1001, MessageID.make("msg_bbb_old_reply"), {
+          finish: "end_turn",
+        })
+        const tail = yield* addUserAt(sessionID, 1002, MessageID.make("msg_ccc_tail"), "tail")
+        const c1 = yield* addUserAt(sessionID, 1003, MessageID.make("msg_ddd_marker"))
+        yield* addCompactionPart(sessionID, c1, tail)
+        // Unfinished summary: the walk phase ignores the marker, the reorder phase does not.
+        yield* addAssistantAt(sessionID, c1, 1004, MessageID.make("msg_eee_summary"), { summary: true })
+        const u2 = yield* addUserAt(sessionID, 1005, MessageID.make("msg_fff_new"), "new")
+
+        const kept = yield* expectMatchesReplayView(sessionID)
+        expect(kept.has(String(u0))).toBe(false)
+        expect(kept.has(String(a0))).toBe(false)
+        expect(kept.has(String(tail))).toBe(true)
+        expect(kept.has(String(c1))).toBe(true)
+        expect(kept.has(String(u2))).toBe(true)
+      }),
+    ),
+  )
+})
+
 describe("MessageV2.recentUsers", () => {
   it.instance("returns the newest user messages oldest-first with parts", () =>
     withSession(({ sessionID }) =>

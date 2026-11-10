@@ -724,6 +724,89 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
   }
 })
 
+/** Message-row existence without hydrating parts. */
+export const exists = Effect.fn("MessageV2.exists")(function* (input: { sessionID: SessionID; messageID: MessageID }) {
+  const { db } = yield* Database.Service
+  const row = yield* db
+    .select({ id: MessageTable.id })
+    .from(MessageTable)
+    .where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID)))
+    .get()
+    .pipe(Effect.orDie)
+  return row !== undefined
+})
+
+const INFO_LOOKUP_CHUNK = 500
+
+/**
+ * Message metadata for a bounded set of ids, without parts. The ids are bound as
+ * opaque strings: callers may pass stale or corrupt anchors and simply get no
+ * entry for them, matching a map lookup on a fully read transcript.
+ */
+export function infosByIDs(
+  db: Database.Interface["db"],
+  input: { sessionID: SessionID; messageIDs: ReadonlyArray<string> },
+): Effect.Effect<ReadonlyMap<string, SessionV1.Info>> {
+  return Effect.gen(function* () {
+    const ids = [...new Set(input.messageIDs)]
+    const result = new Map<string, SessionV1.Info>()
+    for (let start = 0; start < ids.length; start += INFO_LOOKUP_CHUNK) {
+      const chunk = ids.slice(start, start + INFO_LOOKUP_CHUNK) as unknown as ReadonlyArray<MessageID>
+      if (chunk.length === 0) continue
+      const rows = yield* db
+        .select()
+        .from(MessageTable)
+        .where(and(eq(MessageTable.session_id, input.sessionID), inArray(MessageTable.id, chunk)))
+        .all()
+        .pipe(Effect.orDie)
+      for (const row of rows) result.set(String(row.id), info(row))
+    }
+    return result
+  })
+}
+
+/**
+ * A user message plus the assistant messages directly parented to it, in
+ * `(time_created, id)` order. Turn-diff summarization needs exactly this slice,
+ * not the whole transcript. Mirrors `page`: only a zero-row read distinguishes
+ * a missing session from an empty result.
+ */
+export const turnMessages = Effect.fn("MessageV2.turnMessages")(function* (input: {
+  sessionID: SessionID
+  userMessageID: MessageID
+}) {
+  const { db } = yield* Database.Service
+  const rows = yield* db
+    .select()
+    .from(MessageTable)
+    .where(
+      and(
+        eq(MessageTable.session_id, input.sessionID),
+        or(
+          eq(MessageTable.id, input.userMessageID),
+          and(
+            sql`json_extract(${MessageTable.data}, '$.role') = 'assistant'`,
+            sql`json_extract(${MessageTable.data}, '$.parentID') = ${input.userMessageID}`,
+          ),
+        ),
+      ),
+    )
+    .orderBy(asc(MessageTable.time_created), asc(MessageTable.id))
+    .all()
+    .pipe(Effect.orDie)
+  if (rows.length === 0) {
+    const session = yield* db
+      .select({ id: SessionTable.id })
+      .from(SessionTable)
+      .where(eq(SessionTable.id, input.sessionID))
+      .get()
+      .pipe(Effect.orDie)
+    if (!session) return yield* new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+    return [] as WithParts[]
+  }
+  return yield* hydrate(db, rows)
+})
+
 export function filterCompacted(msgs: Iterable<WithParts>) {
   const result = [] as WithParts[]
   const completed = new Set<string>()
@@ -779,6 +862,181 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
   return filterCompacted(yield* stream(sessionID))
+})
+
+interface ReplayPosition {
+  id: string
+  time_created: number
+}
+
+const replayBefore = (row: ReplayPosition, boundary: ReplayPosition) =>
+  row.time_created < boundary.time_created || (row.time_created === boundary.time_created && row.id < boundary.id)
+
+/**
+ * Whether one message remains in the model-visible replay view produced by
+ * [`filterCompacted`], without streaming and hydrating the whole session.
+ *
+ * The walk phase finds the newest user compaction marker whose completed
+ * summary assistant is newer than it, then follows the marker's first compaction
+ * part: absent/self tail stops at the marker, a newer tail leaves history
+ * whole, and an older tail stops at that message. The reorder phase then applies
+ * `filterCompacted`'s final trim: for the newest retained tail-bearing marker
+ * with a newer summary assistant, messages older than its tail are dropped.
+ */
+export const isInReplayRange = Effect.fn("MessageV2.isInReplayRange")(function* (input: {
+  sessionID: SessionID
+  messageID: MessageID
+}) {
+  const { db } = yield* Database.Service
+  const target = yield* db
+    .get<ReplayPosition>(
+      sql`
+      SELECT id, time_created FROM message
+      WHERE session_id = ${input.sessionID} AND id = ${input.messageID}
+    `,
+    )
+    .pipe(Effect.orDie)
+  if (!target) return false
+
+  const marker = yield* db
+    .get<ReplayPosition>(
+      sql`
+      SELECT m.id AS id, m.time_created AS time_created
+      FROM message m
+      WHERE m.session_id = ${input.sessionID}
+        AND json_extract(m.data, '$.role') = 'user'
+        AND EXISTS (
+          SELECT 1 FROM part p
+          WHERE p.message_id = m.id
+            AND p.session_id = m.session_id
+            AND json_extract(p.data, '$.type') = 'compaction'
+        )
+        AND EXISTS (
+          SELECT 1 FROM message a
+          WHERE a.session_id = m.session_id
+            AND json_extract(a.data, '$.role') = 'assistant'
+            AND json_extract(a.data, '$.parentID') = m.id
+            AND json_extract(a.data, '$.summary') = 1
+            AND json_extract(a.data, '$.finish') IS NOT NULL
+            AND json_extract(a.data, '$.finish') <> ''
+            AND json_extract(a.data, '$.error') IS NULL
+            AND (a.time_created > m.time_created OR (a.time_created = m.time_created AND a.id > m.id))
+        )
+      ORDER BY m.time_created DESC, m.id DESC
+      LIMIT 1
+    `,
+    )
+    .pipe(Effect.orDie)
+
+  let boundary: ReplayPosition | undefined
+  if (marker) {
+    const part = yield* db
+      .get<{ tail: string | null }>(
+        sql`
+        SELECT json_extract(data, '$.tail_start_id') AS tail
+        FROM part
+        WHERE message_id = ${marker.id}
+          AND session_id = ${input.sessionID}
+          AND json_extract(data, '$.type') = 'compaction'
+        ORDER BY id ASC
+        LIMIT 1
+      `,
+      )
+      .pipe(Effect.orDie)
+    const tail = part?.tail
+    if (!tail) boundary = marker
+    else if (tail === marker.id) boundary = marker
+    else if (typeof tail !== "string") boundary = undefined
+    else {
+      const anchor = yield* db
+        .get<ReplayPosition>(
+          sql`
+          SELECT id, time_created FROM message
+          WHERE session_id = ${input.sessionID} AND id = ${tail}
+        `,
+        )
+        .pipe(Effect.orDie)
+      if (!anchor || replayBefore(marker, anchor)) boundary = undefined
+      else boundary = anchor
+    }
+  }
+
+  const reorderMarker = yield* db
+    .get<ReplayPosition>(
+      sql`
+      SELECT m.id AS id, m.time_created AS time_created
+      FROM message m
+      WHERE m.session_id = ${input.sessionID}
+        AND json_extract(m.data, '$.role') = 'user'
+        AND EXISTS (
+          SELECT 1 FROM part p
+          WHERE p.message_id = m.id
+            AND p.session_id = m.session_id
+            AND json_extract(p.data, '$.type') = 'compaction'
+            AND json_extract(p.data, '$.tail_start_id') IS NOT NULL
+            AND json_extract(p.data, '$.tail_start_id') <> ''
+        )
+        ${
+          boundary
+            ? sql`AND (m.time_created > ${boundary.time_created} OR (m.time_created = ${boundary.time_created} AND m.id >= ${boundary.id}))`
+            : sql``
+        }
+      ORDER BY m.time_created DESC, m.id DESC
+      LIMIT 1
+    `,
+    )
+    .pipe(Effect.orDie)
+
+  if (reorderMarker) {
+    const part = yield* db
+      .get<{ tail: string | null }>(
+        sql`
+        SELECT json_extract(data, '$.tail_start_id') AS tail
+        FROM part
+        WHERE message_id = ${reorderMarker.id}
+          AND session_id = ${input.sessionID}
+          AND json_extract(data, '$.type') = 'compaction'
+          AND json_extract(data, '$.tail_start_id') IS NOT NULL
+          AND json_extract(data, '$.tail_start_id') <> ''
+        ORDER BY id ASC
+        LIMIT 1
+      `,
+      )
+      .pipe(Effect.orDie)
+    const tail = part?.tail
+    if (typeof tail === "string" && tail !== "") {
+      const anchor = yield* db
+        .get<ReplayPosition>(
+          sql`
+          SELECT id, time_created FROM message
+          WHERE session_id = ${input.sessionID} AND id = ${tail}
+        `,
+        )
+        .pipe(Effect.orDie)
+      if (anchor && (!boundary || !replayBefore(anchor, boundary)) && replayBefore(anchor, reorderMarker)) {
+        const summary = yield* db
+          .get<{ id: string }>(
+            sql`
+            SELECT id FROM message
+            WHERE session_id = ${input.sessionID}
+              AND json_extract(data, '$.role') = 'assistant'
+              AND json_extract(data, '$.parentID') = ${reorderMarker.id}
+              AND json_extract(data, '$.summary') = 1
+              AND (
+                time_created > ${reorderMarker.time_created}
+                OR (time_created = ${reorderMarker.time_created} AND id > ${reorderMarker.id})
+              )
+            LIMIT 1
+          `,
+          )
+          .pipe(Effect.orDie)
+        if (summary) boundary = anchor
+      }
+    }
+  }
+
+  if (!boundary) return true
+  return !replayBefore(target, boundary)
 })
 
 /** Presentation-only user messages do not create a new model work boundary. */

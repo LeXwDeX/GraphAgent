@@ -6,6 +6,7 @@ import { Snapshot } from "@/snapshot"
 import { Session, truncateSummaryDiffs } from "./session"
 import { SessionID, MessageID } from "./schema"
 import { Config } from "@/config/config"
+import { NotFoundError } from "@/storage/storage"
 
 function unquoteGitPath(input: string) {
   if (!input.startsWith('"')) return input
@@ -117,12 +118,14 @@ export const layer = Layer.effect(
       yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: [] })
       if ((yield* config.get()).snapshot === false) return
       if (input.userMessageIDs.length === 0) return
-      const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+      const turns = yield* Effect.forEach(input.userMessageIDs, (userMessageID) =>
+        sessions
+          .turnMessages({ sessionID: input.sessionID, userMessageID })
+          .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed([] as SessionV1.WithParts[]))),
+      )
 
-      for (const userMessageID of input.userMessageIDs) {
-        const messages = all.filter(
-          (m) => m.info.id === userMessageID || (m.info.role === "assistant" && m.info.parentID === userMessageID),
-        )
+      for (const [index, userMessageID] of input.userMessageIDs.entries()) {
+        const messages = turns[index] ?? []
         const target = messages.find((m) => m.info.id === userMessageID)
         if (!target || target.info.role !== "user") continue
         const diffs = truncateSummaryDiffs(yield* computeDiff({ messages })) ?? []

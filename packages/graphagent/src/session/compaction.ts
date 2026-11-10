@@ -603,14 +603,16 @@ export const layer = Layer.effect(
         })
       }
 
-      const stored = yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-      const summary = summaryText(
-        stored.find((item) => item.info.id === msg.id) ?? {
-          info: msg,
-          parts: [],
-        },
+      const storedSummary = Option.getOrUndefined(
+        yield* session.findMessage(input.sessionID, (item) => item.info.id === msg.id).pipe(Effect.orDie),
       )
-      const request = latestUserRequest(stored)
+      const summary = summaryText(storedSummary ?? { info: msg, parts: [] })
+      const requestMessage = Option.getOrUndefined(
+        yield* session
+          .findMessage(input.sessionID, (item) => latestUserRequest([item]) !== undefined)
+          .pipe(Effect.orDie),
+      )
+      const request = requestMessage ? latestUserRequest([requestMessage]) : undefined
       const todo = Option.getOrUndefined(yield* Effect.serviceOption(Todo.Service))
       const todos = todo ? yield* todo.get(input.sessionID) : []
       const dag = Option.getOrUndefined(yield* Effect.serviceOption(DagStore.Service))

@@ -529,6 +529,16 @@ export interface Interface {
     sessionID: SessionID,
     predicate: (msg: SessionV1.WithParts) => boolean,
   ) => Effect.Effect<Option.Option<SessionV1.WithParts>, NotFound>
+  /** Reads one user turn — the user message plus its assistant replies — in order. */
+  readonly turnMessages: (input: {
+    sessionID: SessionID
+    userMessageID: MessageID
+  }) => Effect.Effect<SessionV1.WithParts[], NotFound>
+  /** Looks up message info by id inside one session, without loading parts. */
+  readonly getMessageInfos: (input: {
+    sessionID: SessionID
+    messageIDs: ReadonlyArray<string>
+  }) => Effect.Effect<ReadonlyMap<string, SessionV1.Info>>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/Session") {}
@@ -1296,6 +1306,12 @@ export const layer: Layer.Layer<
       return Option.none<SessionV1.WithParts>()
     })
 
+    const turnMessages: Interface["turnMessages"] = Effect.fn("Session.turnMessages")(function* (input) {
+      return yield* MessageV2.turnMessages(input).pipe(Effect.provideService(Database.Service, database))
+    })
+
+    const getMessageInfos: Interface["getMessageInfos"] = (input) => MessageV2.infosByIDs(db, input)
+
     const api: Interface = Service.of({
       list,
       create,
@@ -1330,6 +1346,8 @@ export const layer: Layer.Layer<
       getPart,
       updatePartDelta,
       findMessage,
+      turnMessages,
+      getMessageInfos,
     })
     return api
   }),
