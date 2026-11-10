@@ -222,10 +222,7 @@ export const layer = Layer.effect(
           if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
           const sessionID = data.sessionID
           if (typeof sessionID !== "string") return Effect.void
-          return Effect.gen(function* () {
-            yield* instruction.forgetSession(sessionID)
-            yield* runtimes.remove(SessionID.make(sessionID))
-          })
+          return runtimes.remove(SessionID.make(sessionID))
         }
         if (event.type === SessionEvent.Moved.type) {
           const data = event.data

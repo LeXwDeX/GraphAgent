@@ -10,6 +10,7 @@ import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 
 import { Instruction } from "../../src/session/instruction"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { Global } from "@graphagent/core/global"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
@@ -30,6 +31,7 @@ const instructionLayer = (global: Partial<Global.Interface>, flags: Partial<Runt
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(Global.layerWith(global)),
     Layer.provide(RuntimeFlags.layer(flags)),
+    Layer.provide(EventV2Bridge.defaultLayer),
   )
 
 const provideInstruction =
@@ -59,6 +61,7 @@ const countingInstructionLayer = (global: Partial<Global.Interface>, counter: { 
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(Global.layerWith(global)),
     Layer.provide(RuntimeFlags.layer()),
+    Layer.provide(EventV2Bridge.defaultLayer),
   )
 
 const write = (filepath: string, content: string) =>

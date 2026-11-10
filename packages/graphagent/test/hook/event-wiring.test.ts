@@ -108,6 +108,7 @@ const instructionEnv = Instruction.layer.pipe(
     FSUtil.defaultLayer,
     FetchHttpClient.layer,
     RuntimeFlags.defaultLayer,
+    EventV2Bridge.defaultLayer,
   ]),
 )
 

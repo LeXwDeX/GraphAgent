@@ -6,6 +6,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect, Layer, Context, Option, Scope } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { Config } from "@/config/config"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { SettingsHook } from "@/hook"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@graphagent/core/flag/flag"
@@ -37,8 +38,6 @@ export interface Interface {
   readonly clear: (messageID: MessageID) => Effect.Effect<void>
   /** A committed compaction: the next system prompt reloads instruction files and announces them as "compact". */
   readonly markCompacted: (sessionID: string) => Effect.Effect<void>
-  /** Drop the per-session announcement state when the session is removed. */
-  readonly forgetSession: (sessionID: string) => Effect.Effect<void>
   readonly systemPaths: () => Effect.Effect<Set<string>, FSUtil.Error>
   readonly system: (input?: { sessionID: string }) => Effect.Effect<string[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
@@ -54,11 +53,12 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 export const layer: Layer.Layer<
   Service,
   never,
-  FSUtil.Service | Config.Service | Global.Service | HttpClient.HttpClient
+  FSUtil.Service | Config.Service | Global.Service | HttpClient.HttpClient | EventV2Bridge.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
     const cfg = yield* Config.Service
+    const events = yield* EventV2Bridge.Service
     const fs = yield* FSUtil.Service
     const global = yield* Global.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
@@ -76,7 +76,7 @@ export const layer: Layer.Layer<
       Effect.fn("Instruction.state")(function* () {
         // InstructionsLoaded is background observation; it lives and dies with this directory instance.
         const scope = yield* Scope.Scope
-        return {
+        const s = {
           // Track which instruction files have already been attached for a given assistant message.
           claims: new Map<MessageID, Set<string>>(),
           // Instruction files already announced via the InstructionsLoaded hook (once per instance).
@@ -87,6 +87,25 @@ export const layer: Layer.Layer<
           files: RequestCache.make<{ readonly signature: string; readonly content: string }>(INSTRUCTION_CACHE_BYTES),
           scope,
         }
+        // Event fan-out runs in the event layer's runtime, which has no
+        // InstanceRef. Subscribe from the per-directory state instead and drop
+        // this session's entries through the captured state.
+        yield* Effect.acquireRelease(
+          events.listen((event) => {
+            if (event.type !== SessionV1.Event.Deleted.type) return Effect.void
+            const data = event.data
+            if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+            const sessionID = data.sessionID
+            if (typeof sessionID !== "string") return Effect.void
+            s.compacted.delete(sessionID)
+            for (const key of s.announced) {
+              if (key.startsWith(`${sessionID}:`)) s.announced.delete(key)
+            }
+            return Effect.void
+          }),
+          (unsubscribe) => unsubscribe,
+        )
+        return s
       }),
     )
 
@@ -149,16 +168,6 @@ export const layer: Layer.Layer<
     const clear = Effect.fn("Instruction.clear")(function* (messageID: MessageID) {
       const s = yield* InstanceState.get(state)
       s.claims.delete(messageID)
-    })
-
-    const forgetSession = Effect.fn("Instruction.forgetSession")(function* (sessionID: string) {
-      const s = yield* InstanceState.get(state)
-      s.compacted.delete(sessionID)
-      for (const key of s.announced) {
-        if (key.startsWith(`${sessionID}:`)) s.announced.delete(key)
-      }
-      // `claims` is keyed by message, not session; a removed session's claims
-      // are bounded by this directory instance and released with it.
     })
 
     const systemPaths = Effect.fn("Instruction.systemPaths")(function* () {
@@ -349,7 +358,7 @@ export const layer: Layer.Layer<
       return results
     })
 
-    return Service.of({ clear, markCompacted, forgetSession, systemPaths, system, find, resolve })
+    return Service.of({ clear, markCompacted, systemPaths, system, find, resolve })
   }),
 )
 
@@ -358,12 +367,13 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Global.layer),
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(FetchHttpClient.layer),
+  Layer.provide(EventV2Bridge.defaultLayer),
 )
 
 export function loaded(messages: SessionV1.WithParts[]) {
   return extract(messages)
 }
 
-export const node = LayerNode.make(layer, [Config.node, FSUtil.node, Global.node, httpClient])
+export const node = LayerNode.make(layer, [Config.node, FSUtil.node, Global.node, httpClient, EventV2Bridge.node])
 
 export * as Instruction from "./instruction"
