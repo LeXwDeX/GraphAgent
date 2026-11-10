@@ -1621,6 +1621,13 @@ export function makePrepare(deps: PrepareDeps) {
       estimateOverhead({
         system: [...processInput.system, ...runtime.ledger.map((entry) => entry.content)],
         tools: processInput.tools,
+        // The cached fragment is only valid for the resolved tool set; the
+        // structured-output tool is added afterwards, so that request
+        // re-serializes instead of reusing a stale fragment (Issue #1022, PR5).
+        toolsJson:
+          toolsDisabled || lastUser.format?.type === "json_schema"
+            ? undefined
+            : SessionTools.serializedFragment(processInput.tools),
       }),
     )
     return { processInput }

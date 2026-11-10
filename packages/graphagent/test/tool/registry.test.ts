@@ -1,9 +1,9 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "path"
 import { Effect } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
-import { ToolRegistry } from "@/tool/registry"
+import { ToolRegistry, definitionKey } from "@/tool/registry"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
@@ -188,4 +188,58 @@ describe("tool.registry", () => {
       expect(resolved).toEqual(order.filter((id) => resolved.includes(id)))
     }),
   )
+})
+
+// The definition-stage cache must eliminate repeated schema derivation. Probe
+// it in a child process: `mock.module` is process-wide and would leak into
+// every other test file.
+test("reuses definition-stage work across identical resolutions", async () => {
+  const probe = path.join(import.meta.dir, "fixtures", "registry-definition-cache-probe.ts")
+  const proc = Bun.spawn([process.execPath, probe], {
+    cwd: path.join(import.meta.dir, "../.."),
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env },
+  })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  if (exitCode !== 0) throw new Error(`definition cache probe failed (${exitCode})\n${stderr}\n${stdout}`)
+  const line = stdout.split("\n").find((item) => item.startsWith("CACHE_RESULT "))
+  if (!line) throw new Error(`definition cache probe produced no result\n${stderr}\n${stdout}`)
+  const result = JSON.parse(line.slice("CACHE_RESULT ".length))
+  expect(result.firstCalls).toBeGreaterThan(0)
+  expect(result.secondCalls).toBe(0)
+  expect(result.sameIds).toBe(true)
+  expect(result.firstKey).toBeTruthy()
+  expect(result.secondKey).toBe(result.firstKey)
+}, 60_000)
+
+test("every definition-stage input invalidates the cache key", () => {
+  const base = {
+    origin: "directory-a",
+    model: { providerID: "provider-a", id: "model-a", apiID: "api-a", npm: "@ai-sdk/test" },
+    flags: { webSearch: false, lsp: false, plan: false, question: false, client: "cli", usePatch: false },
+  }
+  const key = definitionKey(base)
+  expect(definitionKey(base)).toBe(key)
+
+  const variants = {
+    origin: { ...base, origin: "directory-b" },
+    providerID: { ...base, model: { ...base.model, providerID: "provider-b" } },
+    id: { ...base, model: { ...base.model, id: "model-b" } },
+    apiID: { ...base, model: { ...base.model, apiID: "api-b" } },
+    npm: { ...base, model: { ...base.model, npm: "@ai-sdk/other" } },
+    webSearch: { ...base, flags: { ...base.flags, webSearch: true } },
+    lsp: { ...base, flags: { ...base.flags, lsp: true } },
+    plan: { ...base, flags: { ...base.flags, plan: true } },
+    question: { ...base, flags: { ...base.flags, question: true } },
+    client: { ...base, flags: { ...base.flags, client: "tui" } },
+    usePatch: { ...base, flags: { ...base.flags, usePatch: true } },
+  } as const
+  for (const [field, variant] of Object.entries(variants)) {
+    if (definitionKey(variant) === key) throw new Error(`definition key did not change for ${field}`)
+  }
 })

@@ -65,7 +65,11 @@ function toolSchema(tool: unknown) {
   return schema
 }
 
-function serializedTools(tools: Record<string, unknown> | undefined) {
+/**
+ * The model-facing tool fragment shared by the overhead estimate and the
+ * per-session fragment cache. Both must serialize the same shape.
+ */
+export function serializedTools(tools: Record<string, unknown> | undefined) {
   return tools
     ? Object.entries(tools).map(([name, tool]) => ({
         name,
@@ -77,12 +81,29 @@ function serializedTools(tools: Record<string, unknown> | undefined) {
 }
 
 /**
+ * Non-enumerable key under which `SessionTools.resolve` attaches the already
+ * serialized tool fragment to the tools record. `estimateOverhead` accepts the
+ * same string to skip re-serializing every tool schema a second time.
+ */
+export const TOOLS_JSON = Symbol.for("graphagent.tools-json")
+
+/**
  * Conservative estimate of the parts a conversation request carries besides its messages: system text
  * and tool schemas. The main loop checks the context limit before it prepares a request, so it reuses
  * the overhead measured on the previous request instead of omitting these parts.
+ *
+ * `toolsJson` is the exact string `JSON.stringify(serializedTools(tools))`; passing it keeps the
+ * estimate byte-identical while avoiding another schema pass.
  */
-export function estimateOverhead(input: { system: readonly string[]; tools?: Record<string, unknown> }) {
-  return Token.estimateReserve(JSON.stringify({ system: input.system, tools: serializedTools(input.tools) }))
+export function estimateOverhead(input: {
+  system: readonly string[]
+  tools?: Record<string, unknown>
+  toolsJson?: string
+}) {
+  const system = JSON.stringify(input.system)
+  const tools =
+    input.toolsJson ?? (input.tools === undefined ? undefined : JSON.stringify(serializedTools(input.tools)))
+  return Token.estimateReserve(tools === undefined ? `{"system":${system}}` : `{"system":${system},"tools":${tools}}`)
 }
 
 /**
