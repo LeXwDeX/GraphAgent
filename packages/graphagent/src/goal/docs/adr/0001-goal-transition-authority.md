@@ -19,7 +19,7 @@ A `done` verdict writes an immutable `goal_outcome` snapshot and deletes the cur
 
 Judge output is tri-state: `done`, `continue`, or `blocked`. `blocked` writes a paused Goal with the blocker as its reason.
 
-`SessionAutomationLease` is the process-local authority for Goal/DAG ownership. Goal and DAG register their active identities; DAG has priority while any workflow is registered. A claim carries a generation, and the lease holds its per-Session fence through the durable transition or prompt admission. Registration changes cannot overtake that commit. Provider execution starts after the fence is released, so a slow model turn does not block ownership transfer. `SessionPrompt.promptIfIdle` remains the final atomic idle-state admission guard. Failure at either boundary admits no Goal prompt and leaves the durable Goal available for a later idle event.
+`ExclusiveRegistry` is the authority for Goal/DAG ownership within one built service graph. Its state is created per layer build inside `Layer.effect`; separate builds coordinate only through the process-level `EngineProcess.inbox.nudge` hook. Goal and DAG register their active identities; DAG has priority while any workflow is registered. A claim carries a generation, and the registry holds its per-Session fence through the durable transition or prompt admission; `use` and `handoff` validate generation and owner under the per-Session lock. Registration changes cannot overtake that commit. Provider execution starts after the fence is released, so a slow model turn does not block ownership transfer. When the final DAG owner releases a Session whose Goal claim a DAG blocked, the registry re-triggers that Goal exactly once through the session inbox nudge; it no longer synthesizes an idle state. `SessionPrompt.promptIfIdle` remains the final atomic idle-state admission guard. Failure at either boundary admits no Goal prompt and leaves the durable Goal available for a later idle event.
 
 ## Consequences
 
@@ -29,7 +29,7 @@ Judge output is tri-state: `done`, `continue`, or `blocked`. `blocked` writes a 
 - Completion leaves one durable terminal outcome even though the current Goal view is empty.
 - Blocked work is visible and resumable without being reported as achieved.
 - Goal and DAG automation cannot concurrently admit two turns into one process-local Session.
-- Clustered Session execution will need a durable lease before Session drains stop being process-local.
+- Clustered Session execution will need a durable ownership design before Session drains stop being process-local.
 
 ## Alternatives Considered
 

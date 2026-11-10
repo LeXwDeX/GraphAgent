@@ -7,7 +7,7 @@ import { Context, Deferred, Effect, Exit, Fiber, Layer, Option, Scope } from "ef
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"
 import { GoalEvent } from "@/goal/events"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { testEffect } from "../lib/effect"
@@ -28,7 +28,7 @@ const fixture = Effect.gen(function* () {
           if (barrier.armed && definition.type === GoalEvent.Updated.type) {
             barrier.armed = false
             // The durable Goal transaction has committed. Pause its publisher
-            // before the caller can update the shared automation lease.
+            // before the caller can update the shared exclusive registry.
             yield* Deferred.succeed(committed, undefined)
             yield* Deferred.await(release)
           }
@@ -41,7 +41,7 @@ const fixture = Effect.gen(function* () {
     Layer.provide(SessionStatus.defaultLayer),
     Layer.provide(Database.defaultLayer),
     Layer.provide(events),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
   )
   return { layer, barrier, committed: Deferred.await(committed), release: Deferred.succeed(release, undefined) }
 })
@@ -51,8 +51,8 @@ describe("Goal lease follows durable authority across delayed registration", () 
     Effect.gen(function* () {
       const memo = yield* Layer.makeMemoMap
       const outer = yield* Scope.Scope
-      const leaseContext = yield* Layer.buildWithMemoMap(SessionAutomationLease.defaultLayer, memo, outer)
-      const lease = Context.get(leaseContext, SessionAutomationLease.Service)
+      const leaseContext = yield* Layer.buildWithMemoMap(ExclusiveRegistry.defaultLayer, memo, outer)
+      const lease = Context.get(leaseContext, ExclusiveRegistry.Service)
       const inner = yield* Scope.make()
       yield* Effect.addFinalizer(() => Scope.close(inner, Exit.void))
       const goalContext = yield* Layer.buildWithMemoMap(Goal.defaultLayer, memo, inner)
@@ -77,7 +77,7 @@ describe("Goal lease follows durable authority across delayed registration", () 
       const test = yield* fixture
       yield* Effect.gen(function* () {
         const goal = yield* Goal.Service
-        const lease = yield* SessionAutomationLease.Service
+        const lease = yield* ExclusiveRegistry.Service
         const sid = SessionID.descending()
         const original = yield* goal.set(sid, "original goal")
         const owner = { kind: "goal" as const, id: original.goal_id! }
@@ -109,7 +109,7 @@ describe("Goal lease follows durable authority across delayed registration", () 
         const test = yield* fixture
         yield* Effect.gen(function* () {
           const goal = yield* Goal.Service
-          const lease = yield* SessionAutomationLease.Service
+          const lease = yield* ExclusiveRegistry.Service
           const sid = SessionID.descending()
           test.barrier.armed = true
           const setting = yield* goal.set(sid, "original goal").pipe(Effect.forkScoped)
@@ -143,7 +143,7 @@ describe("Goal lease follows durable authority across delayed registration", () 
         const test = yield* fixture
         yield* Effect.gen(function* () {
           const goal = yield* Goal.Service
-          const lease = yield* SessionAutomationLease.Service
+          const lease = yield* ExclusiveRegistry.Service
           const sid = SessionID.descending()
           const old = yield* goal.set(sid, "original goal")
           yield* goal.pause(sid, "user-paused")
@@ -174,7 +174,7 @@ describe("Goal lease follows durable authority across delayed registration", () 
       const test = yield* fixture
       yield* Effect.gen(function* () {
         const goal = yield* Goal.Service
-        const lease = yield* SessionAutomationLease.Service
+        const lease = yield* ExclusiveRegistry.Service
         const sid = SessionID.descending()
         const original = yield* goal.set(sid, "original goal")
         test.barrier.armed = true

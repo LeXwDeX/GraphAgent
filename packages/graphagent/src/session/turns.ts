@@ -197,7 +197,7 @@ export interface Interface {
     input: PromptInput,
     options: TurnStartOptions,
   ) => Effect.Effect<TurnStart, PromptError | SessionAdmission.Blocked>
-  /** Idle two-phase admission; `admitIfIdle` activates it under the automation lease. */
+  /** Idle two-phase admission; `admitIfIdle` activates it under the exclusive registry. */
   readonly prepare: (
     input: PromptInput,
     options?: AdmissionOptions,

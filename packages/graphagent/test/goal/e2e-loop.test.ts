@@ -19,7 +19,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRunState } from "@/session/run-state"
 import { Provider } from "@/provider/provider"
 import { SessionID } from "@/session/schema"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { Database } from "@graphagent/core/database/database"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { GoalStateTable } from "@graphagent/core/goal/sql"
@@ -331,7 +331,7 @@ describe("GoalLoop end-to-end — continue → done lifecycle (P2b)", () => {
   )
 })
 
-describe("GoalLoop — shared Session automation lease", () => {
+describe("GoalLoop — shared ExclusiveRegistry", () => {
   let leaseAttempts = 0
   let directPromptAttempts = 0
   const sessionMock = Layer.succeed(Session.Service, {
@@ -384,7 +384,7 @@ describe("GoalLoop — shared Session automation lease", () => {
       })
       yield* pollWithTimeout(
         Effect.sync(() => (leaseAttempts > 0 ? true : undefined)),
-        "GoalLoop never attempted the shared Session automation lease",
+        "GoalLoop never attempted the shared ExclusiveRegistry",
         "5 seconds",
       )
 
@@ -430,7 +430,7 @@ describe("GoalLoop + DAG owner arbitration", () => {
     // the same pattern).
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
   )
   const it = testEffect(arbitrationLayer)
 
@@ -441,7 +441,7 @@ describe("GoalLoop + DAG owner arbitration", () => {
       const loop = yield* GoalLoop.Service
       const goal = yield* Goal.Service
       const events = yield* EventV2Bridge.Service
-      const automation = yield* SessionAutomationLease.Service
+      const automation = yield* ExclusiveRegistry.Service
       yield* loop.init()
       const sessionID = SessionID.descending()
       yield* goal.set(sessionID, "ship the feature", 10)
@@ -536,7 +536,7 @@ describe("GoalLoop — dag release must not double-evaluate a boundary (GOAL-FP-
     // arbitration describe above).
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
   )
   const it = testEffect(raceLayer)
 
@@ -546,7 +546,7 @@ describe("GoalLoop — dag release must not double-evaluate a boundary (GOAL-FP-
       const loop = yield* GoalLoop.Service
       const goal = yield* Goal.Service
       const events = yield* EventV2Bridge.Service
-      const automation = yield* SessionAutomationLease.Service
+      const automation = yield* ExclusiveRegistry.Service
       yield* loop.init()
       const sessionID = SessionID.descending()
       yield* goal.set(sessionID, "ship the feature", 10)
@@ -764,7 +764,7 @@ describe("GoalLoop — dispatch failure releases the lease without the trailing 
     Layer.provideMerge(Goal.defaultLayer),
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
     Layer.provideMerge(Database.defaultLayer),
   )
   const it = testEffect(failLayer)
@@ -774,7 +774,7 @@ describe("GoalLoop — dispatch failure releases the lease without the trailing 
       reset()
       const loop = yield* GoalLoop.Service
       const goal = yield* Goal.Service
-      const automation = yield* SessionAutomationLease.Service
+      const automation = yield* ExclusiveRegistry.Service
       const { db } = yield* Database.Service
       const events = yield* EventV2Bridge.Service
       const seen = yield* captureEvents(events)
@@ -919,7 +919,7 @@ describe("GoalLoop — real SessionRunState admission seam (GOAL-FP-01-13)", () 
     Layer.provideMerge(Goal.defaultLayer),
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
     Layer.provideMerge(SessionRunState.defaultLayer),
   )
   const it = testEffect(seamLayer)
@@ -1421,7 +1421,7 @@ describe("GoalLoop — startup scan resumes pre-boot active goals (GOAL-FP-01-04
     // read the SAME instances (see the arbitration describe above).
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
     Layer.provideMerge(Database.defaultLayer),
   )
   const it = testEffect(scanLayer)
@@ -1481,7 +1481,7 @@ describe("GoalLoop — startup scan resumes pre-boot active goals (GOAL-FP-01-04
       reset()
       const loop = yield* GoalLoop.Service
       const goal = yield* Goal.Service
-      const automation = yield* SessionAutomationLease.Service
+      const automation = yield* ExclusiveRegistry.Service
       const directory = (yield* TestInstance).directory
 
       // Session B is a plain active goal — its evaluation is the positive
@@ -1629,7 +1629,7 @@ describe("GoalLoop — startup scan scoping and hardening (GOAL-FP-01-04 follow-
     Layer.provideMerge(Goal.defaultLayer),
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
     Layer.provideMerge(Database.defaultLayer),
   )
   const it = testEffect(hardenLayer)
@@ -2045,7 +2045,7 @@ describe("GoalLoop — boot scan must not re-evaluate an already-judged boundary
     Layer.provideMerge(Goal.defaultLayer),
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
     Layer.provideMerge(Database.defaultLayer),
   )
   const it = testEffect(boundaryLayer)

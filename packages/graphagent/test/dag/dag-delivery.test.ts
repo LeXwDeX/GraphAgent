@@ -27,7 +27,7 @@ import { Dag } from "@/dag/dag"
 import { DagDelivery } from "@/dag/runtime/delivery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -75,7 +75,7 @@ function baseLayers() {
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const automation = SessionAutomationLease.layer.pipe(Layer.provide(status))
+  const automation = ExclusiveRegistry.layer.pipe(Layer.provide(status))
   return {
     database,
     bridge,
@@ -164,7 +164,7 @@ function startDelivery(input: {
   readonly sessions: Session.Interface
   readonly prompts: SessionPrompt.Interface
   readonly status: SessionStatus.Interface
-  readonly automation: SessionAutomationLease.Interface
+  readonly automation: ExclusiveRegistry.Interface
   readonly database: Database.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly messages: DagMessages.Interface | undefined
@@ -195,7 +195,7 @@ function services() {
       sessions: yield* Session.Service,
       prompts: yield* SessionPrompt.Service,
       status: yield* SessionStatus.Service,
-      automation: yield* SessionAutomationLease.Service,
+      automation: yield* ExclusiveRegistry.Service,
       database: yield* Database.Service,
       events: yield* EventV2Bridge.Service,
       scope: yield* Scope.Scope,

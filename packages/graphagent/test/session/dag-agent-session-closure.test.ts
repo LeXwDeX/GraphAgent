@@ -14,7 +14,7 @@ import { Dag } from "@/dag/dag"
 import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { testEffect } from "../lib/effect"
 import { testInstanceStoreLayer } from "../fixture/fixture"
 
@@ -23,7 +23,7 @@ const it = testEffect(
     Session.defaultLayer,
     Goal.defaultLayer,
     Dag.defaultLayer,
-    SessionAutomationLease.defaultLayer,
+    ExclusiveRegistry.defaultLayer,
     DagMessages.defaultLayer,
     Database.defaultLayer,
     SessionProjector.defaultLayer,
@@ -139,7 +139,7 @@ const faultedIt = testEffect(
           Database.defaultLayer,
           EventV2Bridge.defaultLayer,
           Goal.defaultLayer,
-          SessionAutomationLease.defaultLayer,
+          ExclusiveRegistry.defaultLayer,
           Dag.defaultLayer,
           faultedMailbox,
         ),

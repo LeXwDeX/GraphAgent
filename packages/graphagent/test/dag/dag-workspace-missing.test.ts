@@ -26,7 +26,7 @@ import { continueRecoveredMessageNode } from "@/dag/runtime/recovery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionPrompt } from "@/session/prompt"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionStatus } from "@/session/status"
 import { SessionID } from "@/session/schema"
 import { and, eq } from "drizzle-orm"
@@ -57,7 +57,7 @@ function sweepHarness() {
   const prompt = Layer.mock(SessionPrompt.Service, {
     cancel: () => Effect.void,
   })
-  const automation = SessionAutomationLease.defaultLayer
+  const automation = ExclusiveRegistry.defaultLayer
   // provideMerge keeps the lease instance shared with the service the test
   // observes; a sibling provide would build a second registry and make the
   // release assertion meaningless.
@@ -120,7 +120,7 @@ const runSweepTest = <A>(
     readonly database: Database.Interface
     readonly store: DagStore.Interface
     readonly sweep: DagSupervisionSweep.Interface
-    readonly automation: SessionAutomationLease.Interface
+    readonly automation: ExclusiveRegistry.Interface
     readonly dagID: string
   }) => Effect.Effect<A, Error>,
 ) =>
@@ -128,7 +128,7 @@ const runSweepTest = <A>(
     const database = yield* Database.Service
     const store = yield* DagStore.Service
     const sweep = yield* DagSupervisionSweep.Service
-    const automation = yield* SessionAutomationLease.Service
+    const automation = yield* ExclusiveRegistry.Service
     const dagID = yield* createWorkflow({ directory, title: path.basename(directory) })
     yield* automation.register(SessionID.make("ses_parent"), { kind: "dag", id: dagID })
     return yield* test({ database, store, sweep, automation, dagID })
@@ -164,7 +164,7 @@ describe("DAG workspace failure terminalization (#948)", () => {
             expect(yield* workflowFailureCount(database, dagID)).toBe(1)
             // One durable terminal wake row, not a per-node error cascade.
             expect((yield* store.getUnreportedWakeWorkflows("ses_parent")).map((row) => row.id)).toEqual([dagID])
-            // The dead graph no longer pins the parent's automation lease.
+            // The dead graph no longer pins the parent's exclusive registry.
             expect(Option.isNone(yield* automation.claim(SessionID.make("ses_parent"), { kind: "dag" }))).toBe(true)
 
             // A second tick is a no-op: terminal rows are not failed twice and

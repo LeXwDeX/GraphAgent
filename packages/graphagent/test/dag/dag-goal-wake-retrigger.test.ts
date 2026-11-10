@@ -22,7 +22,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
@@ -42,7 +42,7 @@ import { withIdleAdmission } from "../lib/session-prompt"
 // Real DagLoop (adoption, terminal handler, wake delivery end-to-end so U2
 // fires inside the delivery tap) + real GoalLoop (idle subscription on the
 // real event bus, judge scripted via GoalLoopJudgeLLM) + real
-// SessionAutomationLease / SessionStatus / Goal / DagStore over one in-memory
+// ExclusiveRegistry / SessionStatus / Goal / DagStore over one in-memory
 // database. Session / SessionPrompt / Agent / Provider are mocked exactly
 // like the wake-integration harness.
 
@@ -278,7 +278,7 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
   // Merge the SAME module-level layer at the top so the test body observes the
   // very instance DagLoop and GoalLoop use (Layer.build memoization dedups the
   // shared layer reference).
-  return Layer.mergeAll(base, loop, goalLoop, SessionAutomationLease.defaultLayer)
+  return Layer.mergeAll(base, loop, goalLoop, ExclusiveRegistry.defaultLayer)
 }
 
 function runGoalWakeTest<A>(
@@ -288,7 +288,7 @@ function runGoalWakeTest<A>(
     readonly goalLoop: GoalLoop.Interface
     readonly store: DagStore.Interface
     readonly goal: Goal.Interface
-    readonly automation: SessionAutomationLease.Interface
+    readonly automation: ExclusiveRegistry.Interface
     readonly database: Database.Interface
     readonly childPrompts: Queue.Queue<ChildPromptGate>
   }) => Effect.Effect<A, Error>,
@@ -302,7 +302,7 @@ function runGoalWakeTest<A>(
       const goalLoop = yield* GoalLoop.Service
       const store = yield* DagStore.Service
       const goal = yield* Goal.Service
-      const automation = yield* SessionAutomationLease.Service
+      const automation = yield* ExclusiveRegistry.Service
       const database = yield* Database.Service
       yield* database.db
         .insert(ProjectTable)

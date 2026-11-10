@@ -7,7 +7,7 @@ import { FetchHttpClient } from "effect/http"
 import { Effect, Layer } from "effect"
 import { Session } from "@/session/session"
 import { SessionProjector } from "@graphagent/core/session/projector"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { Storage } from "@/storage/storage"
 import { SessionProcessor } from "@/session/processor"
 import { SessionPrompt } from "@/session/prompt"
@@ -206,7 +206,7 @@ const sessionLayer = Session.layer.pipe(
   Layer.provide(flags),
   Layer.provide(BackgroundJob.defaultLayer),
   Layer.provide(Goal.defaultLayer),
-  Layer.provide(SessionAutomationLease.defaultLayer),
+  Layer.provide(ExclusiveRegistry.defaultLayer),
   Layer.provide(Dag.defaultLayer),
   Layer.provide(DagMessages.defaultLayer),
 )
@@ -344,7 +344,7 @@ export function makeDagPerfLayer(provider: FakeProvider) {
     Layer.provide(flags),
     Layer.provide(BackgroundJob.defaultLayer),
     Layer.provide(Goal.defaultLayer),
-    Layer.provide(SessionAutomationLease.defaultLayer),
+    Layer.provide(ExclusiveRegistry.defaultLayer),
     Layer.provide(dag),
   )
   const dagDeps = Layer.mergeAll(
@@ -422,7 +422,7 @@ export function makeDagPerfLayer(provider: FakeProvider) {
     Layer.provideMerge(dagDeps),
     Layer.provide(summary),
   )
-  // DagLoop.layer hard-wires SessionAutomationLease.defaultLayer internally;
+  // DagLoop.layer hard-wires ExclusiveRegistry.defaultLayer internally;
   // dagDeps uses the same layer object, so memoization yields one instance.
   const loop = DagLoop.layer.pipe(Layer.provide(prompt))
   return Layer.mergeAll(prompt, loop)

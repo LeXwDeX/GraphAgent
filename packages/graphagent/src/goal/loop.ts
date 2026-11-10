@@ -22,7 +22,7 @@ import { GoalJudge } from "./judge"
 import { GoalPrompts } from "./prompts"
 import { generateText } from "ai"
 import { MessageID, SessionID } from "@/session/schema"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionInbox } from "@/session/inbox"
 import { SessionCancellation } from "@/session/cancellation"
 import { NotFoundError } from "@/storage/storage"
@@ -179,7 +179,7 @@ const serviceLayer = Layer.effect(
     const provider = yield* Provider.Service
     const goal = yield* Goal.Service
     const status = yield* SessionStatus.Service
-    const automation = yield* SessionAutomationLease.Service
+    const automation = yield* ExclusiveRegistry.Service
     const inbox = yield* SessionInbox.Service
 
     const workMessages = Effect.fn("GoalLoop.workMessages")(function* (sessionID: SessionID, limit = 20) {
@@ -285,7 +285,7 @@ const serviceLayer = Layer.effect(
       state: GoalState.Info
       messages: ReadonlyArray<SessionV1.WithParts>
       assistant: SessionV1.WithParts
-      lease: SessionAutomationLease.Token
+      lease: ExclusiveRegistry.Token
       beginRetryDedupe: (revision: number, failureID: string) => void
       endRetryDedupe: () => void
     }) {
@@ -1213,8 +1213,9 @@ const serviceLayer = Layer.effect(
           (pending.dedupeRevision !== undefined &&
             pending.dedupeFailureID === last?.info.id &&
             (goalState.revision ?? 0) === pending.dedupeRevision))
-      )
+      ) {
         return
+      }
       // D-4 gate (scan path only): skip when this process already evaluated
       // the CURRENT revision — the boot snapshot went stale after a
       // legitimate evaluation (e.g. the session's own idle event ran before
@@ -1276,7 +1277,7 @@ const serviceLayer = Layer.effect(
     //   re-evaluates it once the dag releases — the rejected trigger is
     //   harmless and self-healing.
     // - Busy sessions: the SessionStatus gate below mirrors the
-    //   automation-lease re-trigger gate; a session mid-turn is skipped and
+    //   exclusive-registry re-trigger gate; a session mid-turn is skipped and
     //   will be driven by its own turn-end idle event. At startup the status
     //   map is empty (get defaults to idle), so this only filters sessions
     //   that genuinely flipped busy between bootstrap and the scan.
@@ -1404,7 +1405,8 @@ const serviceLayer = Layer.effect(
             // goal.load both orDie). The inbox drain catches the cause and
             // logs it, so a store defect degrades to a logged, skipped
             // evaluation — never a silent one.
-            if (!(yield* Goal.ownsSession(sessionID, ctx.directory))) return false
+            const owned = yield* Goal.ownsSession(sessionID, ctx.directory)
+            if (!owned) return false
             yield* triggerEvaluation(sessionID)
             return true
           }),
@@ -1417,7 +1419,7 @@ const serviceLayer = Layer.effect(
 )
 
 export const layer = serviceLayer.pipe(
-  Layer.provide(SessionAutomationLease.defaultLayer),
+  Layer.provide(ExclusiveRegistry.defaultLayer),
   Layer.provide(SessionInbox.defaultLayer),
 )
 

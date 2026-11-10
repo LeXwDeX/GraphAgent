@@ -23,7 +23,7 @@ import type { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionStatus } from "@/session/status"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import * as MessageV2 from "@/session/message-v2"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Dag, parseWorkflowConfig } from "../dag"
@@ -91,7 +91,7 @@ export interface Environment {
   readonly sessions: Session.Interface
   readonly prompts: SessionPrompt.Interface
   readonly status: SessionStatus.Interface
-  readonly automation: SessionAutomationLease.Interface
+  readonly automation: ExclusiveRegistry.Interface
   readonly database: Database.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly messages: DagMessages.Interface | undefined
@@ -680,7 +680,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
 
           // New admission already committed its mark atomically. An old
           // durable receipt from before this boundary can still be
-          // acknowledged under the current automation lease.
+          // acknowledged under the current exclusive registry.
           const markLease = !alreadyAdmitted
             ? undefined
             : Option.getOrUndefined(yield* automation.claim(SessionID.make(sessionID), { kind: "dag" }))

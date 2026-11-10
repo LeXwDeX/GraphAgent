@@ -10,7 +10,7 @@ import { GoalPrompts } from "@/goal/prompts"
 import { GoalJudge } from "@/goal/judge"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionStatus } from "@/session/status"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { Database } from "@graphagent/core/database/database"
 import { GoalStateTable } from "@graphagent/core/goal/sql"
 import { SessionID } from "@/session/schema"
@@ -351,7 +351,7 @@ describe("Goal.markDone — turns_used is budget-neutral", () => {
 
 const setLeaseLayer = Goal.layer.pipe(
   Layer.provide(SessionStatus.defaultLayer),
-  Layer.provideMerge(SessionAutomationLease.defaultLayer),
+  Layer.provideMerge(ExclusiveRegistry.defaultLayer),
   Layer.provideMerge(Database.defaultLayer),
   Layer.provideMerge(EventV2Bridge.defaultLayer),
 )
@@ -360,7 +360,7 @@ describe("Goal.set — replacing a goal unregisters the previous lease id (GOAL-
   testEffect(setLeaseLayer).live("set on an existing goal leaves exactly the new goal id claimable", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
-      const lease = yield* SessionAutomationLease.Service
+      const lease = yield* ExclusiveRegistry.Service
       const sessionID = SessionID.descending()
 
       const first = yield* goal.set(sessionID, "goal A", 10)
@@ -1199,14 +1199,14 @@ it.instance("Goal invalid resume budgets preserve the entire paused state", () =
 
 // D-3 beyond the startup scan: an undecodable goal_state row (corruption or a
 // newer payload schema) must stay removable through the product and must not
-// kill the shared automation lease, whose Goal authority runs on every claim.
+// kill the shared exclusive registry, whose Goal authority runs on every claim.
 describe("Goal — undecodable goal_state row", () => {
   const corruptIt = testEffect(
     Goal.layer.pipe(
       Layer.provide(SessionStatus.defaultLayer),
       Layer.provideMerge(Database.defaultLayer),
       Layer.provideMerge(EventV2Bridge.defaultLayer),
-      Layer.provideMerge(SessionAutomationLease.defaultLayer),
+      Layer.provideMerge(ExclusiveRegistry.defaultLayer),
     ),
   )
   const insertCorrupt = (sid: SessionID) =>
@@ -1246,7 +1246,7 @@ describe("Goal — undecodable goal_state row", () => {
 
   corruptIt.instance("the lease Goal authority treats an undecodable row as no active goal", () =>
     Effect.gen(function* () {
-      const lease = yield* SessionAutomationLease.Service
+      const lease = yield* ExclusiveRegistry.Service
       const goal = yield* Goal.Service
       const sid = SessionID.descending()
       yield* insertCorrupt(sid)

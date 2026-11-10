@@ -15,7 +15,7 @@ import { and, eq, sql } from "drizzle-orm"
 import { Dag, parseWorkflowConfig } from "@/dag/dag"
 import { DagLocation } from "@/dag/location"
 import { SessionPrompt } from "@/session/prompt"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
 import { InstanceRef } from "@/effect/instance-ref"
 import { childAbort } from "./child-failure-reason"
@@ -135,7 +135,7 @@ const serviceLayer = Layer.effect(
     const store = yield* DagStore.Service
     const dag = yield* Dag.Service
     const promptSvc = yield* SessionPrompt.Service
-    const automation = yield* SessionAutomationLease.Service
+    const automation = yield* ExclusiveRegistry.Service
     const scope = yield* Scope.Scope
 
     // nodeKey -> {extensions, flatTicks}: the counter value last observed and
@@ -396,7 +396,7 @@ const serviceLayer = Layer.effect(
     // #343 host-level mirror of DagLoop.checkCompletion's durable half: when
     // every current-revision node is terminal, land the SAME natural outcome
     // (fail on a required failure or gate gap, complete otherwise) and release
-    // the workflow's automation lease registration. The decision and transition
+    // the workflow's exclusive registry registration. The decision and transition
     // run under the workflow lock inside Dag.settleCompletion, so a completed
     // verifier with a FAIL verdict can no longer turn into a swallowed
     // CompletionGateError that leaves the workflow running and leased.
@@ -472,7 +472,7 @@ export const layer = serviceLayer.pipe(
   Layer.provide(DagStore.defaultLayer),
   Layer.provide(Dag.defaultLayer),
   Layer.provide(SessionPrompt.defaultLayer),
-  Layer.provide(SessionAutomationLease.defaultLayer),
+  Layer.provide(ExclusiveRegistry.defaultLayer),
 )
 
 export const defaultLayer = layer
@@ -482,5 +482,5 @@ export const node = LayerNode.make(serviceLayer, [
   DagStore.node,
   Dag.node,
   SessionPrompt.node,
-  SessionAutomationLease.node,
+  ExclusiveRegistry.node,
 ])

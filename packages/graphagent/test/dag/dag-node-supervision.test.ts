@@ -30,7 +30,7 @@ import { disposeInstance } from "@/effect/instance-registry"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionPrompt } from "@/session/prompt"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
@@ -158,7 +158,7 @@ function supervisionLayer(input: {
   // #343: the sweep terminalizes workflows and releases their automation
   // lease after a host-level settle — give it the real (process-level) lease
   // registry so the unregister path is exercised, not a silent mock no-op.
-  const automation = SessionAutomationLease.defaultLayer
+  const automation = ExclusiveRegistry.defaultLayer
   const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(
     Layer.provide(base),
     Layer.provide(prompt),
@@ -173,7 +173,7 @@ interface SupervisionServices {
   readonly sweep: import("@/dag/runtime/supervision-sweep").Interface
   readonly childPrompts: Queue.Queue<PromptGate>
   readonly cancels: string[]
-  readonly automation: SessionAutomationLease.Interface
+  readonly automation: ExclusiveRegistry.Interface
   readonly database: Database.Interface
 }
 function runSupervisionTest<A>(
@@ -188,7 +188,7 @@ function runSupervisionTest<A>(
       const loop = yield* DagLoop.Service
       const store = yield* DagStore.Service
       const sweep = yield* DagSupervisionSweep.Service
-      const automation = yield* SessionAutomationLease.Service
+      const automation = yield* ExclusiveRegistry.Service
       const database = yield* Database.Service
       for (const project of ["project-1", "project-2"]) {
         yield* database.db

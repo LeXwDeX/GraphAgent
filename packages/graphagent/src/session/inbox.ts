@@ -186,6 +186,14 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    // The exclusive registry's dag-release re-trigger uses this instance's
+    // status map for its idle gate (Issue #1021, PR2).
+    const status = yield* SessionStatus.Service
+    // The service graph this inbox was built in. A nudge can arrive from a
+    // process-level caller in another layer graph; re-entering the owning
+    // instance must resolve services the drain's sources use (for example an
+    // injected judge) against this graph, not the caller's context.
+    const buildContext = yield* Effect.context<never>()
 
     // One claim sequence. Sources run in priority order and the first
     // successful claim ends the drain: a second source must observe the
@@ -309,6 +317,29 @@ export const layer = Layer.effect(
             if (data.route) EngineProcess.inbox.drains.delete(data.route)
           }),
         )
+        // PR2: the exclusive registry re-triggers a dag-blocked goal through
+        // this process router. Register the route as soon as the instance's
+        // inbox state exists — a blocked claim can only be recorded by a
+        // source in this instance, so the route must already be reachable
+        // without waiting for bootstrap's explicit `init`. The route keeps
+        // the generation it was created in and re-enters this instance's
+        // services explicitly.
+        const generation = yield* InstanceState.currentGeneration
+        const route: InboxDrainRoute = {
+          directory: DagLocation.canonicalDirectory(ctx.directory),
+          // A nudge can arrive from any layer graph in the process: re-enter
+          // the owning instance explicitly — its captured service graph plus
+          // its instance ref and generation — instead of inheriting the
+          // caller's context.
+          drain: (sessionID) =>
+            drainFor(data, SessionID.make(sessionID)).pipe(
+              Effect.provideContext(
+                Context.add(InstanceState.contextWithGeneration(generation, buildContext), InstanceRef, ctx),
+              ),
+            ),
+        }
+        data.route = route
+        EngineProcess.inbox.drains.add(route)
         // Invariant 1: exactly one SessionStatus subscription per instance.
         // Idle Status events are store-global; sources check ownership in
         // their claim (goal.continue uses Goal.ownsSession).
@@ -378,24 +409,31 @@ export const layer = Layer.effect(
       )
     })
 
+    // Issue #1021 PR2: the exclusive registry owns Goal/DAG arbitration, but
+    // the re-trigger itself now travels through this inbox instead of a
+    // synthetic idle status. The idle gate preserves the old lease behavior:
+    // the final dag unregister of a wake delivery lands mid-turn at admit
+    // time, where the in-flight turn's own end-of-turn idle re-drives the
+    // goal; nudging here would evaluate mid-turn (wasted judge call).
+    const goalReleaseNudge = (sessionID: SessionID) =>
+      status.get(sessionID).pipe(Effect.flatMap((info) => (info.type === "idle" ? nudge(sessionID) : Effect.void)))
+    // The hook slot holds one inbox per process. Keep the hook that was
+    // installed before this build so closing this layer restores it instead of
+    // stranding a sibling instance that is still open (Issue #1021, PR2).
+    const previousNudge = EngineProcess.inbox.nudge
+    EngineProcess.inbox.nudge = goalReleaseNudge
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        if (EngineProcess.inbox.nudge === goalReleaseNudge) EngineProcess.inbox.nudge = previousNudge
+      }),
+    )
+
     const init = Effect.fn("SessionInbox.init")(function* () {
       const data = yield* InstanceState.get(state)
       if (data.started) return
       data.started = true
-      const ctx = yield* InstanceState.context
-      const generation = yield* InstanceState.currentGeneration
-      const route: InboxDrainRoute = {
-        directory: DagLocation.canonicalDirectory(ctx.directory),
-        // A nudge can arrive from any layer graph in the process: re-enter
-        // the owning instance explicitly instead of inheriting the caller's.
-        drain: (sessionID) =>
-          InstanceState.withGeneration(generation, drain(SessionID.make(sessionID))).pipe(
-            Effect.provideService(InstanceRef, ctx),
-          ),
-      }
-      if (data.route) EngineProcess.inbox.drains.delete(data.route)
-      data.route = route
-      EngineProcess.inbox.drains.add(route)
+      // The process route is installed by the state builder (PR2); init only
+      // arms the durable tick once per instance.
       yield* tick(data).pipe(Effect.forkIn(data.scope))
     })
 
@@ -407,8 +445,7 @@ export const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const source = data.sources.get(sourceID)
       if (!source) return yield* new InboxNotWired({ source: sourceID })
-      if (source.mode === "turn_boundary")
-        return yield* new UnsupportedDeliveryPolicy({ policy: source.mode })
+      if (source.mode === "turn_boundary") return yield* new UnsupportedDeliveryPolicy({ policy: source.mode })
       // PR4 calls Turns.start (origin kind "inbox") here and maps the admission
       // to `Admission`; ledger-less sources confirm on the returned admission.
       yield* Effect.logDebug("session inbox submit is not wired yet", {
@@ -423,6 +460,8 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = Layer.suspend(() => layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)))
+export const defaultLayer = Layer.suspend(() =>
+  layer.pipe(Layer.provide(EventV2Bridge.defaultLayer), Layer.provide(SessionStatus.defaultLayer)),
+)
 
-export const node = LayerNode.make(layer, [EventV2Bridge.node])
+export const node = LayerNode.make(layer, [EventV2Bridge.node, SessionStatus.node])

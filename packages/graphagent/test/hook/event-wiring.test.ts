@@ -12,7 +12,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Session } from "@/session/session"
 import { Goal } from "@/goal/goal"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { Dag } from "@/dag/dag"
 import { SessionID } from "@/session/schema"
 import { Permission } from "@/permission"
@@ -66,7 +66,7 @@ const sessionEnv = Layer.mergeAll(
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(BackgroundJob.defaultLayer),
     Layer.provide(Goal.defaultLayer),
-    Layer.provide(SessionAutomationLease.defaultLayer),
+    Layer.provide(ExclusiveRegistry.defaultLayer),
     Layer.provide(Dag.defaultLayer),
   ),
   Database.defaultLayer,

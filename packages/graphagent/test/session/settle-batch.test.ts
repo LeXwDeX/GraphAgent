@@ -13,7 +13,7 @@ import { Dag } from "@/dag/dag"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, PartID } from "@/session/schema"
 import { Session as SessionNs } from "@/session/session"
 import { Storage } from "@/storage/storage"
@@ -45,7 +45,7 @@ const it = testEffect(
       Layer.provide(RuntimeFlags.layer({ experimentalWorkspaces: false })),
       Layer.provide(BackgroundJob.defaultLayer),
       Layer.provide(Goal.defaultLayer),
-      Layer.provide(SessionAutomationLease.defaultLayer),
+      Layer.provide(ExclusiveRegistry.defaultLayer),
       Layer.provide(Dag.defaultLayer),
     ),
     CrossSpawnSpawner.defaultLayer,

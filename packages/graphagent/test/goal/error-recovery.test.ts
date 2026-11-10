@@ -12,7 +12,7 @@ import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionStatus } from "@/session/status"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionID } from "@/session/schema"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -261,7 +261,7 @@ function harness(input: {
     Layer.provideMerge(goalLayer),
     Layer.provideMerge(SessionStatus.defaultLayer),
     Layer.provideMerge(EventV2Bridge.defaultLayer),
-    Layer.provideMerge(SessionAutomationLease.defaultLayer),
+    Layer.provideMerge(ExclusiveRegistry.defaultLayer),
     Layer.provideMerge(Database.defaultLayer),
   )
   return { layer, judge, compaction, admissions }

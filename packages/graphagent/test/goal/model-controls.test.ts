@@ -5,7 +5,7 @@ import { describe, expect } from "bun:test"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { Agent } from "@/agent/agent"
 import { Goal } from "@/goal/goal"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { GoalTool } from "@/tool/goal"
@@ -17,7 +17,7 @@ const it = testEffect(
   Layer.mergeAll(
     Goal.defaultLayer,
     SessionStatus.defaultLayer,
-    SessionAutomationLease.defaultLayer,
+    ExclusiveRegistry.defaultLayer,
     Agent.defaultLayer,
     Truncate.defaultLayer,
   ),
@@ -105,7 +105,7 @@ describe("model goal controls", () => {
   it.instance("pause returns inside the registered loop fiber and releases ownership", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
-      const lease = yield* SessionAutomationLease.Service
+      const lease = yield* ExclusiveRegistry.Service
       const tool = yield* (yield* GoalTool).init()
       const sid = SessionID.descending()
       yield* tool.execute({ action: "create", text: "work" }, context(sid))
