@@ -22,6 +22,8 @@ import type {
   Goal,
   DagWorkflowSummary,
   ReferenceInfo,
+  ProjectTrustEntry,
+  ProjectTrustDecision,
   Event as SdkEvent,
 } from "@graphagent/sdk"
 
@@ -156,6 +158,10 @@ export const {
         [childSessionID: string]: TaskIndexEntry
       }
       reference: ReferenceInfo[]
+      /** Project-layer executable entries and their trust state (#1040). */
+      trust: ProjectTrustEntry[]
+      /** Whether the trust snapshot has loaded once; gates the first-open panel. */
+      trust_loaded: boolean
     }>({
       provider_next: {
         all: [],
@@ -195,6 +201,8 @@ export const {
       hydrated: [],
       taskIndex: {},
       reference: [],
+      trust: [],
+      trust_loaded: false,
     })
 
     const event = useEvent()
@@ -858,6 +866,13 @@ export const {
           }
           break
         }
+
+        // #1040: the event names the decided ids only; the full snapshot is
+        // the source of truth for state, change flags and risk notes.
+        case "project.trust.updated": {
+          void refreshTrust()
+          break
+        }
       }
     })
 
@@ -950,6 +965,8 @@ export const {
               .list({ headers })
               .then((x) => setStore("reference", reconcile(x.data ?? [])))
               .catch(() => {}),
+            // #1040: the first trust snapshot also gates the first-open panel.
+            refreshTrust(),
             project.workspace.sync(),
             // #886 5.6: DAG summaries are only fetched for the current session
             // tree; entering another tree fetches its missing summaries lazily.
@@ -1032,6 +1049,19 @@ export const {
       })
     }
 
+    // #1040: project-layer trust is global state. The change event only names
+    // ids, so every notification re-reads the snapshot rather than merging.
+    const refreshTrust = (): Promise<void> => {
+      const workspace = project.workspace.current()
+      return sdk.client.project.trust
+        .list({ headers: locationHeaders({ workspace }) })
+        .then((x) => {
+          setStore("trust", reconcile(x.data?.entries ?? []))
+          setStore("trust_loaded", true)
+        })
+        .catch(() => {})
+    }
+
     // #886 5.6: the single reconnect entry point. Features register their own
     // refresh functions here instead of subscribing to `reconnected`.
     function onResync(fn: () => void | Promise<void>) {
@@ -1042,6 +1072,7 @@ export const {
     }
     onResync(guardedRefreshDagSummaries)
     onResync(guardedRefreshGoals)
+    onResync(refreshTrust)
 
     const unsubscribeReconnect = sdk.event.on("reconnected", () => {
       // Deltas that arrived before the disconnect cannot be reconciled with a
@@ -1254,6 +1285,21 @@ export const {
       },
       /** Subscribe a refresh function to the single reconnect entry point. */
       onResync,
+      /** #1040: project-layer trust entries and decisions. */
+      trust: {
+        refresh: refreshTrust,
+        async decide(decisions: readonly ProjectTrustDecision[]) {
+          const workspace = project.workspace.current()
+          const response = await sdk.client.project.trust.decide(
+            { projectTrustDecideInput: { decisions: [...decisions] } },
+            { headers: locationHeaders({ workspace }), throwOnError: true },
+          )
+          if (response.data) {
+            setStore("trust", reconcile(response.data.entries ?? []))
+            setStore("trust_loaded", true)
+          }
+        },
+      },
       /** Store snapshot plus un-settled deltas for text/reasoning parts. */
       readPartText(part: Part) {
         // Track the frame version so memos re-read when a delta batch flushes.

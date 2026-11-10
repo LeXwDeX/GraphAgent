@@ -36,5 +36,10 @@ export function useHomeFooterMeta(): Accessor<FooterMeta> {
     }
   })
 
-  return createMemo(() => ({ directory: directory(), mcp: mcp(), version: InstallationVersion }))
+  const trust = createMemo(() => {
+    const pending = sync.data.trust.filter((entry) => entry.state === "pending").length
+    return pending > 0 ? pending : undefined
+  })
+
+  return createMemo(() => ({ directory: directory(), mcp: mcp(), trust: trust(), version: InstallationVersion }))
 }

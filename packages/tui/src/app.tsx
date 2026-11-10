@@ -51,6 +51,7 @@ import { McpPanel } from "./panel/mcp"
 import { ModelPanel } from "./panel/model"
 import { StatusPanel } from "./panel/status"
 import { ThemePanel } from "./panel/theme"
+import { TrustPanel, type TrustPanelMode } from "./panel/trust"
 import { WorkspacesPanel } from "./panel/workspaces"
 import { SessionListPanel } from "./panel/sessions"
 import { CommandPalettePanel } from "./panel/palette"
@@ -525,6 +526,27 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     ),
   )
 
+  // #1040: before the first session, surface project commands that still need
+  // a trust decision. This opens once per process; later changes stay reachable
+  // through the footer reminder and `/trust`. While another panel owns the
+  // bottom zone the prompt waits for it to close.
+  let trustPrompted = false
+  let sessionOpened = false
+  createEffect(() => {
+    if (route.data.type === "session") sessionOpened = true
+  })
+  createEffect(() => {
+    if (trustPrompted || sessionOpened) return
+    if (route.data.type !== "home") return
+    if (!sync.ready || !sync.data.trust_loaded) return
+    if (args.continue || args.sessionID) return
+    if (bottomZone.host.depth() !== 0) return
+    const pending = sync.data.trust.filter((entry) => entry.state === "pending")
+    if (pending.length === 0) return
+    trustPrompted = true
+    openTrustPanel(pending.some((entry) => entry.change !== undefined) ? "changed" : "first")
+  })
+
   const currentWorktreeWorkspace = createMemo(() => {
     const workspaceID = project.workspace.current()
     if (!workspaceID) return
@@ -555,6 +577,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     ))
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
+  const openTrustPanel = (mode: TrustPanelMode) => openPanel("trust", () => <TrustPanel mode={mode} />)
   const connectProvider = () =>
     openProviderPanel({ host: bottomZone.host, onConnected: (providerID) => openModelList(providerID) })
   const openStatus = () => openPanel("status", () => <StatusPanel />)
@@ -595,6 +618,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     "model.list": () => openModelList(),
     "agent.list": openAgentList,
     "mcp.list": openMcpList,
+    "trust.open": () => openTrustPanel("manage"),
     "provider.connect": connectProvider,
     "graphagent.status": openStatus,
     "theme.switch": openThemeList,
