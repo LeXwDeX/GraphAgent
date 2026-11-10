@@ -97,7 +97,8 @@ export function StatusPanel() {
         result.push({
           id: `error:${record.id}`,
           cells: [errorText(record)],
-          selectable: false,
+          // The row stays one line; selecting it reveals the wrapped full text.
+          body: errorText(record),
         })
       }
     }
