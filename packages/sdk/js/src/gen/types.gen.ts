@@ -1341,6 +1341,11 @@ export type Config = {
     preserve_recent_tokens?: number
     reserved?: number
   }
+  btw?: {
+    model?: string
+    maxContextTokens?: number
+    maxOutputTokens?: number
+  }
   reasoningDistillation?: ConfigV2ReasoningDistillation
   experimental?: {
     disable_paste_summary?: boolean
