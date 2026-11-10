@@ -2473,6 +2473,94 @@
         ]
       }
     },
+    "/project/trust": {
+      "get": {
+        "tags": ["project"],
+        "operationId": "project.trust.list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Project trust entries and their states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrustList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          }
+        },
+        "description": "List the executable entries of the project layer with their fingerprint, trust state and risk notes.",
+        "summary": "List project trust entries",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.project.trust.list({\n  ...\n})"
+          }
+        ]
+      },
+      "post": {
+        "tags": ["project"],
+        "operationId": "project.trust.decide",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Project trust entries after applying the decisions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrustList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/EffectHttpApiErrorBadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Trust, decline or revoke individual project-layer entries and return the updated list.",
+        "summary": "Decide project trust entries",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTrustDecideInput"
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.project.trust.decide({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/project/{projectID}/directories": {
       "get": {
         "tags": ["project"],
@@ -7863,6 +7951,9 @@
             "$ref": "#/components/schemas/EventMessagePartDelta"
           },
           {
+            "$ref": "#/components/schemas/EventMessagePartPreview"
+          },
+          {
             "$ref": "#/components/schemas/EventSessionDiff"
           },
           {
@@ -7945,6 +8036,9 @@
           },
           {
             "$ref": "#/components/schemas/EventProjectUpdated"
+          },
+          {
+            "$ref": "#/components/schemas/EventProjectTrustUpdated"
           },
           {
             "$ref": "#/components/schemas/EventSessionStatus"
@@ -10529,6 +10623,147 @@
           }
         },
         "required": ["id", "sessionID", "questions"],
+        "additionalProperties": false
+      },
+      "ProjectTrustEntry": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["hook", "mcp", "skill-hook", "agent-hook", "command-shell", "formatter", "lsp"]
+          },
+          "fp": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ProjectTrustState"
+          },
+          "change": {
+            "$ref": "#/components/schemas/ProjectTrustChange"
+          },
+          "previous": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ProjectTrustSource"
+          },
+          "when": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectTrustRisk"
+            }
+          }
+        },
+        "required": ["id", "category", "fp", "state", "source", "when", "command", "risks"],
+        "additionalProperties": false
+      },
+      "ProjectTrustRisk": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "download-and-execute",
+              "send-local-file",
+              "delete-outside-project",
+              "startup-persistence",
+              "package-runner",
+              "reads-environment",
+              "external-url",
+              "remote-mcp",
+              "sudo"
+            ]
+          },
+          "level": {
+            "$ref": "#/components/schemas/ProjectTrustRiskLevel"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": ["code", "level"],
+        "additionalProperties": false
+      },
+      "ProjectTrustRiskLevel": {
+        "type": "string",
+        "enum": ["high", "caution"]
+      },
+      "ProjectTrustSource": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ]
+          }
+        },
+        "required": ["file"],
+        "additionalProperties": false
+      },
+      "ProjectTrustChange": {
+        "type": "string",
+        "enum": ["new", "modified"]
+      },
+      "ProjectTrustState": {
+        "type": "string",
+        "enum": ["trusted", "declined", "pending"]
+      },
+      "ProjectTrustDecideInput": {
+        "type": "object",
+        "properties": {
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectTrustDecision"
+            }
+          }
+        },
+        "required": ["decisions"],
+        "additionalProperties": false
+      },
+      "ProjectTrustDecision": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["trusted", "declined", "revoked"]
+          }
+        },
+        "required": ["id", "state"],
+        "additionalProperties": false
+      },
+      "ProjectTrustList": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectTrustEntry"
+            }
+          }
+        },
+        "required": ["entries"],
         "additionalProperties": false
       },
       "Project": {
@@ -13525,6 +13760,43 @@
         "required": ["id", "type", "properties"],
         "additionalProperties": false
       },
+      "EventProjectTrustUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["project.trust.updated"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "projectID": {
+                "type": "string"
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "removed": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["projectID", "entries", "removed"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
       "EventProjectUpdated": {
         "type": "object",
         "properties": {
@@ -14618,6 +14890,49 @@
               }
             },
             "required": ["sessionID", "diff"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventMessagePartPreview": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["message.part.preview"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "tail": {
+                "type": "string"
+              },
+              "totalLength": {
+                "type": "number"
+              },
+              "seq": {
+                "type": "number"
+              }
+            },
+            "required": ["sessionID", "messageID", "partID", "tail", "totalLength", "seq"],
             "additionalProperties": false
           }
         },

@@ -148,6 +148,11 @@ import type {
   ProjectInitGitResponses,
   ProjectListErrors,
   ProjectListResponses,
+  ProjectTrustDecideErrors,
+  ProjectTrustDecideInput,
+  ProjectTrustDecideResponses,
+  ProjectTrustListErrors,
+  ProjectTrustListResponses,
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   ProviderAuthErrors,
@@ -1554,6 +1559,46 @@ export class Mcp extends HeyApiClient {
   }
 }
 
+export class Trust extends HeyApiClient {
+  /**
+   * List project trust entries
+   *
+   * List the executable entries of the project layer with their fingerprint, trust state and risk notes.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ProjectTrustListResponses, ProjectTrustListErrors, ThrowOnError> {
+    return (options?.client ?? this.client).get<ProjectTrustListResponses, ProjectTrustListErrors, ThrowOnError>({
+      url: "/project/trust",
+      ...options,
+    })
+  }
+
+  /**
+   * Decide project trust entries
+   *
+   * Trust, decline or revoke individual project-layer entries and return the updated list.
+   */
+  public decide<ThrowOnError extends boolean = false>(
+    parameters?: {
+      projectTrustDecideInput?: ProjectTrustDecideInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<ProjectTrustDecideResponses, ProjectTrustDecideErrors, ThrowOnError> {
+    const params = buildClientParams([parameters], [{ args: [{ key: "projectTrustDecideInput", map: "body" }] }])
+    return (options?.client ?? this.client).post<ProjectTrustDecideResponses, ProjectTrustDecideErrors, ThrowOnError>({
+      url: "/project/trust",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Project extends HeyApiClient {
   /**
    * List all projects
@@ -1662,6 +1707,11 @@ export class Project extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _trust?: Trust
+  get trust(): Trust {
+    return (this._trust ??= new Trust({ client: this.client }))
   }
 }
 

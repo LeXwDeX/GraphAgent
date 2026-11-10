@@ -30,6 +30,7 @@ import { Memory } from "@/memory/memory"
 import { Permission } from "@/permission"
 import { InstanceStore } from "@/project/instance-store"
 import { Project } from "@/project/project"
+import { ProjectTrust } from "@/project/trust/service"
 import { Vcs } from "@/project/vcs"
 import { ProviderAuth } from "@/provider/auth"
 import { Provider } from "@/provider/provider"
@@ -204,6 +205,7 @@ export const app = LayerNode.group([
   ToolRegistry.node,
   Format.node,
   Project.node,
+  ProjectTrust.node,
   Vcs.node,
   Workspace.node,
   Worktree.node,

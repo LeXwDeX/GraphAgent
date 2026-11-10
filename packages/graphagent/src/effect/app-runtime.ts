@@ -46,6 +46,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { Format } from "@/format"
 import { InstanceLayer } from "@/project/instance-layer"
 import { Project } from "@/project/project"
+import { ProjectTrust } from "@/project/trust/service"
 import { Vcs } from "@/project/vcs"
 import { Workspace } from "@/control-plane/workspace"
 import { Worktree } from "@/worktree"
@@ -125,6 +126,7 @@ const BaseAppLayer = Layer.mergeAll(
     ToolRegistry.defaultLayer,
     Format.defaultLayer,
     Project.defaultLayer,
+    ProjectTrust.defaultLayer,
     Vcs.defaultLayer,
     Workspace.defaultLayer,
     Worktree.appLayer,
