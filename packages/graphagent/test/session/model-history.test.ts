@@ -3,6 +3,7 @@ import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import type { ModelMessage } from "ai"
+import { Effect } from "effect"
 import type { Provider } from "@/provider/provider"
 import { EngineProcess } from "../../src/session/engine-process"
 import { freeze } from "../../src/session/history/freeze"
@@ -299,5 +300,168 @@ describe("MessageV2 conversion cache", () => {
     expect(conversions() - before).toBe(2)
 
     forgetSession(EngineProcess.runtimes.modelHistory, cacheSession)
+  })
+})
+
+describe("ModelHistory lifecycle and boundaries", () => {
+  const session = SessionID.make("ses_model_history_lifecycle")
+  const conversions = () => EngineProcess.runtimes.modelHistory.metrics.conversions
+
+  const textPart = (messageID: string, id: string, text: string) =>
+    ({
+      id: PartID.make(id),
+      sessionID: session,
+      messageID: MessageID.make(messageID),
+      type: "text",
+      text,
+    }) as unknown as SessionV1.Part
+
+  const compactionPart = (messageID: string, id: string) =>
+    ({
+      id: PartID.make(id),
+      sessionID: session,
+      messageID: MessageID.make(messageID),
+      type: "compaction",
+    }) as unknown as SessionV1.Part
+
+  const user = (id: string, created: number, parts: SessionV1.Part[]) =>
+    ({
+      info: {
+        id: MessageID.make(id),
+        sessionID: session,
+        role: "user",
+        time: { created },
+        agent: "user",
+        model: { providerID, modelID: model.api.id },
+        tools: {},
+        mode: "",
+      },
+      parts,
+    }) as unknown as SessionV1.WithParts
+
+  const assistant = (
+    id: string,
+    parentID: string,
+    created: number,
+    extra: { summary?: boolean; finish?: string },
+    parts: SessionV1.Part[],
+  ) =>
+    ({
+      info: {
+        id: MessageID.make(id),
+        sessionID: session,
+        role: "assistant",
+        time: { created },
+        parentID: MessageID.make(parentID),
+        modelID: model.api.id,
+        providerID: model.providerID,
+        mode: "",
+        agent: "agent",
+        path: { cwd: "/", root: "/" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        ...extra,
+      },
+      parts,
+    }) as unknown as SessionV1.WithParts
+
+  const conversation = () =>
+    freeze([
+      user("msg_life_u1", 1, [textPart("msg_life_u1", "prt_life_p1", "hello")]),
+      assistant("msg_life_a1", "msg_life_u1", 2, { finish: "stop" }, [textPart("msg_life_a1", "prt_life_p2", "hi")]),
+    ])
+
+  test("drops entries when the session runtime is removed", async () => {
+    const input = conversation()
+    await MessageV2.toModelMessages(input, model)
+    expect(lookup(EngineProcess.runtimes.modelHistory, session, bucket(model), input[0]!, 0)).toBeDefined()
+
+    await Effect.runPromise(EngineProcess.runtimes.remove(session))
+
+    expect(lookup(EngineProcess.runtimes.modelHistory, session, bucket(model), input[0]!, 0)).toBeUndefined()
+    expect(size(EngineProcess.runtimes.modelHistory).entries).toBe(0)
+  })
+
+  test("drops entries owned by a disposed directory", async () => {
+    const input = conversation()
+    EngineProcess.runtimes.own(session, "model-history-test-directory")
+    await MessageV2.toModelMessages(input, model)
+    expect(size(EngineProcess.runtimes.modelHistory).entries).toBeGreaterThan(0)
+
+    await EngineProcess.runtimes.purgeDirectory("model-history-test-directory")
+
+    expect(size(EngineProcess.runtimes.modelHistory).entries).toBe(0)
+  })
+
+  test("reuses fragments after the view is rebuilt with equal objects", async () => {
+    await MessageV2.toModelMessages(conversation(), model)
+    const before = conversions()
+
+    const rebuilt = conversation()
+    await MessageV2.toModelMessages(rebuilt, model)
+    expect(conversions() - before).toBe(0)
+
+    forgetSession(EngineProcess.runtimes.modelHistory, session)
+  })
+
+  test("never caches derived, unfrozen messages", async () => {
+    const plain = {
+      ...conversation()[0]!,
+      info: { ...conversation()[0]!.info },
+      parts: [...conversation()[0]!.parts],
+    } as SessionV1.WithParts
+    const before = conversions()
+
+    await MessageV2.toModelMessages([plain], model)
+    await MessageV2.toModelMessages([plain], model)
+
+    expect(conversions() - before).toBe(2)
+    expect(size(EngineProcess.runtimes.modelHistory).entries).toBe(0)
+    forgetSession(EngineProcess.runtimes.modelHistory, session)
+  })
+
+  test("reconverts only the messages whose boundary bit flips", async () => {
+    const base = freeze([
+      user("msg_life_u1", 1, [textPart("msg_life_u1", "prt_life_p1", "hello")]),
+      assistant("msg_life_a1", "msg_life_u1", 2, { finish: "stop" }, [textPart("msg_life_a1", "prt_life_p2", "old")]),
+      user("msg_life_u2", 3, [compactionPart("msg_life_u2", "prt_life_p3")]),
+      assistant("msg_life_a2", "msg_life_u2", 4, { summary: true, finish: "stop" }, [
+        textPart("msg_life_a2", "prt_life_p4", "summary one"),
+      ]),
+      user("msg_life_u3", 5, [compactionPart("msg_life_u3", "prt_life_p5")]),
+    ])
+    await MessageV2.toModelMessages(base, model)
+    const before = conversions()
+
+    const extended = freeze([
+      ...base,
+      assistant("msg_life_a3", "msg_life_u3", 6, { summary: true, finish: "stop" }, [
+        textPart("msg_life_a3", "prt_life_p6", "summary two"),
+      ]),
+    ])
+    await MessageV2.toModelMessages(extended, model)
+
+    // The new summary plus the assistant whose boundary bit flipped; every
+    // other cached message is reused.
+    expect(conversions() - before).toBe(2)
+    forgetSession(EngineProcess.runtimes.modelHistory, session)
+  })
+
+  test("deep-freezes the nested metadata the conversion reads", () => {
+    const input = freeze([
+      assistant("msg_life_deep", "msg_life_u1", 2, { finish: "stop" }, [
+        {
+          ...textPart("msg_life_deep", "prt_life_deep", "x"),
+          metadata: { anthropic: { signature: "sig" } },
+        } as SessionV1.Part,
+      ]),
+    ])
+    const part = input[0]!.parts[0]! as SessionV1.Part & { metadata: { anthropic: { signature: string } } }
+
+    expect(Object.isFrozen(part.metadata)).toBe(true)
+    expect(Object.isFrozen(part.metadata.anthropic)).toBe(true)
+    expect(() => {
+      part.metadata.anthropic.signature = "changed"
+    }).toThrow()
   })
 })
