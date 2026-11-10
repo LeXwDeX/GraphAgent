@@ -11,7 +11,6 @@ import { t } from "../i18n"
 import { errorMessage } from "../util/error"
 import { askConfirm } from "../ask/local-ask"
 import { useBottomZoneOptional, type BottomZoneStateApi } from "../shell/bottom-zone"
-import { useDialog, type DialogContext } from "../ui/dialog"
 import { useToast } from "../ui/toast"
 import { usePanelHost, type PanelHostApi } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -68,14 +67,12 @@ async function loadWorkspaceAdapters(input: {
 /** Loads adapters and opens the workspace picker in the bottom-zone host. */
 export async function openWorkspacePanel(input: {
   host: PanelHostApi
-  dialog: DialogContext
   sdk: ReturnType<typeof useSDK>
   sync: ReturnType<typeof useSync>
   project: ReturnType<typeof useProject>
   toast: ReturnType<typeof useToast>
   onSelect: (selection: WorkspaceSelection) => Promise<void> | void
 }) {
-  input.dialog.clear()
   await input.sdk.client.experimental.workspace.syncList().catch(() => undefined)
   await input.project.workspace.sync().catch(() => undefined)
   const adapters = await loadWorkspaceAdapters(input)

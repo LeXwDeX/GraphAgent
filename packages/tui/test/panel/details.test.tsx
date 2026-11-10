@@ -44,7 +44,6 @@ function ExportHarness(props: { onReady(host: PanelHostApi, options: Promise<Exp
       host,
       showExportOptions({
         host,
-        dialog: { clear() {} },
         defaultFilename: "transcript.md",
         defaultThinking: false,
         defaultToolDetails: true,

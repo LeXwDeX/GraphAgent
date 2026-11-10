@@ -25,7 +25,6 @@ import {
   type JSX,
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
-import { DialogProvider, useDialog } from "./ui/dialog"
 import { openProviderPanel } from "./panel/provider"
 import { ErrorComponent } from "./component/error-component"
 import { ProjectProvider, useProject } from "./context/project"
@@ -35,7 +34,6 @@ import { SDKProvider, useSDK } from "./context/sdk"
 import { SyncProvider, useSync } from "./context/sync"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
-import { DialogSessionList } from "./component/dialog-session-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { HomeSessionDestinationProvider } from "./routes/home/session-destination"
@@ -54,6 +52,9 @@ import { ModelPanel } from "./panel/model"
 import { StatusPanel } from "./panel/status"
 import { ThemePanel } from "./panel/theme"
 import { WorkspacesPanel } from "./panel/workspaces"
+import { SessionListPanel } from "./panel/sessions"
+import { CommandPalettePanel } from "./panel/palette"
+import { VariantPanel } from "./panel/variant"
 import { useDrawer } from "./shell/drawer"
 import { useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
@@ -73,7 +74,6 @@ import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
-import { CommandPaletteDialog } from "./component/command-palette"
 import { CommandRegistryProvider, useCommands } from "./commands/context"
 import {
   COMMAND_PALETTE_COMMAND,
@@ -86,7 +86,6 @@ import {
 } from "./keymap"
 
 import type { EventSource } from "./context/sdk"
-import { DialogVariant } from "./component/dialog-variant"
 import { createTuiAttention } from "./attention"
 import { createTuiNotifications } from "./attention/notify"
 import * as TuiAudio from "./audio"
@@ -298,23 +297,21 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                 <LocalProvider>
                                                   <PromptStashProvider>
                                                     <CommandRegistryProvider>
-                                                      <DialogProvider>
-                                                        <FrecencyProvider>
-                                                          <PromptHistoryProvider>
-                                                            <PromptRefProvider>
-                                                              <EditorContextProvider>
-                                                                <LocationProvider>
-                                                                  <HomeSessionDestinationProvider>
-                                                                    <TickerProvider>
-                                                                      <App onSnapshot={input.onSnapshot} />
-                                                                    </TickerProvider>
-                                                                  </HomeSessionDestinationProvider>
-                                                                </LocationProvider>
-                                                              </EditorContextProvider>
-                                                            </PromptRefProvider>
-                                                          </PromptHistoryProvider>
-                                                        </FrecencyProvider>
-                                                      </DialogProvider>
+                                                      <FrecencyProvider>
+                                                        <PromptHistoryProvider>
+                                                          <PromptRefProvider>
+                                                            <EditorContextProvider>
+                                                              <LocationProvider>
+                                                                <HomeSessionDestinationProvider>
+                                                                  <TickerProvider>
+                                                                    <App onSnapshot={input.onSnapshot} />
+                                                                  </TickerProvider>
+                                                                </HomeSessionDestinationProvider>
+                                                              </LocationProvider>
+                                                            </EditorContextProvider>
+                                                          </PromptRefProvider>
+                                                        </PromptHistoryProvider>
+                                                      </FrecencyProvider>
                                                     </CommandRegistryProvider>
                                                   </PromptStashProvider>
                                                 </LocalProvider>
@@ -356,7 +353,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const route = useRoute()
   const dimensions = useTerminalDimensions()
   const renderer = useRenderer()
-  const dialog = useDialog()
   const local = useLocal()
   const kv = useKV()
   const keymap = useGraphagentKeymap()
@@ -537,14 +533,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     return workspace
   })
 
-  const openSessionList = () => dialog.replace(() => <DialogSessionList />)
-  const newSession = () => {
-    route.navigate({ type: "home" })
-    dialog.clear()
-  }
   const openPanel = (id: string, render: () => JSX.Element) => {
     if (bottomZone.host.top()?.id === id) return
     bottomZone.host.push({ id, render })
+  }
+  const openSessionList = () => openPanel("sessions", () => <SessionListPanel />)
+  const openVariant = () => openPanel("variant", () => <VariantPanel />)
+  const newSession = () => {
+    route.navigate({ type: "home" })
+    bottomZone.host.closeAll()
   }
   const [configTab, setConfigTab] = createSignal("interface")
   const openConfig = (tab: string) => {
@@ -554,11 +551,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const openWorkspaceList = () => openPanel("workspaces", () => <WorkspacesPanel />)
   const openModelList = (providerID?: string) =>
     openPanel("model", () => (
-      <ModelPanel
-        providerID={providerID}
-        onConnectProvider={connectProvider}
-        onVariant={() => dialog.replace(() => <DialogVariant />)}
-      />
+      <ModelPanel providerID={providerID} onConnectProvider={connectProvider} onVariant={() => openVariant()} />
     ))
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
@@ -575,15 +568,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           ? route.data.params.sessionID
           : undefined
     diffNavigation.open({ mode: "git", sessionID })
-    dialog.clear()
+    bottomZone.host.closeAll()
   }
   const toggleDebug = () => {
     renderer.toggleDebugOverlay()
-    dialog.clear()
+    bottomZone.host.closeAll()
   }
   const toggleConsole = () => {
     renderer.console.toggle()
-    dialog.clear()
+    bottomZone.host.closeAll()
   }
   const writeHeapSnapshot = async () => {
     const files = await props.onSnapshot?.()
@@ -592,7 +585,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       level: "info",
       duration: 5000,
     })
-    dialog.clear()
+    bottomZone.host.closeAll()
   }
 
   const commandHandlers: Record<string, () => void | Promise<void>> = {
@@ -625,7 +618,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
       hidden: true,
       run: () => {
-        dialog.replace(() => <CommandPaletteDialog />)
+        openPanel("palette", () => <CommandPalettePanel />)
       },
     },
     {
@@ -657,7 +650,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             }),
           )
           .catch(toast.error)
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
     },
     {
@@ -759,7 +752,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             level: "info",
           })
         }
-        dialog.replace(() => <DialogVariant />)
+        openVariant()
       },
     },
     {
@@ -794,7 +787,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       title: mode() === "dark" ? "Switch to light mode" : "Switch to dark mode",
       run: () => {
         setMode(mode() === "dark" ? "light" : "dark")
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
       category: "System",
     },
@@ -804,7 +797,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       run: () => {
         if (locked()) unlock()
         else lock()
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
       category: "System",
     },
@@ -864,7 +857,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
       run: () => {
         setTerminalTitleEnabled((prev) => !prev)
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
     },
     {
@@ -873,7 +866,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
       run: () => {
         kv.set("animations_enabled", !kv.get("animations_enabled", true))
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
     },
     {
@@ -882,7 +875,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
       run: () => {
         kv.set("file_context_enabled", !kv.get("file_context_enabled", true))
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
     },
     {
@@ -892,7 +885,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       run: () => {
         const current = kv.get("diff_wrap_mode", "word")
         kv.set("diff_wrap_mode", current === "word" ? "none" : "word")
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
     },
     {
@@ -901,7 +894,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
       run: () => {
         setPasteSummaryEnabled((prev) => !prev)
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
     },
     {
@@ -913,7 +906,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       run: async () => {
         kv.set("session_directory_filter_enabled", !kv.get("session_directory_filter_enabled", true))
         await sync.session.refresh()
-        dialog.clear()
+        bottomZone.host.closeAll()
       },
     },
   ])

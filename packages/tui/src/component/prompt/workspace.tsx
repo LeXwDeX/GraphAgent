@@ -1,5 +1,4 @@
 import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
-import { useDialog } from "../../ui/dialog"
 import { useSDK } from "../../context/sdk"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
@@ -16,7 +15,6 @@ import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import type { WorkspaceStatus } from "../workspace-label"
 
 export function usePromptWorkspace(sessionID?: string) {
-  const dialog = useDialog()
   const bottomZone = useBottomZoneOptional()
   const sdk = useSDK()
   const project = useProject()
@@ -114,7 +112,6 @@ export function usePromptWorkspace(sessionID?: string) {
     if (!bottomZone) return
     void openWorkspacePanel({
       host: bottomZone.host,
-      dialog,
       sdk,
       sync,
       project,

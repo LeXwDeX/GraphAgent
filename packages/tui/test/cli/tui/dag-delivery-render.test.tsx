@@ -29,7 +29,6 @@ import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Main } from "../../../src/routes/session"
 import { useFooterStatus } from "../../../src/shell/footer-status"
 import { HookProgress } from "../../../src/shell/hook-progress"
-import { DialogProvider } from "../../../src/ui/dialog"
 import { FooterToastProvider } from "../../../src/ui/toast"
 import { TickerProvider } from "../../../src/context/ticker-context"
 import { HookStatusProvider } from "../../../src/context/hook-status"
@@ -183,20 +182,18 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                                       <ThemeProvider mode="dark">
                                         <LocalProvider>
                                           <PromptStashProvider>
-                                            <DialogProvider>
-                                              <FrecencyProvider>
-                                                <PromptHistoryProvider>
-                                                  <PromptRefProvider>
-                                                    <EditorContextProvider integration={{}}>
-                                                      <LocationProvider>
-                                                        <Probe />
-                                                        <FooterStatusView />
-                                                      </LocationProvider>
-                                                    </EditorContextProvider>
-                                                  </PromptRefProvider>
-                                                </PromptHistoryProvider>
-                                              </FrecencyProvider>
-                                            </DialogProvider>
+                                            <FrecencyProvider>
+                                              <PromptHistoryProvider>
+                                                <PromptRefProvider>
+                                                  <EditorContextProvider integration={{}}>
+                                                    <LocationProvider>
+                                                      <Probe />
+                                                      <FooterStatusView />
+                                                    </LocationProvider>
+                                                  </EditorContextProvider>
+                                                </PromptRefProvider>
+                                              </PromptHistoryProvider>
+                                            </FrecencyProvider>
                                           </PromptStashProvider>
                                         </LocalProvider>
                                       </ThemeProvider>

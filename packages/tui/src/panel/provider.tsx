@@ -49,7 +49,7 @@ function providerGroup(providerID: string) {
   return providerID in PROVIDER_PRIORITY ? t("panel.provider.group.popular") : t("panel.provider.group.providers")
 }
 
-function sortedProviders(list: readonly { id: string; name: string }[]) {
+export function sortedProviders(list: readonly { id: string; name: string }[]) {
   return [...list].toSorted((left, right) => {
     const priority = (PROVIDER_PRIORITY[left.id] ?? 99) - (PROVIDER_PRIORITY[right.id] ?? 99)
     if (priority !== 0) return priority

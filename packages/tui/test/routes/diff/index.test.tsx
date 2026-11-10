@@ -24,7 +24,6 @@ import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../../src
 import { Diff } from "../../../src/routes/diff"
 import { useDiffFooterHints } from "../../../src/routes/diff/footer-hints"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "../../../src/shell/bottom-zone"
-import { DialogProvider } from "../../../src/ui/dialog"
 import { FooterToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
 import { TestTuiContexts } from "../../fixture/tui-environment"
@@ -150,13 +149,11 @@ async function renderDiff(
                           <ProjectProvider>
                             <SyncProvider>
                               <ThemeProvider mode="dark">
-                                <DialogProvider>
-                                  <BottomZoneProvider state={bottomZone}>
-                                    <Probe />
-                                    <Diff />
-                                    <BottomZone state={bottomZone} composer={<></>} />
-                                  </BottomZoneProvider>
-                                </DialogProvider>
+                                <BottomZoneProvider state={bottomZone}>
+                                  <Probe />
+                                  <Diff />
+                                  <BottomZone state={bottomZone} composer={<></>} />
+                                </BottomZoneProvider>
                               </ThemeProvider>
                             </SyncProvider>
                           </ProjectProvider>

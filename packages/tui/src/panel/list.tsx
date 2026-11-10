@@ -45,8 +45,11 @@ export interface ListPanelProps<T> {
   items: readonly ListItem<T>[]
   /** Initial selection; also gets the current-value marker. */
   current?: T
-  /** Defaults to true. With a filter input, action keys use their configured ctrl+<key> bindings. */
-  filter?: boolean | { placeholder?: string }
+  /**
+   * Defaults to true. With a filter input, action keys use their configured ctrl+<key> bindings.
+   * Set `client: false` when the owner searches server-side and only needs the input.
+   */
+  filter?: boolean | { placeholder?: string; client?: boolean }
   tabs?: readonly PanelTab[]
   activeTab?: string
   onTab?: (id: string) => void
@@ -73,13 +76,14 @@ export function ListPanel<T>(props: ListPanelProps<T>) {
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const filterEnabled = () => props.filter !== false
+  const clientFilter = () => props.filter === false || typeof props.filter !== "object" || props.filter.client !== false
   const placeholder = () => (typeof props.filter === "object" ? props.filter.placeholder : undefined)
   const descriptionBudget = () => Math.max(0, dimensions().width - 8)
   const actions = createMemo(() => props.actions ?? [])
 
   const filtered = createMemo(() => {
     const items = props.items.filter((item) => item.disabled !== true)
-    if (!filterEnabled()) return items
+    if (!filterEnabled() || !clientFilter()) return items
     const needle = filter().trim().toLowerCase()
     if (!needle) return items
     return fuzzysort.go(needle, items, { key: "title" }).map((result) => result.obj)

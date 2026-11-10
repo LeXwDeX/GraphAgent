@@ -29,7 +29,6 @@ import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Main } from "../../../src/routes/session"
-import { DialogProvider } from "../../../src/ui/dialog"
 import { FooterToastProvider } from "../../../src/ui/toast"
 import { HookStatusProvider } from "../../../src/context/hook-status"
 import { tmpdir } from "../../fixture/fixture"
@@ -276,32 +275,30 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
                                   <ThemeProvider mode="dark">
                                     <LocalProvider>
                                       <PromptStashProvider>
-                                        <DialogProvider>
-                                          <FrecencyProvider>
-                                            <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={{}}>
-                                                  <LocationProvider>
-                                                    <BusCounter
-                                                      onReady={(count) => {
-                                                        counter = count
-                                                        resolveReady()
-                                                      }}
-                                                    />
-                                                    <SyncProbe onSync={(value) => (sync = value)} />
-                                                    <Show when={mounted()}>
-                                                      {view === "session" ? (
-                                                        <Main />
-                                                      ) : (
-                                                        <Prompt sessionID={routeSessionID} />
-                                                      )}
-                                                    </Show>
-                                                  </LocationProvider>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
-                                            </PromptHistoryProvider>
-                                          </FrecencyProvider>
-                                        </DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider integration={{}}>
+                                                <LocationProvider>
+                                                  <BusCounter
+                                                    onReady={(count) => {
+                                                      counter = count
+                                                      resolveReady()
+                                                    }}
+                                                  />
+                                                  <SyncProbe onSync={(value) => (sync = value)} />
+                                                  <Show when={mounted()}>
+                                                    {view === "session" ? (
+                                                      <Main />
+                                                    ) : (
+                                                      <Prompt sessionID={routeSessionID} />
+                                                    )}
+                                                  </Show>
+                                                </LocationProvider>
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
                                       </PromptStashProvider>
                                     </LocalProvider>
                                   </ThemeProvider>

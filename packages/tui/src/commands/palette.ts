@@ -3,22 +3,17 @@
 
 import type { PromptRef } from "../component/prompt"
 import { t } from "../i18n"
-import type { DialogContext } from "../ui/dialog"
 import { TuiLog } from "../util/log"
 import type { CommandRegistry, CommandScope, CommandSpec } from "./registry"
 
+/** One palette row; suggested rows are duplicated with an `suggested:` id prefix. */
 export interface PaletteOption {
+  id: string
   title: string
   description?: string
   category: string
   footer?: string
-  value: string
   suggested: boolean
-  onSelect: (dialog: DialogContext) => void
-}
-
-export interface PaletteDialog {
-  clear(): void
 }
 
 export interface PalettePrompt {
@@ -48,11 +43,17 @@ export function paletteRows(options: readonly PaletteOption[]): PaletteOption[] 
       .filter((option) => option.suggested)
       .map((option) => ({
         ...option,
-        value: `suggested:${option.value}`,
+        id: `suggested:${option.id}`,
         category: suggestedCategory,
       })),
     ...options,
   ]
+}
+
+/** Resolves a suggested-row id back to the command id it duplicates. */
+export function paletteCommandId(id: string): string {
+  const prefix = "suggested:"
+  return id.startsWith(prefix) ? id.slice(prefix.length) : id
 }
 
 /**
@@ -63,11 +64,11 @@ export function paletteRows(options: readonly PaletteOption[]): PaletteOption[] 
 export function selectPaletteCommand(input: {
   registry: CommandRegistry
   spec: CommandSpec
-  dialog: PaletteDialog
+  close: () => void
   prompt: PalettePrompt
   renameTitle?: string
 }) {
-  input.dialog.clear()
+  input.close()
   const name = input.spec.slash?.name
   const current = input.prompt.current
   if (name && input.spec.slash?.args !== "none" && current) {

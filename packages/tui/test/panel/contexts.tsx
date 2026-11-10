@@ -23,9 +23,10 @@ import { KVProvider, useKV } from "../../src/context/kv"
 import { TickerProvider } from "../../src/context/ticker-context"
 import type { Ticker } from "../../src/context/ticker"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
+import { CommandRegistryProvider } from "../../src/commands/context"
+import { PromptRefProvider } from "../../src/context/prompt"
 import { PanelHost, PanelHostProvider, createPanelHost, type PanelHostApi, type PanelSpec } from "../../src/panel/host"
 import { PromptStashProvider, usePromptStash } from "../../src/component/prompt/stash"
-import { DialogProvider } from "../../src/ui/dialog"
 import { BottomZoneProvider, useBottomZone, type BottomZoneStateApi } from "../../src/shell/bottom-zone"
 import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { HookStatusProvider, useHookStatus } from "../../src/context/hook-status"
@@ -172,17 +173,19 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
                                 <LocalProvider>
                                   <LocationProvider>
                                     <PromptStashProvider>
-                                      <DialogProvider>
-                                        <BottomZoneProvider>
-                                          <AppPanelSetup
-                                            language={props.language}
-                                            setup={props.setup}
-                                            onReady={props.onReady}
-                                          >
-                                            <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
-                                          </AppPanelSetup>
-                                        </BottomZoneProvider>
-                                      </DialogProvider>
+                                      <CommandRegistryProvider>
+                                        <PromptRefProvider>
+                                          <BottomZoneProvider>
+                                            <AppPanelSetup
+                                              language={props.language}
+                                              setup={props.setup}
+                                              onReady={props.onReady}
+                                            >
+                                              <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
+                                            </AppPanelSetup>
+                                          </BottomZoneProvider>
+                                        </PromptRefProvider>
+                                      </CommandRegistryProvider>
                                     </PromptStashProvider>
                                   </LocationProvider>
                                 </LocalProvider>

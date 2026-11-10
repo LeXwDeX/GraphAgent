@@ -28,7 +28,6 @@ import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/ke
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
-import { DialogProvider } from "../../src/ui/dialog"
 import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { TickerProvider } from "../../src/context/ticker-context"
 import { useFooterStatus } from "../../src/shell/footer-status"
@@ -139,20 +138,18 @@ async function mount(
                                   <ThemeProvider mode="dark">
                                     <LocalProvider>
                                       <PromptStashProvider>
-                                        <DialogProvider>
-                                          <FrecencyProvider>
-                                            <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={{}}>
-                                                  <LocationProvider>
-                                                    <Content />
-                                                    <FooterStatusView />
-                                                  </LocationProvider>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
-                                            </PromptHistoryProvider>
-                                          </FrecencyProvider>
-                                        </DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider integration={{}}>
+                                                <LocationProvider>
+                                                  <Content />
+                                                  <FooterStatusView />
+                                                </LocationProvider>
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
                                       </PromptStashProvider>
                                     </LocalProvider>
                                   </ThemeProvider>

@@ -4,7 +4,6 @@
 import { createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { t } from "../i18n"
-import type { DialogContext } from "../ui/dialog"
 import type { PanelHostApi } from "./host"
 import { SettingsPanel, type SettingRow } from "./settings"
 
@@ -102,14 +101,12 @@ export function ExportOptionsPanel(props: ExportOptionsPanelProps) {
  */
 export function showExportOptions(input: {
   host: PanelHostApi
-  dialog: Pick<DialogContext, "clear">
   defaultFilename: string
   defaultThinking: boolean
   defaultToolDetails: boolean
   defaultAssistantMetadata: boolean
   defaultOpenWithoutSaving: boolean
 }): Promise<ExportOptions | null> {
-  input.dialog.clear()
   return new Promise((resolve) => {
     let result: ExportOptions | null = null
     input.host.push({
