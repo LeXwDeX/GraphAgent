@@ -39,6 +39,7 @@ import { SessionCompaction } from "@/session/compaction"
 import { Instruction } from "@/session/instruction"
 import { LLM } from "@/session/llm"
 import { SessionProcessor } from "@/session/processor"
+import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionBtw } from "@/session/btw"
@@ -248,6 +249,12 @@ export const app = LayerNode.group([
   // context, so it must be present in this graph or server-driven sessions
   // would silently skip rewake.
   HookRewakeLive.node,
+  // The rewake delivery itself resolves SessionInbox via serviceOption from
+  // the same ambient context (ledger-less sources deliver through
+  // `SessionInbox.submit`); listing it only as HookRewakeLive.node's
+  // dependency builds it but does not expose the service, so it must be a
+  // graph-level node too.
+  SessionInbox.node,
   // Memory: same failure class as SettingsHook above — /memory and
   // memory_search resolve Memory.Service via serviceOption from the ambient
   // request context (session/prompt.ts, tool/memory-search.ts), and listing

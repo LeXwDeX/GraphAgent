@@ -225,7 +225,7 @@ describe("DagDelivery drain", () => {
             getPart: () => Effect.succeed(undefined),
           })
           const prompt = Layer.mock(SessionPrompt.Service, {
-            prepareIfIdle: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
                 yield* persistAdmission ?? Effect.void
@@ -292,7 +292,7 @@ describe("DagDelivery drain", () => {
             Effect.gen(function* () {
               const { db } = yield* Database.Service
               return Layer.mock(SessionPrompt.Service, {
-                prepareIfIdle: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+                prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
                   Effect.gen(function* () {
                     if (mode === "park") {
                       parked += 1
@@ -376,7 +376,7 @@ describe("DagDelivery drain", () => {
             getPart: () => Effect.succeed(undefined),
           })
           const prompt = Layer.mock(SessionPrompt.Service, {
-            prepareIfIdle: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
                 yield* persistAdmission ?? Effect.void
@@ -456,7 +456,7 @@ describe("DagDelivery drain", () => {
             getPart: () => Effect.succeed(undefined),
           })
           const prompt = Layer.mock(SessionPrompt.Service, {
-            prepareIfIdle: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
                 yield* persistAdmission ?? Effect.void
@@ -683,7 +683,7 @@ describe("DagDelivery drain", () => {
             getPart: () => Effect.succeed(undefined),
           })
           const prompt = Layer.mock(SessionPrompt.Service, {
-            prepareIfIdle: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
                 yield* persistAdmission ?? Effect.void

@@ -41,7 +41,7 @@ const recordingPrompt = Layer.succeed(
       })
     return withIdleAdmission({
       prompt: record,
-      promptIfIdle: (input: SessionPrompt.PromptInput) => record(input).pipe(Effect.map(Option.some)),
+      deliver: (input: SessionPrompt.PromptInput) => record(input).pipe(Effect.map(Option.some)),
     }) as never
   })(),
 )

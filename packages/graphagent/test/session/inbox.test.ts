@@ -6,10 +6,13 @@ import { Deferred, Effect, Fiber, Layer, Ref } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import type { EventV2 } from "@graphagent/core/event"
 import { Project } from "@graphagent/core/project"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
-import { SessionInbox, type InboxSource } from "@/session/inbox"
-import { SessionID } from "@/session/schema"
+import { SessionInbox, type InboxItem, type InboxSource } from "@/session/inbox"
+import { SessionPrompt } from "@/session/prompt"
+import { MessageID, SessionID } from "@/session/schema"
+import type { TurnStart } from "@/session/turns"
 import { SessionStatus } from "@/session/status"
 import type { InstanceContext } from "@/project/instance-context"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -173,17 +176,12 @@ describe("SessionInbox", () => {
       const scans = yield* Ref.make(0)
       yield* inbox
         .register(
-          source(
-            "goal.continue",
-            10,
-            (sid) => Ref.update(claims, (seen) => [...seen, sid]).pipe(Effect.as(true)),
-            {
-              // A stale in-memory hint (possible after a restart): the idle
-              // boundary skips the claim, the durable scan must not.
-              hint: () => false,
-              scan: () => Ref.updateAndGet(scans, (n) => n + 1).pipe(Effect.as([sessionID])),
-            },
-          ),
+          source("goal.continue", 10, (sid) => Ref.update(claims, (seen) => [...seen, sid]).pipe(Effect.as(true)), {
+            // A stale in-memory hint (possible after a restart): the idle
+            // boundary skips the claim, the durable scan must not.
+            hint: () => false,
+            scan: () => Ref.updateAndGet(scans, (n) => n + 1).pipe(Effect.as([sessionID])),
+          }),
         )
         .pipe(Effect.provideService(InstanceRef, ctx))
       yield* inbox.init().pipe(Effect.provideService(InstanceRef, ctx))
@@ -209,17 +207,16 @@ describe("SessionInbox", () => {
     Effect.gen(function* () {
       const inbox = yield* SessionInbox.Service
       const sessionID = SessionID.descending()
-      // No source: nothing proves emptiness.
+      // The built-in async-context step is a "maybe" on its own: no source can
+      // prove emptiness before every hint answers explicitly.
       expect(yield* inbox.pullForStep(sessionID)).toBe(true)
 
+      // One explicit "empty" cannot outvote the built-in conservative hint.
       yield* inbox.registerStep({ id: "dag.mailbox.step", hint: () => false })
-      expect(yield* inbox.pullForStep(sessionID)).toBe(false)
-
-      // Any "maybe" wins over another source's explicit empty.
-      yield* inbox.registerStep({ id: "hook.async_context", hint: () => true })
       expect(yield* inbox.pullForStep(sessionID)).toBe(true)
 
-      // A later registration for the same id replaces the previous hint.
+      // Only when every registered source answers "empty" is the session
+      // provably empty.
       yield* inbox.registerStep({ id: "hook.async_context", hint: () => false })
       expect(yield* inbox.pullForStep(sessionID)).toBe(false)
 
@@ -231,6 +228,10 @@ describe("SessionInbox", () => {
         },
       })
       expect(yield* inbox.pullForStep(sessionID)).toBe(true)
+
+      // A later registration for the same id replaces the previous hint.
+      yield* inbox.registerStep({ id: "dag.mailbox.step", hint: () => false })
+      expect(yield* inbox.pullForStep(sessionID)).toBe(false)
     }),
   )
 
@@ -245,9 +246,7 @@ describe("SessionInbox", () => {
       expect(yield* inbox.pullForStep(sessionID)).toBe(true)
       const baseline = subscribeCalls
       yield* inbox.registerStep({ id: "dag.mailbox.step", hint: () => true })
-      yield* inbox.register(
-        source("goal.continue", 10, () => Ref.update(claims, (n) => n + 1).pipe(Effect.as(true))),
-      )
+      yield* inbox.register(source("goal.continue", 10, () => Ref.update(claims, (n) => n + 1).pipe(Effect.as(true))))
       yield* inbox.drain(sessionID)
       expect(yield* Ref.get(claims)).toBe(1)
       expect(yield* inbox.pullForStep(sessionID)).toBe(true)
@@ -261,9 +260,7 @@ describe("SessionInbox", () => {
       const inbox = yield* SessionInbox.Service
       const status = yield* SessionStatus.Service
       const claims = yield* Ref.make(0)
-      yield* inbox.register(
-        source("goal.continue", 10, () => Ref.update(claims, (n) => n + 1).pipe(Effect.as(true))),
-      )
+      yield* inbox.register(source("goal.continue", 10, () => Ref.update(claims, (n) => n + 1).pipe(Effect.as(true))))
       const sessionID = SessionID.descending()
       yield* status.set(sessionID, { type: "busy" })
       yield* inbox.drain(sessionID)
@@ -289,12 +286,9 @@ describe("SessionInbox", () => {
       const claims = yield* Ref.make<ReadonlyArray<SessionID>>([])
       yield* inbox
         .register(
-          source(
-            "goal.continue",
-            10,
-            (sid) => Ref.update(claims, (seen) => [...seen, sid]).pipe(Effect.as(true)),
-            { scan: () => Effect.succeed([sessionID]) },
-          ),
+          source("goal.continue", 10, (sid) => Ref.update(claims, (seen) => [...seen, sid]).pipe(Effect.as(true)), {
+            scan: () => Effect.succeed([sessionID]),
+          }),
         )
         .pipe(Effect.provideService(InstanceRef, ctx))
       yield* inbox.init().pipe(Effect.provideService(InstanceRef, ctx))
@@ -317,22 +311,94 @@ describe("SessionInbox", () => {
     }),
   )
 
-  it.instance("submit reports the admission port as not wired and rejects turn_boundary", () =>
+  it.instance("submit honors the delivery policy and maps admission outcomes", () =>
     Effect.gen(function* () {
       const inbox = yield* SessionInbox.Service
       const sessionID = SessionID.descending()
+
+      // No source is registered under that id.
       const missing = yield* Effect.flip(inbox.submit("goal.continue", sessionID, {}))
       expect(missing._tag).toBe("SessionInboxNotWired")
 
+      // `turn_boundary` has no implementation; overriding the built-in rewake
+      // source proves the policy rejection.
       yield* inbox.register(source("hook.rewake", 10, () => Effect.succeed(true), { mode: "turn_boundary" }))
       const unsupported = yield* Effect.flip(inbox.submit("hook.rewake", sessionID, {}))
       expect(unsupported._tag).toBe("SessionInboxUnsupportedDeliveryPolicy")
 
+      // `idle_only` sources must go through their drain boundary instead.
+      yield* inbox.register(source("goal.continue", 10, () => Effect.succeed(true)))
+      const idleOnly = yield* Effect.flip(inbox.submit("goal.continue", sessionID, {}))
+      expect(idleOnly._tag).toBe("SessionInboxUnsupportedDeliveryPolicy")
+
+      // A join_or_start source without a prompt payload has nothing to admit.
       yield* inbox.register(source("child.result", 10, () => Effect.succeed(true), { mode: "join_or_start" }))
-      const unwired = yield* Effect.flip(
+      const payload = yield* Effect.flip(
         inbox.submit("child.result", sessionID, { idempotencyKey: "key", noReply: true }),
       )
-      expect(unwired._tag).toBe("SessionInboxNotWired")
+      expect(payload._tag).toBe("SessionInboxAdmissionFailed")
+
+      // Ledger-less sources deliver through the built-in rewake source. A
+      // submit with no app-layer admission port reports the port as absent.
+      yield* inbox.register(source("hook.rewake", 10, () => Effect.succeed(true), { mode: "join_or_start" }))
+      const item: InboxItem = {
+        prompt: { parts: [{ type: "text", text: "rewake" }] },
+        admissionOptions: { continueToolBudget: true },
+      }
+      const unavailable = yield* Effect.flip(inbox.submit("hook.rewake", sessionID, item))
+      expect(unavailable._tag).toBe("SessionInboxAdmissionUnavailable")
+
+      // With an admission port, submit maps the outcome without awaiting the
+      // turn: `wait` never resolves here and submit still returns.
+      const seen: { input: { sessionID: string; noReply?: boolean }; options?: unknown }[] = []
+      const createdAt = 1_700_000_000_000
+      const startedID = MessageID.make("msg_started")
+      const joinedID = MessageID.make("msg_joined")
+      const writtenID = MessageID.make("msg_written")
+      const message = (id: MessageID) =>
+        ({
+          info: { id, sessionID, role: "user", time: { created: createdAt } },
+          parts: [{ type: "text", text: "rewake" }],
+        }) as never as SessionV1.WithParts
+      const start = (admission: TurnStart["admission"], admitted?: SessionV1.WithParts): TurnStart => ({
+        admission,
+        ...(admitted === undefined ? {} : { message: admitted }),
+        wait: Effect.never,
+      })
+      let outcome = start({ kind: "not_started", reason: "test" })
+      const promptMock = Layer.mock(SessionPrompt.Service, {
+        admit: (input, options) =>
+          Effect.sync(() => {
+            seen.push({ input, options })
+            return outcome
+          }),
+      })
+      const submit = () => inbox.submit("hook.rewake", sessionID, item).pipe(Effect.provide(promptMock))
+
+      outcome = start({ kind: "started", turn: undefined as never }, message(startedID))
+      expect(yield* submit()).toEqual({ state: "started", messageID: startedID, createdAt })
+      expect(seen[0].input).toMatchObject({ sessionID, parts: [{ type: "text", text: "rewake" }] })
+      expect(seen[0].input.noReply).toBeUndefined()
+      expect(seen[0].options).toEqual({ continueToolBudget: true })
+
+      outcome = start({ kind: "joined", turn: undefined as never, messageID: joinedID }, message(joinedID))
+      expect(yield* submit()).toEqual({ state: "joined", messageID: joinedID, createdAt })
+
+      // A committed message without a started turn is written, not pending.
+      outcome = start({ kind: "not_started", reason: "admission_declined" }, message(writtenID))
+      expect(yield* submit()).toEqual({ state: "written", messageID: writtenID, createdAt })
+
+      // `noReply` rides with the prompt.
+      expect(
+        yield* inbox.submit("hook.rewake", sessionID, { ...item, noReply: true }).pipe(Effect.provide(promptMock)),
+      ).toEqual({ state: "written", messageID: writtenID, createdAt })
+      expect(seen.at(-1)?.input.noReply).toBe(true)
+
+      outcome = start({ kind: "skipped_busy" })
+      expect(yield* submit()).toEqual({ state: "skipped_busy" })
+
+      outcome = start({ kind: "not_started", reason: "test" })
+      expect(yield* submit()).toEqual({ state: "pending" })
     }),
   )
 })

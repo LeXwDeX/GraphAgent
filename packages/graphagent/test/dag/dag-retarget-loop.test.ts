@@ -137,7 +137,7 @@ function loopLayer(input: {
   const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
     cancel: (sessionID) => Effect.sync(() => input.cancelled.push(sessionID)),
     prompt: deliver,
-    promptIfIdle: (value) => deliver(value).pipe(Effect.map(Option.some)),
+    deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
   }))
   const agent = Layer.mock(Agent.Service, {
     get: () => Effect.succeed({

@@ -137,7 +137,7 @@ function supervisionLayer(input: {
               input.cancels.push(sessionID)
             }),
       prompt: (value: SessionPrompt.PromptInput) => deliver(value),
-      promptIfIdle: (value: SessionPrompt.PromptInput) => deliver(value).pipe(Effect.map(Option.some)),
+      deliver: (value: SessionPrompt.PromptInput) => deliver(value).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {

@@ -19,11 +19,12 @@ export * as SessionInbox from "./inbox"
  * - a process-level nudge route: callers only know a session, the inbox finds
  *   the loaded instance that owns the session's directory.
  *
- * `submit` is part of the frozen port but its admission wiring (Turns.start)
- * lands with PR4. Until then it reports the item as not wired instead of
- * accepting and silently dropping it. `turn_boundary` has no implementation
- * yet and reports `UnsupportedDeliveryPolicy`; PR4 decides whether it is still
- * needed once join-or-start covers the same sources.
+ * `submit` is the admission port for ledger-less sources. PR4 wires it to
+ * `SessionPrompt.admit`: the message is committed and classified, but the
+ * caller never waits for the turn itself. Ledger-less sources confirm at
+ * admission time. `turn_boundary` has no implementation and reports
+ * `UnsupportedDeliveryPolicy`; an `idle_only` source cannot skip its boundary
+ * through `submit` either.
  *
  * PR3 adds the hint-only step port: a `StepSource` answers whether it may
  * have input at the next model step boundary, without taking ownership of the
@@ -31,6 +32,10 @@ export * as SessionInbox from "./inbox"
  * and confirmation path; `pullForStep` is purely advisory and conservative
  * (any "maybe" wins). The full take/commit/abandon transaction is deferred
  * until a consumer actually needs step-level ownership.
+ *
+ * PR4 registers the built-in `hook.rewake` source (a submit whitelist only:
+ * its hint is false and it never claims a drain) and the `hook.async_context`
+ * step source. D1's `drainAsync` remains the only async-hook delivery path.
  */
 
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
@@ -45,6 +50,7 @@ import { EngineProcess, type InboxDrainRoute } from "./engine-process"
 import { SessionLocation } from "./location"
 import { MessageID, SessionID } from "./schema"
 import { SessionStatus } from "./status"
+import type { AdmissionOptions, PromptInput } from "./prompt"
 
 /**
  * How an automatic input may enter a session.
@@ -71,13 +77,16 @@ export type InboxSourceID =
 /**
  * What happened to one submitted item. `pending` means the item is queued for
  * a later boundary and has no user message yet; an admitted item names the
- * message and when it was created; `skipped_busy` means the policy refused
- * this boundary.
+ * message and when it was created; `written` means the message was committed
+ * without a turn following it (`noReply`, a declined admission, or a runner
+ * that classified the request as busy); `skipped_busy` means the policy refused
+ * this boundary before writing anything.
  */
 export type Admission =
   | { readonly state: "pending" }
   | { readonly state: "started"; readonly messageID: MessageID; readonly createdAt: number }
   | { readonly state: "joined"; readonly messageID: MessageID; readonly createdAt: number }
+  | { readonly state: "written"; readonly messageID: MessageID; readonly createdAt: number }
   | { readonly state: "skipped_busy" }
 
 /** One deliverable item. Sources own the payload the admission port persists. */
@@ -86,6 +95,10 @@ export interface InboxItem {
   readonly idempotencyKey?: string
   /** Write the user message without starting a turn (watch_pr outcome notices). */
   readonly noReply?: boolean
+  /** The prompt content the admission port commits; `sessionID` comes from the call. */
+  readonly prompt?: Omit<PromptInput, "sessionID">
+  /** Admission options riding with the prompt (for example a rewake token). */
+  readonly admissionOptions?: AdmissionOptions
 }
 
 /**
@@ -162,6 +175,30 @@ export class UnsupportedDeliveryPolicy extends Schema.TaggedError<UnsupportedDel
   }
 }
 
+/** The caller's layer graph has no SessionPrompt service to admit the item. */
+export class InboxAdmissionUnavailable extends Schema.TaggedError<InboxAdmissionUnavailable>()(
+  "SessionInboxAdmissionUnavailable",
+  {
+    source: Schema.String,
+    sessionID: Schema.String,
+  },
+) {
+  override get message() {
+    return `Session inbox source "${this.source}" cannot admit: no session prompt service in this context`
+  }
+}
+
+/** The admission port refused the item; the error text is the prompt failure. */
+export class InboxAdmissionFailed extends Schema.TaggedError<InboxAdmissionFailed>()("SessionInboxAdmissionFailed", {
+  source: Schema.String,
+  sessionID: Schema.String,
+  cause: Schema.String,
+}) {
+  override get message() {
+    return `Session inbox source "${this.source}" admission failed: ${this.cause}`
+  }
+}
+
 export interface Interface {
   /** Resolve this instance's route, arm the tick, and register with the process. */
   readonly init: () => Effect.Effect<void>
@@ -177,12 +214,16 @@ export interface Interface {
   readonly drain: (sessionID: SessionID) => Effect.Effect<void>
   /** Process-level route: drain the loaded instance that owns the session's directory. */
   readonly nudge: (sessionID: SessionID) => Effect.Effect<void>
-  /** Admission port for ledger-less sources (PR4). Reports an explicit error until wired. */
+  /** Admission port for ledger-less sources. Commits the prompt and returns
+   * without waiting for the turn; ledger-less sources confirm at this point. */
   readonly submit: (
     sourceID: InboxSourceID,
     sessionID: SessionID,
     item: InboxItem,
-  ) => Effect.Effect<Admission, InboxNotWired | UnsupportedDeliveryPolicy>
+  ) => Effect.Effect<
+    Admission,
+    InboxNotWired | UnsupportedDeliveryPolicy | InboxAdmissionUnavailable | InboxAdmissionFailed
+  >
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionInbox") {}
@@ -352,8 +393,25 @@ export const layer = Layer.effect(
         const data: InstanceData = {
           directory: ctx.directory,
           scope,
-          sources: new Map(),
-          steps: new Map(),
+          // Built-in sources. `hook.rewake` is a submit whitelist only: a
+          // rewake has no durable ledger, so a drain boundary has nothing to
+          // claim; `hook.async_context` only marks that async hook results may
+          // exist at the next step boundary. Neither takes part in a drain.
+          sources: new Map<InboxSourceID, InboxSource>([
+            [
+              "hook.rewake",
+              {
+                id: "hook.rewake",
+                priority: 20,
+                mode: "join_or_start",
+                hint: () => false,
+                claim: () => Effect.succeed(false),
+              },
+            ],
+          ]),
+          steps: new Map<InboxSourceID, StepSource>([
+            ["hook.async_context", { id: "hook.async_context", hint: () => true }],
+          ]),
           mutex: KeyedMutex.makeUnsafe<SessionID>(),
           inFlight: new Map(),
           route: undefined,
@@ -521,15 +579,44 @@ export const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const source = data.sources.get(sourceID)
       if (!source) return yield* new InboxNotWired({ source: sourceID })
-      if (source.mode === "turn_boundary") return yield* new UnsupportedDeliveryPolicy({ policy: source.mode })
-      // PR4 calls Turns.start (origin kind "inbox") here and maps the admission
-      // to `Admission`; ledger-less sources confirm on the returned admission.
-      yield* Effect.logDebug("session inbox submit is not wired yet", {
-        source: sourceID,
-        sessionID,
-        noReply: item.noReply === true,
-      })
-      return yield* new InboxNotWired({ source: sourceID })
+      // `join_or_start` is the only policy submit can honor: an idle-only
+      // source must go through its drain boundary, and `turn_boundary` has no
+      // implementation.
+      if (source.mode !== "join_or_start") return yield* new UnsupportedDeliveryPolicy({ policy: source.mode })
+      if (!item.prompt)
+        return yield* new InboxAdmissionFailed({ source: sourceID, sessionID, cause: "missing prompt payload" })
+      // Resolve the admission port from the caller's context. Drain claims run
+      // in this instance's build context (no SessionPrompt), so a source must
+      // never call submit from inside `claim`; only external callers that own
+      // the app layer can.
+      const { SessionPrompt } = yield* Effect.promise(() => import("./prompt"))
+      const prompts = Option.getOrUndefined(yield* Effect.serviceOption(SessionPrompt.Service))
+      if (!prompts) return yield* new InboxAdmissionUnavailable({ source: sourceID, sessionID })
+      const started = yield* prompts
+        .admit(
+          { sessionID, ...item.prompt, ...(item.noReply === true ? { noReply: true } : {}) },
+          item.admissionOptions,
+        )
+        .pipe(
+          Effect.mapError((error) => new InboxAdmissionFailed({ source: sourceID, sessionID, cause: String(error) })),
+        )
+      // Never await `started.wait`: admission commits the message and returns;
+      // the turn runs on its own. A committed message that did not start a turn
+      // is `written`, not `pending` — the ledger-less source's confirmation
+      // point is exactly this committed message.
+      const message = started.message
+      if (started.admission.kind === "started" && message)
+        return { state: "started", messageID: message.info.id, createdAt: message.info.time.created } as const
+      if (started.admission.kind === "joined" && message)
+        return {
+          state: "joined",
+          messageID: started.admission.messageID,
+          createdAt: message.info.time.created,
+        } as const
+      if (message)
+        return { state: "written", messageID: message.info.id, createdAt: message.info.time.created } as const
+      if (started.admission.kind === "skipped_busy") return { state: "skipped_busy" } as const
+      return { state: "pending" } as const
     })
 
     return Service.of({ init, register, registerStep, drain, nudge, pullForStep, submit })

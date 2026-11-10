@@ -141,7 +141,7 @@ function runtimeLayer(records: Queue.Queue<PromptRecord>, created: string[], par
     withIdleAdmission({
       cancel: () => Effect.void,
       prompt: deliver,
-      promptIfIdle: (input) => deliver(input).pipe(Effect.map(Option.some)),
+      deliver: (input) => deliver(input).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {

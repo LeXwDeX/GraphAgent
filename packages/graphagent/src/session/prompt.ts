@@ -106,6 +106,7 @@ import {
   type Interface as TurnsInterface,
   type TurnExecution,
   type TurnOrigin,
+  type TurnStart,
 } from "./turns"
 
 export type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
@@ -138,16 +139,23 @@ export interface Interface {
     sessionID: SessionID,
     work: Effect.Effect<A, E, R>,
   ) => Effect.Effect<Option.Option<A>, E, R>
-  readonly prepareIfIdle: (
+  /**
+   * Reserve the two-phase idle admission for exclusive-goal/DAG owners. The
+   * caller activates the returned admission after committing its durable
+   * transition. Never starts or awaits a turn here.
+   */
+  readonly prepareTurn: (
     input: PromptInput,
     persistAdmission?: Effect.Effect<void>,
     options?: AdmissionOptions,
     request?: ReturnType<typeof SessionCancellation.request>,
   ) => Effect.Effect<Option.Option<IdleAdmission>, PromptError>
-  readonly promptIfIdle: (
-    input: PromptInput,
-    options?: AdmissionOptions,
-  ) => Effect.Effect<Option.Option<SessionV1.WithParts>, PromptError>
+  /**
+   * Admit a prompt immediately: commit the user message and return the turn
+   * classification without awaiting the turn. Ledger-less sources reach this
+   * through `SessionInbox.submit`; plain commands keep using `submit`/`prompt`.
+   */
+  readonly admit: (input: PromptInput, options?: AdmissionOptions) => Effect.Effect<TurnStart, PromptError>
   readonly setModel: (input: SetModelInput) => Effect.Effect<typeof ModelRef.Type, ModelSwitchBlocked>
   /** Drain guidance only for the actual target model at a provider request boundary. */
   readonly restoreModelContext: (sessionID: SessionID) => Effect.Effect<void>
@@ -1013,8 +1021,8 @@ export const layer = Layer.effect(
       cancel: admit.cancel,
       prompt: admit.prompt,
       withIdle: admit.withIdle,
-      prepareIfIdle: admit.prepareIfIdle,
-      promptIfIdle: admit.promptIfIdle,
+      prepareTurn: admit.prepareTurn,
+      admit: admit.admit,
       setModel: prepareFns.setModel,
       restoreModelContext: prepareFns.restoreModelContext,
       takeModelSwitchContext: (input) => modelSwitchContext(input.sessionID, input.apiModelID),
@@ -1232,6 +1240,6 @@ export const node = LayerNode.make(layer, [
   ToolSourceLedger.node,
 ])
 
-export { admitIfIdle } from "./turn/admit"
+export { admitIdleUnderFence } from "./turn/admit"
 
 export * as SessionPrompt from "./prompt"

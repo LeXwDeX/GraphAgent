@@ -346,7 +346,7 @@ const serviceLayer = Layer.effect(
         // the turn fails/interrupts.
         yield* goal.markTurnDriven(input.sessionID)
         const admitted = yield* SessionPrompt
-          .admitIfIdle(
+          .admitIdleUnderFence(
             promptSvc,
             automation,
             input.lease,
@@ -357,7 +357,7 @@ const serviceLayer = Layer.effect(
             },
             { continueToolBudget: true },
             Effect.gen(function* () {
-              // prepareIfIdle already holds the prompt lock and confirmed
+              // prepareTurn already holds the prompt lock and confirmed
               // idle. Re-read durable identity immediately before the atomic
               // message commit: a replacement goal or user takeover must
               // roll back the whole admission, not consume reset budget.
@@ -1073,7 +1073,7 @@ const serviceLayer = Layer.effect(
         // admits a new input and owns its fresh budget in SessionPrompt.
         const dispatchExpected = expectedOf(dispatchState)
         const admitted = yield* SessionPrompt
-          .admitIfIdle(
+          .admitIdleUnderFence(
             promptSvc,
             automation,
             continuationLease,

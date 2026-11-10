@@ -15,7 +15,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
 import { SessionCancellation } from "@/session/cancellation"
-import { SessionPrompt } from "@/session/prompt"
+import { SessionInbox } from "@/session/inbox"
 import { SessionID } from "@/session/schema"
 import * as Log from "@/util/log"
 import { testEffect, pollWithTimeout } from "../lib/effect"
@@ -1011,19 +1011,20 @@ it.instance("Stop and SubagentStop continuation budgets are independent", () =>
   }),
 )
 
-it.instance("V1 rewake continues the tool budget and carries the rewake token", () =>
+it.instance("V1 rewake submits through the inbox with the tool budget and rewake token", () =>
   Effect.gen(function* () {
-    const calls: { input: unknown; options: unknown }[] = []
-    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the rewake layer only calls prompt; this partial service mock is structurally typed at the boundary
-    const promptMock = Layer.succeed(SessionPrompt.Service, {
-      prompt: (input: unknown, options?: unknown) =>
+    const calls: { source: unknown; sessionID: unknown; item: unknown }[] = []
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the rewake layer only calls submit; this partial service mock is structurally typed at the boundary
+    const inboxMock = Layer.succeed(SessionInbox.Service, {
+      submit: (sourceID: unknown, sessionID: unknown, item: unknown) =>
         Effect.sync(() => {
-          calls.push({ input, options })
+          calls.push({ source: sourceID, sessionID, item })
+          return { state: "pending" }
         }),
     } as never)
-    // The live rewake resolves SessionPrompt from its own effect context, so
+    // The live rewake resolves SessionInbox from its own effect context, so
     // the mock must stay visible when `rewake` runs, not only while building.
-    const rewakeLayer = HookRewakeLive.liveLayer.pipe(Layer.provideMerge(promptMock))
+    const rewakeLayer = HookRewakeLive.liveLayer.pipe(Layer.provideMerge(inboxMock))
     yield* Effect.gen(function* () {
       const rewake = yield* HookRewake.Service
       yield* rewake.rewake({
@@ -1033,7 +1034,12 @@ it.instance("V1 rewake continues the tool budget and carries the rewake token", 
       })
     }).pipe(Effect.provide(rewakeLayer))
     expect(calls).toHaveLength(1)
-    expect(calls[0].options).toEqual({ continueToolBudget: true, rewakeToken: { epoch: 1, generation: 2 } })
+    expect(calls[0].source).toBe("hook.rewake")
+    expect(calls[0].sessionID).toBe("ses-rewake-budget")
+    expect(calls[0].item).toEqual({
+      prompt: { parts: [{ type: "text", text: "rewake text" }] },
+      admissionOptions: { continueToolBudget: true, rewakeToken: { epoch: 1, generation: 2 } },
+    })
   }),
 )
 
