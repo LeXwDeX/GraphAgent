@@ -6,6 +6,7 @@ import type { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { Effect, Exit, Fiber, Scope } from "effect"
 import { registerDisposer } from "@/effect/instance-registry"
 import type { TriggerResult } from "@/hook"
+import { forgetSession, makeModelHistoryState, type ModelHistoryState } from "./history/model"
 import { makeHistoryState, forgetEntry, type HistoryState } from "./history/state"
 import { makeReasoningQueue } from "./reasoning-queue"
 import type { RuntimeContext } from "./runtime-context"
@@ -69,6 +70,8 @@ export interface SessionRuntimes {
   readonly rewrites: Map<string, RewriteState>
   /** Write-through transcript cache state (Issue #1022, PR3). */
   readonly history: HistoryState
+  /** Per-message model-conversion cache (Issue #1022, PR4). */
+  readonly modelHistory: ModelHistoryState
   /** Directory that first created each session's cache entries. */
   readonly owners: Map<SessionID, string>
   /** Record the owning directory of a session the first time its cache is touched. */
@@ -104,6 +107,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
   const rewrites = new Map<string, RewriteState>()
   const owners = new Map<SessionID, string>()
   const history = makeHistoryState()
+  const modelHistory = makeModelHistoryState()
 
   const forgetLocal = (sessionID: SessionID) => {
     const pending = modelSwitches.get(sessionID)
@@ -117,6 +121,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     runtimeContexts.delete(sessionID)
     toolBudgets.delete(sessionID)
     forgetEntry(history, sessionID)
+    forgetSession(modelHistory, sessionID)
     // `modelWrites` is application-scoped (not directory state); a pending
     // command releases it through its refcount. Never drop it from here.
   }
@@ -131,6 +136,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     modelWrites,
     rewrites,
     history,
+    modelHistory,
     owners,
     own(sessionID, directory) {
       if (!owners.has(sessionID)) owners.set(sessionID, directory)

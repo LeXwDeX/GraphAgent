@@ -45,6 +45,8 @@ import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
 import { ContextFolding } from "./context-folding"
+import { EngineProcess } from "./engine-process"
+import { ModelHistory } from "./history/model"
 import { isReplayableAssistantMessage } from "./message-replay"
 import { isRecord } from "@/util/record"
 
@@ -179,6 +181,11 @@ export interface ToModelMessagesOptions {
   reasoningDistillationEnabled?: boolean
   stripSignedThinking?: boolean
   stripOpaqueReasoning?: boolean
+  /**
+   * `auto` (default) uses the per-message cache, `bypass` always runs the
+   * batched path, and `verify` runs both and throws when they diverge.
+   */
+  cache?: "auto" | "bypass" | "verify"
 }
 
 interface ConversionContext {
@@ -561,17 +568,19 @@ async function toModelMessagesForMessage(
   )
 }
 
-export const toModelMessagesEffect = Effect.fnUntraced(function* (
-  input: WithParts[],
-  model: Provider.Model,
-  options?: ToModelMessagesOptions,
-) {
+function boundaryEffect(msg: WithParts, compactedThrough: User | undefined) {
+  return msg.info.role === "assistant" && compactedThrough !== undefined && before(msg.info, compactedThrough) ? 1 : 0
+}
+
+async function toModelMessagesBatch(input: WithParts[], model: Provider.Model, options?: ToModelMessagesOptions) {
   const context = conversionContext(model, options)
   const compactedThrough = compactionBoundary(input)
+  const state = EngineProcess.runtimes.modelHistory
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
   for (const msg of input) {
     if (msg.parts.length === 0) continue
+    ModelHistory.countConversion(state)
     const built = toUIMessagesForMessage(msg, context, compactedThrough)
     result.push(...built.messages)
     for (const name of built.toolNames) toolNames.add(name)
@@ -579,16 +588,52 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 
   const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
 
-  const messages = yield* Effect.promise(() =>
-    convertToModelMessages(
-      result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")),
-      {
-        //@ts-expect-error (convertToModelMessages expects a ToolSet but only actually needs tools[name]?.toModelOutput)
-        tools,
-      },
-    ),
+  const messages = await convertToModelMessages(
+    result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")),
+    {
+      //@ts-expect-error (convertToModelMessages expects a ToolSet but only actually needs tools[name]?.toModelOutput)
+      tools,
+    },
   )
   return promoteSyntheticProviderOptions(messages)
+}
+
+async function toModelMessagesIncremental(input: WithParts[], model: Provider.Model, options?: ToModelMessagesOptions) {
+  const state = EngineProcess.runtimes.modelHistory
+  const context = conversionContext(model, options)
+  const compactedThrough = compactionBoundary(input)
+  const requestBucket = ModelHistory.bucket(model, options)
+  const messages: ModelMessage[] = []
+  for (const msg of input) {
+    if (msg.parts.length === 0) continue
+    const effect = boundaryEffect(msg, compactedThrough)
+    const hit = ModelHistory.lookup(state, msg.info.sessionID, requestBucket, msg, effect)
+    if (hit) {
+      messages.push(...hit)
+      continue
+    }
+    ModelHistory.countConversion(state)
+    const fragment = await toModelMessagesForMessage(msg, context, compactedThrough)
+    ModelHistory.store(state, msg.info.sessionID, requestBucket, msg, effect, fragment)
+    messages.push(...fragment)
+  }
+  return messages
+}
+
+export const toModelMessagesEffect = Effect.fnUntraced(function* (
+  input: WithParts[],
+  model: Provider.Model,
+  options?: ToModelMessagesOptions,
+) {
+  const cache = options?.cache ?? "auto"
+  if (cache === "bypass") return yield* Effect.promise(() => toModelMessagesBatch(input, model, options))
+  const messages = yield* Effect.promise(() => toModelMessagesIncremental(input, model, options))
+  if (cache === "verify") {
+    const batched = yield* Effect.promise(() => toModelMessagesBatch(input, model, options))
+    if (ModelHistory.canonicalJson(messages) !== ModelHistory.canonicalJson(batched))
+      throw new Error("model-history conversion diverged from the batched path")
+  }
+  return messages
 })
 
 /**
@@ -616,13 +661,7 @@ export const contextFoldingHistory = ContextFolding.history
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: {
-    stripMedia?: boolean
-    toolOutputMaxChars?: number
-    reasoningDistillationEnabled?: boolean
-    stripSignedThinking?: boolean
-    stripOpaqueReasoning?: boolean
-  },
+  options?: ToModelMessagesOptions,
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
 }
