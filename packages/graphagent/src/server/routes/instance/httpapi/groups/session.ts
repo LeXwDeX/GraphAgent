@@ -7,6 +7,7 @@ import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
+import { SessionBtw } from "@/session/btw"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
@@ -19,10 +20,14 @@ import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import {
   ApiNotFoundError,
+  BtwBusyError,
+  BtwCancelledError,
+  BtwTimeoutError,
   ConflictError,
   InvalidRequestError,
   PermissionNotFoundError,
   SessionBusyError,
+  UpstreamError,
 } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
@@ -86,6 +91,16 @@ export const QueuedMessageDeletePayload = Schema.Struct(
   Struct.omit(SessionPrompt.QueuedMessageDeleteInput.fields, ["sessionID", "messageID"]),
 )
 export const RevertPayload = Schema.Struct(Struct.omit(SessionRevert.RevertInput.fields, ["sessionID"]))
+export const BtwPayload = Schema.Struct({
+  id: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64))),
+  question: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(8_000)),
+  model: Schema.optional(
+    Schema.Struct({
+      providerID: ProviderV2.ID,
+      modelID: ModelV2.ID,
+    }),
+  ),
+})
 export const PermissionResponsePayload = Schema.Struct({
   response: PermissionV1.Reply,
 })
@@ -168,6 +183,8 @@ export const SessionPaths = {
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   updatePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   queuedMessage: `${root}/:sessionID/message/:messageID/queued`,
+  btw: `${root}/:sessionID/btw`,
+  btwCancel: `${root}/:sessionID/btw/:btwID`,
 } as const
 
 export const SessionApi = HttpApi.make("session")
@@ -329,6 +346,38 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.message",
             summary: "Get message",
             description: "Retrieve a specific message from a session by its message ID.",
+          }),
+        ),
+        HttpApiEndpoint.post("btw", SessionPaths.btw, {
+          params: { sessionID: SessionID },
+          payload: BtwPayload,
+          success: described(SessionBtw.AskResult, "Side-question answer"),
+          error: [
+            HttpApiError.BadRequest,
+            InvalidRequestError,
+            ApiNotFoundError,
+            BtwBusyError,
+            BtwCancelledError,
+            BtwTimeoutError,
+            UpstreamError,
+          ],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.btw",
+            summary: "Ask a side question",
+            description:
+              "Answer a read-only side question from the session history without running tools or writing to the session.",
+          }),
+        ),
+        HttpApiEndpoint.delete("btwCancel", SessionPaths.btwCancel, {
+          params: { sessionID: SessionID, btwID: Schema.String },
+          success: described(HttpApiSchema.NoContent, "Side question cancelled"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.btw.cancel",
+            summary: "Cancel a side question",
+            description: "Cancel an in-flight side question. Idempotent — an unknown id also succeeds.",
           }),
         ),
         HttpApiEndpoint.post("create", SessionPaths.create, {

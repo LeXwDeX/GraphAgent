@@ -33,6 +33,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionProcessor } from "@/session/processor"
 import { SessionCompaction } from "@/session/compaction"
 import { SessionRevert } from "@/session/revert"
+import { SessionBtw } from "@/session/btw"
 import { SessionSummary } from "@/session/summary"
 import { SessionPrompt } from "@/session/prompt"
 import { Instruction } from "@/session/instruction"
@@ -112,6 +113,7 @@ const BaseAppLayer = Layer.mergeAll(
     SessionProcessor.defaultLayer,
     SessionCompaction.defaultLayer,
     SessionRevert.defaultLayer,
+    SessionBtw.defaultLayer,
     SessionSummary.defaultLayer,
     SessionPrompt.defaultLayer,
     HookRewakeLive.liveLayer,

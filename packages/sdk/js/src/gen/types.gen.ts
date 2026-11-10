@@ -1419,6 +1419,29 @@ export type ApiAuth = {
   }
 }
 
+export type BtwBusyError = {
+  name: "BtwBusy"
+  data: {
+    sessionID: string
+    message: string
+  }
+}
+
+export type BtwCancelledError = {
+  name: "BtwCancelled"
+  data: {
+    sessionID: string
+    message: string
+  }
+}
+
+export type BtwTimeoutError = {
+  name: "BtwTimeout"
+  data: {
+    message: string
+  }
+}
+
 export type ConfigMcpLocal = {
   type: "local"
   command: Array<string>
@@ -1661,6 +1684,15 @@ export type SessionBusyError = {
   data: {
     sessionID: string
     message: string
+  }
+}
+
+export type UpstreamError = {
+  name: "UpstreamError"
+  data: {
+    message: string
+    service?: string
+    status?: number | "Infinity" | "-Infinity" | "NaN"
   }
 }
 
@@ -5037,6 +5069,106 @@ export type SessionMessageResponses = {
 }
 
 export type SessionMessageResponse = SessionMessageResponses[keyof SessionMessageResponses]
+
+export type SessionBtwData = {
+  body?: {
+    id?: string
+    question: string
+    model?: {
+      providerID: string
+      modelID: string
+    }
+  }
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/btw"
+}
+
+export type SessionBtwErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+  /**
+   * BtwBusyError | BtwCancelledError
+   */
+  409: BtwBusyError | BtwCancelledError
+  /**
+   * UpstreamError
+   */
+  502: UpstreamError
+  /**
+   * BtwTimeoutError
+   */
+  504: BtwTimeoutError
+}
+
+export type SessionBtwError = SessionBtwErrors[keyof SessionBtwErrors]
+
+export type SessionBtwResponses = {
+  /**
+   * Side-question answer
+   */
+  200: {
+    id: string
+    answer: string
+    model: {
+      providerID: string
+      modelID: string
+    }
+    usage?: {
+      inputTokens: number | "Infinity" | "-Infinity" | "NaN"
+      outputTokens: number | "Infinity" | "-Infinity" | "NaN"
+      cacheReadTokens?: number | "Infinity" | "-Infinity" | "NaN"
+    }
+    context: {
+      messages: number | "Infinity" | "-Infinity" | "NaN"
+      estimatedTokens: number | "Infinity" | "-Infinity" | "NaN"
+      truncated: boolean
+      inFlightDropped: boolean
+    }
+  }
+}
+
+export type SessionBtwResponse = SessionBtwResponses[keyof SessionBtwResponses]
+
+export type SessionBtwCancelData = {
+  body?: never
+  path: {
+    sessionID: string
+    btwID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/btw/{btwID}"
+}
+
+export type SessionBtwCancelErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionBtwCancelError = SessionBtwCancelErrors[keyof SessionBtwCancelErrors]
+
+export type SessionBtwCancelResponses = {
+  /**
+   * Side question cancelled
+   */
+  204: void
+}
+
+export type SessionBtwCancelResponse = SessionBtwCancelResponses[keyof SessionBtwCancelResponses]
 
 export type SessionForkData = {
   body?: {

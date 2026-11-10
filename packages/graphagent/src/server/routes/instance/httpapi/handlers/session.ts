@@ -22,6 +22,7 @@ import { DagModeStatus } from "@/dag/mode-status"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
+import { SessionBtw } from "@/session/btw"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
@@ -37,6 +38,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import {
+  BtwPayload,
   CommandPayload,
   DiffQuery,
   ForkPayload,
@@ -55,7 +57,16 @@ import {
   UpdatePayload,
   SessionHookAddPayload,
 } from "../groups/session"
-import { ConflictError, InvalidRequestError, PermissionNotFoundError, notFound } from "../errors"
+import {
+  BtwBusyError,
+  BtwCancelledError,
+  BtwTimeoutError,
+  ConflictError,
+  InvalidRequestError,
+  PermissionNotFoundError,
+  UpstreamError,
+  notFound,
+} from "../errors"
 import * as SessionError from "./session-errors"
 
 const promptError = (error: unknown) =>
@@ -69,12 +80,29 @@ const tryParseJson = (text: string) =>
     catch: () => new HttpApiError.BadRequest({}),
   })
 
+const mapBtwError = (error: SessionBtw.BtwError) => {
+  if (error._tag === "BtwSessionNotFoundError") return notFound(error.message)
+  if (error._tag === "BtwInvalidRequestError")
+    return new InvalidRequestError({ name: "InvalidRequestError", data: { message: error.message } })
+  if (error._tag === "BtwBusyError")
+    return new BtwBusyError({ name: "BtwBusy", data: { sessionID: error.sessionID, message: error.message } })
+  if (error._tag === "BtwCancelledError")
+    return new BtwCancelledError({
+      name: "BtwCancelled",
+      data: { sessionID: error.sessionID, message: error.message },
+    })
+  if (error._tag === "BtwTimeoutError")
+    return new BtwTimeoutError({ name: "BtwTimeout", data: { message: error.message } })
+  return new UpstreamError({ name: "UpstreamError", data: { message: error.message } })
+}
+
 export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
     const lifecycle = yield* SessionLifecycle.Service
     const promptSvc = yield* SessionPrompt.Service
     const revertSvc = yield* SessionRevert.Service
+    const btwSvc = yield* SessionBtw.Service
     const runState = yield* SessionRunState.Service
     const permissionSvc = yield* Permission.Service
     const statusSvc = yield* SessionStatus.Service
@@ -643,6 +671,28 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return { cancelled }
     })
 
+    const btw = Effect.fn("SessionHttpApi.btw")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof BtwPayload.Type
+    }) {
+      return yield* btwSvc
+        .ask({
+          sessionID: ctx.params.sessionID,
+          id: ctx.payload.id,
+          question: ctx.payload.question,
+          model: ctx.payload.model,
+        })
+        .pipe(Effect.mapError(mapBtwError))
+    })
+
+    const btwCancel = Effect.fn("SessionHttpApi.btwCancel")(function* (ctx: {
+      params: { sessionID: SessionID; btwID: string }
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      // Cancellation is idempotent: an unknown or already-finished id is a no-op.
+      yield* Effect.asVoid(btwSvc.cancel({ sessionID: ctx.params.sessionID, id: ctx.params.btwID }))
+    })
+
     return handlers
       .handle("list", list)
       .handle("status", status)
@@ -658,6 +708,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)
+      .handle("btw", btw)
+      .handle("btwCancel", btwCancel)
       .handleRaw("create", createRaw)
       .handle("remove", remove)
       .handle("update", update)

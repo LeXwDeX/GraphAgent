@@ -17,6 +17,7 @@ import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import { TITLE_HEADER } from "@/provider/openai-ws/ws-pool"
 import type { ChatParams } from "@/provider/adapter/types"
 import { mergeDeep } from "remeda"
+import { isInternalOneShot } from "./internal-one-shot"
 
 const USER_AGENT = `${APP_NAME}/${InstallationVersion}`
 
@@ -33,6 +34,8 @@ type PrepareInput = {
   readonly messages: ModelMessage[]
   readonly small?: boolean
   readonly tools: Record<string, Tool>
+  /** Caps the resolved output limit; applied after the provider adapter hook. */
+  readonly maxOutputTokens?: number
   readonly provider: Provider.Info
   readonly cfg?: ConfigV1.Info
   readonly auth: Auth.Info | undefined
@@ -138,6 +141,12 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       options,
     },
   )
+  if (input.maxOutputTokens !== undefined) {
+    params.maxOutputTokens =
+      params.maxOutputTokens === undefined
+        ? input.maxOutputTokens
+        : Math.min(params.maxOutputTokens, input.maxOutputTokens)
+  }
 
   const headers = yield* adapters.chatHeaders(
     {
@@ -151,9 +160,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       headers: {},
     },
   )
-  // Configured transports also need title isolation when default plugins are disabled.
+  // Configured transports also need internal one-shot isolation when default plugins are disabled.
   if (
-    input.agent.name === "title" &&
+    isInternalOneShot(input.agent.name) &&
     input.model.api.npm === "@ai-sdk/openai" &&
     input.provider.options.experimentalWebSockets === true
   ) {

@@ -67,6 +67,7 @@ export type ScenarioContext = {
   worktree: (input?: { name?: string }) => Effect.Effect<Worktree.Info>
   worktreeRemove: (directory: string) => Effect.Effect<void>
   llmText: (value: string) => Effect.Effect<void>
+  llmHang: () => Effect.Effect<void>
   llmWait: (count: number) => Effect.Effect<void>
   /** Create a DAG workflow owned by sessionID with the given node configs. Returns the dagID. */
   dag: (input: { sessionID: SessionID; title?: string; nodes: DagNodeSeed[] }) => Effect.Effect<DagWorkflowInfo>

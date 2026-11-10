@@ -40,6 +40,7 @@ import { LLM } from "@/session/llm"
 import { SessionProcessor } from "@/session/processor"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
+import { SessionBtw } from "@/session/btw"
 import { SessionRunState } from "@/session/run-state"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
@@ -192,6 +193,7 @@ export const app = LayerNode.group([
   SessionProcessor.node,
   SessionCompaction.node,
   SessionRevert.node,
+  SessionBtw.node,
   SessionSummary.node,
   SessionPrompt.node,
   Instruction.node,
