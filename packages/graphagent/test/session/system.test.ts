@@ -68,24 +68,28 @@ const build: Agent.Info = {
   options: {},
 }
 
+// Mutable so a test can prove the rendered fragment follows the live lists
+// instead of a stale cached string.
+let availableSkills: Skill.Info[] = skills
+let mcpInstructions: { name: string; instructions: string; tools: string[] }[] = [
+  {
+    name: "guide-server",
+    instructions: "Use lookup before mutate.",
+    tools: [],
+  },
+  {
+    name: "tool-server",
+    instructions: "Prefer search before update.",
+    tools: ["tool-server_search", "tool-server_update"],
+  },
+]
+
 const it = testEffect(
   SystemPrompt.layer.pipe(
     Layer.provide(LocationServiceMap.layer),
     Layer.provide(
       Layer.mock(MCP.Service, {
-        instructions: () =>
-          Effect.succeed([
-            {
-              name: "guide-server",
-              instructions: "Use lookup before mutate.",
-              tools: [],
-            },
-            {
-              name: "tool-server",
-              instructions: "Prefer search before update.",
-              tools: ["tool-server_search", "tool-server_update"],
-            },
-          ]),
+        instructions: () => Effect.succeed(mcpInstructions),
       }),
     ),
     Layer.provide(
@@ -93,15 +97,15 @@ const it = testEffect(
         Skill.Service,
         Skill.Service.of({
           reload: () => Effect.void,
-          get: (name) => Effect.succeed(skills.find((skill) => skill.name === name)),
+          get: (name) => Effect.succeed(availableSkills.find((skill) => skill.name === name)),
           require: (name) => {
-            const info = skills.find((skill) => skill.name === name)
+            const info = availableSkills.find((skill) => skill.name === name)
             if (info) return Effect.succeed(info)
-            return Effect.fail(new Skill.NotFoundError({ name, available: skills.map((skill) => skill.name) }))
+            return Effect.fail(new Skill.NotFoundError({ name, available: availableSkills.map((skill) => skill.name) }))
           },
-          all: () => Effect.succeed(skills),
+          all: () => Effect.succeed(availableSkills),
           dirs: () => Effect.succeed([]),
-          available: () => Effect.succeed(skills),
+          available: () => Effect.succeed(availableSkills),
         }),
       ),
     ),
@@ -164,6 +168,35 @@ describe("session.system", () => {
 
       expect(output).toContain("alpha-skill")
       expect(output).not.toContain("zeta-skill")
+    }),
+  )
+
+  it.effect("skills output follows a changed available list", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      expect(yield* prompt.skills(build)).not.toContain("fresh-skill")
+      availableSkills = [
+        ...skills,
+        { name: "fresh-skill", description: "Fresh skill.", location: "/tmp/fresh/SKILL.md", content: "# fresh" },
+      ]
+      try {
+        expect(yield* prompt.skills(build)).toContain("fresh-skill")
+      } finally {
+        availableSkills = skills
+      }
+    }),
+  )
+
+  it.effect("MCP output follows changed server instructions", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      expect(yield* prompt.mcp(build)).not.toContain("fresh-server")
+      mcpInstructions = [...mcpInstructions, { name: "fresh-server", instructions: "Fresh instructions.", tools: [] }]
+      try {
+        expect(yield* prompt.mcp(build)).toContain("fresh-server")
+      } finally {
+        mcpInstructions = mcpInstructions.filter((item) => item.name !== "fresh-server")
+      }
     }),
   )
 

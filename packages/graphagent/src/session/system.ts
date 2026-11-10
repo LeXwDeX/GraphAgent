@@ -22,6 +22,7 @@ import { Memory } from "@/memory/memory"
 import type { SessionID } from "@/session/schema"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { resolveLanguage } from "@graphagent/core/config/language"
+import { RequestCache } from "./request-cache"
 
 /**
  * Every model receives the same prompt. The only substitution is the editing
@@ -90,6 +91,11 @@ export const layer = Layer.effect(
     // (defaultLayer and the LayerNode deps below), so the goal block renders.
     const goalSvc = Option.getOrUndefined(yield* Effect.serviceOption(Goal.Service))
 
+    // Request-invariant prompt fragments (language, skills, MCP). Keys are
+    // content-derived, so a changed skill list or server instruction misses;
+    // layer-local, so disposal releases the memory.
+    const fragments = RequestCache.make<{ readonly text: string }>(4 * 1024 * 1024)
+
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
         const ctx = yield* InstanceState.context
@@ -131,15 +137,18 @@ export const layer = Layer.effect(
 
       language: Effect.fn("SystemPrompt.language")(function* (configured?: string) {
         const language = resolveLanguage(configured)
+        const key = RequestCache.digest({ version: "system-language-v1", language })
+        const cached = RequestCache.get(fragments, key)
+        if (cached) return [cached.text]
         const name = language === "zh-CN" ? "Simplified Chinese (zh-CN)" : "English (en)"
-        return [
-          [
-            "## Reply language",
-            `Reply to the user in ${name} by default.`,
-            "If the user explicitly asks for another language, follow the user's request.",
-            "Keep code, commands, identifiers, and file paths in their original form.",
-          ].join("\n"),
-        ]
+        const text = [
+          "## Reply language",
+          `Reply to the user in ${name} by default.`,
+          "If the user explicitly asks for another language, follow the user's request.",
+          "Keep code, commands, identifiers, and file paths in their original form.",
+        ].join("\n")
+        RequestCache.set(fragments, key, { text }, Buffer.byteLength(text))
+        return [text]
       }),
 
       skills: Effect.fn("SystemPrompt.skills")(function* (
@@ -155,13 +164,24 @@ export const layer = Layer.effect(
             Permission.evaluate("skill", item.name, nativePermission ?? []).action !== "deny" &&
             Permission.evaluate("skill", item.name, ruleset).action !== "deny",
         )
+        // The rendered block only depends on these three fields; hashing the
+        // full skill content would read every skill body on every request.
+        const key = RequestCache.digest({
+          version: "system-skills-v1",
+          agent: agent.name,
+          skills: list.map((item) => ({ name: item.name, description: item.description, location: item.location })),
+        })
+        const cached = RequestCache.get(fragments, key)
+        if (cached) return cached.text
 
-        return [
+        const text = [
           "Skills provide specialized instructions and workflows for specific tasks.",
           // The skill tool description owns how to load a skill; this block
           // only advertises what is available.
           Skill.fmt(list, { verbose: true }),
         ].join("\n")
+        RequestCache.set(fragments, key, { text }, Buffer.byteLength(text))
+        return text
       }),
 
       mcp: Effect.fn("SystemPrompt.mcp")(function* (
@@ -177,7 +197,18 @@ export const layer = Layer.effect(
         )
         if (instructions.length === 0) return
 
-        return [
+        const key = RequestCache.digest({
+          version: "system-mcp-v1",
+          servers: instructions.map((item) => ({
+            name: item.name,
+            instructions: item.instructions,
+            tools: item.tools,
+          })),
+        })
+        const cached = RequestCache.get(fragments, key)
+        if (cached) return cached.text
+
+        const text = [
           "<mcp_instructions>",
           ...instructions.flatMap((item) => [
             `  <server name="${item.name}">`,
@@ -186,6 +217,8 @@ export const layer = Layer.effect(
           ]),
           "</mcp_instructions>",
         ].join("\n")
+        RequestCache.set(fragments, key, { text }, Buffer.byteLength(text))
+        return text
       }),
 
       goal: Effect.fn("SystemPrompt.goal")(function* (sessionID: SessionID) {

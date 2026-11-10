@@ -13,6 +13,7 @@ import { ConfigReasoningDistillation } from "@graphagent/core/config/reasoning-d
 import { adoptReasoning } from "./reasoning-adoption"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { SessionEvent } from "@graphagent/schema/session-event"
 import { SessionID, MessageID, PartID } from "./schema"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
@@ -216,12 +217,25 @@ export const layer = Layer.effect(
     const runtimes = EngineProcess.runtimes
     yield* Effect.acquireRelease(
       events.listen((event) => {
-        if (event.type !== Session.Event.Deleted.type) return Effect.void
-        const data = event.data
-        if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
-        const sessionID = data.sessionID
-        if (typeof sessionID !== "string") return Effect.void
-        return runtimes.remove(SessionID.make(sessionID))
+        if (event.type === Session.Event.Deleted.type) {
+          const data = event.data
+          if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+          const sessionID = data.sessionID
+          if (typeof sessionID !== "string") return Effect.void
+          return Effect.gen(function* () {
+            yield* instruction.forgetSession(sessionID)
+            yield* runtimes.remove(SessionID.make(sessionID))
+          })
+        }
+        if (event.type === SessionEvent.Moved.type) {
+          const data = event.data
+          if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+          const sessionID = data.sessionID
+          if (typeof sessionID !== "string") return Effect.void
+          // The cached fragment belongs to the old directory's tool set.
+          runtimes.forgetToolsJson(SessionID.make(sessionID))
+        }
+        return Effect.void
       }),
       (unsubscribe) => unsubscribe,
     )

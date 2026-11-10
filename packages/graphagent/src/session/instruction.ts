@@ -13,6 +13,7 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@graphagent/core/global"
 import { hasProjectLayer } from "@/project/project-root"
+import { RequestCache } from "./request-cache"
 import type { MessageID } from "./schema"
 
 function extract(messages: SessionV1.WithParts[]) {
@@ -36,6 +37,8 @@ export interface Interface {
   readonly clear: (messageID: MessageID) => Effect.Effect<void>
   /** A committed compaction: the next system prompt reloads instruction files and announces them as "compact". */
   readonly markCompacted: (sessionID: string) => Effect.Effect<void>
+  /** Drop the per-session announcement state when the session is removed. */
+  readonly forgetSession: (sessionID: string) => Effect.Effect<void>
   readonly systemPaths: () => Effect.Effect<Set<string>, FSUtil.Error>
   readonly system: (input?: { sessionID: string }) => Effect.Effect<string[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
@@ -65,6 +68,9 @@ export const layer: Layer.Layer<
     // need those files convert them explicitly.
     const globalFiles = [path.join(global.config, "AGENTS.md")]
     const instructionFiles = ["AGENTS.md"]
+    // Per-file cache bounds: one oversized file never displaces the rest.
+    const INSTRUCTION_FILE_BYTES = 1024 * 1024
+    const INSTRUCTION_CACHE_BYTES = 8 * 1024 * 1024
 
     const state = yield* InstanceState.make(
       Effect.fn("Instruction.state")(function* () {
@@ -77,6 +83,8 @@ export const layer: Layer.Layer<
           announced: new Set<string>(),
           compactions: 0,
           compacted: new Set<string>(),
+          /** File identity → content, so a second request with an unchanged file skips the read. */
+          files: RequestCache.make<{ readonly signature: string; readonly content: string }>(INSTRUCTION_CACHE_BYTES),
           scope,
         }
       }),
@@ -108,7 +116,20 @@ export const layer: Layer.Layer<
     })
 
     const read = Effect.fnUntraced(function* (filepath: string) {
-      return yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      const s = yield* InstanceState.get(state)
+      // The mtime/size/inode signature is cheaper than a full read and catches
+      // every edit except a same-size rewrite within the filesystem's mtime
+      // granularity (`File.Info` has no ctime).
+      const info = yield* fs.stat(filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (info === undefined) return ""
+      const signature = RequestCache.statSignature(info)
+      const cached = RequestCache.get(s.files, filepath)
+      if (cached?.signature === signature) return cached.content
+      const content = yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      // Do not pin a transient failed read as an empty file.
+      const bytes = Buffer.byteLength(content)
+      if (content && bytes <= INSTRUCTION_FILE_BYTES) RequestCache.set(s.files, filepath, { signature, content }, bytes)
+      return content
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {
@@ -128,6 +149,16 @@ export const layer: Layer.Layer<
     const clear = Effect.fn("Instruction.clear")(function* (messageID: MessageID) {
       const s = yield* InstanceState.get(state)
       s.claims.delete(messageID)
+    })
+
+    const forgetSession = Effect.fn("Instruction.forgetSession")(function* (sessionID: string) {
+      const s = yield* InstanceState.get(state)
+      s.compacted.delete(sessionID)
+      for (const key of s.announced) {
+        if (key.startsWith(`${sessionID}:`)) s.announced.delete(key)
+      }
+      // `claims` is keyed by message, not session; a removed session's claims
+      // are bounded by this directory instance and released with it.
     })
 
     const systemPaths = Effect.fn("Instruction.systemPaths")(function* () {
@@ -318,7 +349,7 @@ export const layer: Layer.Layer<
       return results
     })
 
-    return Service.of({ clear, markCompacted, systemPaths, system, find, resolve })
+    return Service.of({ clear, markCompacted, forgetSession, systemPaths, system, find, resolve })
   }),
 )
 
