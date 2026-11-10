@@ -28,6 +28,7 @@ import { DagDelivery } from "@/dag/runtime/delivery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ExclusiveRegistry } from "@/session/engine-process"
+import { SessionInbox, type InboxSource, type StepSource } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -168,6 +169,7 @@ function startDelivery(input: {
   readonly database: Database.Interface
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly messages: DagMessages.Interface | undefined
+  readonly inbox?: SessionInbox.Interface | undefined
 }) {
   return DagDelivery.make({
     directory: DIRECTORY,
@@ -182,6 +184,7 @@ function startDelivery(input: {
     database: input.database,
     events: input.events,
     messages: input.messages,
+    inbox: input.inbox,
     entries: () => undefined,
     lastAssistantMessage: () => Effect.succeed(undefined),
   })
@@ -353,6 +356,306 @@ describe("DagDelivery drain", () => {
               .where(eq(PartTable.session_id, SessionID.make(PARENT)))
               .all()
             expect(parts.filter((row) => Reflect.get(row.data, "synthetic") === true)).toHaveLength(1)
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("does not fall back to the mailbox while a wake turn is in flight", async () => {
+    let admissions = 0
+    let receiveCalls = 0
+    const admitted = Deferred.makeUnsafe<void>()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = Layer.mock(SessionPrompt.Service, {
+            prepareIfIdle: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                yield* persistAdmission ?? Effect.void
+                yield* Deferred.succeed(admitted, void 0)
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.never,
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          const messages = {
+            receive: () => {
+              receiveCalls += 1
+              return Effect.succeed({ ok: false as const })
+            },
+            pendingRecipients: () => Effect.succeed([]),
+            changed: Stream.empty,
+          } as unknown as DagMessages.Interface
+          yield* Effect.gen(function* () {
+            yield* seedWake
+            const deps = yield* services()
+            const delivery = yield* startDelivery({ ...deps, messages })
+            const first = yield* delivery.deliver(PARENT).pipe(Effect.forkChild)
+            yield* Deferred.await(admitted).pipe(Effect.timeout("2 seconds"))
+            expect(admissions).toBe(1)
+
+            // The wake reservation is held by the parked turn: the second
+            // claim must report "nothing consumed" and must not touch the
+            // mailbox, or wake-first would become mailbox-first.
+            expect(yield* delivery.deliver(PARENT)).toBe(false)
+            expect(receiveCalls).toBe(0)
+
+            yield* Fiber.interrupt(first)
+            // The admission already marked the batch; the pending retry that
+            // the finalizer forks finds nothing left to admit.
+            yield* Effect.sleep("50 millis")
+            expect(admissions).toBe(1)
+            expect(receiveCalls).toBe(0)
+            yield* expectReported
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("returns true for a mailbox admission and false when nothing is deliverable", async () => {
+    let admissions = 0
+    let receiveCalls = 0
+    const message: DagMessages.Message = {
+      id: "agent_scan_report",
+      workflowID: "dag_delivery",
+      sender: {
+        id: "child_endpoint",
+        kind: "node",
+        sessionID: "ses_child",
+        workflowID: "dag_delivery",
+        nodeID: "worker",
+        attemptID: "attempt_1",
+      },
+      recipient: { id: "parent_endpoint", kind: "main", sessionID: PARENT as never },
+      recipientSequence: 1,
+      acceptedRevision: 1,
+      content: "Please review the result.",
+      state: "queued",
+      transcriptID: "msg_agent_scan_report",
+      partID: "prt_agent_scan_report",
+      timeCreated: 1,
+    }
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = Layer.mock(SessionPrompt.Service, {
+            prepareIfIdle: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                yield* persistAdmission ?? Effect.void
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.succeed(reply(input.sessionID as string, "mailbox handled")),
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          const messages = {
+            receive: () => {
+              receiveCalls += 1
+              return Effect.succeed(
+                receiveCalls === 1 ? ({ ok: true as const, value: [message] } as const) : ({ ok: true as const, value: [] } as const),
+              )
+            },
+            pendingRecipients: () => Effect.succeed([]),
+            changed: Stream.empty,
+          } as unknown as DagMessages.Interface
+          yield* Effect.gen(function* () {
+            const deps = yield* services()
+            const delivery = yield* startDelivery({ ...deps, messages })
+            expect(yield* delivery.deliver(PARENT)).toBe(true)
+            expect(admissions).toBe(1)
+            expect(receiveCalls).toBe(1)
+            expect(yield* delivery.deliver(PARENT)).toBe(false)
+            expect(admissions).toBe(1)
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("scanSessions unions the ledgers, filters by directory, and degrades per query", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = Layer.mock(SessionPrompt.Service, {})
+          const mailSession = "ses_mail_scan"
+          const messages = {
+            receive: () => Effect.succeed({ ok: false as const }),
+            pendingRecipients: () => Effect.succeed([{ sessionID: mailSession }]),
+            changed: Stream.empty,
+          } as unknown as DagMessages.Interface
+          yield* Effect.gen(function* () {
+            yield* seedWake
+            const { db } = yield* Database.Service
+            // A due paused reminder in this directory.
+            yield* db
+              .insert(SessionTable)
+              .values({
+                id: SessionID.make("ses_paused_scan"),
+                project_id: Project.ID.make(PROJECT_ID),
+                slug: "paused",
+                directory: AbsolutePath.make(DIRECTORY),
+                title: "Paused",
+                version: "test",
+              })
+              .run()
+              .pipe(Effect.orDie)
+            yield* db
+              .insert(WorkflowTable)
+              .values({
+                id: "dag_paused_scan",
+                project_id: Project.ID.make(PROJECT_ID),
+                session_id: SessionID.make("ses_paused_scan"),
+                directory: AbsolutePath.make(DIRECTORY),
+                target_fingerprint: { kind: "none" },
+                title: "Paused",
+                status: "paused",
+                seq: 1,
+                config: "{}",
+                wake_reported: false,
+                time_updated: 0,
+              })
+              .run()
+              .pipe(Effect.orDie)
+            // An unreported terminal workflow that belongs to another
+            // directory: the store returns its session globally, the
+            // ownership read must filter it out.
+            yield* db
+              .insert(SessionTable)
+              .values({
+                id: SessionID.make("ses_other_scan"),
+                project_id: Project.ID.make(PROJECT_ID),
+                slug: "other",
+                directory: AbsolutePath.make("/other-worktree"),
+                title: "Other",
+                version: "test",
+              })
+              .run()
+              .pipe(Effect.orDie)
+            yield* db
+              .insert(WorkflowTable)
+              .values({
+                id: "dag_other_scan",
+                project_id: Project.ID.make(PROJECT_ID),
+                session_id: SessionID.make("ses_other_scan"),
+                directory: AbsolutePath.make("/other-worktree"),
+                target_fingerprint: { kind: "none" },
+                title: "Other",
+                // Running workflow: terminal rows are notification-only and
+                // deliberately pass ownsSession even across directories.
+                status: "running",
+                seq: 1,
+                config: "{}",
+                wake_reported: false,
+              })
+              .run()
+              .pipe(Effect.orDie)
+            yield* db
+              .insert(WorkflowNodeTable)
+              .values({
+                id: "node_other_scan",
+                workflow_id: "dag_other_scan",
+                name: "Other node",
+                worker_type: "build",
+                status: "completed",
+                output: "done",
+                depends_on: [],
+                required: true,
+                seq: 1,
+                wake_eligible: true,
+                wake_reported: false,
+                completed_at: 1_000,
+              })
+              .run()
+              .pipe(Effect.orDie)
+
+            const deps = yield* services()
+            const delivery = yield* startDelivery({ ...deps, messages })
+            const scanned = yield* delivery.scanSessions()
+            expect([...scanned].sort()).toEqual([PARENT, "ses_paused_scan", mailSession].sort())
+
+            // One broken ledger must not hide the others.
+            const broken = yield* startDelivery({
+              ...deps,
+              messages,
+              store: {
+                ...deps.store,
+                getSessionsWithUnreportedWakes: () => Effect.die(new Error("scan boom")),
+              },
+            })
+            const degraded = yield* broken.scanSessions()
+            expect([...degraded].sort()).toEqual(["ses_paused_scan", mailSession].sort())
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("registers the dag.delivery source and the hint-only step source when an inbox is present", async () => {
+    const sources: InboxSource[] = []
+    const steps: StepSource[] = []
+    const inbox = {
+      init: () => Effect.void,
+      register: (source: InboxSource) =>
+        Effect.sync(() => {
+          sources.push(source)
+        }),
+      registerStep: (source: StepSource) =>
+        Effect.sync(() => {
+          steps.push(source)
+        }),
+      drain: () => Effect.void,
+      nudge: () => Effect.void,
+      pullForStep: () => Effect.succeed(true),
+      submit: () => Effect.fail(new SessionInbox.InboxNotWired({ source: "goal.continue" })),
+    } satisfies SessionInbox.Interface
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = Layer.mock(SessionPrompt.Service, {})
+          yield* Effect.gen(function* () {
+            const deps = yield* services()
+            yield* startDelivery({ ...deps, messages: undefined, inbox })
+            expect(sources.map((source) => source.id)).toEqual(["dag.delivery"])
+            const source = sources[0]!
+            expect(source.priority).toBe(5)
+            expect(source.mode).toBe("idle_only")
+            expect(source.hint(SessionID.make(PARENT))).toBe(true)
+            expect(source.scan).toBeDefined()
+            expect(source.claim).toBeDefined()
+
+            expect(steps.map((step) => step.id)).toEqual(["dag.mailbox.step"])
+            expect(steps[0]!.hint(SessionID.make(PARENT))).toBe(true)
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
         }),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),

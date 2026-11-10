@@ -26,14 +26,22 @@
 //
 // Break on idle iff ALL hold:
 //   1. poll(now) shows no workflow in {pending, running}
-//   2. busyActive === false, or every workflow has a delivered final report
-//      (legacy workflows still require their wake turn)
+//   2. busyActive === false, or no workflow is still owed a report (a
+//      completed final response whose answer receipt is visible)
 //   3. every id in poll(now) was already known (a first-seen workflow id means
 //      a wake for it may still be in flight — covers workflows that
 //      terminalize within turn one and chained DAGs started during a wake turn)
 //   4. every completed final-response workflow has its answer receipt in the
 //      parent transcript and a newly delivered answer has been emitted by this
 //      run (multiple completions may be delivered separately)
+//
+// A delivered report receipt is not proof that an owed completion turn ran.
+// The receipt is committed just before the wake admission starts the turn, so
+// an idle poll can land in that window and see `awaitingReport === false` while
+// `busyActive` still holds this turn's active work. That combination gets one
+// grace idle poll (the synthetic 1s idle tick or the wake turn's own idle),
+// which lets the in-flight admission make the session busy; a display-only
+// completion with no owed turn settles after the same single grace poll.
 //
 // Degradation is deliberately silent and matches pre-614 behavior for the DAG
 // list itself:
@@ -68,6 +76,11 @@ export type DagHoldState = {
   busyActive: boolean
   /** True between the first busy of a turn and the turn's idle event. */
   inTurn: boolean
+  /** A completion report was first observed while this turn's active latch was
+   * still set. `none` → the next delivered-report break holds one poll and
+   * moves to `pending`; `pending` → that poll breaks and moves to `spent`;
+   * `spent` keeps breaking until the next busy boundary re-arms it. */
+  reportGrace: "none" | "pending" | "spent"
 }
 
 /** Terminal-adjacent statuses that do not keep the loop alive. The complement
@@ -78,7 +91,7 @@ export function isDagActiveStatus(status: string): boolean {
 }
 
 export function initialDagHoldState(): DagHoldState {
-  return { busyIds: new Set(), busyActive: false, inTurn: false }
+  return { busyIds: new Set(), busyActive: false, inTurn: false, reportGrace: "none" }
 }
 
 function foldSnapshot(state: DagHoldState, snapshot: readonly DagWorkflowSnapshot[]): void {
@@ -92,6 +105,7 @@ export function observeDagHoldBusy(state: DagHoldState, snapshot: readonly DagWo
   if (!state.inTurn) {
     state.inTurn = true
     state.busyActive = false
+    state.reportGrace = "none"
   }
   foldSnapshot(state, snapshot)
 }
@@ -104,9 +118,27 @@ export function applyDagHoldSnapshot(state: DagHoldState, snapshot: readonly Dag
   const active = snapshot.some((workflow) => isDagActiveStatus(workflow.status))
   const awaitingReport = snapshot.some((workflow) => workflow.awaitingReport === true)
   const known = snapshot.every((workflow) => state.busyIds.has(workflow.id))
-  const delivered = snapshot.length > 0 && snapshot.every((workflow) => workflow.awaitingReport === false)
-  const decision: DagHoldDecision =
+  // `awaitingReport` is only defined for completed workflows. A paused,
+  // failed, cancelled, or stepping row therefore reads as "no owed report":
+  // those rows deliver through their own wake batch, and a receipt-less DTO
+  // cannot prove more. Waiting on them instead of on the receipt would park
+  // the loop forever once their wake turn had already run.
+  const delivered = snapshot.length > 0 && !awaitingReport
+  let decision: DagHoldDecision =
     !active && (!state.busyActive || delivered) && known && !awaitingReport ? "break" : "hold"
+  // A receipt observed while this turn's active latch is still set cannot prove
+  // the owed completion turn already ran: the admission that consumes the
+  // report starts on the same idle event. Hold one poll so it can make the
+  // session busy; the next idle (wake turn or synthetic tick) breaks normally.
+  if (decision === "hold") state.reportGrace = "none"
+  else if (state.busyActive && delivered) {
+    if (state.reportGrace === "none") {
+      decision = "hold"
+      state.reportGrace = "pending"
+    } else {
+      state.reportGrace = "spent"
+    }
+  }
   state.inTurn = false
   foldSnapshot(state, snapshot)
   return decision

@@ -81,6 +81,29 @@ describe("dag hold decision rule (issue 614)", () => {
         ],
       },
       {
+        // The completion report receipt is durable before the owed wake turn is
+        // admitted. A receipt alone cannot prove the turn ran, so the first idle
+        // holds one grace poll; the wake turn's own idle then breaks.
+        name: "delivered report still waits for its completion turn",
+        steps: [
+          { event: "busy", snapshot: [wf("W1", "running")] },
+          { event: "idle", snapshot: [wf("W1", "completed", false)], expect: "hold" },
+          { event: "busy", snapshot: [wf("W1", "completed", false)] },
+          { event: "idle", snapshot: [wf("W1", "completed", false)], expect: "break" },
+        ],
+      },
+      {
+        // Display-only completion: the report arrives with the active latch set
+        // but no turn is owed. The one grace poll bounds the delay instead of
+        // hanging the run.
+        name: "display-only completion exits after one grace poll",
+        steps: [
+          { event: "busy", snapshot: [wf("W1", "running")] },
+          { event: "idle", snapshot: [wf("W1", "completed", false)], expect: "hold" },
+          { event: "idle", snapshot: [wf("W1", "completed", false)], expect: "break" },
+        ],
+      },
+      {
         // A session turn re-emits busy at every model step. The workflow is
         // observed running at one step and terminal at the next; the repeated
         // in-turn busy must NOT reset the latch (regression: the reset-on-every-
@@ -286,6 +309,22 @@ describe("dag hold decision rule (issue 614)", () => {
     DagHold.observeDagHoldBusy(state, [wf("W1", "completed"), wf("W2", "completed")])
     expect(state.busyActive).toBe(false)
     expect(DagHold.applyDagHoldSnapshot(state, [wf("W1", "completed"), wf("W2", "completed")])).toBe("break")
+
+    // A receipt observed while the turn's active latch is still set grants
+    // exactly one grace poll before the run may break...
+    const grace = DagHold.initialDagHoldState()
+    DagHold.observeDagHoldBusy(grace, [wf("W3", "running")])
+    expect(DagHold.applyDagHoldSnapshot(grace, [wf("W3", "completed", false)])).toBe("hold")
+    expect(grace.reportGrace).toBe("pending")
+    // ...and consuming it breaks, after which further idles keep breaking.
+    expect(DagHold.applyDagHoldSnapshot(grace, [wf("W3", "completed", false)])).toBe("break")
+    expect(grace.reportGrace).toBe("spent")
+    expect(DagHold.applyDagHoldSnapshot(grace, [wf("W3", "completed", false)])).toBe("break")
+    // The next busy boundary re-arms ordinary evaluation (no grace held).
+    DagHold.observeDagHoldBusy(grace, [wf("W3", "completed", false)])
+    expect(grace.busyActive).toBe(false)
+    expect(grace.reportGrace).toBe("none")
+    expect(DagHold.applyDagHoldSnapshot(grace, [wf("W3", "completed", false)])).toBe("break")
   })
 })
 
@@ -650,7 +689,11 @@ describe("final-response answer receipt polling", () => {
     await hold.onBusy()
     expect(await hold.onIdle()).toBe("hold")
     current = row
-    // No onText call or busy event: only the shared database changes.
+    // No onText call or busy event: only the shared database changes. The
+    // receipt observed with the turn's active latch set gets one grace poll
+    // (an owed wake turn may be admitted on the same idle); the next idle
+    // breaks. The receipt still renders during the poll that finds it.
+    expect(await hold.onIdle()).toBe("hold")
     expect(await hold.onIdle()).toBe("break")
     expect(rendered).toEqual(["report source", "report"])
     const lateEvent = answer(row).data.parts[0]

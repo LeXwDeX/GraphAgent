@@ -24,6 +24,13 @@ export * as SessionInbox from "./inbox"
  * accepting and silently dropping it. `turn_boundary` has no implementation
  * yet and reports `UnsupportedDeliveryPolicy`; PR4 decides whether it is still
  * needed once join-or-start covers the same sources.
+ *
+ * PR3 adds the hint-only step port: a `StepSource` answers whether it may
+ * have input at the next model step boundary, without taking ownership of the
+ * payload. The turn pipeline keeps `freeze`/`associate` as the only delivery
+ * and confirmation path; `pullForStep` is purely advisory and conservative
+ * (any "maybe" wins). The full take/commit/abandon transaction is deferred
+ * until a consumer actually needs step-level ownership.
  */
 
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
@@ -124,6 +131,18 @@ export interface InboxSource {
   readonly claim: (sessionID: SessionID, ctx: InboxSourceContext) => Effect.Effect<boolean, unknown, Scope.Scope>
 }
 
+/**
+ * A hint-only step source (PR3). It never owns payloads: it only answers
+ * whether it may have input for the next model step. Hints are allowed to be
+ * false positives; a `false` must mean this source positively proved there is
+ * nothing for it to deliver. `pullForStep` therefore returns true when any
+ * registered source says maybe, and only false when every source said false.
+ */
+export interface StepSource {
+  readonly id: InboxSourceID
+  readonly hint: (sessionID: SessionID) => boolean
+}
+
 export class InboxNotWired extends Schema.TaggedError<InboxNotWired>()("SessionInboxNotWired", {
   source: Schema.String,
 }) {
@@ -148,6 +167,12 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
   /** Add one source to this instance's drain set; a later registration for the same id replaces it. */
   readonly register: (source: InboxSource) => Effect.Effect<void>
+  /** Add one step hint source; a later registration for the same id replaces it. */
+  readonly registerStep: (source: StepSource) => Effect.Effect<void>
+  /** Whether any step source may have input for this boundary. Conservative:
+   * no source registered, a throwing hint, or any `true` returns true; false
+   * only when every registered source explicitly returned false. */
+  readonly pullForStep: (sessionID: SessionID) => Effect.Effect<boolean>
   /** Drain one session in the calling instance. */
   readonly drain: (sessionID: SessionID) => Effect.Effect<void>
   /** Process-level route: drain the loaded instance that owns the session's directory. */
@@ -166,6 +191,7 @@ interface InstanceData {
   readonly directory: string
   readonly scope: Scope.Scope
   readonly sources: Map<InboxSourceID, InboxSource>
+  readonly steps: Map<InboxSourceID, StepSource>
   readonly mutex: KeyedMutex.KeyedMutex<SessionID>
   /** Sessions with a drain running; `again` coalesces nudges into one re-run. */
   readonly inFlight: Map<SessionID, { again: boolean }>
@@ -204,12 +230,26 @@ export const layer = Layer.effect(
     const claimAll = (
       data: InstanceData,
       sessionID: SessionID,
-      force = false,
+      options: { readonly force?: boolean; readonly idle?: boolean } = {},
     ): Effect.Effect<void, never, Scope.Scope> =>
       Effect.gen(function* () {
+        const force = options.force === true
         const sources = [...data.sources.values()].sort(byPriority)
+        // `idle_only` means exactly that: neither a nudge nor the forced tick
+        // may deliver into a running turn. The idle subscription itself is
+        // authoritative for its own drain: SessionStatus makes the new state
+        // observable before it publishes the idle event, so an event-driven
+        // read here already sees `idle` rather than the previous `busy`. Only
+        // the non-idle triggers (nudge, tick) read the live status, and a
+        // nudge can arrive mid-turn (release, report follow-up). The forced
+        // tick only bypasses the in-memory hint, not this gate.
+        let idleNow = options.idle === true ? true : undefined
         for (const source of sources) {
           if (!force && !source.hint(sessionID)) continue
+          if (source.mode === "idle_only") {
+            if (idleNow === undefined) idleNow = (yield* status.get(sessionID)).type === "idle"
+            if (!idleNow) continue
+          }
           const claimed = yield* source.claim(sessionID, { directory: data.directory }).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause)
@@ -227,23 +267,31 @@ export const layer = Layer.effect(
 
     // Per-session serial drain with nudge coalescing: while one drain holds
     // the session, every additional nudge only asks for one more pass.
-    const drainFor = (data: InstanceData, sessionID: SessionID, force = false): Effect.Effect<void> =>
+    const drainFor = (
+      data: InstanceData,
+      sessionID: SessionID,
+      options: { readonly force?: boolean; readonly idle?: boolean } = {},
+    ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const active = data.inFlight.get(sessionID)
         if (active) {
           active.again = true
           return
         }
-        const token = { again: false }
+        const token = { again: false, force: options.force === true, idle: options.idle === true }
         data.inFlight.set(sessionID, token)
         yield* data.mutex
           .withLock(sessionID)(
             Effect.gen(function* () {
               do {
                 token.again = false
+                const trigger = { force: token.force, idle: token.idle }
+                // Coalesced re-runs are driven by a nudge, not by the idle
+                // event that opened this pass: they must re-check liveness.
+                token.idle = false
                 // Claim forks (goal evaluation) live on the instance scope,
                 // not on a nudge caller's short-lived scope.
-                yield* claimAll(data, sessionID, force).pipe(Scope.provide(data.scope))
+                yield* claimAll(data, sessionID, trigger).pipe(Scope.provide(data.scope))
               } while (token.again)
             }),
           )
@@ -271,7 +319,7 @@ export const layer = Layer.effect(
         for (const sessionID of sessionIDs) {
           // Forced: the durable scan is the authority, so a stale in-memory
           // hint must not hide the item from this backstop pass.
-          yield* drainFor(data, sessionID, true).pipe(
+          yield* drainFor(data, sessionID, { force: true }).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause)
                 ? Effect.void
@@ -305,6 +353,7 @@ export const layer = Layer.effect(
           directory: ctx.directory,
           scope,
           sources: new Map(),
+          steps: new Map(),
           mutex: KeyedMutex.makeUnsafe<SessionID>(),
           inFlight: new Map(),
           route: undefined,
@@ -346,7 +395,7 @@ export const layer = Layer.effect(
         yield* events.subscribe(SessionStatus.Event.Status).pipe(
           Stream.filter((evt) => evt.data.status.type === "idle"),
           Stream.runForEach((evt) =>
-            drainFor(data, evt.data.sessionID).pipe(
+            drainFor(data, evt.data.sessionID, { idle: true }).pipe(
               Effect.catchCause((cause) =>
                 Cause.hasInterrupts(cause)
                   ? Effect.void
@@ -366,6 +415,33 @@ export const layer = Layer.effect(
     const register = Effect.fn("SessionInbox.register")(function* (source: InboxSource) {
       const data = yield* InstanceState.get(state)
       data.sources.set(source.id, source)
+    })
+
+    const registerStep = Effect.fn("SessionInbox.registerStep")(function* (source: StepSource) {
+      const data = yield* InstanceState.get(state)
+      data.steps.set(source.id, source)
+    })
+
+    // Advisory only: never claims, never writes, never arms a subscription.
+    // A source is allowed a false positive, so any "maybe" wins; `false` is
+    // reserved for "every registered source positively proved empty". A hint
+    // that throws is unknown, not empty.
+    const pullForStep = Effect.fn("SessionInbox.pullForStep")(function* (sessionID: SessionID) {
+      const data = yield* InstanceState.get(state)
+      if (data.steps.size === 0) return true
+      for (const source of data.steps.values()) {
+        try {
+          if (source.hint(sessionID)) return true
+        } catch (cause) {
+          yield* Effect.logDebug("session inbox step hint failed; treating input as pending", {
+            source: source.id,
+            sessionID,
+            cause,
+          })
+          return true
+        }
+      }
+      return false
     })
 
     const drain = Effect.fn("SessionInbox.drain")(function* (sessionID: SessionID) {
@@ -456,7 +532,7 @@ export const layer = Layer.effect(
       return yield* new InboxNotWired({ source: sourceID })
     })
 
-    return Service.of({ init, register, drain, nudge, submit })
+    return Service.of({ init, register, registerStep, drain, nudge, pullForStep, submit })
   }),
 )
 
