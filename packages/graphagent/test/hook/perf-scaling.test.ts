@@ -121,20 +121,38 @@ describe("incremental transcript scaling", () => {
             return samples
           })
 
-        const smallSamples = yield* measure(small.id)
-        const largeSamples = yield* measure(large.id)
+        // A single batch can be skewed by an unrelated scheduler spike on a loaded
+        // machine. Measure five alternating-order batches and gate on the median
+        // ratio; a real O(N) regression raises every batch, while one noisy batch
+        // is absorbed. The absolute bound still applies to the worst batch.
+        const ROUNDS = 5
+        const ratios: number[] = []
+        const largeP95s: number[] = []
+        for (let round = 0; round < ROUNDS; round++) {
+          const smallFirst = round % 2 === 0
+          const firstSamples = yield* measure(smallFirst ? small.id : large.id)
+          const secondSamples = yield* measure(smallFirst ? large.id : small.id)
+          const smallSamples = smallFirst ? firstSamples : secondSamples
+          const largeSamples = smallFirst ? secondSamples : firstSamples
+          const smallP95 = percentile(smallSamples, 0.95)
+          const largeP95 = percentile(largeSamples, 0.95)
+          const ratio = largeP95 / Math.max(smallP95, 0.0001)
+          ratios.push(ratio)
+          largeP95s.push(largeP95)
+          console.log(
+            `[perf-1018] round ${round + 1}/${ROUNDS}: ${SMALL}msgs=${smallP95.toFixed(3)}ms ${LARGE}msgs=${largeP95.toFixed(3)}ms ratio=${ratio.toFixed(2)} (n=${TRIGGERS} each)`,
+          )
+        }
         // No message changed between triggers, so the settled prefix needs no write.
         expect(__transcriptStats.writes).toBe(0)
 
-        const smallP95 = percentile(smallSamples, 0.95)
-        const largeP95 = percentile(largeSamples, 0.95)
+        ratios.sort((a, b) => a - b)
+        const medianRatio = ratios[Math.floor(ROUNDS / 2)]
         console.log(
-          `[perf-1018] prepare p95: ${SMALL}msgs=${smallP95.toFixed(3)}ms ${LARGE}msgs=${largeP95.toFixed(3)}ms ratio=${(
-            largeP95 / Math.max(smallP95, 0.0001)
-          ).toFixed(2)} (n=${TRIGGERS} each)`,
+          `[perf-1018] median ratio=${medianRatio.toFixed(2)}, worst ${LARGE} p95=${Math.max(...largeP95s).toFixed(3)}ms`,
         )
-        expect(largeP95 / Math.max(smallP95, 0.0001)).toBeLessThanOrEqual(1.5)
-        expect(largeP95).toBeLessThanOrEqual(10)
+        expect(medianRatio).toBeLessThanOrEqual(1.5)
+        expect(Math.max(...largeP95s)).toBeLessThanOrEqual(10)
 
         HookTranscript.clearCursor(small.id)
         HookTranscript.clearCursor(large.id)
