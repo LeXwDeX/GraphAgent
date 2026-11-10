@@ -35,8 +35,8 @@ import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { ShellContexts } from "../shell/contexts"
 
-function createResolvedKeymapConfig() {
-  const keybinds = TuiKeybind.parse({})
+function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
+  const keybinds = TuiKeybind.parse(input)
   return {
     keybinds: createBindingLookup(TuiKeybind.toBindingConfig(keybinds), {
       commandMap: TuiKeybind.CommandMap,
@@ -129,6 +129,8 @@ export interface AppPanelContextsProps extends ParentProps<{
   onReady?: () => void
   /** Extra endpoint responses layered over the shared fixture defaults. */
   handler?: FetchHandler
+  /** Keybinding overrides shared by the keymap and the resolved TUI config. */
+  keybinds?: TuiKeybind.KeybindOverrides
   /** Injected ticker so countdown tests control the one-second signal. */
   ticker?: Ticker
 }> {}
@@ -141,12 +143,12 @@ export interface AppPanelContextsProps extends ParentProps<{
 export function AppPanelContexts(props: AppPanelContextsProps) {
   const renderer = useRenderer()
   const keymap = createDefaultOpenTuiKeymap(renderer)
-  const offKeymap = registerGraphagentKeymap(keymap, renderer, createResolvedKeymapConfig())
+  const offKeymap = registerGraphagentKeymap(keymap, renderer, createResolvedKeymapConfig(props.keybinds))
   onCleanup(offKeymap)
 
   const events = createEventSource()
-  const calls = createFetch((url) => {
-    const custom = props.handler?.(url)
+  const calls = createFetch((url, request) => {
+    const custom = props.handler?.(url, request)
     if (custom) return custom
     if (/^\/project\/[^/]+\/directories$/.test(url.pathname)) return json([])
     if (/^\/mcp\/[^/]+\/(connect|disconnect)$/.test(url.pathname)) return json({})
@@ -165,7 +167,7 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
                 <HookStatusProvider>
                   <ClipboardProvider>
                     <RouteProvider>
-                      <TuiConfigProvider config={createTuiResolvedConfig()}>
+                      <TuiConfigProvider config={createTuiResolvedConfig({ keybinds: props.keybinds })}>
                         <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
                           <ProjectProvider>
                             <SyncProvider>
@@ -251,6 +253,7 @@ export async function renderAppPanel(
     state: string
     setup?: (context: AppPanelTestContext) => void | Promise<void>
     handler?: FetchHandler
+    keybinds?: TuiKeybind.KeybindOverrides
     ticker?: Ticker
   },
 ) {
@@ -262,6 +265,7 @@ export async function renderAppPanel(
         state={options.state}
         setup={options.setup}
         handler={options.handler}
+        keybinds={options.keybinds}
         ticker={options.ticker}
         onReady={ready}
       >

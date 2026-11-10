@@ -25,6 +25,8 @@ import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
+import { t } from "../../src/i18n"
+import { BottomZone, BottomZoneProvider, createBottomZoneState } from "../../src/shell/bottom-zone"
 import { useCommands } from "../../src/commands/context"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
@@ -64,8 +66,8 @@ const routeSession = {
   directory,
 }
 
-function routeFetch(url: URL) {
-  if (url.pathname === `/session/${routeSessionID}`) return json(routeSession)
+function routeFetch(url: URL, session: typeof routeSession = routeSession) {
+  if (url.pathname === `/session/${routeSessionID}`) return json(session)
   if (url.pathname.startsWith(`/session/${routeSessionID}/`)) return json([])
   return undefined
 }
@@ -174,6 +176,7 @@ async function mountRoute(
   override?: (url: URL, request: Request) => Response | Promise<Response | undefined> | undefined,
   sessionID?: string,
   editorIntegration?: EditorIntegration,
+  options?: { bottomZone?: boolean; session?: Partial<typeof routeSession> },
 ) {
   prompt = undefined
   const tmp = await tmpdir()
@@ -182,8 +185,9 @@ async function mountRoute(
     JSON.stringify({ tool_details_visibility: !hideDetails, generic_tool_output_visibility: false }),
   )
   const events = createEventSource()
+  const sessionFixture = { ...routeSession, ...(options?.session ?? {}) }
   const base = createFetch((url) =>
-    url.pathname === `/session/${routeSessionID}/message` ? json(messages) : routeFetch(url),
+    url.pathname === `/session/${routeSessionID}/message` ? json(messages) : routeFetch(url, sessionFixture),
   )
   const calls = {
     fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -221,7 +225,9 @@ async function mountRoute(
     const renderer = useRenderer()
     keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createTuiResolvedConfig()
+    const zone = options?.bottomZone ? createBottomZoneState() : undefined
     onCleanup(registerGraphagentKeymap(keymap, renderer, config))
+    const routeView = () => (view === "session" ? <Main /> : <PromptRoute sessionID={sessionID} />)
 
     return (
       <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
@@ -273,11 +279,14 @@ async function mountRoute(
                                                     <SDKProbe ready={(value) => (sdk = value)} />
                                                     <CommandProbe ready={(value) => (commands = value)} />
                                                     <Show when={mounted()}>
-                                                      {view === "session" ? (
-                                                        <Main />
-                                                      ) : (
-                                                        <PromptRoute sessionID={sessionID} />
-                                                      )}
+                                                      <Show when={zone} fallback={routeView()}>
+                                                        {(state) => (
+                                                          <BottomZoneProvider state={state()}>
+                                                            {routeView()}
+                                                            <BottomZone state={state()} composer={<></>} />
+                                                          </BottomZoneProvider>
+                                                        )}
+                                                      </Show>
                                                     </Show>
                                                     <FooterStatusView />
                                                   </LocationProvider>
@@ -1280,6 +1289,108 @@ test("edit mode escape restores the draft without committing", async () => {
     await route.app.renderOnce()
     expect(committed).toBe(0)
     expect(route.app.captureCharFrame()).not.toContain("Editing: 重命名")
+  } finally {
+    await route.dispose()
+  }
+})
+
+async function waitForFrame(
+  app: Awaited<ReturnType<typeof mountRoute>>["app"],
+  predicate: (frame: string) => boolean,
+  timeout = 3000,
+) {
+  const start = Date.now()
+  for (;;) {
+    // Render first so capture never races the renderer's native buffer lease.
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+    if (predicate(frame)) return frame
+    if (Date.now() - start > timeout) throw new Error("timed out waiting for frame")
+    await Bun.sleep(10)
+  }
+}
+
+test("submitting in an unavailable workspace offers to open the workspace picker", async () => {
+  let adapters = 0
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    (url) => {
+      if (url.pathname === "/experimental/workspace")
+        return json([{ id: "wrk_unavailable", name: "Offline workspace", type: "worktree", timeUsed: 1 }])
+      if (url.pathname === "/experimental/workspace/status")
+        return json([{ workspaceID: "wrk_unavailable", status: "disconnected" }])
+      if (url.pathname === "/experimental/workspace/adapter") {
+        adapters += 1
+        return json([{ type: "worktree", name: "Alpha", description: "Alpha adapter" }])
+      }
+      return undefined
+    },
+    routeSessionID,
+    undefined,
+    { bottomZone: true },
+  )
+  try {
+    configureModel(route)
+    route.mount()
+    await wait(() => Boolean(prompt))
+    route.sync.set("session", [{ ...routeSession, workspaceID: "wrk_unavailable" }])
+    await route.app.renderOnce()
+    prompt!.set({ input: "hello", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+
+    await waitForFrame(route.app, (frame) => frame.includes(t("prompt.workspace.unavailable.title")))
+    expect(route.app.captureCharFrame()).toContain(t("prompt.workspace.unavailable.restore"))
+
+    route.app.mockInput.pressKey("1")
+    await wait(() => adapters === 1, 3000)
+    await waitForFrame(route.app, (frame) => frame.includes(t("panel.workspace.select.title")))
+    expect(route.app.captureCharFrame()).toContain("Alpha")
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("cancelling the unavailable workspace prompt keeps the draft and opens nothing", async () => {
+  let adapters = 0
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    (url) => {
+      if (url.pathname === "/experimental/workspace")
+        return json([{ id: "wrk_unavailable", name: "Offline workspace", type: "worktree", timeUsed: 1 }])
+      if (url.pathname === "/experimental/workspace/status")
+        return json([{ workspaceID: "wrk_unavailable", status: "disconnected" }])
+      if (url.pathname === "/experimental/workspace/adapter") {
+        adapters += 1
+        return json([])
+      }
+      return undefined
+    },
+    routeSessionID,
+    undefined,
+    { bottomZone: true },
+  )
+  try {
+    configureModel(route)
+    route.mount()
+    await wait(() => Boolean(prompt))
+    route.sync.set("session", [{ ...routeSession, workspaceID: "wrk_unavailable" }])
+    await route.app.renderOnce()
+    prompt!.set({ input: "draft", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+
+    await waitForFrame(route.app, (frame) => frame.includes(t("prompt.workspace.unavailable.title")))
+    route.app.mockInput.pressKey("2")
+    await waitForFrame(route.app, (frame) => !frame.includes(t("prompt.workspace.unavailable.title")))
+    await Bun.sleep(30)
+    await route.app.renderOnce()
+    expect(adapters).toBe(0)
+    expect(prompt!.current.input).toBe("draft")
   } finally {
     await route.dispose()
   }
