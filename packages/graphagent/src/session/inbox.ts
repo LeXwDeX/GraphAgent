@@ -237,12 +237,12 @@ export const layer = Layer.effect(
         const sources = [...data.sources.values()].sort(byPriority)
         // `idle_only` means exactly that: neither a nudge nor the forced tick
         // may deliver into a running turn. The idle subscription itself is
-        // authoritative for its own drain: SessionStatus publishes the idle
-        // event before it clears the busy entry, so reading the live status
-        // here would race the setter and see the stale `busy`. Only the
-        // non-idle triggers (nudge, tick) read the live status, and a nudge
-        // can arrive mid-turn (release, report follow-up). The forced tick
-        // only bypasses the in-memory hint, not this gate.
+        // authoritative for its own drain: SessionStatus makes the new state
+        // observable before it publishes the idle event, so an event-driven
+        // read here already sees `idle` rather than the previous `busy`. Only
+        // the non-idle triggers (nudge, tick) read the live status, and a
+        // nudge can arrive mid-turn (release, report follow-up). The forced
+        // tick only bypasses the in-memory hint, not this gate.
         let idleNow = options.idle === true ? true : undefined
         for (const source of sources) {
           if (!force && !source.hint(sessionID)) continue
