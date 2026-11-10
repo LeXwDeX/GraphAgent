@@ -6,6 +6,7 @@ import type { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { Effect, Exit, Fiber, Scope } from "effect"
 import { registerDisposer } from "@/effect/instance-registry"
 import type { TriggerResult } from "@/hook"
+import { makeHistoryState, forgetEntry, type HistoryState } from "./history/state"
 import { makeReasoningQueue } from "./reasoning-queue"
 import type { RuntimeContext } from "./runtime-context"
 import type { MessageID, SessionID } from "./schema"
@@ -64,6 +65,8 @@ export interface SessionRuntimes {
   readonly modelWrites: Map<SessionID, ModelWriteState>
   /** Budget and organizer queue for asynchronous reasoning rewrites, per directory. */
   readonly rewrites: Map<string, RewriteState>
+  /** Write-through transcript cache state (Issue #1022, PR3). */
+  readonly history: HistoryState
   /** Directory that first created each session's cache entries. */
   readonly owners: Map<SessionID, string>
   /** Record the owning directory of a session the first time its cache is touched. */
@@ -90,6 +93,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
   const modelWrites = new Map<SessionID, ModelWriteState>()
   const rewrites = new Map<string, RewriteState>()
   const owners = new Map<SessionID, string>()
+  const history = makeHistoryState()
 
   const forgetLocal = (sessionID: SessionID) => {
     const pending = modelSwitches.get(sessionID)
@@ -101,6 +105,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     requestOverheads.delete(sessionID)
     runtimeContexts.delete(sessionID)
     toolBudgets.delete(sessionID)
+    forgetEntry(history, sessionID)
     // `modelWrites` is application-scoped (not directory state); a pending
     // command releases it through its refcount. Never drop it from here.
   }
@@ -113,6 +118,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     toolBudgets,
     modelWrites,
     rewrites,
+    history,
     owners,
     own(sessionID, directory) {
       if (!owners.has(sessionID)) owners.set(sessionID, directory)

@@ -91,6 +91,18 @@ export interface Interface {
    * does not project every event twice.
    */
   readonly project: <D extends Definition>(definition: D, projector: Subscriber<D>, key?: string) => Effect.Effect<void>
+  /**
+   * Register a post-commit observer for live durable events, keyed so a layer
+   * rebuilt against the same bus replaces its observer instead of duplicating
+   * it. Observers run after the publish transaction commits and before
+   * `publish` / `publishMany` return; a rolled-back transaction discards them.
+   * Replays, #523-deduped appends, and non-durable events do not reach an
+   * observer. Callbacks run uninterruptibly in registration order within one
+   * transaction (concurrent publishers are not ordered), so they must be
+   * synchronous, bounded, and side-effect-only; a defect is logged and does not
+   * fail the publish or skip the remaining observers.
+   */
+  readonly onCommitted: (key: string, observer: Subscriber) => Effect.Effect<void>
   readonly replay: (
     event: SerializedEvent,
     options?: { readonly publish?: boolean; readonly ownerID?: string; readonly strictOwner?: boolean },
@@ -120,6 +132,8 @@ export const layerWith = (options?: LayerOptions) =>
       }
       type Projector = { readonly key?: string; readonly handler: Subscriber }
       const projectors = new Map<string, Projector[]>()
+      /** Post-commit observers, keyed for idempotent layer rebuilds. */
+      const observers = new Map<string, Subscriber>()
       // TODO: Bind durable projectors to exact type+version before supporting incompatible historical payloads.
       const listeners = new Array<Subscriber>()
       const { db } = yield* Database.Service
@@ -297,6 +311,32 @@ export const layerWith = (options?: LayerOptions) =>
             yield* projector.handler(committed)
           }
           if (commit) yield* commit(seq)
+          // Live durable events only: `input` marks replay, and the #523
+          // dedup gate returns before this point. Registration happens inside
+          // the transaction, so a rollback discards the callbacks; observers
+          // run after the outermost COMMIT, before the publish returns, with
+          // the durable stamp already attached.
+          if (input === undefined && observers.size > 0) {
+            const snapshot = Array.from(observers.values())
+            yield* db.$client.afterCommit(
+              Effect.forEach(
+                snapshot,
+                (observer) =>
+                  Effect.suspend(() => observer(committed)).pipe(
+                    Effect.catchCauseIf(
+                      (cause) => !Cause.hasInterrupts(cause),
+                      (cause) =>
+                        Effect.logError("Event committed observer failed", {
+                          eventID: event.id,
+                          eventType: event.type,
+                          cause,
+                        }),
+                    ),
+                  ),
+                { discard: true },
+              ),
+            )
+          }
           yield* db
             .insert(EventSequenceTable)
             .values([{ aggregate_id: aggregateID, seq, owner_id: input?.ownerID }])
@@ -763,6 +803,11 @@ export const layerWith = (options?: LayerOptions) =>
           projectors.set(definition.type, list)
         })
 
+      const onCommitted = (key: string, observer: Subscriber): Effect.Effect<void> =>
+        Effect.sync(() => {
+          observers.set(key, observer)
+        })
+
       return Service.of({
         publish,
         publishMany,
@@ -771,6 +816,7 @@ export const layerWith = (options?: LayerOptions) =>
         durable,
         listen,
         project,
+        onCommitted,
         replay,
         replayAll,
         remove,

@@ -5,8 +5,7 @@ import { Database } from "@graphagent/core/database/database"
 import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import { Effect, Schema } from "effect"
-import { NotFoundError } from "@/storage/storage"
+import { Effect } from "effect"
 import { MessageV2 } from "../message-v2"
 import { MessageID, SessionID } from "../schema"
 import type { Session } from "../session"
@@ -15,6 +14,16 @@ import { HistoryView } from "./view"
 export type ClaimedSnapshot = {
   readonly messages: SessionV1.WithParts[]
   readonly budget: ToolBudget.Budget
+}
+
+/**
+ * Cache port the claim path relies on. The default binds to the process
+ * history view; tests inject an isolated state with their own database.
+ */
+export interface HistoryPort {
+  readonly get: (sessionID: SessionID) => Effect.Effect<HistoryView.Snapshot>
+  readonly checkExternal: (sessionID: SessionID) => Effect.Effect<"same" | "reloaded">
+  readonly version: (sessionID: SessionID) => number
 }
 
 export interface ClaimDeps {
@@ -26,88 +35,28 @@ export interface ClaimDeps {
     pending: Map<MessageID, ToolBudget.Budget>
   }>
   readonly maxToolCalls: Effect.Effect<number | undefined>
-  /** Test seam for the bounded tail read. */
-  readonly readHistoryView?: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts[]>
+  /** Test seam for the write-through history cache. */
+  readonly history?: HistoryPort
 }
 
 const ATTEMPTS = 3
-const VERIFY_PAGE = 50
-
-/** Order-independent JSON with sorted keys, for comparing two reads of the same row. */
-function stable(value: unknown): string {
-  if (value === undefined) return "undefined"
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null"
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`
-  const record = value as Record<string, unknown>
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
-    .join(",")}}`
-}
-
-/**
- * Confirms that a snapshot read outside the prompt lock still matches the
- * stored transcript, and returns the fresh copies of the unconsumed prompts
- * that the caller must mark consumed.
- *
- * The check is bounded: it compares the newest stored page (including the
- * snapshot's newest message, which detects appends, reverts, and compaction
- * writes) plus a point re-read of every unconsumed ordinary prompt (which
- * detects queued edits and deletes). Changes older than the page that do not
- * touch an unconsumed prompt are not detected; those require a write-version
- * fence rather than a transcript diff.
- */
-const verifyFresh = (sessionID: SessionID, messages: readonly SessionV1.WithParts[]) =>
-  Effect.gen(function* () {
-    const latest = yield* MessageV2.page({ sessionID, limit: VERIFY_PAGE }).pipe(
-      Effect.catchIf(NotFoundError.isInstance, () =>
-        Effect.succeed({ items: [] as SessionV1.WithParts[], more: false, cursor: undefined }),
-      ),
-    )
-    const newest = messages.at(-1)
-    if (!newest) return latest.items.length === 0 ? new Map<string, SessionV1.WithParts>() : undefined
-    const storedNewest = latest.items.at(-1)
-    if (!storedNewest || storedNewest.info.id !== newest.info.id) return undefined
-    const snapshot = new Map(messages.map((message) => [String(message.info.id), message]))
-    for (const item of latest.items) {
-      const known = snapshot.get(String(item.info.id))
-      if (known && stable(known) !== stable(item)) return undefined
-    }
-    const fresh = new Map<string, SessionV1.WithParts>()
-    for (const message of messages) {
-      if (!HistoryView.isOrdinaryUser(message) || message.info.time.consumed !== undefined) continue
-      const id = String(message.info.id)
-      if (fresh.has(id)) continue
-      const stored = yield* MessageV2.get({ sessionID, messageID: message.info.id }).pipe(
-        Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)),
-      )
-      if (!stored || stable(stored) !== stable(message)) return undefined
-      fresh.set(id, stored)
-    }
-    return fresh
-  })
 
 /**
  * Marks the snapshot's unconsumed prompts consumed. The persisted info is a
- * copy of the freshest read: the frozen snapshot is never mutated, and a stale
- * copy cannot overwrite a concurrent edit or delete of the same prompt.
+ * copy of the cached snapshot: the frozen view is never mutated, and the
+ * prompt lock plus the version check below mean the snapshot cannot be older
+ * than a concurrent edit that would be overwritten. The SessionProjector keeps
+ * the greatest `consumed` timestamp anyway, so a stale whole-JSON replacement
+ * cannot make a claimed prompt editable again.
  */
-const markConsumed = (
-  deps: ClaimDeps,
-  sessionID: SessionID,
-  visible: readonly SessionV1.WithParts[],
-  fresh: ReadonlyMap<string, SessionV1.WithParts> | undefined,
-) =>
+const markConsumed = (deps: ClaimDeps, visible: readonly SessionV1.WithParts[]) =>
   Effect.gen(function* () {
     const consumed = Date.now()
     for (const message of visible) {
       if (!HistoryView.isOrdinaryUser(message) || message.info.time.consumed !== undefined) continue
-      const source = (fresh?.get(String(message.info.id)) ?? message).info
+      const source = message.info
       if (source.role !== "user") continue
       const info = { ...source, time: { ...source.time, consumed } } as SessionV1.User
-      // Persisted JSON loses Schema.Class prototypes. Rehydrate the output
-      // format before encoding the consumed user-message event.
-      if (info.format) info.format = Schema.decodeUnknownSync(SessionV1.Format)(info.format)
       yield* deps.sessions.updateMessage(info)
     }
   })
@@ -117,12 +66,7 @@ const markConsumed = (
  * the prompt lock; it performs no transcript reads, so no writer can interleave
  * between verification and the durable writes.
  */
-const commit = (
-  deps: ClaimDeps,
-  sessionID: SessionID,
-  messages: HistoryView.FrozenHistory,
-  fresh: ReadonlyMap<string, SessionV1.WithParts> | undefined,
-) =>
+const commit = (deps: ClaimDeps, sessionID: SessionID, messages: HistoryView.FrozenHistory) =>
   Effect.gen(function* () {
     const visible = messages.filter((message) => !MessageV2.isIgnoredUser(message))
     const state = yield* deps.budgetState(sessionID)
@@ -133,7 +77,7 @@ const commit = (
         latestPending = { message, budget }
       }
     }
-    yield* markConsumed(deps, sessionID, visible, fresh)
+    yield* markConsumed(deps, visible)
     // Activate only inputs included in this snapshot. Capture the budget under
     // the same lock so later admissions cannot replace its owner.
     const budget = latestPending?.budget ?? state.active ?? ToolBudget.create(yield* deps.maxToolCalls)
@@ -144,26 +88,46 @@ const commit = (
   })
 
 /**
- * Claims the model-visible tail plus the budget for the next request. The tail
- * read happens outside the prompt lock; the lock only verifies freshness and
- * commits the consumed markers. A snapshot that went stale between the read and
- * the lock is re-read, and after a few failed attempts the claim falls back to
- * a full read under the lock.
+ * Claims the model-visible tail plus the budget for the next request. The read
+ * happens outside the prompt lock; the lock only fences freshness and commits
+ * the consumed markers:
+ *
+ * 1. Lock-free `get`: a cold/stale entry reloads under the process and
+ *    connection fences; an unstable reload retries.
+ * 2. Under the prompt lock, `checkExternal` reads `PRAGMA data_version` once
+ *    and reloads the entry if another connection committed since the last
+ *    full read.
+ * 3. The snapshot is read *again* under the lock (a clean hit costs no SQL).
+ *    Another claim may have reloaded the shared entry between steps 1 and 2,
+ *    so committing the lock-free snapshot could resurrect state older than
+ *    that reload.
+ * 4. The snapshot must be stable and still at the current process write
+ *    version; otherwise the attempt is stale and retried.
+ *
+ * After a few failed attempts the claim falls back to a full read under the
+ * lock (not cached).
  */
 export function makeClaim(deps: ClaimDeps) {
-  const read = (sessionID: SessionID) =>
-    (deps.readHistoryView ?? HistoryView.tail)(sessionID).pipe(
-      Effect.provideService(Database.Service, deps.database),
-    )
+  const history =
+    deps.history ??
+    ({
+      get: (sessionID) => HistoryView.get(sessionID).pipe(Effect.provideService(Database.Service, deps.database)),
+      checkExternal: (sessionID) =>
+        HistoryView.checkExternal(sessionID).pipe(Effect.provideService(Database.Service, deps.database)),
+      version: HistoryView.version,
+    } satisfies HistoryPort)
 
   const attempt = (sessionID: SessionID) =>
     Effect.gen(function* () {
-      const messages = HistoryView.freeze(yield* read(sessionID))
+      const initial = yield* history.get(sessionID)
+      if (!initial.stable) return undefined
       return yield* deps.promptLocks.withLock(sessionID)(
         Effect.gen(function* () {
-          const fresh = yield* verifyFresh(sessionID, messages)
-          if (!fresh) return undefined
-          return yield* commit(deps, sessionID, messages, fresh)
+          yield* history.checkExternal(sessionID)
+          const snapshot = yield* history.get(sessionID)
+          if (!snapshot.stable) return undefined
+          if (snapshot.version !== history.version(sessionID)) return undefined
+          return yield* commit(deps, sessionID, snapshot.history)
         }),
       )
     }).pipe(Effect.provideService(Database.Service, deps.database))
@@ -176,12 +140,14 @@ export function makeClaim(deps: ClaimDeps) {
     yield* Effect.logWarning("session history changed while claiming; re-reading under the prompt lock", {
       "session.id": sessionID,
     })
-    return yield* deps.promptLocks.withLock(sessionID)(
-      Effect.gen(function* () {
-        const messages = HistoryView.freeze(yield* MessageV2.filterCompactedEffect(sessionID))
-        return yield* commit(deps, sessionID, messages, undefined)
-      }),
-    ).pipe(Effect.provideService(Database.Service, deps.database))
+    return yield* deps.promptLocks
+      .withLock(sessionID)(
+        Effect.gen(function* () {
+          const messages = HistoryView.freeze(yield* MessageV2.filterCompactedEffect(sessionID))
+          return yield* commit(deps, sessionID, messages)
+        }),
+      )
+      .pipe(Effect.provideService(Database.Service, deps.database))
   })
 }
 

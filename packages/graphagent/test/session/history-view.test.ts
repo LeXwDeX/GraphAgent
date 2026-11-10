@@ -157,9 +157,7 @@ describe("MessageV2.filterCompactedTail generated histories", () => {
           const pick = <T>(items: T[]) => items[Math.floor(random() * items.length)]!
           const users: MessageID[] = []
           const failure = () =>
-            random() < 0.5
-              ? ({ name: "MessageAbortedError", data: { message: "boom" } } as never)
-              : undefined
+            random() < 0.5 ? ({ name: "MessageAbortedError", data: { message: "boom" } } as never) : undefined
           for (let position = 0; position < count; position++) {
             const roll = random()
             if (users.length === 0 || roll < 0.45) {
@@ -188,11 +186,7 @@ describe("MessageV2.filterCompactedTail generated histories", () => {
             }
             const mode = random()
             const marker = yield* f.marker(
-              mode < 0.3
-                ? undefined
-                : mode < 0.6
-                  ? pick(users)
-                  : MessageID.make(`msg_missing_${index}_${position}`),
+              mode < 0.3 ? undefined : mode < 0.6 ? pick(users) : MessageID.make(`msg_missing_${index}_${position}`),
             )
             users.push(marker)
             const finish = random() < 0.75 ? "stop" : undefined
@@ -207,6 +201,34 @@ describe("MessageV2.filterCompactedTail generated histories", () => {
       ),
     )
   }
+})
+
+describe("HistoryView cache", () => {
+  it.instance("reads through the process cache and keeps the version across invalidation", () =>
+    withSession(({ sessionID, f }) =>
+      Effect.gen(function* () {
+        yield* f.user("prompt")
+        const first = yield* HistoryView.get(sessionID)
+        expect(first.stable).toBe(true)
+        expect(first.history).toHaveLength(1)
+        expect(first.version).toBe(HistoryView.version(sessionID))
+
+        const check = yield* HistoryView.checkExternal(sessionID)
+        expect(check).toBe("same")
+
+        const second = yield* HistoryView.get(sessionID)
+        expect(second.history).toBe(first.history)
+
+        HistoryView.invalidateCache(sessionID)
+        const reloaded = yield* HistoryView.get(sessionID)
+        expect(reloaded.stable).toBe(true)
+        expect(reloaded.version).toBe(first.version)
+        expect(reloaded.history).toHaveLength(1)
+
+        HistoryView.invalidateCache(sessionID)
+      }),
+    ),
+  )
 })
 
 describe("HistoryView.freeze", () => {
