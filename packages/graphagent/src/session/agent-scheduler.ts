@@ -608,7 +608,14 @@ export const make = (
         if (until > current) state.requests.penalizedUntil.set(key, until)
       })
     }),
-  capacity: (limit) => Effect.sync(() => capacity(state, limit)),
+  capacity: (limit) =>
+    Effect.gen(function* () {
+      // Refresh lazily so the snapshot reports configured caps even before the
+      // first acquisition; the live layer must not read config while building
+      // (that context has no observability logger and would leak to stdout).
+      yield* refresh(state, readLimits)
+      return capacity(state, limit)
+    }),
   limits: () => refresh(state, readLimits).pipe(Effect.map(() => state.limits)),
 })
 
@@ -630,13 +637,6 @@ const liveLayer = Layer.effect(
         taskReserve: info.engine?.concurrency?.taskReserve ?? DEFAULT_LIMITS.taskReserve,
         dagConcurrency: info.dag?.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
       }
-    })
-    // Seed the shared state from the current configuration so a `capacity`
-    // call and releases before the first acquisition already see configured
-    // caps instead of the draft defaults.
-    const seeded = yield* readLimits
-    yield* Effect.sync(() => {
-      EngineProcess.scheduler.limits = seeded
     })
     return make(EngineProcess.scheduler, () => readLimits)
   }),
