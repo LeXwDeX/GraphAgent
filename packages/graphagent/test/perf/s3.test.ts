@@ -20,6 +20,10 @@ const withoutBytes = (counts: Counters) =>
 // literal `< SUMMARY_DIFF_BYTES` would not hold (measured ~4.1MiB after H5).
 const PRE_H5_PARSE_BYTES = 5_985_446
 
+// The bounded claim plus the rest of the measured turn measured 84 statements
+// on a 5000-message session; a full-table walk was ~894.
+const TAIL_READ_CEILING = 200
+
 describe("S3 cold start on a compacted long session", () => {
   it.instance(
     "5000 messages with ten compactions read only the retained tail",
@@ -37,11 +41,12 @@ describe("S3 cold start on a compacted long session", () => {
         // in the table but must not reach the model.
         expect(first.counts["convert.messages"]).toBeGreaterThan(TAIL_TURNS * 2)
         expect(first.counts["convert.messages"]).toBeLessThan(MESSAGES / 2)
-        // The current cold start pages through the whole table (the read is
-        // statement-counted, not row-counted); the baseline records that cost
-        // for H4's tail-bounded read, which must lower it substantially.
-        expect(first.counts["sql.read"]).toBeGreaterThan(TAIL_TURNS)
-        expect(first.counts["sql.read"]).toBeLessThan(MESSAGES)
+        // The bounded claim pages only the retained tail; a full-table walk
+        // measured ~894 statements here, so this ceiling proves the cold start
+        // no longer scans the compacted prefix. The read is statement-counted,
+        // not row-counted.
+        expect(first.counts["sql.read"]).toBeGreaterThan(0)
+        expect(first.counts["sql.read"]).toBeLessThan(TAIL_READ_CEILING)
         // H5 (#1016): turn diffs live in `message_diff`, so hydrating the user
         // message no longer parses the seeded payload-sized diff. Require the
         // window to lose at least one diff budget against the pre-H5 baseline.

@@ -24,7 +24,46 @@ export function planModePrompt(input: { plan: string; exists: boolean; tools: re
   )
 }
 
-export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
+const textReminder = (message: SessionV1.WithParts, text: string): SessionV1.TextPart => ({
+  id: PartID.ascending(),
+  messageID: message.info.id,
+  sessionID: message.info.sessionID,
+  type: "text",
+  text,
+  synthetic: true,
+})
+
+const appendPart = (
+  messages: SessionV1.WithParts[],
+  target: SessionV1.WithParts,
+  part: SessionV1.Part,
+): SessionV1.WithParts[] =>
+  messages.map((message) =>
+    message.info.id === target.info.id ? { ...message, parts: [...message.parts, part] } : message,
+  )
+
+const retarget = (
+  messages: SessionV1.WithParts[],
+  parts: readonly SessionV1.TextPart[],
+  text: string,
+): SessionV1.WithParts[] => {
+  const ids = new Set(parts.map((part) => part.id))
+  return messages.map((message) => {
+    if (!message.parts.some((part) => ids.has(part.id))) return message
+    return {
+      ...message,
+      parts: message.parts.map((part) => (ids.has(part.id) ? { ...part, text } : part)),
+    }
+  })
+}
+
+/**
+ * Builds the request copy of the history with plan-mode reminders. The input is
+ * read-only: reminders are appended to (or refreshed in) returned copies, so a
+ * frozen history view stays frozen. Persisted reminders are still written
+ * through `Session.updatePart`, matching the stored transcript.
+ */
+export const derive = Effect.fn("SessionReminders.derive")(function* (input: {
   messages: SessionV1.WithParts[]
   agent: Agent.Info
   session: Session.Info
@@ -33,42 +72,26 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   const flags = yield* RuntimeFlags.Service
   const fsys = yield* FSUtil.Service
   const sessions = yield* Session.Service
-  const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
-  if (!userMessage) return input.messages
+  const messages = input.messages
+  const userMessage = messages.findLast((msg) => msg.info.role === "user")
+  if (!userMessage) return messages
 
   if (!flags.experimentalPlanMode) {
-    if (input.agent.name === "plan") {
-      userMessage.parts.push({
-        id: PartID.ascending(),
-        messageID: userMessage.info.id,
-        sessionID: userMessage.info.sessionID,
-        type: "text",
-        text: PROMPT_PLAN,
-        synthetic: true,
-      })
-    }
+    let next = messages
+    if (input.agent.name === "plan") next = appendPart(next, userMessage, textReminder(userMessage, PROMPT_PLAN))
     // Only the turn that leaves plan mode needs the switch. An older plan turn
     // left in history must not re-inject it on every later build step.
-    const lastAssistant = input.messages.findLast((msg) => msg.info.role === "assistant")
+    const lastAssistant = messages.findLast((msg) => msg.info.role === "assistant")
     if (lastAssistant?.info.agent === "plan" && input.agent.name === "build") {
       const already = userMessage.parts.some(
         (part) => part.type === "text" && part.synthetic === true && part.text === BUILD_SWITCH,
       )
-      if (!already) {
-        userMessage.parts.push({
-          id: PartID.ascending(),
-          messageID: userMessage.info.id,
-          sessionID: userMessage.info.sessionID,
-          type: "text",
-          text: BUILD_SWITCH,
-          synthetic: true,
-        })
-      }
+      if (!already) next = appendPart(next, userMessage, textReminder(userMessage, BUILD_SWITCH))
     }
-    return input.messages
+    return next
   }
 
-  const assistantMessage = input.messages.findLast((msg) => msg.info.role === "assistant")
+  const assistantMessage = messages.findLast((msg) => msg.info.role === "assistant")
   if (input.agent.name !== "plan" && assistantMessage?.info.agent === "plan") {
     const ctx = yield* InstanceState.context
     const plan = Session.plan(input.session, ctx)
@@ -83,17 +106,16 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
         : BUILD_SWITCH,
       synthetic: true,
     })
-    userMessage.parts.push(part)
-    return input.messages
+    return appendPart(messages, userMessage, part)
   }
 
-  if (input.agent.name !== "plan") return input.messages
+  if (input.agent.name !== "plan") return messages
 
   const ctx = yield* InstanceState.context
   const plan = Session.plan(input.session, ctx)
   const exists = yield* fsys.existsSafe(plan)
   const text = planModePrompt({ plan, exists, tools: input.tools })
-  const reminders = input.messages.flatMap((message) =>
+  const reminders = messages.flatMap((message) =>
     message.parts.filter(
       (part): part is SessionV1.TextPart =>
         part.type === "text" &&
@@ -105,8 +127,7 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   if (reminders.length) {
     // Persisted reminders belong to earlier tool sets. Refresh the request copy
     // after permissions and step limits, without adding another history part.
-    for (const reminder of reminders) reminder.text = text
-    return input.messages
+    return retarget(messages, reminders, text)
   }
   if (!exists) yield* fsys.ensureDir(path.dirname(plan)).pipe(Effect.catch(Effect.die))
   const part = yield* sessions.updatePart({
@@ -117,8 +138,7 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
     text,
     synthetic: true,
   })
-  userMessage.parts.push(part)
-  return input.messages
+  return appendPart(messages, userMessage, part)
 })
 
 export * as SessionReminders from "./reminders"
