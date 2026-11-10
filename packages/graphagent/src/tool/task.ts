@@ -299,13 +299,21 @@ export const TaskTool = Tool.define(
       const scopedOrigin = scopedAgent.hookOrigin ? `agent:${scopedAgent.hookOrigin}` : `agent-config:${next.name}`
       let retainScopedAgent = runInBackground
 
-      let stopToolCount = 0
-      const countTools = (messages: readonly SessionV1.WithParts[]) =>
-        messages.reduce((count, message) => count + message.parts.filter((part) => part.type === "tool").length, 0)
+      let stopToolCursor: string | undefined
       const stopPayload = Effect.fn("TaskTool.subagentStopPayload")(function* (active: boolean) {
-        const messages = yield* sessions.messages({ sessionID: nextSession.id }).pipe(Effect.orDie)
-        stopToolCount = countTools(messages)
-        const last = messages.findLast((message) => message.info.role === "assistant")
+        const recent = yield* sessions.messages({ sessionID: nextSession.id, limit: 1 }).pipe(Effect.orDie)
+        const latest = recent.at(-1)
+        stopToolCursor = latest
+          ? MessageV2.cursor.encode({ id: latest.info.id, time: latest.info.time.created })
+          : undefined
+        const last =
+          latest?.info.role === "assistant"
+            ? latest
+            : Option.getOrUndefined(
+                yield* sessions
+                  .findMessage(nextSession.id, (message) => message.info.role === "assistant")
+                  .pipe(Effect.orDie),
+              )
         return {
           event: "SubagentStop" as const,
           stopHookActive: active,
@@ -319,6 +327,21 @@ export const TaskTool = Tool.define(
           sessionCrons: [],
         }
       })
+      // Scans forward from the stop-payload cursor for tool work started by a
+      // blocked-continuation turn instead of re-reading the whole session.
+      const newToolWorkSince = (after: string | undefined) =>
+        Effect.gen(function* () {
+          let cursor = after
+          while (true) {
+            const page = yield* MessageV2.after({ sessionID: nextSession.id, limit: 50, after: cursor }).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.orDie,
+            )
+            if (page.items.some((message) => message.parts.some((part) => part.type === "tool"))) return true
+            if (!page.more || !page.cursor) return false
+            cursor = page.cursor
+          }
+        })
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
         Effect.orDie,
@@ -671,7 +694,7 @@ export const TaskTool = Tool.define(
             // Continue the subagent: feed the block reason and run another turn.
             // A failure here breaks the loop immediately (don't swallow the error
             // and re-loop forever — the prior Effect.catch did that).
-            const toolsBefore = stopToolCount
+            const toolCursor = stopToolCursor
             const cont = yield* ops
               .prompt(
                 {
@@ -697,9 +720,8 @@ export const TaskTool = Tool.define(
             // A failed continuation is not a clean stop: propagate its
             // interruption, defect, or failure instead of returning stale output.
             if (Exit.isFailure(cont)) return yield* Effect.failCause(cont.cause)
-            const after = yield* sessions.messages({ sessionID: nextSession.id }).pipe(Effect.orDie)
             // Like the main Stop budget, only consecutive feedback turns without tool work count.
-            if (countTools(after) > toolsBefore) i = -1
+            if (yield* newToolWorkSince(toolCursor)) i = -1
             const failure = providerFailure(cont.value)
             if (failure) {
               lastStillBlocked = false

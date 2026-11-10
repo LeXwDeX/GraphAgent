@@ -163,7 +163,7 @@ interface AgentInputGateResult {
 }
 
 function makeAgentInputGate(deps: LoopDeps) {
-  const { sessions, agentMessages, prepareFns } = deps
+  const { sessions, agentMessages, prepareFns, database } = deps
   return Effect.fnUntraced(function* (input: AgentInputGateInput): Effect.fn.Return<AgentInputGateResult> {
     let state = input.state
     let agentSnapshot: DagMessages.Snapshot | undefined
@@ -188,13 +188,20 @@ function makeAgentInputGate(deps: LoopDeps) {
     if (!agentSnapshot.messages.length) {
       return { state, snapshot: { messages: input.messages, budget: input.budget }, agentSnapshot }
     }
-    const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-    const user = history.findLast((message) => message.info.role === "user")?.info
+    const users = yield* MessageV2.recentUsers({ sessionID: input.sessionID, limit: 1 }).pipe(
+      Effect.provideService(Database.Service, database),
+      Effect.orDie,
+    )
+    const user = users.at(-1)?.info
     if (!user || user.role !== "user") throw new Error("Agent messages require an existing user context")
     for (const message of agentSnapshot.messages) {
       const messageID = MessageID.make(message.transcriptID)
       // Stable IDs recover admission crashes without duplicating a logical message.
-      if (!history.some((existing) => existing.info.id === messageID)) {
+      const recorded = yield* MessageV2.exists({ sessionID: input.sessionID, messageID }).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.orDie,
+      )
+      if (!recorded) {
         yield* sessions.updateMessage({
           id: messageID,
           sessionID: input.sessionID,
@@ -1068,7 +1075,7 @@ function makeScopedAgentCleanup(deps: LoopDeps) {
 }
 
 function makeErrorRecorder(deps: LoopDeps) {
-  const { db, agentMessages, sessions } = deps
+  const { db, database, agentMessages, sessions } = deps
   return (sessionID: SessionID) => (cause: Cause.Cause<never>) =>
     db
       .transaction(
@@ -1086,9 +1093,16 @@ function makeErrorRecorder(deps: LoopDeps) {
               input.associated ? "model_error" : "preparation_failed",
             )
             if (input.associated) yield* agentMessages.discardPending(identity, "model_error")
-            const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-            if (history.some((message) => message.info.id === input.logicalTurnID)) return
-            const user = history.findLast((message) => message.info.role === "user")?.info
+            const recorded = yield* MessageV2.exists({
+              sessionID,
+              messageID: MessageID.make(input.logicalTurnID),
+            }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
+            if (recorded) return
+            const users = yield* MessageV2.recentUsers({ sessionID, limit: 1 }).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.orDie,
+            )
+            const user = users.at(-1)?.info
             if (!user || user.role !== "user") return
             const now = Date.now()
             // Earlier preparation failures precede processor creation. Record

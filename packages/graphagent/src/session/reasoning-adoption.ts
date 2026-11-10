@@ -6,10 +6,7 @@ import { Cause, Effect } from "effect"
 import { isDeepStrictEqual } from "node:util"
 import { EventV2 } from "@graphagent/core/event"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import {
-  adoptionProvenance,
-  type ReasoningReplacement,
-} from "@graphagent/core/session/reasoning-distillation/adoption"
+import { adoptionProvenance, type ReasoningReplacement } from "@graphagent/core/session/reasoning-distillation/adoption"
 import { replaceCanonicalReasoning } from "@graphagent/core/session/reasoning-distillation/canonical"
 import { assessRewriteControl } from "@graphagent/core/session/reasoning-distillation/control-markup"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -63,11 +60,11 @@ export const adoptReasoning = Effect.fn("Session.adoptReasoning")(function* (inp
     if (!(yield* input.canAdopt)) yield* reject("reasoning rewrite was sealed or disabled")
     const currentSession = yield* session.get(input.sessionID).pipe(Effect.orDie)
     if (currentSession.revert) yield* reject("reasoning source was reverted")
-    const replay = yield* MessageV2.filterCompactedEffect(input.sessionID).pipe(
-      Effect.provideService(Database.Service, database),
-    )
-    if (!replay.some((message) => message.info.id === part.messageID))
-      yield* reject("reasoning source is outside the replay range")
+    const inReplay = yield* MessageV2.isInReplayRange({
+      sessionID: input.sessionID,
+      messageID: part.messageID,
+    }).pipe(Effect.provideService(Database.Service, database))
+    if (!inReplay) yield* reject("reasoning source is outside the replay range")
     const current = yield* session.getPart({ sessionID: input.sessionID, messageID: part.messageID, partID: part.id })
     if (!isDeepStrictEqual(current, part)) yield* reject("stale reasoning adoption")
   })

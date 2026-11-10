@@ -382,9 +382,10 @@ export function lastOutcomeOf(deps: LookupDeps, sessionID: SessionID): Effect.Ef
     if (rows.length === 0) return Option.none<TurnOutcome>()
     const session = yield* deps.sessions.get(sessionID).pipe(Effect.option)
     if (Option.isNone(session)) return Option.none<TurnOutcome>()
-    const messages = yield* deps.sessions.messages({ sessionID }).pipe(Effect.orDie)
-    const byID = new Map(messages.map((message) => [String(message.info.id), message.info]))
     const revert = session.value.revert
+    const wanted = new Set<string>(rows.flatMap((row) => (row.user_message_id ? [row.user_message_id] : [])))
+    if (revert) wanted.add(String(revert.messageID))
+    const byID = yield* deps.sessions.getMessageInfos({ sessionID, messageIDs: [...wanted] })
     const revertInfo = revert ? byID.get(String(revert.messageID)) : undefined
     for (const row of rows) {
       const userID = row.user_message_id
@@ -420,8 +421,12 @@ export function dropReverted(deps: LookupDeps, session: Session.Info): Effect.Ef
       .all()
       .pipe(Effect.orDie)
     if (rows.length === 0) return
-    const messages = yield* deps.sessions.messages({ sessionID: session.id }).pipe(Effect.orDie)
-    const byID = new Map(messages.map((message) => [String(message.info.id), message.info]))
+    const wanted = new Set<string>([String(revert.messageID)])
+    for (const row of rows) {
+      const anchor = row.user_message_id ?? row.last_assistant_id
+      if (anchor) wanted.add(anchor)
+    }
+    const byID = yield* deps.sessions.getMessageInfos({ sessionID: session.id, messageIDs: [...wanted] })
     const revertInfo = byID.get(String(revert.messageID))
     if (!revertInfo) return
     yield* Effect.forEach(

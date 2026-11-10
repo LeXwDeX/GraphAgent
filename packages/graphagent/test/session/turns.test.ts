@@ -52,6 +52,13 @@ function mockSessions(): Session.Interface {
       return entry ? Effect.succeed(entry.info) : Effect.fail(new Error(`missing session ${id}`))
     },
     messages: (input: { sessionID: SessionID }) => Effect.succeed(sessions.get(input.sessionID)?.messages ?? []),
+    getMessageInfos: (input: { sessionID: SessionID; messageIDs: ReadonlyArray<string> }) => {
+      const wanted = new Set(input.messageIDs.map(String))
+      const result = new Map<string, SessionV1.Info>()
+      for (const message of sessions.get(input.sessionID)?.messages ?? [])
+        if (wanted.has(String(message.info.id))) result.set(String(message.info.id), message.info)
+      return Effect.succeed(result)
+    },
   } as unknown as Session.Interface
 }
 

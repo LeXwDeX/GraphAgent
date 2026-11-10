@@ -42,6 +42,7 @@ function parseCommandPayload(payload: PromptInput) {
   }
 }
 import { Session } from "./session"
+import { MessageV2 } from "./message-v2"
 import { Agent } from "../agent/agent"
 import { Provider } from "@/provider/provider"
 
@@ -707,8 +708,11 @@ export const layer = Layer.effect(
                   if (cancelEpoch(sessionID) !== epoch) return undefined
                   const item = yield* pendingInput((yield* sessions.get(sessionID).pipe(Effect.orDie)).metadata)
                   if (!item) return undefined
-                  const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-                  if (history.some((message) => message.info.id === item.messageID)) {
+                  const recorded = yield* MessageV2.exists({
+                    sessionID,
+                    messageID: item.messageID,
+                  }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
+                  if (recorded) {
                     yield* writePendingInput(sessionID, undefined, (current) => {
                       const saved = pendingMessageID(current.metadata)
                       return saved === undefined || saved === item.messageID
@@ -752,8 +756,11 @@ export const layer = Layer.effect(
                     const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
                     const saved = yield* pendingInput(current.metadata).pipe(Effect.option)
                     if (Option.isNone(saved) || saved.value?.messageID !== pending.messageID) return
-                    const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
-                    if (history.some((message) => message.info.id === pending.messageID))
+                    const recorded = yield* MessageV2.exists({
+                      sessionID,
+                      messageID: pending.messageID,
+                    }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
+                    if (recorded)
                       yield* writePendingInput(sessionID, undefined, (current) => {
                         return pendingMessageID(current.metadata) === pending.messageID
                       })
@@ -786,9 +793,16 @@ export const layer = Layer.effect(
                     input.hookMode !== "interactive" && hookLifecycle
                       ? yield* hookLifecycle.consumeInitial(input.sessionID)
                       : undefined
-                  const history = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-                  const initialTurn = initial && !history.some((message) => message.info.role === "user")
-                  const latest = history.findLast((message) => message.info.role === "assistant")
+                  const users = yield* MessageV2.recentUsers({ sessionID: input.sessionID, limit: 1 }).pipe(
+                    Effect.provideService(Database.Service, database),
+                    Effect.orDie,
+                  )
+                  const initialTurn = !!initial && users.length === 0
+                  const latest = Option.getOrUndefined(
+                    yield* sessions
+                      .findMessage(input.sessionID, (message) => message.info.role === "assistant")
+                      .pipe(Effect.orDie),
+                  )
                   const deferred = latest?.parts.some(
                     (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
                   )
@@ -839,7 +853,7 @@ export const layer = Layer.effect(
                       .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
                     if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
                   } else if (input.hookMode) {
-                    const user = history.findLast((message) => message.info.role === "user")?.info
+                    const user = users[0]?.info
                     if (user?.role === "user" && user.hookMode !== input.hookMode)
                       yield* sessions.updateMessage({ ...user, hookMode: input.hookMode })
                   }
@@ -954,9 +968,12 @@ export const layer = Layer.effect(
       // Drop the reverted turns before their anchor messages disappear.
       yield* dropReverted({ db, sessions }, current)
       yield* revert.cleanup(current)
-      const messages = yield* sessions.messages({ sessionID: input.sessionID })
+      const latestUser = yield* MessageV2.recentUsers({ sessionID: input.sessionID, limit: 1 }).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.orDie,
+      )
       const defaultAgent = yield* agents.defaultAgent()
-      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+      const currentAgent = latestUser.at(-1)?.info.agent ?? defaultAgent
       yield* compaction.create({
         sessionID: input.sessionID,
         agent: currentAgent,
