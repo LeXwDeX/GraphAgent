@@ -132,8 +132,18 @@ export function trusted(message: WithParts) {
   return Object.isFrozen(message) && Object.isFrozen(message.info) && Object.isFrozen(message.parts)
 }
 
+// The H0 engine probe installs a process-wide observer so `convert.messages`
+// measures real conversions (cache misses and the batched path), not the size
+// of the request input. Production builds never set it.
+let convertObserver: (() => void) | undefined
+
+export function observeConversions(observer: (() => void) | undefined) {
+  convertObserver = observer
+}
+
 export function countConversion(state: ModelHistoryState) {
   state.metrics.conversions++
+  convertObserver?.()
 }
 
 /**

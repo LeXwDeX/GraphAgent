@@ -30,6 +30,7 @@ export type Operation =
   | "model"
   | "options"
   | "rebuild"
+  | "edit"
   | "noop"
 
 const OPERATIONS: readonly Operation[] = [
@@ -47,6 +48,7 @@ const OPERATIONS: readonly Operation[] = [
   "model",
   "options",
   "rebuild",
+  "edit",
   "noop",
 ]
 
@@ -174,7 +176,7 @@ export function makeScenario(seed: number, sessionID: SessionID): Scenario {
         agent: rng.chance(0.15) ? "plan" : "user",
         model: { providerID: model.providerID, modelID: model.api.id },
         tools: {},
-        mode: "",
+        mode: rng.chance(0.2) ? "plan" : "",
       },
       parts,
     }) as unknown as SessionV1.WithParts
@@ -291,6 +293,18 @@ export function makeScenario(seed: number, sessionID: SessionID): Scenario {
     draft[index] = structuredClone(draft[index]!)
   }
 
+  // A part rewrite (reasoning adoption, consumed-marker update, thinking
+  // invalidation) changes the wire content of one message without adding one.
+  const edit = () => {
+    if (draft.length === 0) return
+    const index = rng.int(draft.length)
+    const message = structuredClone(draft[index]!)
+    const part = message.parts.find((candidate) => candidate.type === "text")
+    if (!part || part.type !== "text") return
+    part.text = `${part.text} edited ${messageSeq}`
+    draft[index] = message
+  }
+
   const operations: Record<Operation, () => void> = {
     "user-text": addUserText,
     "assistant-text": addAssistantText,
@@ -310,6 +324,7 @@ export function makeScenario(seed: number, sessionID: SessionID): Scenario {
       if (rng.chance(0.5)) options.reasoningDistillationEnabled = !options.reasoningDistillationEnabled
     },
     rebuild,
+    edit,
     noop: () => {},
   }
 

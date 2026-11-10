@@ -12,7 +12,7 @@ import type { Connection } from "effect/sql/SqlConnection"
 import { SqlError, classifySqliteError } from "effect/sql/SqlError"
 import * as Statement from "effect/sql/Statement"
 import * as Reactivity from "effect/reactivity/Reactivity"
-import * as MessageV2 from "@/session/message-v2"
+import { observeConversions } from "@/session/history/model"
 import * as ToolJsonSchema from "@/tool/json-schema"
 import { Snapshot } from "@/snapshot"
 
@@ -107,24 +107,15 @@ function installJsonParseCounter() {
 installJsonParseCounter()
 
 // `convert.messages` and `schema.fromSchema` are plain module functions, not
-// Effect services, so the probe replaces their exports for this test process.
-// The mock factories spread the real namespace and delegate to the captured
-// originals, so behavior is unchanged; each Bun test file runs in its own
-// process, keeping the replacement scoped to the perf suite.
-const messageV2Exports = { ...MessageV2 }
-const jsonSchemaExports = { ...ToolJsonSchema }
-const realToModelMessagesEffect = messageV2Exports.toModelMessagesEffect
-const realFromSchema = jsonSchemaExports.fromSchema
+// Effect services. The ModelHistory cache fires its observer once per message
+// it actually converts, so a warm request contributes zero; the probe mirrors
+// those conversions into the H0 counter. `fromSchema` is replaced for this test
+// process (each Bun test file runs in its own process, keeping the replacement
+// scoped to the perf suite).
+observeConversions(() => note("convert.messages"))
 
-mock.module("@/session/message-v2", () => ({
-  ...messageV2Exports,
-  toModelMessagesEffect: (...args: Parameters<typeof realToModelMessagesEffect>) =>
-    Effect.suspend(() => {
-      // One unit per input message converted for the next provider request.
-      note("convert.messages", args[0]?.length ?? 0)
-      return realToModelMessagesEffect(...args)
-    }),
-}))
+const jsonSchemaExports = { ...ToolJsonSchema }
+const realFromSchema = jsonSchemaExports.fromSchema
 
 mock.module("@/tool/json-schema", () => ({
   ...jsonSchemaExports,

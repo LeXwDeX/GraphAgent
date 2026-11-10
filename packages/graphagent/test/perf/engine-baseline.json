@@ -43,11 +43,7 @@
           "toolChoice": "auto"
         }
       ],
-      "volatile": [
-        "json.parseBytes",
-        "json.encodeBytes",
-        "sha256Bytes"
-      ]
+      "volatile": ["json.parseBytes", "json.encodeBytes", "sha256Bytes"]
     },
     "S2": {
       "perTurn": {
@@ -105,11 +101,7 @@
           "toolChoice": "auto"
         }
       ],
-      "volatile": [
-        "json.parseBytes",
-        "json.encodeBytes",
-        "sha256Bytes"
-      ]
+      "volatile": ["json.parseBytes", "json.encodeBytes", "sha256Bytes"]
     },
     "S3": {
       "perTurn": {
@@ -151,11 +143,7 @@
           "toolChoice": "auto"
         }
       ],
-      "volatile": [
-        "json.parseBytes",
-        "json.encodeBytes",
-        "sha256Bytes"
-      ]
+      "volatile": ["json.parseBytes", "json.encodeBytes", "sha256Bytes"]
     },
     "S5": {
       "perTurn": {
@@ -519,13 +507,7 @@
           "toolChoice": "auto"
         }
       ],
-      "volatile": [
-        "json.parseBytes",
-        "json.encodeBytes",
-        "sha256Bytes",
-        "sql.read",
-        "sql.write"
-      ]
+      "volatile": ["json.parseBytes", "json.encodeBytes", "sha256Bytes", "sql.read", "sql.write"]
     },
     "S7": {
       "perTurn": {
@@ -591,11 +573,7 @@
           "toolChoice": "auto"
         }
       ],
-      "volatile": [
-        "json.parseBytes",
-        "json.encodeBytes",
-        "sha256Bytes"
-      ]
+      "volatile": ["json.parseBytes", "json.encodeBytes", "sha256Bytes"]
     },
     "S4": {
       "perTurn": {
@@ -797,13 +775,7 @@
           "toolChoice": "none"
         }
       ],
-      "volatile": [
-        "json.parseBytes",
-        "json.encodeBytes",
-        "sha256Bytes",
-        "sql.read",
-        "sql.write"
-      ]
+      "volatile": ["json.parseBytes", "json.encodeBytes", "sha256Bytes", "sql.read", "sql.write"]
     }
   },
   "declared": [
@@ -869,6 +841,27 @@
       "scenario": "S6",
       "delta": 600,
       "reason": "H5 PR5 (#1016): running shell output publishes one non-durable preview tail per line instead of a durable event, so the ephemeral book carries the stream while durable stays flat."
+    },
+    {
+      "pr": "#1022",
+      "metric": "convert.messages",
+      "scenario": "S1",
+      "delta": -46,
+      "reason": "H4 PR4 (#1022): the per-message ModelHistory cache serves messages already converted in this turn, so convert.messages measures real conversions instead of the request input size."
+    },
+    {
+      "pr": "#1022",
+      "metric": "convert.messages",
+      "scenario": "S4",
+      "delta": -209,
+      "reason": "H4 PR4 (#1022): the per-message ModelHistory cache serves messages already converted in this turn, so convert.messages measures real conversions instead of the request input size."
+    },
+    {
+      "pr": "#1022",
+      "metric": "convert.messages",
+      "scenario": "S7",
+      "delta": -2,
+      "reason": "H4 PR4 (#1022): the per-message ModelHistory cache serves messages already converted in this turn, so convert.messages measures real conversions instead of the request input size."
     }
   ]
 }
