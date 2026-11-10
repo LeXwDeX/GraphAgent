@@ -101,7 +101,7 @@ export function createFetch(override?: FetchHandler, events?: ReturnType<typeof 
     if (["/config", "/experimental/resource", "/mcp", "/provider/auth", "/session/status"].includes(url.pathname))
       return json({})
     if (url.pathname === "/config/providers") return json({ providers: {}, default: {} })
-    if (url.pathname === "/experimental/capabilities") return json({ backgroundSubagents: false })
+    if (url.pathname === "/experimental/capabilities") return json({})
     if (url.pathname === "/path") return json({ home: "", state: "", config: "", worktree, directory })
     if (url.pathname === "/project/current") return json({ id: "proj_test" })
     if (url.pathname === "/reference") return json([])

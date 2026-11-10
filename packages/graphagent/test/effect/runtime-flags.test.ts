@@ -19,7 +19,6 @@ describe("RuntimeFlags", () => {
             GRAPHAGENT_ENABLE_PARALLEL: "true",
             GRAPHAGENT_ENABLE_EXPERIMENTAL_MODELS: "true",
             GRAPHAGENT_ENABLE_QUESTION_TOOL: "true",
-            GRAPHAGENT_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true",
             GRAPHAGENT_LSP_TOOL: "true",
             GRAPHAGENT_OXFMT: "true",
             GRAPHAGENT_PLAN_MODE: "true",
@@ -35,7 +34,6 @@ describe("RuntimeFlags", () => {
       expect(flags.enableParallel).toBe(true)
       expect(flags.enableExperimentalModels).toBe(true)
       expect(flags.enableQuestionTool).toBe(true)
-      expect(flags.experimentalBackgroundSubagents).toBe(true)
       expect(flags.experimentalLspTy).toBe(false)
       expect(flags.experimentalLspTool).toBe(true)
       expect(flags.experimentalOxfmt).toBe(true)

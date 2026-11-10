@@ -1,5 +1,4 @@
 import { BackgroundJob } from "@/background/job"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
 import type { SessionID } from "@/session/schema"
 import { Effect } from "effect"
@@ -10,16 +9,14 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
   Effect.gen(function* () {
     const mcp = yield* MCP.Service
     const background = yield* BackgroundJob.Service
-    const flags = yield* RuntimeFlags.Service
 
     const capabilities = Effect.fn("ExperimentalHttpApi.capabilities")(function* () {
-      return { backgroundSubagents: flags.experimentalBackgroundSubagents }
+      return {}
     })
 
     const sessionBackground = Effect.fn("ExperimentalHttpApi.sessionBackground")(function* (ctx: {
       params: { sessionID: SessionID }
     }) {
-      if (!flags.experimentalBackgroundSubagents) return false
       const jobs = (yield* background.list()).filter(
         (job) =>
           job.type === "task" &&

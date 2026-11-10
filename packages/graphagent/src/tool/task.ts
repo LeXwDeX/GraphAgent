@@ -1,6 +1,5 @@
 import { Tool } from "./tool"
 import DESCRIPTION from "./task.txt"
-import { ToolJsonSchema } from "./json-schema"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -14,7 +13,6 @@ import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@graphagent/core/database/database"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { SettingsHook, type TriggerResult } from "@/hook"
@@ -154,8 +152,6 @@ const requireTaskShape = Schema.makeFilter<TaskShape>((value) => {
     : "description, prompt and subagent_type are required unless action is cancel"
 })
 
-const BaseParameters = Schema.Struct(TaskParameterFields).check(requireTaskShape)
-
 export const Parameters = Schema.Struct({
   ...TaskParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
@@ -198,7 +194,6 @@ export const TaskTool = Tool.define(
     const config = yield* Config.Service
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
-    const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     // Child runs share the process-level child pool (#1021). Optional so a
     // standalone harness without the app layer runs unconstrained.
@@ -241,11 +236,6 @@ export const TaskTool = Tool.define(
       const subagentType: string = params.subagent_type
       const cfg = yield* config.get()
       const runInBackground = params.background === true
-      if (runInBackground && !flags.experimentalBackgroundSubagents) {
-        return yield* Effect.fail(
-          new Error("Background subagents require GRAPHAGENT_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
-        )
-      }
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
@@ -786,15 +776,10 @@ export const TaskTool = Tool.define(
     })
 
     return {
-      description: [
-        DESCRIPTION,
-        ...(flags.experimentalBackgroundSubagents ? [BACKGROUND_DESCRIPTION] : []),
-        CANCEL_DESCRIPTION,
-      ].join("\n\n"),
+      description: [DESCRIPTION, BACKGROUND_DESCRIPTION, CANCEL_DESCRIPTION].join("\n\n"),
       effects: "unknown",
       parameters: Parameters,
       repairArguments: repairBackgroundArgument,
-      jsonSchema: flags.experimentalBackgroundSubagents ? undefined : ToolJsonSchema.fromSchema(BaseParameters),
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         run(params, ctx).pipe(Effect.orDie),
     }

@@ -197,17 +197,15 @@ export function Main() {
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const foregroundTasks = createMemo(() =>
-    sync.data.capabilities.experimentalBackgroundSubagents
-      ? messages().flatMap((message) =>
-          (sync.data.part[message.id] ?? []).filter(
-            (part): part is ToolPart =>
-              part.type === "tool" &&
-              part.tool === "task" &&
-              part.state.status === "running" &&
-              part.state.metadata?.background !== true,
-          ),
-        )
-      : [],
+    messages().flatMap((message) =>
+      (sync.data.part[message.id] ?? []).filter(
+        (part): part is ToolPart =>
+          part.type === "tool" &&
+          part.tool === "task" &&
+          part.state.status === "running" &&
+          part.state.metadata?.background !== true,
+      ),
+    ),
   )
   const askRequests = useAskSurfaceRequests()
   const visible = createMemo(() => !session()?.parentID)
@@ -1514,16 +1512,13 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
             {childShortcut()}
             <span style={{ fg: theme.textMuted }}> view subagents</span>
             <Show
-              when={
-                sync.data.capabilities.experimentalBackgroundSubagents &&
-                props.parts.some(
-                  (x) =>
-                    x.type === "tool" &&
-                    x.tool === "task" &&
-                    x.state.status === "running" &&
-                    x.state.metadata?.background !== true,
-                )
-              }
+              when={props.parts.some(
+                (x) =>
+                  x.type === "tool" &&
+                  x.tool === "task" &&
+                  x.state.status === "running" &&
+                  x.state.metadata?.background !== true,
+              )}
             >
               <span style={{ fg: theme.textMuted }}> · </span>
               {backgroundShortcut()}

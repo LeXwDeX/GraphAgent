@@ -66,7 +66,6 @@ export type LifecycleInput = {
   model: RunInput["model"]
   variant: string | undefined
   tuiConfig: RunTuiConfig
-  backgroundSubagents: boolean
   onPermissionReply: (input: PermissionReply) => void | Promise<void>
   onQuestionReply: (input: QuestionReply) => void | Promise<void>
   onQuestionReject: (input: QuestionReject) => void | Promise<void>
@@ -248,7 +247,6 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
       wrote,
       keymap,
       tuiConfig: input.tuiConfig,
-      backgroundSubagents: input.backgroundSubagents,
       diffStyle: input.tuiConfig.diff_style ?? "auto",
       onPermissionReply: input.onPermissionReply,
       onQuestionReply: input.onQuestionReply,

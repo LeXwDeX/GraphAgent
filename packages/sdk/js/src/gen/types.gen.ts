@@ -1062,7 +1062,7 @@ export type McpResource = {
 }
 
 export type ExperimentalCapabilities = {
-  backgroundSubagents: boolean
+  [key: string]: never
 }
 
 export type AttachmentConfig = {

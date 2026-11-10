@@ -6,9 +6,7 @@ import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 
-const CapabilitiesResponse = Schema.Struct({
-  backgroundSubagents: Schema.Boolean,
-}).annotate({ identifier: "ExperimentalCapabilities" })
+const CapabilitiesResponse = Schema.Record(Schema.String, Schema.Never).annotate({ identifier: "ExperimentalCapabilities" })
 
 export const ExperimentalPaths = {
   capabilities: "/experimental/capabilities",

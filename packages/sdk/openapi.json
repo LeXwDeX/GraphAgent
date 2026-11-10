@@ -7863,6 +7863,9 @@
             "$ref": "#/components/schemas/EventMessagePartDelta"
           },
           {
+            "$ref": "#/components/schemas/EventMessagePartPreview"
+          },
+          {
             "$ref": "#/components/schemas/EventSessionDiff"
           },
           {
@@ -11132,12 +11135,6 @@
       },
       "ExperimentalCapabilities": {
         "type": "object",
-        "properties": {
-          "backgroundSubagents": {
-            "type": "boolean"
-          }
-        },
-        "required": ["backgroundSubagents"],
         "additionalProperties": false
       },
       "AttachmentConfig": {
@@ -14618,6 +14615,49 @@
               }
             },
             "required": ["sessionID", "diff"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventMessagePartPreview": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["message.part.preview"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "tail": {
+                "type": "string"
+              },
+              "totalLength": {
+                "type": "number"
+              },
+              "seq": {
+                "type": "number"
+              }
+            },
+            "required": ["sessionID", "messageID", "partID", "tail", "totalLength", "seq"],
             "additionalProperties": false
           }
         },

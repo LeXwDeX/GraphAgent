@@ -85,7 +85,6 @@ type RunFooterOptions = {
   theme: RunTheme
   keymap: Keymap<Renderable, KeyEvent>
   tuiConfig: RunTuiConfig
-  backgroundSubagents: boolean
   diffStyle: RunDiffStyle
   onPermissionReply: (input: PermissionReply) => void | Promise<void>
   onQuestionReply: (input: QuestionReply) => void | Promise<void>
@@ -327,7 +326,6 @@ export class RunFooter implements FooterApi {
               theme: footer.theme,
               diffStyle: options.diffStyle,
               tuiConfig: options.tuiConfig,
-              backgroundSubagents: options.backgroundSubagents,
               history: options.history,
               agent: options.agentLabel,
               onSubmit: footer.handlePrompt,

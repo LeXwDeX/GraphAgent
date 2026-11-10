@@ -43,7 +43,6 @@ test("mini actual keypress and visible subagent panels report attention without 
     theme: RUN_THEME_FALLBACK,
     keymap,
     tuiConfig,
-    backgroundSubagents: true,
     diffStyle: "auto" as const,
     onPermissionReply: () => {},
     onQuestionReply: () => {},
