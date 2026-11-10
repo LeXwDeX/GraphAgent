@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { Token } from "@/util/token"
-import { estimateOverhead, estimateRequest, isOverflow, usable } from "../../src/session/overflow"
+import { estimateOverhead, estimateRequest, isOverflow, serializedTools, usable } from "../../src/session/overflow"
 
 describe("estimateRequest", () => {
   test("counts CJK text near one token per character", () => {
@@ -57,9 +57,34 @@ describe("estimateOverhead", () => {
 
   test("counts the AI SDK inputSchema shape", () => {
     const schema = { type: "object", properties: { query: { type: "string", description: "z".repeat(4_000) } } }
-    expect(estimateOverhead({ system: [], tools: { lookup: { inputSchema: { jsonSchema: schema } } } })).toBeGreaterThan(
-      900,
-    )
+    expect(
+      estimateOverhead({ system: [], tools: { lookup: { inputSchema: { jsonSchema: schema } } } }),
+    ).toBeGreaterThan(900)
+  })
+
+  test("reuses a pre-serialized tool fragment without touching tool schemas", () => {
+    let accesses = 0
+    const tools = {
+      lookup: {
+        description: "lookup",
+        get inputSchema() {
+          accesses += 1
+          return { jsonSchema: { type: "object", properties: { query: { type: "string" } } } }
+        },
+      },
+    }
+    const system = ["s".repeat(100)]
+    const toolsJson = JSON.stringify(serializedTools(tools))
+    const expected = estimateOverhead({ system, tools })
+
+    accesses = 0
+    expect(estimateOverhead({ system, tools, toolsJson })).toBe(expected)
+    expect(accesses).toBe(0)
+  })
+
+  test("keeps the legacy JSON shape for empty and absent tools", () => {
+    expect(estimateOverhead({ system: ["x"], tools: undefined })).toBe(Token.estimateReserve('{"system":["x"]}'))
+    expect(estimateOverhead({ system: ["x"], tools: {} })).toBe(Token.estimateReserve('{"system":["x"],"tools":[]}'))
   })
 })
 

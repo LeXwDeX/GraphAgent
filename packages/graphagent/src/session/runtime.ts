@@ -57,6 +57,8 @@ export interface SessionRuntimes {
   readonly scopedAgents: Map<SessionID, string>
   /** Measured overhead of the previous prepared request, per session. */
   readonly requestOverheads: Map<SessionID, number>
+  /** Serialized tool fragment of the last prepared request, per session (Issue #1022, PR5). */
+  readonly requestTools: Map<SessionID, { readonly key: string; readonly json: string }>
   /** Runtime-context blocks already sent per session, so their positions stay stable. */
   readonly runtimeContexts: Map<SessionID, readonly RuntimeContext.Entry[]>
   /** Tool budgets and their pending user-message budgets, per session. */
@@ -73,11 +75,18 @@ export interface SessionRuntimes {
   readonly own: (sessionID: SessionID, directory: string) => void
   /** Lazily create the directory-owned reasoning rewrite state. */
   readonly directory: (directory: string) => RewriteState
+  /** Remember the serialized tools fragment for the materialization key it was built from. */
+  readonly rememberToolsJson: (sessionID: SessionID, key: string, json: string) => void
+  /** Drop the serialized tools fragment, used when a session moves between directories. */
+  readonly forgetToolsJson: (sessionID: SessionID) => void
   /** Drop every cache entry for one session (Session.Event.Deleted). */
   readonly remove: (sessionID: SessionID) => Effect.Effect<void>
   /** Drop only the entries created by the disposed instance directory. */
   readonly purgeDirectory: (directory: string) => Promise<void>
 }
+
+/** A session reuses at most one fragment; oversized fragments skip the cache. */
+const REQUEST_TOOLS_BYTES = 4 * 1024 * 1024
 
 /**
  * Create the process-wide registry. `EngineProcess` instantiates exactly one;
@@ -88,6 +97,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
   const modelSwitches = new Map<SessionID, ModelSwitchRecord>()
   const scopedAgents = new Map<SessionID, string>()
   const requestOverheads = new Map<SessionID, number>()
+  const requestTools = new Map<SessionID, { readonly key: string; readonly json: string }>()
   const runtimeContexts = new Map<SessionID, readonly RuntimeContext.Entry[]>()
   const toolBudgets = new Map<SessionID, ToolBudgetState>()
   const modelWrites = new Map<SessionID, ModelWriteState>()
@@ -103,6 +113,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     }
     scopedAgents.delete(sessionID)
     requestOverheads.delete(sessionID)
+    requestTools.delete(sessionID)
     runtimeContexts.delete(sessionID)
     toolBudgets.delete(sessionID)
     forgetEntry(history, sessionID)
@@ -114,6 +125,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     modelSwitches,
     scopedAgents,
     requestOverheads,
+    requestTools,
     runtimeContexts,
     toolBudgets,
     modelWrites,
@@ -131,6 +143,13 @@ export function makeSessionRuntimes(): SessionRuntimes {
       const created: RewriteState = { budget: makeRewriteBudget(), queue, scope }
       rewrites.set(directory, created)
       return created
+    },
+    rememberToolsJson(sessionID, key, json) {
+      if (json.length > REQUEST_TOOLS_BYTES) return
+      requestTools.set(sessionID, { key, json })
+    },
+    forgetToolsJson(sessionID) {
+      requestTools.delete(sessionID)
     },
     remove: (sessionID) =>
       Effect.gen(function* () {

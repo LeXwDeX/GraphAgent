@@ -62,6 +62,8 @@ import { ProviderTransform } from "@/provider/transform"
 import { ToolJsonSchema } from "./json-schema"
 import { MCP_RESOURCE_DEFINITIONS, MCP_RESOURCE_ORDER, type McpResourceOp } from "./mcp-resource"
 import { ROOT_ONLY_TOOLS, type DirectTool } from "./pipeline"
+import { RequestCache } from "../session/request-cache"
+import { randomUUID } from "node:crypto"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { asSchema, type Tool as AITool } from "ai"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
@@ -113,10 +115,63 @@ export const canUseAgentMessages = Effect.fn("ToolRegistry.canUseAgentMessages")
 type TaskDef = Tool.InferDef<typeof TaskTool>
 type ReadDef = Tool.InferDef<typeof ReadTool>
 
+/**
+ * Cache key of the definition-stage built-in superset a `resolve` call used.
+ * Attached non-enumerably to the returned array so the request layer can reuse
+ * the serialized tool fragment without re-deriving it (Issue #1022, PR5).
+ */
+const RESOLVE_KEY = Symbol.for("graphagent.registry.resolve-key")
+
+export function resolveKey(entries: ReadonlyArray<ToolEntry>): string | undefined {
+  return (entries as unknown as Record<PropertyKey, unknown>)[RESOLVE_KEY] as string | undefined
+}
+
+const DEFINITION_CACHE_BYTES = 4 * 1024 * 1024
+
+/**
+ * Identity of one definition-stage result. Every input that changes the built
+ * tool set or a derived schema is part of the key: the owning directory
+ * instance, the model shape used by availability and provider transforms, and
+ * the runtime flags that decide which built-ins exist.
+ */
+export function definitionKey(input: {
+  origin: string
+  model: { readonly providerID: string; readonly id: string; readonly apiID: string; readonly npm: string }
+  flags: {
+    readonly webSearch: boolean
+    readonly lsp: boolean
+    readonly plan: boolean
+    readonly question: boolean
+    readonly client: string
+    readonly usePatch: boolean
+  }
+}) {
+  return RequestCache.digest({ version: "builtin-definitions-v1", ...input })
+}
+
+/**
+ * Definition-stage result cached per model. Per-request policy filters
+ * (parent session, agent-message visibility, permission, user switches) are
+ * applied after the lookup, so the cache only stores request-independent work:
+ * availability, derived JSON Schema and provider-schema transformation.
+ */
+type CachedBuiltin = Readonly<{
+  index: number
+  id: string
+  source: BuiltinSource
+  effects: Tool.Effects
+  description: string
+  jsonSchema: JSONSchema7
+  definition: Tool.Def
+}>
+
 type State = {
   builtin: Tool.Def[]
   task: TaskDef
   read: ReadDef
+  /** Directory-local cache identity; a new directory never reuses old work. */
+  readonly origin: string
+  readonly definitions: RequestCache.CacheState<CachedBuiltin[]>
 }
 
 type AgentCatalogOptions = {
@@ -288,6 +343,8 @@ export const layer = Layer.effect(
           ],
           task: tool.task,
           read: tool.read,
+          origin: randomUUID(),
+          definitions: RequestCache.make<CachedBuiltin[]>(DEFINITION_CACHE_BYTES),
         }
       }),
     )
@@ -417,31 +474,73 @@ export const layer = Layer.effect(
       const usePatch = usesApplyPatch(ModelV2.ID.make(model.api.id))
       const entries = new Map<string, ToolEntry>()
 
-      for (const [index, definition] of s.builtin.entries()) {
-        if (definition.id === WebSearchTool.id) {
-          if (!webSearchEnabled({ exa: flags.enableExa, parallel: flags.enableParallel })) continue
-        } else if (definition.id === ApplyPatchTool.id) {
-          if (!usePatch) continue
-        } else if (definition.id === EditTool.id || definition.id === WriteTool.id) {
-          if (usePatch) continue
+      const definitionsKey = definitionKey({
+        origin: s.origin,
+        model: { providerID: model.providerID, id: model.id, apiID: model.api.id, npm: model.api.npm },
+        flags: {
+          webSearch: webSearchEnabled({ exa: flags.enableExa, parallel: flags.enableParallel }),
+          lsp: flags.experimentalLspTool,
+          plan: flags.experimentalPlanMode,
+          question: flags.enableQuestionTool,
+          client: flags.client,
+          usePatch,
+        },
+      })
+
+      let builtins = RequestCache.get(s.definitions, definitionsKey)
+      if (builtins === undefined) {
+        const built: CachedBuiltin[] = []
+        for (const [index, definition] of s.builtin.entries()) {
+          if (definition.id === WebSearchTool.id) {
+            if (!webSearchEnabled({ exa: flags.enableExa, parallel: flags.enableParallel })) continue
+          } else if (definition.id === ApplyPatchTool.id) {
+            if (!usePatch) continue
+          } else if (definition.id === EditTool.id || definition.id === WriteTool.id) {
+            if (usePatch) continue
+          }
+          const jsonSchema = definition.jsonSchema ?? ToolJsonSchema.fromSchema(definition.parameters)
+          built.push({
+            index,
+            id: definition.id,
+            source: { kind: "builtin", registrationID: `builtin:${index}:${definition.id}` },
+            effects: definition.effects ?? "unknown",
+            description: definition.description,
+            jsonSchema: transform(jsonSchema),
+            // Keep the derived schema on the definition so the execution
+            // pipeline does not derive it a second time (H0 S1).
+            definition: definition.jsonSchema ? definition : { ...definition, jsonSchema },
+          })
         }
-        if (input.session.parentID && ROOT_ONLY_TOOLS.has(definition.id)) continue
-        if (definition.id === AgentTool.id && !(yield* canUseAgentMessages(input.session))) continue
-        const jsonSchema = definition.jsonSchema ?? ToolJsonSchema.fromSchema(definition.parameters)
-        entries.set(definition.id, {
-          id: definition.id,
-          source: { kind: "builtin", registrationID: `builtin:${index}:${definition.id}` },
-          effects: definition.effects ?? "unknown",
+        RequestCache.set(
+          s.definitions,
+          definitionsKey,
+          built,
+          built.reduce(
+            (total, entry) =>
+              total + Buffer.byteLength(entry.description) + Buffer.byteLength(JSON.stringify(entry.jsonSchema)),
+            0,
+          ),
+        )
+        builtins = built
+      }
+
+      for (const builtin of builtins) {
+        if (input.session.parentID && ROOT_ONLY_TOOLS.has(builtin.id)) continue
+        if (builtin.id === AgentTool.id && !(yield* canUseAgentMessages(input.session))) continue
+        entries.set(builtin.id, {
+          id: builtin.id,
+          source: builtin.source,
+          effects: builtin.effects,
           description: [
-            definition.description,
-            definition.id === TaskTool.id
+            builtin.description,
+            builtin.id === TaskTool.id
               ? yield* describeAgents(input.agent, {
                   heading: "Available agent types:",
                   includeHidden: true,
                   includeModelState: false,
                 })
               : undefined,
-            definition.id === WorkflowTool.id
+            builtin.id === WorkflowTool.id
               ? yield* describeAgents(input.agent, {
                   heading: "Available workflow worker_type values:",
                   includeHidden: false,
@@ -452,10 +551,8 @@ export const layer = Layer.effect(
           ]
             .filter(Boolean)
             .join("\n"),
-          jsonSchema: transform(jsonSchema),
-          // Keep the derived schema on the definition so the execution
-          // pipeline does not derive it a second time (H0 S1).
-          definition: definition.jsonSchema ? definition : { ...definition, jsonSchema },
+          jsonSchema: builtin.jsonSchema,
+          definition: builtin.definition,
         })
       }
 
@@ -511,7 +608,11 @@ export const layer = Layer.effect(
       }
 
       const disabled = Permission.disabledByPolicy([...entries.keys()], nativePermission, configuredPermission)
-      return [...entries.values()].filter((entry) => input.user?.tools?.[entry.id] !== false && !disabled.has(entry.id))
+      const resolved = [...entries.values()].filter(
+        (entry) => input.user?.tools?.[entry.id] !== false && !disabled.has(entry.id),
+      )
+      Object.defineProperty(resolved, RESOLVE_KEY, { value: definitionsKey })
+      return resolved
     })
 
     const named: Interface["named"] = Effect.fn("ToolRegistry.named")(function* () {

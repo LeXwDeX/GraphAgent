@@ -6,6 +6,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect, Layer, Context, Option, Scope } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { Config } from "@/config/config"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { SettingsHook } from "@/hook"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@graphagent/core/flag/flag"
@@ -13,6 +14,7 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@graphagent/core/global"
 import { hasProjectLayer } from "@/project/project-root"
+import { RequestCache } from "./request-cache"
 import type { MessageID } from "./schema"
 
 function extract(messages: SessionV1.WithParts[]) {
@@ -51,11 +53,12 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 export const layer: Layer.Layer<
   Service,
   never,
-  FSUtil.Service | Config.Service | Global.Service | HttpClient.HttpClient
+  FSUtil.Service | Config.Service | Global.Service | HttpClient.HttpClient | EventV2Bridge.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
     const cfg = yield* Config.Service
+    const events = yield* EventV2Bridge.Service
     const fs = yield* FSUtil.Service
     const global = yield* Global.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
@@ -65,20 +68,44 @@ export const layer: Layer.Layer<
     // need those files convert them explicitly.
     const globalFiles = [path.join(global.config, "AGENTS.md")]
     const instructionFiles = ["AGENTS.md"]
+    // Per-file cache bounds: one oversized file never displaces the rest.
+    const INSTRUCTION_FILE_BYTES = 1024 * 1024
+    const INSTRUCTION_CACHE_BYTES = 8 * 1024 * 1024
 
     const state = yield* InstanceState.make(
       Effect.fn("Instruction.state")(function* () {
         // InstructionsLoaded is background observation; it lives and dies with this directory instance.
         const scope = yield* Scope.Scope
-        return {
+        const s = {
           // Track which instruction files have already been attached for a given assistant message.
           claims: new Map<MessageID, Set<string>>(),
           // Instruction files already announced via the InstructionsLoaded hook (once per instance).
           announced: new Set<string>(),
           compactions: 0,
           compacted: new Set<string>(),
+          /** File identity → content, so a second request with an unchanged file skips the read. */
+          files: RequestCache.make<{ readonly signature: string; readonly content: string }>(INSTRUCTION_CACHE_BYTES),
           scope,
         }
+        // Event fan-out runs in the event layer's runtime, which has no
+        // InstanceRef. Subscribe from the per-directory state instead and drop
+        // this session's entries through the captured state.
+        yield* Effect.acquireRelease(
+          events.listen((event) => {
+            if (event.type !== SessionV1.Event.Deleted.type) return Effect.void
+            const data = event.data
+            if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+            const sessionID = data.sessionID
+            if (typeof sessionID !== "string") return Effect.void
+            s.compacted.delete(sessionID)
+            for (const key of s.announced) {
+              if (key.startsWith(`${sessionID}:`)) s.announced.delete(key)
+            }
+            return Effect.void
+          }),
+          (unsubscribe) => unsubscribe,
+        )
+        return s
       }),
     )
 
@@ -108,7 +135,20 @@ export const layer: Layer.Layer<
     })
 
     const read = Effect.fnUntraced(function* (filepath: string) {
-      return yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      const s = yield* InstanceState.get(state)
+      // The mtime/size/inode signature is cheaper than a full read and catches
+      // every edit except a same-size rewrite within the filesystem's mtime
+      // granularity (`File.Info` has no ctime).
+      const info = yield* fs.stat(filepath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (info === undefined) return ""
+      const signature = RequestCache.statSignature(info)
+      const cached = RequestCache.get(s.files, filepath)
+      if (cached?.signature === signature) return cached.content
+      const content = yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      // Do not pin a transient failed read as an empty file.
+      const bytes = Buffer.byteLength(content)
+      if (content && bytes <= INSTRUCTION_FILE_BYTES) RequestCache.set(s.files, filepath, { signature, content }, bytes)
+      return content
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {
@@ -327,12 +367,13 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Global.layer),
   Layer.provide(FSUtil.defaultLayer),
   Layer.provide(FetchHttpClient.layer),
+  Layer.provide(EventV2Bridge.defaultLayer),
 )
 
 export function loaded(messages: SessionV1.WithParts[]) {
   return extract(messages)
 }
 
-export const node = LayerNode.make(layer, [Config.node, FSUtil.node, Global.node, httpClient])
+export const node = LayerNode.make(layer, [Config.node, FSUtil.node, Global.node, httpClient, EventV2Bridge.node])
 
 export * as Instruction from "./instruction"

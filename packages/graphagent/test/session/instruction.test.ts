@@ -10,6 +10,7 @@ import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 
 import { Instruction } from "../../src/session/instruction"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { Global } from "@graphagent/core/global"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
@@ -30,12 +31,38 @@ const instructionLayer = (global: Partial<Global.Interface>, flags: Partial<Runt
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(Global.layerWith(global)),
     Layer.provide(RuntimeFlags.layer(flags)),
+    Layer.provide(EventV2Bridge.defaultLayer),
   )
 
 const provideInstruction =
   (global: Partial<Global.Interface>, flags?: Partial<RuntimeFlags.Info>) =>
   <A, E, R>(self: Effect.Effect<A, E, R>) =>
     self.pipe(Effect.provide(instructionLayer(global, flags)))
+
+// Counts full reads so the cache hit is observable: an unchanged file must not
+// be read again even though `system()` still lists it as a path.
+const countingFsLayer = (counter: { reads: number }) =>
+  Layer.effect(
+    FSUtil.Service,
+    Effect.gen(function* () {
+      const base = yield* FSUtil.Service
+      return FSUtil.Service.of({
+        ...base,
+        readFileString: (filepath: string) =>
+          Effect.tap(base.readFileString(filepath), () => Effect.sync(() => (counter.reads += 1))),
+      })
+    }),
+  ).pipe(Layer.provide(FSUtil.defaultLayer))
+
+const countingInstructionLayer = (global: Partial<Global.Interface>, counter: { reads: number }) =>
+  Instruction.layer.pipe(
+    Layer.provide(configLayer),
+    Layer.provide(countingFsLayer(counter)),
+    Layer.provide(FetchHttpClient.layer),
+    Layer.provide(Global.layerWith(global)),
+    Layer.provide(RuntimeFlags.layer()),
+    Layer.provide(EventV2Bridge.defaultLayer),
+  )
 
 const write = (filepath: string, content: string) =>
   Effect.gen(function* () {
@@ -235,6 +262,34 @@ describe("Instruction.system", () => {
         expect([...paths].sort()).toEqual([])
         expect(yield* svc.system()).toEqual([])
       }).pipe(provideInstance(projectTmp), provideInstruction({ home: globalTmp, config: globalTmp }))
+    }),
+  )
+
+  it.live("reuses file content until the file identity changes", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpWithFiles({ "AGENTS.md": "# One" })
+      const counter = { reads: 0 }
+      yield* Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        const filepath = path.join(dir, "AGENTS.md")
+        const first = yield* svc.system()
+        expect(first).toEqual([`Instructions from: ${filepath}\n# One`])
+        expect(counter.reads).toBe(1)
+
+        // A second request with an unchanged file must not read it again.
+        expect(yield* svc.system()).toEqual(first)
+        expect(counter.reads).toBe(1)
+
+        const fs = yield* FileSystem.FileSystem
+        yield* fs.writeFileString(filepath, "# Two, longer")
+        const future = new Date(Date.now() + 5_000)
+        yield* fs.utimes(filepath, future, future)
+        expect((yield* svc.system())[0]).toContain("# Two, longer")
+        expect(counter.reads).toBe(2)
+      }).pipe(
+        provideInstance(dir),
+        Effect.provide(countingInstructionLayer({ home: path.join(dir, ".home"), config: dir }, counter)),
+      )
     }),
   )
 })

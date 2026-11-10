@@ -9,12 +9,14 @@ import { ToolPipeline, toRecord } from "@/tool/pipeline"
 import type { DirectToolContext, ToolEntry, WrapInput } from "@/tool/pipeline"
 import { SettingsHook } from "@/hook"
 import { ToolInputUpdated } from "@/permission/hook-control"
-import { type Tool as AITool, type ToolExecutionOptions, asSchema } from "ai"
+import { type Tool as AITool, type ToolExecutionOptions } from "ai"
 import { Effect } from "effect"
 import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { Hash } from "@graphagent/core/util/hash"
 import { ToolSourceLedger, type Registration as ToolSourceRegistration } from "./tool-source-ledger"
+import { serializedTools, TOOLS_JSON } from "./overflow"
+import { EngineProcess } from "./engine-process"
 
 const outputFingerprint = (value: unknown) => {
   try {
@@ -256,15 +258,40 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
 
   yield* ToolPipeline.mcpServerTools(pipelineDeps, tools)
 
-  registrationGeneration = yield* sourceLedger.activate(
-    input.session.id,
-    activeRegistrations,
-    materializationSignature(input.model, tools),
-  )
+  const serialized = serializedTools(tools)
+  const strict = Object.entries(tools)
+    .filter(([, item]) => item.strict !== undefined)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([name, item]) => ({ name, strict: item.strict }))
+  const signature = materializationSignature(input.model, serialized, strict)
+  registrationGeneration = yield* sourceLedger.activate(input.session.id, activeRegistrations, signature)
+
+  // Serialize the model-facing fragment once and keep it for the next request
+  // that materializes the same tools. The overhead estimate in `prepare` reads
+  // the attached string instead of walking every schema again (Issue #1022, PR5).
+  try {
+    const runtimes = EngineProcess.runtimes
+    const cached = runtimes.requestTools.get(input.session.id)
+    const json = cached?.key === signature ? cached.json : JSON.stringify(serialized)
+    if (cached?.key !== signature) runtimes.rememberToolsJson(input.session.id, signature, json)
+    Object.defineProperty(tools, TOOLS_JSON, { value: json })
+  } catch {
+    // An unserializable tool shape falls back to the legacy estimate path.
+  }
   return tools
 })
 
-function materializationSignature(model: Provider.Model | undefined, tools: Record<string, AITool>) {
+/** The tool fragment `SessionTools.resolve` serialized for this record, if any. */
+export function serializedFragment(tools: Record<string, AITool>): string | undefined {
+  const value = (tools as Record<PropertyKey, unknown>)[TOOLS_JSON]
+  return typeof value === "string" ? value : undefined
+}
+
+function materializationSignature(
+  model: Provider.Model | undefined,
+  tools: ReturnType<typeof serializedTools>,
+  strict: ReadonlyArray<{ readonly name: string; readonly strict: AITool["strict"] }>,
+) {
   try {
     return Hash.sha256(
       JSON.stringify({
@@ -276,14 +303,8 @@ function materializationSignature(model: Provider.Model | undefined, tools: Reco
               npm: model.api.npm,
             }
           : undefined,
-        tools: Object.entries(tools)
-          .toSorted(([left], [right]) => left.localeCompare(right))
-          .map(([name, item]) => ({
-            name,
-            description: item.description ?? "",
-            inputSchema: asSchema(item.inputSchema).jsonSchema,
-            ...(item.strict === undefined ? {} : { strict: item.strict }),
-          })),
+        tools,
+        ...(strict.length === 0 ? {} : { strict }),
       }),
     )
   } catch {
