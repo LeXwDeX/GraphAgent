@@ -60,13 +60,14 @@ export interface Snapshot {
 
 export type ExternalCheck = "same" | "reloaded"
 
-const defaultDataVersion = (database: Database.Interface) =>
+/** One `PRAGMA data_version` read on the caller's connection. */
+export const dataVersion = (database: Database.Interface) =>
   database.db.get<{ data_version: number }>(sql`PRAGMA data_version`).pipe(
     Effect.map((row) => row?.data_version ?? 0),
     Effect.orDie,
   )
 
-const readDataVersion = (deps: CacheDeps) => (deps.dataVersion ?? defaultDataVersion)(deps.database)
+const readDataVersion = (deps: CacheDeps) => (deps.dataVersion ?? dataVersion)(deps.database)
 
 const collectTail = (deps: CacheDeps, sessionID: SessionID) =>
   (deps.collect ?? MessageV2.collectCompactedTail)(sessionID).pipe(

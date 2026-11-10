@@ -67,7 +67,7 @@ import { randomUUID } from "node:crypto"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { asSchema, type Tool as AITool } from "ai"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
-import type { SessionV1 } from "@graphagent/core/v1/session"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import type { ToolSourceKind } from "@graphagent/core/session/context-folding"
 
 export function webSearchEnabled(flags = { exa: false, parallel: false }) {
@@ -169,9 +169,11 @@ type State = {
   builtin: Tool.Def[]
   task: TaskDef
   read: ReadDef
-  /** Directory-local cache identity; a new directory never reuses old work. */
+/** Directory-local cache identity; a new directory never reuses old work. */
   readonly origin: string
   readonly definitions: RequestCache.CacheState<CachedBuiltin[]>
+  /** One agent-tool visibility decision per session turn (Issue #1022, HS6b). */
+  agentUsable: Map<string, { readonly turnID: string; readonly value: boolean }>
 }
 
 type AgentCatalogOptions = {
@@ -242,6 +244,8 @@ export type ResolveInput = (
 ) & {
   agent: Agent.Info
   session: Session.Info
+  /** Current user turn; its id scopes the per-turn agent-tool visibility decision. */
+  turnID?: string
   /** Per-message tool switches; undefined leaves every tool enabled. */
   user?: Pick<SessionV1.User, "tools">
   /** Session rules; agent rules are merged in before filtering. */
@@ -264,6 +268,7 @@ export const layer = Layer.effect(
     const truncate = yield* Truncate.Service
     const flags = yield* RuntimeFlags.Service
     const mcp = yield* MCP.Service
+    const events = yield* EventV2Bridge.Service
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
@@ -317,6 +322,22 @@ export const layer = Layer.effect(
           plan: Tool.init(plan),
         })
 
+        const agentUsable = new Map<string, { readonly turnID: string; readonly value: boolean }>()
+        // Event fan-out runs without InstanceRef: drop entries through the map
+        // captured by this per-directory state.
+        yield* Effect.acquireRelease(
+          events.listen((event) => {
+            if (event.type !== SessionV1.Event.Deleted.type) return Effect.void
+            const data = event.data
+            if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+            const sessionID = data.sessionID
+            if (typeof sessionID !== "string") return Effect.void
+            agentUsable.delete(sessionID)
+            return Effect.void
+          }),
+          (unsubscribe) => unsubscribe,
+        )
+
         return {
           builtin: [
             tool.invalid,
@@ -345,6 +366,7 @@ export const layer = Layer.effect(
           read: tool.read,
           origin: randomUUID(),
           definitions: RequestCache.make<CachedBuiltin[]>(DEFINITION_CACHE_BYTES),
+          agentUsable,
         }
       }),
     )
@@ -511,7 +533,7 @@ export const layer = Layer.effect(
             definition: definition.jsonSchema ? definition : { ...definition, jsonSchema },
           })
         }
-        RequestCache.set(
+RequestCache.set(
           s.definitions,
           definitionsKey,
           built,
@@ -526,7 +548,17 @@ export const layer = Layer.effect(
 
       for (const builtin of builtins) {
         if (input.session.parentID && ROOT_ONLY_TOOLS.has(builtin.id)) continue
-        if (builtin.id === AgentTool.id && !(yield* canUseAgentMessages(input.session))) continue
+        if (builtin.id === AgentTool.id) {
+          const turnID = input.turnID
+          const cached = turnID === undefined ? undefined : s.agentUsable.get(input.session.id)
+          const usable =
+            cached !== undefined && cached.turnID === turnID ? cached.value : yield* canUseAgentMessages(input.session)
+          // The toolset stays stable for one user turn even when a mailbox
+          // becomes reachable mid-turn (HS6b); a new turn re-evaluates.
+          if (turnID !== undefined && (cached === undefined || cached.turnID !== turnID))
+            s.agentUsable.set(input.session.id, { turnID, value: usable })
+          if (!usable) continue
+        }
         entries.set(builtin.id, {
           id: builtin.id,
           source: builtin.source,

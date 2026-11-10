@@ -8,7 +8,21 @@ import { FSUtil } from "@graphagent/core/fs-util"
 import { ProjectV2 } from "@graphagent/core/project"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Ref, Schema, Scope, Semaphore } from "effect"
+import {
+  Cause,
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Ref,
+  Schema,
+  Scope,
+  Semaphore,
+} from "effect"
 import path from "node:path"
 import { stringify } from "yaml"
 import { Config } from "@/config/config"
@@ -107,6 +121,10 @@ export const layer: Layer.Layer<
     const state = yield* InstanceState.make(() => Effect.succeed({ sessions: new Map<SessionID, SessionCache>() }))
     const scope = yield* Scope.Scope
     const maintenanceInFlight = yield* Ref.make(new Set<ProjectV2.ID>())
+    // HS12: at most one first-turn selection runs per session. The slot is
+    // reserved before the fork and released when the background job settles;
+    // a turn that finds the slot taken proceeds without memory.
+    const selectInFlight = yield* Ref.make(new Set<SessionID>())
     // MEM-02: per-(session,turn,key) in-flight matcher registrations — the
     // turn origin (messageID) in the key keeps coalescing turn-scoped, so a
     // new turn's identical query re-runs instead of riding a previous turn's
@@ -446,6 +464,14 @@ export const layer: Layer.Layer<
         return next
       })
 
+    const releaseSelectSlot = (sessionID: SessionID) =>
+      Ref.update(selectInFlight, (set) => {
+        if (!set.has(sessionID)) return set
+        const next = new Set(set)
+        next.delete(sessionID)
+        return next
+      })
+
     const kickMaintenance = Effect.fn("Memory.kickMaintenance")(function* (input: MaintenanceInput) {
       const job = backgroundMaintain(input).pipe(
         Effect.catchCause((cause) => Effect.logWarning("background MEMORY maintenance failed", { cause })),
@@ -536,23 +562,57 @@ export const layer: Layer.Layer<
       // kicked AFTERwards, so a long reasoning call never holds the fence:
       // this turn renders the pre-maintenance topics and the committed update
       // surfaces on a later prepare.
-      const selected = yield* select({
-        model: current.model,
-        config: current.loaded.config,
-        topics: yield* store.readTopics(current.project.id),
-        text: user.text,
-        projectID: current.project.id,
-      })
-      if (!selected) {
-        yield* clearSession(input.sessionID)
-        return
-      }
-      const entry = data.sessions.get(input.sessionID)
-      if (entry?.turn.messageID === user.info.id) {
-        entry.turn = { ...entry.turn, completedTurns: turns, rendered: selected.rendered }
-      }
-      if (!due) return
-      if (Option.isNone(yield* kickMaintenance(maintenance))) yield* clearSession(input.sessionID)
+      //
+      // HS12: the matcher is bounded by `engine.memory.selectTimeoutMs`. On
+      // expiry this request proceeds without memory; the job keeps running and
+      // writes its result into the turn cache, which the next request reads
+      // through `context`. Only one select may be in flight per session.
+      const timeoutMs = (yield* config.get()).engine?.memory?.selectTimeoutMs ?? 3000
+      const reserved = yield* Ref.modify(selectInFlight, (set) =>
+        set.has(input.sessionID) ? ([false, set] as const) : ([true, new Set(set).add(input.sessionID)] as const),
+      )
+      if (!reserved) return
+      const job = Effect.gen(function* () {
+        const selected = yield* select({
+          model: current.model,
+          config: current.loaded.config,
+          topics: yield* store.readTopics(current.project.id),
+          text: user.text,
+          projectID: current.project.id,
+        })
+        if (!selected) {
+          data.sessions.delete(input.sessionID)
+          return
+        }
+        const entry = data.sessions.get(input.sessionID)
+        if (entry?.turn.messageID === user.info.id) {
+          entry.turn = { ...entry.turn, completedTurns: turns, rendered: selected.rendered }
+        }
+        if (!due) return
+        if (Option.isNone(yield* kickMaintenance(maintenance))) data.sessions.delete(input.sessionID)
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause) ? Effect.void : Effect.logWarning("background MEMORY select failed", { cause }),
+        ),
+        Effect.ensuring(releaseSelectSlot(input.sessionID)),
+      )
+      const fiber = yield* job.pipe(
+        Effect.forkIn(scope),
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            yield* releaseSelectSlot(input.sessionID)
+            yield* Effect.logWarning("background MEMORY select fork failed", { cause })
+            return undefined
+          }),
+        ),
+      )
+      if (!fiber) return
+      yield* Fiber.await(fiber).pipe(
+        Effect.timeoutOption(Duration.millis(timeoutMs)),
+        // The deadline leaves the job running for the next request, but a
+        // cancelled turn must not keep spending a matcher call for its result.
+        Effect.onInterrupt(() => Fiber.interrupt(fiber)),
+      )
     })
 
     const prepare: Interface["prepare"] = Effect.fn("Memory.prepare")((input) =>

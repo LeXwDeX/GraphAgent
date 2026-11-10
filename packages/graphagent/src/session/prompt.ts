@@ -93,6 +93,8 @@ import { Admit } from "./turn/admit"
 import { ModelSwitchBlocked, Prepare } from "./turn/prepare"
 import { Settle } from "./turn/settle"
 import { Loop } from "./turn/loop"
+import { AgentInputHint } from "./turn/agent-input-hint"
+import { HistoryCache } from "./history/cache"
 import { Stop } from "./turn/stop"
 import type { QueuedMessageDeleteInput, QueuedMessageEditInput, QueuedMessageError } from "./turn/prepare"
 import {
@@ -215,27 +217,6 @@ export const layer = Layer.effect(
     // Every session cache below is process-wide: one ManagedRuntime cannot
     // see another's InstanceState, but cancellations and followups cross them.
     const runtimes = EngineProcess.runtimes
-    yield* Effect.acquireRelease(
-      events.listen((event) => {
-        if (event.type === Session.Event.Deleted.type) {
-          const data = event.data
-          if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
-          const sessionID = data.sessionID
-          if (typeof sessionID !== "string") return Effect.void
-          return runtimes.remove(SessionID.make(sessionID))
-        }
-        if (event.type === SessionEvent.Moved.type) {
-          const data = event.data
-          if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
-          const sessionID = data.sessionID
-          if (typeof sessionID !== "string") return Effect.void
-          // The cached fragment belongs to the old directory's tool set.
-          runtimes.forgetToolsJson(SessionID.make(sessionID))
-        }
-        return Effect.void
-      }),
-      (unsubscribe) => unsubscribe,
-    )
     const reasoningDistillationEnabled = (model: Provider.Model) =>
       config.get().pipe(
         Effect.map(
@@ -316,6 +297,38 @@ export const layer = Layer.effect(
     const workflowStore = yield* DagStore.Service
     const agentMessages = Option.getOrUndefined(yield* Effect.serviceOption(DagMessages.Service))
     const { db } = database
+    const agentInputHint = agentMessages
+      ? yield* AgentInputHint.make({
+          changed: agentMessages.changed,
+          dataVersion: HistoryCache.dataVersion(database),
+        })
+      : undefined
+    // The event fan-out runs without InstanceRef: only process-wide state and
+    // the hint's layer-scoped Refs may be touched here.
+    yield* Effect.acquireRelease(
+      events.listen((event) => {
+        if (event.type === Session.Event.Deleted.type) {
+          const data = event.data
+          if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+          const sessionID = data.sessionID
+          if (typeof sessionID !== "string") return Effect.void
+          return Effect.gen(function* () {
+            if (agentInputHint) yield* agentInputHint.forget(SessionID.make(sessionID))
+            yield* runtimes.remove(SessionID.make(sessionID))
+          })
+        }
+        if (event.type === SessionEvent.Moved.type) {
+          const data = event.data
+          if (typeof data !== "object" || data === null || !("sessionID" in data)) return Effect.void
+          const sessionID = data.sessionID
+          if (typeof sessionID !== "string") return Effect.void
+          // The cached fragment belongs to the old directory's tool set.
+          runtimes.forgetToolsJson(SessionID.make(sessionID))
+        }
+        return Effect.void
+      }),
+      (unsubscribe) => unsubscribe,
+    )
     // The hook engine derives transcript, environment, prompt identity and
     // permission mode lazily for every trigger (D1 PR2): callers only name the
     // session, and a trigger that matches no handler touches no session state.
@@ -598,6 +611,8 @@ export const layer = Layer.effect(
       toolSources,
       settingsHook,
       agentMessages,
+      agentInputHint: agentInputHint?.hint,
+      agentInputChecked: agentInputHint?.checked,
       events,
       database,
       db,
