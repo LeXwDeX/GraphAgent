@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { recentConnectedWorkspaces } from "../../../../src/component/dialog-workspace-create"
+import { recentConnectedWorkspaces } from "../../../../src/panel/workspace-select"
 
 describe("recentConnectedWorkspaces", () => {
   test("returns connected workspaces sorted by time used", () => {

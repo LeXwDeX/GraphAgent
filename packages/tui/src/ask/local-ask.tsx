@@ -22,7 +22,7 @@ export interface ChoiceAskOptions {
 
 /**
  * Enqueues a local confirm request and resolves once the user picks an
- * option. Esc resolves `false`, matching the retired DialogConfirm contract.
+ * option. Esc resolves `false`, preserving the previous confirm behavior.
  */
 export function askConfirm(zone: BottomZoneStateApi, options: ConfirmAskOptions): Promise<boolean> {
   return new Promise((resolve) => {

@@ -30,7 +30,6 @@ import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
-import { DialogProvider } from "../../src/ui/dialog"
 import { FooterToastProvider } from "../../src/ui/toast"
 import { TickerProvider } from "../../src/context/ticker-context"
 import { HookStatusProvider } from "../../src/context/hook-status"
@@ -254,40 +253,38 @@ async function mountRoute(
                                           }}
                                         />
                                         <PromptStashProvider>
-                                          <DialogProvider>
-                                            <FrecencyProvider>
-                                              <PromptHistoryProvider>
-                                                <PromptRefProvider>
-                                                  <EditorContextProvider integration={editorIntegration ?? {}}>
-                                                    <EditorProbe
-                                                      ready={(value) => {
-                                                        editor = value
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider integration={editorIntegration ?? {}}>
+                                                  <EditorProbe
+                                                    ready={(value) => {
+                                                      editor = value
+                                                    }}
+                                                  />
+                                                  <LocationProvider>
+                                                    <BusCounter
+                                                      onReady={(count) => {
+                                                        counter = count
+                                                        resolveReady()
                                                       }}
                                                     />
-                                                    <LocationProvider>
-                                                      <BusCounter
-                                                        onReady={(count) => {
-                                                          counter = count
-                                                          resolveReady()
-                                                        }}
-                                                      />
-                                                      <SyncProbe onSync={(value) => (sync = value)} />
-                                                      <SDKProbe ready={(value) => (sdk = value)} />
-                                                      <CommandProbe ready={(value) => (commands = value)} />
-                                                      <Show when={mounted()}>
-                                                        {view === "session" ? (
-                                                          <Main />
-                                                        ) : (
-                                                          <PromptRoute sessionID={sessionID} />
-                                                        )}
-                                                      </Show>
-                                                      <FooterStatusView />
-                                                    </LocationProvider>
-                                                  </EditorContextProvider>
-                                                </PromptRefProvider>
-                                              </PromptHistoryProvider>
-                                            </FrecencyProvider>
-                                          </DialogProvider>
+                                                    <SyncProbe onSync={(value) => (sync = value)} />
+                                                    <SDKProbe ready={(value) => (sdk = value)} />
+                                                    <CommandProbe ready={(value) => (commands = value)} />
+                                                    <Show when={mounted()}>
+                                                      {view === "session" ? (
+                                                        <Main />
+                                                      ) : (
+                                                        <PromptRoute sessionID={sessionID} />
+                                                      )}
+                                                    </Show>
+                                                    <FooterStatusView />
+                                                  </LocationProvider>
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
                                         </PromptStashProvider>
                                       </LocalProvider>
                                     </ThemeProvider>

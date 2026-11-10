@@ -28,7 +28,6 @@ import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
-import { DialogProvider } from "../../src/ui/dialog"
 import { FooterToastProvider } from "../../src/ui/toast"
 import { HookStatusProvider } from "../../src/context/hook-status"
 import { TestTuiContexts } from "../fixture/tui-environment"
@@ -161,19 +160,17 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
                                   <ThemeProvider mode="dark">
                                     <LocalProvider>
                                       <PromptStashProvider>
-                                        <DialogProvider>
-                                          <FrecencyProvider>
-                                            <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={{}}>
-                                                  <LocationProvider>
-                                                    <Probe />
-                                                  </LocationProvider>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
-                                            </PromptHistoryProvider>
-                                          </FrecencyProvider>
-                                        </DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider integration={{}}>
+                                                <LocationProvider>
+                                                  <Probe />
+                                                </LocationProvider>
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
                                       </PromptStashProvider>
                                     </LocalProvider>
                                   </ThemeProvider>

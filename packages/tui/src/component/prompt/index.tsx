@@ -44,7 +44,6 @@ import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
-import { useDialog } from "../../ui/dialog"
 import { t } from "../../i18n"
 import { openProviderPanel } from "../../panel/provider"
 import { askChoice } from "../../ask/local-ask"
@@ -176,7 +175,6 @@ export function Prompt(props: PromptProps) {
   const project = useProject()
   const sync = useSync()
   const tuiConfig = useTuiConfig()
-  const dialog = useDialog()
   const commands = useCommands()
   const commandScope = useCommandScope()
   const bottomZone = useBottomZoneOptional()
@@ -385,8 +383,6 @@ export function Prompt(props: PromptProps) {
   })
 
   async function openPromptEditor() {
-    dialog.clear()
-
     // replace summarized text parts with the actual text
     const text = store.prompt.parts
       .filter((p) => p.type === "text")
@@ -506,7 +502,6 @@ export function Prompt(props: PromptProps) {
         restoreExtmarksFromParts(failed.parts)
         setFailedSubmission(undefined)
         if (props.sessionID) sync.set("failed_submission", props.sessionID, undefined)
-        dialog.clear()
       },
     },
     {
@@ -516,7 +511,6 @@ export function Prompt(props: PromptProps) {
       hidden: true,
       run: () => {
         clearPrompt()
-        dialog.clear()
       },
     },
     {
@@ -528,8 +522,6 @@ export function Prompt(props: PromptProps) {
         if (!input.focused) return
         const handled = await submit()
         if (!handled) return
-
-        dialog.clear()
       },
     },
     {
@@ -539,7 +531,6 @@ export function Prompt(props: PromptProps) {
       enabled: Boolean(editorContext()),
       run: () => {
         dismissEditorContext()
-        dialog.clear()
       },
     },
     {
@@ -599,7 +590,6 @@ export function Prompt(props: PromptProps) {
           if (status().type === "idle") {
             local.model.interruptQueued(sessionID)
             setStore("interrupt", 0)
-            dialog.clear()
             return
           }
           const token = ++cancelAttempt
@@ -619,7 +609,6 @@ export function Prompt(props: PromptProps) {
           })
           setStore("interrupt", 0)
         }
-        dialog.clear()
       },
     },
     {
@@ -808,13 +797,13 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0 || bottomZone?.composerVisible() === false) {
+    if (props.visible === false || bottomZone?.composerVisible() === false) {
       if (input.focused) input.blur()
       return
     }
 
-    // Slot/plugin updates can remount the background prompt while a dialog is open.
-    // Keep focus with the dialog and let the prompt reclaim it after the dialog closes.
+    // Slot/plugin updates can remount the background prompt while a panel is open.
+    // Keep focus with the panel and let the prompt reclaim it after it closes.
     if (!input.focused) input.focus()
   })
 
@@ -923,7 +912,6 @@ export function Prompt(props: PromptProps) {
         input.clear()
         setStore("prompt", { input: "", parts: [] })
         setStore("extmarkToPartIndex", new Map())
-        dialog.clear()
       },
     },
     {
@@ -939,7 +927,6 @@ export function Prompt(props: PromptProps) {
           restoreExtmarksFromParts(entry.parts)
           input.gotoBufferEnd()
         }
-        dialog.clear()
       },
     },
     {

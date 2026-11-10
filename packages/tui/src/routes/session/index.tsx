@@ -53,7 +53,6 @@ import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK, locationHeaders } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
-import { useDialog } from "../../ui/dialog"
 import { askConfirm } from "../../ask/local-ask"
 import { TodoItem } from "../../component/todo-item"
 import type { PromptInfo } from "../../component/prompt/history"
@@ -386,7 +385,6 @@ export function Main() {
   )
 
   const keymap = useGraphagentKeymap()
-  const dialog = useDialog()
   const bottomZone = useBottomZoneOptional()
   const renderer = useRenderer()
 
@@ -478,18 +476,16 @@ export function Main() {
   }
 
   // Helper: Scroll to message in direction or fallback to page scroll
-  const scrollToMessage = (direction: "next" | "prev", dialog: ReturnType<typeof useDialog>) => {
+  const scrollToMessage = (direction: "next" | "prev") => {
     const targetID = findNextVisibleMessage(direction)
 
     if (!targetID) {
       scroll.scrollBy(direction === "next" ? scroll.height : -scroll.height)
-      dialog.clear()
       return
     }
 
     const child = scroll.getChildren().find((c) => c.id === targetID)
     if (child) scroll.scrollBy(child.y - scroll.y - 1)
-    dialog.clear()
   }
 
   function toBottom() {
@@ -533,7 +529,7 @@ export function Main() {
 
   function childSessionHandler(func: () => void) {
     return () => {
-      if (!session()?.parentID || dialog.stack.length > 0) return
+      if (!session()?.parentID || (bottomZone?.host.depth() ?? 0) > 0) return
       func()
     }
   }
@@ -592,7 +588,6 @@ export function Main() {
           modelID: selectedModel.modelID,
           providerID: selectedModel.providerID,
         })
-        dialog.clear()
       },
     },
     {
@@ -629,7 +624,6 @@ export function Main() {
             { input: "", parts: [] as PromptInfo["parts"] },
           ),
         )
-        dialog.clear()
       },
     },
     {
@@ -638,7 +632,6 @@ export function Main() {
       category: "Session",
       enabled: !!session()?.revert?.messageID,
       run: () => {
-        dialog.clear()
         const messageID = session()?.revert?.messageID
         if (!messageID) return
         const revertMessage = messages().find((m) => m.id === messageID)
@@ -665,7 +658,6 @@ export function Main() {
       enabled: !session()?.parentID,
       run: () => {
         drawer.toggle()
-        dialog.clear()
       },
     },
     {
@@ -674,7 +666,6 @@ export function Main() {
       category: "Session",
       run: () => {
         setConceal((prev) => !prev)
-        dialog.clear()
       },
     },
     {
@@ -683,7 +674,6 @@ export function Main() {
       category: "Session",
       run: () => {
         setTimestamps((prev) => (prev === "show" ? "hide" : "show"))
-        dialog.clear()
       },
     },
     {
@@ -696,7 +686,6 @@ export function Main() {
       category: "Session",
       run: () => {
         thinking.set(nextThinkingMode(thinkingMode()))
-        dialog.clear()
       },
     },
     {
@@ -705,7 +694,6 @@ export function Main() {
       category: "Session",
       run: () => {
         setShowDetails((prev) => !prev)
-        dialog.clear()
       },
     },
     {
@@ -714,7 +702,6 @@ export function Main() {
       category: "Session",
       run: () => {
         setShowScrollbar((prev) => !prev)
-        dialog.clear()
       },
     },
     {
@@ -723,7 +710,6 @@ export function Main() {
       category: "Session",
       run: () => {
         setShowGenericToolOutput((prev) => !prev)
-        dialog.clear()
       },
     },
     {
@@ -733,7 +719,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollBy(-scroll.height / 2)
-        dialog.clear()
       },
     },
     {
@@ -743,7 +728,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollBy(scroll.height / 2)
-        dialog.clear()
       },
     },
     {
@@ -753,7 +737,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollBy(-1)
-        dialog.clear()
       },
     },
     {
@@ -763,7 +746,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollBy(1)
-        dialog.clear()
       },
     },
     {
@@ -773,7 +755,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollBy(-scroll.height / 4)
-        dialog.clear()
       },
     },
     {
@@ -783,7 +764,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollBy(scroll.height / 4)
-        dialog.clear()
       },
     },
     {
@@ -793,7 +773,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollTo(0)
-        dialog.clear()
       },
     },
     {
@@ -803,7 +782,6 @@ export function Main() {
       hidden: true,
       run: () => {
         scroll.scrollTo(scroll.scrollHeight)
-        dialog.clear()
       },
     },
     {
@@ -842,14 +820,14 @@ export function Main() {
       value: "session.message.next",
       category: "Session",
       hidden: true,
-      run: () => scrollToMessage("next", dialog),
+      run: () => scrollToMessage("next"),
     },
     {
       title: "Previous message",
       value: "session.message.previous",
       category: "Session",
       hidden: true,
-      run: () => scrollToMessage("prev", dialog),
+      run: () => scrollToMessage("prev"),
     },
     {
       title: "Copy last assistant message",
@@ -866,7 +844,6 @@ export function Main() {
             text: "No assistant messages found",
             level: "error",
           })
-          dialog.clear()
           return
         }
 
@@ -877,7 +854,6 @@ export function Main() {
             text: "No text parts found in last assistant message",
             level: "error",
           })
-          dialog.clear()
           return
         }
 
@@ -890,7 +866,6 @@ export function Main() {
             text: "No text content found in last assistant message",
             level: "error",
           })
-          dialog.clear()
           return
         }
 
@@ -908,7 +883,6 @@ export function Main() {
               level: "error",
             }),
           )
-        dialog.clear()
       },
     },
     {
@@ -942,7 +916,6 @@ export function Main() {
             level: "error",
           })
         }
-        dialog.clear()
       },
     },
     {
@@ -960,7 +933,6 @@ export function Main() {
           const options = bottomZone
             ? await showExportOptions({
                 host: bottomZone.host,
-                dialog,
                 defaultFilename,
                 defaultThinking: showThinking(),
                 defaultToolDetails: showDetails(),
@@ -1024,7 +996,6 @@ export function Main() {
             level: "error",
           })
         }
-        dialog.clear()
       },
     },
     {
@@ -1038,7 +1009,6 @@ export function Main() {
           { sessionID: route.sessionID },
           { headers: locationHeaders({ workspace: project.workspace.current() }) },
         )
-        dialog.clear()
       },
     },
     {
@@ -1047,7 +1017,6 @@ export function Main() {
       category: "Session",
       hidden: true,
       run: () => {
-        dialog.clear()
         moveFirstChild()
       },
     },
@@ -1065,7 +1034,6 @@ export function Main() {
             sessionID: parentID,
           })
         }
-        dialog.clear()
       }),
     },
     {
@@ -1075,7 +1043,6 @@ export function Main() {
       hidden: true,
       enabled: !!session()?.parentID,
       run: childSessionHandler(() => {
-        dialog.clear()
         moveChild(1)
       }),
     },
@@ -1086,7 +1053,6 @@ export function Main() {
       hidden: true,
       enabled: !!session()?.parentID,
       run: childSessionHandler(() => {
-        dialog.clear()
         moveChild(-1)
       }),
     },

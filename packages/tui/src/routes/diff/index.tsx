@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { SnapshotFileDiff, VcsFileDiff } from "@graphagent/sdk"
-import { TextAttributes, type BorderSides, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
+import { type BorderSides, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { LANGUAGE_EXTENSIONS } from "../../util/filetype"
 import { useBindings, useCommandShortcut } from "../../keymap"
 import { useTheme } from "../../context/theme"
@@ -9,7 +9,7 @@ import { useSync } from "../../context/sync"
 import { useSDK, locationHeaders } from "../../context/sdk"
 import { useKV } from "../../context/kv"
 import { useTuiConfig } from "../../config"
-import { useDialog } from "../../ui/dialog"
+import { DetailPanel, type DetailRow } from "../../panel/detail"
 import { useDiffNavigation } from "./route"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import path from "path"
@@ -100,7 +100,6 @@ export function Diff() {
   const sdk = useSDK()
   const kv = useKV()
   const tuiConfig = useTuiConfig()
-  const dialog = useDialog()
   const bottomZone = useBottomZoneOptional()
   const params = () => route.params
   const mode = () => params()?.mode ?? "git"
@@ -159,7 +158,7 @@ export function Diff() {
   const [pendingPatchScrollFileIndex, setPendingPatchScrollFileIndex] = createSignal<number | undefined>()
   const [patchFillerHeight, setPatchFillerHeight] = createSignal(0)
 
-  onCleanup(() => dialog.clear())
+  onCleanup(() => bottomZone?.host.closeAll())
 
   createEffect(() => {
     setExpandedFileNodes(allExpandedFileTreeDirectories(fileTree()))
@@ -416,7 +415,7 @@ export function Diff() {
       title: t("diff.command.close"),
       category: "VCS",
       run() {
-        dialog.clear()
+        bottomZone?.host.closeAll()
         navigation.close()
       },
     },
@@ -704,8 +703,10 @@ export function Diff() {
   }
 
   const openHelpDialog = () => {
-    dialog.replace(() => <DiffViewerHelpDialog />)
-    dialog.setSize("large")
+    const host = bottomZone?.host
+    if (!host) return
+    if (host.top()?.id === "diff-help") return
+    host.push({ id: "diff-help", render: () => <DiffHelpPanel /> })
   }
 
   useBindings(() => ({
@@ -859,101 +860,89 @@ export function Diff() {
   )
 }
 
-function DiffViewerHelpDialog() {
-  const { theme } = useTheme()
+function DiffHelpPanel() {
   const rows = [
     {
+      id: "close",
       shortcut: useCommandShortcut("diff.close"),
       action: t("diff.help.close.action"),
       description: t("diff.help.close.description"),
     },
     {
+      id: "switch-focus",
       shortcut: useCommandShortcut("diff.switch_focus"),
       action: t("diff.help.switchFocus.action"),
       description: t("diff.help.switchFocus.description"),
     },
     {
+      id: "next-hunk",
       shortcut: useCommandShortcut("diff.next_hunk"),
       action: t("diff.help.nextHunk.action"),
       description: t("diff.help.nextHunk.description"),
     },
     {
+      id: "previous-hunk",
       shortcut: useCommandShortcut("diff.previous_hunk"),
       action: t("diff.help.previousHunk.action"),
       description: t("diff.help.previousHunk.description"),
     },
     {
+      id: "next-file",
       shortcut: useCommandShortcut("diff.next_file"),
       action: t("diff.help.nextFile.action"),
       description: t("diff.help.nextFile.description"),
     },
     {
+      id: "previous-file",
       shortcut: useCommandShortcut("diff.previous_file"),
       action: t("diff.help.previousFile.action"),
       description: t("diff.help.previousFile.description"),
     },
     {
+      id: "toggle-file-tree",
       shortcut: useCommandShortcut("diff.toggle_file_tree"),
       action: t("diff.help.toggleFileTree.action"),
       description: t("diff.help.toggleFileTree.description"),
     },
     {
+      id: "single-patch",
       shortcut: useCommandShortcut("diff.single_patch"),
       action: t("diff.help.singlePatch.action"),
       description: t("diff.help.singlePatch.description"),
     },
     {
+      id: "switch-source",
       shortcut: useCommandShortcut("diff.switch_source"),
       action: t("diff.help.switchSource.action"),
       description: t("diff.help.switchSource.description"),
     },
     {
+      id: "toggle-view",
       shortcut: useCommandShortcut("diff.toggle_view"),
       action: t("diff.help.toggleView.action"),
       description: t("diff.help.toggleView.description"),
     },
     {
+      id: "expand-all",
       shortcut: useCommandShortcut("diff.expand_all"),
       action: t("diff.help.expandAll.action"),
       description: t("diff.help.expandAll.description"),
     },
     {
+      id: "mark-reviewed",
       shortcut: useCommandShortcut("diff.mark_reviewed"),
       action: t("diff.help.markReviewed.action"),
       description: t("diff.help.markReviewed.description"),
     },
   ]
 
-  return (
-    <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
-      <box flexDirection="row" justifyContent="space-between">
-        <text attributes={TextAttributes.BOLD} fg={theme.text}>
-          {t("diff.help.title")}
-        </text>
-        <text fg={theme.textMuted}>esc</text>
-      </box>
-      <box flexDirection="row">
-        <text fg={theme.textMuted} width={5} wrapMode="none">
-          {t("diff.help.key")}
-        </text>
-        <text fg={theme.textMuted} width={22} wrapMode="none">
-          {t("diff.help.action")}
-        </text>
-        <text fg={theme.textMuted}>{t("diff.help.description")}</text>
-      </box>
-      <For each={rows}>
-        {(row) => (
-          <box flexDirection="row">
-            <text fg={theme.text} width={5} wrapMode="none">
-              {row.shortcut() || "-"}
-            </text>
-            <text fg={theme.text} width={22} wrapMode="none">
-              {row.action}
-            </text>
-            <text fg={theme.textMuted}>{row.description}</text>
-          </box>
-        )}
-      </For>
-    </box>
+  const detailRows = createMemo<DetailRow[]>(() =>
+    rows.map((row) => ({
+      id: row.id,
+      cells: [row.shortcut() || "-", row.action, row.description],
+      selectable: false,
+    })),
   )
+
+  return <DetailPanel title={t("diff.help.title")} rows={detailRows()} hints={[]} />
 }

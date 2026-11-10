@@ -18,7 +18,6 @@ import {
   recentConnectedWorkspaces,
   type WorkspaceSelection,
 } from "../../src/panel/workspace-select"
-import { useDialog } from "../../src/ui/dialog"
 import { useToast } from "../../src/ui/toast"
 import { shellState } from "../shell/contexts"
 import { json } from "../fixture/tui-sdk"
@@ -236,7 +235,6 @@ test("recent connected workspaces excludes the current one and keeps the newest 
 
 function WorkspaceHarness(props: { onReady(host: PanelHostApi, selected: WorkspaceSelection[]): void }) {
   const zone = useBottomZone()
-  const dialog = useDialog()
   const sdk = useSDK()
   const sync = useSync()
   const project = useProject()
@@ -247,7 +245,6 @@ function WorkspaceHarness(props: { onReady(host: PanelHostApi, selected: Workspa
     props.onReady(zone.host, selected)
     void openWorkspacePanel({
       host: zone.host,
-      dialog,
       sdk,
       sync,
       project,

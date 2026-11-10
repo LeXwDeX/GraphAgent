@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { registerBuiltinCommands } from "../../src/commands/context"
 import {
+  paletteCommandId,
   paletteRows,
   selectPaletteCommand,
   suggestedCommandIds,
-  type PaletteDialog,
   type PaletteOption,
   type PalettePrompt,
 } from "../../src/commands/palette"
@@ -29,14 +29,14 @@ function registryWithBuiltins() {
   return { registry, dispose }
 }
 
-function fakeDialog() {
-  const cleared: number[] = []
-  const dialog: PaletteDialog = {
-    clear() {
-      cleared.push(cleared.length + 1)
+function fakeClose() {
+  const closed: number[] = []
+  return {
+    close() {
+      closed.push(closed.length + 1)
     },
+    closed,
   }
-  return { dialog, cleared }
 }
 
 function fakePrompt() {
@@ -54,13 +54,12 @@ function fakePrompt() {
   return { prompt, events }
 }
 
-function option(value: string, suggested: boolean): PaletteOption {
+function option(id: string, suggested: boolean): PaletteOption {
   return {
-    title: value,
+    id,
+    title: id,
     category: "Session",
-    value,
     suggested,
-    onSelect: () => {},
   }
 }
 
@@ -94,11 +93,16 @@ describe("suggestions", () => {
 describe("palette rows", () => {
   test("suggested commands are duplicated above the full list", () => {
     const rows = paletteRows([option("session.new", true), option("help.show", false)])
-    expect(rows.map((row) => [row.value, row.category])).toEqual([
+    expect(rows.map((row) => [row.id, row.category])).toEqual([
       ["suggested:session.new", "Suggested"],
       ["session.new", "Session"],
       ["help.show", "Session"],
     ])
+  })
+
+  test("suggested ids resolve back to the command they duplicate", () => {
+    expect(paletteCommandId("suggested:session.new")).toBe("session.new")
+    expect(paletteCommandId("help.show")).toBe("help.show")
   })
 
   test("no suggested matches leaves the base list untouched", () => {
@@ -110,7 +114,7 @@ describe("palette rows", () => {
 describe("selection behavior", () => {
   test("/btw prefills the prompt and focuses instead of executing", () => {
     const { registry, dispose } = registryWithBuiltins()
-    const { dialog, cleared } = fakeDialog()
+    const { close, closed } = fakeClose()
     const { prompt, events } = fakePrompt()
     const runs: string[] = []
     registry.setHandler("session.btw", (ctx) => {
@@ -120,11 +124,11 @@ describe("selection behavior", () => {
     selectPaletteCommand({
       registry,
       spec: registry.find("btw")!,
-      dialog,
+      close,
       prompt,
     })
 
-    expect(cleared).toHaveLength(1)
+    expect(closed).toHaveLength(1)
     expect(events).toEqual(["set:/btw ", "focus"])
     expect(runs).toEqual([])
     dispose()
@@ -132,7 +136,7 @@ describe("selection behavior", () => {
 
   test("/rename prefills the current session title", () => {
     const { registry, dispose } = registryWithBuiltins()
-    const { dialog } = fakeDialog()
+    const { close } = fakeClose()
     const { prompt, events } = fakePrompt()
     const runs: string[] = []
     registry.setHandler("session.rename", (ctx) => {
@@ -142,7 +146,7 @@ describe("selection behavior", () => {
     selectPaletteCommand({
       registry,
       spec: registry.find("rename")!,
-      dialog,
+      close,
       prompt,
       renameTitle: "Existing title",
     })
@@ -158,7 +162,7 @@ describe("selection behavior", () => {
     selectPaletteCommand({
       registry,
       spec: registry.find("rename")!,
-      dialog: fakeDialog().dialog,
+      close: fakeClose().close,
       prompt,
     })
     expect(events).toEqual(["set:/rename ", "focus"])
@@ -167,7 +171,7 @@ describe("selection behavior", () => {
 
   test("commands without arguments execute through the registry", () => {
     const { registry, dispose } = registryWithBuiltins()
-    const { dialog, cleared } = fakeDialog()
+    const { close, closed } = fakeClose()
     const { prompt, events } = fakePrompt()
     const runs: Array<{ id: string; args: string; origin: string }> = []
     registry.setHandler("session.new", (ctx) => {
@@ -177,11 +181,11 @@ describe("selection behavior", () => {
     selectPaletteCommand({
       registry,
       spec: registry.find("new")!,
-      dialog,
+      close,
       prompt,
     })
 
-    expect(cleared).toHaveLength(1)
+    expect(closed).toHaveLength(1)
     expect(events).toEqual([])
     expect(runs).toEqual([{ id: "session.new", args: "", origin: "palette" }])
     dispose()
@@ -197,7 +201,7 @@ describe("selection behavior", () => {
     selectPaletteCommand({
       registry,
       spec: registry.find("btw")!,
-      dialog: fakeDialog().dialog,
+      close: fakeClose().close,
       prompt: { current: undefined },
     })
 
@@ -219,7 +223,7 @@ describe("selection behavior", () => {
     selectPaletteCommand({
       registry,
       spec: registry.find("init")!,
-      dialog: fakeDialog().dialog,
+      close: fakeClose().close,
       prompt: fakePrompt().prompt,
     })
 
