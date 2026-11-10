@@ -20,10 +20,9 @@ import type { Measurement, Scenario } from "./types"
 // read the visible history, carry the media parts (images on user messages,
 // one 256KiB message diff), and trigger no compaction.
 //
-// This is the H4 baseline shape: `sql.read` records what the current
-// full-table read costs, and `convert.messages` records what the reconstructed
-// history contains. A later tail-bounded read is expected to lower the former
-// without changing the latter.
+// The tail-bounded claim reconstructs this view from the retained tail alone:
+// `sql.read` records the bounded statement count and `convert.messages` records
+// what the reconstructed history contains.
 export const MESSAGES = 5_000
 export const TURNS = MESSAGES / 2
 export const COMPACTION_EVERY = 250

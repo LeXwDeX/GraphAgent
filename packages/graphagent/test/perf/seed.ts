@@ -258,7 +258,9 @@ export const seedTurn = (sessionID: SessionID, turn: number, options: SeedTurnOp
       role: "user",
       agent: "build",
       model: modelRef,
-      time: { created: createdAt },
+      // A finished turn's prompt was consumed by the request that produced its
+      // assistant reply; a realistic transcript records that marker.
+      time: { created: createdAt, consumed: createdAt },
     })
     if (options.userMessageDiff)
       yield* sessions.writeMessageDiff({ sessionID, messageID: user.id, diff: options.userMessageDiff })

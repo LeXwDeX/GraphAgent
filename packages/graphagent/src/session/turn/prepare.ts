@@ -40,6 +40,8 @@ import type { Question } from "@/question"
 import { InstanceState } from "@/effect/instance-state"
 import { MessageID, PartID, SessionID } from "../schema"
 import { MessageV2 } from "../message-v2"
+import { HistoryClaim } from "../history/claim"
+import { HistoryView } from "../history/view"
 import { SessionTools } from "../tools"
 import { SessionReminders } from "../reminders"
 import { TodoReminders } from "../todo-reminders"
@@ -302,43 +304,12 @@ export function makePrepare(deps: PrepareDeps) {
     ops,
   } = deps
 
-  const ordinaryUser = (message: SessionV1.WithParts): message is SessionV1.WithParts & { info: SessionV1.User } =>
-    message.info.role === "user" &&
-    !MessageV2.isIgnoredUser(message) &&
-    !message.parts.some((part) => part.type === "compaction" || part.type === "subtask")
-
-  const claimSnapshot = Effect.fn("SessionPrompt.claimSnapshot")(function* (sessionID: SessionID) {
-    return yield* promptLocks.withLock(sessionID)(
-      Effect.gen(function* () {
-        const messages = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
-          Effect.map((items) => items.filter((message) => !MessageV2.isIgnoredUser(message))),
-          Effect.provideService(Database.Service, database),
-        )
-        const state = yield* budgetState(sessionID)
-        let latestPending: { message: SessionV1.WithParts; budget: ToolBudget.Budget } | undefined
-        for (const message of messages) {
-          const budget = state.pending.get(message.info.id)
-          if (budget && (!latestPending || MessageV2.before(latestPending.message.info, message.info))) {
-            latestPending = { message, budget }
-          }
-        }
-        const consumed = Date.now()
-        for (const message of messages) {
-          if (!ordinaryUser(message) || message.info.time.consumed !== undefined) continue
-          message.info.time.consumed = consumed
-          // Persisted JSON loses Schema.Class prototypes. Rehydrate the output
-          // format before encoding the consumed user-message event.
-          if (message.info.format) message.info.format = Schema.decodeUnknownSync(SessionV1.Format)(message.info.format)
-          yield* sessions.updateMessage(message.info)
-        }
-        // Activate only inputs included in this snapshot. Capture the budget
-        // under the same lock so later admissions cannot replace its owner.
-        const budget = latestPending?.budget ?? state.active ?? ToolBudget.create((yield* config.get()).maxToolCalls)
-        state.active = budget
-        for (const message of messages) state.pending.delete(message.info.id)
-        return { messages, budget }
-      }),
-    )
+  const claimSnapshot = HistoryClaim.makeClaim({
+    database,
+    sessions,
+    promptLocks,
+    budgetState,
+    maxToolCalls: config.get().pipe(Effect.map((info) => info.maxToolCalls)),
   })
 
   const queuedMessage = Effect.fn("SessionPrompt.queuedMessage")(function* (input: QueuedMessageDeleteInput) {
@@ -347,7 +318,7 @@ export function makePrepare(deps: PrepareDeps) {
       .pipe(Effect.catch(() => Effect.fail(new QueuedMessageNotFound({ messageID: input.messageID }))))
     const message = messages.find((item) => item.info.id === input.messageID)
     if (!message) return yield* new QueuedMessageNotFound({ messageID: input.messageID })
-    if (!ordinaryUser(message)) {
+    if (!HistoryView.isOrdinaryUser(message)) {
       return yield* new QueuedMessageInvalid({ message: "Only ordinary user prompts can be changed while queued" })
     }
 
@@ -1483,7 +1454,7 @@ export function makePrepare(deps: PrepareDeps) {
     // Resolution already applied native and configured permission rules plus the
     // per-message tool switches, so the advertised set is exactly the resolved keys.
     const enabledTools = Object.keys(tools)
-    msgs = yield* SessionReminders.apply({
+    msgs = yield* SessionReminders.derive({
       messages: msgs,
       agent,
       session,

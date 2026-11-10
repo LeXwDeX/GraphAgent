@@ -277,8 +277,12 @@ function makeDeferredResumer(deps: LoopDeps) {
     )
     const agent = yield* agents.get(input.lastAssistant.agent)
     if (!agent) throw new Error(`Agent not found: "${input.lastAssistant.agent}"`)
+    // The snapshot history is frozen; the processor owns a mutable copy of the
+    // deferred assistant it is finishing. The stored transcript is updated
+    // through `sessions.updateMessage`, not through the view.
+    const assistantMessage = structuredClone(input.lastAssistant)
     const handle = yield* processor.create({
-      assistantMessage: input.lastAssistant,
+      assistantMessage,
       sessionID: input.sessionID,
       model,
     })
@@ -302,8 +306,8 @@ function makeDeferredResumer(deps: LoopDeps) {
     )
     const tool = tools[pendingDeferred.tool]
     if (!tool?.execute) {
-      input.lastAssistant.finish = "tool_deferred_unavailable"
-      yield* sessions.updateMessage(input.lastAssistant)
+      assistantMessage.finish = "tool_deferred_unavailable"
+      yield* sessions.updateMessage(assistantMessage)
       return { kind: "return", message: yield* getLastAssistant(input.sessionID) }
     }
     yield* handle.resumeToolCall(
