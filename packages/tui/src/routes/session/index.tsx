@@ -12,6 +12,7 @@ import {
   Switch,
   untrack,
   useContext,
+  type Accessor,
 } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { hideToolDetails, toolAttention } from "./tool-attention"
@@ -152,6 +153,12 @@ const context = createContext<{
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
+  shortcuts: {
+    childFirst: Accessor<string>
+    background: Accessor<string>
+    redo: Accessor<string>
+    dagmodeToggle: Accessor<string>
+  }
 }>()
 
 function use() {
@@ -1191,6 +1198,16 @@ export function Main() {
   // snap to bottom when session changes
   createEffect(on(() => route.sessionID, toBottom))
 
+  // Keymap selectors re-run on every keymap state change. Creating one per
+  // message makes their cost grow with the transcript, so the session owns a
+  // single set and passes it down through context.
+  const shortcuts = {
+    childFirst: useCommandShortcut("session.child.first"),
+    background: useCommandShortcut("session.background"),
+    redo: useCommandShortcut("session.redo"),
+    dagmodeToggle: useCommandShortcut("session.dagmode.toggle"),
+  }
+
   return (
     <LocationProvider location={location()}>
       <context.Provider
@@ -1210,6 +1227,7 @@ export function Main() {
           providers,
           sync,
           tui: tuiConfig,
+          shortcuts,
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
@@ -1239,7 +1257,6 @@ export function Main() {
                     <Switch>
                       <Match when={message.id === revert()?.messageID}>
                         {(function () {
-                          const redoShortcut = useCommandShortcut("session.redo")
                           const [hover, setHover] = createSignal(false)
 
                           const handleUnrevert = async () => {
@@ -1274,7 +1291,7 @@ export function Main() {
                               >
                                 <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
                                 <text fg={theme.textMuted}>
-                                  <span style={{ fg: theme.text }}>{redoShortcut()}</span> or /redo to restore
+                                  <span style={{ fg: theme.text }}>{shortcuts.redo()}</span> or /redo to restore
                                 </text>
                                 <Show when={revert()!.diffFiles?.length}>
                                   <box marginTop={1}>
@@ -1365,7 +1382,7 @@ function UserMessage(props: {
 }) {
   const ctx = use()
   const local = useLocal()
-  const receiptShortcut = useCommandShortcut("session.dagmode.toggle")
+  const receiptShortcut = ctx.shortcuts.dagmodeToggle
   const text = createMemo(() => {
     const texts = props.parts
       .map((x) => {
@@ -1482,8 +1499,8 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     return props.message.time.completed - user.time.created
   })
 
-  const childShortcut = useCommandShortcut("session.child.first")
-  const backgroundShortcut = useCommandShortcut("session.background")
+  const childShortcut = ctx.shortcuts.childFirst
+  const backgroundShortcut = ctx.shortcuts.background
   const retryBlocked = createMemo(() => {
     const error = recordValue(props.message.error)
     if (error?.name !== "APIError") return false

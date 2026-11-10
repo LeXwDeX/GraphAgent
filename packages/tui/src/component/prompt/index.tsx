@@ -8,7 +8,7 @@ import {
   type Renderable,
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
-import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
+import { createEffect, createMemo, onMount, createSignal, onCleanup, on, untrack, Show, Switch, Match } from "solid-js"
 import "../../ui/spinner-register"
 import path from "path"
 import { fileURLToPath } from "url"
@@ -263,7 +263,6 @@ export function Prompt(props: PromptProps) {
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const workspace = usePromptWorkspace(props.sessionID)
   const move = usePromptMove({ projectID: project.project, sessionID: () => props.sessionID })
-  const [cursorVersion, setCursorVersion] = createSignal(0)
   const currentProviderLabel = createMemo(() => local.model.parsed().provider)
   const hasRightContent = createMemo(() => Boolean(props.right))
 
@@ -486,12 +485,12 @@ export function Prompt(props: PromptProps) {
     })
   }
 
-  const promptCommands = createMemo(() => [
+  const promptCommands = [
     {
       title: "Restore failed prompt",
       name: "prompt.restore_failed",
       category: "Prompt",
-      enabled: Boolean(failedSubmission()),
+      enabled: () => untrack(() => Boolean(failedSubmission())),
       run: () => {
         const failed = failedSubmission()
         if (!failed) return
@@ -528,7 +527,7 @@ export function Prompt(props: PromptProps) {
       title: "Remove editor context",
       name: "prompt.editor_context.clear",
       category: "Prompt",
-      enabled: Boolean(editorContext()),
+      enabled: () => untrack(() => Boolean(editorContext())),
       run: () => {
         dismissEditorContext()
       },
@@ -560,7 +559,8 @@ export function Prompt(props: PromptProps) {
       name: "session.interrupt",
       category: "Session",
       hidden: true,
-      enabled: status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID)),
+      enabled: () =>
+        untrack(() => status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID))),
       run: (ctx: CommandContext<Renderable, KeyEvent>) => {
         if (auto()?.visible) return
         if (!input.focused) return
@@ -642,10 +642,10 @@ export function Prompt(props: PromptProps) {
         move.open()
       },
     },
-  ])
+  ]
 
   useBindings(() => ({
-    commands: promptCommands(),
+    commands: promptCommands,
   }))
 
   onCleanup(commands.setHandler("prompt.editor", openPromptEditor))
@@ -693,12 +693,12 @@ export function Prompt(props: PromptProps) {
   useBindings(() => ({
     target: inputTarget,
     priority: EscapePriority.interrupt,
-    enabled: (() => {
-      cursorVersion()
-      if (inputTarget() === undefined || input === undefined || props.disabled || auto()?.visible) return false
-      if (store.mode === "shell" || !input.focused) return false
-      return status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID))
-    })(),
+    enabled: () =>
+      untrack(() => {
+        if (inputTarget() === undefined || input === undefined || props.disabled || auto()?.visible) return false
+        if (store.mode === "shell" || !input.focused) return false
+        return status().type !== "idle" || Boolean(props.sessionID && local.model.queued(props.sessionID))
+      }),
     bindings: tuiConfig.keybinds.get("session.interrupt"),
   }))
 
@@ -717,7 +717,7 @@ export function Prompt(props: PromptProps) {
     // Above the interrupt layer: Esc cancels the edit instead of stopping the
     // running session, and below ask/panel layers so an incoming request wins.
     priority: EscapePriority.edit,
-    enabled: () => editing() !== undefined,
+    enabled: () => untrack(() => editing() !== undefined),
     commands: [
       {
         name: "prompt.edit.cancel",
@@ -896,12 +896,12 @@ export function Prompt(props: PromptProps) {
     )
   }
 
-  const stashCommands = createMemo(() => [
+  const stashCommands = [
     {
       title: "Stash prompt",
       name: "prompt.stash",
       category: "Prompt",
-      enabled: !!store.prompt.input,
+      enabled: () => untrack(() => !!store.prompt.input),
       run: () => {
         if (!store.prompt.input) return
         stash.push({
@@ -918,7 +918,7 @@ export function Prompt(props: PromptProps) {
       title: "Stash pop",
       name: "prompt.stash.pop",
       category: "Prompt",
-      enabled: stash.list().length > 0,
+      enabled: () => untrack(() => stash.list().length > 0),
       run: () => {
         const entry = stash.pop()
         if (entry) {
@@ -933,7 +933,7 @@ export function Prompt(props: PromptProps) {
       title: "Stash list",
       name: "prompt.stash.list",
       category: "Prompt",
-      enabled: stash.list().length > 0,
+      enabled: () => untrack(() => stash.list().length > 0),
       run: () => {
         if (!bottomZone) return
         bottomZone.host.push({
@@ -951,16 +951,16 @@ export function Prompt(props: PromptProps) {
         })
       },
     },
-  ])
+  ]
 
   useBindings(() => ({
-    commands: stashCommands(),
+    commands: stashCommands,
   }))
 
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !props.disabled,
+      enabled: () => untrack(() => inputTarget() !== undefined && !props.disabled),
       bindings: tuiConfig.keybinds.get("prompt.paste"),
     }
   })
@@ -968,7 +968,7 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: inputTarget() !== undefined && !props.disabled && store.prompt.input !== "",
+      enabled: () => untrack(() => inputTarget() !== undefined && !props.disabled && store.prompt.input !== ""),
       bindings: tuiConfig.keybinds.get("prompt.clear"),
     }
   })
@@ -976,16 +976,15 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: (() => {
-        cursorVersion()
-        return (
-          inputTarget() !== undefined &&
-          !props.disabled &&
-          store.mode === "normal" &&
-          !auto()?.visible &&
-          input?.visualCursor.offset === 0
-        )
-      })(),
+      enabled: () =>
+        untrack(
+          () =>
+            inputTarget() !== undefined &&
+            !props.disabled &&
+            store.mode === "normal" &&
+            !auto()?.visible &&
+            input?.visualCursor.offset === 0,
+        ),
       bindings: [
         {
           key: "!",
@@ -1004,7 +1003,7 @@ export function Prompt(props: PromptProps) {
     return {
       target: inputTarget,
       priority: EscapePriority.shell,
-      enabled: inputTarget() !== undefined && store.mode === "shell",
+      enabled: () => untrack(() => inputTarget() !== undefined && store.mode === "shell"),
       bindings: [{ key: "escape", desc: "Exit shell mode", group: "Prompt", cmd: () => setStore("mode", "normal") }],
     }
   })
@@ -1012,10 +1011,8 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: (() => {
-        cursorVersion()
-        return inputTarget() !== undefined && store.mode === "shell" && input?.visualCursor.offset === 0
-      })(),
+      enabled: () =>
+        untrack(() => inputTarget() !== undefined && store.mode === "shell" && input?.visualCursor.offset === 0),
       bindings: [{ key: "backspace", desc: "Exit shell mode", group: "Prompt", cmd: () => setStore("mode", "normal") }],
     }
   })
@@ -1023,10 +1020,8 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: (() => {
-        cursorVersion()
-        return inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined
-      })(),
+      enabled: () =>
+        untrack(() => inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined),
       commands: [
         {
           name: "prompt.history.previous",
@@ -1055,10 +1050,8 @@ export function Prompt(props: PromptProps) {
   useBindings(() => {
     return {
       target: inputTarget,
-      enabled: (() => {
-        cursorVersion()
-        return inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined
-      })(),
+      enabled: () =>
+        untrack(() => inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined),
       commands: [
         {
           name: "prompt.history.next",
@@ -1717,9 +1710,7 @@ export function Prompt(props: PromptProps) {
                 setStore("prompt", "input", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()
-                setCursorVersion((value) => value + 1)
               }}
-              onCursorChange={() => setCursorVersion((value) => value + 1)}
               onKeyDown={(e: { preventDefault(): void }) => {
                 if (props.disabled) {
                   e.preventDefault()
