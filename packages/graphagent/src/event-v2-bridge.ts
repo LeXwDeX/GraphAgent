@@ -7,6 +7,8 @@ import { EventV2 } from "@graphagent/core/event"
 import { Location } from "@graphagent/core/location"
 import { Project } from "@graphagent/core/project"
 import { AbsolutePath } from "@graphagent/core/schema"
+import { EngineProcess } from "@/session/engine-process"
+import { applyCommitted } from "@/session/history/state"
 import { Cause, Context, Effect, Layer, Stream } from "effect"
 
 export class Service extends Context.Service<Service, EventV2.Interface>()("@graphagent/EventV2Bridge") {}
@@ -24,6 +26,14 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2.Service
+
+    // Write-through transcript cache (Issue #1022, PR3): every live durable
+    // session event updates the process cache after its publish commits and
+    // before the publish returns. The observer is synchronous, bounded, and
+    // keyed so a rebuilt bridge against the same bus replaces it.
+    yield* events.onCommitted("history-cache", (event) =>
+      Effect.sync(() => applyCommitted(EngineProcess.runtimes.history, event)),
+    )
 
     const publish: EventV2.Interface["publish"] = (definition, data, options) =>
       Effect.gen(function* () {

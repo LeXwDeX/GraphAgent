@@ -865,13 +865,14 @@ export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: Ses
 })
 
 /**
- * Tail-bounded [`filterCompactedEffect`]. It pages newest-first exactly like
- * [`stream`], but stops as soon as the replay walk in [`filterCompacted`] would
- * break: at a completed compaction boundary without a retained tail, or after
- * reaching the boundary's `tail_start_id`. Messages older than that point were
- * discarded by the full walk anyway, so the result is identical.
+ * Raw retained tail rows in replay-walk order (newest first). It pages
+ * newest-first exactly like [`stream`], but stops as soon as the replay walk in
+ * [`filterCompacted`] would break: at a completed compaction boundary without a
+ * retained tail, or after reaching the boundary's `tail_start_id`. The write-
+ * through history cache stores this raw slice and derives the model-visible
+ * view lazily, so it must not apply [`filterCompacted`] here.
  */
-export const filterCompactedTail = Effect.fn("MessageV2.filterCompactedTail")(function* (sessionID: SessionID) {
+export const collectCompactedTail = Effect.fn("MessageV2.collectCompactedTail")(function* (sessionID: SessionID) {
   const size = 50
   const collected = [] as WithParts[]
   const completed = new Set<string>()
@@ -910,7 +911,15 @@ export const filterCompactedTail = Effect.fn("MessageV2.filterCompactedTail")(fu
     if (done || !next.more || !next.cursor) break
     before = next.cursor
   }
-  return filterCompacted(collected)
+  return collected
+})
+
+/**
+ * Tail-bounded [`filterCompactedEffect`]. Messages older than the retained tail
+ * were discarded by the full walk anyway, so the result is identical.
+ */
+export const filterCompactedTail = Effect.fn("MessageV2.filterCompactedTail")(function* (sessionID: SessionID) {
+  return filterCompacted(yield* collectCompactedTail(sessionID))
 })
 
 interface ReplayPosition {
