@@ -32,6 +32,7 @@ import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { SyncProvider, useSync } from "./context/sync"
+import { BtwProvider } from "./context/btw"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { ThemeProvider, useTheme } from "./context/theme"
@@ -304,7 +305,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                               <LocationProvider>
                                                                 <HomeSessionDestinationProvider>
                                                                   <TickerProvider>
-                                                                    <App onSnapshot={input.onSnapshot} />
+                                                                    <BtwProvider>
+                                                                      <App onSnapshot={input.onSnapshot} />
+                                                                    </BtwProvider>
                                                                   </TickerProvider>
                                                                 </HomeSessionDestinationProvider>
                                                               </LocationProvider>

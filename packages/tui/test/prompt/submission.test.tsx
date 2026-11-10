@@ -30,6 +30,7 @@ import { BottomZone, BottomZoneProvider, createBottomZoneState } from "../../src
 import { useCommands } from "../../src/commands/context"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
+import { BtwProvider, useBtw, type BtwController } from "../../src/context/btw"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
 import { FooterToastProvider } from "../../src/ui/toast"
@@ -118,6 +119,11 @@ function SDKProbe(props: { ready: (value: ReturnType<typeof useSDK>) => void }) 
 
 function CommandProbe(props: { ready: (value: ReturnType<typeof useCommands>) => void }) {
   props.ready(useCommands())
+  return <box />
+}
+
+function BtwProbe(props: { ready: (value: BtwController) => void }) {
+  props.ready(useBtw())
   return <box />
 }
 
@@ -214,6 +220,7 @@ async function mountRoute(
   let sync!: ReturnType<typeof useSync>
   let sdk!: ReturnType<typeof useSDK>
   let commands!: ReturnType<typeof useCommands>
+  let btw!: BtwController
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
   let counter!: () => number
   let resolveReady!: () => void
@@ -261,37 +268,40 @@ async function mountRoute(
                                         <PromptStashProvider>
                                           <FrecencyProvider>
                                             <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={editorIntegration ?? {}}>
-                                                  <EditorProbe
-                                                    ready={(value) => {
-                                                      editor = value
-                                                    }}
-                                                  />
-                                                  <LocationProvider>
-                                                    <BusCounter
-                                                      onReady={(count) => {
-                                                        counter = count
-                                                        resolveReady()
+                                              <BtwProvider>
+                                                <PromptRefProvider>
+                                                  <EditorContextProvider integration={editorIntegration ?? {}}>
+                                                    <EditorProbe
+                                                      ready={(value) => {
+                                                        editor = value
                                                       }}
                                                     />
-                                                    <SyncProbe onSync={(value) => (sync = value)} />
-                                                    <SDKProbe ready={(value) => (sdk = value)} />
-                                                    <CommandProbe ready={(value) => (commands = value)} />
-                                                    <Show when={mounted()}>
-                                                      <Show when={zone} fallback={routeView()}>
-                                                        {(state) => (
-                                                          <BottomZoneProvider state={state()}>
-                                                            {routeView()}
-                                                            <BottomZone state={state()} composer={<></>} />
-                                                          </BottomZoneProvider>
-                                                        )}
+                                                    <LocationProvider>
+                                                      <BusCounter
+                                                        onReady={(count) => {
+                                                          counter = count
+                                                          resolveReady()
+                                                        }}
+                                                      />
+                                                      <SyncProbe onSync={(value) => (sync = value)} />
+                                                      <SDKProbe ready={(value) => (sdk = value)} />
+                                                      <CommandProbe ready={(value) => (commands = value)} />
+                                                      <BtwProbe ready={(value) => (btw = value)} />
+                                                      <Show when={mounted()}>
+                                                        <Show when={zone} fallback={routeView()}>
+                                                          {(state) => (
+                                                            <BottomZoneProvider state={state()}>
+                                                              {routeView()}
+                                                              <BottomZone state={state()} composer={<></>} />
+                                                            </BottomZoneProvider>
+                                                          )}
+                                                        </Show>
                                                       </Show>
-                                                    </Show>
-                                                    <FooterStatusView />
-                                                  </LocationProvider>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
+                                                      <FooterStatusView />
+                                                    </LocationProvider>
+                                                  </EditorContextProvider>
+                                                </PromptRefProvider>
+                                              </BtwProvider>
                                             </PromptHistoryProvider>
                                           </FrecencyProvider>
                                         </PromptStashProvider>
@@ -327,6 +337,7 @@ async function mountRoute(
     sync,
     sdk,
     commands,
+    btw,
     events,
     keymap,
     editor,
@@ -1158,6 +1169,160 @@ test("builtin slash commands execute locally and never reach the model", async (
     await Bun.sleep(20)
     expect(handled).toEqual(["new:slash:", "exit:slash:"])
     expect(sent.length).toBe(before)
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("/btw asks a side question without submitting a prompt and recalls it from memory history", async () => {
+  const requests: Array<Record<string, unknown>> = []
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    async (url, request) => {
+      if (url.pathname !== `/session/${routeSessionID}/btw` || request.method !== "POST") return undefined
+      requests.push((await request.json()) as Record<string, unknown>)
+      return json({
+        id: "btw_answer",
+        answer: "because",
+        model: { providerID: "test", modelID: "m" },
+        usage: { inputTokens: 3, outputTokens: 5 },
+        context: { messages: 2, estimatedTokens: 10, truncated: false, inFlightDropped: false },
+      })
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const before = sent.length
+
+    prompt!.set({ input: "/btw -m test/m why?", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => requests.length === 1)
+
+    expect(requests[0]).toMatchObject({ question: "why?", model: { providerID: "test", modelID: "m" } })
+    expect(String(requests[0].id)).toMatch(/^btw_/)
+    await wait(() => prompt!.current.input === "")
+    await wait(() => route.btw.latest(routeSessionID)?.status === "done")
+    expect(route.btw.latest(routeSessionID)).toMatchObject({ answer: "because", status: "done" })
+    await Bun.sleep(20)
+    expect(sent.length).toBe(before)
+
+    route.app.mockInput.pressKey("ARROW_UP")
+    await route.app.renderOnce()
+    expect(prompt!.current.input).toBe("/btw -m test/m why?")
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("/btw reports a busy side question without keeping an entry", async () => {
+  const requests: Array<Record<string, unknown>> = []
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    async (url, request) => {
+      if (url.pathname !== `/session/${routeSessionID}/btw`) return undefined
+      requests.push((await request.json()) as Record<string, unknown>)
+      return json({ name: "BtwBusy", data: { sessionID: routeSessionID, message: "busy" } }, { status: 409 })
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+
+    prompt!.set({ input: "/btw another?", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => requests.length === 1)
+    await Bun.sleep(30)
+    await route.app.renderOnce()
+
+    expect(route.btw.entries(routeSessionID)).toEqual([])
+    // The footer clips long toasts to the available width.
+    expect(route.app.captureCharFrame()).toContain(t("prompt.btw.busy").slice(0, 20))
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("/btw keeps the draft on invalid arguments and prefills on empty arguments", async () => {
+  const requests: Array<Record<string, unknown>> = []
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    async (url, request) => {
+      if (url.pathname !== `/session/${routeSessionID}/btw`) return undefined
+      requests.push((await request.json()) as Record<string, unknown>)
+      return json({
+        id: "btw_answer",
+        answer: "because",
+        model: { providerID: "test", modelID: "m" },
+        context: { messages: 1, estimatedTokens: 1, truncated: false, inFlightDropped: false },
+      })
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const before = sent.length
+
+    prompt!.set({ input: "/btw -m broken why?", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await Bun.sleep(20)
+    await route.app.renderOnce()
+    expect(prompt!.current.input).toBe("/btw -m broken why?")
+    expect(route.app.captureCharFrame()).toContain(t("prompt.btw.invalid_model"))
+
+    prompt!.set({ input: "/btw -m test/m", parts: [] })
+    prompt!.submit()
+    await Bun.sleep(20)
+    expect(prompt!.current.input).toBe("/btw -m test/m")
+
+    prompt!.set({ input: "/btw", parts: [] })
+    prompt!.submit()
+    await Bun.sleep(20)
+    expect(prompt!.current.input).toBe("/btw ")
+
+    expect(requests).toEqual([])
+    expect(sent.length).toBe(before)
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("/btw on the home view keeps the draft and creates no session", async () => {
+  const route = await mountRoute("prompt")
+  try {
+    route.mount()
+    await wait(() => Boolean(prompt))
+    const created = createStarted
+    const before = sent.length
+
+    prompt!.set({ input: "/btw hello", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await Bun.sleep(20)
+    await route.app.renderOnce()
+
+    expect(prompt!.current.input).toBe("/btw hello")
+    expect(createStarted).toBe(created)
+    expect(sent.length).toBe(before)
+    expect(route.app.captureCharFrame()).toContain(t("prompt.btw.no_session"))
   } finally {
     await route.dispose()
   }
