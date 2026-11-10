@@ -37,7 +37,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Goal } from "@/goal/goal"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { SessionStatus } from "@/session/status"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionRunState } from "@/session/run-state"
 
 const mcp = Layer.succeed(
@@ -215,7 +215,7 @@ const goalIt = testEffect(
       GoalLoop.node,
       Goal.node,
       SessionStatus.node,
-      SessionAutomationLease.node,
+      ExclusiveRegistry.node,
       SessionRunState.node,
     ]),
     {
@@ -275,14 +275,14 @@ goalIt.live("cancel decides the goal pause before dispatching owners", () =>
   ),
 )
 
-goalIt.live("goal handoff abandons a start invalidated while holding the automation lease", () =>
+goalIt.live("goal handoff abandons a start invalidated while holding the exclusive registry", () =>
   provideTmpdirServer(
     ({ llm }) =>
       Effect.gen(function* () {
         const prompt = yield* SessionPrompt.Service
         const sessions = yield* Session.Service
         const goal = yield* Goal.Service
-        const lease = yield* SessionAutomationLease.Service
+        const lease = yield* ExclusiveRegistry.Service
         const runs = yield* SessionRunState.Service
         const session = yield* sessions.create({ title: "goal handoff cancellation" })
         const active = yield* goal.set(session.id, "finish work", 5)
@@ -337,7 +337,7 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
         const prompt = yield* SessionPrompt.Service
         const sessions = yield* Session.Service
         const goal = yield* Goal.Service
-        const lease = yield* SessionAutomationLease.Service
+        const lease = yield* ExclusiveRegistry.Service
         const session = yield* sessions.create({ title: "goal handoff blocked admission" })
         const active = yield* goal.set(session.id, "finish work", 5)
         yield* goal.markTurnDriven(session.id)
@@ -1921,7 +1921,7 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
       const sessions = yield* Session.Service
       const goals = yield* Goal.Service
       const hooks = yield* SessionHooks.Service
-      const lease = yield* SessionAutomationLease.Service
+      const lease = yield* ExclusiveRegistry.Service
       const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
       const audit = (name: string) => path.join(dir, `ups-${name}.txt`)
       const auditText = (file: string) => Effect.promise(() => fs.readFile(file, "utf8").catch(() => undefined))

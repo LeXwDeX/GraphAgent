@@ -13,7 +13,7 @@ import { SessionProjector } from "@graphagent/core/session/projector"
 import { Schema, Deferred, Effect, Exit, Layer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { Dag } from "@/dag/dag"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
@@ -36,7 +36,7 @@ const it = testEffect(
       Layer.provide(RuntimeFlags.layer({ experimentalWorkspaces: false })),
       Layer.provide(BackgroundJob.defaultLayer),
       Layer.provide(Goal.defaultLayer),
-      Layer.provide(SessionAutomationLease.defaultLayer),
+      Layer.provide(ExclusiveRegistry.defaultLayer),
       Layer.provide(Dag.defaultLayer),
     ),
     Database.defaultLayer,

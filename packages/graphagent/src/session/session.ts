@@ -52,7 +52,7 @@ import { ModelV2 } from "@graphagent/core/model"
 import { SessionMessageID } from "@graphagent/schema/session-message-id"
 import { DagBudgetTokens, DagMode } from "@graphagent/schema/dag-mode"
 import { Goal } from "@/goal/goal"
-import { SessionAutomationLease } from "./automation-lease"
+import { ExclusiveRegistry } from "./engine-process"
 import { SessionStatus } from "./status"
 import { Dag } from "@/dag/dag"
 import { isWorkflowTerminalStatus } from "@graphagent/core/dag/core/types"
@@ -560,7 +560,7 @@ export const layer: Layer.Layer<
   | Database.Service
   | EventV2Bridge.Service
   | Goal.Service
-  | SessionAutomationLease.Service
+  | ExclusiveRegistry.Service
   | Dag.Service
 > = Layer.effect(
   Service,
@@ -598,11 +598,11 @@ export const layer: Layer.Layer<
     // requirements: typecheck enforces that every composition of Session's
     // layer provides them (defaultLayer self-provides all three below; the
     // node graph lists them in Session.node). No layer cycle exists — Goal,
-    // Dag and SessionAutomationLease defaultLayers are all self-contained and
+    // Dag and ExclusiveRegistry defaultLayers are all self-contained and
     // none of them depends on Session.
     const goal = yield* Goal.Service
     const dag = yield* Dag.Service
-    const automation = yield* SessionAutomationLease.Service
+    const automation = yield* ExclusiveRegistry.Service
     const toolSources = Option.getOrUndefined(yield* Effect.serviceOption(ToolSourceLedger.Service))
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
@@ -797,7 +797,7 @@ export const layer: Layer.Layer<
           .purgeSession(sessionID)
           .pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("automation lease purge failed during session remove", { sessionID, cause }),
+              Effect.logWarning("exclusive registry purge failed during session remove", { sessionID, cause }),
             ),
           )
         // Session-row deletion (projector, inside this publish's transaction)
@@ -1373,7 +1373,7 @@ export const defaultLayer = layer.pipe(
   // Session, so this cannot introduce a layer cycle; memoization shares the
   // instances with the other group-1 siblings.
   Layer.provide(Goal.defaultLayer),
-  Layer.provide(SessionAutomationLease.defaultLayer),
+  Layer.provide(ExclusiveRegistry.defaultLayer),
   Layer.provide(Dag.defaultLayer),
   Layer.provide(ToolSourceLedger.defaultLayer),
   Layer.provide(Skill.defaultLayer),
@@ -1467,10 +1467,10 @@ export const node = LayerNode.make(layer, [
   DagMessages.node,
   EventV2Bridge.node,
   Goal.node,
-  SessionAutomationLease.node,
-  // S-3: the lease node now requires SessionStatus (hard requirement for
-  // the dag-release re-trigger); consumers listing the lease node must
-  // provide it or the wiring fails silently.
+  ExclusiveRegistry.node,
+  // PR2: the dag-release re-trigger is gated by the session inbox's status
+  // map, not by the registry. The status node stays listed so the inbox's
+  // hard SessionStatus requirement remains explicit in this wiring.
   SessionStatus.node,
   Dag.node,
 ])

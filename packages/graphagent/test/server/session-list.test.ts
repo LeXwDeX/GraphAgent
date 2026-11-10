@@ -4,7 +4,7 @@ import { Database } from "@graphagent/core/database/database"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { Dag } from "@/dag/dag"
 import { disposeAllInstances, provideInstance, TestInstance } from "../fixture/fixture"
 import { mkdir } from "fs/promises"
@@ -29,7 +29,7 @@ const layer = (experimentalWorkspaces: boolean) =>
       Layer.provide(RuntimeFlags.layer({ experimentalWorkspaces })),
       Layer.provide(BackgroundJob.defaultLayer),
       Layer.provide(Goal.defaultLayer),
-      Layer.provide(SessionAutomationLease.defaultLayer),
+      Layer.provide(ExclusiveRegistry.defaultLayer),
       Layer.provide(Dag.defaultLayer),
     ),
   )

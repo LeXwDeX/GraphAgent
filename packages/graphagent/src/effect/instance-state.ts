@@ -43,6 +43,16 @@ export const withGeneration = <A, E, R>(
     current: generation,
   })
 
+/** Rebuild a captured service graph as the context of one instance
+ * generation. A process-level caller (the inbox nudge route) may sit in a
+ * different layer graph; re-entering the owning instance must run with that
+ * instance's services, not the caller's. */
+export const contextWithGeneration = (
+  generation: object | undefined,
+  context: Context.Context<never>,
+): Context.Context<never> =>
+  Context.add(Context.add(context, generationRef, generation), generationCellRef, { current: generation })
+
 /** Retarget the calling provide block after a completed reload, or clear it
  * after the caller disposed the directory itself. */
 export const adoptGeneration = (generation: object | undefined) =>

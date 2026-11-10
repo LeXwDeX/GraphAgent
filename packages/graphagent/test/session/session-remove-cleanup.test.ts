@@ -14,7 +14,7 @@ import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session as SessionNs } from "@/session/session"
 import { SessionAttention } from "@/notification/attention"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { Goal } from "@/goal/goal"
 import { Dag } from "@/dag/dag"
 import { testEffect } from "../lib/effect"
@@ -22,7 +22,7 @@ import { testInstanceStoreLayer } from "../fixture/fixture"
 
 // GOAL-FP-01-05/-06/-16: `Session.remove` must be the single cleanup point for
 // durable session-scoped state — goal_state + goal_outcome rows, the dag
-// automation lease registrations, and owned workflows.
+// exclusive registry registrations, and owned workflows.
 //
 // The layer mirrors the production AppLayer (effect/app-runtime.ts) group-1
 // composition: Session, Goal and Dag are `Layer.mergeAll` SIBLINGS. mergeAll
@@ -36,7 +36,7 @@ const testLayer = Layer.mergeAll(
   SessionNs.defaultLayer,
   Goal.defaultLayer,
   Dag.defaultLayer,
-  SessionAutomationLease.defaultLayer,
+  ExclusiveRegistry.defaultLayer,
   Database.defaultLayer,
   testInstanceStoreLayer,
   CrossSpawnSpawner.defaultLayer,
@@ -89,10 +89,10 @@ describe("Session.remove goal cleanup (GOAL-FP-01-05/-16)", () => {
 })
 
 describe("Session.remove dag lease cleanup (GOAL-FP-01-06)", () => {
-  it.instance("purges dag automation lease registrations for the removed session", () =>
+  it.instance("purges dag exclusive registry registrations for the removed session", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
-      const lease = yield* SessionAutomationLease.Service
+      const lease = yield* ExclusiveRegistry.Service
 
       const info = yield* session.create({})
       const sessionID = info.id

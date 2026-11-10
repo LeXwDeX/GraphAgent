@@ -15,7 +15,7 @@ import { GoalEvent } from "./events"
 import { GoalPrompts } from "./prompts"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionCancellation } from "@/session/cancellation"
 import { SessionLocation } from "@/session/location"
 import { DagLocation } from "@/dag/location"
@@ -256,7 +256,7 @@ const serviceLayer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const { db } = yield* Database.Service
     const sessionStatus = yield* SessionStatus.Service
-    const automation = yield* SessionAutomationLease.Service
+    const automation = yield* ExclusiveRegistry.Service
 
     // Unified event publisher — every state change publishes goal.updated
     // with the full snapshot, identical to Todo's todo.updated pattern.
@@ -1393,7 +1393,7 @@ const serviceLayer = Layer.effect(
   }),
 )
 
-export const layer = serviceLayer.pipe(Layer.provide(SessionAutomationLease.defaultLayer))
+export const layer = serviceLayer.pipe(Layer.provide(ExclusiveRegistry.defaultLayer))
 
 export const defaultLayer = layer.pipe(
   Layer.provide(SessionStatus.defaultLayer),

@@ -67,7 +67,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { makeNodeRow } from "./fixtures"
@@ -420,7 +420,7 @@ function twoInstanceLayer(input: TwoInstanceInput) {
   const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(
     Layer.provide(base),
     Layer.provide(prompt),
-    Layer.provide(SessionAutomationLease.defaultLayer),
+    Layer.provide(ExclusiveRegistry.defaultLayer),
   )
   // The session mock is also surfaced to the test body (Session.remove for
   // the deletion-teardown probe); mergeAll memoizes by layer identity, so the
@@ -2149,7 +2149,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
 // adoption at the getWorkflow/getNodes seam, publishes the reentrant
 // WorkflowReplanned from the SIBLING directory's ambient context, and
 // asserts adopt-exactly-once: while parked, exactly ONE adoption sequence
-// may sit at the seam (single runtimes.set-to-be, single automation-lease
+// may sit at the seam (single runtimes.set-to-be, single exclusive-registry
 // registration-to-be); after release, exactly one first-wave spawn; a
 // follow-up duplicate WorkflowStarted from the sibling directory must not
 // drive a second adoption either. Reverting 959bae7c2 turns this probe RED

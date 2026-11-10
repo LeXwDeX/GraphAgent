@@ -52,7 +52,7 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { renderTemplate } from "../templates/resolve"
 import { sanitizeInput } from "../templates/sanitize"
 import { DagConfig } from "../config"
@@ -148,7 +148,7 @@ const serviceLayer = Layer.effect(
     const promptSvc = yield* SessionPrompt.Service
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const statusSvc = yield* SessionStatus.Service
-    const automation = yield* SessionAutomationLease.Service
+    const automation = yield* ExclusiveRegistry.Service
     const database = yield* Database.Service
 
     const state = yield* InstanceState.make(
@@ -1231,7 +1231,7 @@ const serviceLayer = Layer.effect(
               // passed the guard above (neither reserves anything) and both
               // reached runtimes.set: the second overwrote the first entry,
               // orphaning its fibers/watchers from every interrupt sweep and
-              // double-registering the automation lease. Reserve
+              // double-registering the exclusive registry. Reserve
               // synchronously right after the guard — no yield between the
               // check and the add, so the second event's guard sees the
               // reservation — and release via Effect.ensuring, exactly
@@ -2097,7 +2097,7 @@ const serviceLayer = Layer.effect(
                     entry.fibers.clear()
                     entry.watchers.clear()
                     runtimes.delete(dagID)
-                    // The dag automation-lease registration is deliberately kept:
+                    // The dag exclusive-registry registration is deliberately kept:
                     // it is keyed by (session, workflow), not by directory, and
                     // the lease service is process-wide. The workflow is still
                     // live, the new owner's adoption re-registers the same key
@@ -2226,7 +2226,7 @@ const serviceLayer = Layer.effect(
   }),
 )
 
-export const layer = serviceLayer.pipe(Layer.provide(SessionAutomationLease.defaultLayer))
+export const layer = serviceLayer.pipe(Layer.provide(ExclusiveRegistry.defaultLayer))
 
 export const defaultLayer = layer.pipe(
   Layer.provide(Database.defaultLayer),

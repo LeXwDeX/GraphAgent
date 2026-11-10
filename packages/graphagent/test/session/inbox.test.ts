@@ -32,7 +32,12 @@ const countingBridge = Layer.effect(
 
 // provideMerge so the body observes the same bridge instance the inbox
 // subscribed through (publishing on a second bridge would not deliver).
-const layer = SessionInbox.layer.pipe(Layer.provideMerge(countingBridge))
+// PR2: the inbox owns the dag-release idle gate, so SessionStatus is now a
+// hard requirement of its layer.
+const layer = SessionInbox.layer.pipe(
+  Layer.provideMerge(countingBridge),
+  Layer.provide(SessionStatus.defaultLayer),
+)
 const it = testEffect(layer)
 
 // Let TestClock-resumed fibers run. `adjust` only wakes sleepers; the resumed

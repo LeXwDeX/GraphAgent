@@ -21,7 +21,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Goal } from "@/goal/goal"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
@@ -29,7 +29,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 
-// GOAL-FP-01-01 / GOAL-FP-01-03: the DAG automation-lease registration lifetime
+// GOAL-FP-01-01 / GOAL-FP-01-03: the DAG exclusive-registry registration lifetime
 // must be bound to WORKFLOW STATE, not to wake delivery.
 //
 //   -01: after a restart, a session whose snapshot contains only terminal
@@ -38,7 +38,7 @@ import { withIdleAdmission } from "../lib/session-prompt"
 //   -03: a workflow that terminalizes without a successful wake delivery must
 //        release its dag registration from the terminal event handler.
 //
-// Real DagLoop startup sweep + real SessionAutomationLease + real DagStore /
+// Real DagLoop startup sweep + real ExclusiveRegistry + real DagStore /
 // Projector / EventV2 over an in-memory database; Session / SessionPrompt /
 // Agent are mocked exactly like the wake-integration harness.
 
@@ -198,7 +198,7 @@ function leaseLifecycleLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>
   // re-expose it). Merge the SAME module-level layer at the top so the test
   // body can observe the lease; Layer.build memoization dedups the shared
   // layer reference, so it is the very instance DagLoop and Goal use.
-  return Layer.mergeAll(base, loop, SessionAutomationLease.defaultLayer)
+  return Layer.mergeAll(base, loop, ExclusiveRegistry.defaultLayer)
 }
 
 function runLeaseTest<A>(
@@ -208,7 +208,7 @@ function runLeaseTest<A>(
     readonly store: DagStore.Interface
     readonly goal: Goal.Interface
     readonly status: SessionStatus.Interface
-    readonly automation: SessionAutomationLease.Interface
+    readonly automation: ExclusiveRegistry.Interface
     readonly database: Database.Interface
     readonly childPrompts: Queue.Queue<ChildPromptGate>
   }) => Effect.Effect<A, Error>,
@@ -221,7 +221,7 @@ function runLeaseTest<A>(
       const store = yield* DagStore.Service
       const goal = yield* Goal.Service
       const status = yield* SessionStatus.Service
-      const automation = yield* SessionAutomationLease.Service
+      const automation = yield* ExclusiveRegistry.Service
       const database = yield* Database.Service
       yield* database.db
         .insert(ProjectTable)
@@ -308,7 +308,7 @@ describe("DagLoop lease lifecycle — startup wake sweep (GOAL-FP-01-01)", () =>
             .pipe(Effect.orDie)
 
           // An active goal survived the restart (Goal.set registers the goal
-          // owner with the shared Session automation lease, like GoalLoop).
+          // owner with the shared ExclusiveRegistry, like GoalLoop).
           const goalState = yield* goal.set(sid, "ship the feature", 10)
           const goalOwner = { kind: "goal" as const, id: goalState.goal_id ?? "legacy" }
 

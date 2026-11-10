@@ -22,7 +22,7 @@ import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionPrompt } from "@/session/prompt"
-import { SessionAutomationLease } from "@/session/automation-lease"
+import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionStatus } from "@/session/status"
 
 describe("DagSupervisionSweep attempt identity", () => {
@@ -49,7 +49,7 @@ describe("DagSupervisionSweep attempt identity", () => {
     const sweepLayer = DagSupervisionSweep.layerWithoutDeps.pipe(
       Layer.provide(base),
       Layer.provide(prompt),
-      Layer.provide(SessionAutomationLease.defaultLayer),
+      Layer.provide(ExclusiveRegistry.defaultLayer),
     )
 
     await Effect.runPromise(

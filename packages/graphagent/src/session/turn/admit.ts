@@ -24,7 +24,7 @@ import { Filesystem } from "@/util/filesystem"
 import { SessionAbortReason } from "../abort-reason"
 import { SessionCancellation } from "../cancellation"
 import { MessageID, PartID, type SessionID } from "../schema"
-import type { SessionAutomationLease } from "../automation-lease"
+import type { ExclusiveRegistry } from "../engine-process"
 import type { Session } from "../session"
 import type { SessionRevert } from "../revert"
 import type { SessionRunState } from "../run-state"
@@ -646,8 +646,8 @@ export function makeAdmit(deps: AdmitDeps) {
 
 export function admitIfIdle(
   service: Interface,
-  automation: SessionAutomationLease.Interface,
-  token: SessionAutomationLease.Token,
+  automation: ExclusiveRegistry.Interface,
+  token: ExclusiveRegistry.Token,
   input: PromptInput,
   options?: AdmissionOptions,
   persistAdmission?: Effect.Effect<void>,
