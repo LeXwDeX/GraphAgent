@@ -45,6 +45,8 @@ import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
 import { ContextFolding } from "./context-folding"
+import { EngineProcess } from "./engine-process"
+import { ModelHistory } from "./history/model"
 import { isReplayableAssistantMessage } from "./message-replay"
 import { isRecord } from "@/util/record"
 
@@ -173,213 +175,254 @@ function claudeThinking(metadata: Record<string, any> | undefined, providerID: s
   )
 }
 
-export const toModelMessagesEffect = Effect.fnUntraced(function* (
-  input: WithParts[],
-  model: Provider.Model,
-  options?: {
-    stripMedia?: boolean
-    toolOutputMaxChars?: number
-    reasoningDistillationEnabled?: boolean
-    stripSignedThinking?: boolean
-    stripOpaqueReasoning?: boolean
-  },
-) {
-  const result: UIMessage[] = []
-  const claudeReplay = ["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic", "@ai-sdk/amazon-bedrock"].includes(
-    model.api.npm,
-  )
+export interface ToModelMessagesOptions {
+  stripMedia?: boolean
+  toolOutputMaxChars?: number
+  reasoningDistillationEnabled?: boolean
+  stripSignedThinking?: boolean
+  stripOpaqueReasoning?: boolean
+  /**
+   * `auto` (default) uses the per-message cache, `bypass` always runs the
+   * batched path, and `verify` runs both and throws when they diverge.
+   */
+  cache?: "auto" | "bypass" | "verify"
+}
+
+interface ConversionContext {
+  readonly model: Provider.Model
+  readonly options: ToModelMessagesOptions | undefined
+  readonly claudeReplay: boolean
+}
+
+// Track media from tool results that need to be injected as user messages
+// for providers that don't support that media type in tool results.
+//
+// OpenAI-compatible APIs only support string content in tool results, so we need
+// to extract media and inject as user messages. Some SDKs only support a subset
+// of media in tool results; e.g. Bedrock supports images but not PDFs there.
+//
+// Only apply this workaround if the model actually supports that media input -
+// otherwise unsupportedParts() will turn it into a user-visible error.
+function supportsMediaInToolResult(model: Provider.Model, attachment: { mime: string }) {
+  if (model.api.npm === "@ai-sdk/anthropic") return true
+  if (model.api.npm === "@ai-sdk/openai") return true
+  if (model.api.npm === "@ai-sdk/amazon-bedrock/mantle") return true
+  if (model.api.npm === "@ai-sdk/amazon-bedrock") return attachment.mime.startsWith("image/")
+  if (model.api.npm === "@ai-sdk/xai") return attachment.mime.startsWith("image/")
+  if (model.api.npm === "@ai-sdk/google-vertex/anthropic") return true
+  if (model.api.npm === "@ai-sdk/google") {
+    const id = model.api.id.toLowerCase()
+    return id.includes("gemini-3") && !id.includes("gemini-2")
+  }
+  return false
+}
+
+function toModelOutput(options: { toolCallId: string; input: unknown; output: unknown }) {
+  const output = options.output
+  if (typeof output === "string") {
+    return { type: "text", value: output }
+  }
+
+  if (typeof output === "object") {
+    const outputObject = output as {
+      text: string
+      attachments?: Array<{ mime: string; url: string }>
+    }
+    const attachments = (outputObject.attachments ?? []).filter((attachment) => {
+      return attachment.url.startsWith("data:") && attachment.url.includes(",")
+    })
+
+    return {
+      type: "content",
+      value: [
+        ...(outputObject.text ? [{ type: "text", text: outputObject.text }] : []),
+        ...attachments.map((attachment) => ({
+          type: "media",
+          mediaType: attachment.mime,
+          data: iife(() => {
+            const commaIndex = attachment.url.indexOf(",")
+            return commaIndex === -1 ? attachment.url : attachment.url.slice(commaIndex + 1)
+          }),
+        })),
+      ],
+    }
+  }
+
+  return { type: "json", value: output as never }
+}
+
+/**
+ * The newest completed compaction marker referenced by a summary in this input.
+ * It is the only cross-message state of the conversion: one boolean per
+ * assistant message depends on it, so the boundary must be computed from the
+ * exact input being converted (title, overflow estimates and compaction all
+ * convert subsets).
+ */
+export function compactionBoundary(input: WithParts[]): User | undefined {
   const compactions = new Map<MessageID, User>()
   for (const msg of input) {
     if (msg.info.role === "user" && msg.parts.some((part) => part.type === "compaction"))
       compactions.set(msg.info.id, msg.info)
   }
-  const compactedThrough = input.reduce<User | undefined>((boundary, msg) => {
+  return input.reduce<User | undefined>((boundary, msg) => {
     if (msg.info.role !== "assistant" || !msg.info.summary || !msg.info.finish || msg.info.error) return boundary
     const marker = compactions.get(msg.info.parentID)
     if (!marker) return boundary
     return !boundary || before(boundary, marker) ? marker : boundary
   }, undefined)
+}
+
+const conversionContext = (model: Provider.Model, options?: ToModelMessagesOptions): ConversionContext => ({
+  model,
+  options,
+  claudeReplay: ["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic", "@ai-sdk/amazon-bedrock"].includes(
+    model.api.npm,
+  ),
+})
+
+/**
+ * Builds the UI messages for one persisted message. A message is independent
+ * from the rest of the input except for the compaction boundary; the tool names
+ * it reports are used to build the per-message tool map.
+ */
+function toUIMessagesForMessage(msg: WithParts, context: ConversionContext, compactedThrough: User | undefined) {
+  const { model, options, claudeReplay } = context
+  const messages: UIMessage[] = []
   const toolNames = new Set<string>()
-  // Track media from tool results that need to be injected as user messages
-  // for providers that don't support that media type in tool results.
-  //
-  // OpenAI-compatible APIs only support string content in tool results, so we need
-  // to extract media and inject as user messages. Some SDKs only support a subset
-  // of media in tool results; e.g. Bedrock supports images but not PDFs there.
-  //
-  // Only apply this workaround if the model actually supports that media input -
-  // otherwise unsupportedParts() will turn it into a user-visible error.
-  const supportsMediaInToolResult = (attachment: { mime: string }) => {
-    if (model.api.npm === "@ai-sdk/anthropic") return true
-    if (model.api.npm === "@ai-sdk/openai") return true
-    if (model.api.npm === "@ai-sdk/amazon-bedrock/mantle") return true
-    if (model.api.npm === "@ai-sdk/amazon-bedrock") return attachment.mime.startsWith("image/")
-    if (model.api.npm === "@ai-sdk/xai") return attachment.mime.startsWith("image/")
-    if (model.api.npm === "@ai-sdk/google-vertex/anthropic") return true
-    if (model.api.npm === "@ai-sdk/google") {
-      const id = model.api.id.toLowerCase()
-      return id.includes("gemini-3") && !id.includes("gemini-2")
+  if (msg.parts.length === 0) return { messages, toolNames }
+
+  if (msg.info.role === "user") {
+    const userMessage: UIMessage = {
+      id: msg.info.id,
+      role: "user",
+      parts: [],
     }
-    return false
-  }
-
-  const toModelOutput = (options: { toolCallId: string; input: unknown; output: unknown }) => {
-    const output = options.output
-    if (typeof output === "string") {
-      return { type: "text", value: output }
-    }
-
-    if (typeof output === "object") {
-      const outputObject = output as {
-        text: string
-        attachments?: Array<{ mime: string; url: string }>
-      }
-      const attachments = (outputObject.attachments ?? []).filter((attachment) => {
-        return attachment.url.startsWith("data:") && attachment.url.includes(",")
-      })
-
-      return {
-        type: "content",
-        value: [
-          ...(outputObject.text ? [{ type: "text", text: outputObject.text }] : []),
-          ...attachments.map((attachment) => ({
-            type: "media",
-            mediaType: attachment.mime,
-            data: iife(() => {
-              const commaIndex = attachment.url.indexOf(",")
-              return commaIndex === -1 ? attachment.url : attachment.url.slice(commaIndex + 1)
-            }),
-          })),
-        ],
-      }
-    }
-
-    return { type: "json", value: output as never }
-  }
-
-  for (const msg of input) {
-    if (msg.parts.length === 0) continue
-
-    if (msg.info.role === "user") {
-      const userMessage: UIMessage = {
-        id: msg.info.id,
-        role: "user",
-        parts: [],
-      }
-      for (const part of msg.parts) {
-        // User message parts should never be empty
-        if (part.type === "text" && !part.ignored && part.text !== "")
-          userMessage.parts.push({
-            type: "text",
-            text: part.text,
-          })
-        // text/plain and directory files are converted into text parts, ignore them
-        if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
-          if (options?.stripMedia && isMedia(part.mime)) {
-            userMessage.parts.push({
-              type: "text",
-              text: `[Attached ${part.mime}: ${part.filename ?? "file"}]`,
-            })
-          } else {
-            userMessage.parts.push({
-              type: "file",
-              url: part.url,
-              mediaType: part.mime,
-              filename: part.filename,
-            })
-          }
-        }
-
-        if (part.type === "compaction") {
-          userMessage.parts.push({
-            type: "text",
-            text: "What did we do so far?",
-          })
-        }
-        if (part.type === "subtask") {
-          userMessage.parts.push({
-            type: "text",
-            text: "The following tool was executed by the user",
-          })
-        }
-      }
-      if (userMessage.parts.length > 0) result.push(userMessage)
-    }
-
-    if (msg.info.role === "assistant") {
-      const differentModel = `${model.providerID}/${model.id}` !== `${msg.info.providerID}/${msg.info.modelID}`
-      const media: Array<{ mime: string; url: string; filename?: string }> = []
-
-      if (!isReplayableAssistantMessage(msg)) continue
-      // Any successful compaction inserts a summary before the retained old tail,
-      // so opaque reasoning from that replaced prefix and from the summary itself
-      // is not replayable. Every summarizer input strips opaque reasoning too,
-      // whatever the prior marker. Fresh post-boundary reasoning stays replayable.
-      const invalidatedThinking =
-        options?.stripOpaqueReasoning === true ||
-        msg.info.summary === true ||
-        (compactedThrough !== undefined && before(msg.info, compactedThrough)) ||
-        (claudeReplay && options?.stripSignedThinking === true)
-      const assistantMessage: UIMessage = {
-        id: msg.info.id,
-        role: "assistant",
-        parts: [],
-      }
-      // Anthropic adaptive thinking can persist assistant turns like:
-      // step-start, reasoning(signature), text(""), step-start,
-      // reasoning(signature). The empty text part is a structural separator,
-      // but it does not carry the signature metadata itself. Dropping it shifts
-      // signed thinking positions after step-start splitting/provider regrouping;
-      // keeping it as "" is filtered by the AI SDK and rejected by Anthropic.
-      // It is unclear whether this shape originates in our stream processing,
-      // a proxy, or a lower-level library, but preserving a non-empty separator
-      // here is the only safe replay point we have.
-      // Use a single space so the separator survives replay without changing
-      // the neighboring signed reasoning blocks.
-      const hasSignedReasoning =
-        !invalidatedThinking &&
-        msg.parts.some((part) => {
-          if (part.type !== "reasoning") return false
-          return part.metadata?.anthropic?.signature != null
+    for (const part of msg.parts) {
+      // User message parts should never be empty
+      if (part.type === "text" && !part.ignored && part.text !== "")
+        userMessage.parts.push({
+          type: "text",
+          text: part.text,
         })
-      for (const part of msg.parts) {
-        if (part.type === "text") {
-          const text = part.text === "" && hasSignedReasoning ? " " : part.text
-          assistantMessage.parts.push({
+      // text/plain and directory files are converted into text parts, ignore them
+      if (part.type === "file" && part.mime !== "text/plain" && part.mime !== "application/x-directory") {
+        if (options?.stripMedia && isMedia(part.mime)) {
+          userMessage.parts.push({
             type: "text",
-            text,
-            ...(differentModel ? {} : { providerMetadata: part.metadata }),
+            text: `[Attached ${part.mime}: ${part.filename ?? "file"}]`,
+          })
+        } else {
+          userMessage.parts.push({
+            type: "file",
+            url: part.url,
+            mediaType: part.mime,
+            filename: part.filename,
           })
         }
-        if (part.type === "step-start")
+      }
+
+      if (part.type === "compaction") {
+        userMessage.parts.push({
+          type: "text",
+          text: "What did we do so far?",
+        })
+      }
+      if (part.type === "subtask") {
+        userMessage.parts.push({
+          type: "text",
+          text: "The following tool was executed by the user",
+        })
+      }
+    }
+    if (userMessage.parts.length > 0) messages.push(userMessage)
+  }
+
+  if (msg.info.role === "assistant") {
+    if (!isReplayableAssistantMessage(msg)) return { messages, toolNames }
+    const differentModel = `${model.providerID}/${model.id}` !== `${msg.info.providerID}/${msg.info.modelID}`
+    const media: Array<{ mime: string; url: string; filename?: string }> = []
+    // Any successful compaction inserts a summary before the retained old tail,
+    // so opaque reasoning from that replaced prefix and from the summary itself
+    // is not replayable. Every summarizer input strips opaque reasoning too,
+    // whatever the prior marker. Fresh post-boundary reasoning stays replayable.
+    const invalidatedThinking =
+      options?.stripOpaqueReasoning === true ||
+      msg.info.summary === true ||
+      (compactedThrough !== undefined && before(msg.info, compactedThrough)) ||
+      (claudeReplay && options?.stripSignedThinking === true)
+    const assistantMessage: UIMessage = {
+      id: msg.info.id,
+      role: "assistant",
+      parts: [],
+    }
+    // Anthropic adaptive thinking can persist assistant turns like:
+    // step-start, reasoning(signature), text(""), step-start,
+    // reasoning(signature). The empty text part is a structural separator,
+    // but it does not carry the signature metadata itself. Dropping it shifts
+    // signed thinking positions after step-start splitting/provider regrouping;
+    // keeping it as "" is filtered by the AI SDK and rejected by Anthropic.
+    // It is unclear whether this shape originates in our stream processing,
+    // a proxy, or a lower-level library, but preserving a non-empty separator
+    // here is the only safe replay point we have.
+    // Use a single space so the separator survives replay without changing
+    // the neighboring signed reasoning blocks.
+    const hasSignedReasoning =
+      !invalidatedThinking &&
+      msg.parts.some((part) => {
+        if (part.type !== "reasoning") return false
+        return part.metadata?.anthropic?.signature != null
+      })
+    for (const part of msg.parts) {
+      if (part.type === "text") {
+        const text = part.text === "" && hasSignedReasoning ? " " : part.text
+        assistantMessage.parts.push({
+          type: "text",
+          text,
+          ...(differentModel ? {} : { providerMetadata: part.metadata }),
+        })
+      }
+      if (part.type === "step-start")
+        assistantMessage.parts.push({
+          type: "step-start",
+        })
+      if (part.type === "tool") {
+        toolNames.add(part.tool)
+        if (part.state.status === "completed") {
+          const outputText = part.state.time.compacted
+            ? "[Old tool result content cleared]"
+            : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
+          const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
+
+          // For providers that don't support media in tool results, extract media files
+          // (images, PDFs) to be sent as a separate user message
+          const mediaAttachments = attachments.filter((a) => isMedia(a.mime))
+          const extractedMedia = mediaAttachments.filter((a) => !supportsMediaInToolResult(model, a))
+          if (extractedMedia.length > 0) {
+            media.push(...extractedMedia)
+          }
+          const finalAttachments = attachments.filter((a) => !isMedia(a.mime) || supportsMediaInToolResult(model, a))
+
+          const output =
+            finalAttachments.length > 0
+              ? {
+                  text: outputText,
+                  attachments: finalAttachments,
+                }
+              : outputText
+
           assistantMessage.parts.push({
-            type: "step-start",
+            type: ("tool-" + part.tool) as `tool-${string}`,
+            state: "output-available",
+            toolCallId: part.callID,
+            input: part.state.input,
+            output,
+            ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
+            ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
           })
-        if (part.type === "tool") {
-          toolNames.add(part.tool)
-          if (part.state.status === "completed") {
-            const outputText = part.state.time.compacted
-              ? "[Old tool result content cleared]"
-              : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
-            const attachments = part.state.time.compacted || options?.stripMedia ? [] : (part.state.attachments ?? [])
-
-            // For providers that don't support media in tool results, extract media files
-            // (images, PDFs) to be sent as a separate user message
-            const mediaAttachments = attachments.filter((a) => isMedia(a.mime))
-            const extractedMedia = mediaAttachments.filter((a) => !supportsMediaInToolResult(a))
-            if (extractedMedia.length > 0) {
-              media.push(...extractedMedia)
-            }
-            const finalAttachments = attachments.filter((a) => !isMedia(a.mime) || supportsMediaInToolResult(a))
-
-            const output =
-              finalAttachments.length > 0
-                ? {
-                    text: outputText,
-                    attachments: finalAttachments,
-                  }
-                : outputText
-
+        }
+        if (part.state.status === "error") {
+          const output = part.state.metadata?.interrupted === true ? part.state.metadata.output : undefined
+          if (typeof output === "string") {
             assistantMessage.parts.push({
               type: ("tool-" + part.tool) as `tool-${string}`,
               state: "output-available",
@@ -389,123 +432,102 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
             })
-          }
-          if (part.state.status === "error") {
-            const output = part.state.metadata?.interrupted === true ? part.state.metadata.output : undefined
-            if (typeof output === "string") {
-              assistantMessage.parts.push({
-                type: ("tool-" + part.tool) as `tool-${string}`,
-                state: "output-available",
-                toolCallId: part.callID,
-                input: part.state.input,
-                output,
-                ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
-                ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
-              })
-            } else {
-              assistantMessage.parts.push({
-                type: ("tool-" + part.tool) as `tool-${string}`,
-                state: "output-error",
-                toolCallId: part.callID,
-                input: part.state.input,
-                errorText: part.state.error,
-                ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
-                ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
-              })
-            }
-          }
-          // Handle pending/running tool calls to prevent dangling tool_use blocks
-          // Anthropic/Claude APIs require every tool_use to have a corresponding tool_result
-          if (part.state.status === "pending" || part.state.status === "running")
+          } else {
             assistantMessage.parts.push({
               type: ("tool-" + part.tool) as `tool-${string}`,
               state: "output-error",
               toolCallId: part.callID,
               input: part.state.input,
-              errorText: "[Tool execution was interrupted]",
+              errorText: part.state.error,
               ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
             })
-        }
-        if (part.type === "reasoning") {
-          const replay = reasoningForReplay({
-            text: part.text,
-            metadata: part.metadata,
-            distillation: part.distillation,
-            enabled: options?.reasoningDistillationEnabled === true,
-          })
-          const carrier = ReasoningCarrier.classify(replay.metadata, replay.text)
-          const knownThinking = ThinkingReplay.origin(replay.metadata) !== undefined
-          if (
-            invalidatedThinking &&
-            claudeReplay &&
-            claudeThinking(replay.metadata, msg.info.providerID) &&
-            !knownThinking
-          )
-            continue
-          if (!knownThinking && (differentModel || (invalidatedThinking && carrier.kind === "opaque"))) {
-            if (replay.text.trim().length > 0)
-              assistantMessage.parts.push({
-                type: "text",
-                text: replay.text,
-              })
-            continue
           }
+        }
+        // Handle pending/running tool calls to prevent dangling tool_use blocks
+        // Anthropic/Claude APIs require every tool_use to have a corresponding tool_result
+        if (part.state.status === "pending" || part.state.status === "running")
           assistantMessage.parts.push({
-            type: "reasoning",
-            text: replay.text,
-            providerMetadata: (invalidatedThinking && knownThinking
-              ? ThinkingReplay.forceInvalidation(replay.metadata)
-              : replay.metadata) as typeof part.metadata,
+            type: ("tool-" + part.tool) as `tool-${string}`,
+            state: "output-error",
+            toolCallId: part.callID,
+            input: part.state.input,
+            errorText: "[Tool execution was interrupted]",
+            ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
+            ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
           })
-        }
       }
-      if (assistantMessage.parts.length > 0) {
-        result.push(assistantMessage)
-        // Inject pending media as a user message for providers that don't support
-        // media (images, PDFs) in tool results
-        if (media.length > 0) {
-          result.push({
-            id: MessageID.ascending(),
-            role: "user",
-            parts: [
-              {
-                type: "text" as const,
-                text: SYNTHETIC_ATTACHMENT_PROMPT,
-                // providerMetadata is a known UIMessage field and
-                // convertToModelMessages carries it as providerOptions. This is
-                // explicit provenance across the conversion boundary, not a
-                // positional guess.
-                providerMetadata: { [METADATA_NAMESPACE]: { synthetic: "attachment", cache: "none" } },
-              },
-              ...media.map((attachment) => ({
-                type: "file" as const,
-                url: attachment.url,
-                mediaType: attachment.mime,
-                filename: attachment.filename,
-              })),
-            ],
-          })
+      if (part.type === "reasoning") {
+        const replay = reasoningForReplay({
+          text: part.text,
+          metadata: part.metadata,
+          distillation: part.distillation,
+          enabled: options?.reasoningDistillationEnabled === true,
+        })
+        const carrier = ReasoningCarrier.classify(replay.metadata, replay.text)
+        const knownThinking = ThinkingReplay.origin(replay.metadata) !== undefined
+        if (
+          invalidatedThinking &&
+          claudeReplay &&
+          claudeThinking(replay.metadata, msg.info.providerID) &&
+          !knownThinking
+        )
+          continue
+        if (!knownThinking && (differentModel || (invalidatedThinking && carrier.kind === "opaque"))) {
+          if (replay.text.trim().length > 0)
+            assistantMessage.parts.push({
+              type: "text",
+              text: replay.text,
+            })
+          continue
         }
+        assistantMessage.parts.push({
+          type: "reasoning",
+          text: replay.text,
+          providerMetadata: (invalidatedThinking && knownThinking
+            ? ThinkingReplay.forceInvalidation(replay.metadata)
+            : replay.metadata) as typeof part.metadata,
+        })
+      }
+    }
+    if (assistantMessage.parts.length > 0) {
+      messages.push(assistantMessage)
+      // Inject pending media as a user message for providers that don't support
+      // media (images, PDFs) in tool results
+      if (media.length > 0) {
+        messages.push({
+          id: MessageID.ascending(),
+          role: "user",
+          parts: [
+            {
+              type: "text" as const,
+              text: SYNTHETIC_ATTACHMENT_PROMPT,
+              // providerMetadata is a known UIMessage field and
+              // convertToModelMessages carries it as providerOptions. This is
+              // explicit provenance across the conversion boundary, not a
+              // positional guess.
+              providerMetadata: { [METADATA_NAMESPACE]: { synthetic: "attachment", cache: "none" } },
+            },
+            ...media.map((attachment) => ({
+              type: "file" as const,
+              url: attachment.url,
+              mediaType: attachment.mime,
+              filename: attachment.filename,
+            })),
+          ],
+        })
       }
     }
   }
 
-  const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
+  return { messages, toolNames }
+}
 
-  const messages = yield* Effect.promise(() =>
-    convertToModelMessages(
-      result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")),
-      {
-        //@ts-expect-error (convertToModelMessages expects a ToolSet but only actually needs tools[name]?.toModelOutput)
-        tools,
-      },
-    ),
-  )
-  // `convertToModelMessages` drops message-level metadata for user messages, so
-  // promote the synthetic attachment marker after conversion. Native cache
-  // policy and provider transforms read the message marker; the part marker
-  // stays for target selection.
+// `convertToModelMessages` drops message-level metadata for user messages, so
+// promote the synthetic attachment marker after conversion. Native cache
+// policy and provider transforms read the message marker; the part marker
+// stays for target selection.
+function promoteSyntheticProviderOptions(messages: ModelMessage[]) {
   return messages.map((message) => {
     if (message.role !== "user" || !Array.isArray(message.content)) return message
     const marked = message.content.some((part) => {
@@ -527,20 +549,119 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       },
     }
   })
+}
+
+async function toModelMessagesForMessage(
+  msg: WithParts,
+  context: ConversionContext,
+  compactedThrough: User | undefined,
+) {
+  const built = toUIMessagesForMessage(msg, context, compactedThrough)
+  const filtered = built.messages.filter((message) => message.parts.some((part) => part.type !== "step-start"))
+  if (filtered.length === 0) return []
+  const tools = Object.fromEntries(Array.from(built.toolNames).map((toolName) => [toolName, { toModelOutput }]))
+  return promoteSyntheticProviderOptions(
+    await convertToModelMessages(filtered, {
+      //@ts-expect-error (convertToModelMessages expects a ToolSet but only actually needs tools[name]?.toModelOutput)
+      tools,
+    }),
+  )
+}
+
+function boundaryEffect(msg: WithParts, compactedThrough: User | undefined) {
+  return msg.info.role === "assistant" && compactedThrough !== undefined && before(msg.info, compactedThrough) ? 1 : 0
+}
+
+async function toModelMessagesBatch(input: WithParts[], model: Provider.Model, options?: ToModelMessagesOptions) {
+  const context = conversionContext(model, options)
+  const compactedThrough = compactionBoundary(input)
+  const state = EngineProcess.runtimes.modelHistory
+  const result: UIMessage[] = []
+  const toolNames = new Set<string>()
+  for (const msg of input) {
+    if (msg.parts.length === 0) continue
+    ModelHistory.countConversion(state)
+    const built = toUIMessagesForMessage(msg, context, compactedThrough)
+    result.push(...built.messages)
+    for (const name of built.toolNames) toolNames.add(name)
+  }
+
+  const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
+
+  const messages = await convertToModelMessages(
+    result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")),
+    {
+      //@ts-expect-error (convertToModelMessages expects a ToolSet but only actually needs tools[name]?.toModelOutput)
+      tools,
+    },
+  )
+  return promoteSyntheticProviderOptions(messages)
+}
+
+async function toModelMessagesIncremental(input: WithParts[], model: Provider.Model, options?: ToModelMessagesOptions) {
+  const state = EngineProcess.runtimes.modelHistory
+  const context = conversionContext(model, options)
+  const compactedThrough = compactionBoundary(input)
+  const requestBucket = ModelHistory.bucket(model, options)
+  const messages: ModelMessage[] = []
+  for (const msg of input) {
+    if (msg.parts.length === 0) continue
+    const effect = boundaryEffect(msg, compactedThrough)
+    const hit = ModelHistory.lookup(state, msg.info.sessionID, requestBucket, msg, effect)
+    if (hit) {
+      messages.push(...hit)
+      continue
+    }
+    ModelHistory.countConversion(state)
+    const fragment = await toModelMessagesForMessage(msg, context, compactedThrough)
+    ModelHistory.store(state, msg.info.sessionID, requestBucket, msg, effect, fragment)
+    messages.push(...fragment)
+  }
+  return messages
+}
+
+export const toModelMessagesEffect = Effect.fnUntraced(function* (
+  input: WithParts[],
+  model: Provider.Model,
+  options?: ToModelMessagesOptions,
+) {
+  const cache = options?.cache ?? "auto"
+  if (cache === "bypass") return yield* Effect.promise(() => toModelMessagesBatch(input, model, options))
+  const messages = yield* Effect.promise(() => toModelMessagesIncremental(input, model, options))
+  if (cache === "verify") {
+    const batched = yield* Effect.promise(() => toModelMessagesBatch(input, model, options))
+    if (ModelHistory.canonicalJson(messages) !== ModelHistory.canonicalJson(batched))
+      throw new Error("model-history conversion diverged from the batched path")
+  }
+  return messages
 })
+
+/**
+ * Converts each message in isolation and concatenates the results in input
+ * order. This is the incremental primitive the model-history cache builds on;
+ * the equivalence canary pins it to the batched path above.
+ */
+export async function toModelMessagesPerMessage(
+  input: WithParts[],
+  model: Provider.Model,
+  options?: ToModelMessagesOptions,
+) {
+  const context = conversionContext(model, options)
+  const compactedThrough = compactionBoundary(input)
+  const messages: ModelMessage[] = []
+  for (const msg of input) {
+    if (msg.parts.length === 0) continue
+    messages.push(...(await toModelMessagesForMessage(msg, context, compactedThrough)))
+  }
+  return messages
+}
 
 export const contextFoldingHistory = ContextFolding.history
 
 export function toModelMessages(
   input: WithParts[],
   model: Provider.Model,
-  options?: {
-    stripMedia?: boolean
-    toolOutputMaxChars?: number
-    reasoningDistillationEnabled?: boolean
-    stripSignedThinking?: boolean
-    stripOpaqueReasoning?: boolean
-  },
+  options?: ToModelMessagesOptions,
 ): Promise<ModelMessage[]> {
   return Effect.runPromise(toModelMessagesEffect(input, model, options))
 }
