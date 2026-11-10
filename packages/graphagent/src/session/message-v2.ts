@@ -864,6 +864,55 @@ export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: Ses
   return filterCompacted(yield* stream(sessionID))
 })
 
+/**
+ * Tail-bounded [`filterCompactedEffect`]. It pages newest-first exactly like
+ * [`stream`], but stops as soon as the replay walk in [`filterCompacted`] would
+ * break: at a completed compaction boundary without a retained tail, or after
+ * reaching the boundary's `tail_start_id`. Messages older than that point were
+ * discarded by the full walk anyway, so the result is identical.
+ */
+export const filterCompactedTail = Effect.fn("MessageV2.filterCompactedTail")(function* (sessionID: SessionID) {
+  const size = 50
+  const collected = [] as WithParts[]
+  const completed = new Set<string>()
+  let retain: MessageID | undefined
+  let done = false
+  let before: string | undefined
+  while (!done) {
+    const next = yield* page({ sessionID, limit: size, before }).pipe(
+      Effect.catchIf(NotFoundError.isInstance, () =>
+        Effect.succeed({ items: [] as WithParts[], more: false, cursor: undefined }),
+      ),
+    )
+    if (next.items.length === 0) break
+    for (let i = next.items.length - 1; i >= 0 && !done; i--) {
+      const item = next.items[i]
+      if (!item) continue
+      collected.push(item)
+      if (retain) {
+        if (item.info.id === retain) done = true
+        continue
+      }
+      if (item.info.role === "user" && completed.has(item.info.id)) {
+        const part = item.parts.find((value): value is CompactionPart => value.type === "compaction")
+        if (!part) continue
+        if (!part.tail_start_id) {
+          done = true
+          continue
+        }
+        retain = part.tail_start_id
+        if (item.info.id === retain) done = true
+        continue
+      }
+      if (item.info.role === "assistant" && item.info.summary && item.info.finish && !item.info.error)
+        completed.add(item.info.parentID)
+    }
+    if (done || !next.more || !next.cursor) break
+    before = next.cursor
+  }
+  return filterCompacted(collected)
+})
+
 interface ReplayPosition {
   id: string
   time_created: number
