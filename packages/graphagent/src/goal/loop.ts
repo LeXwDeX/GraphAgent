@@ -3,7 +3,7 @@
 
 export * as GoalLoop from "./loop"
 
-import { Effect, Layer, Context, Option, Stream, Scope, Fiber, Cause, Duration, Schedule } from "effect"
+import { Effect, Layer, Context, Option, Scope, Fiber, Cause, Duration } from "effect"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
@@ -23,6 +23,7 @@ import { GoalPrompts } from "./prompts"
 import { generateText } from "ai"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionAutomationLease } from "@/session/automation-lease"
+import { SessionInbox } from "@/session/inbox"
 import { SessionCancellation } from "@/session/cancellation"
 import { NotFoundError } from "@/storage/storage"
 
@@ -173,13 +174,13 @@ function isAPIError(error: AssistantError): error is SessionV1.APIError {
 const serviceLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const events = yield* EventV2Bridge.Service
     const sessions = yield* Session.Service
     const promptSvc = yield* SessionPrompt.Service
     const provider = yield* Provider.Service
     const goal = yield* Goal.Service
     const status = yield* SessionStatus.Service
     const automation = yield* SessionAutomationLease.Service
+    const inbox = yield* SessionInbox.Service
 
     const workMessages = Effect.fn("GoalLoop.workMessages")(function* (sessionID: SessionID, limit = 20) {
       let count = limit
@@ -551,48 +552,15 @@ const serviceLayer = Layer.effect(
     const scanDirectoryRef: { current: string } = { current: "" }
 
     const state = yield* InstanceState.make(
-      Effect.fn("GoalLoop.state")(function* (ctx) {
+      Effect.fn("GoalLoop.state")(function* () {
         // Wakes arrive from tool and background-job fibers whose scopes close
         // right after the wake. Evaluations they start must live as long as
-        // this instance, like the ones started by the idle subscription.
+        // this instance, like the ones started by the inbox drain.
         const scope = yield* Scope.Scope
-        // startImmediately runs the stream through its PubSub subscription
-        // before init returns (same contract as EventV2Bridge startup), so an
-        // idle published immediately after boot cannot race subscription.
-        yield* events.subscribe(SessionStatus.Event.Status).pipe(
-          Stream.filter((evt) => evt.data.status.type === "idle"),
-          // D4 (fiber lifecycle): triggerEvaluation below carries the full
-          // discipline (active-goal pre-check, fork, fiber registration,
-          // identity-scoped self-clean), shared verbatim with the
-          // GOAL-FP-01-04 startup scan so both drivers use one path.
-          Stream.runForEach((evt) =>
-            Effect.gen(function* () {
-              const sid = evt.data.sessionID
-              // DAG-LOC-01 execution-location guard: idle Status events are
-              // store-global. Only the instance whose DIRECTORY owns the
-              // session may drive its goal loop — the real session-row check
-              // (Goal.ownsSession reads SessionTable.directory; the workflow-
-              // keyed DAG authority is vacuous for goal-only sessions, P2-A).
-              // Sessions without a durable row are owned vacuously (synthetic
-              // test sessions; a deleted session's goal state is gone with it).
-              if (!(yield* Goal.ownsSession(sid, ctx.directory))) return
-              yield* triggerEvaluation(sid)
-              // P2-B subscription survival: this handler now contains the
-              // first defect-capable durable reads in the goal idle path
-              // (Goal.ownsSession / goal.load both orDie). In effect v4,
-              // Effect.ignore absorbs failures, defects AND interruptions —
-              // an error here would vanish without a trace, leaving skipped
-              // evaluations permanently invisible. catchCause keeps the same
-              // absorption but LOGS at the boundary, so a store defect
-              // degrades to a logged, skipped evaluation — never a silent one.
-            }).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("GoalLoop idle handler failed", { sessionID: evt.data.sessionID, cause }),
-              ),
-            ),
-          ),
-          Effect.forkScoped({ startImmediately: true }),
-        )
+        // Idle events no longer drive this loop directly: SessionInbox owns
+        // the single per-instance SessionStatus subscription (Issue #1021,
+        // PR1) and calls the goal.continue source's claim, which carries the
+        // DAG-LOC-01 directory guard and triggerEvaluation below.
         // GOAL-FP-01-04: the startup resume scan. The durable snapshot is
         // captured HERE — at instance boot (the builder runs at the first
         // InstanceState.get, i.e. init), awaited — not inside the forked
@@ -601,22 +569,21 @@ const serviceLayer = Layer.effect(
         // and re-evaluating that same turn boundary would double-commit
         // turns (the R1 turns-inflation harm). Querying at boot means only
         // goals that were active BEFORE this process started are ever
-        // scanned. The builder context is also the layer-build context — the
-        // one the idle subscription above sees — so the scan's evaluation
-        // fibers resolve the same services.
+        // scanned. The builder context is the layer-build context the scan's
+        // evaluation fibers resolve their services from.
         //
         // D-2: catchCause (unlike tapError/orElseSucceed) catches Fail AND
         // Defect, so ANY query failure degrades to no-scan + a log and can
         // never kill the builder — which would close the ScopedCache entry
-        // scope and take the idle subscription down with it.
+        // scope and take the inbox drain down with it.
         //
         // S-2: defensive read. The ref being set before the first state get
         // is an invariant of the init→builder chain, not of the type system —
         // if any future path builds this state without init setting the ref
         // first, scanning with the empty value would silently match no
         // session (a quiet no-op that looks healthy). Fail LOUD instead:
-        // log an error and skip the scan. The idle subscription above stays
-        // armed either way, so the event-driven path is unaffected.
+        // log an error and skip the scan. The inbox subscription stays armed
+        // either way, so the event-driven path is unaffected.
         if (!scanDirectoryRef.current) {
           yield* Effect.logError("goal startup scan skipped: instance directory not resolved before state build")
           return { scope }
@@ -630,7 +597,7 @@ const serviceLayer = Layer.effect(
             }).pipe(Effect.as(empty))
           }),
         )
-        // The per-session triggers are forked after the subscription is
+        // The per-session triggers are forked after the inbox subscription is
         // armed and into the same scope; failures are logged, never fatal to
         // init.
         yield* scanForActiveGoals(snapshot).pipe(
@@ -644,25 +611,6 @@ const serviceLayer = Layer.effect(
           ),
           Effect.forkScoped,
         )
-        // Waiting goals have no idle event to check their deadline. Scan the
-        // durable rows so an expired wait becomes a visible pause even when
-        // the session stays silent.
-        yield* Effect.gen(function* () {
-          const waiting = yield* goal.listWaitingSessions(scanDirectoryRef.current).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("goal wait expiry scan failed", { cause: Cause.pretty(cause) }).pipe(
-                Effect.as([] as ReadonlyArray<SessionID>),
-              ),
-            ),
-          )
-          for (const sessionID of waiting) {
-            yield* expireWaiting(sessionID).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("goal wait expiry failed", { sessionID, cause: Cause.pretty(cause) }),
-              ),
-            )
-          }
-        }).pipe(Effect.repeat(Schedule.spaced(Duration.seconds(30))), Effect.forkScoped({ startImmediately: true }))
         return { scope }
       }),
     )
@@ -1424,6 +1372,43 @@ const serviceLayer = Layer.effect(
       // context carries InstanceRef (instance boot provides it); the
       // builder's does not.
       scanDirectoryRef.current = yield* InstanceState.directory
+      // Issue #1021 PR1: automatic goal continuation enters through the one
+      // session inbox port. This source replaces the loop's own SessionStatus
+      // subscription and its 30s wait-expiry scan; the inbox owns the idle
+      // subscription (one per instance) and calls `claim` from the drain.
+      yield* inbox.register({
+        id: "goal.continue",
+        priority: 10,
+        mode: "idle_only",
+        exclusiveClass: "goal",
+        preemptGuard: true,
+        // The authoritative checks below are durable reads; there is no
+        // in-memory index to answer a cheap hint from, so every boundary
+        // claims and the claim decides.
+        hint: () => true,
+        // Waiting goals have no idle event to check their deadline. This is
+        // the inbox tick's durable backstop for silently waiting sessions.
+        scan: (ctx) => goal.listWaitingSessions(ctx.directory),
+        claim: (sessionID, ctx) =>
+          Effect.gen(function* () {
+            // DAG-LOC-01 execution-location guard: idle Status events are
+            // store-global. Only the instance whose DIRECTORY owns the
+            // session may drive its goal loop — the real session-row check
+            // (Goal.ownsSession reads SessionTable.directory; the workflow-
+            // keyed DAG authority is vacuous for goal-only sessions, P2-A).
+            // Sessions without a durable row are owned vacuously (synthetic
+            // test sessions; a deleted session's goal state is gone with it).
+            //
+            // P2-B survival: this claim contains the first defect-capable
+            // durable reads of the goal idle path (Goal.ownsSession /
+            // goal.load both orDie). The inbox drain catches the cause and
+            // logs it, so a store defect degrades to a logged, skipped
+            // evaluation — never a silent one.
+            if (!(yield* Goal.ownsSession(sessionID, ctx.directory))) return false
+            yield* triggerEvaluation(sessionID)
+            return true
+          }),
+      })
       yield* InstanceState.get(state)
     })
 
@@ -1431,7 +1416,10 @@ const serviceLayer = Layer.effect(
   }),
 )
 
-export const layer = serviceLayer.pipe(Layer.provide(SessionAutomationLease.defaultLayer))
+export const layer = serviceLayer.pipe(
+  Layer.provide(SessionAutomationLease.defaultLayer),
+  Layer.provide(SessionInbox.defaultLayer),
+)
 
 // GoalLoop.defaultLayer self-provides its construction deps. Because
 // Layer.provideMerge(self, layer) requires `layer` (GoalLoop) to be

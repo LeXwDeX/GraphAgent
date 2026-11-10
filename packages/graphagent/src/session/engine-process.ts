@@ -50,12 +50,29 @@ export interface AbortReasonState {
   readonly pending: Map<string, { readonly reason: string; readonly actor: string }>
 }
 
+/**
+ * One loaded instance's inbox drain (Issue #1021, PR1). The inbox registers a
+ * route when the instance boots and removes it from the instance scope, so a
+ * process-level nudge can reach the instance that owns a session's directory
+ * even when the caller lives in another layer graph.
+ */
+export interface InboxDrainRoute {
+  readonly directory: string
+  readonly drain: (sessionID: string) => Effect.Effect<void>
+}
+
+/** Session-inbox routing shared by every layer graph in the process. */
+export interface InboxRouting {
+  readonly drains: Set<InboxDrainRoute>
+}
+
 export interface EngineProcess {
   readonly runtimes: SessionRuntimes
   readonly cancellation: CancellationState
   readonly abort: AbortReasonState
   /** Sessions opened by the in-process client, used only to end their local hooks on shutdown. */
   readonly clientSessions: Map<string, string>
+  readonly inbox: InboxRouting
 }
 
 export const EngineProcess: EngineProcess = {
@@ -70,4 +87,7 @@ export const EngineProcess: EngineProcess = {
     pending: new Map(),
   },
   clientSessions: new Map<string, string>(),
+  inbox: {
+    drains: new Set(),
+  },
 }

@@ -14,6 +14,7 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { Service } from "./bootstrap-service"
 import { Memory } from "@/memory/memory"
+import { SessionInbox } from "@/session/inbox"
 import { Turns } from "@/session/turns"
 
 export { Service } from "./bootstrap-service"
@@ -88,6 +89,15 @@ export const layer = Layer.effect(
         yield* goalLoop.value
           .init()
           .pipe(Effect.catchCause((cause) => Effect.logWarning("goal loop init failed", { cause })))
+      }
+      // SessionInbox owns the single per-instance idle subscription and the
+      // process-level nudge route. init registers this instance's route and
+      // arms the 30s durable tick; GoalLoop.init registered its source.
+      const inbox = yield* Effect.serviceOption(SessionInbox.Service)
+      if (inbox._tag === "Some") {
+        yield* inbox.value
+          .init()
+          .pipe(Effect.catchCause((cause) => Effect.logWarning("session inbox init failed", { cause })))
       }
       yield* dagLoop.init().pipe(Effect.catchCause((cause) => Effect.logWarning("dag loop init failed", { cause })))
       // DagSummaryPublisher: same lifecycle pattern. Stateless derived-view
