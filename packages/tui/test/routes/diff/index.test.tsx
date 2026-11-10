@@ -25,7 +25,7 @@ import { Diff } from "../../../src/routes/diff"
 import { useDiffFooterHints } from "../../../src/routes/diff/footer-hints"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "../../../src/shell/bottom-zone"
 import { DialogProvider } from "../../../src/ui/dialog"
-import { ToastProvider } from "../../../src/ui/toast"
+import { FooterToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -143,7 +143,7 @@ async function renderDiff(
             <GraphagentKeymapProvider keymap={keymap}>
               <ArgsProvider>
                 <KVProvider>
-                  <ToastProvider>
+                  <FooterToastProvider>
                     <RouteProvider initialRoute={initialRoute}>
                       <TuiConfigProvider config={config}>
                         <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
@@ -163,7 +163,7 @@ async function renderDiff(
                         </SDKProvider>
                       </TuiConfigProvider>
                     </RouteProvider>
-                  </ToastProvider>
+                  </FooterToastProvider>
                 </KVProvider>
               </ArgsProvider>
             </GraphagentKeymapProvider>

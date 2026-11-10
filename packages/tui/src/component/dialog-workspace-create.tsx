@@ -65,9 +65,8 @@ async function loadWorkspaceAdapters(input: {
     return response.data
   } catch (err) {
     input.toast.show({
-      title: "Failed to load workspace adapters",
-      message: errorMessage(err),
-      variant: "error",
+      text: "Failed to load workspace adapters: " + errorMessage(err),
+      level: "error",
     })
     return undefined
   }
@@ -110,9 +109,8 @@ export async function warpWorkspaceSession(input: {
     })
   } catch (err) {
     input.toast.show({
-      title: "Failed to warp session",
-      message: errorMessage(err),
-      variant: "error",
+      text: "Failed to warp session: " + errorMessage(err),
+      level: "error",
     })
     return false
   }
@@ -127,9 +125,8 @@ export async function warpWorkspaceSession(input: {
     }
 
     input.toast.show({
-      title: "Failed to warp session",
-      message: errorMessage(result?.error ?? "no response"),
-      variant: "error",
+      text: "Failed to warp session: " + errorMessage(result?.error ?? "no response"),
+      level: "error",
     })
     return false
   }

@@ -70,9 +70,8 @@ export function DialogWorkspaceList() {
     if (result?.error) {
       setRemoving(undefined)
       toast.show({
-        variant: "error",
-        title: "Failed to delete workspace",
-        message: errorMessage(result.error),
+        text: "Failed to delete workspace: " + errorMessage(result.error),
+        level: "error",
       })
       return
     }

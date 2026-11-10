@@ -56,13 +56,15 @@ import { WorkspacesPanel } from "./panel/workspaces"
 import { useDrawer } from "./shell/drawer"
 import { useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
+import { HookProgress } from "./shell/hook-progress"
+import { HookStatusProvider } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import type { TopBarRight } from "./shell/top-bar"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
-import { ToastProvider, useToast } from "./ui/toast"
+import { FooterToastProvider, useToast } from "./ui/toast"
 import { TickerProvider } from "./context/ticker-context"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
@@ -269,58 +271,60 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                           <GraphagentKeymapProvider keymap={keymap}>
                             <ArgsProvider {...input.args}>
                               <KVProvider>
-                                <ToastProvider>
-                                  <RouteProvider
-                                    initialRoute={
-                                      input.args.continue
-                                        ? {
-                                            type: "session",
-                                            sessionID: "dummy",
-                                          }
-                                        : undefined
-                                    }
-                                  >
-                                    <TuiConfigProvider config={input.config}>
-                                      <SDKProvider
-                                        url={input.url}
-                                        directory={input.directory}
-                                        fetch={input.fetch}
-                                        headers={input.headers}
-                                        events={input.events}
-                                      >
-                                        <ProjectProvider>
-                                          <SyncProvider>
-                                            <ThemeProvider mode={mode}>
-                                              <LocalProvider>
-                                                <PromptStashProvider>
-                                                  <CommandRegistryProvider>
-                                                    <DialogProvider>
-                                                      <FrecencyProvider>
-                                                        <PromptHistoryProvider>
-                                                          <PromptRefProvider>
-                                                            <EditorContextProvider>
-                                                              <LocationProvider>
-                                                                <HomeSessionDestinationProvider>
-                                                                  <TickerProvider>
-                                                                    <App onSnapshot={input.onSnapshot} />
-                                                                  </TickerProvider>
-                                                                </HomeSessionDestinationProvider>
-                                                              </LocationProvider>
-                                                            </EditorContextProvider>
-                                                          </PromptRefProvider>
-                                                        </PromptHistoryProvider>
-                                                      </FrecencyProvider>
-                                                    </DialogProvider>
-                                                  </CommandRegistryProvider>
-                                                </PromptStashProvider>
-                                              </LocalProvider>
-                                            </ThemeProvider>
-                                          </SyncProvider>
-                                        </ProjectProvider>
-                                      </SDKProvider>
-                                    </TuiConfigProvider>
-                                  </RouteProvider>
-                                </ToastProvider>
+                                <FooterToastProvider>
+                                  <HookStatusProvider>
+                                    <RouteProvider
+                                      initialRoute={
+                                        input.args.continue
+                                          ? {
+                                              type: "session",
+                                              sessionID: "dummy",
+                                            }
+                                          : undefined
+                                      }
+                                    >
+                                      <TuiConfigProvider config={input.config}>
+                                        <SDKProvider
+                                          url={input.url}
+                                          directory={input.directory}
+                                          fetch={input.fetch}
+                                          headers={input.headers}
+                                          events={input.events}
+                                        >
+                                          <ProjectProvider>
+                                            <SyncProvider>
+                                              <ThemeProvider mode={mode}>
+                                                <LocalProvider>
+                                                  <PromptStashProvider>
+                                                    <CommandRegistryProvider>
+                                                      <DialogProvider>
+                                                        <FrecencyProvider>
+                                                          <PromptHistoryProvider>
+                                                            <PromptRefProvider>
+                                                              <EditorContextProvider>
+                                                                <LocationProvider>
+                                                                  <HomeSessionDestinationProvider>
+                                                                    <TickerProvider>
+                                                                      <App onSnapshot={input.onSnapshot} />
+                                                                    </TickerProvider>
+                                                                  </HomeSessionDestinationProvider>
+                                                                </LocationProvider>
+                                                              </EditorContextProvider>
+                                                            </PromptRefProvider>
+                                                          </PromptHistoryProvider>
+                                                        </FrecencyProvider>
+                                                      </DialogProvider>
+                                                    </CommandRegistryProvider>
+                                                  </PromptStashProvider>
+                                                </LocalProvider>
+                                              </ThemeProvider>
+                                            </SyncProvider>
+                                          </ProjectProvider>
+                                        </SDKProvider>
+                                      </TuiConfigProvider>
+                                    </RouteProvider>
+                                  </HookStatusProvider>
+                                </FooterToastProvider>
                               </KVProvider>
                             </ArgsProvider>
                           </GraphagentKeymapProvider>
@@ -369,7 +373,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const disposeNotifications = createTuiNotifications({ event, sessions: sync.session, attention })
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
-  const footerStatus = useFooterStatus()
+  const footerStatus = useFooterStatus(() =>
+    route.data.type === "session" ? <HookProgress sessionID={route.data.sessionID} /> : undefined,
+  )
   const bottomZone = createBottomZoneState()
   const homeMeta = useHomeFooterMeta()
   const drawer = useDrawer()
@@ -397,7 +403,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
     await clipboard
       .write?.(text)
-      .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+      .then(() =>
+        toast.show({
+          text: "Copied to clipboard",
+          level: "info",
+        }),
+      )
       .catch(toast.error)
 
     renderer.clearSelection()
@@ -441,8 +452,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         const { providerID, modelID } = Model.parse(args.model)
         if (!providerID || !modelID)
           return toast.show({
-            variant: "warning",
-            message: `Invalid model format: ${args.model}`,
+            text: `Invalid model format: ${args.model}`,
+            level: "warning",
             duration: 3000,
           })
         local.model.set({ providerID, modelID }, { recent: true })
@@ -470,7 +481,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           if (result.data?.id) {
             route.navigate({ type: "session", sessionID: result.data.id })
           } else {
-            toast.show({ message: "Failed to fork session", variant: "error" })
+            toast.show({
+              text: "Failed to fork session",
+              level: "error",
+            })
           }
         })
       } else {
@@ -490,7 +504,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       if (result.data?.id) {
         route.navigate({ type: "session", sessionID: result.data.id })
       } else {
-        toast.show({ message: "Failed to fork session", variant: "error" })
+        toast.show({
+          text: "Failed to fork session",
+          level: "error",
+        })
       }
     })
   })
@@ -560,8 +577,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const writeHeapSnapshot = async () => {
     const files = await props.onSnapshot?.()
     toast.show({
-      variant: "info",
-      message: `Heap snapshot written to ${files?.join(", ")}`,
+      text: `Heap snapshot written to ${files?.join(", ")}`,
+      level: "info",
       duration: 5000,
     })
     dialog.clear()
@@ -620,7 +637,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         if (!workspace?.directory) return
         await clipboard
           .write?.(workspace.directory)
-          .then(() => toast.show({ message: "Copied worktree path", variant: "info" }))
+          .then(() =>
+            toast.show({
+              text: "Copied worktree path",
+              level: "info",
+            }),
+          )
           .catch(toast.error)
         dialog.clear()
       },
@@ -720,9 +742,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       run: () => {
         if (local.model.variant.list().length === 0) {
           return toast.show({
-            title: "No variants available",
-            message: "The current model does not support any variants.",
-            variant: "info",
+            text: "No variants available: The current model does not support any variants.",
+            level: "info",
           })
         }
         dialog.replace(() => <DialogVariant />)
@@ -930,11 +951,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   event.on("tui.toast.show", (evt, { workspace }) => {
     if (workspace !== project.workspace.current()) return
+    const message = evt.properties.message
     toast.show({
-      title: evt.properties.title,
-      message: evt.properties.message,
-      variant: evt.properties.variant,
+      text: evt.properties.title ? `${evt.properties.title}: ${message}` : message,
+      level: evt.properties.variant,
       duration: evt.properties.duration,
+      dedupeKey: `tui.toast.${message}`,
     })
   })
 
@@ -942,8 +964,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (route.data.type === "session" && route.data.sessionID === evt.properties.info.id) {
       route.navigate({ type: "home" })
       toast.show({
-        variant: "info",
-        message: "The current session was deleted",
+        text: "The current session was deleted",
+        level: "info",
       })
     }
   })
@@ -955,17 +977,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     const message = errorMessage(error)
 
     toast.show({
-      variant: "error",
-      message,
+      text: message,
+      level: "error",
       duration: 5000,
     })
   })
 
   event.on("models-dev.fetch_failed", (evt) => {
     toast.show({
-      variant: "warning",
-      title: "Model catalog unavailable",
-      message: `${evt.properties.source} is unreachable. Using cached or configured providers only. See ${TuiLog.logFilePath()} for details.`,
+      text:
+        "Model catalog unavailable: " +
+        `${evt.properties.source} is unreachable. Using cached or configured providers only. See ${TuiLog.logFilePath()} for details.`,
+      level: "warning",
       duration: 8000,
     })
   })

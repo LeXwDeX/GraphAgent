@@ -351,7 +351,7 @@ test("queued message delete requires a second confirmation", async () => {
     await settle(app)
     app.mockInput.pressEnter()
     await settle(app)
-    expect(ctx.toast.currentToast?.message).toBe("再次选择以删除")
+    expect(ctx.toast.currentToast?.text).toBe("再次选择以删除")
     expect(deletes).toBe(0)
     expect(host?.depth()).toBe(1)
 

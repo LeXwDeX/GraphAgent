@@ -58,9 +58,8 @@ async function loadWorkspaceAdapters(input: {
     return response.data
   } catch (error) {
     input.toast.show({
-      title: t("panel.workspace.adapter.failed"),
-      message: errorMessage(error),
-      variant: "error",
+      text: `${t("panel.workspace.adapter.failed")}: ${errorMessage(error)}`,
+      level: "error",
     })
     return undefined
   }
@@ -250,25 +249,22 @@ export async function warpWorkspaceSession(input: {
     })
   } catch (error) {
     input.toast.show({
-      title: t("panel.workspace.warp.failed"),
-      message: errorMessage(error),
-      variant: "error",
+      text: `${t("panel.workspace.warp.failed")}: ${errorMessage(error)}`,
+      level: "error",
     })
     return false
   }
   if (!result?.data) {
     if (result?.error && "name" in result.error && result.error.name === "VcsApplyError") {
       input.toast.show({
-        title: t("panel.workspace.warp.failed"),
-        message: t("panel.workspace.warp.conflict"),
-        variant: "error",
+        text: `${t("panel.workspace.warp.failed")}: ${t("panel.workspace.warp.conflict")}`,
+        level: "error",
       })
       return false
     }
     input.toast.show({
-      title: t("panel.workspace.warp.failed"),
-      message: errorMessage(result?.error ?? "no response"),
-      variant: "error",
+      text: `${t("panel.workspace.warp.failed")}: ${errorMessage(result?.error ?? "no response")}`,
+      level: "error",
     })
     return false
   }

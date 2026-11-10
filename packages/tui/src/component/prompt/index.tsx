@@ -271,8 +271,8 @@ export function Prompt(props: PromptProps) {
 
   function promptModelWarning() {
     toast.show({
-      variant: "warning",
-      message: t("panel.provider.promptWarning"),
+      text: t("panel.provider.promptWarning"),
+      level: "warning",
       duration: 3000,
     })
     if (sync.data.provider.length === 0 && bottomZone) {
@@ -613,9 +613,8 @@ export function Prompt(props: PromptProps) {
             if (disposed || token !== cancelAttempt || props.sessionID !== sessionID) return
             setStopping(undefined)
             toast.show({
-              title: "Failed to stop session",
-              message: errorMessage(error) + " · Press esc twice to retry",
-              variant: "error",
+              text: "Failed to stop session: " + (errorMessage(error) + " · Press esc twice to retry"),
+              level: "error",
             })
           })
           setStore("interrupt", 0)
@@ -1118,7 +1117,10 @@ export function Prompt(props: PromptProps) {
       return await submitInner()
     } catch (error) {
       setSending(false)
-      toast.show({ title: "Failed to send prompt", message: errorMessage(error), variant: "error" })
+      toast.show({
+        text: "Failed to send prompt: " + errorMessage(error),
+        level: "error",
+      })
       return false
     } finally {
       submitting = false
@@ -1152,7 +1154,11 @@ export function Prompt(props: PromptProps) {
     const editSend = edit !== undefined
     if (editSend) setEditing(undefined)
     if (store.mode === "shell" && props.sessionID && local.model.commandActive(props.sessionID)) {
-      toast.show({ message: t("prompt.submit.unconfirmed.toast"), variant: "warning", duration: 5000 })
+      toast.show({
+        text: t("prompt.submit.unconfirmed.toast"),
+        level: "warning",
+        duration: 5000,
+      })
       return false
     }
     const agent = local.agent.current()
@@ -1167,8 +1173,8 @@ export function Prompt(props: PromptProps) {
       setStore("extmarkToPartIndex", new Map())
       void commands.run(builtin.spec.id, { args: builtin.args, origin: "slash" }).catch((error) => {
         toast.show({
-          message: errorMessage(error),
-          variant: "error",
+          text: errorMessage(error),
+          level: "error",
         })
       })
       props.onSubmit?.()
@@ -1185,7 +1191,10 @@ export function Prompt(props: PromptProps) {
     const workspaceStatus = workspaceID ? (project.workspace.status(workspaceID) ?? "error") : undefined
     if (props.sessionID && workspaceID && workspaceStatus !== "connected") {
       if (!bottomZone) {
-        toast.show({ message: t("prompt.workspace.unavailable.body"), variant: "warning" })
+        toast.show({
+          text: t("prompt.workspace.unavailable.body"),
+          level: "warning",
+        })
         return false
       }
       if (!workspaceAskOpen) {
@@ -1289,16 +1298,18 @@ export function Prompt(props: PromptProps) {
         if (sessionID && sync.data.submission_attempt[sessionID] === messageID)
           sync.set("failed_submission", sessionID, { ...submitted, mode: currentMode })
         toast.show({
-          title: "Failed to send prompt",
-          message: errorMessage(error) + " · Failed input saved in prompt stash",
-          variant: "error",
+          text: "Failed to send prompt: " + (errorMessage(error) + " · Failed input saved in prompt stash"),
+          level: "error",
         })
         return
       }
       setSending(false)
       setFailedSubmission({ ...submitted, mode: currentMode })
       restoreDraft()
-      toast.show({ title: "Failed to send prompt", message: errorMessage(error), variant: "error" })
+      toast.show({
+        text: "Failed to send prompt: " + errorMessage(error),
+        level: "error",
+      })
     }
     // An interrupted request stays unconfirmed: restore the draft for a retry
     // without claiming the request failed or was accepted.
@@ -1345,9 +1356,8 @@ export function Prompt(props: PromptProps) {
         TuiLog.write("error", "Creating a session failed", res.error)
 
         toast.show({
-          title: "Creating a session failed",
-          message: errorMessage(res.error),
-          variant: "error",
+          text: "Creating a session failed: " + errorMessage(res.error),
+          level: "error",
         })
 
         return true
@@ -1938,7 +1948,10 @@ export function Prompt(props: PromptProps) {
                         const r = retry()
                         if (!r) return
                         if (isTruncated()) {
-                          toast.show({ title: "Retry Error", message: r.message, variant: "warning" })
+                          toast.show({
+                            text: "Retry Error: " + r.message,
+                            level: "warning",
+                          })
                         }
                       }
 

@@ -76,7 +76,10 @@ export function MessagePanel(props: MessagePanelProps) {
         { throwOnError: true },
       )
     } catch (error) {
-      toast.show({ title: t("panel.message.edit.failed"), message: errorMessage(error), variant: "warning" })
+      toast.show({
+        text: `${t("panel.message.edit.failed")}: ${errorMessage(error)}`,
+        level: "warning",
+      })
       return
     }
     props.editPrompt({ label: t("prompt.edit.queued"), value: expected.expectedText, parts: prompt.parts })
@@ -88,7 +91,10 @@ export function MessagePanel(props: MessagePanelProps) {
     if (!expected) return
     if (!confirmingDelete()) {
       setConfirmingDelete(true)
-      toast.show({ variant: "warning", message: t("panel.message.delete.confirm") })
+      toast.show({
+        text: t("panel.message.delete.confirm"),
+        level: "warning",
+      })
       return
     }
     try {
@@ -101,7 +107,10 @@ export function MessagePanel(props: MessagePanelProps) {
         { throwOnError: true },
       )
     } catch (error) {
-      toast.show({ title: t("panel.message.delete.failed"), message: errorMessage(error), variant: "warning" })
+      toast.show({
+        text: `${t("panel.message.delete.failed")}: ${errorMessage(error)}`,
+        level: "warning",
+      })
     }
     host.close()
   }

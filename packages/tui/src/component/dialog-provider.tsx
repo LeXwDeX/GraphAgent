@@ -101,9 +101,8 @@ export function createDialogProviderOptions() {
     if (providerID) return providerID
 
     toast.show({
-      variant: "error",
-      message:
-        "Provider ids must start with a lowercase letter or number and only use lowercase letters, numbers, hyphens, and underscores",
+      text: "Provider ids must start with a lowercase letter or number and only use lowercase letters, numbers, hyphens, and underscores",
+      level: "error",
     })
     return promptCustomProviderID()
   }
@@ -180,8 +179,8 @@ export function createDialogProviderOptions() {
               })
               if (result.error) {
                 toast.show({
-                  variant: "error",
-                  message: JSON.stringify(result.error),
+                  text: JSON.stringify(result.error),
+                  level: "error",
                 })
                 dialog.clear()
                 return
@@ -246,7 +245,12 @@ function AutoMethod(props: AutoMethodProps) {
             props.authorization.instructions.match(/[A-Z0-9]{4}-[A-Z0-9]{4,5}/)?.[0] ?? props.authorization.url
           clipboard
             .write?.(code)
-            .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+            .then(() =>
+              toast.show({
+                text: "Copied to clipboard",
+                level: "info",
+              }),
+            )
             .catch(toast.error)
         },
       },
@@ -260,11 +264,11 @@ function AutoMethod(props: AutoMethodProps) {
     })
     if (result.error) {
       toast.show({
-        variant: "error",
-        message:
+        text:
           "name" in result.error && result.error.name === "ProviderAuthOauthCallbackFailed"
             ? "OAuth authorization failed. Try /connect again."
             : JSON.stringify(result.error),
+        level: "error",
       })
       dialog.clear()
       return
@@ -371,8 +375,8 @@ function ApiMethod(props: ApiMethodProps) {
         await sync.bootstrap()
         if (props.custom && !sync.data.provider_next.all.some((provider) => provider.id === props.providerID)) {
           toast.show({
-            variant: "info",
-            message: `Saved credential for ${props.providerID}. Configure it in graphagent.json to use it.`,
+            text: `Saved credential for ${props.providerID}. Configure it in graphagent.json to use it.`,
+            level: "info",
           })
           dialog.clear()
           return

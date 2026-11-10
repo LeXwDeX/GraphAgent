@@ -45,7 +45,9 @@ export function DialogSessionList() {
   const currentSessionID = createMemo(() => (route.data.type === "session" ? route.data.sessionID : undefined))
   // sync.data.session is id-ordered (binary-search invariant); the browse
   // fallback re-sorts by recency for display, matching the search results.
-  const sessions = createMemo(() => searchResults() ?? [...sync.data.session].toSorted((a, b) => b.time.updated - a.time.updated))
+  const sessions = createMemo(
+    () => searchResults() ?? [...sync.data.session].toSorted((a, b) => b.time.updated - a.time.updated),
+  )
 
   function recover(session: NonNullable<ReturnType<typeof sessions>[number]>) {
     const workspace = project.workspace.get(session.workspaceID!)
@@ -59,18 +61,16 @@ export function DialogSessionList() {
           result = await sdk.client.experimental.workspace.create({ type: selection.workspaceType, branch: null })
         } catch (err) {
           toast.show({
-            title: "Failed to create workspace",
-            message: errorMessage(err),
-            variant: "error",
+            text: "Failed to create workspace: " + errorMessage(err),
+            level: "error",
           })
           return
         }
         const workspace = result?.data
         if (!workspace) {
           toast.show({
-            title: "Failed to create workspace",
-            message: errorMessage(result?.error ?? "no response"),
-            variant: "error",
+            text: "Failed to create workspace: " + errorMessage(result?.error ?? "no response"),
+            level: "error",
           })
           return
         }
@@ -102,9 +102,8 @@ export function DialogSessionList() {
           const result = await sdk.client.experimental.workspace.remove({ id: session.workspaceID! })
           if (result.error) {
             toast.show({
-              variant: "error",
-              title: "Failed to delete workspace",
-              message: errorMessage(result.error),
+              text: "Failed to delete workspace: " + errorMessage(result.error),
+              level: "error",
             })
             return false
           }
@@ -257,9 +256,8 @@ export function DialogSessionList() {
                     recover(session)
                   } else {
                     toast.show({
-                      variant: "error",
-                      title: "Failed to delete session",
-                      message: errorMessage(result.error),
+                      text: "Failed to delete session: " + errorMessage(result.error),
+                      level: "error",
                     })
                   }
                   setToDelete(undefined)
@@ -270,9 +268,8 @@ export function DialogSessionList() {
                   recover(session)
                 } else {
                   toast.show({
-                    variant: "error",
-                    title: "Failed to delete session",
-                    message: errorMessage(err),
+                    text: "Failed to delete session: " + errorMessage(err),
+                    level: "error",
                   })
                 }
                 setToDelete(undefined)

@@ -28,8 +28,11 @@ import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Main } from "../../../src/routes/session"
 import { useFooterStatus } from "../../../src/shell/footer-status"
+import { HookProgress } from "../../../src/shell/hook-progress"
 import { DialogProvider } from "../../../src/ui/dialog"
-import { ToastProvider } from "../../../src/ui/toast"
+import { FooterToastProvider } from "../../../src/ui/toast"
+import { TickerProvider } from "../../../src/context/ticker-context"
+import { HookStatusProvider } from "../../../src/context/hook-status"
 import { tmpdir } from "../../fixture/fixture"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -146,7 +149,7 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
 
   // Mirrors the production footer slot that renders transient footer content.
   function FooterStatusView() {
-    const status = useFooterStatus()
+    const status = useFooterStatus(() => <HookProgress sessionID={sessionID} />)
     return <box flexShrink={0}>{status()}</box>
   }
 
@@ -164,43 +167,47 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                 <GraphagentKeymapProvider keymap={keymap}>
                   <ArgsProvider>
                     <KVProvider>
-                      <ToastProvider>
-                        <RouteProvider initialRoute={{ type: "session", sessionID }}>
-                          <TuiConfigProvider config={config}>
-                            <SDKProvider
-                              url="http://test"
-                              directory={directory}
-                              events={events.source}
-                              fetch={calls.fetch}
-                            >
-                              <ProjectProvider>
-                                <SyncProvider>
-                                  <ThemeProvider mode="dark">
-                                    <LocalProvider>
-                                      <PromptStashProvider>
-                                        <DialogProvider>
-                                          <FrecencyProvider>
-                                            <PromptHistoryProvider>
-                                              <PromptRefProvider>
-                                                <EditorContextProvider integration={{}}>
-                                                  <LocationProvider>
-                                                    <Probe />
-                                                    <FooterStatusView />
-                                                  </LocationProvider>
-                                                </EditorContextProvider>
-                                              </PromptRefProvider>
-                                            </PromptHistoryProvider>
-                                          </FrecencyProvider>
-                                        </DialogProvider>
-                                      </PromptStashProvider>
-                                    </LocalProvider>
-                                  </ThemeProvider>
-                                </SyncProvider>
-                              </ProjectProvider>
-                            </SDKProvider>
-                          </TuiConfigProvider>
-                        </RouteProvider>
-                      </ToastProvider>
+                      <FooterToastProvider>
+                        <TickerProvider>
+                          <HookStatusProvider>
+                            <RouteProvider initialRoute={{ type: "session", sessionID }}>
+                              <TuiConfigProvider config={config}>
+                                <SDKProvider
+                                  url="http://test"
+                                  directory={directory}
+                                  events={events.source}
+                                  fetch={calls.fetch}
+                                >
+                                  <ProjectProvider>
+                                    <SyncProvider>
+                                      <ThemeProvider mode="dark">
+                                        <LocalProvider>
+                                          <PromptStashProvider>
+                                            <DialogProvider>
+                                              <FrecencyProvider>
+                                                <PromptHistoryProvider>
+                                                  <PromptRefProvider>
+                                                    <EditorContextProvider integration={{}}>
+                                                      <LocationProvider>
+                                                        <Probe />
+                                                        <FooterStatusView />
+                                                      </LocationProvider>
+                                                    </EditorContextProvider>
+                                                  </PromptRefProvider>
+                                                </PromptHistoryProvider>
+                                              </FrecencyProvider>
+                                            </DialogProvider>
+                                          </PromptStashProvider>
+                                        </LocalProvider>
+                                      </ThemeProvider>
+                                    </SyncProvider>
+                                  </ProjectProvider>
+                                </SDKProvider>
+                              </TuiConfigProvider>
+                            </RouteProvider>
+                          </HookStatusProvider>
+                        </TickerProvider>
+                      </FooterToastProvider>
                     </KVProvider>
                   </ArgsProvider>
                 </GraphagentKeymapProvider>
@@ -277,7 +284,7 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
         },
       },
     })
-    await waitForFrame(app, "Checking model policy")
+    await waitForFrame(app, "policy check")
     events.emit({
       directory,
       project: "proj_test",
@@ -308,6 +315,7 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
     })
     const notified = await waitForFrame(app, "Hook warning for user")
     expect(notified).not.toContain("Checking model policy")
+    expect(notified).not.toContain("policy check")
 
     // Exercise the mounted session's terminal outlet; only its own TTY receives a sequence.
     const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY")

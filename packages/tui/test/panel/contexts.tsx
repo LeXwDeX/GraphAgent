@@ -15,7 +15,7 @@ import { LocalProvider, useLocal } from "../../src/context/local"
 import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider, useProject } from "../../src/context/project"
 import { RouteProvider, useRoute } from "../../src/context/route"
-import { SDKProvider } from "../../src/context/sdk"
+import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider, useTheme } from "../../src/context/theme"
 import { TuiConfigProvider } from "../../src/config"
@@ -27,7 +27,8 @@ import { PanelHost, PanelHostProvider, createPanelHost, type PanelHostApi, type 
 import { PromptStashProvider, usePromptStash } from "../../src/component/prompt/stash"
 import { DialogProvider } from "../../src/ui/dialog"
 import { BottomZoneProvider, useBottomZone, type BottomZoneStateApi } from "../../src/shell/bottom-zone"
-import { ToastProvider, useToast } from "../../src/ui/toast"
+import { FooterToastProvider, useToast } from "../../src/ui/toast"
+import { HookStatusProvider, useHookStatus } from "../../src/context/hook-status"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { TestTuiContexts } from "../fixture/tui-environment"
@@ -111,6 +112,8 @@ export interface AppPanelTestContext {
   theme: ReturnType<typeof useTheme>
   stash: ReturnType<typeof usePromptStash>
   toast: ReturnType<typeof useToast>
+  hooks: ReturnType<typeof useHookStatus>
+  sdk: ReturnType<typeof useSDK>
   /** Shared ask state so confirm/choice promises can be driven from tests. */
   bottomZone: BottomZoneStateApi
 }
@@ -156,39 +159,41 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
         <ExitProvider exit={() => {}}>
           <ArgsProvider>
             <KVProvider>
-              <ToastProvider>
-<ClipboardProvider>
-                  <RouteProvider>
-                    <TuiConfigProvider config={createTuiResolvedConfig()}>
-                      <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
-                        <ProjectProvider>
-                          <SyncProvider>
-                            <ThemeProvider mode="dark">
-                              <LocalProvider>
-                                <LocationProvider>
-                                  <PromptStashProvider>
-                                    <DialogProvider>
-                                      <BottomZoneProvider>
-                                        <AppPanelSetup
-                                          language={props.language}
-                                          setup={props.setup}
-                                          onReady={props.onReady}
-                                        >
-                                          <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
-                                        </AppPanelSetup>
-                                      </BottomZoneProvider>
-                                    </DialogProvider>
-                                  </PromptStashProvider>
-                                </LocationProvider>
-                              </LocalProvider>
-                            </ThemeProvider>
-                          </SyncProvider>
-                        </ProjectProvider>
-                      </SDKProvider>
-                    </TuiConfigProvider>
-                  </RouteProvider>
-                </ClipboardProvider>
-              </ToastProvider>
+              <FooterToastProvider>
+                <HookStatusProvider>
+                  <ClipboardProvider>
+                    <RouteProvider>
+                      <TuiConfigProvider config={createTuiResolvedConfig()}>
+                        <SDKProvider url="http://test" directory={directory} events={events.source} fetch={calls.fetch}>
+                          <ProjectProvider>
+                            <SyncProvider>
+                              <ThemeProvider mode="dark">
+                                <LocalProvider>
+                                  <LocationProvider>
+                                    <PromptStashProvider>
+                                      <DialogProvider>
+                                        <BottomZoneProvider>
+                                          <AppPanelSetup
+                                            language={props.language}
+                                            setup={props.setup}
+                                            onReady={props.onReady}
+                                          >
+                                            <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
+                                          </AppPanelSetup>
+                                        </BottomZoneProvider>
+                                      </DialogProvider>
+                                    </PromptStashProvider>
+                                  </LocationProvider>
+                                </LocalProvider>
+                              </ThemeProvider>
+                            </SyncProvider>
+                          </ProjectProvider>
+                        </SDKProvider>
+                      </TuiConfigProvider>
+                    </RouteProvider>
+                  </ClipboardProvider>
+                </HookStatusProvider>
+              </FooterToastProvider>
             </KVProvider>
           </ArgsProvider>
         </ExitProvider>
@@ -211,6 +216,8 @@ function AppPanelSetup(
   const theme = useTheme()
   const stash = usePromptStash()
   const toast = useToast()
+  const hooks = useHookStatus()
+  const sdk = useSDK()
   const bottomZone = useBottomZone()
   let seeded = false
 
@@ -221,7 +228,9 @@ function AppPanelSetup(
     // fixture leaves unset; pin it after the bootstrap so panel assertions do
     // not depend on the host locale.
     setLanguage(props.language ?? "zh-CN")
-    void Promise.resolve(props.setup?.({ sync, project, route, local, theme, stash, toast, bottomZone })).then(() => {
+    void Promise.resolve(
+      props.setup?.({ sync, project, route, local, theme, stash, toast, hooks, sdk, bottomZone }),
+    ).then(() => {
       props.onReady?.()
     })
   })

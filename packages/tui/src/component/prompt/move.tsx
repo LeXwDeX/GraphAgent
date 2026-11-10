@@ -60,7 +60,10 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
       homeDestination?.clear()
       setProgress(undefined)
       setCreating(false)
-      toast.show({ title: t("panel.move.create.failed"), message: errorMessage(err), variant: "error" })
+      toast.show({
+        text: `${t("panel.move.create.failed")}: ${errorMessage(err)}`,
+        level: "error",
+      })
       return
     }
   }

@@ -34,7 +34,7 @@ async function mountPrompt(input: {
     { KVProvider },
     { ThemeProvider },
     { TuiConfigProvider },
-    { ToastProvider },
+    { FooterToastProvider },
     { GraphagentKeymapProvider, registerGraphagentKeymap },
   ] = await Promise.all([
     import("../../../src/ui/dialog"),
@@ -69,11 +69,11 @@ async function mountPrompt(input: {
           <TuiConfigProvider config={resolvedConfig}>
             <KVProvider>
               <ThemeProvider mode="dark">
-                <ToastProvider>
+                <FooterToastProvider>
                   <DialogProvider>
                     <DialogPrompt title="Rename Session" value="draft" onConfirm={input.onConfirm} />
                   </DialogProvider>
-                </ToastProvider>
+                </FooterToastProvider>
               </ThemeProvider>
             </KVProvider>
           </TuiConfigProvider>

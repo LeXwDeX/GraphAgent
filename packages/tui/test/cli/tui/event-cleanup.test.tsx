@@ -30,7 +30,8 @@ import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Main } from "../../../src/routes/session"
 import { DialogProvider } from "../../../src/ui/dialog"
-import { ToastProvider } from "../../../src/ui/toast"
+import { FooterToastProvider } from "../../../src/ui/toast"
+import { HookStatusProvider } from "../../../src/context/hook-status"
 import { tmpdir } from "../../fixture/fixture"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -260,55 +261,57 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
               <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
-                    <ToastProvider>
-                      <RouteProvider initialRoute={{ type: "session", sessionID: routeSessionID }}>
-                        <TuiConfigProvider config={config}>
-                          <SDKProvider
-                            url="http://test"
-                            directory={directory}
-                            events={events.source}
-                            fetch={calls.fetch}
-                          >
-                            <ProjectProvider>
-                              <SyncProvider>
-                                <ThemeProvider mode="dark">
-                                  <LocalProvider>
-                                    <PromptStashProvider>
-                                      <DialogProvider>
-                                        <FrecencyProvider>
-                                          <PromptHistoryProvider>
-                                            <PromptRefProvider>
-                                              <EditorContextProvider integration={{}}>
-                                                <LocationProvider>
-                                                  <BusCounter
-                                                    onReady={(count) => {
-                                                      counter = count
-                                                      resolveReady()
-                                                    }}
-                                                  />
-                                                  <SyncProbe onSync={(value) => (sync = value)} />
-                                                  <Show when={mounted()}>
-                                                    {view === "session" ? (
-                                                      <Main />
-                                                    ) : (
-                                                      <Prompt sessionID={routeSessionID} />
-                                                    )}
-                                                  </Show>
-                                                </LocationProvider>
-                                              </EditorContextProvider>
-                                            </PromptRefProvider>
-                                          </PromptHistoryProvider>
-                                        </FrecencyProvider>
-                                      </DialogProvider>
-                                    </PromptStashProvider>
-                                  </LocalProvider>
-                                </ThemeProvider>
-                              </SyncProvider>
-                            </ProjectProvider>
-                          </SDKProvider>
-                        </TuiConfigProvider>
-                      </RouteProvider>
-                    </ToastProvider>
+                    <FooterToastProvider>
+                      <HookStatusProvider>
+                        <RouteProvider initialRoute={{ type: "session", sessionID: routeSessionID }}>
+                          <TuiConfigProvider config={config}>
+                            <SDKProvider
+                              url="http://test"
+                              directory={directory}
+                              events={events.source}
+                              fetch={calls.fetch}
+                            >
+                              <ProjectProvider>
+                                <SyncProvider>
+                                  <ThemeProvider mode="dark">
+                                    <LocalProvider>
+                                      <PromptStashProvider>
+                                        <DialogProvider>
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider integration={{}}>
+                                                  <LocationProvider>
+                                                    <BusCounter
+                                                      onReady={(count) => {
+                                                        counter = count
+                                                        resolveReady()
+                                                      }}
+                                                    />
+                                                    <SyncProbe onSync={(value) => (sync = value)} />
+                                                    <Show when={mounted()}>
+                                                      {view === "session" ? (
+                                                        <Main />
+                                                      ) : (
+                                                        <Prompt sessionID={routeSessionID} />
+                                                      )}
+                                                    </Show>
+                                                  </LocationProvider>
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
+                                        </DialogProvider>
+                                      </PromptStashProvider>
+                                    </LocalProvider>
+                                  </ThemeProvider>
+                                </SyncProvider>
+                              </ProjectProvider>
+                            </SDKProvider>
+                          </TuiConfigProvider>
+                        </RouteProvider>
+                      </HookStatusProvider>
+                    </FooterToastProvider>
                   </KVProvider>
                 </ArgsProvider>
               </GraphagentKeymapProvider>

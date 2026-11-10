@@ -58,8 +58,10 @@ import { askConfirm } from "../../ask/local-ask"
 import { TodoItem } from "../../component/todo-item"
 import type { PromptInfo } from "../../component/prompt/history"
 import { ForkPanel } from "../../panel/fork"
+import { HooksPanel } from "../../panel/hooks"
 import { MessagePanel } from "../../panel/message"
 import { TimelinePanel } from "../../panel/timeline"
+import { useHookStatus } from "../../context/hook-status"
 import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { SubagentFooter } from "./subagent-footer.tsx"
@@ -245,8 +247,7 @@ export function Main() {
   const toast = useToast()
   const sdk = useSDK()
   const editor = useEditorContext()
-  const [hookStatus, setHookStatus] = createSignal<Record<string, string>>({})
-  const currentHookStatus = createMemo(() => Object.values(hookStatus())[0])
+  const hookStatus = useHookStatus()
 
   onCleanup(
     event.subscribe((evt) => {
@@ -259,7 +260,8 @@ export function Main() {
       if (evt.properties.sessionID !== route.sessionID) return
       if (evt.type === "session.hook.message") {
         const message = evt.properties.message
-        if (typeof message === "string" && message) toast.show({ message, variant: "info", duration: 5000 })
+        if (typeof message === "string" && message)
+          toast.show({ text: message, level: "info", dedupeKey: "session.hook.message" })
         return
       }
       if (evt.type === "session.hook.terminal") {
@@ -267,19 +269,7 @@ export function Main() {
         if (process.stdout.isTTY && typeof sequence === "string") process.stdout.write(sequence)
         return
       }
-      const { hookID, statusMessage, phase } = evt.properties
-      if (typeof hookID !== "string") return
-      if (phase === "started") {
-        if (typeof statusMessage !== "string") return
-        setHookStatus((current) => ({ ...current, [hookID]: statusMessage }))
-        return
-      }
-      // finished, cancelled and timeout are all terminal for the footer row.
-      setHookStatus((current) => {
-        const next = { ...current }
-        delete next[hookID]
-        return next
-      })
+      hookStatus.update(evt.properties)
     }),
   )
 
@@ -324,7 +314,6 @@ export function Main() {
         const current = ++generation
         const isCurrent = () => current === generation
         seeded = false
-        setHookStatus({})
         lastSwitch = undefined
         prompt?.set(route.prompt ?? { input: "", parts: [] })
 
@@ -336,8 +325,8 @@ export function Main() {
             if (!isCurrent()) return
             if (!result.data) {
               toast.show({
-                message: `Session not found: ${sessionID}`,
-                variant: "error",
+                text: `Session not found: ${sessionID}`,
+                level: "error",
                 duration: 5000,
               })
               navigate({ type: "home" })
@@ -377,8 +366,8 @@ export function Main() {
           .catch((error) => {
             if (!isCurrent()) return
             toast.show({
-              message: errorMessage(error),
-              variant: "error",
+              text: errorMessage(error),
+              level: "error",
               duration: 5000,
             })
             navigate({ type: "home" })
@@ -412,6 +401,8 @@ export function Main() {
     if (bottomZone.host.top()?.id === id) return
     bottomZone.host.push({ id, render })
   }
+
+  onCleanup(commands.setHandler("hooks.list", () => openBottomPanel("hooks", () => <HooksPanel />)))
 
   function previewMessage(messageID?: string) {
     if (!messageID) return
@@ -515,7 +506,11 @@ export function Main() {
       sessionID,
     })
     const status = sync.data.session_status[sessionID]
-    if (status?.type === "retry") toast.show({ title: "Retry Error", message: status.message, variant: "warning" })
+    if (status?.type === "retry")
+      toast.show({
+        text: "Retry Error: " + status.message,
+        level: "warning",
+      })
   }
 
   function moveFirstChild() {
@@ -585,8 +580,8 @@ export function Main() {
         const selectedModel = local.model.current()
         if (!selectedModel) {
           toast.show({
-            variant: "warning",
-            message: "Connect a provider to summarize this session",
+            text: "Connect a provider to summarize this session",
+            level: "warning",
             duration: 3000,
           })
           return
@@ -866,7 +861,10 @@ export function Main() {
           (msg) => msg.role === "assistant" && (!revertMessage || orderedBefore(msg, revertMessage)),
         )
         if (!lastAssistantMessage) {
-          toast.show({ message: "No assistant messages found", variant: "error" })
+          toast.show({
+            text: "No assistant messages found",
+            level: "error",
+          })
           dialog.clear()
           return
         }
@@ -874,7 +872,10 @@ export function Main() {
         const parts = sync.data.part[lastAssistantMessage.id] ?? []
         const textParts = parts.filter((part) => part.type === "text")
         if (textParts.length === 0) {
-          toast.show({ message: "No text parts found in last assistant message", variant: "error" })
+          toast.show({
+            text: "No text parts found in last assistant message",
+            level: "error",
+          })
           dialog.clear()
           return
         }
@@ -885,8 +886,8 @@ export function Main() {
           .trim()
         if (!text) {
           toast.show({
-            message: "No text content found in last assistant message",
-            variant: "error",
+            text: "No text content found in last assistant message",
+            level: "error",
           })
           dialog.clear()
           return
@@ -894,8 +895,18 @@ export function Main() {
 
         clipboard
           .write?.(text)
-          .then(() => toast.show({ message: "Message copied to clipboard!", variant: "success" }))
-          .catch(() => toast.show({ message: "Failed to copy to clipboard", variant: "error" }))
+          .then(() =>
+            toast.show({
+              text: "Message copied to clipboard!",
+              level: "success",
+            }),
+          )
+          .catch(() =>
+            toast.show({
+              text: "Failed to copy to clipboard",
+              level: "error",
+            }),
+          )
         dialog.clear()
       },
     },
@@ -920,9 +931,15 @@ export function Main() {
             },
           )
           await clipboard.write?.(transcript)
-          toast.show({ message: "Session transcript copied to clipboard!", variant: "success" })
+          toast.show({
+            text: "Session transcript copied to clipboard!",
+            level: "success",
+          })
         } catch {
-          toast.show({ message: "Failed to copy session transcript", variant: "error" })
+          toast.show({
+            text: "Failed to copy session transcript",
+            level: "error",
+          })
         }
         dialog.clear()
       },
@@ -995,10 +1012,16 @@ export function Main() {
               await writeExport(filepath, result)
             }
 
-            toast.show({ message: `Session exported to ${filename}`, variant: "success" })
+            toast.show({
+              text: `Session exported to ${filename}`,
+              level: "success",
+            })
           }
         } catch {
-          toast.show({ message: "Failed to export session", variant: "error" })
+          toast.show({
+            text: "Failed to export session",
+            level: "error",
+          })
         }
         dialog.clear()
       },
@@ -1253,17 +1276,17 @@ export function Main() {
                           const [hover, setHover] = createSignal(false)
 
                           const handleUnrevert = async () => {
-                              if (!bottomZone) return
-                              const confirmed = await askConfirm(bottomZone, {
-                                title: "Confirm Redo",
-                                body: "Are you sure you want to restore the reverted messages?",
-                                confirmLabel: t("ask.confirm.confirm"),
-                                cancelLabel: t("ask.confirm.cancel"),
-                              })
-                              if (confirmed) {
-                                keymap.dispatchCommand("session.redo")
-                              }
+                            if (!bottomZone) return
+                            const confirmed = await askConfirm(bottomZone, {
+                              title: "Confirm Redo",
+                              body: "Are you sure you want to restore the reverted messages?",
+                              confirmLabel: t("ask.confirm.confirm"),
+                              cancelLabel: t("ask.confirm.cancel"),
+                            })
+                            if (confirmed) {
+                              keymap.dispatchCommand("session.redo")
                             }
+                          }
 
                           return (
                             <box
@@ -1347,13 +1370,6 @@ export function Main() {
                   <SubagentFooter />
                 </Show>
                 <Show when={visible()}>
-                  <Show when={currentHookStatus()}>
-                    {(status) => (
-                      <text fg={theme.textMuted} paddingLeft={3}>
-                        {status()}
-                      </text>
-                    )}
-                  </Show>
                   <Prompt
                     visible={visible() && !disabled()}
                     ref={bind}
@@ -2342,7 +2358,11 @@ function Task(props: ToolProps) {
           navigate({ type: "session", sessionID: sessionID()! })
         }
         const status = retry()
-        if (status) toast.show({ title: "Retry Error", message: status.message, variant: "warning" })
+        if (status)
+          toast.show({
+            text: "Retry Error: " + status.message,
+            level: "warning",
+          })
       }}
     >
       {content()}
