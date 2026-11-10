@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, expect, test } from "bun:test"
+import { createMemo, createRoot } from "solid-js"
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { setLanguage, t } from "../../src/i18n"
-import { renderDagModeReceipt } from "../../src/i18n/receipt"
+import { parseDagModeReceipt, renderDagModeReceipt, renderUserTextPart } from "../../src/i18n/receipt"
 
 const ctx = { key: "<leader>d" }
 
@@ -58,4 +59,45 @@ test("renders in the language active at call time", () => {
   const english = renderDagModeReceipt({ kind: "off", values: { n: 1 } }, t, ctx)
   expect(chinese).not.toBe(english)
   expect(english).toContain("DAG mode is off")
+})
+
+test("parses known receipts and rejects malformed metadata", () => {
+  expect(parseDagModeReceipt({ receipt: { kind: "off", values: { n: 2 } } })).toEqual({
+    kind: "off",
+    values: { n: 2 },
+  })
+  expect(parseDagModeReceipt({ receipt: { kind: "status" } })?.kind).toBe("status")
+  expect(parseDagModeReceipt({ receipt: { kind: "future", values: {} } })).toBeUndefined()
+  expect(parseDagModeReceipt({ receipt: { kind: "on", values: "invalid" } })).toEqual({
+    kind: "on",
+    values: undefined,
+  })
+  expect(parseDagModeReceipt({})).toBeUndefined()
+  expect(parseDagModeReceipt(undefined)).toBeUndefined()
+})
+
+test("user text parts render receipts and fall back to the server text", () => {
+  setLanguage("en")
+  const localized = renderUserTextPart(
+    { text: "server fallback", metadata: { receipt: { kind: "off", values: { n: 1 } } } },
+    ctx,
+  )
+  expect(localized).toContain("DAG mode is off")
+  expect(localized).not.toContain("server fallback")
+  expect(renderUserTextPart({ text: "plain text" }, ctx)).toBe("plain text")
+  expect(
+    renderUserTextPart({ text: "unknown receipt", metadata: { receipt: { kind: "future", values: {} } } }, ctx),
+  ).toBe("unknown receipt")
+})
+
+test("a memo re-renders a historical receipt after a language switch", () => {
+  setLanguage("zh-CN")
+  const part = { text: "fallback", metadata: { receipt: { kind: "off", values: { n: 1 } } } }
+  createRoot((dispose) => {
+    const rendered = createMemo(() => renderUserTextPart(part, ctx))
+    expect(rendered()).toContain("DAG 模式已关闭")
+    setLanguage("en")
+    expect(rendered()).toContain("DAG mode is off")
+    dispose()
+  })
 })

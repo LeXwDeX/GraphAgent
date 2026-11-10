@@ -19,7 +19,7 @@ import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider, useTheme } from "../../src/context/theme"
 import { TuiConfigProvider } from "../../src/config"
-import { KVProvider } from "../../src/context/kv"
+import { KVProvider, useKV } from "../../src/context/kv"
 import { TickerProvider } from "../../src/context/ticker-context"
 import type { Ticker } from "../../src/context/ticker"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
@@ -114,6 +114,7 @@ export interface AppPanelTestContext {
   toast: ReturnType<typeof useToast>
   hooks: ReturnType<typeof useHookStatus>
   sdk: ReturnType<typeof useSDK>
+  kv: ReturnType<typeof useKV>
   /** Shared ask state so confirm/choice promises can be driven from tests. */
   bottomZone: BottomZoneStateApi
 }
@@ -218,6 +219,7 @@ function AppPanelSetup(
   const toast = useToast()
   const hooks = useHookStatus()
   const sdk = useSDK()
+  const kv = useKV()
   const bottomZone = useBottomZone()
   let seeded = false
 
@@ -229,7 +231,7 @@ function AppPanelSetup(
     // not depend on the host locale.
     setLanguage(props.language ?? "zh-CN")
     void Promise.resolve(
-      props.setup?.({ sync, project, route, local, theme, stash, toast, hooks, sdk, bottomZone }),
+      props.setup?.({ sync, project, route, local, theme, stash, toast, hooks, sdk, kv, bottomZone }),
     ).then(() => {
       props.onReady?.()
     })

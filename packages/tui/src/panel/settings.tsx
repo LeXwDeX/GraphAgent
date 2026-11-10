@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { InputRenderable, TextAttributes } from "@opentui/core"
+import { BoxRenderable, InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { useKV } from "../context/kv"
 import { useTheme } from "../context/theme"
 import { t, type MessageKey } from "../i18n"
@@ -11,45 +11,43 @@ import { EscapePriority, useBindings } from "../keymap"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { PanelShell, type PanelHint, type PanelTab } from "./shell"
 
+interface SettingRowBase {
+  id: string
+  label: string
+  description?: string
+  /** Muted trailing note, for example the current session state. */
+  suffix?: () => string | undefined
+  /** Rendered dimmed; activation is ignored when the write path is unavailable. */
+  disabled?: boolean
+}
+
 export type SettingRow =
-  | {
-      id: string
-      label: string
+  | (SettingRowBase & {
       kind: "choice"
       value: string
       options: readonly { value: string; label: string }[]
-      description?: string
+      /** Overrides the value text when no option matches, for example a custom rule. */
+      valueLabel?: string
       onChange(value: string): void
-    }
-  | {
-      id: string
-      label: string
+    })
+  | (SettingRowBase & {
       kind: "toggle"
       value: boolean
-      description?: string
       onChange(value: boolean): void
-    }
-  | {
-      id: string
-      label: string
+    })
+  | (SettingRowBase & {
       kind: "text"
       value: string
       secret?: boolean
-      description?: string
       /** Returns a message key; a non-empty result blocks the commit. */
       validate?(value: string): string | undefined
-      /** Muted trailing note, for example the current session state. */
-      suffix?: () => string
       onChange(value: string): void
-    }
-  | {
-      id: string
-      label: string
+    })
+  | (SettingRowBase & {
       kind: "action"
       valueLabel?: string
-      description?: string
       run(): void
-    }
+    })
 
 export interface SettingsTab {
   id: string
@@ -76,6 +74,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const [editing, setEditing] = createSignal<string>()
   const [error, setError] = createSignal<string>()
   let editInput: InputRenderable | undefined
+  let scroll: ScrollBoxRenderable | undefined
+  const rowRefs = new Map<string, BoxRenderable>()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const activeTabId = () => props.activeTab ?? internalTab() ?? props.tabs[0]?.id
@@ -94,6 +94,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
         setSelected(0)
         setEditing(undefined)
         setError(undefined)
+        scrollTo(currentTab()?.rows[0])
       },
       { defer: true },
     ),
@@ -126,36 +127,50 @@ export function SettingsPanel(props: SettingsPanelProps) {
     if (next) selectTab(next.id)
   }
 
+  function scrollTo(row: SettingRow | undefined) {
+    if (!row) return
+    queueMicrotask(() => {
+      const element = rowRefs.get(row.id)
+      if (!element || element.isDestroyed) return
+      scroll?.scrollChildIntoView(element)
+    })
+  }
+
   function move(direction: number) {
     const all = rows()
     if (all.length === 0) return
-    setSelected((current) => (current + direction + all.length) % all.length)
+    const next = (selected() + direction + all.length) % all.length
+    setSelected(next)
     setEditing(undefined)
     setError(undefined)
+    scrollTo(all[next])
   }
 
   function moveTo(index: number) {
     if (rows().length === 0) return
-    setSelected(((index % rows().length) + rows().length) % rows().length)
+    const next = ((index % rows().length) + rows().length) % rows().length
+    setSelected(next)
     setEditing(undefined)
     setError(undefined)
+    scrollTo(rows()[next])
   }
 
   function cycleChoice(row: Extract<SettingRow, { kind: "choice" }>) {
-    if (row.options.length === 0) return
+    if (row.disabled || row.options.length === 0) return
     const index = row.options.findIndex((option) => option.value === row.value)
     const next = row.options[(index + 1) % row.options.length]
     if (next) row.onChange(next.value)
   }
 
   function beginEdit(row: Extract<SettingRow, { kind: "text" }>) {
+    if (row.disabled) return
     setError(undefined)
     setEditing(row.id)
   }
 
   function activate() {
     const row = selectedRow()
-    if (!row) return
+    if (!row || row.disabled) return
     if (row.kind === "choice") cycleChoice(row)
     else if (row.kind === "toggle") row.onChange(!row.value)
     else if (row.kind === "action") row.run()
@@ -248,14 +263,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
       { key: "panel.next", label: t("panel.hint.next") },
     ]
     if (props.tabs.length > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
-    result.push({ key: "panel.submit", label: submitLabel })
+    if (!row?.disabled) result.push({ key: "panel.submit", label: submitLabel })
     result.push(...(props.hints ?? []))
     return result
   })
 
   function displayValue(row: SettingRow): string {
     if (row.kind === "choice") {
-      return row.options.find((option) => option.value === row.value)?.label ?? t("panel.setting.empty")
+      return (
+        row.valueLabel ?? row.options.find((option) => option.value === row.value)?.label ?? t("panel.setting.empty")
+      )
     }
     if (row.kind === "toggle") return row.value ? t("panel.setting.on") : t("panel.setting.off")
     if (row.kind === "action") return row.valueLabel ?? ""
@@ -271,14 +288,17 @@ export function SettingsPanel(props: SettingsPanelProps) {
       activeTab={activeTabId()}
       onTab={selectTab}
       hints={hints()}
+      scrollRef={(element) => (scroll = element)}
     >
       <For each={rows()}>
         {(row, index) => {
           const isSelected = () => selected() === index()
           const isEditing = () => editing() === row.id
+          onCleanup(() => rowRefs.delete(row.id))
           return (
             <>
               <box
+                ref={(element: BoxRenderable) => rowRefs.set(row.id, element)}
                 height={1}
                 flexShrink={0}
                 flexDirection="row"
@@ -286,6 +306,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 onMouseDown={() => moveTo(index())}
                 onMouseUp={() => {
                   moveTo(index())
+                  if (row.disabled) return
                   if (row.kind === "text") beginEdit(row)
                   else if (row.kind === "action") row.run()
                   else if (row.kind === "choice") cycleChoice(row)
@@ -299,6 +320,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                   flexShrink={1}
                   overflow="hidden"
                   wrapMode="none"
+                  fg={row.disabled ? theme.textMuted : undefined}
                   attributes={isSelected() ? TextAttributes.BOLD : undefined}
                 >
                   {row.label}
@@ -307,13 +329,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
                 <Show
                   when={isEditing()}
                   fallback={
-                    <Show when={row.kind === "text" && (row as Extract<SettingRow, { kind: "text" }>).suffix?.()}>
+                    <Show when={row.suffix?.()}>
                       <text flexShrink={0} fg={theme.textDim} wrapMode="none">
-                        {truncateCells(
-                          (row as Extract<SettingRow, { kind: "text" }>).suffix!(),
-                          valueBudget(),
-                          ambiguousWidth(),
-                        )}{" "}
+                        {truncateCells(row.suffix!()!, valueBudget(), ambiguousWidth())}{" "}
                       </text>
                     </Show>
                   }
@@ -334,7 +352,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
                   </box>
                 </Show>
                 <Show when={!isEditing()}>
-                  <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+                  <text flexShrink={0} fg={row.disabled ? theme.textDim : theme.textMuted} wrapMode="none">
                     {truncateCells(displayValue(row), valueBudget(), ambiguousWidth())}
                   </text>
                 </Show>
