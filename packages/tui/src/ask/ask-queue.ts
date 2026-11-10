@@ -8,7 +8,7 @@ import { useSync } from "../context/sync"
 /**
  * One pending user decision. Permission and question entries mirror the server
  * stores; confirm and choice entries are local surfaces resolved by their
- * owning feature. The queue never inspects DAG state: server-side auto
+ * owning feature. The queue never inspects workflow state: server-side auto
  * adjudication decides what reaches the user.
  */
 export type AskRequest =

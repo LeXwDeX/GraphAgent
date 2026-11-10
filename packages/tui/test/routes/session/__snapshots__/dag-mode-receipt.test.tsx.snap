@@ -1,0 +1,273 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`renders the on receipt in zh-CN 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  DAG 模式已开启（本会话，自下一次请求起生效）；token 消耗通常成倍增加；并发上限 4（所有会话共   
+  ┃  享）、单工作流节点上限 32、token 预算 200000；关闭：/dag-mode off 或                           
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;
+
+exports[`renders the on receipt in en 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  DAG mode is on for this session, starting with the next request. Token usage usually           
+  ┃  multiplies; concurrency cap 4 (shared by all sessions), per-workflow node cap 32, token        
+  ┃  budget 200000. Turn it off with /dag-mode off or .                                             
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;
+
+exports[`renders the off receipt in zh-CN 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  DAG 模式已关闭；2 个运行中的工作流会继续到结束；之后主 agent 只在你明确要求时启动工作流        
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;
+
+exports[`renders the off receipt in en 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  DAG mode is off. 2 running workflow(s) will finish; after that the main agent starts           
+  ┃  workflows only when you ask.                                                                   
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;
+
+exports[`renders the status receipt in zh-CN 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  模式 on；新会话默认 off；并发 1/4；节点上限 32；token 100/200                                  
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;
+
+exports[`renders the status receipt in en 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  Mode on; new-session default off; concurrency 1/4; node cap 32; tokens 100/200                 
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;
+
+exports[`renders the budget receipt in zh-CN 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  本会话 DAG 预算已设为 5000 token；有因预算暂停的工作流时追加已恢复 1 个                        
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;
+
+exports[`renders the budget receipt in en 1`] = `
+"                                                                                                    
+  ┃                                                                                                 
+  ┃  DAG budget for this session is now 5000 tokens; restored 1 workflow(s) that were paused by     
+  ┃  the budget.                                                                                    
+  ┃                                                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ┃                                                                                                 
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  
+                                                                                 agents   commands  
+                                                                                                    
+"
+`;

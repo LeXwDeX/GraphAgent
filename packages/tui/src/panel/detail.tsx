@@ -19,6 +19,8 @@ export interface DetailRow<T = unknown> {
   selectable?: boolean
   /** One-line note shown only while the row is selected. */
   note?: string
+  /** Wrapped text revealed below the row while it is selected. */
+  body?: string
 }
 
 export interface DetailPanelProps<T = unknown> {
@@ -263,6 +265,13 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
                 <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
                   {truncateCells(row.note!, innerWidth(), ambiguousWidth())}
                 </text>
+              </Show>
+              <Show when={isSelected() && row.body}>
+                <box flexShrink={0} paddingLeft={2} paddingBottom={1}>
+                  <text wrapMode="word" fg={theme.text}>
+                    {row.body!}
+                  </text>
+                </box>
               </Show>
             </>
           )

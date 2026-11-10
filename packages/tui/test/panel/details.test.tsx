@@ -5,6 +5,7 @@
 import type { FormatterStatus, LspStatus, McpStatus, VcsFileStatus } from "@graphagent/sdk"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { onMount } from "solid-js"
+import { useTuiConfig } from "../../src/config"
 import { useBindings } from "../../src/keymap"
 import { setLanguage } from "../../src/i18n"
 import { HelpPanel } from "../../src/panel/help"
@@ -33,6 +34,16 @@ function RegisteredShortcut() {
   useBindings(() => ({
     commands: [{ name: "test.shortcut", title: "测试快捷键", category: "测试", run: () => {} }],
     bindings: [{ key: "ctrl+t", cmd: "test.shortcut", desc: "测试快捷键", group: "测试" }],
+  }))
+  return null
+}
+
+/** Registers an existing command from the resolved config so overrides reach /help. */
+function ReboundShortcut() {
+  const config = useTuiConfig()
+  useBindings(() => ({
+    commands: [{ name: "session.dagmode.toggle", title: "切换工作流模式", category: "测试", run: () => {} }],
+    bindings: config.keybinds.gather("test.help", ["session.dagmode.toggle"]),
   }))
   return null
 }
@@ -85,6 +96,64 @@ test("help panel lists keymap shortcuts and registry commands and closes with es
     await settle(app)
     expect(host?.depth()).toBe(0)
     expect(app.captureCharFrame()).not.toContain("帮助")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("help panel shows the rebound key for an existing command", async () => {
+  await using tmp = await shellState()
+  const app = await renderAppPanel(
+    () => (
+      <>
+        <ReboundShortcut />
+        <PanelSurface spec={{ id: "help", render: () => <HelpPanel /> }} />
+      </>
+    ),
+    {
+      width: 120,
+      height: 40,
+      state: tmp.path,
+      keybinds: { session_dagmode_toggle: "f8" },
+    },
+  )
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("帮助")
+    expect(frame).toContain("切换工作流模式")
+    expect(frame).toContain("f8")
+    expect(frame).not.toContain("ctrl+x d")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("status panel reveals the full recent error when its row is selected", async () => {
+  await using tmp = await shellState()
+  const segments = Array.from({ length: 40 }, (_, index) => `segment-${index}`)
+  const long = `export failed: ${segments.join(" ")}`
+  const app = await renderAppPanel(() => <PanelSurface spec={{ id: "status", render: () => <StatusPanel /> }} />, {
+    width: 120,
+    height: 40,
+    state: tmp.path,
+    setup: (context) => {
+      context.sync.set("mcp", { alpha: { status: "connected" } as McpStatus })
+      context.toast.error(new Error(long))
+    },
+  })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("最近的错误")
+    expect(frame).toContain("export failed:")
+    expect(frame).not.toContain("segment-39")
+
+    app.mockInput.pressArrow("down")
+    await settle(app)
+    const expanded = app.captureCharFrame()
+    expect(expanded).toContain("export failed:")
+    expect(expanded).toContain("segment-39")
   } finally {
     app.renderer.destroy()
   }
