@@ -26,6 +26,7 @@ import { AgentTool } from "./agent"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { Dag } from "@/dag/dag"
 import { DagControl } from "@/dag/control"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -657,6 +658,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(Database.defaultLayer),
       Layer.provide(RuntimeFlags.defaultLayer),
       Layer.provide(HookStartContext.defaultLayer),
+      Layer.provide(AgentScheduler.defaultLayer),
     ),
 )
 
@@ -687,6 +689,7 @@ export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer
   DagStore.node,
   DagMessages.node,
   MCP.node,
+  AgentScheduler.node,
 ])
 
 export * as ToolRegistry from "./registry"

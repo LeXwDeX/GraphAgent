@@ -7,9 +7,10 @@
 // reply fixture use type-only shims for branded IDs — converting them would
 // fork the shared harness shape without changing behavior.
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer, Semaphore, Fiber, Option } from "effect"
+import { Effect, Layer, Fiber, Option } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionPrompt } from "@/session/prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -112,7 +113,7 @@ function makeHarness(
     storeState,
     failUnrecoverableReasons,
     createCalls: () => createCalls,
-    fullLayer: Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer),
+    fullLayer: Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer, AgentScheduler.defaultLayer),
   }
 }
 
@@ -148,6 +149,11 @@ function makeSpawnInput(directory?: string): NodeSpawnInput {
   }
 }
 
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+function workflowSchedule() {
+  return { limit: { kind: "workflow" as const, workflowID: "wf-1" }, cap: 1 }
+}
+
 describe("spawnNode pause fence (#379)", () => {
   it("holds a queued node at the fence while the workflow is paused, then spawns after resume", async () => {
     let paused = true
@@ -158,7 +164,7 @@ describe("spawnNode pause fence (#379)", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput())
+          const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
           // Two+ poll cycles past the initial read: the fiber must still be
           // held — no child session, no terminal transition.
           yield* Effect.sleep(600)
@@ -185,7 +191,7 @@ describe("spawnNode pause fence (#379)", () => {
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput())
+            const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
             yield* Effect.sleep(300)
             expect(harness.createCalls()).toBe(0)
             rmSync(root, { recursive: true, force: true })
@@ -219,7 +225,7 @@ describe("spawnNode pause fence (#379)", () => {
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const spawning = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput()).pipe(Effect.forkScoped)
+            const spawning = yield* spawnNode(workflowSchedule(), makeSpawnInput()).pipe(Effect.forkScoped)
             yield* Effect.sleep(50)
             rmSync(root, { recursive: true, force: true })
             releaseAgent()
@@ -256,14 +262,17 @@ describe("spawnNode pause fence (#379)", () => {
         () => true,
         root,
       )
-      const semaphore = Semaphore.makeUnsafe(0)
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const result = yield* spawnNode(semaphore, makeSpawnInput())
+            const scheduler = yield* AgentScheduler.Service
+            // Hold the workflow's only child slot so the spawn stays queued in
+            // the scheduler, reproducing the old zero-permit semaphore wait.
+            const held = yield* scheduler.childSlot({ kind: "workflow", workflowID: "wf-1" }, 1)
+            const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
             yield* Effect.sleep(50)
             rmSync(root, { recursive: true, force: true })
-            yield* semaphore.release(1)
+            yield* held.release
             const settled = yield* Fiber.await(result.fiber).pipe(Effect.timeoutOption("5 seconds"))
             expect(Option.isSome(settled)).toBe(true)
             expect(harness.createCalls()).toBe(0)
@@ -281,7 +290,11 @@ describe("spawnNode pause fence (#379)", () => {
   it("#948: fails closed when the post-wait workflow read keeps failing", async () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-read-failure-")))
     try {
-      const harness = makeHarness(() => "running", () => true, root)
+      const harness = makeHarness(
+        () => "running",
+        () => true,
+        root,
+      )
       harness.storeState.failReads = 10
       await Effect.runPromise(
         Effect.scoped(
@@ -289,7 +302,7 @@ describe("spawnNode pause fence (#379)", () => {
             // The fiber must not materialize a child when the post-wait read
             // never recovers. Its exact failure channel is the caller loop's
             // nodeFailed seam; this direct harness asserts the safety boundary.
-            const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput(root))
+            const result = yield* spawnNode(workflowSchedule(), makeSpawnInput(root))
             yield* Fiber.await(result.fiber).pipe(Effect.timeout("5 seconds"))
             expect(harness.createCalls()).toBe(0)
             expect(harness.events).toContainEqual({ type: "nodeFailed", nodeID: "node-1" })
@@ -318,7 +331,7 @@ describe("spawnNode pause fence (#379)", () => {
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput(directoryA))
+            const result = yield* spawnNode(workflowSchedule(), makeSpawnInput(directoryA))
             yield* Effect.sleep(300)
             expect(harness.createCalls()).toBe(0)
             currentDirectory = directoryB
@@ -343,7 +356,7 @@ describe("spawnNode pause fence (#379)", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput())
+          const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
           yield* Effect.sleep(300)
           expect(harness.createCalls()).toBe(0)
           status = "cancelled"
@@ -363,7 +376,7 @@ describe("spawnNode pause fence (#379)", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), { ...makeSpawnInput(), timeoutMs: 0 })
+          const result = yield* spawnNode(workflowSchedule(), { ...makeSpawnInput(), timeoutMs: 0 })
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,

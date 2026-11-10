@@ -16,7 +16,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Fiber, Layer, Semaphore } from "effect"
+import { Effect, Fiber, Layer } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Global } from "@graphagent/core/global"
@@ -38,6 +38,13 @@ import {
 } from "@/dag/runtime/output-ref"
 import { makeNodeRow } from "./fixtures"
 import type { DagStore } from "@graphagent/core/dag/store"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 const tmpRoots: string[] = []
 
@@ -183,12 +190,12 @@ async function runSpawn(
   outputSchema?: Record<string, unknown>,
   overrides: Partial<NodeSpawnInput> = {},
 ) {
-  const semaphore = Semaphore.makeUnsafe(1)
-  const fullLayer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer)
+  const input = makeSpawnInput(outputSchema, overrides)
+  const fullLayer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer, AgentScheduler.defaultLayer)
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const result = yield* spawnNode(semaphore, makeSpawnInput(outputSchema, overrides))
+        const result = yield* spawnNode(spawnSchedule(input, 1), input)
         yield* Fiber.await(result.fiber)
       }),
     ).pipe(Effect.provide(fullLayer)) as Effect.Effect<never>,
@@ -255,22 +262,30 @@ describe("submit-time absolute-path capture (Train B, B-p1)", () => {
     if (!ref) throw new Error("missing input artifact")
     tmpRoots.push(path.dirname(ref.path))
     const { events, dagLayer } = makeEventTracker({ directory: dir })
-    const semaphore = Semaphore.makeUnsafe(1)
+    const input = makeSpawnInput(undefined, { directory: dir, inputArtifacts: [ref] })
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          yield* semaphore.take(1)
-          const spawned = yield* spawnNode(
-            semaphore,
-            makeSpawnInput(undefined, { directory: dir, inputArtifacts: [ref] }),
-          )
+          const scheduler = yield* AgentScheduler.Service
+          // Hold the only workflow slot so the spawn queues until the artifact
+          // is removed, matching the old semaphore-held window.
+          const held = yield* scheduler.childSlot({ kind: "workflow", workflowID: input.dagID }, 1)
+          const spawned = yield* spawnNode(spawnSchedule(input, 1), input)
           yield* Effect.promise(() => fs.chmod(ref.path, 0o600))
           yield* Effect.promise(() => fs.unlink(ref.path))
-          yield* semaphore.release(1)
+          yield* held.release
           yield* Fiber.await(spawned.fiber)
         }),
       ).pipe(
-        Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, makePromptLayer(reply("must not execute")))),
+        Effect.provide(
+          Layer.mergeAll(
+            dagLayer,
+            agentLayer,
+            sessionLayer,
+            makePromptLayer(reply("must not execute")),
+            AgentScheduler.defaultLayer,
+          ),
+        ),
       ) as Effect.Effect<void, Error>,
     )
     expect(events.some((event) => event.type === "nodeCompleted")).toBe(false)

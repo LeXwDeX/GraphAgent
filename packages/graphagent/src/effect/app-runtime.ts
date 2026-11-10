@@ -73,6 +73,7 @@ import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventResidueSweep } from "@graphagent/core/event/residue-sweep"
 import { Memory } from "@/memory/memory"
 import { SessionInbox } from "@/session/inbox"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { ToolSourceLedger } from "@/session/tool-source-ledger"
 
 const BaseAppLayer = Layer.mergeAll(
@@ -101,6 +102,7 @@ const BaseAppLayer = Layer.mergeAll(
     Session.defaultLayer,
     SessionStatus.defaultLayer,
     SessionInbox.defaultLayer,
+    AgentScheduler.defaultLayer,
     BackgroundJob.defaultLayer,
     RuntimeFlags.defaultLayer,
     EventV2Bridge.defaultLayer,

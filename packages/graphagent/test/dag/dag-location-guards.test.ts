@@ -77,6 +77,7 @@ import { EventTable } from "@graphagent/core/event/sql"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 const PROJECT_ID = "project-1"
 // #948 requires execution directories to exist. Keep this harness on real
@@ -113,10 +114,12 @@ function node(overrides: Partial<NodeConfig> = {}): NodeConfig {
 function takeWithin<A>(queue: Queue.Queue<A>, message: string) {
   return Queue.take(queue).pipe(
     Effect.timeoutOption("1 second"),
-    Effect.flatMap(Option.match({
+    Effect.flatMap(
+      Option.match({
       onNone: () => Effect.fail(new Error(message)),
       onSome: Effect.succeed,
-    })),
+      }),
+    ),
   )
 }
 
@@ -222,7 +225,8 @@ function twoInstanceLayer(input: TwoInstanceInput) {
   const events = EventV2.layer.pipe(Layer.provide(database))
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const realStore = DagStore.layer.pipe(Layer.provide(database))
-  const needsStoreWrapper = Boolean(input.failGetWorkflow) || Boolean(input.parkGetNodes) || Boolean(input.parkAdoptionClaim)
+  const needsStoreWrapper =
+    Boolean(input.failGetWorkflow) || Boolean(input.parkGetNodes) || Boolean(input.parkAdoptionClaim)
   const store = needsStoreWrapper
     ? Layer.effect(
         DagStore.Service,
@@ -260,23 +264,24 @@ function twoInstanceLayer(input: TwoInstanceInput) {
       ).pipe(Layer.provide(realStore))
     : realStore
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   // The session projector runs the SessionEvent.Moved projection (session row
   // + workflow directory re-stamp — the #269 atomic-adoption transition), so
   // publishing Moved through the bridge converges the workflow stamps in the
   // same durable transaction, exactly as production.
-  const sessionProjector = SessionProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
+  const sessionProjector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const base = Layer.mergeAll(
+    database,
+    events,
+    bridge,
+    store,
+    projector,
+    sessionProjector,
+    dag,
+    status,
+    AgentScheduler.defaultLayer,
   )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, sessionProjector, dag, status)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const session = Layer.mock(Session.Service, {
@@ -309,16 +314,24 @@ function twoInstanceLayer(input: TwoInstanceInput) {
     remove: ((sessionID: Session.Interface["remove"] extends (sessionID: infer A) => unknown ? A : never) =>
       Effect.gen(function* () {
         const db = yield* Database.Service
-        const rows = yield* db.db.select().from(SessionTable)
+        const rows = yield* db.db
+          .select()
+          .from(SessionTable)
           .where(eq(SessionTable.id, sessionID as never))
-          .all().pipe(Effect.orDie)
+          .all()
+          .pipe(Effect.orDie)
         const row = rows[0]
-        yield* db.db.delete(SessionTable).where(eq(SessionTable.id, sessionID as never)).run().pipe(Effect.orDie)
+        yield* db.db
+          .delete(SessionTable)
+          .where(eq(SessionTable.id, sessionID as never))
+          .run()
+          .pipe(Effect.orDie)
         const bridgeSvc = yield* EventV2Bridge.Service
         // Same shape the real remove publishes (SessionV1.Event.Deleted with
         // the session's info); the schema requires id/slug/projectID/
         // directory/title/version/time.
-        yield* bridgeSvc.publish(SessionV1Events.Event.Deleted, {
+        yield* bridgeSvc
+          .publish(SessionV1Events.Event.Deleted, {
           sessionID: sessionID as never,
           info: {
             id: row?.id ?? sessionID,
@@ -329,7 +342,8 @@ function twoInstanceLayer(input: TwoInstanceInput) {
             version: row?.version ?? "test",
             time: { created: Date.now(), updated: Date.now() },
           } as never,
-        }).pipe(Effect.orDie)
+          })
+          .pipe(Effect.orDie)
       })) as unknown as Session.Interface["remove"],
   })
   const queueFor = (dir: string | undefined) =>
@@ -386,7 +400,9 @@ function twoInstanceLayer(input: TwoInstanceInput) {
         gate.parked.value = true
         const result = Effect.promise(() => gate.wait).pipe(
           Effect.flatMap(() =>
-            Effect.die(new Error(`session ${(value as { sessionID?: string }).sessionID} removed during wake delivery`)),
+            Effect.die(
+              new Error(`session ${(value as { sessionID?: string }).sessionID} removed during wake delivery`),
+            ),
           ),
         )
         return Option.some({
@@ -396,10 +412,11 @@ function twoInstanceLayer(input: TwoInstanceInput) {
           result,
           abort: Effect.void,
         })
-      }).pipe(Effect.tap((prepared) => Option.isSome(prepared) ? persistAdmission ?? Effect.void : Effect.void)),
+      }).pipe(Effect.tap((prepared) => (Option.isSome(prepared) ? (persistAdmission ?? Effect.void) : Effect.void))),
   })
   const agent = Layer.mock(Agent.Service, {
-    get: () => Effect.succeed({
+    get: () =>
+      Effect.succeed({
       name: "build",
       mode: "all",
       permission: [],
@@ -505,23 +522,31 @@ function runTwoInstanceGuardTest<A>(
       const session = yield* Session.Service
       // ONE project row; TWO sessions in the SAME project but DISTINCT
       // directories — sibling worktrees of one project.
-      yield* database.db.insert(ProjectTable).values({
+      yield* database.db
+        .insert(ProjectTable)
+        .values({
         id: projectID as never,
         worktree: directoryA as never,
         sandboxes: [],
-      }).run().pipe(Effect.orDie)
+        })
+        .run()
+        .pipe(Effect.orDie)
       for (const [id, dir, slug, title] of [
         [sessionA, directoryA, "a", "Parent A"],
         [sessionB, directoryB, "b", "Parent B"],
       ] as const) {
-        yield* database.db.insert(SessionTable).values({
+        yield* database.db
+          .insert(SessionTable)
+          .values({
           id: id as never,
           project_id: projectID as never,
           slug,
           directory: dir as never,
           title,
           version: "test",
-        }).run().pipe(Effect.orDie)
+          })
+          .run()
+          .pipe(Effect.orDie)
       }
       if (beforeInit) yield* beforeInit({ database })
       const refB = {
@@ -557,7 +582,8 @@ function runTwoInstanceGuardTest<A>(
         messagesBySession,
       })
     }).pipe(
-      Effect.provide(twoInstanceLayer({
+      Effect.provide(
+        twoInstanceLayer({
         directoryA,
         directoryB,
         childPrompts: new Map([
@@ -575,7 +601,8 @@ function runTwoInstanceGuardTest<A>(
         parkGetNodes: options.parkGetNodes,
         parkWakeDelivery: options.parkWakeDelivery,
         parkAdoptionClaim: options.parkAdoptionClaim,
-      })),
+        }),
+      ),
       Effect.provideService(InstanceRef, {
         directory: directoryA,
         worktree: directoryA,
@@ -587,11 +614,10 @@ function runTwoInstanceGuardTest<A>(
 }
 
 /** Seed a terminal (failed) workflow owned by sesA with an unreported wake. */
-function seedTerminalWorkflow(
-  services: { readonly database: Database.Interface },
-  wakeReported: boolean,
-) {
-  return services.database.db.insert(WorkflowTable).values({
+function seedTerminalWorkflow(services: { readonly database: Database.Interface }, wakeReported: boolean) {
+  return services.database.db
+    .insert(WorkflowTable)
+    .values({
     id: "wake-wf",
     project_id: PROJECT_ID as never,
     session_id: SES_A as never,
@@ -602,7 +628,9 @@ function seedTerminalWorkflow(
     config: "{}",
     seq: 5,
     wake_reported: wakeReported,
-  }).run().pipe(Effect.orDie, Effect.as(undefined))
+    })
+    .run()
+    .pipe(Effect.orDie, Effect.as(undefined))
 }
 
 // ---------------------------------------------------------------------------
@@ -612,9 +640,7 @@ function seedTerminalWorkflow(
 describe("DAG execution-location guards (DAG-LOC-01)", () => {
   it("R1/S1: a booted sibling instance does not adopt a workflow created for another directory's session", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store, initB, childPromptsB }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store, initB, childPromptsB }) =>
           Effect.gen(function* () {
             // Instance B is booted; instance A is not (booting A would race
             // the first-wave spawn on the shared dag service and mask B's
@@ -640,9 +666,7 @@ describe("DAG execution-location guards (DAG-LOC-01)", () => {
 
   it("R2/S2: a sibling directory's startup recovery does not cancel the owner's live child", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store, initA, initB, childPromptsA, cancelsB, messagesBySession }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store, initA, initB, childPromptsA, cancelsB, messagesBySession }) =>
           Effect.gen(function* () {
             // A boots first and owns the workflow: it adopts through the
             // WorkflowStarted handler (no reconciliation) and spawns n1.
@@ -681,14 +705,18 @@ describe("DAG execution-location guards (DAG-LOC-01)", () => {
             // Re-arm the terminal workflow's wake AFTER B's startup sweep has
             // passed over it, so the delivery below can only come from the
             // idle-Status subscription path.
-            yield* database.db.update(WorkflowTable)
+            yield* database.db
+              .update(WorkflowTable)
               .set({ wake_reported: false })
               .where(eq(WorkflowTable.id, "wake-wf"))
-              .run().pipe(Effect.orDie)
-            yield* bridge.publish(SessionStatusEvent.Status, {
+              .run()
+              .pipe(Effect.orDie)
+            yield* bridge
+              .publish(SessionStatusEvent.Status, {
               sessionID: SES_A as never,
               status: { type: "idle" },
-            }).pipe(Effect.orDie)
+              })
+              .pipe(Effect.orDie)
             const delivered = yield* Queue.take(childPromptsB).pipe(Effect.timeoutOption("1 second"))
             expect(Option.getOrElse(delivered, () => null)).toBe(null)
           }),
@@ -716,9 +744,7 @@ describe("DAG execution-location guards (DAG-LOC-01)", () => {
 
   it("R5: Session.remove drops the in-memory entry before a later stimulus can act on it", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store, bridge, session, initA, childPromptsA, promptInterrupts }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store, bridge, session, initA, childPromptsA, promptInterrupts }) =>
           Effect.gen(function* () {
             yield* initA
             const dagID = yield* dag.create({
@@ -745,10 +771,12 @@ describe("DAG execution-location guards (DAG-LOC-01)", () => {
             // handler is gated on runtimes.has(dagID): if the entry was dropped
             // at deletion the handler never fires and the parked child prompt
             // fiber is left untouched by this stimulus.
-            yield* bridge.publish(DagEvent.WorkflowCancelled, {
+          yield* bridge
+            .publish(DagEvent.WorkflowCancelled, {
               dagID: dagID as never,
               timestamp: yield* DateTime.now,
-            }).pipe(Effect.orDie)
+            })
+            .pipe(Effect.orDie)
             // Negative window: give the stimulus handler time to (wrongly) act,
             // then assert it added no further interrupts. (pollWithTimeout is a
             // positive-wait tool — its timeout errors the effect rather than
@@ -778,10 +806,12 @@ describe("DAG execution-location guards (DAG-LOC-01)", () => {
             // Identity migration: repaint the workflow's project id (old →
             // new). The in-memory entry must not keep driving the migrated
             // workflow.
-            yield* database.db.update(WorkflowTable)
+            yield* database.db
+              .update(WorkflowTable)
               .set({ project_id: "project-new" as never })
               .where(eq(WorkflowTable.id, dagID as never))
-              .run().pipe(Effect.orDie)
+              .run()
+              .pipe(Effect.orDie)
             // Node-completion stimulus: the stale entry must not publish a
             // workflow transition (here: running → completed) for a workflow
             // whose durable identity moved away.
@@ -798,11 +828,15 @@ describe("DAG execution-location guards (DAG-LOC-01)", () => {
             expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
           }),
         ({ database }) =>
-          database.db.insert(ProjectTable).values({
+          database.db
+            .insert(ProjectTable)
+            .values({
             id: "project-new" as never,
             worktree: process.cwd() as never,
             sandboxes: [],
-          }).run().pipe(Effect.orDie, Effect.as(undefined)),
+            })
+            .run()
+            .pipe(Effect.orDie, Effect.as(undefined)),
       ),
     )
   })
@@ -911,8 +945,7 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
   it("R7-ext: the stamp is write-once and every revalidation site carries the authority", () => {
     const sources = [...readDagSources(graphagentDagSrc), ...readDagSources(coreDagSrc)]
     expect(sources.length).toBeGreaterThan(20)
-    const codeLines = (source: string) =>
-      source.split("\n").filter((line) => !line.trim().startsWith("//"))
+    const codeLines = (source: string) => source.split("\n").filter((line) => !line.trim().startsWith("//"))
 
     // (a) TWO-WRITER WHITELIST (amended for #269 — an invariant UPDATE, not a
     // weakening): the directory stamp is WRITE-ONCE except for exactly ONE
@@ -1020,11 +1053,7 @@ function goalLoopLayer(input: {
   const events = EventV2.layer.pipe(Layer.provide(database))
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const goal = Goal.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(database),
-    Layer.provide(status),
-  )
+  const goal = Goal.layer.pipe(Layer.provide(bridge), Layer.provide(database), Layer.provide(status))
   const judge = Layer.succeed(
     GoalLoopJudgeLLM,
     GoalLoopJudgeLLM.of({
@@ -1082,23 +1111,31 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         const goal = yield* Goal.Service
         const loop = yield* GoalLoop.Service
         const bridge = yield* EventV2Bridge.Service
-        yield* database.db.insert(ProjectTable).values({
+        yield* database.db
+          .insert(ProjectTable)
+          .values({
           id: PROJECT_ID as never,
           worktree: DIR_A as never,
           sandboxes: [],
-        }).run().pipe(Effect.orDie)
+          })
+          .run()
+          .pipe(Effect.orDie)
         for (const [id, dir, slug] of [
           [SES_A, DIR_A, "a"],
           [SES_B, DIR_B, "b"],
         ] as const) {
-          yield* database.db.insert(SessionTable).values({
+          yield* database.db
+            .insert(SessionTable)
+            .values({
             id: id as never,
             project_id: PROJECT_ID as never,
             slug,
             directory: dir as never,
             title: id,
             version: "test",
-          }).run().pipe(Effect.orDie)
+            })
+            .run()
+            .pipe(Effect.orDie)
         }
         // A goal-only session: no workflow rows, so the workflow-keyed DAG
         // authority is vacuous — only the goal-side session-row check can
@@ -1106,16 +1143,20 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         yield* goal.set(SES_A as never, "ship the feature", 10)
         // Boot BOTH instances (A ambient, B via refB).
         yield* loop.init()
-        yield* loop.init().pipe(Effect.provideService(InstanceRef, {
+        yield* loop.init().pipe(
+          Effect.provideService(InstanceRef, {
           directory: DIR_B,
           worktree: DIR_B,
           project: { id: PROJECT_ID },
-        } as never))
+          } as never),
+        )
         yield* Effect.yieldNow
-        yield* bridge.publish(SessionStatusEvent.Status, {
+        yield* bridge
+          .publish(SessionStatusEvent.Status, {
           sessionID: SES_A as never,
           status: { type: "idle" },
-        }).pipe(Effect.orDie)
+          })
+          .pipe(Effect.orDie)
         // A owns /wtA and drives the goal; B must never judge it.
         yield* pollWithTimeout(
           Effect.sync(() => ((judgeCalls.get(DIR_A)?.length ?? 0) > 0 ? true : undefined)),
@@ -1126,11 +1167,13 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         expect(judgeCalls.get(DIR_B) ?? []).toEqual([])
       }).pipe(
         Effect.withLogger(collector),
-        Effect.provide(goalLoopLayer({
+        Effect.provide(
+          goalLoopLayer({
           judgeCalls,
           continuationCalls,
           messagesBySession: new Map([[SES_A, [reply(SES_A, "making progress")]]]),
-        })),
+          }),
+        ),
         Effect.provideService(InstanceRef, {
           directory: DIR_A,
           worktree: DIR_A,
@@ -1146,9 +1189,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
 
   it("P2-F: creating a workflow for a foreign session stamps the SESSION's directory", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store }) =>
           Effect.gen(function* () {
             // Ambient instance is A; the target session belongs to B's
             // directory. The stamp must come from the durable SESSION row,
@@ -1173,9 +1214,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     mkdirSync(directory, { recursive: true })
     try {
       await Effect.runPromise(
-        runTwoInstanceGuardTest(
-          { directoryA: directory },
-          ({ dag, store, initA, childPromptsA }) =>
+        runTwoInstanceGuardTest({ directoryA: directory }, ({ dag, store, initA, childPromptsA }) =>
             Effect.gen(function* () {
               // Created while the directory still exists, as a real linked
               // worktree workflow would be. No loop is booted yet, so the
@@ -1213,9 +1252,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     mkdirSync(directory, { recursive: true })
     try {
       await Effect.runPromise(
-        runTwoInstanceGuardTest(
-          { directoryA: directory },
-          ({ dag, store, initA, childPromptsA }) =>
+        runTwoInstanceGuardTest({ directoryA: directory }, ({ dag, store, initA, childPromptsA }) =>
             Effect.gen(function* () {
               yield* initA
               const dagID = yield* dag.create({
@@ -1252,9 +1289,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     mkdirSync(directory, { recursive: true })
     try {
       await Effect.runPromise(
-        runTwoInstanceGuardTest(
-          { directoryA: directory },
-          ({ dag, store, bridge }) =>
+        runTwoInstanceGuardTest({ directoryA: directory }, ({ dag, store, bridge }) =>
             Effect.gen(function* () {
               const dagID = yield* dag.create({
                 projectID: PROJECT_ID,
@@ -1341,9 +1376,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
 
             yield* initA
             const wake = yield* takeWithin(childPromptsA, "parent did not receive the terminal wake")
-            const text = wake.input.parts
-              .map((part) => (part.type === "text" ? part.text : ""))
-              .join("\n")
+            const text = wake.input.parts.map((part) => (part.type === "text" ? part.text : "")).join("\n")
             expect(text).toContain("Earlier terminal workflow")
             expect(text).toContain("Valid later workflow")
             yield* Deferred.succeed(wake.release, "acknowledged")
@@ -1361,7 +1394,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
           }),
         ({ database }) =>
           Effect.gen(function* () {
-            yield* database.db.insert(WorkflowTable).values([
+            yield* database.db
+              .insert(WorkflowTable)
+              .values([
               {
                 id: "wake-null",
                 project_id: PROJECT_ID as never,
@@ -1386,7 +1421,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
                 seq: 2,
                 wake_reported: false,
               },
-            ]).run().pipe(Effect.orDie)
+              ])
+              .run()
+              .pipe(Effect.orDie)
           }),
       ),
     )
@@ -1406,9 +1443,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             expect((yield* store.getWorkflow("dag-wake-swept-unusable"))?.status).toBe("failed")
 
             const wake = yield* takeWithin(childPromptsA, "parent did not receive the swept workflow wake")
-            const text = wake.input.parts
-              .map((part) => (part.type === "text" ? part.text : ""))
-              .join("\n")
+            const text = wake.input.parts.map((part) => (part.type === "text" ? part.text : "")).join("\n")
             expect(text).toContain("Swept unusable workflow")
             yield* Deferred.succeed(wake.release, "acknowledged")
             yield* pollWithTimeout(
@@ -1422,7 +1457,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             expect(Option.isNone(yield* Queue.poll(childPromptsA))).toBe(true)
           }),
         ({ database }) =>
-          database.db.insert(WorkflowTable).values({
+          database.db
+            .insert(WorkflowTable)
+            .values({
             id: "dag-wake-swept-unusable",
             project_id: PROJECT_ID as never,
             session_id: SES_A as never,
@@ -1434,7 +1471,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             config: "{}",
             seq: 1,
             wake_reported: false,
-          }).run().pipe(Effect.orDie, Effect.as(undefined)),
+            })
+            .run()
+            .pipe(Effect.orDie, Effect.as(undefined)),
       ),
     )
   })
@@ -1458,10 +1497,12 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             // revalidation, P2-C) — settling n1 makes n2 ready, and without
             // the gate the stale instance would materialize a child for the
             // migrated workflow.
-            yield* database.db.update(WorkflowTable)
+            yield* database.db
+              .update(WorkflowTable)
               .set({ project_id: "project-new" as never })
               .where(eq(WorkflowTable.id, dagID as never))
-              .run().pipe(Effect.orDie)
+              .run()
+              .pipe(Effect.orDie)
             yield* dag.nodeCompleted(dagID, "n1", { ok: true })
             const second = yield* Queue.take(childPromptsA).pipe(Effect.timeoutOption("1 second"))
             expect(Option.isNone(second)).toBe(true)
@@ -1469,11 +1510,15 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
             expect((yield* store.getNode(dagID, "n2"))?.status).toBe("pending")
           }),
         ({ database }) =>
-          database.db.insert(ProjectTable).values({
+          database.db
+            .insert(ProjectTable)
+            .values({
             id: "project-new" as never,
             worktree: process.cwd() as never,
             sandboxes: [],
-          }).run().pipe(Effect.orDie, Effect.as(undefined)),
+            })
+            .run()
+            .pipe(Effect.orDie, Effect.as(undefined)),
       ),
     )
   })
@@ -1490,34 +1535,46 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         const goal = yield* Goal.Service
         const loop = yield* GoalLoop.Service
         const bridge = yield* EventV2Bridge.Service
-        yield* database.db.insert(ProjectTable).values({
+        yield* database.db
+          .insert(ProjectTable)
+          .values({
           id: PROJECT_ID as never,
           worktree: DIR_A as never,
           sandboxes: [],
-        }).run().pipe(Effect.orDie)
-        yield* database.db.insert(SessionTable).values({
+          })
+          .run()
+          .pipe(Effect.orDie)
+        yield* database.db
+          .insert(SessionTable)
+          .values({
           id: SES_A as never,
           project_id: PROJECT_ID as never,
           slug: "a",
           directory: DIR_A as never,
           title: SES_A,
           version: "test",
-        }).run().pipe(Effect.orDie)
+          })
+          .run()
+          .pipe(Effect.orDie)
         yield* goal.set(SES_A as never, "ship the feature", 10)
         yield* loop.init()
         yield* Effect.yieldNow
         // First idle: the guard's session-row read defects. The handler must
         // absorb it (P2-B) — otherwise the runForEach subscription dies and
         // the NEXT idle event is never evaluated.
-        yield* bridge.publish(SessionStatusEvent.Status, {
+        yield* bridge
+          .publish(SessionStatusEvent.Status, {
           sessionID: SES_A as never,
           status: { type: "idle" },
-        }).pipe(Effect.orDie)
+          })
+          .pipe(Effect.orDie)
         // Second idle: with the subscription alive, the goal is driven.
-        yield* bridge.publish(SessionStatusEvent.Status, {
+        yield* bridge
+          .publish(SessionStatusEvent.Status, {
           sessionID: SES_A as never,
           status: { type: "idle" },
-        }).pipe(Effect.orDie)
+          })
+          .pipe(Effect.orDie)
         yield* pollWithTimeout(
           Effect.sync(() => ((judgeCalls.get(DIR_A)?.length ?? 0) > 0 ? true : undefined)),
           "goal loop did not evaluate the idle event after the store defect (subscription died)",
@@ -1526,7 +1583,8 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
         expect(fail.armed).toBe(false)
       }).pipe(
         Effect.withLogger(collector),
-        Effect.provide(goalLoopLayer({
+        Effect.provide(
+          goalLoopLayer({
           judgeCalls,
           continuationCalls,
           messagesBySession: new Map([[SES_A, [reply(SES_A, "making progress")]]]),
@@ -1551,7 +1609,8 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
               return Database.Service.of({ db: proxy })
             }),
           ).pipe(Layer.provide(Database.layerFromPath(":memory:"))),
-        })),
+          }),
+        ),
         Effect.provideService(InstanceRef, {
           directory: DIR_A,
           worktree: DIR_A,
@@ -1572,23 +1631,33 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const database = yield* Database.Service
-        yield* database.db.insert(ProjectTable).values({
+        yield* database.db
+          .insert(ProjectTable)
+          .values({
           id: PROJECT_ID as never,
           worktree: DIR_A as never,
           sandboxes: [],
-        }).run().pipe(Effect.orDie)
-        yield* database.db.insert(SessionTable).values({
+          })
+          .run()
+          .pipe(Effect.orDie)
+        yield* database.db
+          .insert(SessionTable)
+          .values({
           id: SES_A as never,
           project_id: PROJECT_ID as never,
           slug: "a",
           directory: DIR_A as never,
           title: SES_A,
           version: "test",
-        }).run().pipe(Effect.orDie)
+          })
+          .run()
+          .pipe(Effect.orDie)
         // An empty stamp cannot be produced by create, but the projector keeps
         // a stored event without the field NOT NULL by writing "". Ownership
         // and execution stay fail-closed for that row.
-        yield* database.db.insert(WorkflowTable).values({
+        yield* database.db
+          .insert(WorkflowTable)
+          .values({
           id: "p2d-empty-wf",
           project_id: PROJECT_ID as never,
           session_id: SES_A as never,
@@ -1598,7 +1667,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
           status: "running",
           config: "{}",
           seq: 1,
-        }).run().pipe(Effect.orDie)
+          })
+          .run()
+          .pipe(Effect.orDie)
         yield* DagLocation.ownsWorkflow("p2d-empty-wf", DIR_A).pipe(Effect.ignore)
         yield* DagLocation.ownsWorkflow("p2d-empty-wf", DIR_A).pipe(Effect.ignore)
         const warnings = lines.filter((line) => line.includes("NULL execution-location directory"))
@@ -1683,20 +1754,30 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const database = yield* Database.Service
-        yield* database.db.insert(ProjectTable).values({
+        yield* database.db
+          .insert(ProjectTable)
+          .values({
           id: PROJECT_ID as never,
           worktree: process.cwd() as never,
           sandboxes: [],
-        }).run().pipe(Effect.orDie)
-        yield* database.db.insert(SessionTable).values({
+          })
+          .run()
+          .pipe(Effect.orDie)
+        yield* database.db
+          .insert(SessionTable)
+          .values({
           id: SES_A as never,
           project_id: PROJECT_ID as never,
           slug: "a",
           directory: process.cwd() as never,
           title: SES_A,
           version: "test",
-        }).run().pipe(Effect.orDie)
-        yield* database.db.insert(WorkflowTable).values({
+          })
+          .run()
+          .pipe(Effect.orDie)
+        yield* database.db
+          .insert(WorkflowTable)
+          .values({
           id: "p2w",
           project_id: PROJECT_ID as never,
           session_id: SES_A as never,
@@ -1706,7 +1787,9 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
           seq: 1,
           directory: process.cwd() as never,
           target_fingerprint: { kind: "none" },
-        }).run().pipe(Effect.orDie)
+          })
+          .run()
+          .pipe(Effect.orDie)
         const scope = yield* Scope.Scope
         const watcher = yield* makeDeadlineWatcher({ dagID: "p2w", nodeID: "n1", timeoutMs: 300 }).pipe(
           Effect.forkIn(scope),
@@ -1743,9 +1826,7 @@ describe("DAG-LOC-01 P2 follow-ups", () => {
 describe("DAG-LOC-01 issue #238 evidence probes", () => {
   it("C1: concurrent live adoption — only the stamped directory adopts", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store, initA, initB, childPromptsA, childPromptsB }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store, initA, initB, childPromptsA, childPromptsB }) =>
           Effect.gen(function* () {
             // Boot BOTH instances before the workflow exists so each live
             // WorkflowStarted subscription is already armed when adoption
@@ -1774,9 +1855,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
 
   it("C3: an entry orphaned by cascade-in-window deletion acts on no later stimulus", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store, database, bridge, initA, childPromptsA }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store, database, bridge, initA, childPromptsA }) =>
           Effect.gen(function* () {
             yield* initA
             const dagID = yield* dag.create({
@@ -1790,30 +1869,36 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             // directly (FK cascade wipes the node rows) WITHOUT publishing a
             // SessionV1.Event.Deleted, so the Deleted sweep can never reach
             // the live in-memory entry.
-            yield* database.db.delete(WorkflowTable)
+          yield* database.db
+            .delete(WorkflowTable)
               .where(eq(WorkflowTable.id, dagID as never))
-              .run().pipe(Effect.orDie)
+            .run()
+            .pipe(Effect.orDie)
             expect(yield* store.getWorkflow(dagID)).toBeUndefined()
             // Stimulus 1: settle n1 via a direct bus publish (dag.nodeCompleted's
             // guard rejects a missing node). The orphaned entry must not spawn n2.
-            yield* bridge.publish(DagEvent.NodeCompleted, {
+          yield* bridge
+            .publish(DagEvent.NodeCompleted, {
               dagID: dagID as never,
               nodeID: "n1" as never,
               output: { ok: true },
               durationMs: 0 as never,
               timestamp: yield* DateTime.now,
-            }).pipe(Effect.orDie)
+            })
+            .pipe(Effect.orDie)
             expect(Option.isNone(yield* Queue.take(childPromptsA).pipe(Effect.timeoutOption("1 second")))).toBe(true)
             // Stimulus 2: a follow-up completion also no-ops — the entry is
             // inert (every action path revalidates ownership against the
             // missing row), so nothing is ever spawned for a deleted workflow.
-            yield* bridge.publish(DagEvent.NodeCompleted, {
+          yield* bridge
+            .publish(DagEvent.NodeCompleted, {
               dagID: dagID as never,
               nodeID: "n2" as never,
               output: { ok: true },
               durationMs: 0 as never,
               timestamp: yield* DateTime.now,
-            }).pipe(Effect.orDie)
+            })
+            .pipe(Effect.orDie)
             expect(Option.isNone(yield* Queue.take(childPromptsA).pipe(Effect.timeoutOption("1 second")))).toBe(true)
           }),
       ),
@@ -1822,9 +1907,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
 
   it("C4: a moved session's workflow stamps move WITH the session — exactly one live owner, the new durable directory (#269 resolution)", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store, bridge }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store, bridge }) =>
           Effect.gen(function* () {
             // wf1 created while SES_A lives in DIR_A → stamped DIR_A.
             const wf1 = yield* dag.create({
@@ -1883,10 +1966,12 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             // Re-arm the seeded terminal wake AFTER both startup sweeps passed
             // over it (seeded wake_reported=true), so the ONLY later trigger is
             // the Moved subscription's re-fork (no idle event, no restart).
-            yield* database.db.update(WorkflowTable)
+            yield* database.db
+              .update(WorkflowTable)
               .set({ wake_reported: false })
               .where(eq(WorkflowTable.id, "c8-wake"))
-              .run().pipe(Effect.orDie)
+              .run()
+              .pipe(Effect.orDie)
             // Move SES_A → DIR_B. The Moved projection re-stamps the wake row to
             // DIR_B (exactly one owner), and the NEW owner's Moved subscription
             // re-forks tryDeliverWake — the wake delivers immediately (bounded
@@ -1903,7 +1988,9 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
           }),
         ({ database }) =>
           Effect.gen(function* () {
-            yield* database.db.insert(WorkflowTable).values({
+            yield* database.db
+              .insert(WorkflowTable)
+              .values({
               id: "c8-wake",
               project_id: PROJECT_ID as never,
               session_id: SES_A as never,
@@ -1914,7 +2001,9 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               config: "{}",
               seq: 1,
               wake_reported: true,
-            }).run().pipe(Effect.orDie)
+              })
+              .run()
+              .pipe(Effect.orDie)
           }),
       ),
     )
@@ -1952,9 +2041,11 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             // publishing SessionV1.Event.Deleted, so no in-memory sweep interrupts
             // the parked admission — the fence must hold purely because the atomic
             // claim re-reads the row.
-            yield* database.db.delete(WorkflowTable)
+            yield* database.db
+              .delete(WorkflowTable)
               .where(eq(WorkflowTable.id, dagID as never))
-              .run().pipe(Effect.orDie)
+              .run()
+              .pipe(Effect.orDie)
             // Release: the claim conditional UPDATE matches no row (cascade already
             // removed it) → the spawn aborts BEFORE sessions.create — nothing a
             // deleted workflow may run survives the admission window.
@@ -1971,9 +2062,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
 
   it("C5: replaying a deleted workflow's journal does not resurrect the read-model", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, store, database, bridge, session }) =>
+      runTwoInstanceGuardTest({}, ({ dag, store, database, bridge, session }) =>
           Effect.gen(function* () {
             const dagID = yield* dag.create({
               projectID: PROJECT_ID,
@@ -1983,10 +2072,13 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             })
             expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
             // Serialize the dag aggregate journal BEFORE deletion.
-            const rows = yield* database.db.select().from(EventTable)
+          const rows = yield* database.db
+            .select()
+            .from(EventTable)
               .where(eq(EventTable.aggregate_id, dagID))
               .orderBy(EventTable.seq)
-              .all().pipe(Effect.orDie)
+            .all()
+            .pipe(Effect.orDie)
             const serialized = rows.map((r) => ({
               id: r.id,
               type: r.type,
@@ -2031,16 +2123,20 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             // over them (they were seeded wake_reported=true), so the delivery
             // below can only come from the idle-Status path.
             for (const id of ["wake-wf-a", "wake-wf-b"]) {
-              yield* database.db.update(WorkflowTable)
+              yield* database.db
+                .update(WorkflowTable)
                 .set({ wake_reported: false })
                 .where(eq(WorkflowTable.id, id))
-                .run().pipe(Effect.orDie)
+                .run()
+                .pipe(Effect.orDie)
             }
             // Idle SES_A → wake delivery parks inside prepareTurn.
-            yield* bridge.publish(SessionStatusEvent.Status, {
+            yield* bridge
+              .publish(SessionStatusEvent.Status, {
               sessionID: SES_A as never,
               status: { type: "idle" },
-            }).pipe(Effect.orDie)
+              })
+              .pipe(Effect.orDie)
             yield* pollWithTimeout(
               Effect.sync(() => (parked.value ? true : undefined)),
               "wake delivery never parked in prepareTurn",
@@ -2056,10 +2152,12 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             // Subscription survival: an idle for a DIFFERENT session still reaches
             // prepareTurn (calls bumps again) — proof the idle wake subscription
             // is alive after the raced deletion.
-            yield* bridge.publish(SessionStatusEvent.Status, {
+            yield* bridge
+              .publish(SessionStatusEvent.Status, {
               sessionID: SES_B as never,
               status: { type: "idle" },
-            }).pipe(Effect.orDie)
+              })
+              .pipe(Effect.orDie)
             yield* pollWithTimeout(
               Effect.sync(() => (calls.value >= 2 ? true : undefined)),
               "idle wake subscription died after the Session.remove race",
@@ -2072,7 +2170,9 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               ["wake-wf-a", SES_A],
               ["wake-wf-b", SES_B],
             ] as const) {
-              yield* database.db.insert(WorkflowTable).values({
+              yield* database.db
+                .insert(WorkflowTable)
+                .values({
                 id,
                 project_id: PROJECT_ID as never,
                 session_id: sessionID as never,
@@ -2083,7 +2183,9 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
                 config: "{}",
                 seq: 1,
                 wake_reported: true,
-              }).run().pipe(Effect.orDie)
+                })
+                .run()
+                .pipe(Effect.orDie)
             }
           }),
       ),
@@ -2098,13 +2200,13 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
       release = resolve
     })
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        { parkGetNodes: { wait, parked, calls } },
-        ({ database, session, store, initA }) =>
+      runTwoInstanceGuardTest({ parkGetNodes: { wait, parked, calls } }, ({ database, session, store, initA }) =>
           Effect.gen(function* () {
             // An all-pending orphan under A: a create that crashed mid-way.
             // It is stamped DIR_A so instance A's recoverOrphanPending owns it.
-            yield* database.db.insert(WorkflowTable).values({
+          yield* database.db
+            .insert(WorkflowTable)
+            .values({
               id: "c6-orphan",
               project_id: PROJECT_ID as never,
               session_id: SES_A as never,
@@ -2115,8 +2217,12 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               config: "{}",
               seq: 1,
               wake_reported: true,
-            }).run().pipe(Effect.orDie)
-            yield* database.db.insert(WorkflowNodeTable).values({
+            })
+            .run()
+            .pipe(Effect.orDie)
+          yield* database.db
+            .insert(WorkflowNodeTable)
+            .values({
               id: "n1",
               workflow_id: "c6-orphan",
               name: "n1",
@@ -2125,7 +2231,9 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               required: true,
               depends_on: [],
               seq: 1,
-            }).run().pipe(Effect.orDie)
+            })
+            .run()
+            .pipe(Effect.orDie)
             // Boot A; recoverOrphanPending parks its first getNodes on the gate.
             const initFiber = yield* initA.pipe(Effect.forkChild)
             yield* pollWithTimeout(
@@ -2206,14 +2314,16 @@ describe("DAG-LOC-01 H1 adopt-exactly-once latch", () => {
             // reservation must repel it — pre-latch the replan passed
             // recoverWorkflow's guard and parked a SECOND gated getNodes
             // inside reconcileWorkflow.
-            yield* bridge.publish(DagEvent.WorkflowReplanned, {
+            yield* bridge
+              .publish(DagEvent.WorkflowReplanned, {
               dagID: dagID as never,
               added: 0 as never,
               removed: 0 as never,
               replaced: 0 as never,
               restarted: 0 as never,
               timestamp: yield* DateTime.now,
-            }).pipe(
+              })
+              .pipe(
               Effect.orDie,
               Effect.provideService(InstanceRef, {
                 directory: DIR_B,
@@ -2239,10 +2349,12 @@ describe("DAG-LOC-01 H1 adopt-exactly-once latch", () => {
             // Duplicate WorkflowStarted — same dagID, published from the
             // sibling directory's context while the owner's entry is live —
             // must not drive a second adoption or a re-spawn.
-            yield* bridge.publish(DagEvent.WorkflowStarted, {
+            yield* bridge
+              .publish(DagEvent.WorkflowStarted, {
               dagID: dagID as never,
               timestamp: yield* DateTime.now,
-            }).pipe(
+              })
+              .pipe(
               Effect.orDie,
               Effect.provideService(InstanceRef, {
                 directory: DIR_B,
@@ -2267,9 +2379,7 @@ describe("DAG-LOC-01 H1 adopt-exactly-once latch", () => {
 describe("DAG workspace binding", () => {
   it("#943: rejects an invalid config workspace through the Error channel before persistence", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, database }) =>
+      runTwoInstanceGuardTest({}, ({ dag, database }) =>
           Effect.gen(function* () {
             const exit = yield* dag
               .create({
@@ -2297,9 +2407,7 @@ describe("DAG workspace binding", () => {
 
   it("#943: rejects an invalid node workspace through the Error channel before persistence", async () => {
     await Effect.runPromise(
-      runTwoInstanceGuardTest(
-        {},
-        ({ dag, database }) =>
+      runTwoInstanceGuardTest({}, ({ dag, database }) =>
           Effect.gen(function* () {
             const exit = yield* dag
               .create({

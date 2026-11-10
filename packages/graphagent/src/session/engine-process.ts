@@ -7,6 +7,7 @@ import { SessionAdmission } from "@graphagent/core/session/admission"
 import { Cause, Context, Effect, Layer, Option, type Deferred, type Scope } from "effect"
 import { makeSessionRuntimes, type SessionRuntimes } from "./runtime"
 import { SessionID } from "./schema"
+import { AgentSchedulerState } from "./agent-scheduler-state"
 
 /**
  * Process-wide engine state (Issue #1019, PR9).
@@ -181,6 +182,8 @@ export interface EngineProcess {
   /** Sessions opened by the in-process client, used only to end their local hooks on shutdown. */
   readonly clientSessions: Map<string, string>
   readonly inbox: InboxRouting
+  /** Model-stream and child-run budgets shared by every layer graph (Issue #1021, PR5). */
+  readonly scheduler: AgentSchedulerState.SchedulerState
 }
 
 export const EngineProcess: EngineProcess = {
@@ -198,6 +201,7 @@ export const EngineProcess: EngineProcess = {
   inbox: {
     drains: new Set(),
   },
+  scheduler: AgentSchedulerState.makeState(),
 }
 
 const entry = (state: ExclusiveState, sessionID: SessionID) => {

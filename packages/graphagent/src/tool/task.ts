@@ -16,6 +16,7 @@ import * as Option from "effect/Option"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@graphagent/core/database/database"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { SettingsHook, type TriggerResult } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { TaskSubagents } from "@/hook/task-subagents"
@@ -199,6 +200,9 @@ export const TaskTool = Tool.define(
     const scope = yield* Scope.Scope
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    // Child runs share the process-level child pool (#1021). Optional so a
+    // standalone harness without the app layer runs unconstrained.
+    const scheduler = Option.getOrUndefined(yield* Effect.serviceOption(AgentScheduler.Service))
     // Build-phase serviceOption is SAFE here, unlike tool/goal.ts: SettingsHook
     // arrives via Layer.provideMerge (app-runtime.ts), whose output is visible to
     // the ToolRegistry mergeAll group during construction, so this resolves Some.
@@ -447,6 +451,20 @@ export const TaskTool = Tool.define(
         return settled.text
       })
 
+      // The child-run slot covers the whole subagent run, and task runs only
+      // draw the slots left after the DAG workflow reservation; DAG runs never
+      // enter the per-parent task bucket (#1021).
+      const runWithSlot = Effect.fn("TaskTool.runWithSlot")(function* () {
+        if (!scheduler) return yield* runTask()
+        const limits = yield* scheduler.limits()
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* scheduler.childSlot({ kind: "task", parentSessionID: ctx.sessionID }, limits.childGlobal)
+            return yield* runTask()
+          }),
+        )
+      })
+
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
         state: "completed" | "error",
         text: string,
@@ -529,7 +547,7 @@ export const TaskTool = Tool.define(
         )
       })
 
-      if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
+      if (yield* background.extend({ id: nextSession.id, run: runWithSlot() })) {
         return {
           title: description,
           metadata: {
@@ -566,7 +584,7 @@ export const TaskTool = Tool.define(
             // From here the child is a background task and fires its own Stop.
             releaseSubagent,
           ]),
-          run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
+          run: runWithSlot().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
         })
         .pipe(Effect.onError(() => releaseSubagent))
 

@@ -21,6 +21,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 function node(id: string, timeoutMs?: number): NodeConfig {
   return {
@@ -51,7 +52,7 @@ function reply(sessionID: string, text: string): SessionV1.WithParts {
       time: { created: Date.now() },
       finish: "stop",
     },
-    parts: text ? [{ type: "text", text }] as never : [],
+    parts: text ? ([{ type: "text", text }] as never) : [],
   }
 }
 
@@ -61,15 +62,9 @@ function recoveryLayer(input: { wakes: string[] }) {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   // The crashed child session is gone: reads yield no durable outcome, so the
   // recovery checker reports "unknown" (ownership lost), not a fabricated
   // completion/failure read off the child.
@@ -79,17 +74,18 @@ function recoveryLayer(input: { wakes: string[] }) {
     get: () => Effect.succeed({} as never),
     messages: () => Effect.succeed([]),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: () => Effect.void,
     prompt: () => Effect.never,
     deliver: (value) =>
       Effect.sync(() => {
         const text = value.parts.find((part) => part.type === "text")?.text
         if (text) input.wakes.push(text)
-      }).pipe(
-        Effect.map(() => Option.some(reply(value.sessionID as string, "wake handled"))),
-      ),
-  }))
+        }).pipe(Effect.map(() => Option.some(reply(value.sessionID as string, "wake handled")))),
+    }),
+  )
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(session),
@@ -114,19 +110,27 @@ function runRecoveryTest<A>(
     const database = yield* Database.Service
     const loop = yield* DagLoop.Service
     const store = yield* DagStore.Service
-    yield* database.db.insert(ProjectTable).values({
+    yield* database.db
+      .insert(ProjectTable)
+      .values({
       id: "project-1" as never,
       worktree: process.cwd() as never,
       sandboxes: [],
-    }).run().pipe(Effect.orDie)
-    yield* database.db.insert(SessionTable).values({
+      })
+      .run()
+      .pipe(Effect.orDie)
+    yield* database.db
+      .insert(SessionTable)
+      .values({
       id: "ses_parent" as never,
       project_id: "project-1" as never,
       slug: "parent",
       directory: process.cwd() as never,
       title: "Parent",
       version: "test",
-    }).run().pipe(Effect.orDie)
+      })
+      .run()
+      .pipe(Effect.orDie)
     return yield* test({ dag, database, loop, store, wakes })
   }).pipe(
     Effect.provide(recoveryLayer({ wakes })),

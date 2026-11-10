@@ -22,6 +22,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface PromptGate {
   readonly title: string
@@ -46,10 +47,12 @@ interface AdmissionAttempt {
 function takeWithin<A>(queue: Queue.Queue<A>, message: string) {
   return Queue.take(queue).pipe(
     Effect.timeoutOption("2 seconds"),
-    Effect.flatMap(Option.match({
+    Effect.flatMap(
+      Option.match({
       onNone: () => Effect.fail(new Error(message)),
       onSome: Effect.succeed,
-    })),
+      }),
+    ),
   )
 }
 
@@ -74,7 +77,7 @@ function reply(sessionID: string, text: string): SessionV1.WithParts {
       time: { created: Date.now() },
       finish: "stop",
     },
-    parts: text ? [{ type: "text", text }] as never : [],
+    parts: text ? ([{ type: "text", text }] as never) : [],
   }
 }
 
@@ -110,7 +113,9 @@ function loopLayer(input: {
       return EventV2Bridge.Service.of({
         ...original,
         subscribe: (definition) =>
-          original.subscribe(definition).pipe(
+          original
+            .subscribe(definition)
+            .pipe(
             Stream.tap(() =>
               definition.type === DagEvent.WorkflowReplanned.type && input.holdReplan
                 ? Deferred.await(input.holdReplan)
@@ -122,14 +127,8 @@ function loopLayer(input: {
   ).pipe(Layer.provide(rawBridge))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
-  const rawDag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
   const dag = Layer.effect(
     Dag.Service,
     Effect.gen(function* () {
@@ -137,21 +136,21 @@ function loopLayer(input: {
       return Dag.Service.of({
         ...original,
         nodeQueued: (dagID, nodeID, deadlineMs, attempt) =>
-          original.nodeQueued(dagID, nodeID, deadlineMs, attempt).pipe(
-            Effect.ensuring(Queue.offer(input.admissions, { nodeID, attempt })),
-          ),
+          original
+            .nodeQueued(dagID, nodeID, deadlineMs, attempt)
+            .pipe(Effect.ensuring(Queue.offer(input.admissions, { nodeID, attempt }))),
         nodeCompleted: (dagID, nodeID, output, attempt) =>
-          original.nodeCompleted(dagID, nodeID, output, attempt).pipe(
-            Effect.ensuring(Queue.offer(input.settlements, { kind: "completed", attempt })),
-          ),
+          original
+            .nodeCompleted(dagID, nodeID, output, attempt)
+            .pipe(Effect.ensuring(Queue.offer(input.settlements, { kind: "completed", attempt }))),
         nodeFailed: (dagID, nodeID, reason, trigger, attempt) =>
-          original.nodeFailed(dagID, nodeID, reason, trigger, attempt).pipe(
-            Effect.ensuring(Queue.offer(input.settlements, { kind: "failed", attempt })),
-          ),
+          original
+            .nodeFailed(dagID, nodeID, reason, trigger, attempt)
+            .pipe(Effect.ensuring(Queue.offer(input.settlements, { kind: "failed", attempt }))),
       })
     }),
   ).pipe(Layer.provide(rawDag))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const session = Layer.mock(Session.Service, {
@@ -187,13 +186,18 @@ function loopLayer(input: {
       yield* Deferred.await(release).pipe(Effect.onInterrupt(() => Queue.offer(input.interrupts, title))),
     )
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: () => Effect.void,
     prompt: deliver,
     deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
-    get: (workerType) => (input.agentGate ? input.agentGate(workerType) : Effect.void).pipe(Effect.as({
+    get: (workerType) =>
+      (input.agentGate ? input.agentGate(workerType) : Effect.void).pipe(
+        Effect.as({
       name: "build",
       mode: "all",
       permission: [],
@@ -203,7 +207,8 @@ function loopLayer(input: {
       model: { providerID: "test" as never, modelID: "test-model" as never },
       tools: {},
       hooks: {},
-    })),
+        }),
+      ),
   })
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
@@ -240,19 +245,27 @@ function runLoopTest<A>(
       const loop = yield* DagLoop.Service
       const store = yield* DagStore.Service
       const database = yield* Database.Service
-      yield* database.db.insert(ProjectTable).values({
+      yield* database.db
+        .insert(ProjectTable)
+        .values({
         id: "project-1" as never,
         worktree: process.cwd() as never,
         sandboxes: [],
-      }).run().pipe(Effect.orDie)
-      yield* database.db.insert(SessionTable).values({
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* database.db
+        .insert(SessionTable)
+        .values({
         id: "ses_parent" as never,
         project_id: "project-1" as never,
         slug: "parent",
         directory: process.cwd() as never,
         title: "Parent",
         version: "test",
-      }).run().pipe(Effect.orDie)
+        })
+        .run()
+        .pipe(Effect.orDie)
       yield* loop.init()
       return yield* test({ dag, store, childPrompts, parentPrompts, settlements, admissions, interrupts })
     }).pipe(
@@ -375,14 +388,8 @@ describe("DagLoop replan vs stale NodeFailed", () => {
                 },
               ],
             })
-            const replacement = yield* requireValue(
-              yield* store.getNode(dagID, "b"),
-              "replacement node row missing",
-            )
-            const workflow = yield* requireValue(
-              yield* store.getWorkflow(dagID),
-              "replacement workflow row missing",
-            )
+            const replacement = yield* requireValue(yield* store.getNode(dagID, "b"), "replacement node row missing")
+            const workflow = yield* requireValue(yield* store.getWorkflow(dagID), "replacement workflow row missing")
             expect(workflow.graphRev).toBeGreaterThan(originalGraphRev ?? 0)
 
             yield* Deferred.succeed(first.release, "a done")
@@ -427,10 +434,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           expect((yield* takeWithin(childPrompts, "a did not start")).title).toBe("a")
 
           const plan = yield* dag.replan(dagID, {
-            nodes: [
-              { ...node("a"), required: false, cancel: true },
-              node("b"),
-            ],
+            nodes: [{ ...node("a"), required: false, cancel: true }, node("b")],
           })
           expect(plan.cancel).toEqual(["a"])
           expect(plan.add).toEqual(["b"])
@@ -493,10 +497,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
             expect(x.title).toBe("x")
 
             const plan = yield* dag.replan(dagID, {
-              nodes: [
-                { ...node("x", ["a"]), report_to_parent: false, cancel: true },
-                node("y", ["a"]),
-              ],
+              nodes: [{ ...node("x", ["a"]), report_to_parent: false, cancel: true }, node("y", ["a"])],
             })
             expect(plan.cancel).toEqual(["x"])
             expect(plan.replace).toEqual(["y"])
@@ -504,9 +505,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
             // The cancellation handler runs against the old graph while the
             // rebuild is held. It must not terminalize the workflow.
             yield* pollWithTimeout(
-              store.getNode(dagID, "x").pipe(
-                Effect.map((row) => (row?.status === "failed" ? row : undefined)),
-              ),
+              store.getNode(dagID, "x").pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
               "x was not cancelled",
             )
             yield* Effect.sleep("300 millis")
@@ -518,9 +517,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
             expect(y.title).toBe("y")
             yield* Deferred.succeed(y.release, "y done")
             const workflow = yield* pollWithTimeout(
-              store.getWorkflow(dagID).pipe(
-                Effect.map((row) => (row && row.status !== "running" ? row : undefined)),
-              ),
+              store.getWorkflow(dagID).pipe(Effect.map((row) => (row && row.status !== "running" ? row : undefined))),
               "workflow did not settle under the rewired graph",
             )
             expect(workflow.status).toBe("completed")
@@ -542,7 +539,10 @@ describe("DagLoop replan vs stale NodeFailed", () => {
             title: "Superseded dependency",
             config: {
               name: "superseded-dependency",
-              nodes: [{ ...node("a"), report_to_parent: false }, { ...node("x"), report_to_parent: false }],
+              nodes: [
+                { ...node("a"), report_to_parent: false },
+                { ...node("x"), report_to_parent: false },
+              ],
             },
           })
           const first = yield* takeWithin(childPrompts, "first root did not start")
@@ -672,9 +672,9 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           yield* Deferred.succeed(secondA.release, "done")
 
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => workflow?.status === "completed" ? workflow : undefined),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
             "workflow did not complete after the restarted node reran",
           )
           const parent = yield* takeWithin(parentPrompts, "terminal wake did not reach the parent")
@@ -707,9 +707,9 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           // failed), so the NodeFailed handler's DB cross-check confirms and
           // the required-failure cascade must fail the workflow.
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => workflow?.status === "failed" ? workflow : undefined),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "failed" ? workflow : undefined))),
             "workflow did not fail after the required node timed out",
           )
           const nodeA = yield* store.getNode(dagID, "a")
@@ -746,9 +746,9 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           yield* Deferred.succeed(gate.release, "")
 
           yield* pollWithTimeout(
-            store.getNode(dagID, "a").pipe(
-              Effect.map((current) => current?.status === "failed" ? current : undefined),
-            ),
+            store
+              .getNode(dagID, "a")
+              .pipe(Effect.map((current) => (current?.status === "failed" ? current : undefined))),
             "required node did not fail while the workflow was paused",
           )
           expect((yield* store.getWorkflow(dagID))?.status).toBe("paused")
@@ -756,9 +756,9 @@ describe("DagLoop replan vs stale NodeFailed", () => {
 
           yield* dag.resume(dagID)
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => workflow?.status === "failed" ? workflow : undefined),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "failed" ? workflow : undefined))),
             "workflow did not fail after resuming with a required failure",
           )
           const nodeB = yield* store.getNode(dagID, "b")
@@ -791,10 +791,7 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           // DAG-02: c is a fresh reporting checkpoint, so the rewired dependent
           // must gate on its output (the merged checkpoint check at replan).
           const plan = yield* dag.replan(dagID, {
-            nodes: [
-              { ...node("b", ["c"]), restart: true, condition: 'c.output == "done"' },
-              node("c"),
-            ],
+            nodes: [{ ...node("b", ["c"]), restart: true, condition: 'c.output == "done"' }, node("c")],
           })
           expect(plan.restart).toEqual(["b"])
           expect(plan.add).toEqual(["c"])
@@ -815,9 +812,9 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           yield* Deferred.succeed(gateB2.release, "done")
 
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => workflow?.status === "completed" ? workflow : undefined),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
             "workflow did not complete under the rewired graph",
           )
           const parent = yield* takeWithin(parentPrompts, "terminal wake did not reach the parent")
@@ -854,9 +851,9 @@ describe("DagLoop replan vs stale NodeFailed", () => {
 
           yield* Deferred.succeed(secondA.release, "done")
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => workflow?.status === "completed" ? workflow : undefined),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
             "workflow did not complete after the restarted node reran",
           )
           const parent = yield* takeWithin(parentPrompts, "terminal wake did not reach the parent")

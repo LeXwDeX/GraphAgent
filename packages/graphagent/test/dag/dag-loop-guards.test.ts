@@ -44,6 +44,7 @@ import { SettingsHook } from "@/hook"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface PromptGate {
   readonly title: string
@@ -66,10 +67,12 @@ function node(overrides: Partial<NodeConfig> = {}): NodeConfig {
 function takeWithin<A>(queue: Queue.Queue<A>, message: string) {
   return Queue.take(queue).pipe(
     Effect.timeoutOption("1 second"),
-    Effect.flatMap(Option.match({
+    Effect.flatMap(
+      Option.match({
       onNone: () => Effect.fail(new Error(message)),
       onSome: Effect.succeed,
-    })),
+      }),
+    ),
   )
 }
 
@@ -119,14 +122,8 @@ function guardLayer(input: {
       ).pipe(Layer.provide(realStore))
     : realStore
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
-  const realDag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const realDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
   const dag = input.failPause
     ? Layer.effect(
         Dag.Service,
@@ -162,7 +159,7 @@ function guardLayer(input: {
         }),
       ).pipe(Layer.provide(realDag))
     : realDag
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
@@ -186,16 +183,20 @@ function guardLayer(input: {
     })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: (sessionID) =>
       Effect.sync(() => {
         input.cancels.push(sessionID as string)
       }),
     prompt: deliver,
     deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
-    get: () => Effect.succeed({
+    get: () =>
+      Effect.succeed({
       name: "build",
       mode: "all",
       permission: [],
@@ -247,19 +248,27 @@ function runGuardTest<A>(
       const database = yield* Database.Service
       // Two projects sharing the process-global store, one session in each.
       for (const project of ["project-1", "project-2"]) {
-        yield* database.db.insert(ProjectTable).values({
+        yield* database.db
+          .insert(ProjectTable)
+          .values({
           id: project as never,
           worktree: process.cwd() as never,
           sandboxes: [],
-        }).run().pipe(Effect.orDie)
-        yield* database.db.insert(SessionTable).values({
+          })
+          .run()
+          .pipe(Effect.orDie)
+        yield* database.db
+          .insert(SessionTable)
+          .values({
           id: `ses_${project}` as never,
           project_id: project as never,
           slug: project,
           directory: process.cwd() as never,
           title: `Parent of ${project}`,
           version: "test",
-        }).run().pipe(Effect.orDie)
+          })
+          .run()
+          .pipe(Effect.orDie)
       }
       if (beforeInit) yield* beforeInit({ database })
       yield* loop.init()
@@ -340,9 +349,12 @@ describe("DagLoop cross-instance adoption guard", () => {
             expect(cancels).toHaveLength(0)
           }),
         ({ database }) =>
-          database.db.transaction((tx) =>
+          database.db
+            .transaction((tx) =>
             Effect.gen(function* () {
-              yield* tx.insert(WorkflowTable).values({
+                yield* tx
+                  .insert(WorkflowTable)
+                  .values({
                 id: "foreign-recovery",
                 project_id: "project-1" as never,
                 session_id: "ses_project-1" as never,
@@ -352,8 +364,11 @@ describe("DagLoop cross-instance adoption guard", () => {
                 status: "running",
                 config: "{}",
                 seq: 10,
-              }).run()
-              yield* tx.insert(WorkflowNodeTable).values({
+                  })
+                  .run()
+                yield* tx
+                  .insert(WorkflowNodeTable)
+                  .values({
                 id: "orphan-node",
                 workflow_id: "foreign-recovery",
                 name: "orphan-node",
@@ -363,9 +378,11 @@ describe("DagLoop cross-instance adoption guard", () => {
                 depends_on: [],
                 child_session_id: "ses_orphan",
                 seq: 9,
-              }).run()
+                  })
+                  .run()
             }),
-          ).pipe(Effect.orDie),
+            )
+            .pipe(Effect.orDie),
       ),
     )
   })
@@ -379,9 +396,9 @@ describe("DagLoop missing node config guard (DAG-A03)", () => {
         ({ store, created }) =>
           Effect.gen(function* () {
             const failed = yield* pollWithTimeout(
-              store.getNode("dag_missing_config", "orphan-node").pipe(
-                Effect.map((row) => row?.status === "failed" ? row : undefined),
-              ),
+              store
+                .getNode("dag_missing_config", "orphan-node")
+                .pipe(Effect.map((row) => (row?.status === "failed" ? row : undefined))),
               "missing-config node was not failed closed",
             )
             expect(failed.errorReason).toBe("Node configuration missing for active node: orphan-node")
@@ -389,9 +406,12 @@ describe("DagLoop missing node config guard (DAG-A03)", () => {
             expect(created).toEqual([])
           }),
         ({ database }) =>
-          database.db.transaction((tx) =>
+          database.db
+            .transaction((tx) =>
             Effect.gen(function* () {
-              yield* tx.insert(WorkflowTable).values({
+                yield* tx
+                  .insert(WorkflowTable)
+                  .values({
                 id: "dag_missing_config",
                 project_id: Project.ID.make("project-1"),
                 session_id: SessionID.make("ses_project-1"),
@@ -401,8 +421,11 @@ describe("DagLoop missing node config guard (DAG-A03)", () => {
                 status: "running",
                 config: JSON.stringify({ name: "missing-config", nodes: [] }),
                 seq: 10,
-              }).run()
-              yield* tx.insert(WorkflowNodeTable).values({
+                  })
+                  .run()
+                yield* tx
+                  .insert(WorkflowNodeTable)
+                  .values({
                 id: "orphan-node",
                 workflow_id: "dag_missing_config",
                 name: "orphan-node",
@@ -411,9 +434,11 @@ describe("DagLoop missing node config guard (DAG-A03)", () => {
                 required: true,
                 depends_on: [],
                 seq: 9,
-              }).run()
+                  })
+                  .run()
             }),
-          ).pipe(Effect.orDie),
+            )
+            .pipe(Effect.orDie),
       ),
     )
   })
@@ -422,9 +447,7 @@ describe("DagLoop missing node config guard (DAG-A03)", () => {
 describe("DagLoop subscription survival", () => {
   it("keeps processing WorkflowStarted after a handler defect", async () => {
     await Effect.runPromise(
-      runGuardTest(
-        { instanceProject: "project-1", failGetWorkflow: { remaining: 1 } },
-        ({ dag, childPrompts }) =>
+      runGuardTest({ instanceProject: "project-1", failGetWorkflow: { remaining: 1 } }, ({ dag, childPrompts }) =>
           Effect.gen(function* () {
             // First workflow: the handler's getWorkflow dies (injected defect).
             // The guarded boundary must log-and-survive, not kill the stream.
@@ -442,7 +465,10 @@ describe("DagLoop subscription survival", () => {
               title: "Healthy workflow",
               config: { name: "healthy", nodes: [node({ id: "healthy-node", name: "healthy-node" })] },
             })
-            const child = yield* takeWithin(childPrompts, "subscription died after defect — healthy workflow never spawned")
+          const child = yield* takeWithin(
+            childPrompts,
+            "subscription died after defect — healthy workflow never spawned",
+          )
             expect(child.title).toBe("healthy-node")
             yield* Deferred.succeed(child.release, "done")
           }),
@@ -470,7 +496,7 @@ describe("DagLoop cancel-skip race", () => {
           yield* dag.nodeSkipped(dagID, "racy-node", "workflow_cancelled")
           // The handler must abort the child instead of orphaning its fiber.
           yield* pollWithTimeout(
-            Effect.sync(() => (cancels.includes(childSessionID) ? true as const : undefined)),
+            Effect.sync(() => (cancels.includes(childSessionID) ? (true as const) : undefined)),
             "NodeSkipped handler did not cancel the live child session",
           )
           const updated = yield* store.getNode(dagID, "racy-node")
@@ -493,7 +519,13 @@ describe("DagLoop replan verdict gate (issue #322)", () => {
             config: {
               name: "gate-replan",
               nodes: [
-                node({ id: "gate", name: "gate", required: true, report_to_parent: true, output_schema: { type: "object" } }),
+                node({
+                  id: "gate",
+                  name: "gate",
+                  required: true,
+                  report_to_parent: true,
+                  output_schema: { type: "object" },
+                }),
                 node({ id: "downstream", name: "downstream", required: false, depends_on: ["gate"] }),
               ],
             },
@@ -538,7 +570,13 @@ describe("DagLoop replan verdict gate (issue #322)", () => {
             config: {
               name: "gate-continue",
               nodes: [
-                node({ id: "gate", name: "gate", required: true, report_to_parent: true, output_schema: { type: "object" } }),
+                node({
+                  id: "gate",
+                  name: "gate",
+                  required: true,
+                  report_to_parent: true,
+                  output_schema: { type: "object" },
+                }),
                 node({ id: "downstream", name: "downstream", required: false, depends_on: ["gate"] }),
               ],
             },
@@ -549,7 +587,8 @@ describe("DagLoop replan verdict gate (issue #322)", () => {
           // The report_to_parent wake and the downstream spawn can land in
           // either order; accept the downstream prompt whichever comes second.
           const first = yield* takeWithin(childPrompts, "no prompt after continue verdict")
-          const downstreamChild = first.title === "downstream"
+          const downstreamChild =
+            first.title === "downstream"
             ? first
             : yield* takeWithin(childPrompts, "downstream did not spawn after continue verdict")
           expect(downstreamChild.title).toBe("downstream")
@@ -633,10 +672,17 @@ describe("DagLoop equality gates on schema-less string outputs (DAG-01)", () => 
           yield* dag.nodeCompleted(dagID, "gate", JSON.stringify({ verdict: "continue", findings: "confirmed" }))
           // The report_to_parent wake and the downstream spawn can land in
           // either order; accept the downstream prompt whichever comes second.
-          const first = yield* takeWithin(childPrompts, "no prompt after continue verdict — gate evaluated false on the string output")
-          const downstreamChild = first.title === "downstream"
+          const first = yield* takeWithin(
+            childPrompts,
+            "no prompt after continue verdict — gate evaluated false on the string output",
+          )
+          const downstreamChild =
+            first.title === "downstream"
             ? first
-            : yield* takeWithin(childPrompts, "downstream was silently skipped — string output never normalized (DAG-01)")
+              : yield* takeWithin(
+                  childPrompts,
+                  "downstream was silently skipped — string output never normalized (DAG-01)",
+                )
           expect(downstreamChild.title).toBe("downstream")
           expect((yield* store.getNode(dagID, "downstream"))?.status).not.toBe("skipped")
           yield* Deferred.succeed(downstreamChild.release, "done")
@@ -704,7 +750,13 @@ describe("Dag.replan merged-graph checkpoint gate (DAG-02)", () => {
             config: {
               name: "merged-gate",
               nodes: [
-                node({ id: "gate", name: "gate", required: true, report_to_parent: true, output_schema: { type: "object" } }),
+                node({
+                  id: "gate",
+                  name: "gate",
+                  required: true,
+                  report_to_parent: true,
+                  output_schema: { type: "object" },
+                }),
                 node({
                   id: "downstream",
                   name: "downstream",
@@ -729,7 +781,7 @@ describe("Dag.replan merged-graph checkpoint gate (DAG-02)", () => {
             )
           expect(attempt.ok).toBe(false)
           expect(attempt.message.includes('"gate"') && attempt.message.includes('"late"')).toBe(true)
-          expect((yield* store.getNode(dagID, "late"))).toBeUndefined()
+          expect(yield* store.getNode(dagID, "late")).toBeUndefined()
           yield* Deferred.succeed(gateChild.release, "done")
         }),
       ),
@@ -770,19 +822,21 @@ describe("DagLoop replan verdict gate fail-closed (DAG-03)", () => {
     return Effect.gen(function* () {
       const first = yield* takeWithin(childPrompts, "first boot prompt did not arrive")
       const second = yield* takeWithin(childPrompts, "second boot prompt did not arrive")
-      const byTitle = new Map([[first.title, first], [second.title, second]])
+      const byTitle = new Map([
+        [first.title, first],
+        [second.title, second],
+      ])
       const gate = byTitle.get("gate")
       const probe = byTitle.get("probe")
-      if (!gate || !probe) return yield* Effect.fail(new Error(`expected gate+probe, got ${first.title}/${second.title}`))
+      if (!gate || !probe)
+        return yield* Effect.fail(new Error(`expected gate+probe, got ${first.title}/${second.title}`))
       return { gate, probe }
     })
   }
 
   it("holds the in-memory pause when the durable pause exhausts its retries", async () => {
     await Effect.runPromise(
-      runGuardTest(
-        { instanceProject: "project-1", failPause: { remaining: 99 } },
-        ({ dag, store, childPrompts }) =>
+      runGuardTest({ instanceProject: "project-1", failPause: { remaining: 99 } }, ({ dag, store, childPrompts }) =>
           Effect.gen(function* () {
             const dagID = yield* dag.create(vetoedGateGraph("Fail-closed gate", "fail-closed-gate"))
             const { gate } = yield* takeBootPrompts(childPrompts)
@@ -828,9 +882,7 @@ describe("DagLoop replan verdict gate fail-closed (DAG-03)", () => {
   // ever adjudicated the verdict.
   it("the veto hold survives a terminal-event flag re-sync (DAG-03 / F2)", async () => {
     await Effect.runPromise(
-      runGuardTest(
-        { instanceProject: "project-1", failPause: { remaining: 99 } },
-        ({ dag, store, childPrompts }) =>
+      runGuardTest({ instanceProject: "project-1", failPause: { remaining: 99 } }, ({ dag, store, childPrompts }) =>
           Effect.gen(function* () {
             const dagID = yield* dag.create(vetoedGateGraph("Resync hold", "resync-hold"))
             const { gate } = yield* takeBootPrompts(childPrompts)
@@ -851,9 +903,7 @@ describe("DagLoop replan verdict gate fail-closed (DAG-03)", () => {
 
   it("a parent replan releases the hold and the corrective path spawns (DAG-03 / F2)", async () => {
     await Effect.runPromise(
-      runGuardTest(
-        { instanceProject: "project-1", failPause: { remaining: 99 } },
-        ({ dag, store, childPrompts }) =>
+      runGuardTest({ instanceProject: "project-1", failPause: { remaining: 99 } }, ({ dag, store, childPrompts }) =>
           Effect.gen(function* () {
             const dagID = yield* dag.create(vetoedGateGraph("Replan release", "replan-release"))
             const { gate } = yield* takeBootPrompts(childPrompts)

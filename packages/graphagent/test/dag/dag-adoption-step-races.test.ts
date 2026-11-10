@@ -23,6 +23,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface PromptGate {
   readonly title: string
@@ -32,10 +33,12 @@ interface PromptGate {
 function takeWithin<A>(queue: Queue.Queue<A>, message: string) {
   return Queue.take(queue).pipe(
     Effect.timeoutOption("2 seconds"),
-    Effect.flatMap(Option.match({
+    Effect.flatMap(
+      Option.match({
       onNone: () => Effect.fail(new Error(message)),
       onSome: Effect.succeed,
-    })),
+      }),
+    ),
   )
 }
 
@@ -56,7 +59,7 @@ function reply(sessionID: string, text: string): SessionV1.WithParts {
       time: { created: Date.now() },
       finish: "stop",
     },
-    parts: text ? [{ type: "text", text }] as never : [],
+    parts: text ? ([{ type: "text", text }] as never) : [],
   }
 }
 
@@ -82,15 +85,9 @@ function raceLayer(input: {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const session = Layer.mock(Session.Service, {
@@ -105,7 +102,9 @@ function raceLayer(input: {
       }),
     messages: (value) => input.messages(value as never) as never,
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: (sessionID) => Effect.sync(() => void input.cancelled.push(sessionID as string)),
     prompt: Effect.fn("test.SessionPrompt.prompt")(function* (value: SessionPrompt.PromptInput) {
       const sessionID = value.sessionID as string
@@ -118,9 +117,11 @@ function raceLayer(input: {
     }),
     // Keep wake delivery pending so the tests observe scheduling only.
     deliver: () => Effect.succeed(Option.none()),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
-    get: () => Effect.succeed({
+    get: () =>
+      Effect.succeed({
       name: "build",
       mode: "all",
       permission: [],
@@ -164,19 +165,27 @@ function runRaceTest<A>(
       const store = yield* DagStore.Service
       const events = yield* EventV2.Service
       const database = yield* Database.Service
-      yield* database.db.insert(ProjectTable).values({
+      yield* database.db
+        .insert(ProjectTable)
+        .values({
         id: "project-1" as never,
         worktree: process.cwd() as never,
         sandboxes: [],
-      }).run().pipe(Effect.orDie)
-      yield* database.db.insert(SessionTable).values({
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* database.db
+        .insert(SessionTable)
+        .values({
         id: "ses_parent" as never,
         project_id: "project-1" as never,
         slug: "parent",
         directory: process.cwd(),
         title: "Parent",
         version: "test",
-      }).run().pipe(Effect.orDie)
+        })
+        .run()
+        .pipe(Effect.orDie)
       return yield* test({ dag, loop, store, events, database, childPrompts, cancelled })
     }).pipe(
       Effect.provide(raceLayer({ childPrompts, cancelled, messages: input.messages })),
@@ -226,7 +235,7 @@ describe("DagLoop adoption idempotency", () => {
 
             const initFiber = yield* loop.init().pipe(Effect.forkChild)
             yield* pollWithTimeout(
-              Effect.sync(() => childStatusCalls.count === 1 ? true as const : undefined),
+              Effect.sync(() => (childStatusCalls.count === 1 ? (true as const) : undefined)),
               "startup scan did not reach the child status probe",
             )
             yield* events.publish(DagEvent.WorkflowReplanned, {
@@ -257,14 +266,15 @@ describe("DagLoop adoption idempotency", () => {
 describe("DagLoop stepping race window", () => {
   it("does not spawn a second node when a stale stepped event lands while one is in flight", async () => {
     await Effect.runPromise(
-      runRaceTest(
-        { messages: () => Effect.succeed([]) },
-        ({ dag, loop, store, events, database, childPrompts }) =>
+      runRaceTest({ messages: () => Effect.succeed([]) }, ({ dag, loop, store, events, database, childPrompts }) =>
           Effect.gen(function* () {
             const dagID = "dag_step_race"
-            yield* database.db.transaction((tx) =>
+          yield* database.db
+            .transaction((tx) =>
               Effect.gen(function* () {
-                yield* tx.insert(WorkflowTable).values({
+                yield* tx
+                  .insert(WorkflowTable)
+                  .values({
                   id: dagID,
                   project_id: "project-1" as never,
                   session_id: "ses_parent" as never,
@@ -275,8 +285,11 @@ describe("DagLoop stepping race window", () => {
                   config: JSON.stringify({ name: "step-race", nodes: [nodeConfig("a"), nodeConfig("b")] }),
                   seq: 2,
                   wake_reported: false,
-                }).run()
-                yield* tx.insert(WorkflowNodeTable).values([
+                  })
+                  .run()
+                yield* tx
+                  .insert(WorkflowNodeTable)
+                  .values([
                   {
                     id: "a",
                     workflow_id: dagID,
@@ -301,9 +314,11 @@ describe("DagLoop stepping race window", () => {
                     wake_reported: false,
                     seq: 0,
                   },
-                ]).run()
+                  ])
+                  .run()
               }),
-            ).pipe(Effect.orDie)
+            )
+            .pipe(Effect.orDie)
 
             yield* loop.init()
             expect(yield* dag.step(dagID)).toEqual({ status: "stepping", nodeID: "a" })
@@ -326,9 +341,7 @@ describe("DagLoop stepping race window", () => {
             // The next explicit step after a settles advances exactly one node.
             yield* Deferred.succeed(first.release, "done")
             yield* pollWithTimeout(
-              store.getNode(dagID, "a").pipe(
-                Effect.map((item) => item?.status === "completed" ? item : undefined),
-              ),
+            store.getNode(dagID, "a").pipe(Effect.map((item) => (item?.status === "completed" ? item : undefined))),
               "stepped node a did not complete",
             )
             expect(yield* dag.step(dagID)).toEqual({ status: "stepping", nodeID: "b" })
@@ -336,9 +349,9 @@ describe("DagLoop stepping race window", () => {
             expect(second.title).toBe("b")
             yield* Deferred.succeed(second.release, "done")
             yield* pollWithTimeout(
-              store.getWorkflow(dagID).pipe(
-                Effect.map((workflow) => workflow?.status === "completed" ? workflow : undefined),
-              ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
               "step-race workflow did not complete",
             )
           }),

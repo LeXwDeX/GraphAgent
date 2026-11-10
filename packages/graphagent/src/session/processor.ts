@@ -29,6 +29,7 @@ import { ToolInputRejectedError } from "./llm/ai-sdk"
 import { hookToolStop } from "@/hook/trigger-result"
 import { CompactionTimeoutError, watchCompactionStream } from "./compaction-timeout"
 import { SessionStatus } from "./status"
+import { AgentScheduler } from "./agent-scheduler"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
@@ -190,6 +191,7 @@ export const layer = Layer.effect(
     const snapshot = yield* Snapshot.Service
     const agents = yield* Agent.Service
     const llm = yield* LLM.Service
+    const scheduler = yield* AgentScheduler.Service
     const permission = yield* Permission.Service
     const scope = yield* Scope.Scope
     const status = yield* SessionStatus.Service
@@ -1155,6 +1157,11 @@ export const layer = Layer.effect(
             Effect.retry(
               SessionRetry.policy({
                 provider: input.model.providerID,
+                // A rate-limited lane pauses new requests to this provider/model
+                // until the backoff elapses (#1021), so queued work does not
+                // burn capacity on requests the provider will reject anyway.
+                onRateLimit: ({ retryAfterMs }) =>
+                  scheduler.penalize(input.model.providerID, input.model.id, retryAfterMs),
                 shouldRetry: () =>
                   !aborted &&
                   !ctx.blocked &&
@@ -1281,6 +1288,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Snapshot.defaultLayer),
     Layer.provide(Agent.defaultLayer),
     Layer.provide(LLM.defaultLayer),
+    Layer.provide(AgentScheduler.defaultLayer),
     Layer.provide(Permission.defaultLayer),
     Layer.provide(SessionStatus.defaultLayer),
     Layer.provide(Image.defaultLayer),
@@ -1296,6 +1304,7 @@ export const node = LayerNode.make(layer, [
   Snapshot.node,
   Agent.node,
   LLM.node,
+  AgentScheduler.node,
   Permission.node,
   SessionStatus.node,
   Image.node,

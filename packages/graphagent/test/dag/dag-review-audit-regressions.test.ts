@@ -22,7 +22,7 @@
  *   item-count, and additionalProperties constraints.
  */
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer, Semaphore, Fiber } from "effect"
+import { Effect, Layer, Fiber } from "effect"
 import { reconcileWorkflow } from "@/dag/runtime/recovery"
 import { validateAgainstSchema, unsupportedSchemaKeywords } from "@/dag/runtime/capture"
 import { evaluateCondition } from "@/dag/runtime/eval"
@@ -35,6 +35,13 @@ import { SessionPrompt } from "@/session/prompt"
 import { validateReviewExecutionInput, unresolvedReviewOutcomes } from "@/dag/review-lifecycle"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { makeNodeRow } from "./fixtures"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 type TrackedEvent = { type: string; nodeID: string; output?: unknown; reason?: string; trigger?: string }
 
@@ -173,7 +180,9 @@ describe("B1: reconcileWorkflow review-contract gap", () => {
     // Recovery enforces the same review contract (verdict ∈ ACCEPT|REJECT)
     // as spawn's completion gate — both call settleCapturedOutput.
     expect(events).not.toContainEqual(expect.objectContaining({ type: "nodeCompleted", nodeID: "review-1" }))
-    expect(events).toContainEqual(expect.objectContaining({ type: "nodeFailed", nodeID: "review-1", trigger: "verdict_fail" }))
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "nodeFailed", nodeID: "review-1", trigger: "verdict_fail" }),
+    )
   })
 
   it("recovered diff review with stale fingerprint must not be completed", async () => {
@@ -301,7 +310,9 @@ describe("B3: evaluateCondition numeric comparisons", () => {
 
   it("non-finite operands fail loudly too (parseValue turns 'Infinity' into a number)", () => {
     expect(evaluateCondition("a.output.count > Infinity", { a: { output: { count: 1 } } }).ok).toBe(false)
-    expect(evaluateCondition("a.output.count > 0", { a: { output: { count: Number.POSITIVE_INFINITY } } }).ok).toBe(false)
+    expect(evaluateCondition("a.output.count > 0", { a: { output: { count: Number.POSITIVE_INFINITY } } }).ok).toBe(
+      false,
+    )
   })
 
   it("numeric comparison on real numbers still works", () => {
@@ -363,10 +374,13 @@ describe("B4: unsupportedSchemaKeywords", () => {
   })
 
   it("flags inert forms the validator cannot enforce: tuple items and schema-form additionalProperties", () => {
-    expect(unsupportedSchemaKeywords({ type: "array", items: [{ type: "string" }, { oneOf: [] }] }))
-      .toEqual(["items (tuple form)", "oneOf"])
-    expect(unsupportedSchemaKeywords({ type: "object", additionalProperties: { type: "string" } }))
-      .toEqual(["additionalProperties (schema form)"])
+    expect(unsupportedSchemaKeywords({ type: "array", items: [{ type: "string" }, { oneOf: [] }] })).toEqual([
+      "items (tuple form)",
+      "oneOf",
+    ])
+    expect(unsupportedSchemaKeywords({ type: "object", additionalProperties: { type: "string" } })).toEqual([
+      "additionalProperties (schema form)",
+    ])
   })
 })
 
@@ -395,16 +409,27 @@ describe("B5: spawn pre-admission failures", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+          const input = {
             dagID: "wf-1",
             nodeID: "node-1",
             node: makeNodeRow(),
             parentSessionID: "ses_parent",
             promptParts: [{ type: "text", text: "run" }] as never,
-          })
+          }
+          const result = yield* spawnNode(spawnSchedule(input, 1), input)
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(harness.dagLayer, agentLayer, harness.sessionLayer, harness.promptLayer))) as Effect.Effect<never>,
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            harness.dagLayer,
+            agentLayer,
+            harness.sessionLayer,
+            harness.promptLayer,
+            AgentScheduler.defaultLayer,
+          ),
+        ),
+      ) as Effect.Effect<never>,
     )
   }
 
@@ -417,9 +442,7 @@ describe("B5: spawn pre-admission failures", () => {
     // before B5 this promise rejected and loop's catchCause published a
     // second, guard-rejected NodeFailed.
     await runSpawnToSettled(agentLayer, harness)
-    expect(harness.events).toEqual([
-      { type: "nodeFailed", nodeID: "node-1", reason: "unknown worker_type: build" },
-    ])
+    expect(harness.events).toEqual([{ type: "nodeFailed", nodeID: "node-1", reason: "unknown worker_type: build" }])
   })
 
   it("missing model publishes exactly one nodeFailed and resolves", async () => {
@@ -427,8 +450,14 @@ describe("B5: spawn pre-admission failures", () => {
     const agentLayer = Layer.mock(Agent.Service, {
       get: () =>
         Effect.succeed({
-          name: "general", mode: "all", permission: [], options: {}, description: "", prompt: "",
-          tools: {}, hooks: {},
+          name: "general",
+          mode: "all",
+          permission: [],
+          options: {},
+          description: "",
+          prompt: "",
+          tools: {},
+          hooks: {},
         }),
     })
     await runSpawnToSettled(agentLayer, harness)
