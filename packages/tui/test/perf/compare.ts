@@ -7,7 +7,7 @@ import { PART_OVERSCAN, TAIL_ALWAYS } from "../../src/routes/session/rows"
 
 export type ScenarioMetrics = Record<string, number | string>
 export type PerfReport = {
-  calibration?: { fixedLoopMs?: number }
+  calibration?: { fixedLoopMs?: number; fixedLayoutMsMedian?: number }
   scenarios: Record<string, Record<string, ScenarioMetrics>>
 }
 export type CompareRow = {
@@ -29,6 +29,12 @@ export type Failure = {
 /** Relative timing tolerance. Tightening is safe; raising it needs review. */
 export const TIMING_RATIO = 1.3
 /**
+ * p99 is the second-worst of 200 keystrokes, so one scheduler hiccup moves it.
+ * It gets a wider ratio than the stable percentiles; the absolute frame ceiling
+ * still caps pathological frames.
+ */
+export const P99_TIMING_RATIO = 1.5
+/**
  * Timing floor for the ratio check. A sub-millisecond sample moves by tens of
  * microseconds under background load, so a 1.30x comparison there measures the
  * scheduler rather than the frame.
@@ -38,7 +44,16 @@ export const MIN_COMPARE_MS = 1
 export const FRAME_CEILING_MS = 100
 const SIZE_ORDER = ["S", "M", "L"]
 
+/**
+ * Normalize timings by the render-path calibration, not the fixed JavaScript
+ * loop: the loop barely moves between a developer machine and a shared CI
+ * runner, while mount + first layout moved 1.51x in the same comparison. The
+ * loop stays as a fallback for reports captured before layout calibration.
+ */
 function machineFactor(baseline: PerfReport, current: PerfReport): number {
+  const layoutBefore = baseline.calibration?.fixedLayoutMsMedian ?? 0
+  const layoutNow = current.calibration?.fixedLayoutMsMedian ?? 0
+  if (layoutBefore > 0 && layoutNow > 0) return layoutNow / layoutBefore
   const before = baseline.calibration?.fixedLoopMs ?? 0
   const now = current.calibration?.fixedLoopMs ?? 0
   if (before <= 0 || now <= 0) return 1
@@ -54,10 +69,7 @@ function metric(report: PerfReport, size: string, id: string, name: string): num
   return typeof value === "number" ? value : undefined
 }
 
-export function compareReports(
-  baseline: PerfReport,
-  current: PerfReport,
-): { rows: CompareRow[]; failures: Failure[] } {
+export function compareReports(baseline: PerfReport, current: PerfReport): { rows: CompareRow[]; failures: Failure[] } {
   const rows: CompareRow[] = []
   const failures: Failure[] = []
   const factor = machineFactor(baseline, current)
@@ -83,16 +95,17 @@ export function compareReports(
           ratio: old === 0 ? 0 : Number((value / old).toFixed(3)),
         })
         // `maxMs` is one worst frame; a single scheduler hiccup moves it far
-        // past 1.30x. It is gated by the absolute ceiling below instead.
+        // past the ratio. It is gated by the absolute ceiling below instead.
         if (!name.endsWith("Ms") || name === "maxMs") continue
         const adjusted = value / factor
         if (adjusted < MIN_COMPARE_MS) continue
-        if (adjusted > old * TIMING_RATIO) {
+        const tolerance = name.endsWith("p99Ms") ? P99_TIMING_RATIO : TIMING_RATIO
+        if (adjusted > old * tolerance) {
           fail(
             size,
             id,
             name,
-            `≤ ${(old * TIMING_RATIO).toFixed(2)} (1.30× baseline, machine factor ${factor.toFixed(3)})`,
+            `≤ ${(old * tolerance).toFixed(2)} (${tolerance.toFixed(2)}× baseline, machine factor ${factor.toFixed(3)})`,
             adjusted,
           )
         }
@@ -176,7 +189,11 @@ async function main() {
   const current = (await Bun.file(path.resolve(currentPath)).json()) as PerfReport
   const { rows, failures } = compareReports(baseline, current)
   console.log(
-    JSON.stringify({ baseline: path.resolve(baselinePath), current: path.resolve(currentPath), rows, failures }, null, 2),
+    JSON.stringify(
+      { baseline: path.resolve(baselinePath), current: path.resolve(currentPath), rows, failures },
+      null,
+      2,
+    ),
   )
   if (flags.includes("--enforce") && failures.length > 0) process.exit(1)
 }
