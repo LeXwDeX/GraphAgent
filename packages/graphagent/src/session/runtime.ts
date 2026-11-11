@@ -10,6 +10,7 @@ import { forgetSession, makeModelHistoryState, type ModelHistoryState } from "./
 import { makeHistoryState, forgetEntry, type HistoryState } from "./history/state"
 import { makeReasoningQueue } from "./reasoning-queue"
 import type { RuntimeContext } from "./runtime-context"
+import { RuntimeSlots } from "./runtime-slots"
 import type { MessageID, SessionID } from "./schema"
 
 /**
@@ -62,6 +63,8 @@ export interface SessionRuntimes {
   readonly requestTools: Map<SessionID, { readonly key: string; readonly json: string }>
   /** Runtime-context blocks already sent per session, so their positions stay stable. */
   readonly runtimeContexts: Map<SessionID, readonly RuntimeContext.Entry[]>
+  /** State contributed by feature owners (for example DAG mode) in runtime-context slots. */
+  readonly runtimeSlots: RuntimeSlots.Slots
   /** Tool budgets and their pending user-message budgets, per session. */
   readonly toolBudgets: Map<SessionID, ToolBudgetState>
   /** App-layer model-write epochs for sessions with a pending command. */
@@ -102,6 +105,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
   const requestOverheads = new Map<SessionID, number>()
   const requestTools = new Map<SessionID, { readonly key: string; readonly json: string }>()
   const runtimeContexts = new Map<SessionID, readonly RuntimeContext.Entry[]>()
+  const runtimeSlots = RuntimeSlots.make()
   const toolBudgets = new Map<SessionID, ToolBudgetState>()
   const modelWrites = new Map<SessionID, ModelWriteState>()
   const rewrites = new Map<string, RewriteState>()
@@ -119,6 +123,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     requestOverheads.delete(sessionID)
     requestTools.delete(sessionID)
     runtimeContexts.delete(sessionID)
+    runtimeSlots.forget(sessionID)
     toolBudgets.delete(sessionID)
     forgetEntry(history, sessionID)
     forgetSession(modelHistory, sessionID)
@@ -132,6 +137,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     requestOverheads,
     requestTools,
     runtimeContexts,
+    runtimeSlots,
     toolBudgets,
     modelWrites,
     rewrites,

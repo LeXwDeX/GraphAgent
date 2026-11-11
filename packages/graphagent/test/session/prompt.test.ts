@@ -39,6 +39,7 @@ import { SessionCompaction } from "../../src/session/compaction"
 import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
+import { EngineProcess } from "../../src/session/engine-process"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
@@ -3049,8 +3050,11 @@ backgroundUnix(
       // Parent and child requests run concurrently; dispatch responses by the
       // actual user request instead of assuming a scheduling order.
       const childRequest = (hit: { body: Record<string, unknown> }) => {
-        const lastUser = decodeRecords(hit.body.messages).findLast((message) => message.role === "user")
-        return JSON.stringify(lastUser?.content).includes("review the change")
+        // Runtime-context slots (the date, for example) trail the actual user
+        // request, so search every user message rather than only the last one.
+        return decodeRecords(hit.body.messages)
+          .filter((message) => message.role === "user")
+          .some((message) => JSON.stringify(message.content).includes("review the change"))
       }
       yield* llm.textMatch(childRequest, "reviewer done")
       yield* llm.textMatch((hit) => !childRequest(hit), "dispatched")
@@ -3625,13 +3629,17 @@ for (const [runtime, runner] of [
 
         const request = requestMessages((yield* llm.hits).at(-1)?.body ?? {})
         const messages = request.conversation
-        expect(messages.map((message) => message.role)).toEqual(["user", "user", "assistant", "tool"])
+        expect(messages.map((message) => message.role)).toEqual(["user", "user", "user", "user", "assistant", "tool"])
         expect(JSON.stringify(messages[0])).toContain("run a tool with runtime context")
         expect(JSON.stringify(messages[0])).toContain("[todo reminder]")
         expect(JSON.stringify(messages[1])).toContain("project-memory-probe")
         expect(JSON.stringify(messages[1])).not.toContain("[todo reminder]")
-        expect(JSON.stringify(messages[2])).toContain("glob")
-        expect(JSON.stringify(messages[3])).toContain("tool")
+        expect(JSON.stringify(messages[2])).toContain("<env>")
+        expect(JSON.stringify(messages[2])).not.toContain("[todo reminder]")
+        expect(JSON.stringify(messages[3])).toContain("Today's date")
+        expect(JSON.stringify(messages[3])).not.toContain("[todo reminder]")
+        expect(JSON.stringify(messages[4])).toContain("glob")
+        expect(JSON.stringify(messages[5])).toContain("tool")
       }),
   )
 }
@@ -3673,8 +3681,8 @@ for (const [runtime, runner] of [
       const synthetic = messages.find((message) => JSON.stringify(message).includes("Attached media from tool result"))
       expect(synthetic).toBeDefined()
       expect(JSON.stringify(synthetic)).not.toContain("[todo reminder]")
-      const context = messages.at(-1)
-      expect(JSON.stringify(context)).toContain("project-memory-probe")
+      const context = messages.filter((message) => JSON.stringify(message).includes("project-memory-probe")).at(-1)
+      expect(context).toBeDefined()
       expect(JSON.stringify(context)).not.toContain("[todo reminder]")
       expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
     }),
@@ -3720,8 +3728,8 @@ for (const [runtime, runner] of [
       )
       expect(synthetic.length).toBeGreaterThanOrEqual(1)
       for (const message of synthetic) expect(JSON.stringify(message)).not.toContain("[todo reminder]")
-      const context = messages.at(-1)
-      expect(JSON.stringify(context)).toContain("project-memory-probe")
+      const context = messages.filter((message) => JSON.stringify(message).includes("project-memory-probe")).at(-1)
+      expect(context).toBeDefined()
       expect(JSON.stringify(context)).not.toContain("[todo reminder]")
       expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
     }),
@@ -3761,7 +3769,8 @@ withMemoryContext.instance("does not target provider-executed tool attachment me
     const synthetic = messages.filter((message) => JSON.stringify(message).includes("Attached media from tool result"))
     expect(synthetic.length).toBeGreaterThanOrEqual(1)
     for (const message of synthetic) expect(JSON.stringify(message)).not.toContain("[todo reminder]")
-    expect(JSON.stringify(messages.at(-1))).toContain("project-memory-probe")
+    const context = messages.filter((message) => JSON.stringify(message).includes("project-memory-probe")).at(-1)
+    expect(context).toBeDefined()
     expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("[todo reminder]")
   }),
 )
@@ -7244,8 +7253,11 @@ withMemoryContext.instance("sends MEMORY data in the trailing runtime context, n
     expect(request.system).not.toContain("project-memory-probe")
     expect(request.system).toContain(RuntimeContext.SYSTEM_NOTE)
     expect(request.lastRole).toBe("user")
-    expect(request.last).toContain("<runtime_context>")
-    expect(request.last).toContain("project-memory-probe")
+    // Other slots (environment, date) follow the memory block, so search the
+    // whole conversation rather than the last message.
+    const conversation = JSON.stringify(request.conversation)
+    expect(conversation).toContain("<runtime_context>")
+    expect(conversation).toContain("project-memory-probe")
   }),
 )
 
@@ -7269,11 +7281,76 @@ withChangingMemoryContext.instance("keeps the system prompt identical when runti
     const parts = inputs.map(requestMessages)
     expect(parts[1].system).toBe(parts[0].system)
     expect(parts[0].system).not.toContain("memory-step-")
-    expect(parts[0].last).toMatch(/memory-step-\d+/)
-    expect(parts[1].last).toMatch(/memory-step-\d+/)
-    expect(parts[1].last).not.toBe(parts[0].last)
+    const memoryBlocks = (conversation: RequestMessage[]) =>
+      conversation.map((message) => JSON.stringify(message)).filter((message) => /memory-step-\d+/.test(message))
+    expect(memoryBlocks(parts[0].conversation)).not.toHaveLength(0)
+    expect(memoryBlocks(parts[1].conversation)).not.toHaveLength(0)
+    expect(memoryBlocks(parts[1].conversation)).not.toEqual(memoryBlocks(parts[0].conversation))
     // The second request extends the first one: its earlier runtime context stays in place.
     expect(parts[1].conversation.slice(0, parts[0].conversation.length)).toEqual(parts[0].conversation)
+  }),
+)
+
+it.instance("carries the environment and date in runtime context, not the system prompt", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, chat } = yield* boot()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "where am I" }],
+    })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const request = requestMessages((yield* llm.inputs)[0])
+    expect(request.system).not.toContain("Working directory:")
+    expect(request.system).not.toContain("Today's date:")
+    const conversation = JSON.stringify(request.conversation)
+    expect(conversation).toContain("<env>")
+    expect(conversation).toContain("Working directory:")
+    expect(conversation).toContain("Workspace root folder:")
+    expect(conversation).toContain("Today's date:")
+  }),
+)
+
+it.instance("an owner runtime slot adds a block without changing the system prefix or tools", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, chat } = yield* boot()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "first" }],
+    })
+    yield* llm.text("first done")
+    yield* prompt.loop({ sessionID: chat.id })
+    EngineProcess.runtimes.runtimeSlots.set(chat.id, "dag_mode", {
+      parts: ["<dag_mode>on</dag_mode>"],
+      cleared: "DAG mode is off.",
+    })
+    try {
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "second" }],
+      })
+      yield* llm.text("second done")
+      yield* prompt.loop({ sessionID: chat.id })
+    } finally {
+      EngineProcess.runtimes.runtimeSlots.delete(chat.id, "dag_mode")
+    }
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    expect(JSON.stringify(inputs[1]?.system)).toBe(JSON.stringify(inputs[0]?.system))
+    expect(JSON.stringify(inputs[1]?.tools)).toBe(JSON.stringify(inputs[0]?.tools))
+    expect(JSON.stringify(inputs[0]?.messages)).not.toContain("<dag_mode>on</dag_mode>")
+    expect(JSON.stringify(inputs[1]?.messages)).toContain("<dag_mode>on</dag_mode>")
   }),
 )
 

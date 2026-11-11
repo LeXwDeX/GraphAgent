@@ -28,6 +28,8 @@ import type { Instruction } from "../instruction"
 import type { LLM } from "../llm"
 import type { SystemPrompt } from "../system"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EngineProcess } from "../engine-process"
+import { RuntimeSlots } from "../runtime-slots"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { FSUtil } from "@graphagent/core/fs-util"
 import type { Config } from "@/config/config"
@@ -1538,10 +1540,17 @@ export function makePrepare(deps: PrepareDeps) {
       ...hooksDocs,
       RuntimeContext.SYSTEM_NOTE,
     ]
-    const runtimeState: RuntimeContext.State[] = [
-      { key: "goal", parts: goalDocs.context, cleared: "No autonomous goal is active." },
-      { key: "memory", parts: memoryDocs, cleared: "No project memory data applies to the current request." },
-    ]
+    // Goal, memory, the environment and the date are state, not system text:
+    // the cached prefix must not change when the directory or the day changes.
+    // Owner-contributed slots (for example DAG mode) follow them.
+    const ctx = yield* InstanceState.context
+    const runtimeState = RuntimeSlots.state({
+      goal: goalDocs.context,
+      memory: memoryDocs,
+      environment: { directory: ctx.directory, root: ctx.root, git: ctx.project.vcs === "git" },
+      now: new Date(DateTime.toEpochMillis(yield* DateTime.now)),
+      custom: EngineProcess.runtimes.runtimeSlots.list(input.sessionID),
+    })
     const runtimeEvents: string[] = []
     if (!toolsDisabled && format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
     const processInput: LLM.StreamInput = {
