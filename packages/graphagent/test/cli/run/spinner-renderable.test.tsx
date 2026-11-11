@@ -4,9 +4,10 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
 import { RGBA, type ColorInput } from "@opentui/core"
-import { testRender } from "@opentui/solid"
-import { SpinnerRenderable } from "../../src/ui/spinner-renderable"
-import "../../src/ui/spinner-register"
+import { extend, testRender } from "@opentui/solid"
+import { SpinnerRenderable } from "../../../src/cli/cmd/run/spinner-renderable"
+
+extend({ spinner: SpinnerRenderable })
 
 const FRAMES = ["⠋", "⠙", "⠹"]
 

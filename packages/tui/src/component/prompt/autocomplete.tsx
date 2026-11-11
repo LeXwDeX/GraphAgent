@@ -14,6 +14,7 @@ import { useTuiPaths } from "../../context/runtime"
 import { useTuiConfig } from "../../config"
 import { useLocation } from "../../context/location"
 import { useTheme, selectedForeground } from "../../context/theme"
+import { useTicker } from "../../context/ticker-context"
 import { SplitBorder } from "../../ui/border"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
@@ -109,6 +110,7 @@ export function Autocomplete(props: {
   const commandScope = useCommandScope()
   const modeStack = useGraphagentModeStack()
   const { theme } = useTheme()
+  const ticker = useTicker()
   const dimensions = useTerminalDimensions()
   const frecency = useFrecency()
   const tuiConfig = useTuiConfig()
@@ -132,15 +134,18 @@ export function Autocomplete(props: {
   createEffect(() => {
     if (store.visible) {
       let lastPos = { x: 0, y: 0, width: 0 }
-      const interval = setInterval(() => {
+      let cancel: (() => void) | undefined
+      const check = () => {
         const anchor = props.anchor()
         if (anchor.x !== lastPos.x || anchor.y !== lastPos.y || anchor.width !== lastPos.width) {
           lastPos = { x: anchor.x, y: anchor.y, width: anchor.width }
           setPositionTick((t) => t + 1)
         }
-      }, 50)
+        cancel = ticker.at(ticker.now() + 50, check)
+      }
+      check()
 
-      onCleanup(() => clearInterval(interval))
+      onCleanup(() => cancel?.())
     }
   })
 

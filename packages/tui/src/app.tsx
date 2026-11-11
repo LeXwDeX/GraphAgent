@@ -273,60 +273,60 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                           <GraphagentKeymapProvider keymap={keymap}>
                             <ArgsProvider {...input.args}>
                               <KVProvider>
-                                <FooterToastProvider>
-                                  <HookStatusProvider>
-                                    <RouteProvider
-                                      initialRoute={
-                                        input.args.continue
-                                          ? {
-                                              type: "session",
-                                              sessionID: "dummy",
-                                            }
-                                          : undefined
-                                      }
-                                    >
-                                      <TuiConfigProvider config={input.config}>
-                                        <SDKProvider
-                                          url={input.url}
-                                          directory={input.directory}
-                                          fetch={input.fetch}
-                                          headers={input.headers}
-                                          events={input.events}
-                                        >
-                                          <ProjectProvider>
-                                            <SyncProvider>
-                                              <ThemeProvider mode={mode}>
-                                                <LocalProvider>
-                                                  <PromptStashProvider>
-                                                    <CommandRegistryProvider>
-                                                      <FrecencyProvider>
-                                                        <PromptHistoryProvider>
-                                                          <PromptRefProvider>
-                                                            <EditorContextProvider>
-                                                              <LocationProvider>
-                                                                <HomeSessionDestinationProvider>
-                                                                  <TickerProvider>
+                                <TickerProvider>
+                                  <FooterToastProvider>
+                                    <HookStatusProvider>
+                                      <RouteProvider
+                                        initialRoute={
+                                          input.args.continue
+                                            ? {
+                                                type: "session",
+                                                sessionID: "dummy",
+                                              }
+                                            : undefined
+                                        }
+                                      >
+                                        <TuiConfigProvider config={input.config}>
+                                          <SDKProvider
+                                            url={input.url}
+                                            directory={input.directory}
+                                            fetch={input.fetch}
+                                            headers={input.headers}
+                                            events={input.events}
+                                          >
+                                            <ProjectProvider>
+                                              <SyncProvider>
+                                                <ThemeProvider mode={mode}>
+                                                  <LocalProvider>
+                                                    <PromptStashProvider>
+                                                      <CommandRegistryProvider>
+                                                        <FrecencyProvider>
+                                                          <PromptHistoryProvider>
+                                                            <PromptRefProvider>
+                                                              <EditorContextProvider>
+                                                                <LocationProvider>
+                                                                  <HomeSessionDestinationProvider>
                                                                     <BtwProvider>
                                                                       <App onSnapshot={input.onSnapshot} />
                                                                     </BtwProvider>
-                                                                  </TickerProvider>
-                                                                </HomeSessionDestinationProvider>
-                                                              </LocationProvider>
-                                                            </EditorContextProvider>
-                                                          </PromptRefProvider>
-                                                        </PromptHistoryProvider>
-                                                      </FrecencyProvider>
-                                                    </CommandRegistryProvider>
-                                                  </PromptStashProvider>
-                                                </LocalProvider>
-                                              </ThemeProvider>
-                                            </SyncProvider>
-                                          </ProjectProvider>
-                                        </SDKProvider>
-                                      </TuiConfigProvider>
-                                    </RouteProvider>
-                                  </HookStatusProvider>
-                                </FooterToastProvider>
+                                                                  </HomeSessionDestinationProvider>
+                                                                </LocationProvider>
+                                                              </EditorContextProvider>
+                                                            </PromptRefProvider>
+                                                          </PromptHistoryProvider>
+                                                        </FrecencyProvider>
+                                                      </CommandRegistryProvider>
+                                                    </PromptStashProvider>
+                                                  </LocalProvider>
+                                                </ThemeProvider>
+                                              </SyncProvider>
+                                            </ProjectProvider>
+                                          </SDKProvider>
+                                        </TuiConfigProvider>
+                                      </RouteProvider>
+                                    </HookStatusProvider>
+                                  </FooterToastProvider>
+                                </TickerProvider>
                               </KVProvider>
                             </ArgsProvider>
                           </GraphagentKeymapProvider>

@@ -1,6 +1,11 @@
-import type { ColorInput } from "@opentui/core"
-import { RGBA } from "@opentui/core"
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
+import { RGBA, type ColorInput } from "@opentui/core"
 import type { ColorGenerator } from "./spinner-renderable"
+
+// Frame and color generators for `run` mode's custom `<spinner>` renderable.
+// The TUI itself uses the ticker-driven braille Spinner component instead.
 
 interface AdvancedGradientOptions {
   colors: ColorInput[]

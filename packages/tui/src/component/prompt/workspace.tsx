@@ -1,9 +1,10 @@
-import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import { createEffect, createMemo, createSignal, on, onCleanup } from "solid-js"
 import { useSDK } from "../../context/sdk"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
+import { useTicker } from "../../context/ticker-context"
 import { t } from "../../i18n"
 import {
   confirmWorkspaceFileChanges,
@@ -20,10 +21,13 @@ export function usePromptWorkspace(sessionID?: string) {
   const project = useProject()
   const sync = useSync()
   const toast = useToast()
+  const ticker = useTicker()
   const [selection, setSelection] = createSignal<WorkspaceSelection>()
   const [creating, setCreating] = createSignal(false)
   const [creatingDots, setCreatingDots] = createSignal(3)
   const [notice, setNotice] = createSignal<string>()
+  let noticeTimer: (() => void) | undefined
+  onCleanup(() => noticeTimer?.())
 
   async function create(selection: Extract<WorkspaceSelection, { type: "new" }>) {
     setCreating(true)
@@ -101,10 +105,16 @@ export function usePromptWorkspace(sessionID?: string) {
 
   function showNotice(name: string) {
     setNotice(t("panel.workspace.warped", { name }))
-    setTimeout(() => setNotice(undefined), 4000)
+    noticeTimer?.()
+    noticeTimer = ticker.at(ticker.now() + 4000, () => {
+      noticeTimer = undefined
+      setNotice(undefined)
+    })
   }
 
   function clearNotice() {
+    noticeTimer?.()
+    noticeTimer = undefined
     setNotice(undefined)
   }
 
@@ -125,9 +135,18 @@ export function usePromptWorkspace(sessionID?: string) {
       setCreatingDots(3)
       return
     }
-    const timer = setInterval(() => setCreatingDots((dots) => (dots % 3) + 1), 1000)
-    onCleanup(() => clearInterval(timer))
+    onCleanup(ticker.subscribeSecond())
   })
+
+  createEffect(
+    on(
+      ticker.second,
+      () => {
+        if (creating()) setCreatingDots((dots) => (dots % 3) + 1)
+      },
+      { defer: true },
+    ),
+  )
 
   const label = createMemo<
     | { type: "new"; workspaceType: string }

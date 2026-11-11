@@ -18,6 +18,7 @@ import { useBottomZoneOptional } from "../shell/bottom-zone"
 import { errorMessage } from "../util/error"
 import { Locale } from "../util/locale"
 import { createDebouncedSignal } from "../util/signal"
+import { useTicker } from "../context/ticker-context"
 import { useToast } from "../ui/toast"
 import { usePanelHost } from "./host"
 import { ListPanel, type ListItem } from "./list"
@@ -38,8 +39,9 @@ export function SessionListPanel() {
   const bottomZone = useBottomZoneOptional()
   const prompt = usePromptRef()
   const { theme } = useTheme()
+  const ticker = useTicker()
   const [toDelete, setToDelete] = createSignal<string>()
-  const [search, setSearch] = createDebouncedSignal("", 150)
+  const [search, setSearch] = createDebouncedSignal("", 150, (callback, ms) => ticker.at(ticker.now() + ms, callback))
   const deleteHint = useCommandShortcut("session.delete")
 
   const [searchResults, { refetch }] = createResource(

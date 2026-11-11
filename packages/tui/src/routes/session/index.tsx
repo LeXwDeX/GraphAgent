@@ -27,13 +27,7 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
-import {
-  BoxRenderable,
-  ScrollBoxRenderable,
-  addDefaultParsers,
-  TextAttributes,
-  RGBA,
-} from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { PatchDiff } from "../../component/patch-diff"
 import type {
@@ -70,6 +64,8 @@ import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
+import { createTicker } from "../../context/ticker"
+import { useOptionalTicker } from "../../context/ticker-context"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { useEpilogue } from "../../context/epilogue"
@@ -171,6 +167,9 @@ const context = createContext<{
   view: SessionViewState
   rowHeight: (row: Row, index: number) => number
   measureRow: (row: Row, el: BoxRenderable) => void
+  /** True while the row hosting `partID` is inside the scroll viewport. Unwindowed transcripts report everything visible. */
+  isVisible: (partID: string | undefined) => boolean
+  setVisibleParts: (partIDs: ReadonlySet<string> | undefined) => void
   shortcuts: {
     childFirst: Accessor<string>
     background: Accessor<string>
@@ -201,6 +200,9 @@ export function Main() {
   const tuiConfig = useTuiConfig()
   const kv = useKV()
   const { theme } = useTheme()
+  // The session route schedules a few deferred scrolls on the shared ticker;
+  // isolated renders without a provider fall back to a local ticker.
+  const ticker = useOptionalTicker() ?? createTicker()
   const promptRef = usePromptRef()
   const commands = useCommands()
   const session = createMemo(() => sync.session.get(route.sessionID))
@@ -286,6 +288,22 @@ export function Main() {
   const view = createSessionViewState()
   const measurements = createRowMeasurements()
   let previousRows: ReadonlyMap<string, Row> = new Map()
+
+  // Windowing reports which part rows are actually on screen, so spinners in
+  // scrolled-out rows stay static. Undefined means "everything visible" (the
+  // unwindowed transcript and the window before the first layout pass).
+  const [visibleParts, setVisibleParts] = createSignal<ReadonlySet<string> | undefined>(undefined)
+  const updateVisibleParts = (next: ReadonlySet<string> | undefined) => {
+    const current = visibleParts()
+    if (current === next) return
+    if (current && next && current.size === next.size && [...next].every((id) => current.has(id))) return
+    setVisibleParts(next)
+  }
+  const isVisiblePart = (partID: string | undefined) => {
+    const ids = visibleParts()
+    if (!ids || !partID) return true
+    return ids.has(partID)
+  }
 
   const rowData = createMemo(() => {
     const list: Row[] = []
@@ -745,10 +763,10 @@ export function Main() {
   }
 
   function toBottom() {
-    setTimeout(() => {
+    ticker.at(ticker.now() + 50, () => {
       if (!scroll || scroll.isDestroyed) return
       scroll.scrollTo(scroll.scrollHeight)
-    }, 50)
+    })
   }
 
   const local = useLocal()
@@ -1443,6 +1461,8 @@ export function Main() {
           view,
           rowHeight: heightFor,
           measureRow,
+          isVisible: isVisiblePart,
+          setVisibleParts: updateVisibleParts,
           shortcuts,
         }}
       >
@@ -1690,6 +1710,7 @@ function SessionTranscript(props: {
 
   onCleanup(() => {
     if (controller) renderer.unregisterLifecyclePass(controller)
+    ctx.setVisibleParts(undefined)
   })
 
   const mounted = (row: Row, index: number) =>
@@ -1723,9 +1744,16 @@ function SessionTranscript(props: {
             if (!scroll || scroll.isDestroyed) return
             const range = visibleRange(props.positions, scroll.scrollTop, scroll.viewport.height)
             if (range.first === first() && range.last === last()) return
+            const ids = new Set<string>()
+            const end = Math.min(range.last, props.rows.length - 1)
+            for (let index = range.first; index <= end; index++) {
+              const partID = props.rows[index]?.partID
+              if (partID) ids.add(partID)
+            }
             batch(() => {
               setFirst(range.first)
               setLast(range.last)
+              ctx.setVisibleParts(ids)
             })
           }
           renderer.registerLifecyclePass(el)
@@ -2121,6 +2149,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             done={isDone()}
             title={summary().title}
             duration={isDone() ? Locale.duration(duration()) : undefined}
+            visible={() => ctx.isVisible(props.part.id)}
           />
         </box>
         <Show when={(!inMinimal() || expanded()) && summary().body}>
@@ -2145,6 +2174,7 @@ function ReasoningHeader(props: {
   done: boolean
   title: string | null
   duration?: string
+  visible?: Accessor<boolean>
 }) {
   const { theme } = useTheme()
   const fg = () =>
@@ -2156,7 +2186,9 @@ function ReasoningHeader(props: {
     <Switch>
       <Match when={!props.done}>
         <box flexDirection="row">
-          <Spinner color={fg()}>{props.title ? "Thinking: " + props.title : "Thinking"}</Spinner>
+          <Spinner color={fg()} visible={props.visible}>
+            {props.title ? "Thinking: " + props.title : "Thinking"}
+          </Spinner>
         </box>
       </Match>
       <Match when={true}>
@@ -2394,6 +2426,7 @@ function InlineTool(props: {
       pending={props.pending}
       failure={props.failure}
       spinner={props.spinner}
+      visible={() => ctx.isVisible(props.part.id)}
       separate={props.separate}
       onMouseOver={() => clickable() && setHover(true)}
       onMouseOut={() => setHover(false)}
@@ -2424,6 +2457,7 @@ export function InlineToolRow(props: {
   pending: string
   failure?: string
   spinner?: boolean
+  visible?: Accessor<boolean>
   separate?: boolean
   children: JSX.Element
   onMouseOver?: () => void
@@ -2448,7 +2482,7 @@ export function InlineToolRow(props: {
     >
       <Switch>
         <Match when={props.spinner}>
-          <Spinner color={props.color} children={props.children} />
+          <Spinner color={props.color} children={props.children} visible={props.visible} />
         </Match>
         <Match when={true}>
           <Show
@@ -2499,6 +2533,7 @@ function BlockTool(props: {
   spinner?: boolean
 }) {
   const { theme } = useTheme()
+  const ctx = use()
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   const error = createMemo(() => (props.part?.state.status === "error" ? props.part.state.error : undefined))
@@ -2531,7 +2566,9 @@ function BlockTool(props: {
               </text>
             }
           >
-            <Spinner color={theme.textMuted}>{title().replace(/^# /, "")}</Spinner>
+            <Spinner color={theme.textMuted} visible={() => ctx.isVisible(props.part?.id)}>
+              {title().replace(/^# /, "")}
+            </Spinner>
           </Show>
         )}
       </Show>
@@ -2582,7 +2619,9 @@ function Shell(props: ToolProps) {
         >
           <box gap={1}>
             <Show when={isRunning()} fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}>
-              <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
+              <Spinner color={theme.text} visible={() => ctx.isVisible(props.part.id)}>
+                {stringValue(props.input.command)}
+              </Spinner>
             </Show>
             <Show when={output()}>
               <text fg={theme.text}>{limited()}</text>

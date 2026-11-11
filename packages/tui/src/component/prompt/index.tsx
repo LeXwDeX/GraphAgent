@@ -9,7 +9,6 @@ import {
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, untrack, Show, Switch, Match } from "solid-js"
-import "../../ui/spinner-register"
 import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
@@ -44,12 +43,12 @@ import type { AssistantMessage, FilePart, UserMessage } from "@graphagent/sdk"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
-import { createColors, createFrames } from "../../ui/spinner"
 import { t } from "../../i18n"
 import { openProviderPanel } from "../../panel/provider"
 import { askChoice } from "../../ask/local-ask"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
+import { useTicker } from "../../context/ticker-context"
 import { useArgs } from "../../context/args"
 import {
   EscapePriority,
@@ -235,6 +234,7 @@ export function Prompt(props: PromptProps) {
   const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const ticker = useTicker()
   const list = createMemo(() => props.placeholders?.normal ?? [])
   const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
@@ -351,8 +351,8 @@ export function Prompt(props: PromptProps) {
       () => {
         setStore("placeholder", randomIndex(list().length))
         setStore("interrupt", 0)
-        if (interruptTimer) clearTimeout(interruptTimer)
-        interruptTimer = undefined
+        interruptCancel?.()
+        interruptCancel = undefined
       },
       { defer: true },
     ),
@@ -360,10 +360,8 @@ export function Prompt(props: PromptProps) {
 
   // Initialize agent/model/variant from last user message when session changes
   let syncedSessionID: string | undefined
-  let interruptTimer: Timer | undefined
-  onCleanup(() => {
-    if (interruptTimer) clearTimeout(interruptTimer)
-  })
+  let interruptCancel: (() => void) | undefined
+  onCleanup(() => interruptCancel?.())
   createEffect(() => {
     const sessionID = props.sessionID
     const msg = lastUserMessage()
@@ -585,15 +583,15 @@ export function Prompt(props: PromptProps) {
         // press instead of losing it.
         setStore("interrupt", store.interrupt + (ctx.event.meta ? 2 : 1))
 
-        if (interruptTimer) clearTimeout(interruptTimer)
-        interruptTimer = setTimeout(() => {
-          interruptTimer = undefined
+        if (interruptCancel) interruptCancel()
+        interruptCancel = ticker.at(ticker.now() + 5000, () => {
+          interruptCancel = undefined
           setStore("interrupt", 0)
-        }, 5000)
+        })
 
         if (store.interrupt >= 2) {
-          if (interruptTimer) clearTimeout(interruptTimer)
-          interruptTimer = undefined
+          if (interruptCancel) interruptCancel()
+          interruptCancel = undefined
           if (stopping()?.sessionID === props.sessionID) return
           const sessionID = props.sessionID
           if (status().type === "idle") {
@@ -1529,14 +1527,14 @@ export function Prompt(props: PromptProps) {
     // temporary hack to make sure the message is sent
     if (!originalSessionID && props.sessionID === originalSessionID && !disposed) {
       if (editorParts.length > 0) editor.preserveSelectionFromNewSession()
-      setTimeout(() => {
+      ticker.at(ticker.now() + 50, () => {
         if (!disposed && props.sessionID === originalSessionID)
           route.navigate({
             type: "session",
             sessionID,
             prompt: structuredClone(unwrap(store.prompt)),
           })
-      }, 50)
+      })
     }
     if (finishMoveProgress) move.finishSubmit()
     return true
@@ -1610,11 +1608,11 @@ export function Prompt(props: PromptProps) {
 
     input.insertText(normalizedText)
 
-    setTimeout(() => {
+    ticker.at(ticker.now(), () => {
       if (!input || input.isDestroyed) return
       input.invalidateIntrinsicSize()
       renderer.requestRender()
-    }, 0)
+    })
   }
 
   async function pasteAttachment(file: { filename?: string; filepath?: string; content: string; mime: string }) {
@@ -1709,28 +1707,12 @@ export function Prompt(props: PromptProps) {
     return `Ask anything... "${list()[store.placeholder % list().length]}"`
   })
 
-  const spinnerDef = createMemo(() => {
+  const spinnerColor = createMemo(() => {
     const agent =
       status().type !== "idle"
         ? (local.agent.list().find((a) => a.name === lastUserMessage()?.agent) ?? local.agent.current())
         : local.agent.current()
-    const color = agent ? local.agent.color(agent.name) : theme.border
-    return {
-      frames: createFrames({
-        color,
-        style: "blocks",
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
-      }),
-      color: createColors({
-        color,
-        style: "blocks",
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
-      }),
-    }
+    return agent ? local.agent.color(agent.name) : theme.border
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
 
@@ -1790,7 +1772,7 @@ export function Prompt(props: PromptProps) {
               onSubmit={() => {
                 // IME: double-defer so the last composed character (e.g. Korean
                 // hangul) is flushed to plainText before we read it for submission.
-                setTimeout(() => setTimeout(() => submit(), 0), 0)
+                ticker.at(ticker.now(), () => ticker.at(ticker.now(), () => submit()))
               }}
               onPaste={async (event: PasteEvent) => {
                 if (props.disabled) {
@@ -1827,11 +1809,11 @@ export function Prompt(props: PromptProps) {
                   promptPartTypeId = input.extmarks.registerType("prompt-part")
                 }
                 props.ref?.(ref)
-                setTimeout(() => {
-                  // setTimeout is a workaround and needs to be addressed properly
+                ticker.at(ticker.now(), () => {
+                  // deferred so the textarea is initialized before the cursor color applies
                   if (!input || input.isDestroyed) return
                   input.cursorColor = theme.text
-                }, 0)
+                })
               }}
               onMouseDown={(r: MouseEvent) => r.target?.focus()}
               focusedBackgroundColor={theme.backgroundElement}
@@ -1945,7 +1927,7 @@ export function Prompt(props: PromptProps) {
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <box marginLeft={1}>
                     <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                      <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
+                      <Spinner color={spinnerColor()} />
                     </Show>
                   </box>
                   <box flexDirection="row" gap={1} flexShrink={0}>
@@ -1981,17 +1963,13 @@ export function Prompt(props: PromptProps) {
                         if (!r) return false
                         return r.message.length > 120
                       })
-                      const [seconds, setSeconds] = createSignal(0)
-                      onMount(() => {
-                        const timer = setInterval(() => {
-                          const next = retry()?.next
-                          if (next) setSeconds(Math.round((next - Date.now()) / 1000))
-                        }, 1000)
-
-                        onCleanup(() => {
-                          clearInterval(timer)
-                        })
+                      const seconds = createMemo(() => {
+                        ticker.second()
+                        const next = retry()?.next
+                        if (!next) return 0
+                        return Math.max(0, Math.round((next - ticker.now()) / 1000))
                       })
+                      onMount(() => onCleanup(ticker.subscribeSecond()))
                       const handleMessageClick = () => {
                         const r = retry()
                         if (!r) return

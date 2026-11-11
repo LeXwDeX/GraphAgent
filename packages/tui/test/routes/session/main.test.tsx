@@ -20,6 +20,7 @@ import { RouteProvider, useRoute } from "../../../src/context/route"
 import { SDKProvider, useSDK } from "../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
+import { TickerProvider } from "../../../src/context/ticker-context"
 import { TuiConfigProvider } from "../../../src/config"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../../src/keymap"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
@@ -153,45 +154,47 @@ async function mountMain(initialPrompt?: string) {
               <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
-                    <FooterToastProvider>
-                      <HookStatusProvider>
-                        <RouteProvider
-                          initialRoute={{
-                            type: "session",
-                            sessionID: sessionA,
-                            prompt: initialPrompt ? { input: initialPrompt, parts: [] } : undefined,
-                          }}
-                        >
-                          <TuiConfigProvider config={config}>
-                            <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
-                              <ProjectProvider>
-                                <SyncProvider>
-                                  <ThemeProvider mode="dark">
-                                    <LocalProvider>
-                                      <PromptStashProvider>
-                                        <FrecencyProvider>
-                                          <PromptHistoryProvider>
-                                            <PromptRefProvider>
-                                              <EditorContextProvider integration={{}}>
-                                                <BusCounter onReady={(value) => (listeners = value)} />
-                                                <Probe />
-                                                <Show when={mounted()}>
-                                                  <Main />
-                                                </Show>
-                                              </EditorContextProvider>
-                                            </PromptRefProvider>
-                                          </PromptHistoryProvider>
-                                        </FrecencyProvider>
-                                      </PromptStashProvider>
-                                    </LocalProvider>
-                                  </ThemeProvider>
-                                </SyncProvider>
-                              </ProjectProvider>
-                            </SDKProvider>
-                          </TuiConfigProvider>
-                        </RouteProvider>
-                      </HookStatusProvider>
-                    </FooterToastProvider>
+                    <TickerProvider>
+                      <FooterToastProvider>
+                        <HookStatusProvider>
+                          <RouteProvider
+                            initialRoute={{
+                              type: "session",
+                              sessionID: sessionA,
+                              prompt: initialPrompt ? { input: initialPrompt, parts: [] } : undefined,
+                            }}
+                          >
+                            <TuiConfigProvider config={config}>
+                              <SDKProvider url="http://test" directory={directory} events={events.source} fetch={fetch}>
+                                <ProjectProvider>
+                                  <SyncProvider>
+                                    <ThemeProvider mode="dark">
+                                      <LocalProvider>
+                                        <PromptStashProvider>
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider integration={{}}>
+                                                  <BusCounter onReady={(value) => (listeners = value)} />
+                                                  <Probe />
+                                                  <Show when={mounted()}>
+                                                    <Main />
+                                                  </Show>
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
+                                        </PromptStashProvider>
+                                      </LocalProvider>
+                                    </ThemeProvider>
+                                  </SyncProvider>
+                                </ProjectProvider>
+                              </SDKProvider>
+                            </TuiConfigProvider>
+                          </RouteProvider>
+                        </HookStatusProvider>
+                      </FooterToastProvider>
+                    </TickerProvider>
                   </KVProvider>
                 </ArgsProvider>
               </GraphagentKeymapProvider>

@@ -1,17 +1,18 @@
 import { createSignal, onCleanup, type Accessor } from "solid-js"
 
-export function createDebouncedSignal<T>(value: T, ms: number): [Accessor<T>, (value: T) => void] {
+/** Schedules `callback` once after `ms`, returning its cancel function. */
+export type Scheduler = (callback: () => void, ms: number) => () => void
+
+export function createDebouncedSignal<T>(value: T, ms: number, schedule: Scheduler): [Accessor<T>, (value: T) => void] {
   const [get, set] = createSignal(value)
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancel: (() => void) | undefined
   const debounced = (next: T) => {
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = undefined
+    cancel?.()
+    cancel = schedule(() => {
+      cancel = undefined
       set(() => next)
     }, ms)
   }
-  onCleanup(() => {
-    if (timer) clearTimeout(timer)
-  })
+  onCleanup(() => cancel?.())
   return [get, debounced]
 }

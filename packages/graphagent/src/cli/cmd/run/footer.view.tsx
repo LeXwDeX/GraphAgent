@@ -11,7 +11,7 @@
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import "./spinner-register"
-import { createColors, createFrames } from "@graphagent/tui/ui/spinner"
+import { createColors, createFrames } from "./spinner-frames"
 import {
   RUN_SUBAGENT_PANEL_ROWS,
   RunCommandMenuBody,

@@ -79,7 +79,9 @@ export class SpinnerRenderable extends Renderable {
     super(ctx, { ...options, height: 1 })
     this._name = options.name
     this._frames = options.frames?.length ? options.frames : this._name ? spinners[this._name].frames : DEFAULT_FRAMES
-    this._interval = clampInterval(options.interval ?? (this._name ? spinners[this._name].interval : spinners.dots.interval))
+    this._interval = clampInterval(
+      options.interval ?? (this._name ? spinners[this._name].interval : spinners.dots.interval),
+    )
     this._autoplay = options.autoplay ?? true
     this._backgroundColor = options.backgroundColor ?? "transparent"
     this._parsedBackgroundColor = parseColor(this._backgroundColor)

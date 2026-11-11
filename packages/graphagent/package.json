@@ -115,6 +115,7 @@
     "ai-gateway-provider": "catalog:",
     "bonjour-service": "1.4.4",
     "chokidar": "6.0.0",
+    "cli-spinners": "catalog:",
     "cross-spawn": "catalog:",
     "decimal.js": "10.6.0",
     "diff": "catalog:",
