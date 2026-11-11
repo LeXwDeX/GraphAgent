@@ -836,14 +836,14 @@ export function Autocomplete(props: {
               backgroundColor={index === store.selected ? theme.primary : undefined}
               flexDirection="row"
               onMouseMove={() => {
-                setStore("input", "mouse")
+                if (store.input !== "mouse") setStore("input", "mouse")
               }}
               onMouseOver={() => {
                 if (store.input !== "mouse") return
                 moveTo(index)
               }}
               onMouseDown={() => {
-                setStore("input", "mouse")
+                if (store.input !== "mouse") setStore("input", "mouse")
                 moveTo(index)
               }}
               onMouseUp={() => select()}
