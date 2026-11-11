@@ -19,9 +19,11 @@ export * as SessionInbox from "./inbox"
  * - a process-level nudge route: callers only know a session, the inbox finds
  *   the loaded instance that owns the session's directory.
  *
- * `submit` is the admission port for ledger-less sources. PR4 wires it to
+ * `submit` is the admission port for automatic sources. PR4 wired it to
  * `SessionPrompt.admit`: the message is committed and classified, but the
- * caller never waits for the turn itself. Ledger-less sources confirm at
+ * caller never waits for the turn itself. A source with a ledger derives one
+ * idempotency key, checks it before admission, and commits it inside the
+ * admission transaction; a source without a ledger simply confirms at
  * admission time. `turn_boundary` has no implementation and reports
  * `UnsupportedDeliveryPolicy`; an `idle_only` source cannot skip its boundary
  * through `submit` either.
@@ -80,7 +82,8 @@ export type InboxSourceID =
  * message and when it was created; `written` means the message was committed
  * without a turn following it (`noReply`, a declined admission, or a runner
  * that classified the request as busy); `skipped_busy` means the policy refused
- * this boundary before writing anything.
+ * this boundary before writing anything; `duplicate` means a ledger already
+ * held this delivery's key, so nothing was written.
  */
 export type Admission =
   | { readonly state: "pending" }
@@ -88,11 +91,10 @@ export type Admission =
   | { readonly state: "joined"; readonly messageID: MessageID; readonly createdAt: number }
   | { readonly state: "written"; readonly messageID: MessageID; readonly createdAt: number }
   | { readonly state: "skipped_busy" }
+  | { readonly state: "duplicate" }
 
 /** One deliverable item. Sources own the payload the admission port persists. */
 export interface InboxItem {
-  /** Stable identity of this delivery; the same key yields at most one user message. */
-  readonly idempotencyKey?: string
   /** Write the user message without starting a turn (watch_pr outcome notices). */
   readonly noReply?: boolean
   /** The prompt content the admission port commits; `sessionID` comes from the call. */
@@ -101,17 +103,27 @@ export interface InboxItem {
   readonly admissionOptions?: AdmissionOptions
 }
 
+/** The durable identity of one delivery, derived by the source's ledger. */
+export interface LedgerScope {
+  readonly source: InboxSourceID
+  readonly sessionID: SessionID
+  readonly idempotencyKey: string
+}
+
 /**
- * How a source keeps its durable ledger in step with admission. Sources
- * without a ledger deliver through `submit` and confirm at admission time.
+ * How a source keeps its durable ledger in step with admission (Issue #1021).
+ * The ledger owns key derivation, so the item carries no second source of
+ * truth. A ledger source delivers through `submit`; the admission transaction
+ * commits the key atomically with the message, and a failed admission re-checks
+ * `seen` to classify a concurrent loser as `duplicate`.
  */
 export interface InboxLedger {
   /** Derive the stable key of one item for duplicate suppression. */
   readonly idempotencyKey: (item: InboxItem) => string
-  /** Who confirms the entry: the admission transaction (#321) or an associate step. */
-  readonly confirm: "admission" | "associate"
-  /** Confirm inside the admission transaction instead of after it. */
-  readonly onAdmit?: boolean
+  /** Whether this scope's key is already durably committed. */
+  readonly seen: (scope: LedgerScope) => Effect.Effect<boolean, unknown>
+  /** Commit the key; `submit` runs it inside the admission transaction. */
+  readonly commit: (scope: LedgerScope) => Effect.Effect<void, unknown>
 }
 
 /** Ambient facts a source may use while scanning or claiming. */
@@ -214,8 +226,9 @@ export interface Interface {
   readonly drain: (sessionID: SessionID) => Effect.Effect<void>
   /** Process-level route: drain the loaded instance that owns the session's directory. */
   readonly nudge: (sessionID: SessionID) => Effect.Effect<void>
-  /** Admission port for ledger-less sources. Commits the prompt and returns
-   * without waiting for the turn; ledger-less sources confirm at this point. */
+  /** Admission port for automatic sources. Commits the prompt and returns
+   * without waiting for the turn; a ledger source's key is committed in the
+   * same transaction, and an already-seen key returns `duplicate`. */
   readonly submit: (
     sourceID: InboxSourceID,
     sessionID: SessionID,
@@ -592,14 +605,47 @@ export const layer = Layer.effect(
       const { SessionPrompt } = yield* Effect.promise(() => import("./prompt"))
       const prompts = Option.getOrUndefined(yield* Effect.serviceOption(SessionPrompt.Service))
       if (!prompts) return yield* new InboxAdmissionUnavailable({ source: sourceID, sessionID })
-      const started = yield* prompts
+      // One key, derived by the ledger: the item carries no identity of its
+      // own. A ledger that already holds this scope is a redelivery; return
+      // before admission so the caller cannot write a second message.
+      const ledger = source.ledger
+      const scope: LedgerScope | undefined = ledger
+        ? { source: sourceID, sessionID, idempotencyKey: ledger.idempotencyKey(item) }
+        : undefined
+      const failed = (error: unknown) => new InboxAdmissionFailed({ source: sourceID, sessionID, cause: String(error) })
+      if (ledger && scope) {
+        const committed = yield* ledger.seen(scope).pipe(Effect.mapError(failed))
+        if (committed) return { state: "duplicate" } as const
+      }
+      const admitted = yield* prompts
         .admit(
           { sessionID, ...item.prompt, ...(item.noReply === true ? { noReply: true } : {}) },
           item.admissionOptions,
+          ledger && scope ? ledger.commit(scope) : undefined,
         )
         .pipe(
-          Effect.mapError((error) => new InboxAdmissionFailed({ source: sourceID, sessionID, cause: String(error) })),
+          Effect.map((value) => ({ tag: "admitted", value }) as const),
+          // Admission failures are typed (`PromptError`); a ledger source
+          // re-reads the durable truth here. A concurrent loser rolled back
+          // its transaction after the winner committed, so `seen` now holds
+          // and the item is a duplicate. Every other failure (including an
+          // interrupt or defect, which this mapping never touches) propagates.
+          Effect.mapError(failed),
+          Effect.catchTag("SessionInboxAdmissionFailed", (failure) =>
+            ledger && scope
+              ? ledger.seen(scope).pipe(
+                  Effect.mapError(failed),
+                  Effect.flatMap((committed) =>
+                    committed
+                      ? Effect.succeed({ tag: "duplicate" } as const)
+                      : Effect.fail(failure),
+                  ),
+                )
+              : Effect.fail(failure),
+          ),
         )
+      if (admitted.tag === "duplicate") return { state: "duplicate" } as const
+      const started = admitted.value
       // Never await `started.wait`: admission commits the message and returns;
       // the turn runs on its own. A committed message that did not start a turn
       // is `written`, not `pending` — the ledger-less source's confirmation

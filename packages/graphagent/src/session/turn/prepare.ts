@@ -77,6 +77,20 @@ export type PromptModelSelection = {
 }
 
 /**
+ * The admission transaction (message plus ledger key) rolled back. `submit`
+ * re-checks its ledger and classifies a concurrent loser as `duplicate`; any
+ * other admission caller surfaces the failure instead of a defect.
+ */
+export class AdmissionPersistFailed extends Schema.TaggedError<AdmissionPersistFailed>()(
+  "SessionPromptAdmissionPersistFailed",
+  { cause: Schema.String },
+) {
+  override get message() {
+    return `session admission transaction failed: ${this.cause}`
+  }
+}
+
+/**
  * Explicit callers win, then the model saved on the session, then the agent
  * default. The provider default remains the caller's final fallback.
  */
@@ -239,7 +253,7 @@ export interface PrepareDeps {
 
 export type CreateUserMessage = (
   input: PromptInput,
-  persistAdmission?: Effect.Effect<void>,
+  persistAdmission?: Effect.Effect<void, unknown>,
   commitAdmission?: AdmissionCommit,
   modelBaseline?: ModelBaseline,
 ) => Effect.Effect<
@@ -954,7 +968,7 @@ export function makePrepare(deps: PrepareDeps) {
 
   const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (
     input: PromptInput,
-    persistAdmission?: Effect.Effect<void>,
+    persistAdmission?: Effect.Effect<void, unknown>,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
   ) {
@@ -1362,7 +1376,7 @@ export function makePrepare(deps: PrepareDeps) {
       })
     }
 
-    const persist = Effect.gen(function* () {
+    const persistMessages = Effect.gen(function* () {
       // A command's model selection was captured before expansion. If the
       // user changed the session model while the command was still pending,
       // the old command must not publish its ModelSwitched (or run its post
@@ -1389,14 +1403,20 @@ export function makePrepare(deps: PrepareDeps) {
       }
       yield* sessions.updateMessage(info)
       for (const part of parts) yield* sessions.updatePart(part)
-      if (persistAdmission) yield* persistAdmission
     })
     // Preparation and hook callbacks stay outside the write reservation.
     // Internal wakes commit their transcript receipt and reporting mark together.
-    const reserved = () =>
-      persistAdmission || modelBaseline
-        ? db.transaction(() => persist, { behavior: "immediate" }).pipe(Effect.orDie)
-        : persist
+    // A fallible ledger commit keeps its failure typed so `SessionInbox.submit`
+    // can re-read the ledger and classify a concurrent duplicate; the
+    // model-baseline-only reservation keeps its historical defect-on-failure.
+    const reserved = (): Effect.Effect<void, AdmissionPersistFailed> =>
+      persistAdmission
+        ? db.transaction(() => persistMessages.pipe(Effect.andThen(persistAdmission)), { behavior: "immediate" }).pipe(
+            Effect.mapError((cause) => new AdmissionPersistFailed({ cause: String(cause) })),
+          )
+        : modelBaseline
+          ? db.transaction(() => persistMessages, { behavior: "immediate" }).pipe(Effect.orDie)
+          : persistMessages
     yield* commitAdmission ? commitAdmission(reserved()) : reserved()
     return { info, parts }
   }, Effect.scoped)

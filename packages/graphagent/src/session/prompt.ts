@@ -91,7 +91,7 @@ import { DagMessages } from "@graphagent/core/dag/messages"
 import { makeCommand } from "./command"
 import { makeShell } from "./shell"
 import { Admit } from "./turn/admit"
-import { ModelSwitchBlocked, Prepare } from "./turn/prepare"
+import { AdmissionPersistFailed, ModelSwitchBlocked, Prepare } from "./turn/prepare"
 import { Settle } from "./turn/settle"
 import { Loop } from "./turn/loop"
 import { AgentInputHint } from "./turn/agent-input-hint"
@@ -153,10 +153,16 @@ export interface Interface {
   ) => Effect.Effect<Option.Option<IdleAdmission>, PromptError>
   /**
    * Admit a prompt immediately: commit the user message and return the turn
-   * classification without awaiting the turn. Ledger-less sources reach this
+   * classification without awaiting the turn. Automatic sources reach this
    * through `SessionInbox.submit`; plain commands keep using `submit`/`prompt`.
+   * `persistAdmission` commits inside the message transaction, so it rolls
+   * back with the message.
    */
-  readonly admit: (input: PromptInput, options?: AdmissionOptions) => Effect.Effect<TurnStart, PromptError>
+  readonly admit: (
+    input: PromptInput,
+    options?: AdmissionOptions,
+    persistAdmission?: Effect.Effect<void, unknown>,
+  ) => Effect.Effect<TurnStart, PromptError>
   readonly setModel: (input: SetModelInput) => Effect.Effect<typeof ModelRef.Type, ModelSwitchBlocked>
   /** Drain guidance only for the actual target model at a provider request boundary. */
   readonly restoreModelContext: (sessionID: SessionID) => Effect.Effect<void>
@@ -185,7 +191,7 @@ export interface Interface {
   readonly deleteQueuedMessage: (input: QueuedMessageDeleteInput) => Effect.Effect<boolean, QueuedMessageError>
 }
 
-export type PromptError = Image.Error | ModelSwitchBlocked | NoPendingHookInput
+export type PromptError = Image.Error | ModelSwitchBlocked | NoPendingHookInput | AdmissionPersistFailed
 
 export class NoPendingHookInput extends Schema.TaggedError<NoPendingHookInput>()("NoPendingHookInput", {
   message: Schema.String,

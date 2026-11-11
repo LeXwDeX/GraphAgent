@@ -372,7 +372,7 @@ export function makeAdmit(deps: AdmitDeps) {
 
   const admitPrompt = Effect.fn("SessionPrompt.admitPrompt")(function* (
     input: PromptInput,
-    persistAdmission?: Effect.Effect<void>,
+    persistAdmission?: Effect.Effect<void, unknown>,
     options?: AdmissionOptions,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
@@ -616,17 +616,24 @@ export function makeAdmit(deps: AdmitDeps) {
     return yield* turns().prepare(input, options, persistAdmission, request)
   })
 
-  // Immediate admission for ledger-less sources (`SessionInbox.submit`): commit
-  // the user message and return the turn classification without awaiting the
-  // turn itself. The initial hook-resume branch belongs to `prompt`; a rewake
-  // carries `continueToolBudget`, so skipping it matches the old path.
+  // Immediate admission for automatic sources (`SessionInbox.submit`): commit
+  // the user message (and any ledger key inside the same transaction) and
+  // return the turn classification without awaiting the turn itself. The
+  // initial hook-resume branch belongs to `prompt`; a rewake carries
+  // `continueToolBudget`, so skipping it matches the old path.
   const admitNow: Interface["admit"] = Effect.fn("SessionPrompt.admit")(function* (
     input: PromptInput,
     options?: AdmissionOptions,
+    persistAdmission?: Effect.Effect<void, unknown>,
   ): Effect.fn.Return<TurnStart, PromptError> {
     if (attention) yield* attention.input(input.sessionID)
     return yield* turns()
-      .start(input, { origin: originFor(options), when: "now", admissionOptions: options })
+      .start(input, {
+        origin: originFor(options),
+        when: "now",
+        admissionOptions: options,
+        persistAdmission,
+      })
       .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
   })
 

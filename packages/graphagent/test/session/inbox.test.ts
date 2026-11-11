@@ -333,9 +333,7 @@ describe("SessionInbox", () => {
 
       // A join_or_start source without a prompt payload has nothing to admit.
       yield* inbox.register(source("child.result", 10, () => Effect.succeed(true), { mode: "join_or_start" }))
-      const payload = yield* Effect.flip(
-        inbox.submit("child.result", sessionID, { idempotencyKey: "key", noReply: true }),
-      )
+      const payload = yield* Effect.flip(inbox.submit("child.result", sessionID, { noReply: true }))
       expect(payload._tag).toBe("SessionInboxAdmissionFailed")
 
       // Ledger-less sources deliver through the built-in rewake source. A
