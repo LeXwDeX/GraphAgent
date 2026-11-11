@@ -10681,3 +10681,41 @@ metadataCommitIt.instance("cancel does not resurrect a disposing target's follow
     yield* Fiber.await(disposing).pipe(Effect.timeoutOption("3 seconds"))
   }),
 )
+
+it.instance("prompt.admit commits its admission write inside the message transaction", () =>
+  Effect.gen(function* () {
+    yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const { db } = yield* Database.Service
+    yield* db.run(sql`CREATE TABLE admit_ledger (id TEXT PRIMARY KEY)`).pipe(Effect.orDie)
+
+    const committed = yield* sessions.create({ title: "Admission commit" })
+    const admitted = yield* prompt.admit(
+      { sessionID: committed.id, noReply: true, parts: [{ type: "text", text: "ADMIT_COMMIT" }] },
+      undefined,
+      db.run(sql`INSERT INTO admit_ledger (id) VALUES (${"commit-key"})`),
+    )
+    expect(admitted.admission.kind).toBe("not_started")
+    expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM message WHERE session_id = ${committed.id}`)).toEqual(
+      { n: 1 },
+    )
+    expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM admit_ledger`)).toEqual({ n: 1 })
+
+    // The admission write shares the transaction: its failure must roll the
+    // message row back instead of leaving a committed prompt without a key.
+    const rejected = yield* sessions.create({ title: "Admission rollback" })
+    const failure = yield* Effect.flip(
+      prompt.admit(
+        { sessionID: rejected.id, noReply: true, parts: [{ type: "text", text: "ADMIT_ROLLBACK" }] },
+        undefined,
+        Effect.fail(new Error("admission write failed")),
+      ),
+    )
+    expect(failure._tag).toBe("SessionPromptAdmissionPersistFailed")
+    expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM message WHERE session_id = ${rejected.id}`)).toEqual(
+      { n: 0 },
+    )
+    expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM admit_ledger`)).toEqual({ n: 1 })
+  }),
+)

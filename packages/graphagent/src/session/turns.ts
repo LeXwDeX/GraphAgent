@@ -145,7 +145,7 @@ export interface TurnStartOptions {
   readonly admissionOptions?: AdmissionOptions
   readonly commitAdmission?: AdmissionCommit
   readonly modelBaseline?: ModelBaseline
-  readonly persistAdmission?: Effect.Effect<void>
+  readonly persistAdmission?: Effect.Effect<void, unknown>
 }
 
 /** What the loop machine reports at its exit; `Turns` persists it. */
@@ -177,7 +177,7 @@ export interface TurnDeps {
   readonly settingsHook: SettingsHook.Interface | undefined
   readonly admitPrompt: (
     input: PromptInput,
-    persistAdmission?: Effect.Effect<void>,
+    persistAdmission?: Effect.Effect<void, unknown>,
     options?: AdmissionOptions,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
@@ -205,7 +205,7 @@ export interface Interface {
   readonly prepare: (
     input: PromptInput,
     options?: AdmissionOptions,
-    persistAdmission?: Effect.Effect<void>,
+    persistAdmission?: Effect.Effect<void, unknown>,
     request?: ReturnType<typeof SessionCancellation.request>,
   ) => Effect.Effect<Option.Option<IdleAdmission>, PromptError>
   readonly current: (sessionID: SessionID) => Effect.Effect<Option.Option<TurnHandle>>
@@ -570,7 +570,7 @@ export function makeTurns(deps: TurnDeps): Interface {
   const prepare = Effect.fn("Turns.prepare")(function* (
     input: PromptInput,
     options: AdmissionOptions | undefined,
-    persistAdmission: Effect.Effect<void> | undefined,
+    persistAdmission: Effect.Effect<void, unknown> | undefined,
     request: ReturnType<typeof SessionCancellation.request> | undefined,
   ) {
     return yield* deps.withRunRequest(
