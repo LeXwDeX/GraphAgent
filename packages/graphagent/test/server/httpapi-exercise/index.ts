@@ -1720,6 +1720,20 @@ const scenarios: Scenario[] = [
         check(typeof summary.status === "string", "summary should have status")
         check(typeof summary.title === "string", "summary should have title")
         check(typeof summary.escalatedNodes === "number", "summary should have escalatedNodes")
+        // #1027 D6a: usage is summed from the attempt ledger; a fresh fixture
+        // has no attempts. Cache reads are separate, and quality/coverage are
+        // fixed-shape placeholders until D6b computes them.
+        check(
+          typeof summary.tokens === "number" && summary.tokens >= 0,
+          "summary should have tokens as a non-negative number",
+        )
+        check(
+          typeof summary.tokensCacheRead === "number" && summary.tokensCacheRead >= 0,
+          "summary should have tokensCacheRead as a non-negative number",
+        )
+        check(summary.checkpointPending === false, "a fresh fixture is not checkpoint-pending")
+        check(summary.coverageCount === 0, "D6a fixes coverageCount at 0")
+        check(summary.quality === null, "D6a fixes quality at null")
         // #468: graphRev is the topology invalidation token — an equal-count
         // replan bumps it alone so TUI signatures can detect the change.
         check(typeof summary.graphRev === "number", "summary should have graphRev")

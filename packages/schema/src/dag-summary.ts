@@ -8,6 +8,30 @@ import { define, inventory } from "./event"
 import { SessionID } from "./session-id"
 import { NonNegativeInt } from "./schema"
 
+/** #1027 D6: review-quality counters for the `/dag` panel, computed by the
+ * same rule as the workflow inspection status. `null` when the workflow is
+ * not strict or has no reviews yet. */
+export const WorkflowQuality = Schema.Struct({
+  /** A binding ACCEPT decision exists for the final target fingerprint. */
+  reviewBound: Schema.Boolean,
+  reviews: NonNegativeInt,
+  raised: NonNegativeInt,
+  fixed: NonNegativeInt,
+  refuted: NonNegativeInt,
+  stillOpen: NonNegativeInt,
+  skepticRefutations: NonNegativeInt,
+  rounds: NonNegativeInt,
+  quietRounds: NonNegativeInt,
+  completeness: Schema.NullOr(
+    Schema.Struct({
+      covered: NonNegativeInt,
+      total: NonNegativeInt,
+      unlisted: NonNegativeInt,
+    }),
+  ),
+}).annotate({ identifier: "DagWorkflowQuality" })
+export type WorkflowQuality = typeof WorkflowQuality.Type
+
 /** Aggregated per-workflow progress for TUI display. Mirrors DagStore.WorkflowSummary. */
 export const WorkflowSummary = Schema.Struct({
   id: Schema.String,
@@ -31,6 +55,21 @@ export const WorkflowSummary = Schema.Struct({
   // (escalation_pending) — lets the TUI distinguish normal RUNNING from
   // timeout-pending. Already-adjudicated (extended) nodes are excluded.
   escalatedNodes: Schema.Number,
+  // #1027 D6: optional so an older client still decodes a newer server's
+  // event. The consumer contract fixes the names and types; D6b fills
+  // `quality` and `coverageCount` once their owner Issues define the sources.
+  /** Σ input + cache write + output + reasoning across every attempt's child session. */
+  tokens: Schema.optional(NonNegativeInt),
+  /** Cache reads tracked separately; they are not part of the token budget. */
+  tokensCacheRead: Schema.optional(NonNegativeInt),
+  /** DAG-wide running child slots in this process (not this workflow's). */
+  concurrencyRunning: Schema.optional(NonNegativeInt),
+  /** Coverage entries (skipped/failed/cancelled/aborted nodes and unread pages); 0 = none. */
+  coverageCount: Schema.optional(NonNegativeInt),
+  /** A durable checkpoint pause is waiting for the main agent. */
+  checkpointPending: Schema.optional(Schema.Boolean),
+  /** Review quality; null until the review-aggregation owner lands (D6b). */
+  quality: Schema.optional(Schema.NullOr(WorkflowQuality)),
 }).annotate({ identifier: "DagWorkflowSummary" })
 export type WorkflowSummary = typeof WorkflowSummary.Type
 

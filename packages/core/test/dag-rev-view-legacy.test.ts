@@ -115,6 +115,9 @@ describe("Train A rev-view — legacy rows render unchanged (A-p4 PIN)", () => {
           abortedNodes: 0,
           queuedNodes: 0,
           escalatedNodes: 0,
+          tokens: 0,
+          tokensCacheRead: 0,
+          checkpointPending: false,
         })
 
         const rows = yield* store.getNodes("wf-legacy")

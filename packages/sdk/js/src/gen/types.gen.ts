@@ -173,6 +173,29 @@ export type DagWorkflowSummary = {
   abortedNodes: number
   queuedNodes: number | "Infinity" | "-Infinity" | "NaN"
   escalatedNodes: number | "Infinity" | "-Infinity" | "NaN"
+  tokens?: number
+  tokensCacheRead?: number
+  concurrencyRunning?: number
+  coverageCount?: number
+  checkpointPending?: boolean
+  quality?: DagWorkflowQuality
+}
+
+export type DagWorkflowQuality = {
+  reviewBound: boolean
+  reviews: number
+  raised: number
+  fixed: number
+  refuted: number
+  stillOpen: number
+  skepticRefutations: number
+  rounds: number
+  quietRounds: number
+  completeness: {
+    covered: number
+    total: number
+    unlisted: number
+  }
 }
 
 export type Todo = {

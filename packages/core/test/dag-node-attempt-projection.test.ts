@@ -21,6 +21,9 @@ import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagNodeAttemptTable, WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { ProjectTable } from "@graphagent/core/project/sql"
+import { Project } from "@graphagent/core/project"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { SessionSchema } from "@graphagent/core/session/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { DagEvent } from "@graphagent/schema/dag-event"
 
@@ -38,8 +41,8 @@ function seed() {
     yield* db
       .insert(ProjectTable)
       .values({
-        id: "project-1" as never,
-        worktree: process.cwd() as never,
+        id: Project.ID.make("project-1"),
+        worktree: AbsolutePath.make(process.cwd()),
         sandboxes: [],
       })
       .run()
@@ -47,10 +50,10 @@ function seed() {
     yield* db
       .insert(SessionTable)
       .values({
-        id: "ses_parent" as never,
-        project_id: "project-1" as never,
+        id: SessionSchema.ID.make("ses_parent"),
+        project_id: Project.ID.make("project-1"),
         slug: "parent",
-        directory: process.cwd() as never,
+        directory: AbsolutePath.make(process.cwd()),
         title: "Parent",
         version: "test",
       })
@@ -60,8 +63,8 @@ function seed() {
       .insert(WorkflowTable)
       .values({
         id: "dag_attempt",
-        project_id: "project-1" as never,
-        session_id: "ses_parent" as never,
+        project_id: Project.ID.make("project-1"),
+        session_id: SessionSchema.ID.make("ses_parent"),
         title: "Attempt ledger",
         status: "running",
         config: "{}",
@@ -103,7 +106,7 @@ const started = (childSessionID: string, timestamp: DateTime.Utc) =>
     yield* events.publish(DagEvent.NodeStarted, {
       dagID: DagEvent.DagID.make("dag_attempt"),
       nodeID: DagEvent.NodeID.make("n1"),
-      childSessionID: childSessionID as never,
+      childSessionID: SessionSchema.ID.make(childSessionID),
       timestamp,
     })
   })
@@ -141,7 +144,7 @@ describe("dag_node_attempt projection (#1027 D6)", () => {
         yield* events.publish(DagEvent.NodeRestarted, {
           dagID,
           nodeID,
-          childSessionID: "ses_first" as never,
+          childSessionID: SessionSchema.ID.make("ses_first"),
           timestamp: yield* DateTime.now,
         })
         yield* started("ses_second", yield* DateTime.now)
