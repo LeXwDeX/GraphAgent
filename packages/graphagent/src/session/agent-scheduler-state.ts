@@ -35,9 +35,23 @@ export interface RequestWaiter {
   readonly providerID: string
   readonly modelID: string
   readonly sessionID: string
+  /** Prompt-cache group this waiter belongs to, when staggered. */
+  readonly cacheGroup?: string
+  /** Sibling stagger requested for this waiter; only child-lane requests opt in. */
+  readonly staggerSiblings?: boolean
   readonly grant: Deferred.Deferred<void>
   granted: boolean
   cancelled: boolean
+}
+
+/**
+ * Gate shared by the child runs of one cache group. `open` turns true when the
+ * leader streams its first content, releases its permit, or its stagger window
+ * elapses. While closed, siblings queue behind the leader.
+ */
+export interface CacheGroupState {
+  open: boolean
+  inflight: number
 }
 
 /** One queued child-run request. `grant` completes inside the granting sync block. */
@@ -100,6 +114,8 @@ export interface ChildState {
 export interface SchedulerState {
   requests: RequestState
   children: ChildState
+  /** Per-cache-group stagger gates, keyed by `CacheGroup.cacheGroupOf`. */
+  readonly cacheGroups: Map<string, CacheGroupState>
   /** Latest limits observed by an acquiring effect; releases pump against these. */
   limits: SchedulerLimits
 }
@@ -122,5 +138,6 @@ export const makeState = (limits: SchedulerLimits = DEFAULT_LIMITS): SchedulerSt
     taskCaps: new Map(),
     waiters: [],
   },
+  cacheGroups: new Map(),
   limits,
 })

@@ -25,6 +25,7 @@ import * as OtelTracer from "@effect/opentelemetry/OtelTracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { CacheGroup } from "./llm/cache-group"
 import { ToolRefusedError } from "./llm/refusal"
 import { ThinkingReplay } from "./thinking-replay"
 import { AgentScheduler } from "./agent-scheduler"
@@ -172,6 +173,8 @@ export type StreamInput = {
   purpose?: RequestPurpose
   /** Scheduling lane; derived from purpose and parent session when omitted. */
   lane?: SchedulerLane
+  /** Prompt-cache group shared by sibling child runs; computed by `stream` when omitted. */
+  cacheGroup?: string
   contextFolding?: ContextFoldingHistorySnapshot
   /** In-process safety signal for activity that can precede or outlive stream events. */
   onAttemptActivity?: (activity: "tool-executed" | "suppressed" | "observational") => void
@@ -225,6 +228,7 @@ const live: Layer.Layer<
         small: (input.small ?? false).toString(),
         agent: input.agent.name,
         mode: input.agent.mode,
+        cacheGroup: input.cacheGroup,
       })
 
       const [language, cfg, item, info] = yield* Effect.all(
@@ -640,20 +644,48 @@ const live: Layer.Layer<
             const lane: SchedulerLane =
               input.lane ??
               (input.purpose === "auxiliary" ? "auxiliary" : input.parentSessionID ? "child" : "interactive")
+            // The group identity deliberately comes from the caller's system
+            // fragments, never from the prepared wire system: a DAG child
+            // appends its node-specific execution context to `user.system`.
+            const cacheGroup = input.small ? undefined : CacheGroup.cacheGroupOf(input)
+            const staggerSiblings =
+              lane === "child" &&
+              (input.purpose === "conversation" || input.purpose === undefined) &&
+              ((yield* config.get()).engine?.cache?.staggerSiblings ?? true)
             const permit = yield* scheduler.request({
               lane,
               providerID: input.model.providerID,
               modelID: input.model.id,
               sessionID: input.sessionID,
+              cacheGroup,
+              staggerSiblings,
             })
+            // The first streamed content opens the group for queued siblings;
+            // tool calls count even though they release the permit themselves.
+            let primed = false
+            // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Stream.tap widens the element type in this position; the tap only observes events.
+            const primeOnFirstContent = Stream.tap((event: LLMEvent) => {
+              if (cacheGroup === undefined || primed) return Effect.void
+              if (
+                event.type !== "reasoning-delta" &&
+                event.type !== "tool-input-start" &&
+                event.type !== "text-delta" &&
+                event.type !== "tool-call"
+              )
+                return Effect.void
+              return Effect.suspend(() => {
+                primed = true
+                return scheduler.prime(cacheGroup)
+              })
+            }) as <E, R>(self: Stream.Stream<LLMEvent, E, R>) => Stream.Stream<LLMEvent, E, R>
             const releaseOnToolCall = Stream.tap((event: LLMEvent) =>
               event.type === "tool-call" ? permit.release : Effect.void,
             ) as <E, R>(self: Stream.Stream<LLMEvent, E, R>) => Stream.Stream<LLMEvent, E, R>
 
-            const result = yield* run({ ...input, abort: ctrl.signal })
+            const result = yield* run({ ...input, abort: ctrl.signal, cacheGroup })
 
             if (result.type === "native")
-              return result.stream.pipe(releaseOnToolCall, Stream.tap(result.observeToolCall))
+              return result.stream.pipe(primeOnFirstContent, releaseOnToolCall, Stream.tap(result.observeToolCall))
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
@@ -664,6 +696,7 @@ const live: Layer.Layer<
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event, input.onAttemptActivity)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
               Stream.map(result.bindThinking),
+              primeOnFirstContent,
               releaseOnToolCall,
               Stream.tap(result.observeToolCall),
             )

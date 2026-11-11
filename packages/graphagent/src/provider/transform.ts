@@ -1419,6 +1419,11 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
 export function options(input: {
   model: Provider.Model
   sessionID: string
+  /**
+   * Prompt-cache identity shared by sibling child runs. Falls back to the
+   * session id when absent, so unrelated sessions keep distinct cache keys.
+   */
+  cacheKey?: string
   providerOptions?: Record<string, any>
 }): Record<string, any> {
   const result: Record<string, any> = {}
@@ -1517,8 +1522,9 @@ export function options(input: {
   }
 
   if (input.providerOptions?.setCacheKey !== false) {
+    const cacheKey = input.cacheKey ?? input.sessionID
     if (input.model.api.npm === "@ai-sdk/deepinfra" || input.model.api.npm === "@ai-sdk/cerebras") {
-      result["prompt_cache_key"] = input.sessionID
+      result["prompt_cache_key"] = cacheKey
     } else if (
       input.model.api.npm === "@ai-sdk/openai" ||
       input.model.api.npm === "@ai-sdk/azure" ||
@@ -1527,7 +1533,7 @@ export function options(input: {
       input.model.api.npm === "venice-ai-sdk-provider" ||
       input.providerOptions?.setCacheKey === true
     ) {
-      result["promptCacheKey"] = input.sessionID
+      result["promptCacheKey"] = cacheKey
     }
   }
 

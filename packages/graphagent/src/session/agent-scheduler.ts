@@ -8,6 +8,7 @@ import { Clock, Context, Deferred, Duration, Effect, Layer, Option, Schema, Scop
 import { Config } from "@/config/config"
 import {
   DEFAULT_LIMITS,
+  type CacheGroupState,
   type Lane,
   type LimitKey,
   type RequestWaiter,
@@ -52,6 +53,16 @@ import { EngineProcess } from "./engine-process"
  * Every waiter wakes on its grant. Because a penalty has no timer, a waiting
  * request also polls once per second while queued; the poll re-runs the pump so
  * a permit becomes available when the penalty expires without any release.
+ *
+ * # Cache groups (Issue #1028, PR4)
+ *
+ * Child runs whose agent prompt, system fragments and tools hash to the same
+ * cache group may share a provider-side prompt cache. When sibling staggering
+ * is enabled, only one request per closed group — the leader — is in flight;
+ * its siblings queue. The group opens on the leader's first streamed content,
+ * when the leader releases (end, failure, or interruption), or when the
+ * `STAGGER_WINDOW_MS` timer expires. Invariant: while a group is closed, its
+ * leader is the only inflight request among that group's staggered siblings.
  */
 
 /** One provider stream permit. `release` is idempotent. */
@@ -69,6 +80,10 @@ export interface RequestInput {
   readonly providerID: string
   readonly modelID: string
   readonly sessionID: string
+  /** Prompt-cache group shared by sibling child runs, when known. */
+  readonly cacheGroup?: string
+  /** Opt child-lane requests into sibling staggering within their cache group. */
+  readonly staggerSiblings?: boolean
 }
 
 export interface RequestOptions {
@@ -112,6 +127,12 @@ export interface Interface {
   ) => Effect.Effect<Permit, SchedulerTimeout, Scope.Scope>
   /** Take a model-stream permit only if one is available now; never queues. */
   readonly tryRequest: (input: RequestInput) => Effect.Effect<Option.Option<Permit>, never, Scope.Scope>
+  /**
+   * Open a cache group so its queued siblings may start. Idempotent; an
+   * untracked group is a no-op. While a group stays closed, only its leader
+   * holds an inflight request among that group's staggered siblings.
+   */
+  readonly prime: (cacheGroup: string) => Effect.Effect<void>
   /** Wait for a child-run slot inside the caller's scope. */
   readonly childSlot: (
     limit: LimitKey,
@@ -138,6 +159,18 @@ const LANE_RANK: Record<Lane, number> = {
 }
 
 const modelKey = (providerID: string, modelID: string) => `${providerID}\u0000${modelID}`
+
+/**
+ * How long a cache-group leader may run before its siblings are released even
+ * without a first stream event. A leader that ends, fails, or is interrupted
+ * opens the group immediately through its permit release instead of waiting.
+ */
+export const STAGGER_WINDOW_MS = 3_000
+
+type StaggeringInput = RequestInput & { readonly cacheGroup: string }
+
+const staggering = (input: RequestInput): input is StaggeringInput =>
+  input.lane === "child" && input.staggerSiblings === true && input.cacheGroup !== undefined
 
 const increment = (map: Map<string, number>, key: string) => {
   map.set(key, (map.get(key) ?? 0) + 1)
@@ -194,6 +227,12 @@ const canRequest = (state: SchedulerState, input: RequestInput, nowMs: number): 
     if (nowMs < until) return false
   }
   if (input.lane !== "interactive" && input.lane !== "side" && requests.inflight >= othersCap(limits)) return false
+  // A closed group admits only its leader; siblings queue until it primes or
+  // releases. Groups without an entry are not yet started, so they admit.
+  if (staggering(input)) {
+    const group = state.cacheGroups.get(input.cacheGroup)
+    if (group !== undefined && !group.open) return false
+  }
   return true
 }
 
@@ -202,13 +241,68 @@ const grantRequest = (state: SchedulerState, input: RequestInput) => {
   increment(state.requests.byProvider, input.providerID)
   incrementLane(state.requests.byLane, input.lane)
   state.requests.lastGrantedLane = input.lane
+  if (!staggering(input)) return
+  const entry: CacheGroupState = state.cacheGroups.get(input.cacheGroup) ?? { open: false, inflight: 0 }
+  if (!state.cacheGroups.has(input.cacheGroup)) state.cacheGroups.set(input.cacheGroup, entry)
+  entry.inflight += 1
 }
+
+const hasGroupWaiter = (state: SchedulerState, cacheGroup: string) =>
+  state.requests.waiters.some(
+    (waiter) =>
+      !waiter.cancelled && !waiter.granted && waiter.staggerSiblings === true && waiter.cacheGroup === cacheGroup,
+  )
 
 const releaseRequest = (state: SchedulerState, input: RequestInput) => {
   state.requests.inflight = Math.max(0, state.requests.inflight - 1)
   decrement(state.requests.byProvider, input.providerID)
   decrementLane(state.requests.byLane, input.lane)
+  if (!staggering(input)) return
+  const entry = state.cacheGroups.get(input.cacheGroup)
+  if (entry === undefined) return
+  entry.inflight = Math.max(0, entry.inflight - 1)
+  // A leader that ends, fails, or is interrupted before its first token still
+  // opens the group: siblings must never wait for a stream that cannot report.
+  if (!entry.open) entry.open = true
+  if (entry.inflight === 0 && !hasGroupWaiter(state, input.cacheGroup)) state.cacheGroups.delete(input.cacheGroup)
 }
+
+/**
+ * Open a cache group and admit its queued siblings. Idempotent: an absent or
+ * already-open group does nothing. `expected` is the entry captured when the
+ * leader armed its timer; an entry recreated in the meantime must not be
+ * opened by the stale timer.
+ */
+const primeGroup = (state: SchedulerState, cacheGroup: string, expected?: CacheGroupState) =>
+  Effect.gen(function* () {
+    const nowMs = yield* Clock.currentTimeMillis
+    yield* Effect.sync(() => {
+      const entry = state.cacheGroups.get(cacheGroup)
+      if (entry === undefined || entry.open) return
+      if (expected !== undefined && entry !== expected) return
+      entry.open = true
+      pumpRequests(state, nowMs)
+    })
+  })
+
+/**
+ * Arm the stagger window for a leader: if it has not opened its group within
+ * `STAGGER_WINDOW_MS`, open it so siblings are not blocked by a slow first
+ * token. The timer lives in the caller's scope and is interrupted with the
+ * stream, so it cannot outlive the request that armed it.
+ */
+const armStagger = (state: SchedulerState, input: RequestInput) =>
+  Effect.suspend(() => {
+    if (!staggering(input)) return Effect.void
+    const entry = state.cacheGroups.get(input.cacheGroup)
+    // Only the first inflight request of a closed group is the leader.
+    if (entry === undefined || entry.open || entry.inflight !== 1) return Effect.void
+    return Effect.sleep(Duration.millis(STAGGER_WINDOW_MS)).pipe(
+      Effect.andThen(primeGroup(state, input.cacheGroup, entry)),
+      Effect.forkScoped,
+      Effect.asVoid,
+    )
+  })
 
 /**
  * Grant as many queued requests as the counters allow. Lane order is strict;
@@ -569,7 +663,9 @@ export const make = (
     Effect.acquireRelease(
       Effect.gen(function* () {
         yield* refresh(state, readLimits)
-        return yield* acquireRequest(state, input, options)
+        const permit = yield* acquireRequest(state, input, options)
+        yield* armStagger(state, input)
+        return permit
       }),
       (permit) => permit.release,
       { interruptible: true },
@@ -579,6 +675,8 @@ export const make = (
       Effect.gen(function* () {
         yield* refresh(state, readLimits)
         const nowMs = yield* Clock.currentTimeMillis
+        // No cache-group accounting here: its only caller is the background
+        // reasoning rewrite, which never joins a sibling cache group.
         const granted = yield* Effect.sync(() => {
           if (!canRequest(state, input, nowMs)) return false
           grantRequest(state, input)
@@ -588,6 +686,7 @@ export const make = (
       }),
       (permit) => (Option.isSome(permit) ? permit.value.release : Effect.void),
     ),
+  prime: (cacheGroup) => primeGroup(state, cacheGroup),
   childSlot: (limit, cap, options) =>
     Effect.acquireRelease(
       Effect.gen(function* () {

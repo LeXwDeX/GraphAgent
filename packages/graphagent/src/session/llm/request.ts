@@ -34,6 +34,8 @@ type PrepareInput = {
   readonly messages: ModelMessage[]
   readonly small?: boolean
   readonly tools: Record<string, Tool>
+  /** Prompt-cache group shared by sibling child runs; overrides the per-session cache key. */
+  readonly cacheGroup?: string
   /** Caps the resolved output limit; applied after the provider adapter hook. */
   readonly maxOutputTokens?: number
   readonly provider: Provider.Info
@@ -97,6 +99,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     : ProviderTransform.options({
         model: input.model,
         sessionID: input.sessionID,
+        cacheKey: input.cacheGroup,
         providerOptions: input.provider.options,
       })
   const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)

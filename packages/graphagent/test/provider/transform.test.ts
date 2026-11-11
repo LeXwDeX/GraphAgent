@@ -701,6 +701,29 @@ describe("ProviderTransform.options - setCacheKey", () => {
     })
     expect(result.prompt_cache_key).toBeUndefined()
   })
+
+  const cacheKey = "cg_shared_prefix"
+  for (const npm of ["@ai-sdk/openai", "@ai-sdk/azure", "@ai-sdk/xai", "@ai-sdk/mistral", "venice-ai-sdk-provider"]) {
+    test(`should prefer cacheKey over sessionID for ${npm}`, () => {
+      const result = ProviderTransform.options({
+        model: { ...mockModel, providerID: "custom", api: { ...mockModel.api, npm } },
+        sessionID,
+        cacheKey,
+        providerOptions: {},
+      })
+      expect(result.promptCacheKey).toBe(cacheKey)
+    })
+  }
+
+  test("should not let cacheKey bypass setCacheKey: false", () => {
+    const result = ProviderTransform.options({
+      model: { ...mockModel, providerID: "openai", api: { ...mockModel.api, npm: "@ai-sdk/openai" } },
+      sessionID,
+      cacheKey,
+      providerOptions: { setCacheKey: false },
+    })
+    expect(result.promptCacheKey).toBeUndefined()
+  })
 })
 
 describe("ProviderTransform.options - zai/zhipuai thinking", () => {
