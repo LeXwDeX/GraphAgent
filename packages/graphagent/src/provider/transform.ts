@@ -452,8 +452,11 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   //   request's hit prefix.
   const systemEnd = msgs.findLast((msg) => msg.role === "system" && cacheable(msg))
   const currentEnd = walkBack(msgs.length - 1)
-  const assistantIndex = msgs.findLastIndex((msg) => msg.role === "assistant")
-  const last = msgs[msgs.length - 1]
+  // Request-only messages (the final-step instruction, a runtime context, a
+  // synthetic attachment) do not belong to the persisted history, so they must
+  // not shift the previous/current boundary inference.
+  const assistantIndex = msgs.findLastIndex((msg) => msg.role === "assistant" && !uncachedMessage(msg))
+  const last = msgs.findLast((msg) => !uncachedMessage(msg))
   const previousEnd =
     assistantIndex < 0
       ? undefined

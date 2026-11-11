@@ -1586,7 +1586,16 @@ export function makePrepare(deps: PrepareDeps) {
               },
             ]
           : refuseTools
-            ? [{ role: "assistant" as const, content: FINAL_STEP_INSTRUCTION }]
+            ? [
+                {
+                  role: "assistant" as const,
+                  // The instruction belongs to this request only; keep it out
+                  // of the cached prefix so the breakpoint stays on the last
+                  // persisted message.
+                  providerOptions: { graphagent: { cache: "none" } },
+                  content: FINAL_STEP_INSTRUCTION,
+                },
+              ]
             : []),
       ],
       tools,

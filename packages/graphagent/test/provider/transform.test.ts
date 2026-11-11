@@ -297,6 +297,32 @@ describe("ProviderTransform.message - cache breakpoint layout (#1028)", () => {
     expect(hasCachePoint(transformed[3])).toBe(false)
   })
 
+  test("ignores a request-only final-step instruction when inferring boundaries", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "do work" }] },
+        toolCall("call_1"),
+        toolResult("call_1"),
+        toolCall("call_2"),
+        toolResult("call_2"),
+        {
+          role: "assistant",
+          providerOptions: { graphagent: { cache: "none" } },
+          content: "Final step: reply in text only; tool calls will be refused.",
+        },
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed).toHaveLength(7)
+    expect(hasCachePoint(transformed[0])).toBe(true)
+    expect(cachePointCount(transformed[3])).toBe(1)
+    expect(cachePointCount(transformed[5])).toBe(1)
+    expect(cachePointCount(transformed[6])).toBe(0)
+  })
+
   test("keeps system_end and semantic boundaries when more than four targets exist", () => {
     const transformed = ProviderTransform.message(
       [
