@@ -11,7 +11,7 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { MessageTable, PartTable, SessionTable, TodoTable } from "@graphagent/core/session/sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
-import { Duration, Effect, Fiber, Layer } from "effect"
+import { Duration, Effect, Fiber, Layer, Stream } from "effect"
 import { Config } from "@/config/config"
 import { SettingsHook } from "@/hook"
 import { Provider } from "@/provider/provider"
@@ -23,7 +23,7 @@ import { Session } from "@/session/session"
 import { SystemPrompt } from "@/session/system"
 import type { Provider as ProviderNs } from "@/provider/provider"
 import type { ConfigV1 } from "@graphagent/core/v1/config/config"
-import { provideTmpdirServer } from "../fixture/fixture"
+import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
@@ -405,6 +405,26 @@ function timeoutEnv(timeout: Duration.Input) {
 }
 
 const itTimeout = testEffect(timeoutEnv("50 millis"))
+
+// A side question must be scheduled on the `side` lane under its own
+// descending session. The fake LLM records the exact StreamInput the btw
+// service passes to the provider and returns an empty stream, so the lane,
+// session and purpose assertions do not depend on a provider round trip.
+const laneStreams: LLM.StreamInput[] = []
+const fakeLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    organizer: () => Effect.succeed(undefined),
+    stream: (input) => {
+      laneStreams.push(input)
+      return Stream.empty
+    },
+  }),
+)
+const laneEnv = LayerNode.buildLayer(integrationRoot, {
+  replacements: [LayerNode.replace(SettingsHook.node, hooks), LayerNode.replace(LLM.node, fakeLLM)],
+})
+const itLane = testEffect(laneEnv)
 
 function configFor(url: string, modelIDs = ["test-model"]): Partial<ConfigV1.Info> {
   const base = testProviderConfig(url)
@@ -838,3 +858,36 @@ it.live("follows the configured reply language for side questions", () =>
     { config: (url) => ({ ...configFor(url), language: "zh-CN" }) },
   ),
 )
+
+describe("session.btw scheduling lane (issue #1021)", () => {
+  itLane.live("schedules a side question on the side lane under a descending btw session", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const btw = yield* SessionBtw.Service
+          const session = yield* sessions.create({ title: "btw lane" })
+          yield* awaitSession(session.id)
+          yield* seedUser(session.id, "context")
+
+          laneStreams.length = 0
+          const failure = yield* btw.ask({ sessionID: session.id, question: "which lane?" }).pipe(Effect.flip)
+          // The fake stream is empty, so the side question fails after the
+          // provider stream was requested; the captured input is the subject.
+          expect(failure._tag).toBe("BtwUpstreamError")
+          expect(laneStreams).toHaveLength(1)
+          const input = laneStreams[0]!
+          expect(input.lane).toBe("side")
+          expect(input.purpose).toBe("auxiliary")
+          // The btw turn runs in its own descending session, never the
+          // caller's transcript.
+          expect(input.sessionID).not.toBe(session.id)
+          expect(input.sessionID.startsWith("ses_")).toBe(true)
+          expect(String(input.user.sessionID)).toBe(input.sessionID)
+          expect(hookTriggers).toBe(0)
+          expect(hookLists).toBe(0)
+        }),
+      { config: () => configFor("http://127.0.0.1:1/v1") },
+    ),
+  )
+})

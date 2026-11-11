@@ -3394,6 +3394,137 @@ describe("session.llm model-stream permits", () => {
   )
 })
 
+describe("session.llm scheduling lane (issue #1021)", () => {
+  const laneFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
+  const laneProvider = "opencode-test"
+
+  const recordingScheduler = () => {
+    const requests: AgentScheduler.RequestInput[] = []
+    const releases: AgentScheduler.RequestInput[] = []
+    const layer = Layer.mock(AgentScheduler.Service, {
+      request: (input) =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            requests.push(input)
+            return {
+              release: Effect.sync(() => {
+                releases.push(input)
+              }),
+            }
+          }),
+          (permit) => permit.release,
+        ),
+    })
+    return { requests, releases, layer }
+  }
+
+  const laneInput = (input: {
+    resolved: Provider.Model
+    sessionID: string
+    lane?: AgentSchedulerState.Lane
+    purpose?: "auxiliary"
+    parentSessionID?: string
+  }): LLM.StreamInput => {
+    const sessionID = SessionID.make(input.sessionID)
+    const agent = {
+      name: "test",
+      mode: "primary",
+      options: {},
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    } satisfies Agent.Info
+    return {
+      user: {
+        id: MessageID.make(`msg_${input.sessionID}`),
+        sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: agent.name,
+        model: { providerID: ProviderV2.ID.make(laneProvider), modelID: input.resolved.id },
+      } satisfies SessionV1.User,
+      sessionID,
+      ...(input.parentSessionID !== undefined ? { parentSessionID: input.parentSessionID } : {}),
+      model: input.resolved,
+      agent,
+      system: ["You are a helpful assistant."],
+      messages: [{ role: "user", content: "Hello" }],
+      tools: {},
+      ...(input.lane !== undefined ? { lane: input.lane } : {}),
+      ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
+    }
+  }
+
+  // Resolution order: explicit lane > purpose `auxiliary` > parent session
+  // (`child`) > interactive. Every other caller (title generation, memory,
+  // compaction) relies on these defaults for its reservation.
+  it.instance(
+    "resolves explicit lane, auxiliary purpose, parent session, then interactive",
+    () =>
+      Effect.gen(function* () {
+        const fixture = loadFixture(laneFixture.providerID, laneFixture.modelID)
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(laneProvider),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const recorder = recordingScheduler()
+        const layer = llmLayerWithExecutor(RequestExecutor.defaultLayer, {}, recorder.layer)
+        const cases = [
+          {
+            sessionID: "ses_lane_explicit",
+            input: {
+              lane: "side" as const,
+              purpose: "auxiliary" as const,
+              parentSessionID: "ses_lane_parent",
+            },
+            expected: "side",
+          },
+          {
+            sessionID: "ses_lane_auxiliary",
+            input: { purpose: "auxiliary" as const },
+            expected: "auxiliary",
+          },
+          {
+            sessionID: "ses_lane_child",
+            input: { parentSessionID: "ses_lane_parent" },
+            expected: "child",
+          },
+          { sessionID: "ses_lane_default", input: {}, expected: "interactive" },
+        ] as const
+        for (const testCase of cases) {
+          void waitRequest(
+            "/chat/completions",
+            new Response(createChatStream("done"), {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+          )
+          yield* drainWith(layer, laneInput({ resolved, sessionID: testCase.sessionID, ...testCase.input }))
+        }
+        expect(recorder.requests.map((request) => request.lane)).toEqual(cases.map((testCase) => testCase.expected))
+        // The permit is taken for the stream's own session, not the parent.
+        expect(recorder.requests.map((request) => request.sessionID)).toEqual(
+          cases.map((testCase) => testCase.sessionID),
+        )
+        expect(recorder.releases).toHaveLength(cases.length)
+      }),
+    {
+      config: () => {
+        const fixture = loadFixture(laneFixture.providerID, laneFixture.modelID)
+        return {
+          enabled_providers: [laneProvider],
+          provider: {
+            [laneProvider]: {
+              name: "OpenCode Test",
+              npm: "@ai-sdk/openai-compatible",
+              models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },
+              options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            },
+          },
+        }
+      },
+    },
+  )
+})
+
 describe("strictJSON", () => {
   test("parses plain JSON", () => {
     expect(strictJSON('{"a":1}')).toEqual({ a: 1 })

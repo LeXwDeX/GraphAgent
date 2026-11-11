@@ -9,7 +9,7 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { Memory } from "@/memory/memory"
 import { MemoryModel } from "@/memory/model"
@@ -171,6 +171,28 @@ describe("memory model scheduler (issue #1021)", () => {
     ),
   )
 
+  const defaultLane = schedulerFixture()
+  const defaultLaneIt = scheduledWireIt(defaultLane)
+
+  // Checkpoint, search, and background maintenance call the model without a
+  // lane; the scheduler request must still land on the auxiliary reservation.
+  defaultLaneIt.live("defaults an unlabeled maintenance call to the auxiliary lane", () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          yield* llm.pushMatch(
+            (hit) => JSON.stringify(hit.body).includes("topic_ids"),
+            reply().text('{"topic_ids":[]}').stop(),
+          )
+          yield* scheduledGenerate({ sessionID: "ses_memory_default_lane" })
+          expect(defaultLane.requests.map((request) => request.lane)).toEqual(["auxiliary"])
+          expect(defaultLane.releases).toHaveLength(1)
+          expect(defaultLane.releases[0]).toBe(defaultLane.requests[0])
+        }),
+      { config: (url) => testProviderConfig(url) },
+    ),
+  )
+
   const withoutSession = schedulerFixture()
   const withoutSessionIt = scheduledWireIt(withoutSession)
 
@@ -185,6 +207,57 @@ describe("memory model scheduler (issue #1021)", () => {
           yield* scheduledGenerate({ lane: "interactive" })
           expect(withoutSession.requests).toHaveLength(0)
           expect(withoutSession.releases).toHaveLength(0)
+        }),
+      { config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  const failedStream = schedulerFixture()
+  const failedStreamIt = scheduledWireIt(failedStream)
+
+  failedStreamIt.live("releases the permit when the provider stream fails", () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          yield* llm.fail("upstream exploded")
+          const failure = yield* scheduledGenerate({ sessionID: "ses_memory_failure", lane: "child" }).pipe(
+            Effect.flip,
+          )
+          expect(failure).toBeInstanceOf(MemoryModel.GenerateError)
+          expect(failedStream.requests).toHaveLength(1)
+          expect(failedStream.releases).toHaveLength(1)
+          expect(failedStream.releases[0]).toBe(failedStream.requests[0])
+        }),
+      { config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  const hungStream = schedulerFixture()
+  const hungStreamIt = scheduledWireIt(hungStream)
+
+  hungStreamIt.live("releases the permit when the caller times out a hung stream", () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          // Warm the layer first so the timed call does not race layer
+          // construction; the hang below then owns the permit for the whole
+          // caller-side timeout.
+          yield* llm.pushMatch(
+            (hit) => JSON.stringify(hit.body).includes("topic_ids"),
+            reply().text('{"topic_ids":[]}').stop(),
+          )
+          yield* scheduledGenerate({ sessionID: "ses_memory_timeout_warmup", lane: "auxiliary" })
+          yield* llm.hang
+          const outcome = yield* scheduledGenerate({ sessionID: "ses_memory_timeout", lane: "auxiliary" }).pipe(
+            Effect.timeoutOption("2 seconds"),
+          )
+          expect(Option.isNone(outcome)).toBe(true)
+          expect(hungStream.requests.map((request) => request.sessionID)).toEqual([
+            "ses_memory_timeout_warmup",
+            "ses_memory_timeout",
+          ])
+          expect(hungStream.releases).toHaveLength(2)
+          expect(hungStream.releases[1]).toBe(hungStream.requests[1])
         }),
       { config: (url) => testProviderConfig(url) },
     ),
