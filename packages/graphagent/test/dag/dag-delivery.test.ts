@@ -28,6 +28,7 @@ import { DagDelivery } from "@/dag/runtime/delivery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ExclusiveRegistry } from "@/session/engine-process"
+import { SessionCancellation } from "@/session/cancellation"
 import { SessionInbox, type InboxSource, type StepSource } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
@@ -155,6 +156,27 @@ const seedWake = Effect.gen(function* () {
     .run()
     .pipe(Effect.orDie)
 })
+
+const queuedMailboxMessage: DagMessages.Message = {
+  id: "agent_scan_report",
+  workflowID: "dag_delivery",
+  sender: {
+    id: "child_endpoint",
+    kind: "node",
+    sessionID: "ses_child",
+    workflowID: "dag_delivery",
+    nodeID: "worker",
+    attemptID: "attempt_1",
+  },
+  recipient: { id: "parent_endpoint", kind: "main", sessionID: PARENT as never },
+  recipientSequence: 1,
+  acceptedRevision: 1,
+  content: "Please review the result.",
+  state: "queued",
+  transcriptID: "msg_agent_scan_report",
+  partID: "prt_agent_scan_report",
+  timeCreated: 1,
+}
 
 const instanceRef = { directory: DIRECTORY, worktree: DIRECTORY, project: { id: PROJECT_ID } } as never
 
@@ -426,26 +448,6 @@ describe("DagDelivery drain", () => {
   it("returns true for a mailbox admission and false when nothing is deliverable", async () => {
     let admissions = 0
     let receiveCalls = 0
-    const message: DagMessages.Message = {
-      id: "agent_scan_report",
-      workflowID: "dag_delivery",
-      sender: {
-        id: "child_endpoint",
-        kind: "node",
-        sessionID: "ses_child",
-        workflowID: "dag_delivery",
-        nodeID: "worker",
-        attemptID: "attempt_1",
-      },
-      recipient: { id: "parent_endpoint", kind: "main", sessionID: PARENT as never },
-      recipientSequence: 1,
-      acceptedRevision: 1,
-      content: "Please review the result.",
-      state: "queued",
-      transcriptID: "msg_agent_scan_report",
-      partID: "prt_agent_scan_report",
-      timeCreated: 1,
-    }
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -471,7 +473,9 @@ describe("DagDelivery drain", () => {
             receive: () => {
               receiveCalls += 1
               return Effect.succeed(
-                receiveCalls === 1 ? ({ ok: true as const, value: [message] } as const) : ({ ok: true as const, value: [] } as const),
+                receiveCalls === 1
+                  ? ({ ok: true as const, value: [queuedMailboxMessage] } as const)
+                  : ({ ok: true as const, value: [] } as const),
               )
             },
             pendingRecipients: () => Effect.succeed([]),
@@ -485,6 +489,160 @@ describe("DagDelivery drain", () => {
             expect(receiveCalls).toBe(1)
             expect(yield* delivery.deliver(PARENT)).toBe(false)
             expect(admissions).toBe(1)
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("a stale claim epoch leaves the wake batch unconfirmed for the next trigger", async () => {
+    let admissions = 0
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = Layer.mock(SessionPrompt.Service, {
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                yield* persistAdmission ?? Effect.void
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.succeed(reply(input.sessionID as string, "wake handled")),
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          yield* Effect.gen(function* () {
+            yield* seedWake
+            const deps = yield* services()
+            const delivery = yield* startDelivery({ ...deps, messages: undefined })
+            const observed = SessionCancellation.epoch(PARENT)
+            SessionCancellation.begin(PARENT).finish()
+            // An ESC advanced the epoch after the inbox captured it: the wake
+            // admission is refused and nothing is marked or delivered.
+            expect(yield* delivery.deliver(PARENT, observed)).toBe(false)
+            expect(admissions).toBe(0)
+            expect(yield* deps.store.getUnreportedWakeWorkflows(PARENT)).not.toEqual([])
+            expect(yield* deps.store.getUnreportedWakeNodes(PARENT)).not.toEqual([])
+            // A fresh trigger has no stale epoch: the same durable batch is
+            // admitted and its rows are confirmed.
+            expect(yield* delivery.deliver(PARENT)).toBe(true)
+            expect(admissions).toBe(1)
+            yield* expectReported
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("a cancellation during the mailbox read leaves the queued message deliverable", async () => {
+    let admissions = 0
+    let receiveCalls = 0
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = Layer.mock(SessionPrompt.Service, {
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                yield* persistAdmission ?? Effect.void
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.succeed(reply(input.sessionID as string, "mailbox handled")),
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          const messages = {
+            receive: () => {
+              receiveCalls += 1
+              // The mailbox attempt captures its own epoch at entry; this ESC
+              // lands after that capture and before the admission.
+              if (receiveCalls === 1) SessionCancellation.begin(PARENT).finish()
+              return Effect.succeed({ ok: true as const, value: [queuedMailboxMessage] } as const)
+            },
+            pendingRecipients: () => Effect.succeed([]),
+            changed: Stream.empty,
+          } as unknown as DagMessages.Interface
+          yield* Effect.gen(function* () {
+            const deps = yield* services()
+            const delivery = yield* startDelivery({ ...deps, messages })
+            expect(yield* delivery.deliver(PARENT)).toBe(false)
+            expect(admissions).toBe(0)
+            // The queued message was never confirmed, so the next trigger
+            // delivers the same row instead of dropping it.
+            expect(yield* delivery.deliver(PARENT)).toBe(true)
+            expect(admissions).toBe(1)
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("a stale drain epoch fences both wake and mailbox in the same attempt", async () => {
+    let admissions = 0
+    let receiveCalls = 0
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = Layer.mock(SessionPrompt.Service, {
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                yield* persistAdmission ?? Effect.void
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.succeed(reply(input.sessionID as string, "handled")),
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          const messages = {
+            receive: () => {
+              receiveCalls += 1
+              return Effect.succeed({ ok: true as const, value: [queuedMailboxMessage] } as const)
+            },
+            pendingRecipients: () => Effect.succeed([]),
+            changed: Stream.empty,
+          } as unknown as DagMessages.Interface
+          yield* Effect.gen(function* () {
+            yield* seedWake
+            const deps = yield* services()
+            const delivery = yield* startDelivery({ ...deps, messages })
+            const observed = SessionCancellation.epoch(PARENT)
+            SessionCancellation.begin(PARENT).finish()
+            // The drain's observation is stale for both sources. The mailbox
+            // attempt reuses it instead of re-reading the post-ESC epoch, so
+            // neither the wake ledger nor the queued message is admitted.
+            expect(yield* delivery.deliver(PARENT, observed)).toBe(false)
+            expect(admissions).toBe(0)
+            expect(receiveCalls).toBe(1)
+            expect(yield* deps.store.getUnreportedWakeWorkflows(PARENT)).not.toEqual([])
+            expect(yield* deps.store.getUnreportedWakeNodes(PARENT)).not.toEqual([])
+            // A fresh trigger delivers the wake first and returns before the
+            // mailbox; the queued message is still there for the next attempt.
+            expect(yield* delivery.deliver(PARENT)).toBe(true)
+            expect(admissions).toBe(1)
+            expect(receiveCalls).toBe(1)
+            yield* expectReported
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
         }),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),

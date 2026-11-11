@@ -286,6 +286,7 @@ const serviceLayer = Layer.effect(
       messages: ReadonlyArray<SessionV1.WithParts>
       assistant: SessionV1.WithParts
       lease: ExclusiveRegistry.Token
+      claimEpoch: number
       beginRetryDedupe: (revision: number, failureID: string) => void
       endRetryDedupe: () => void
     }) {
@@ -394,12 +395,14 @@ const serviceLayer = Layer.effect(
                 auto: true,
               })
             }),
+            input.claimEpoch,
           )
           .pipe(
             Effect.catchCause((cause) => {
               const clear = goal.clearTurnDriven(input.sessionID)
               if (Cause.hasInterrupts(cause)) return clear.pipe(Effect.andThen(Effect.failCause(cause)))
-              if (Cause.squash(cause) instanceof RecoveryFenceLost) return clear.pipe(Effect.as(Option.none()))
+              if (Cause.squash(cause) instanceof RecoveryFenceLost)
+                return clear.pipe(Effect.as({ tag: "skipped" } as const))
               // The admission transaction may have rolled back the local
               // `claim` after the nested transition savepoint returned. Read
               // durable state and pause only the entrance identity or this
@@ -426,12 +429,22 @@ const serviceLayer = Layer.effect(
                     )
                   }),
                 ),
-                Effect.as(Option.none()),
+                Effect.as({ tag: "skipped" } as const),
               )
             }),
           )
 
-        if (Option.isNone(admitted)) {
+        if (admitted.tag === "cancelled") {
+          // An ESC landed between the evaluation trigger and this admission
+          // (for example during the reasoning-reset backoff). The cancel
+          // handler may not have observed this goal turn yet, so pause here —
+          // without the automatic compaction failure notice, which would
+          // misreport a user abort as a reset failure.
+          yield* goal.pauseForUserCancel(input.sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
+          yield* goal.clearTurnDriven(input.sessionID)
+          return "stop" as const
+        }
+        if (admitted.tag === "skipped") {
           // Admission was denied or invalidated. Clear the speculative mark
           // even if the catch above already did (idempotent).
           yield* goal.clearTurnDriven(input.sessionID)
@@ -443,7 +456,7 @@ const serviceLayer = Layer.effect(
             )
           return "stop" as const
         }
-        yield* admitted.value.pipe(
+        yield* admitted.turn.pipe(
           Effect.catchCause((cause) => {
             const clear = goal.clearTurnDriven(input.sessionID)
             if (Cause.hasInterrupts(cause)) return clear.pipe(Effect.asVoid)
@@ -647,6 +660,10 @@ const serviceLayer = Layer.effect(
       sessionID: SessionID,
       scanResume: boolean | undefined,
       owner: InFlightEvaluation,
+      // Captured at the trigger (the inbox claim), not at admission: an ESC
+      // that lands during the judge call or a recovery backoff must fence the
+      // continuation instead of being bound to the advanced epoch.
+      claimEpoch: number,
     ) {
       // GOAL-TURN-SCOPE: the goal-driven turn that produced this idle has
       // ended. Clear the mark unless cancellation still needs it for the pause.
@@ -751,6 +768,7 @@ const serviceLayer = Layer.effect(
               messages: msgs,
               assistant: lastAssistant,
               lease: observedLease,
+              claimEpoch,
               beginRetryDedupe: (revision, failureID) => beginRetryDedupe(sessionID, owner, revision, failureID),
               endRetryDedupe: () => endRetryDedupe(sessionID, owner),
             }).pipe(
@@ -1090,15 +1108,28 @@ const serviceLayer = Layer.effect(
                 throw new GoalDispatchFenceLost()
               }
             }),
+            claimEpoch,
           )
           .pipe(
             Effect.catchCause((cause) =>
               Cause.squash(cause) instanceof GoalDispatchFenceLost
-                ? Effect.succeed(Option.none())
+                ? Effect.succeed({ tag: "skipped" } as const)
                 : Effect.failCause(cause),
             ),
           )
-        if (Option.isNone(admitted)) {
+        if (admitted.tag === "cancelled") {
+          // An ESC landed between this evaluation's claim and the dispatch
+          // (most likely during the judge call). The cancel handler's own
+          // pause may not have run against this delayed admission, and the
+          // dispatch fence refused the write, so pause the goal here instead
+          // of leaving it active with no driver. pauseForUserCancel is
+          // idempotent against a concurrent cancel pause.
+          clearRetryDedupe()
+          yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
+          yield* goal.clearTurnDriven(sessionID)
+          return
+        }
+        if (admitted.tag === "skipped") {
           clearRetryDedupe()
           yield* goal.clearTurnDriven(sessionID)
           return
@@ -1107,7 +1138,7 @@ const serviceLayer = Layer.effect(
         // assistant must not be deduped as if this retry were still pending.
         clearRetryDedupe()
         admittedStarted = true
-        yield* admitted.value
+        yield* admitted.turn
       }).pipe(
         Effect.ensuring(Effect.suspend(() => (admittedStarted ? Effect.void : Effect.sync(() => clearRetryDedupe())))),
         Effect.catchCause((cause) =>
@@ -1185,7 +1216,15 @@ const serviceLayer = Layer.effect(
     // interrupts + overwrites the old one); clearLoopFiberIf's identity check
     // avoids evicting the new fiber. The watcher never interrupts and
     // completes right after its target, so it does not accumulate.
-    const triggerEvaluation = Effect.fnUntraced(function* (sessionID: SessionID, scanResume?: boolean) {
+    const triggerEvaluation = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      scanResume?: boolean,
+      claimEpoch?: number,
+    ) {
+      // An inbox claim already observed the epoch; every other trigger (wake,
+      // startup scan) captures it here, before its own durable reads, so a
+      // later ESC fences the admission instead of being re-read past.
+      const evaluationEpoch = claimEpoch ?? SessionCancellation.epoch(sessionID)
       const scope = yield* Scope.Scope
       const goalState = yield* goal.load(sessionID)
       if (!goalState) return
@@ -1242,7 +1281,7 @@ const serviceLayer = Layer.effect(
         dedupeFailureID: undefined,
       }
       inFlight.set(sessionID, evaluation)
-      const fiber = yield* afterIdle(sessionID, scanResume, evaluation).pipe(
+      const fiber = yield* afterIdle(sessionID, scanResume, evaluation, evaluationEpoch).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             if (inFlight.get(sessionID) === evaluation) inFlight.delete(sessionID)
@@ -1407,7 +1446,7 @@ const serviceLayer = Layer.effect(
             // evaluation — never a silent one.
             const owned = yield* Goal.ownsSession(sessionID, ctx.directory)
             if (!owned) return false
-            yield* triggerEvaluation(sessionID)
+            yield* triggerEvaluation(sessionID, undefined, ctx.claimEpoch)
             return true
           }),
       })

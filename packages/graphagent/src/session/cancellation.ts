@@ -76,6 +76,18 @@ export function request(sessionID: string) {
   }
 }
 
+/**
+ * Fenced form of `request` (Issue #1021): create the request only when the
+ * session's cancellation epoch still matches the caller's claim-time
+ * observation. A mismatch means an ESC advanced the epoch after the claim, so
+ * the input must not be admitted; the comparison runs before any state is
+ * created, so nothing needs a release.
+ */
+export function requestIfEpoch(sessionID: string, expected: number): ReturnType<typeof request> | undefined {
+  if (epoch(sessionID) !== expected) return undefined
+  return request(sessionID)
+}
+
 export function goalCancelPending(sessionID: string): boolean {
   return (cancellation.sessions.get(sessionID)?.goalCancels ?? 0) > 0
 }

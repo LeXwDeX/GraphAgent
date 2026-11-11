@@ -48,6 +48,7 @@ import { DagLocation } from "@/dag/location"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionCancellation } from "./cancellation"
 import { EngineProcess, type InboxDrainRoute } from "./engine-process"
 import { SessionLocation } from "./location"
 import { MessageID, SessionID } from "./schema"
@@ -129,6 +130,14 @@ export interface InboxLedger {
 /** Ambient facts a source may use while scanning or claiming. */
 export interface InboxSourceContext {
   readonly directory: string
+  /**
+   * The session's cancellation epoch captured once per drain, before any
+   * source runs. A claim passes it to a fenced admission
+   * (`SessionCancellation.requestIfEpoch`) so an ESC that lands after this
+   * capture but before the admission cannot be bypassed by binding a new
+   * request to the advanced epoch.
+   */
+  readonly claimEpoch: number
 }
 
 export interface InboxSource {
@@ -147,8 +156,10 @@ export interface InboxSource {
    * tick.
    */
   readonly hint: (sessionID: SessionID) => boolean
-  /** Durable backstop for sources whose items can outlive a missed nudge. */
-  readonly scan?: (ctx: InboxSourceContext) => Effect.Effect<ReadonlyArray<SessionID>, unknown>
+  /** Durable backstop for sources whose items can outlive a missed nudge. The
+   * scan runs per instance, before any session is known, so it sees only the
+   * directory; the drain supplies `claimEpoch` to each claim. */
+  readonly scan?: (ctx: Pick<InboxSourceContext, "directory">) => Effect.Effect<ReadonlyArray<SessionID>, unknown>
   /**
    * Take (or begin) one delivery for the session. `true` means this boundary
    * consumed the claim; `false` means nothing was deliverable.
@@ -288,6 +299,10 @@ export const layer = Layer.effect(
     ): Effect.Effect<void, never, Scope.Scope> =>
       Effect.gen(function* () {
         const force = options.force === true
+        // One epoch for the whole drain: a source's admission is fenced
+        // against the cancellation state this boundary observed, not against
+        // an epoch re-read after an ESC has already advanced it.
+        const claimEpoch = SessionCancellation.epoch(sessionID)
         const sources = [...data.sources.values()].sort(byPriority)
         // `idle_only` means exactly that: neither a nudge nor the forced tick
         // may deliver into a running turn. The idle subscription itself is
@@ -304,7 +319,7 @@ export const layer = Layer.effect(
             if (idleNow === undefined) idleNow = (yield* status.get(sessionID)).type === "idle"
             if (!idleNow) continue
           }
-          const claimed = yield* source.claim(sessionID, { directory: data.directory }).pipe(
+          const claimed = yield* source.claim(sessionID, { directory: data.directory, claimEpoch }).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause)
                 ? Effect.succeed(false)

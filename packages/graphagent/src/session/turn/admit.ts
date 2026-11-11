@@ -650,6 +650,21 @@ export function makeAdmit(deps: AdmitDeps) {
   }
 }
 
+/**
+ * How an idle admission under the exclusive fence ended:
+ *
+ * - `admitted`: the message committed and `turn` settles when its turn ends.
+ * - `skipped`: the admission was refused without a cancellation (session
+ *   busy, lease lost, or an admission-side fence such as a stale goal).
+ * - `cancelled`: a cancellation advanced the session's epoch (ESC) at or
+ *   before this admission, or the caller's claim-time epoch was already
+ *   stale. Nothing was committed.
+ */
+export type FencedAdmission =
+  | { readonly tag: "admitted"; readonly turn: Effect.Effect<SessionV1.WithParts> }
+  | { readonly tag: "skipped" }
+  | { readonly tag: "cancelled" }
+
 export function admitIdleUnderFence(
   service: Interface,
   automation: ExclusiveRegistry.Interface,
@@ -657,9 +672,18 @@ export function admitIdleUnderFence(
   input: PromptInput,
   options?: AdmissionOptions,
   persistAdmission?: Effect.Effect<void>,
-): Effect.Effect<Option.Option<Effect.Effect<SessionV1.WithParts>>, PromptError> {
+  claimEpoch?: number,
+): Effect.Effect<FencedAdmission, PromptError> {
   return Effect.suspend(() => {
-    const request = SessionCancellation.request(input.sessionID)
+    // A caller that observed the epoch at its claim (inbox drain) is fenced
+    // against a cancellation that landed in between: the request is created
+    // only for the expected epoch, with no cancellation state to clean up on
+    // a mismatch. Callers without a claim observation keep the old behavior.
+    const request =
+      claimEpoch === undefined
+        ? SessionCancellation.request(input.sessionID)
+        : SessionCancellation.requestIfEpoch(input.sessionID, claimEpoch)
+    if (!request) return Effect.succeed<FencedAdmission>({ tag: "cancelled" })
     // Goal cancellation may need this lease, so wait before taking it.
     return request.wait.pipe(
       Effect.andThen(
@@ -671,6 +695,14 @@ export function admitIdleUnderFence(
               : Effect.succeed(Option.none()),
           ),
         ),
+      ),
+      Effect.map((prepared) =>
+        Option.isSome(prepared)
+          ? ({ tag: "admitted", turn: prepared.value } as const)
+          : // Classified before `release` below: once the last request is
+            // released the session entry may vanish, and `current()` would
+            // then read as cancelled.
+            ({ tag: request.current() ? "skipped" : "cancelled" } as const),
       ),
       Effect.ensuring(Effect.sync(() => request.release())),
     )

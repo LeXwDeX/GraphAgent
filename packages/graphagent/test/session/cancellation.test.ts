@@ -5,6 +5,7 @@ import { describe, expect } from "bun:test"
 import { Deferred, Effect } from "effect"
 import { SessionAbortReason } from "@/session/abort-reason"
 import { SessionCancellation } from "@/session/cancellation"
+import { EngineProcess } from "@/session/engine-process"
 import { awaitWithTimeout, it } from "../lib/effect"
 
 describe("session cancellation coordinator", () => {
@@ -91,6 +92,51 @@ describe("session cancellation coordinator", () => {
       yield* awaitWithTimeout(request.wait, "unrelated session was blocked")
       expect(request.valid()).toBe(true)
       expect(abort.owners).toHaveLength(0)
+    }),
+  )
+})
+
+describe("SessionCancellation.requestIfEpoch", () => {
+  it.effect(
+    "creates a request only for the observed epoch",
+    Effect.sync(() => {
+      const id = "request-if-epoch-match"
+      const observed = SessionCancellation.epoch(id)
+      const request = SessionCancellation.requestIfEpoch(id, observed)
+      expect(request).toBeDefined()
+      expect(request?.valid()).toBe(true)
+      request?.release()
+      // The match created cancellation state; release removed it.
+      expect(EngineProcess.cancellation.sessions.has(id)).toBe(false)
+    }),
+  )
+
+  it.effect(
+    "a stale epoch creates no request and no cancellation state",
+    Effect.sync(() => {
+      const id = "request-if-epoch-mismatch"
+      const abort = SessionCancellation.begin(id)
+      abort.finish()
+      expect(SessionCancellation.epoch(id)).toBe(1)
+      expect(EngineProcess.cancellation.sessions.has(id)).toBe(false)
+      expect(SessionCancellation.requestIfEpoch(id, 0)).toBeUndefined()
+      // The mismatch is a comparison only: no CancellationSession is created.
+      expect(EngineProcess.cancellation.sessions.has(id)).toBe(false)
+    }),
+  )
+
+  it.effect(
+    "a begin after the observation makes the old epoch stale",
+    Effect.sync(() => {
+      const id = "request-if-epoch-after-begin"
+      const observed = SessionCancellation.epoch(id)
+      const request = SessionCancellation.requestIfEpoch(id, observed)
+      expect(request).toBeDefined()
+      request?.release()
+      const abort = SessionCancellation.begin(id)
+      abort.finish()
+      expect(SessionCancellation.requestIfEpoch(id, observed)).toBeUndefined()
+      expect(EngineProcess.cancellation.sessions.has(id)).toBe(false)
     }),
   )
 })

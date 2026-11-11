@@ -8,6 +8,7 @@ import { APICallError } from "ai"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { Goal } from "@/goal/goal"
 import { MessageV2 } from "@/session/message-v2"
+import { SessionCancellation } from "@/session/cancellation"
 import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
 import { SessionPrompt } from "@/session/prompt"
@@ -135,6 +136,8 @@ function harness(input: {
   readonly afterAdmissionRollback?: Effect.Effect<void>
   readonly onGoalCommitted?: Effect.Effect<void>
   readonly onRetryClaimed?: Effect.Effect<void>
+  readonly onJudge?: Effect.Effect<void>
+  readonly onMarkTurnDriven?: Effect.Effect<void>
 }) {
   const judge = { calls: 0 }
   const compaction: CompactionState = { creates: 0, attempts: 0, loops: 0, calls: [] as CompactionCall[] }
@@ -208,7 +211,8 @@ function harness(input: {
     GoalLoopJudgeLLM,
     GoalLoopJudgeLLM.of({
       call: () =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          yield* input.onJudge ?? Effect.void
           judge.calls += 1
           return JSON.stringify({ verdict: "continue", reason: "more work" })
         }),
@@ -227,7 +231,7 @@ function harness(input: {
       } as never)
     : Layer.empty
   const goalLayer =
-    input.onGoalCommitted || input.onRetryClaimed
+    input.onGoalCommitted || input.onRetryClaimed || input.onMarkTurnDriven
       ? Layer.effect(
           Goal.Service,
           Effect.gen(function* () {
@@ -248,6 +252,8 @@ function harness(input: {
                         : Effect.void,
                     ),
                   ),
+              markTurnDriven: (sessionID: SessionID) =>
+                goal.markTurnDriven(sessionID).pipe(Effect.tap(() => input.onMarkTurnDriven ?? Effect.void)),
             })
           }),
         ).pipe(Layer.provide(Goal.defaultLayer))
@@ -305,6 +311,8 @@ describe("GoalLoop — #892 failed assistant turns", () => {
   let onActivate: Effect.Effect<void> | undefined
   let onGoalCommitted: Effect.Effect<void> | undefined
   let onRetryClaimed: Effect.Effect<void> | undefined
+  let onJudge: Effect.Effect<void> | undefined
+  let onMarkTurnDriven: Effect.Effect<void> | undefined
   let onContinue:
     ((input: SessionPrompt.PromptInput) => Effect.Effect<SessionV1.WithParts, never, EventV2Bridge.Service>) | undefined
   const { layer, judge, compaction, admissions } = harness({
@@ -318,10 +326,12 @@ describe("GoalLoop — #892 failed assistant turns", () => {
     onActivate: Effect.suspend(() => onActivate ?? Effect.void),
     onGoalCommitted: Effect.suspend(() => onGoalCommitted ?? Effect.void),
     onRetryClaimed: Effect.suspend(() => onRetryClaimed ?? Effect.void),
+    onJudge: Effect.suspend(() => onJudge ?? Effect.void),
+    onMarkTurnDriven: Effect.suspend(() => onMarkTurnDriven ?? Effect.void),
   })
   const it = testEffect(layer)
 
-  const setup = (failure: SessionV1.Assistant["error"], extra: SessionV1.WithParts[] = []) =>
+  const setup = (failure?: SessionV1.Assistant["error"], extra: SessionV1.WithParts[] = []) =>
     Effect.gen(function* () {
       reset(prompts, compaction)
       admissions.length = 0
@@ -334,11 +344,15 @@ describe("GoalLoop — #892 failed assistant turns", () => {
       onActivate = undefined
       onGoalCommitted = undefined
       onRetryClaimed = undefined
+      onJudge = undefined
+      onMarkTurnDriven = undefined
       onContinue = undefined
       window = [
         userMessage("user-1", Date.now() + 60_000),
         ...extra,
-        assistantMessage({ id: "assistant-1", created: Date.now() + 60_100, error: failure }),
+        failure
+          ? assistantMessage({ id: "assistant-1", created: Date.now() + 60_100, error: failure })
+          : assistantMessage({ id: "assistant-1", created: Date.now() + 60_100, text: "progress" }),
       ]
       const goal = yield* Goal.Service
       const loop = yield* GoalLoop.Service
@@ -940,6 +954,61 @@ describe("GoalLoop — #892 failed assistant turns", () => {
       expect(markedBeforeDeny).toBe(true)
       expect(compaction.creates).toBe(0)
       expect(continuation).toBe(0)
+    }),
+  )
+
+  it.instance("an ESC during the judge window pauses the goal without dispatching or a reset-failure notice", () =>
+    Effect.gen(function* () {
+      const { goal, sessionID } = yield* setup()
+      onJudge = Effect.sync(() => {
+        SessionCancellation.begin(sessionID).finish()
+      })
+      yield* idle(sessionID)
+      const current = yield* paused(sessionID)
+      expect(String(current.paused_reason)).toContain("用户中断（ESC）")
+      // The judge verdict had already committed the continuation turn.
+      expect(current.turns_used).toBe(1)
+      expect(continuation).toBe(0)
+      expect(judge.calls).toBe(1)
+      expect(compaction.creates).toBe(0)
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(0)
+      expect(prompts.some((call) => call.text?.includes("自动压缩失败"))).toBe(false)
+      expect(prompts.some((call) => call.text?.includes("目标已暂停"))).toBe(false)
+
+      // The pause is recoverable: an explicit resume dispatches again.
+      onJudge = undefined
+      const resumed = yield* goal.resume(sessionID)
+      expect(resumed?.status).toBe("active")
+      yield* idle(sessionID)
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompts.filter((call) => call.kind === "continue").length === 1 ? true : undefined)),
+        "the resumed goal was never dispatched",
+        "8 seconds",
+      )
+      expect((yield* goal.load(sessionID))?.status).toBe("active")
+    }),
+  )
+
+  it.instance("an ESC before the reasoning-reset admission pauses without a compaction or reset-failure notice", () =>
+    Effect.gen(function* () {
+      const { goal, sessionID } = yield* setup(reasoningError())
+      // The admission is fenced by the epoch captured at the evaluation
+      // trigger; bumping it here simulates an ESC landing between that
+      // capture and the reset admission.
+      onMarkTurnDriven = Effect.sync(() => {
+        SessionCancellation.begin(sessionID).finish()
+      })
+      yield* idle(sessionID)
+      const current = yield* paused(sessionID)
+      expect(String(current.paused_reason)).toContain("用户中断（ESC）")
+      expect(current.turns_used).toBe(0)
+      expect(continuation).toBe(0)
+      expect(compaction.attempts).toBe(0)
+      expect(compaction.creates).toBe(0)
+      expect(prompts.filter((call) => call.kind === "continue")).toHaveLength(0)
+      expect(prompts.some((call) => call.text?.includes("自动压缩失败"))).toBe(false)
+      expect(prompts.some((call) => call.text?.includes("目标已暂停"))).toBe(false)
+      expect((yield* goal.load(sessionID))?.status).toBe("paused")
     }),
   )
 
