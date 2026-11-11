@@ -7,8 +7,8 @@ import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 describe("GraphAgentPrompt", () => {
   test("renders one identity with the hooks and DAG entry points", () => {
     const prompt = GraphAgentPrompt.render(["edit", "write"])
-    expect(prompt).toContain("You are graphagent")
-    expect(prompt).toContain("graphagent uses the OpenCode kernel")
+    expect(prompt).toContain("You are GraphAgent")
+    expect(prompt).toContain("GraphAgent is an independent project")
     expect(prompt).toContain("# Hooks")
     expect(prompt).toContain("# DAG workflows")
     expect(prompt).not.toContain("${")
