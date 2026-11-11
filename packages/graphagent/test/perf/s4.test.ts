@@ -21,20 +21,19 @@ const it = testEffect(scenario.layer)
 
 describe("S4 tool-dense turn", () => {
   it.instance(
-    "twenty tool steps then a tools-disabled final step are deterministic",
+    "twenty tool steps then a final step that keeps the tool set are deterministic",
     () =>
       Effect.gen(function* () {
         const result = yield* scenario.run
 
         const requests = result.requests
         expect(requests).toHaveLength(STEPS + 1)
-        // The first twenty requests advertise the tool set and allow calls; the
-        // final request runs after the step budget is spent, so the engine
-        // disables tools and the model can only answer with text.
-        expect(requests.slice(0, -1).every((request) => request.toolChoice === "auto")).toBe(true)
-        expect(new Set(requests.slice(0, -1).map((request) => request.toolsHash)).size).toBe(1)
-        expect(requests.at(-1)!.toolChoice).toBe("none")
-        expect(requests.at(-1)!.toolsHash).not.toBe(requests[0].toolsHash)
+        // The first twenty requests advertise the tool set and allow calls. The
+        // final request runs after the step budget is spent; it keeps the same
+        // tool set so the cached prefix stays valid, and the engine refuses any
+        // tool execution so the model can only answer with text.
+        expect(requests.every((request) => request.toolChoice === "auto")).toBe(true)
+        expect(new Set(requests.map((request) => request.toolsHash)).size).toBe(1)
         expect(result.firstCounts["events.durable"]).toBeGreaterThan(0)
         expect(result.firstCounts["sql.write"]).toBeGreaterThan(0)
 

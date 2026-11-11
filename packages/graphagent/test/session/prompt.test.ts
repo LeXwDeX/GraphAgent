@@ -41,6 +41,7 @@ import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { EngineProcess } from "../../src/session/engine-process"
 import { SessionPrompt } from "../../src/session/prompt"
+import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -3775,7 +3776,7 @@ withMemoryContext.instance("does not target provider-executed tool attachment me
   }),
 )
 
-it.instance("keeps the reminder on a tools-disabled last step (#953)", () =>
+it.instance("keeps the reminder on a final step that retains tools (#953)", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
       ...providerCfg(url),
@@ -3805,8 +3806,11 @@ it.instance("keeps the reminder on a tools-disabled last step (#953)", () =>
 
     const inputs = yield* llm.inputs
     expect(inputs).toHaveLength(2)
-    expect(inputs[1].tools ?? []).toEqual([])
+    expect(inputs[1].tools).toEqual(inputs[0].tools)
+    expect(JSON.stringify(inputs[1].tools)).toContain('"glob"')
     const bodies = inputs.map((input) => JSON.stringify(input.messages))
+    expect(bodies[1]).toContain(FINAL_STEP_INSTRUCTION)
+    expect(bodies[1]).not.toContain("Tools are disabled until next user input")
     for (const body of bodies) expect(body.match(/\[todo reminder\]/g)).toHaveLength(1)
     expect(bodies[1]).toContain("stable last step")
     const stored = yield* sessions.messages({ sessionID: chat.id })
@@ -4072,7 +4076,7 @@ for (const [runtime, runner] of [
     }),
   )
 
-  runner.instance(`step limit disables execution tools and stops a provider tool call (${runtime})`, () =>
+  runner.instance(`step limit refuses provider tool calls and closes with a text-only step (${runtime})`, () =>
     Effect.gen(function* () {
       const { dir, llm } = yield* useServerConfig((url) => ({
         ...providerCfg(url),
@@ -4094,7 +4098,7 @@ for (const [runtime, runner] of [
         parts: [{ type: "text", text: "Write a file, then summarize." }],
       })
       yield* llm.tool("write", { filePath: firstFile, content: "allowed" })
-      // The provider deliberately ignores toolChoice=none on the last step.
+      // The provider deliberately calls a tool on the final step.
       yield* llm.tool("write", { filePath: blockedFile, content: "must not execute" })
       yield* llm.text("must not request another step")
 
@@ -4103,12 +4107,16 @@ for (const [runtime, runner] of [
       expect(yield* fs.readFileString(firstFile)).toBe("allowed")
       expect(yield* fs.exists(blockedFile)).toBe(false)
       const inputs = yield* llm.inputs
-      expect(inputs).toHaveLength(2)
+      expect(inputs).toHaveLength(3)
       expect(JSON.stringify(inputs[0].tools)).toContain('"write"')
-      expect(inputs[1].tools ?? []).toEqual([])
-      expect(inputs[1].tool_choice ?? "none").toBe("none")
-      expect(JSON.stringify(inputs[1].messages)).toContain("Tools are disabled until next user input")
-      expect(yield* llm.pending).toBe(1)
+      expect(JSON.stringify(inputs[1].tools)).toContain('"write"')
+      expect(inputs[1].tool_choice).not.toBe("none")
+      expect(JSON.stringify(inputs[1].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(JSON.stringify(inputs[1].messages)).not.toContain("Tools are disabled until next user input")
+      expect(inputs[2].tools ?? []).toEqual([])
+      expect(inputs[2].tool_choice ?? "none").toBe("none")
+      expect(JSON.stringify(inputs[2].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(yield* llm.pending).toBe(0)
     }),
   )
 
@@ -4407,6 +4415,7 @@ for (const [runtime, runner] of [
           ],
         }),
         reply().tool("write", { filePath: files[3], content: "must not execute" }),
+        reply().text("The tool budget is exhausted.").stop(),
       )
       yield* prompt.loop({ sessionID: chat.id })
 
@@ -4423,9 +4432,12 @@ for (const [runtime, runner] of [
         )
       expect(rejected?.state.error).toContain("Maximum tool calls (2) reached")
       const firstInputs = yield* llm.inputs
-      expect(firstInputs).toHaveLength(2)
-      expect(firstInputs[1].tools ?? []).toEqual([])
-      expect(firstInputs[1].tool_choice ?? "none").toBe("none")
+      expect(firstInputs).toHaveLength(3)
+      expect(JSON.stringify(firstInputs[1].tools)).toContain('"write"')
+      expect(firstInputs[1].tool_choice).not.toBe("none")
+      expect(JSON.stringify(firstInputs[1].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(firstInputs[2].tools ?? []).toEqual([])
+      expect(firstInputs[2].tool_choice ?? "none").toBe("none")
 
       yield* prompt.prompt({
         sessionID: chat.id,
@@ -4441,10 +4453,12 @@ for (const [runtime, runner] of [
       expect(yield* fs.readFileString(files[4])).toBe("fresh")
       expect(yield* fs.readFileString(files[5])).toBe("fresh")
       const inputs = yield* llm.inputs
-      expect(inputs).toHaveLength(5)
-      expect(JSON.stringify(inputs[2].tools)).toContain('"write"')
+      expect(inputs).toHaveLength(6)
       expect(JSON.stringify(inputs[3].tools)).toContain('"write"')
-      expect(inputs[4].tools ?? []).toEqual([])
+      expect(JSON.stringify(inputs[4].tools)).toContain('"write"')
+      expect(JSON.stringify(inputs[5].tools)).toContain('"write"')
+      expect(inputs[5].tool_choice).not.toBe("none")
+      expect(JSON.stringify(inputs[5].messages)).toContain(FINAL_STEP_INSTRUCTION)
     }),
   )
 
@@ -4519,10 +4533,13 @@ for (const [runtime, runner] of [
       expect(yield* fs.readFileString(first)).toBe("first write")
       expect(yield* fs.exists(malicious)).toBe(false)
       const inputs = yield* llm.inputs
-      expect(inputs).toHaveLength(2)
-      expect(inputs[1].tools ?? []).toEqual([])
-      expect(inputs[1].tool_choice ?? "none").toBe("none")
-      expect(JSON.stringify(inputs[1].messages)).not.toContain("Input B to delete")
+      expect(inputs).toHaveLength(3)
+      expect(JSON.stringify(inputs[1].tools)).toContain('"write"')
+      expect(inputs[1].tool_choice).not.toBe("none")
+      expect(JSON.stringify(inputs[1].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(inputs[2].tools ?? []).toEqual([])
+      expect(inputs[2].tool_choice ?? "none").toBe("none")
+      expect(JSON.stringify(inputs[2].messages)).not.toContain("Input B to delete")
     }),
   )
 
@@ -4587,13 +4604,15 @@ for (const [runtime, runner] of [
       expect(yield* fs.readFileString(second)).toBe("B")
       expect(yield* fs.exists(excess)).toBe(false)
       const inputs = yield* llm.inputs
-      expect(inputs).toHaveLength(3)
+      expect(inputs).toHaveLength(4)
       expect(inputs[0].tools ?? []).not.toEqual([])
       expect(JSON.stringify(inputs[0].messages)).not.toContain("Input B retained")
       expect(JSON.stringify(inputs[1].messages)).toContain("Input B retained")
       expect(inputs[1].tools ?? []).not.toEqual([])
-      expect(inputs[2].tools ?? []).toEqual([])
-      expect(inputs[2].tool_choice ?? "none").toBe("none")
+      expect(JSON.stringify(inputs[2].tools)).toContain('"write"')
+      expect(JSON.stringify(inputs[2].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(inputs[3].tools ?? []).toEqual([])
+      expect(inputs[3].tool_choice ?? "none").toBe("none")
     }),
   )
 
@@ -4622,14 +4641,18 @@ for (const [runtime, runner] of [
         { continueToolBudget: true },
       )
       yield* llm.tool("write", { filePath: blocked, content: "must not execute" })
+      yield* llm.text("No file was written.")
       yield* prompt.loop({ sessionID: chat.id })
       expect(yield* fs.readFileString(first)).toBe("allowed")
       expect(yield* fs.exists(blocked)).toBe(false)
       const inputs = yield* llm.inputs
-      expect(inputs).toHaveLength(3)
-      expect(inputs[2].tools ?? []).toEqual([])
-      expect(inputs[2].tool_choice ?? "none").toBe("none")
-      expect(JSON.stringify(inputs[2].messages)).toContain("Maximum tool calls (1)")
+      expect(inputs).toHaveLength(4)
+      expect(JSON.stringify(inputs[2].tools)).toContain('"write"')
+      expect(inputs[2].tool_choice).not.toBe("none")
+      expect(JSON.stringify(inputs[2].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(JSON.stringify(inputs[2].messages)).not.toContain("Maximum tool calls (1)")
+      expect(inputs[3].tools ?? []).toEqual([])
+      expect(inputs[3].tool_choice ?? "none").toBe("none")
     }),
   )
 
@@ -4722,6 +4745,7 @@ for (const [runtime, runner] of [
         reply().tool("write", { filePath: first, content: "allowed" }).usage({ input: 30_000, output: 10 }),
         reply().text("One file was written. Summarize the remaining work.").stop(),
         reply().tool("write", { filePath: blocked, content: "must not execute" }),
+        reply().text("The budget is exhausted after compaction.").stop(),
       )
       yield* prompt.loop({ sessionID: chat.id })
       expect(yield* fs.readFileString(first)).toBe("allowed")
@@ -4729,10 +4753,13 @@ for (const [runtime, runner] of [
       const history = yield* sessions.messages({ sessionID: chat.id })
       expect(history.some((message) => message.parts.some((part) => part.type === "compaction"))).toBe(true)
       const inputs = yield* llm.inputs
-      expect(inputs).toHaveLength(3)
-      expect(inputs[2].tools ?? []).toEqual([])
-      expect(inputs[2].tool_choice ?? "none").toBe("none")
-      expect(JSON.stringify(inputs[2].messages)).toContain("Maximum tool calls (1)")
+      expect(inputs).toHaveLength(4)
+      expect(JSON.stringify(inputs[2].tools)).toContain('"write"')
+      expect(inputs[2].tool_choice).not.toBe("none")
+      expect(JSON.stringify(inputs[2].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(JSON.stringify(inputs[2].messages)).not.toContain("Maximum tool calls (1)")
+      expect(inputs[3].tools ?? []).toEqual([])
+      expect(inputs[3].tool_choice ?? "none").toBe("none")
     }),
   )
 
@@ -4754,9 +4781,10 @@ for (const [runtime, runner] of [
       yield* prompt.loop({ sessionID: chat.id })
       const inputs = yield* llm.inputs
       expect(inputs).toHaveLength(3)
-      expect(inputs[2].tools ?? []).toEqual([])
-      expect(inputs[2].tool_choice ?? "none").toBe("none")
-      expect(JSON.stringify(inputs[2].messages)).toContain("Maximum tool calls (2)")
+      expect(JSON.stringify(inputs[2].tools)).toContain('"write"')
+      expect(inputs[2].tool_choice).not.toBe("none")
+      expect(JSON.stringify(inputs[2].messages)).toContain(FINAL_STEP_INSTRUCTION)
+      expect(JSON.stringify(inputs[2].messages)).not.toContain("Maximum tool calls (2)")
     }),
   )
 }
@@ -9325,7 +9353,7 @@ for (const maxToolCalls of [1, 0] as const) {
       expect(yield* fs.exists(first)).toBe(true)
       expect(yield* fs.exists(second)).toBe(maxToolCalls === 0)
       const inputs = yield* llm.inputs
-      expect(JSON.stringify(inputs[2].tools ?? []).includes('"name":"write"')).toBe(maxToolCalls === 0)
+      expect(JSON.stringify(inputs[2].tools ?? []).includes('"name":"write"')).toBe(true)
     }),
   )
 }
@@ -10247,8 +10275,8 @@ for (const scenario of ["available", "user-disabled", "last-step", "non-cli", "d
         ? decodeRecords(request.tools).map((item) => decodeString(decodeRecord(item.function).name))
         : []
       const text = JSON.stringify(request.messages)
-      const editing = scenario === "available" || scenario === "non-cli"
-      const exiting = scenario === "available"
+      const editing = scenario === "available" || scenario === "non-cli" || scenario === "last-step"
+      const exiting = scenario === "available" || scenario === "last-step"
       expect(names.includes("apply_patch")).toBe(editing)
       expect(text.includes("Use apply_patch for manual file edits")).toBe(editing)
       expect(text.includes("No file-editing tool is available")).toBe(!editing)

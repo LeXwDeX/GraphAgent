@@ -362,6 +362,85 @@ describe("decide: outcomes", () => {
   })
 })
 
+describe("final step protocol", () => {
+  test("the final phase starts at none and only moves forward", () => {
+    const initial = State.initial({ stopCap: 3 })
+    expect(initial.final).toBe("none")
+    const violated = State.markFinalViolated(initial)
+    expect(violated.final).toBe("violated")
+    expect(State.markFinalViolated(violated)).toBe(violated)
+    // A second violation cannot restart the protocol.
+    expect(State.beginClosing(violated).final).toBe("closing")
+    expect(State.beginClosing(initial)).toBe(initial)
+    const closed = State.markClosed(violated)
+    expect(closed.final).toBe("violated")
+    expect(State.markClosed(State.beginClosing(violated)).final).toBe("closed")
+    expect(State.markClosed(initial).final).toBe("closed")
+    expect(State.markClosed(State.markClosed(initial))).toEqual(State.markClosed(initial))
+  })
+
+  test("an errored attempt is never marked as a final violation", () => {
+    const errored = state({ error: contentFilter() })
+    expect(State.markFinalViolated(errored)).toBe(errored)
+  })
+
+  test("model steps preserve the final phase and reject continuation grants", () => {
+    const violated = State.markFinalViolated(state())
+    expect(State.beginStep(violated).final).toBe("violated")
+    expect(State.continueFromStopBlock(violated)).toBe(violated)
+    expect(State.continueFromQueuedInput(violated)).toBe(violated)
+  })
+
+  test("a violation requests the closing step regardless of completion signals", () => {
+    const violated = State.markFinalViolated(state())
+    const ongoing = signals({ assistantFinished: false, assistantFinish: "tool-calls", stopHook: ran(true) })
+    expect(Decide.decide(violated, ongoing)).toEqual({ kind: "close" })
+    expect(Decide.decide(violated, signals())).toEqual({ kind: "close" })
+  })
+
+  test("the closing phase consumes exactly one more step", () => {
+    const closing = State.beginClosing(State.markFinalViolated(state()))
+    expect(Decide.decide(closing, signals())).toEqual({ kind: "step" })
+  })
+
+  test("a closed turn runs Stop hooks once and then exits", () => {
+    const closed = State.markClosed(state())
+    expect(Decide.decide(closed, signals())).toEqual({ kind: "run_stop_hooks", event: "Stop" })
+    expect(Decide.decide(closed, signals({ stopHook: ran(false) }))).toEqual({
+      kind: "finish",
+      outcome: { type: "completed" },
+    })
+  })
+
+  test("a closed turn ignores a blocking Stop hook and queued input", () => {
+    const closed = State.markClosed(state())
+    expect(
+      Decide.decide(closed, signals({ stopHook: ran(true), stepInputChecked: true, stepInputPending: true })),
+    ).toEqual({ kind: "finish", outcome: { type: "completed" } })
+    expect(Decide.decide(closed, signals({ stopHook: ran(false, true), stepInputChecked: false }))).toEqual({
+      kind: "finish",
+      outcome: { type: "completed" },
+    })
+  })
+
+  test("the final phase freezes input and forbids continuation", () => {
+    const closed = State.markClosed(state())
+    expect(Decide.shouldFreezeAgentInput(closed, false)).toBe(false)
+    expect(Decide.shouldFreezeAgentInput(closed, true)).toBe(false)
+    expect(Decide.continuationAllowed(closed)).toBe(false)
+    const violated = State.markFinalViolated(state())
+    expect(Decide.continuationAllowed(violated)).toBe(false)
+  })
+
+  test("a closed errored turn keeps the error outcome", () => {
+    const errored = State.markClosed(state({ error: contentFilter() }))
+    expect(Decide.decide(errored, signals({ stopHook: ran(false) }))).toEqual({
+      kind: "finish",
+      outcome: { type: "content_filter" },
+    })
+  })
+})
+
 describe("decideOverflow", () => {
   test("first automatic compaction is allowed", () => {
     const transition = Decide.decideOverflow(state(), { overflow: true })

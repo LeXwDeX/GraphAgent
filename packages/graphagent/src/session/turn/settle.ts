@@ -16,6 +16,7 @@ import { MessageV2 } from "../message-v2"
 import type { Handle as ProcessorHandle, Result as ProcessorResult } from "../processor"
 import { PartID, type MessageID, type SessionID } from "../schema"
 import { Session } from "../session"
+import type { FinalPolicy } from "./final-policy"
 
 /** A turn interrupted only by disposal is still an interrupt for finalization;
  * a mixed cause keeps its real failure and must take the error path. */
@@ -56,7 +57,8 @@ export interface SettleAttemptInput {
   readonly format: NonNullable<SessionV1.User["format"]>
   readonly result: ProcessorResult
   readonly structured: unknown
-  readonly toolsDisabled: boolean
+  /** Request shape used for this attempt; see `FinalPolicy`. */
+  readonly finalPolicy: FinalPolicy
   readonly isLastStep: boolean
   readonly toolLimitReached: boolean
   readonly agentInputBlocked: boolean
@@ -182,12 +184,14 @@ function makeSettleAttempt(deps: SettleDeps, postToolBatch: ReturnType<typeof ma
       handle,
       format,
       structured,
-      toolsDisabled,
+      finalPolicy,
       isLastStep,
       toolLimitReached,
       agentSnapshot,
       identity,
     } = input
+    // `closing` and `structuredTerminal` share the empty-tool request shape;
+    // only the structured terminal keeps the legacy error handling below.
     let result = input.result
     let resetStopContinuations = false
     if (result === "deferred")
@@ -252,7 +256,7 @@ function makeSettleAttempt(deps: SettleDeps, postToolBatch: ReturnType<typeof ma
       }
     }
 
-    if (format.type === "json_schema" && !handle.message.error && (finished || toolsDisabled)) {
+    if (format.type === "json_schema" && !handle.message.error && (finished || finalPolicy === "structuredTerminal")) {
       handle.message.error = new SessionV1.StructuredOutputError({
         message: toolLimitReached
           ? "Maximum tool calls reached before producing structured output"
@@ -262,11 +266,13 @@ function makeSettleAttempt(deps: SettleDeps, postToolBatch: ReturnType<typeof ma
         retries: 0,
       }).toObject()
       yield* sessions.updateMessage(handle.message)
-      if (toolsDisabled) yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
+      if (finalPolicy === "structuredTerminal")
+        yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
       return { outcome: "break" as const, agentInputBlocked, resetStopContinuations }
     }
 
-    if (toolsDisabled || result === "stop")
+    // Any final-step policy ends the attempt here; only `normal` may continue.
+    if (finalPolicy !== "normal" || result === "stop")
       return { outcome: "break" as const, agentInputBlocked, resetStopContinuations }
     if (result === "compact") {
       yield* compaction.create({
