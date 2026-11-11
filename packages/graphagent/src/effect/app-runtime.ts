@@ -77,6 +77,7 @@ import { Memory } from "@/memory/memory"
 import { SessionInbox } from "@/session/inbox"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { ToolSourceLedger } from "@/session/tool-source-ledger"
+import { Lifecycle } from "@/lifecycle/service"
 
 const BaseAppLayer = Layer.mergeAll(
   Layer.mergeAll(
@@ -108,6 +109,7 @@ const BaseAppLayer = Layer.mergeAll(
     BackgroundJob.defaultLayer,
     RuntimeFlags.defaultLayer,
     EventV2Bridge.defaultLayer,
+    Lifecycle.defaultLayer,
     SessionRunState.defaultLayer,
     DagStore.defaultLayer,
     DagMessages.defaultLayer,

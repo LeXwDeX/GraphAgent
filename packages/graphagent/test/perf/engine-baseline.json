@@ -862,6 +862,55 @@
       "scenario": "S7",
       "delta": -2,
       "reason": "H4 PR4 (#1022): the per-message ModelHistory cache serves messages already converted in this turn, so convert.messages measures real conversions instead of the request input size."
+    },
+    {
+      "pr": "#1069",
+      "metric": "events.ephemeral",
+      "scenario": "S1",
+      "delta": 1,
+      "reason": "P2 (#1069): each settled turn publishes one transient session.turn.settled event. The perf harness does not provide the optional Lifecycle service, so lifecycle.transitioned stays out of this book."
+    },
+    {
+      "pr": "#1069",
+      "metric": "events.ephemeral",
+      "scenario": "S2",
+      "delta": 1,
+      "reason": "P2 (#1069): each settled turn publishes one transient session.turn.settled event. The perf harness does not provide the optional Lifecycle service, so lifecycle.transitioned stays out of this book."
+    },
+    {
+      "pr": "#1069",
+      "metric": "events.ephemeral",
+      "scenario": "S3",
+      "delta": 1,
+      "reason": "P2 (#1069): each settled turn publishes one transient session.turn.settled event. The perf harness does not provide the optional Lifecycle service, so lifecycle.transitioned stays out of this book."
+    },
+    {
+      "pr": "#1069",
+      "metric": "events.ephemeral",
+      "scenario": "S4",
+      "delta": 1,
+      "reason": "P2 (#1069): each settled turn publishes one transient session.turn.settled event. The perf harness does not provide the optional Lifecycle service, so lifecycle.transitioned stays out of this book."
+    },
+    {
+      "pr": "#1069",
+      "metric": "events.ephemeral",
+      "scenario": "S5",
+      "delta": 34,
+      "reason": "P2 (#1069): the S5 measured window settles 34 turns and each publishes one transient session.turn.settled event. The perf harness does not provide the optional Lifecycle service, so lifecycle.transitioned stays out of this book."
+    },
+    {
+      "pr": "#1069",
+      "metric": "events.ephemeral",
+      "scenario": "S6",
+      "delta": 1,
+      "reason": "P2 (#1069): each settled turn publishes one transient session.turn.settled event. The perf harness does not provide the optional Lifecycle service, so lifecycle.transitioned stays out of this book."
+    },
+    {
+      "pr": "#1069",
+      "metric": "events.ephemeral",
+      "scenario": "S7",
+      "delta": 1,
+      "reason": "P2 (#1069): each settled turn publishes one transient session.turn.settled event. The perf harness does not provide the optional Lifecycle service, so lifecycle.transitioned stays out of this book."
     }
   ]
 }

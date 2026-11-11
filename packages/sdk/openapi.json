@@ -8396,6 +8396,12 @@
             "$ref": "#/components/schemas/EventGlobalDisposed"
           },
           {
+            "$ref": "#/components/schemas/EventLifecycleTransitioned"
+          },
+          {
+            "$ref": "#/components/schemas/EventSessionTurnSettled"
+          },
+          {
             "$ref": "#/components/schemas/EventServerInstanceDisposed"
           }
         ]
@@ -13668,6 +13674,243 @@
               }
             },
             "required": ["directory"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventSessionTurnSettled": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["session.turn.settled"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "turnID": {
+                "type": "string"
+              },
+              "outcome": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["completed"]
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["length"]
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["tool_budget_exhausted"]
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["structured_missing"]
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["content_filter"]
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["error"]
+                      },
+                      "code": {
+                        "type": "string"
+                      },
+                      "retryable": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": ["type", "code", "retryable"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["cancelled"]
+                      },
+                      "reason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["context_overflow"]
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["blocked"]
+                      },
+                      "by": {
+                        "type": "string"
+                      },
+                      "code": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["type", "by", "code"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": ["interrupted"]
+                      }
+                    },
+                    "required": ["type"],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "steps": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "timeEnded": {
+                "type": "number"
+              }
+            },
+            "required": ["sessionID", "turnID", "outcome", "steps", "timeEnded"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventLifecycleTransitioned": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["lifecycle.transitioned"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "domain": {
+                "type": "string",
+                "enum": [
+                  "session",
+                  "job",
+                  "goal",
+                  "workflow",
+                  "node",
+                  "mailbox",
+                  "inbox",
+                  "hook",
+                  "tool",
+                  "turn",
+                  "cancellation"
+                ]
+              },
+              "stateID": {
+                "type": "string"
+              },
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "running",
+                  "waiting",
+                  "settling",
+                  "succeeded",
+                  "failed",
+                  "cancelled",
+                  "skipped",
+                  "paused"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "number"
+              }
+            },
+            "required": ["domain", "stateID", "to", "phase", "timestamp"],
             "additionalProperties": false
           }
         },

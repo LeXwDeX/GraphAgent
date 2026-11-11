@@ -157,6 +157,15 @@ export interface TurnExecution {
   readonly lastAssistantID: MessageID | undefined
 }
 
+/** A turn whose ended row was written; published after the write commits. */
+export interface TurnSettled {
+  readonly sessionID: SessionID
+  readonly turnID: string
+  readonly outcome: TurnOutcome
+  readonly steps: number
+  readonly timeEnded: number
+}
+
 export interface TurnDeps {
   readonly db: Database.Interface["db"]
   readonly sessions: Session.Interface
@@ -175,6 +184,8 @@ export interface TurnDeps {
   ) => Effect.Effect<A, E, R>
   readonly goal: Goal.Interface | undefined
   readonly settingsHook: SettingsHook.Interface | undefined
+  /** Runs after the ended row is written, before the handle settles. */
+  readonly onSettled: (settled: TurnSettled) => Effect.Effect<void>
   readonly admitPrompt: (
     input: PromptInput,
     persistAdmission?: Effect.Effect<void, unknown>,
@@ -535,23 +546,37 @@ export function makeTurns(deps: TurnDeps): Interface {
         const exit = yield* restore(work).pipe(Effect.exit)
         const result = Exit.isSuccess(exit) ? exit.value : undefined
         const outcome = result?.outcome ?? outcomeOfExit(exit, handle.sessionID)
-        yield* deps.db
+        const steps = result?.steps ?? 0
+        const timeEnded = Date.now()
+        const wrote = yield* deps.db
           .update(SessionTurnTable)
           .set({
             state: "ended",
             outcome,
             user_message_id: result?.userMessageID ?? handle.userMessageID ?? null,
             last_assistant_id: result?.lastAssistantID ?? null,
-            steps: result?.steps ?? 0,
-            time_ended: Date.now(),
+            steps,
+            time_ended: timeEnded,
           })
           .where(eq(SessionTurnTable.id, handle.id))
           .run()
           .pipe(
+            Effect.as(true),
             Effect.catchCause((cause) =>
-              Effect.logWarning("session turn end write failed", { turnID: handle.id, cause }),
+              Effect.logWarning("session turn end write failed", { turnID: handle.id, cause }).pipe(Effect.as(false)),
             ),
           )
+        // Publish only once the ended row exists: a late observer must never
+        // see a settlement for a turn it cannot read back.
+        if (wrote) {
+          yield* deps
+            .onSettled({ sessionID: handle.sessionID, turnID: handle.id, outcome, steps, timeEnded })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session turn settled hook failed", { turnID: handle.id, cause }),
+              ),
+            )
+        }
         yield* settle(handle, outcome)
         return yield* exit
       }),

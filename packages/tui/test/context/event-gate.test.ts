@@ -48,6 +48,8 @@ describe("eventScope", () => {
       "goal.updated",
       "goal.cleared",
       "dag.workflow.summary.updated",
+      "lifecycle.transitioned",
+      "session.turn.settled",
     ])
       expect(eventScope(type), type).toBe("session-summary")
   })

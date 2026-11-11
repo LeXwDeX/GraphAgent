@@ -52,6 +52,8 @@ const SESSION_SUMMARY_TYPES = new Set([
   "goal.updated",
   "goal.cleared",
   "dag.workflow.summary.updated",
+  "lifecycle.transitioned",
+  "session.turn.settled",
 ])
 
 /** Unlisted event types default to `global`, matching the schema inventory. */

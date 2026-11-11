@@ -69,6 +69,8 @@ export type Event =
   | EventWorktreeFailed
   | EventServerConnected
   | EventGlobalDisposed
+  | EventLifecycleTransitioned
+  | EventSessionTurnSettled
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -1792,6 +1794,69 @@ export type EventServerInstanceDisposed = {
   type: "server.instance.disposed"
   properties: {
     directory: string
+  }
+}
+
+export type EventSessionTurnSettled = {
+  id: string
+  type: "session.turn.settled"
+  properties: {
+    sessionID: string
+    turnID: string
+    outcome:
+      | {
+          type: "completed"
+        }
+      | {
+          type: "length"
+        }
+      | {
+          type: "tool_budget_exhausted"
+        }
+      | {
+          type: "structured_missing"
+        }
+      | {
+          type: "content_filter"
+        }
+      | {
+          type: "error"
+          code: string
+          retryable: boolean
+        }
+      | {
+          type: "cancelled"
+          reason?: string
+        }
+      | {
+          type: "context_overflow"
+        }
+      | {
+          type: "blocked"
+          by: string
+          code: string
+        }
+      | {
+          type: "interrupted"
+        }
+    steps: number
+    timeEnded: number
+  }
+}
+
+export type EventLifecycleTransitioned = {
+  id: string
+  type: "lifecycle.transitioned"
+  properties: {
+    domain:
+      "session" | "job" | "goal" | "workflow" | "node" | "mailbox" | "inbox" | "hook" | "tool" | "turn" | "cancellation"
+    stateID: string
+    sessionID?: string
+    from?: string
+    to: string
+    phase: "pending" | "running" | "waiting" | "settling" | "succeeded" | "failed" | "cancelled" | "skipped" | "paused"
+    reason?: string
+    timestamp: number
   }
 }
 
