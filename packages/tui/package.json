@@ -43,8 +43,6 @@
     "./util/record": "./src/util/record.ts",
     "./logo": "./src/logo.ts",
     "./ui/dialog": "./src/ui/dialog.tsx",
-    "./ui/spinner": "./src/ui/spinner.ts",
-    "./ui/spinner-renderable": "./src/ui/spinner-renderable.ts",
     "./ui/toast": "./src/ui/toast.tsx",
     "./component/spinner": "./src/component/spinner.tsx"
   },
@@ -59,7 +57,6 @@
     "effect": "catalog:",
     "fuzzysort": "catalog:",
     "open": "catalog:",
-    "cli-spinners": "catalog:",
     "remeda": "catalog:",
     "strip-ansi": "catalog:",
     "solid-js": "catalog:"

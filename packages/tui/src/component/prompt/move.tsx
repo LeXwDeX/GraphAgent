@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import { createEffect, createMemo, createSignal, on, onCleanup } from "solid-js"
 import path from "path"
 import { useTuiPaths } from "../../context/runtime"
 import { errorMessage } from "../../util/error"
@@ -11,6 +11,7 @@ import { showWorkspaceFileChanges } from "../../panel/workspace-file-changes"
 import { useBottomZoneOptional } from "../../shell/bottom-zone"
 import { useHomeSessionDestination } from "../../routes/home/session-destination"
 import { useProject } from "../../context/project"
+import { useTicker } from "../../context/ticker-context"
 
 function moveReminderText(directory: string) {
   return `<system-reminder>The user has changed the current working directory to "${directory}". This is still the same project but at a possibly new location; take this into account when working with any files from now on.</system-reminder>`
@@ -24,6 +25,7 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
   const homeDestination = useHomeSessionDestination()
   const project = useProject()
   const paths = useTuiPaths()
+  const ticker = useTicker()
   const [creating, setCreating] = createSignal(false)
   const [creatingDots, setCreatingDots] = createSignal(3)
   const [progress, setProgress] = createSignal<string>()
@@ -198,9 +200,18 @@ export function usePromptMove(input: { projectID: () => string | undefined; sess
       setCreatingDots(3)
       return
     }
-    const timer = setInterval(() => setCreatingDots((dots) => (dots % 3) + 1), 1000)
-    onCleanup(() => clearInterval(timer))
+    onCleanup(ticker.subscribeSecond())
   })
+
+  createEffect(
+    on(
+      ticker.second,
+      () => {
+        if (creating()) setCreatingDots((dots) => (dots % 3) + 1)
+      },
+      { defer: true },
+    ),
+  )
 
   return {
     creating,

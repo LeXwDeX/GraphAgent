@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { extend } from "@opentui/solid"
-import { SpinnerRenderable } from "@graphagent/tui/ui/spinner-renderable"
+import { SpinnerRenderable } from "./spinner-renderable"
 
 // Explicit registration is load-bearing. `bun build` on a Windows host drops
 // side-effect-only component imports, so `<spinner>` crashed with

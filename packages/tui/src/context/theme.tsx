@@ -23,6 +23,8 @@ import { createEffect, createMemo, onCleanup, onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useKV } from "./kv"
+import { createTicker } from "./ticker"
+import { useOptionalTicker } from "./ticker-context"
 import { useTuiConfig } from "../config"
 import { Global } from "@graphagent/core/global"
 import { Glob } from "@graphagent/core/util/glob"
@@ -104,6 +106,9 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     const renderer = useRenderer()
     const config = useTuiConfig()
     const kv = useKV()
+    // Theme refresh uses the shared ticker; tests that render the provider
+    // without one get a local ticker with the same timing behavior.
+    const ticker = useOptionalTicker() ?? createTicker()
     const themes = props.source ?? themeSource
     const pick = (value: unknown) => {
       if (value === "dark" || value === "light") return value
@@ -231,14 +236,14 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     }
     renderer.prependInputHandler(handleThemeNotification)
 
-    let themeRefreshTimeouts: ReturnType<typeof setTimeout>[] = []
+    let themeRefreshCancels: (() => void)[] = []
     const refresh = () => {
-      for (const timeout of themeRefreshTimeouts) clearTimeout(timeout)
-      themeRefreshTimeouts = THEME_REFRESH_DELAYS.map((delay) =>
-        setTimeout(() => {
+      for (const cancel of themeRefreshCancels) cancel()
+      themeRefreshCancels = THEME_REFRESH_DELAYS.map((delay) =>
+        ticker.at(ticker.now() + delay, () => {
           refreshSystemTheme()
           if (delay === THEME_REFRESH_DELAYS[THEME_REFRESH_DELAYS.length - 1]) void syncCustomThemes()
-        }, delay),
+        }),
       )
     }
     let unsubscribeRefresh: (() => void) | undefined
@@ -248,8 +253,8 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
       renderer.off(CliRenderEvents.THEME_MODE, handle)
       renderer.removeInputHandler(handleThemeNotification)
       unsubscribeRefresh?.()
-      for (const timeout of themeRefreshTimeouts) clearTimeout(timeout)
-      themeRefreshTimeouts.length = 0
+      for (const cancel of themeRefreshCancels) cancel()
+      themeRefreshCancels.length = 0
     })
 
     const values = createMemo(() => {

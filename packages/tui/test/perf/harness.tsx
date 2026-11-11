@@ -22,6 +22,7 @@ import { RouteProvider } from "../../src/context/route"
 import { SDKProvider } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
+import { TickerProvider } from "../../src/context/ticker-context"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../src/keymap"
 import { Prompt, type PromptRef } from "../../src/component/prompt"
 import { FrecencyProvider } from "../../src/prompt/frecency"
@@ -145,42 +146,44 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
               <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
-                    <FooterToastProvider>
-                      <HookStatusProvider>
-                        <RouteProvider initialRoute={{ type: "session", sessionID: fixture.session.id }}>
-                          <TuiConfigProvider config={config}>
-                            <SDKProvider
-                              url="http://test"
-                              directory={directory}
-                              events={events.source}
-                              fetch={calls.fetch}
-                            >
-                              <ProjectProvider>
-                                <SyncProvider>
-                                  <ThemeProvider mode="dark">
-                                    <LocalProvider>
-                                      <PromptStashProvider>
-                                        <FrecencyProvider>
-                                          <PromptHistoryProvider>
-                                            <PromptRefProvider>
-                                              <EditorContextProvider integration={{}}>
-                                                <LocationProvider>
-                                                  <Probe />
-                                                </LocationProvider>
-                                              </EditorContextProvider>
-                                            </PromptRefProvider>
-                                          </PromptHistoryProvider>
-                                        </FrecencyProvider>
-                                      </PromptStashProvider>
-                                    </LocalProvider>
-                                  </ThemeProvider>
-                                </SyncProvider>
-                              </ProjectProvider>
-                            </SDKProvider>
-                          </TuiConfigProvider>
-                        </RouteProvider>
-                      </HookStatusProvider>
-                    </FooterToastProvider>
+                    <TickerProvider>
+                      <FooterToastProvider>
+                        <HookStatusProvider>
+                          <RouteProvider initialRoute={{ type: "session", sessionID: fixture.session.id }}>
+                            <TuiConfigProvider config={config}>
+                              <SDKProvider
+                                url="http://test"
+                                directory={directory}
+                                events={events.source}
+                                fetch={calls.fetch}
+                              >
+                                <ProjectProvider>
+                                  <SyncProvider>
+                                    <ThemeProvider mode="dark">
+                                      <LocalProvider>
+                                        <PromptStashProvider>
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider integration={{}}>
+                                                  <LocationProvider>
+                                                    <Probe />
+                                                  </LocationProvider>
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
+                                        </PromptStashProvider>
+                                      </LocalProvider>
+                                    </ThemeProvider>
+                                  </SyncProvider>
+                                </ProjectProvider>
+                              </SDKProvider>
+                            </TuiConfigProvider>
+                          </RouteProvider>
+                        </HookStatusProvider>
+                      </FooterToastProvider>
+                    </TickerProvider>
                   </KVProvider>
                 </ArgsProvider>
               </GraphagentKeymapProvider>

@@ -4,6 +4,8 @@ import { Option, Schema, SchemaGetter } from "effect"
 import { isRecord } from "../util/record"
 import { useTuiPaths } from "./runtime"
 import { createSimpleContext } from "./helper"
+import { createTicker } from "./ticker"
+import { useOptionalTicker } from "./ticker-context"
 import { editorIntegration } from "../editor"
 
 const MCP_PROTOCOL_VERSION = "2025-11-25"
@@ -112,6 +114,9 @@ export const { use: useEditorContext, provider: EditorContextProvider } = create
   name: "EditorContext",
   init: (props: { integration?: EditorIntegration; WebSocketImpl?: typeof WebSocket }) => {
     const paths = useTuiPaths()
+    // Reconnect backoff is scheduled on the shared ticker; tests without one
+    // get a local ticker with the same timing behavior.
+    const ticker = useOptionalTicker() ?? createTicker()
     const editor = props.integration ?? editorIntegration
     const value = process.env.GRAPHAGENT_EDITOR_SSE_PORT
     const parsedPort = value ? Number.parseInt(value, 10) : undefined
@@ -134,7 +139,7 @@ export const { use: useEditorContext, provider: EditorContextProvider } = create
 
     let socket: WebSocket | undefined
     let closed = false
-    let reconnect: ReturnType<typeof setTimeout> | undefined
+    let reconnectCancel: (() => void) | undefined
     let attempt = 0
     let requestID = 0
     let zedSelection: Promise<void> | undefined
@@ -274,16 +279,16 @@ export const { use: useEditorContext, provider: EditorContextProvider } = create
 
     const scheduleReconnect = () => {
       if (closed) return
-      if (reconnect) clearTimeout(reconnect)
+      reconnectCancel?.()
       attempt += 1
       const delay = Math.min(1000 * 2 ** (attempt - 1), 10_000)
-      reconnect = setTimeout(connect, delay)
+      reconnectCancel = ticker.at(ticker.now() + delay, connect)
     }
 
     const scheduleZedPoll = () => {
       if (closed) return
-      if (reconnect) clearTimeout(reconnect)
-      reconnect = setTimeout(connect, 1000)
+      reconnectCancel?.()
+      reconnectCancel = ticker.at(ticker.now() + 1000, connect)
     }
 
     const reconnectWithDirectory = (nextDirectory?: string) => {
@@ -295,8 +300,8 @@ export const { use: useEditorContext, provider: EditorContextProvider } = create
       directory = resolved
       attempt = 0
       pending.clear()
-      if (reconnect) clearTimeout(reconnect)
-      reconnect = undefined
+      if (reconnectCancel) reconnectCancel()
+      reconnectCancel = undefined
       if (socket) {
         const current = socket
         socket = undefined
@@ -312,7 +317,7 @@ export const { use: useEditorContext, provider: EditorContextProvider } = create
 
       onCleanup(() => {
         closed = true
-        if (reconnect) clearTimeout(reconnect)
+        reconnectCancel?.()
         socket?.close()
       })
     })
