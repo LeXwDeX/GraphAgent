@@ -1393,6 +1393,7 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+    mode?: "small" | "shared" | "auto"
   }
   btw?: {
     model?: string

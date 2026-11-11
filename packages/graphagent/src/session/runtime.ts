@@ -3,9 +3,13 @@
 
 import { makeRewriteBudget, type RewriteBudget } from "@graphagent/core/session/reasoning-distillation"
 import type { ToolBudget } from "@graphagent/core/session/tool-budget"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
+import type { Tool } from "ai"
 import { Effect, Exit, Fiber, Scope } from "effect"
+import type { Agent } from "@/agent/agent"
 import { registerDisposer } from "@/effect/instance-registry"
 import type { TriggerResult } from "@/hook"
+import type { Provider } from "@/provider/provider"
 import { forgetSession, makeModelHistoryState, type ModelHistoryState } from "./history/model"
 import { makeHistoryState, forgetEntry, type HistoryState } from "./history/state"
 import { makeReasoningQueue } from "./reasoning-queue"
@@ -52,6 +56,36 @@ export interface RewriteState {
   readonly scope: Scope.Closeable
 }
 
+/**
+ * The reusable prefix of the last prepared conversation request (Issue #1028,
+ * PR5). Compaction can send its directive after the same system text and tool
+ * set, so providers that cache prefixes serve most of the request from cache.
+ *
+ * Only the prefix is shared: the recorded system text and tools, not the
+ * conversation messages. `prefixTokens` is the conservative estimate of that
+ * prefix for the cost selector.
+ */
+export interface RequestPrefix {
+  /** Instance directory that prepared the request; a session moved elsewhere cannot reuse it. */
+  readonly directory: string
+  /** Agent that prepared the request, so the agent prompt matches too. */
+  readonly agent: Agent.Info
+  readonly model: Pick<Provider.Model, "providerID" | "id">
+  /** Final system text of the request, without the agent prompt that request preparation adds. */
+  readonly system: readonly string[]
+  /** Per-message system text that request preparation appends after `system`. */
+  readonly userSystem?: string
+  /** Already resolved tool record; the non-enumerable serialized fragment stays attached. */
+  readonly tools: Record<string, Tool>
+  readonly toolsJson?: string
+  readonly toolChoice?: "auto" | "required" | "none"
+  readonly permission?: PermissionV1.Ruleset
+  readonly nativePermission?: PermissionV1.Ruleset
+  /** Estimated tokens of `system` + `userSystem` + tools. */
+  readonly prefixTokens: number
+  readonly recordedAt: number
+}
+
 export interface SessionRuntimes {
   /** Pending PreModelSwitch/PostModelSwitch hook fibers, keyed by session. */
   readonly modelSwitches: Map<SessionID, ModelSwitchRecord>
@@ -61,6 +95,8 @@ export interface SessionRuntimes {
   readonly requestOverheads: Map<SessionID, number>
   /** Serialized tool fragment of the last prepared request, per session (Issue #1022, PR5). */
   readonly requestTools: Map<SessionID, { readonly key: string; readonly json: string }>
+  /** Prefix of the last conversation request, per session (Issue #1028, PR5). */
+  readonly requestPrefixes: Map<SessionID, RequestPrefix>
   /** Runtime-context blocks already sent per session, so their positions stay stable. */
   readonly runtimeContexts: Map<SessionID, readonly RuntimeContext.Entry[]>
   /** State contributed by feature owners (for example DAG mode) in runtime-context slots. */
@@ -85,6 +121,10 @@ export interface SessionRuntimes {
   readonly rememberToolsJson: (sessionID: SessionID, key: string, json: string) => void
   /** Drop the serialized tools fragment, used when a session moves between directories. */
   readonly forgetToolsJson: (sessionID: SessionID) => void
+  /** Remember the reusable prefix of the last conversation request. */
+  readonly rememberRequestPrefix: (sessionID: SessionID, prefix: RequestPrefix) => void
+  /** Drop the reusable prefix after a successful compaction. */
+  readonly forgetRequestPrefix: (sessionID: SessionID) => void
   /** Drop every cache entry for one session (Session.Event.Deleted). */
   readonly remove: (sessionID: SessionID) => Effect.Effect<void>
   /** Drop only the entries created by the disposed instance directory. */
@@ -104,6 +144,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
   const scopedAgents = new Map<SessionID, string>()
   const requestOverheads = new Map<SessionID, number>()
   const requestTools = new Map<SessionID, { readonly key: string; readonly json: string }>()
+  const requestPrefixes = new Map<SessionID, RequestPrefix>()
   const runtimeContexts = new Map<SessionID, readonly RuntimeContext.Entry[]>()
   const runtimeSlots = RuntimeSlots.make()
   const toolBudgets = new Map<SessionID, ToolBudgetState>()
@@ -122,6 +163,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     scopedAgents.delete(sessionID)
     requestOverheads.delete(sessionID)
     requestTools.delete(sessionID)
+    requestPrefixes.delete(sessionID)
     runtimeContexts.delete(sessionID)
     runtimeSlots.forget(sessionID)
     toolBudgets.delete(sessionID)
@@ -136,6 +178,7 @@ export function makeSessionRuntimes(): SessionRuntimes {
     scopedAgents,
     requestOverheads,
     requestTools,
+    requestPrefixes,
     runtimeContexts,
     runtimeSlots,
     toolBudgets,
@@ -162,6 +205,12 @@ export function makeSessionRuntimes(): SessionRuntimes {
     },
     forgetToolsJson(sessionID) {
       requestTools.delete(sessionID)
+    },
+    rememberRequestPrefix(sessionID, prefix) {
+      requestPrefixes.set(sessionID, prefix)
+    },
+    forgetRequestPrefix(sessionID) {
+      requestPrefixes.delete(sessionID)
     },
     remove: (sessionID) =>
       Effect.gen(function* () {

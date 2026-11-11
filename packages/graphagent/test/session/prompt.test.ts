@@ -2611,6 +2611,40 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+it.instance("records the prepared conversation prefix for compaction", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const ctx = yield* InstanceState.context
+    const chat = yield* sessions.create({
+      title: "Prefix",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* Effect.gen(function* () {
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.text("world")
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const prefix = EngineProcess.runtimes.requestPrefixes.get(chat.id)
+      expect(prefix).toBeDefined()
+      expect(prefix!.directory).toBe(ctx.directory)
+      expect(prefix!.agent.name).toBe("build")
+      expect(prefix!.model).toEqual({ providerID: ref.providerID, id: ref.modelID })
+      expect(prefix!.system.length).toBeGreaterThan(0)
+      expect(prefix!.toolsJson).toBeString()
+      expect(Object.keys(prefix!.tools).length).toBeGreaterThan(0)
+      expect(prefix!.prefixTokens).toBeGreaterThan(0)
+      expect(prefix!.recordedAt).toBeGreaterThan(0)
+    }).pipe(Effect.ensuring(Effect.sync(() => EngineProcess.runtimes.forgetRequestPrefix(chat.id))))
+  }),
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>
@@ -4152,6 +4186,8 @@ for (const [runtime, runner] of [
       expect(inputs[0].tools ?? []).toEqual([])
       expect(inputs[0].tool_choice ?? "none").toBe("none")
       expect(JSON.stringify(inputs[0].messages)).not.toContain("MUST use the StructuredOutput tool")
+      // Structured turns reshape the request, so they never feed the shared prefix.
+      expect(EngineProcess.runtimes.requestPrefixes.has(chat.id)).toBe(false)
       expect(result.info.role).toBe("assistant")
       if (result.info.role !== "assistant") throw new Error("Expected an assistant response")
       expect(result.info.error?.name).toBe("StructuredOutputError")

@@ -473,6 +473,24 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("decodes and migrates the compaction mode without inventing a default", () =>
+    Effect.sync(() => {
+      const decodeV1 = (compaction: Record<string, unknown> = {}) =>
+        Schema.decodeUnknownSync(ConfigV1.Info)({ compaction })
+      for (const mode of ["small", "shared", "auto"] as const) {
+        expect(decodeV1({ mode }).compaction?.mode).toBe(mode)
+        expect(Schema.decodeUnknownSync(Config.Info)({ compaction: { mode } }).compaction?.mode).toBe(mode)
+        expect(
+          Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(decodeV1({ mode }))).compaction?.mode,
+        ).toBe(mode)
+      }
+      expect(decodeV1().compaction?.mode).toBeUndefined()
+      expect(Schema.decodeUnknownSync(Config.Info)({ compaction: {} }).compaction?.mode).toBeUndefined()
+      expect(() => Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { mode: "large" } })).toThrow()
+      expect(() => Schema.decodeUnknownSync(Config.Info)({ compaction: { mode: "large" } })).toThrow()
+    }),
+  )
+
   it.effect("ignores the removed automatic compaction ceiling in v1 and v2 configuration", () =>
     Effect.sync(() => {
       const v1 = Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { max_context_tokens: 250_000 } })

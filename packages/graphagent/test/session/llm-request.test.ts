@@ -425,3 +425,39 @@ describe("hosted history projection before SDK prompt conversion", () => {
     }),
   )
 })
+
+describe("shared compaction prefix", () => {
+  it.instance("reproduces the main request system text and tool set", () =>
+    Effect.gen(function* () {
+      const input = yield* request("openai", "gpt-5", "@ai-sdk/openai")
+      const agent = { ...input.agent, prompt: "You are the build agent." }
+      const tools = {
+        zeta: tool({ description: "Zeta tool", inputSchema: jsonSchema({ type: "object", properties: {} }) }),
+        alpha: tool({ description: "Alpha tool", inputSchema: jsonSchema({ type: "object", properties: {} }) }),
+      }
+      const system = ["Environment: test", "Project instructions"]
+      const userSystem = "Per-message system text"
+      const main = yield* prepare({
+        ...input,
+        agent,
+        system,
+        user: { ...input.user, system: userSystem },
+        tools,
+      })
+      // The shared request appends the per-message system text itself because
+      // its carrier message has no system of its own.
+      const shared = yield* prepare({
+        ...input,
+        agent,
+        system: [...system, userSystem],
+        user: input.user,
+        tools,
+      })
+
+      expect(Object.keys(main.tools)).toEqual(["alpha", "zeta"])
+      expect(Object.keys(shared.tools)).toEqual(Object.keys(main.tools))
+      expect(shared.system).toEqual(main.system)
+      expect(JSON.stringify(shared.messages[0])).toBe(JSON.stringify(main.messages[0]))
+    }),
+  )
+})

@@ -284,6 +284,10 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      mode: Schema.optional(Schema.Literals(["small", "shared", "auto"])).annotate({
+        description:
+          "Compaction request shape: 'small' sends a stripped request, 'shared' reuses the main request's cached system+tools prefix, and 'auto' picks the cheaper shape from model prices (default: small)",
+      }),
     }),
   ),
   btw: Schema.optional(

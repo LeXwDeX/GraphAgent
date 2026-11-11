@@ -19,8 +19,13 @@ import { NamedError } from "@graphagent/core/util/error"
 import { Hash } from "@graphagent/core/util/hash"
 import { DagStore } from "@graphagent/core/dag/store"
 
-import { Effect, Layer, Context } from "effect"
+import { Effect, Exit, Layer, Context } from "effect"
 import * as Option from "effect/Option"
+import type { ModelMessage } from "ai"
+import { EngineProcess } from "./engine-process"
+import { SessionCompactionModel } from "./compaction-model"
+import type { LLM } from "./llm"
+import type { RequestPrefix } from "./runtime"
 import { InstanceState } from "@/effect/instance-state"
 import { isOverflow as overflow, measured, triggerLimit, usable } from "./overflow"
 import { serviceUse } from "@graphagent/core/effect/service-use"
@@ -42,6 +47,60 @@ const TOOL_OUTPUT_MAX_CHARS = 2_000
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
+
+// The shared request keeps the main request's system text and tools, so the
+// compaction agent prompt cannot carry the role constraints. Repeat them in
+// the directive instead: summarize, never answer or call tools, follow the
+// template. The directive comes before the generated prompt (Issue #1028, PR5).
+const SHARED_DIRECTIVE = `You summarize coding-session context so work can continue.
+
+Summarize only the supplied conversation history. Newest turns may remain verbatim outside the summary. Focus on older context that still matters.
+
+Do not answer the conversation. Do not call tools. Do not mention summarization, compaction, or merging. Use the conversation's language and follow the requested output structure exactly.`
+
+/**
+ * Compaction request that reuses the main conversation request's cached
+ * prefix (system text and tools). Only the trailing directive is new, and the
+ * conversation messages are converted exactly as the main request converted
+ * them. Tool execution is refused so a model that ignores the directive falls
+ * back to a clean request instead of persisting a summary.
+ */
+function sharedCompactionInput(input: {
+  prefix: RequestPrefix
+  user: SessionV1.User
+  sessionID: SessionID
+  model: Provider.Model
+  messages: ModelMessage[]
+  prompt: string
+  onToolRefused: () => void
+}): LLM.StreamInput {
+  return {
+    // The carrier message keeps the parent identity but not its system text:
+    // that text is already part of the recorded prefix below.
+    user: { ...input.user, system: undefined },
+    agent: input.prefix.agent,
+    permission: input.prefix.permission,
+    nativePermission: input.prefix.nativePermission,
+    sessionID: input.sessionID,
+    // `LLMRequestPrep.prepare` appends the per-message system text after the
+    // recorded system array; the compaction carrier has none of its own.
+    system: [...input.prefix.system, ...(input.prefix.userSystem ? [input.prefix.userSystem] : [])],
+    messages: [
+      ...input.messages,
+      {
+        role: "user",
+        content: [{ type: "text", text: `${SHARED_DIRECTIVE}\n\n${input.prompt}` }],
+      },
+    ],
+    tools: input.prefix.tools,
+    toolChoice: input.prefix.toolChoice,
+    model: input.model,
+    purpose: "compaction",
+    retries: 0,
+    toolPolicy: "refuse",
+    onToolRefused: input.onToolRefused,
+  }
+}
 type Turn = {
   start: number
   end: number
@@ -378,6 +437,26 @@ export const layer = Layer.effect(
       }
     })
 
+    // The shared prefix is usable only while all four guards hold: a snapshot
+    // exists, it belongs to this instance directory, the triggering turn used
+    // the recorded agent, and the recorded model still resolves. Otherwise the
+    // compaction skips the shared request entirely and uses a clean one.
+    const resolveSharedPrefix = Effect.fn("SessionCompaction.sharedPrefix")(function* (input: {
+      sessionID: SessionID
+      directory: string
+      agent: string
+    }) {
+      const prefix = EngineProcess.runtimes.requestPrefixes.get(input.sessionID)
+      if (!prefix) return undefined
+      if (prefix.directory !== input.directory) return undefined
+      if (prefix.agent.name !== input.agent) return undefined
+      const resolved = yield* provider.getModel(prefix.model.providerID, prefix.model.id).pipe(Effect.exit)
+      if (Exit.isFailure(resolved)) return undefined
+      if (resolved.value.providerID !== prefix.model.providerID || resolved.value.id !== prefix.model.id)
+        return undefined
+      return { prefix, model: resolved.value }
+    })
+
     const processCompaction = Effect.fn("SessionCompaction.process")(function* (input: {
       parentID: MessageID
       messages: SessionV1.WithParts[]
@@ -482,13 +561,8 @@ export const layer = Layer.effect(
       const agentModel = agent.model
         ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
         : undefined
-      const models = [smallModel, agentModel, conversationModel].filter(
-        (candidate, index, all): candidate is Provider.Model =>
-          candidate !== undefined &&
-          all.findIndex((item) => item?.id === candidate.id && item.providerID === candidate.providerID) === index,
-      )
-      const model = models[0]
       const cfg = yield* config.get()
+      const mode = cfg.compaction?.mode ?? "small"
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
@@ -496,6 +570,42 @@ export const layer = Layer.effect(
       const filteredHistory = history.filter((_, index) => !hidden.has(index))
       const nextPrompt = buildPrompt({ previousSummary, context: memoryContext })
       const ctx = yield* InstanceState.context
+      // Clean candidates keep the legacy preference order. A duplicated model
+      // is tried once, under its earliest role.
+      const clean: SessionCompactionModel.CleanCandidate<Provider.Model>[] = []
+      for (const [kind, candidate] of [
+        ["small", smallModel],
+        ["agent", agentModel],
+        ["conversation", conversationModel],
+      ] as const) {
+        if (!candidate) continue
+        if (clean.some((entry) => entry.model.providerID === candidate.providerID && entry.model.id === candidate.id))
+          continue
+        clean.push({ model: candidate, kind })
+      }
+      const model = clean[0].model
+      const shared =
+        mode === "small"
+          ? undefined
+          : yield* resolveSharedPrefix({
+              sessionID: input.sessionID,
+              directory: ctx.directory,
+              agent: userMessage.agent,
+            })
+      const promptTokens =
+        mode === "small" ? 0 : yield* estimate({ messages: filteredHistory, model: conversationModel })
+      // `small` never enters the cost selector; it keeps the pre-PR ladder
+      // exactly. `shared` puts the shared attempt first; `auto` prices both.
+      const plan: SessionCompactionModel.PlanEntry<Provider.Model>[] =
+        mode === "small"
+          ? clean.map((entry) => ({ ...entry, shared: false, estimatedCost: 0 }))
+          : SessionCompactionModel.chooseCompactionModel({
+              mode,
+              clean,
+              shared: shared && { model: shared.model, prefixTokens: shared.prefix.prefixTokens },
+              promptTokens,
+              warm: !input.overflow,
+            })
       const template = {
         id: MessageID.ascending(),
         role: "assistant",
@@ -528,7 +638,8 @@ export const layer = Layer.effect(
       let result: SessionProcessor.Result
       let selected: { head: SessionV1.WithParts[]; tail_start_id: MessageID | undefined }
       while (true) {
-        const candidate = models[attempt]
+        const entry = plan[attempt]
+        const candidate = entry.model
         selected = yield* select({ messages: filteredHistory, cfg, model: candidate, conversationModel })
         const msgs = structuredClone(selected.head)
         msg = {
@@ -540,31 +651,69 @@ export const layer = Layer.effect(
         }
         yield* session.updateMessage(msg)
         processor = yield* processors.create({ assistantMessage: msg, sessionID: input.sessionID, model: candidate })
-        const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, candidate, {
-          stripMedia: true,
-          toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-          reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
-          stripOpaqueReasoning: true,
-        })
-        result = yield* processor.process({
-          user: userMessage,
-          agent,
-          sessionID: input.sessionID,
-          tools: {},
-          system: [],
-          messages: [
-            ...modelMessages,
-            {
-              role: "user",
-              content: [{ type: "text", text: nextPrompt }],
-            },
-          ],
-          model: candidate,
-          purpose: "compaction",
-          retries: 0,
-        })
-        if (result !== "timeout" && result !== "compact") break
-        if (attempt + 1 >= models.length) {
+        // The shared request must convert history exactly like the main
+        // request so the provider sees the same prefix. A clean request keeps
+        // its size-reducing options.
+        const modelMessages = yield* MessageV2.toModelMessagesEffect(
+          msgs,
+          candidate,
+          entry.shared
+            ? { reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate) }
+            : {
+                stripMedia: true,
+                toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+                reasoningDistillationEnabled: reasoningDistillationEnabled(cfg, candidate),
+                stripOpaqueReasoning: true,
+              },
+        )
+        let refused = false
+        result = yield* processor.process(
+          entry.shared && shared
+            ? sharedCompactionInput({
+                prefix: shared.prefix,
+                user: userMessage,
+                sessionID: input.sessionID,
+                model: candidate,
+                messages: modelMessages,
+                prompt: nextPrompt,
+                onToolRefused: () => {
+                  refused = true
+                },
+              })
+            : {
+                user: userMessage,
+                agent,
+                sessionID: input.sessionID,
+                tools: {},
+                system: [],
+                messages: [
+                  ...modelMessages,
+                  {
+                    role: "user",
+                    content: [{ type: "text", text: nextPrompt }],
+                  },
+                ],
+                model: candidate,
+                purpose: "compaction",
+                retries: 0,
+              },
+        )
+        // A refused tool call invalidates the shared attempt even when the
+        // stream finished normally: its summary must never be persisted.
+        const failed = result === "timeout" || result === "compact" || refused
+        if (!failed) break
+        if (attempt + 1 >= plan.length) {
+          if (refused) {
+            yield* session.removeMessage({ sessionID: input.sessionID, messageID: msg.id })
+            yield* events.publish(Session.Event.Error, {
+              sessionID: input.sessionID,
+              error: new NamedError.Unknown({
+                message: "Compaction shared request attempted a tool call",
+              }).toObject(),
+            })
+            yield* status.set(input.sessionID, { type: "idle" })
+            return "stop"
+          }
           if (result === "timeout") {
             if (processor.message.error)
               yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: processor.message.error })
@@ -576,10 +725,11 @@ export const layer = Layer.effect(
         // Failed/partial summaries must never become future compaction input.
         yield* session.removeMessage({ sessionID: input.sessionID, messageID: msg.id })
         attempt++
+        const reason = refused ? "attempted a tool call" : result === "timeout" ? "timed out" : "exceeded context"
         yield* status.set(input.sessionID, {
           type: "retry",
           attempt,
-          message: `Compaction ${result === "timeout" ? "timed out" : "exceeded context"}; switching to ${models[attempt].providerID}/${models[attempt].id}`,
+          message: `Compaction ${reason}; switching to ${plan[attempt].model.providerID}/${plan[attempt].model.id}`,
           next: Date.now(),
         })
       }
@@ -692,6 +842,9 @@ export const layer = Layer.effect(
 
       if (processor.message.error) return "stop"
       if (result === "continue") {
+        // The committed summary replaces the context the prefix was recorded
+        // for; the next conversation request records a fresh one.
+        EngineProcess.runtimes.forgetRequestPrefix(input.sessionID)
         yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
         // The committed summary drops earlier context; the next system prompt reloads instruction files.
         if (instruction) yield* instruction.markCompacted(input.sessionID)

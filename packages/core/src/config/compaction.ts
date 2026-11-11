@@ -13,6 +13,7 @@ export class Info extends Schema.Class<Info>("ConfigV2.Compaction")({
   prune: Schema.Boolean.pipe(Schema.optional),
   keep: Keep.pipe(Schema.optional),
   buffer: NonNegativeInt.pipe(Schema.optional),
+  mode: Schema.Literals(["small", "shared", "auto"]).pipe(Schema.optional),
 }) {}
 
 export type DynamicSource = "environment" | "dynamic" | "prune" | "default"

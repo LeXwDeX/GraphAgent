@@ -1671,6 +1671,13 @@ export function makePrepare(deps: PrepareDeps) {
     else runtimeContextBySession.delete(sessionID)
     processInput.messages.splice(0, modelMsgs.length, ...TodoReminders.append(runtime.messages, todoReminder))
     processInput.system.push(...runtime.unplaced)
+    // The cached fragment is only valid for the resolved tool set; the
+    // structured-output tool is added afterwards, so that request
+    // re-serializes instead of reusing a stale fragment (Issue #1022, PR5).
+    const toolsJson =
+      legacyToolsDisabled || lastUser.format?.type === "json_schema"
+        ? undefined
+        : SessionTools.serializedFragment(processInput.tools)
     // Record what this request carries besides its messages. The next limit check runs before the
     // next request is prepared, when system text and tool schemas are not available yet.
     requestOverheadBySession.set(
@@ -1678,15 +1685,33 @@ export function makePrepare(deps: PrepareDeps) {
       estimateOverhead({
         system: [...processInput.system, ...runtime.ledger.map((entry) => entry.content)],
         tools: processInput.tools,
-        // The cached fragment is only valid for the resolved tool set; the
-        // structured-output tool is added afterwards, so that request
-        // re-serializes instead of reusing a stale fragment (Issue #1022, PR5).
-        toolsJson:
-          legacyToolsDisabled || lastUser.format?.type === "json_schema"
-            ? undefined
-            : SessionTools.serializedFragment(processInput.tools),
+        toolsJson,
       }),
     )
+    // Compaction may reuse exactly this system text and tool set so provider
+    // prefix caching serves most of its request (Issue #1028, PR5). Structured
+    // turns and the closing policy reshape the request, so they record nothing.
+    if ((finalPolicy === "normal" || finalPolicy === "terminal") && lastUser.format?.type !== "json_schema") {
+      const prefixSystem = [...processInput.system]
+      EngineProcess.runtimes.rememberRequestPrefix(sessionID, {
+        directory: ctx.directory,
+        agent,
+        model: { providerID: model.providerID, id: model.id },
+        system: prefixSystem,
+        userSystem: lastUser.system,
+        tools: processInput.tools,
+        toolsJson,
+        toolChoice: processInput.toolChoice,
+        permission: session.permission,
+        nativePermission,
+        prefixTokens: estimateOverhead({
+          system: [...prefixSystem, ...(lastUser.system ? [lastUser.system] : [])],
+          tools: processInput.tools,
+          toolsJson,
+        }),
+        recordedAt: Date.now(),
+      })
+    }
     return { processInput }
   })
 
