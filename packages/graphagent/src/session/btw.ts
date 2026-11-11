@@ -12,12 +12,14 @@ import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import { Provider } from "@/provider/provider"
 import { NotFoundError } from "@/storage/storage"
-import { Cause, Context, Deferred, Duration, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { Cause, Context, DateTime, Deferred, Duration, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { InstanceState } from "@/effect/instance-state"
 import { randomUUID } from "node:crypto"
 import { DEFAULT_MAX_CONTEXT_TOKENS, selectBtwContext } from "./btw-context"
 import { LLM } from "./llm"
 import { MessageID, SessionID } from "./schema"
 import { Session } from "./session"
+import { RuntimeSlots } from "./runtime-slots"
 import { SystemPrompt } from "./system"
 import BTW_PROMPT from "./prompt/btw.txt"
 
@@ -248,7 +250,15 @@ export const layer = (options: LayerOptions = {}) =>
 
         const language = yield* systemPrompt.language(cfg.language)
         const environment = (yield* systemPrompt.environment(model))[0]
-        const system = environment === undefined ? language : [...language, environment]
+        // A side question is a one-shot request: it has no cache prefix to
+        // protect, so the directory and date stay in its system text. The main
+        // loop carries them in runtime-context slots instead.
+        const ctx = yield* InstanceState.context
+        const slots = [
+          RuntimeSlots.environment({ directory: ctx.directory, root: ctx.root, git: ctx.project.vcs === "git" }),
+          RuntimeSlots.date(yield* DateTime.nowAsDate),
+        ].flatMap((slot) => slot.parts)
+        const system = [...language, ...(environment === undefined ? [] : [environment]), ...slots]
 
         const id = input.id ?? randomUUID()
         const btwSessionID = SessionID.descending()
