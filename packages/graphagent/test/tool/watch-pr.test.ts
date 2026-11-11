@@ -592,6 +592,12 @@ describe("watch_pr notice and tool", () => {
         running.push(info)
         return info
       }),
+    beginSettling: (id) =>
+      Effect.sync(() => {
+        const info = running.find((job) => job.id === id)
+        if (info?.status === "running") info.status = "settling"
+        return info
+      }),
   })
   const reset = () => {
     started.length = 0
@@ -694,6 +700,7 @@ describe("watch_pr notice and tool", () => {
       const tool = yield* (yield* WatchPrTool).init()
       let rewatching = false
       let secondOutput: string | undefined
+      let deliveryStatus: string | undefined
       yield* tool.execute({ url: githubRequest.url, deadline_seconds: 10, poll_seconds: 5 }, {
         ...summary,
         extra: {
@@ -705,6 +712,7 @@ describe("watch_pr notice and tool", () => {
                   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
                   return {} as unknown as SessionV1.WithParts
                 }
+                deliveryStatus = running.find((job) => job.id === "job_test")?.status
                 rewatching = true
                 const again = yield* tool.execute({ url: githubRequest.url }, {
                   ...summary,
@@ -722,15 +730,15 @@ describe("watch_pr notice and tool", () => {
         },
       } as Tool.Context)
       expect(started).toHaveLength(1)
-      // The first job's terminal notice is being delivered while the registry
-      // still reports it as running; the finishing marker must let the
-      // re-watch start a replacement instead of being deduplicated away.
+      // The first job is settling while its terminal notice is delivered; the
+      // re-watch must start a replacement instead of being deduplicated away.
       const run = started[0]?.run
       if (!run) throw new Error("expected a started job")
       const fiber = yield* Effect.forkChild(run)
       yield* TestClock.adjust(Duration.seconds(11))
       yield* Fiber.join(fiber)
       expect(rewatching).toBe(true)
+      expect(deliveryStatus).toBe("settling")
       expect(started).toHaveLength(2)
       expect(secondOutput).toContain("job_test")
     }).pipe(Effect.provide(TestClock.layer())),
