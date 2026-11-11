@@ -99,7 +99,7 @@ Provide only merge-suggestion text for `AGENTS.md`. Append it after the user con
 - Do not write `.gitignore` or `package.json`.
 - When the resolved root is `$HOME`, refuse every project target (`<root>/.agents/...`) with a clear error; only user-level targets are allowed.
 - Original Claude files, scripts, and skills stay unchanged. Never write `~/.claude/`, and do not recommend deleting `.claude/`.
-- Hooks execute without a trust-list prerequisite in this runtime; the conversion does not mark anything as verified.
+- Project-layer entries written by this import stay pending until the user confirms them in the trust review (`/trust`); the conversion itself never marks anything as trusted, and entries the user declines stay disabled.
 
 ## 5. Report
 
@@ -118,7 +118,7 @@ Import result
 - Original Claude files unchanged
 ```
 
-After writing, the `hooks.json` chain loads the entries. The Active Hooks block produced by `summarizeChain` proves only that configuration loaded, not that behavior matches Claude Code. Trigger a real operation for each important hook and inspect its input and output before claiming the conversion is complete.
+After the user confirms the new entries, the `hooks.json` chain loads them. The Active Hooks block produced by `summarizeChain` proves only that configuration loaded, not that behavior matches Claude Code. Trigger a real operation for each important hook and inspect its input and output before claiming the conversion is complete.
 
 ## Hooks.json format reference
 

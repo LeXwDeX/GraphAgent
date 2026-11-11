@@ -32,6 +32,7 @@ import { createStore, produce, reconcile } from "solid-js/store"
 import { createEventGate } from "./event-gate"
 import { createInterestAggregator } from "./interest"
 import { createStreamBuffer } from "./stream-buffer"
+import { importedEntryIds, snapshotTrust, type TrustSnapshot } from "./trust-import"
 import {
   createSummary,
   HYDRATED_MAX,
@@ -51,7 +52,7 @@ import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, createMemo, onCleanup, onMount } from "solid-js"
+import { batch, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { TuiLog } from "../util/log"
@@ -721,7 +722,9 @@ export const {
         }
 
         case "session.status": {
-          setStore("session_status", event.properties.sessionID, event.properties.status)
+          const { sessionID, status } = event.properties
+          setStore("session_status", sessionID, status)
+          if (status.type === "idle") void finishTrustImport(sessionID)
           break
         }
 
@@ -1075,6 +1078,25 @@ export const {
         .catch(() => {})
     }
 
+    // #1223: `/import-claude` writes project entries that stay pending until
+    // the user confirms them. The snapshot is taken when the command's message
+    // is accepted and the diff is computed from the server-scanned entries
+    // once the turn goes idle, so the model's report never decides trust.
+    const pendingTrustImports = new Map<string, TrustSnapshot>()
+    const [trustImportReview, setTrustImportReview] = createSignal<{ sessionID: string; ids: string[] }>()
+    const beginTrustImport = async (sessionID: string) => {
+      if (!store.trust_loaded) await refreshTrust()
+      pendingTrustImports.set(sessionID, snapshotTrust(store.trust))
+    }
+    const finishTrustImport = async (sessionID: string) => {
+      const before = pendingTrustImports.get(sessionID)
+      if (!before) return
+      pendingTrustImports.delete(sessionID)
+      await refreshTrust()
+      const ids = importedEntryIds(before, store.trust)
+      if (ids.length > 0) setTrustImportReview({ sessionID, ids })
+    }
+
     // #886 5.6: the single reconnect entry point. Features register their own
     // refresh functions here instead of subscribing to `reconnected`.
     function onResync(fn: () => void | Promise<void>) {
@@ -1301,6 +1323,15 @@ export const {
       /** #1040: project-layer trust entries and decisions. */
       trust: {
         refresh: refreshTrust,
+        /** #1223: remember the pre-import snapshot; the idle transition diffs it. */
+        beginImport: beginTrustImport,
+        /** Entries the latest import created or rewrote, awaiting a decision. */
+        get importedReview() {
+          return trustImportReview()
+        },
+        clearImportedReview() {
+          setTrustImportReview(undefined)
+        },
         async decide(decisions: readonly ProjectTrustDecision[]) {
           const workspace = project.workspace.current()
           const response = await sdk.client.project.trust.decide(
