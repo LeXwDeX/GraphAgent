@@ -1,6 +1,6 @@
 import { HookTranscript, type Message } from "@/hook/transcript"
 import { promptIdentity } from "@/hook/prompt-identity"
-import { Effect, Fiber, Semaphore, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Option, Semaphore, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -9,6 +9,9 @@ import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
 import { Language, type Node } from "web-tree-sitter"
+import { BackgroundJob } from "@/background/job"
+import { Identifier } from "@graphagent/core/id/id"
+import type { TaskPromptOps } from "./task"
 
 import { FSUtil } from "@graphagent/core/fs-util"
 import { fileURLToPath } from "url"
@@ -32,6 +35,18 @@ const DEFAULT_SILENCE_WARN_MS = 5 * 60 * 1000
 
 const shellSilenceNote = (ms: number) =>
   `shell tool emitted an inactivity warning after ${ms} ms without output; the command was left running. If this command is expected to stay silent, pass expectedSilent: true to opt out.`
+
+/**
+ * Structural guard for the prompt capability carried in `ctx.extra`. Kept as a
+ * type predicate so the tools never narrow `unknown` with an assertion.
+ */
+function isTaskPromptOps(value: unknown): value is TaskPromptOps {
+  if (typeof value !== "object" || value === null) return false
+  if (!("cancel" in value) || typeof value.cancel !== "function") return false
+  if (!("resolvePromptParts" in value) || typeof value.resolvePromptParts !== "function") return false
+  if (!("prompt" in value) || typeof value.prompt !== "function") return false
+  return true
+}
 
 const MAX_METADATA_LENGTH = 30_000
 const METADATA_INTERVAL_MS = 200
@@ -411,6 +426,7 @@ export const ShellTool = Tool.define(
     const fs = yield* FSUtil.Service
     const trunc = yield* Truncate.Service
     const flags = yield* RuntimeFlags.Service
+    const background = yield* BackgroundJob.Service
     const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
     const silenceWarnMs = flags.bashSilenceWarnMs ?? DEFAULT_SILENCE_WARN_MS
 
@@ -493,25 +509,75 @@ export const ShellTool = Tool.define(
       return effort ? { ...env, CLAUDE_EFFORT: effort } : env
     })
 
+    // A goal waiting on this background job registers its job id. Wake only
+    // that wait; see watch_pr for the evaluate semantics.
+    const wakeJob = (
+      ctx: Tool.Context,
+      jobID: string,
+      payload: string,
+      evaluate: boolean,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
+        const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
+        if (!loops) return
+        yield* loops.wake(ctx.sessionID, { source: "background_job", ids: [jobID] }, payload, { evaluate })
+      }).pipe(Effect.ignore)
+
+    const notifyBackground = Effect.fn("ShellTool.notifyBackground")(function* (
+      input: {
+        jobID: string
+        payload: string
+        output: string
+        logPath: string
+      },
+      ctx: Tool.Context,
+    ) {
+      yield* wakeJob(ctx, input.jobID, input.payload, false)
+      const ops = ctx.extra?.promptOps
+      if (!isTaskPromptOps(ops)) return
+      yield* ops
+        .prompt(
+          {
+            sessionID: ctx.sessionID,
+            agent: ctx.agent,
+            parts: [
+              {
+                type: "text",
+                synthetic: true,
+                text: `${input.payload}\njob: ${input.jobID}\nlog: ${input.logPath}\n\n${input.output}`,
+              },
+            ],
+          },
+          { continueToolBudget: true },
+        )
+        .pipe(Effect.ignore)
+    })
+
     const run = Effect.fn("ShellTool.run")(function* (
       input: {
         shell: string
         command: string
         cwd: string
         env: NodeJS.ProcessEnv
-        timeout: number
+        /** `undefined` means no timeout (background jobs without an explicit bound). */
+        timeout: number | undefined
         expectedSilent: boolean
+        /** Present only for a background job: the id to wake and the log file to append. */
+        background?: { jobID: string; logPath: string }
       },
       ctx: Tool.Context,
     ) {
+      const background = input.background
       const limits = yield* trunc.limits()
       const keep = limits.maxBytes * 2
       let full = ""
       let last = ""
       const list: Chunk[] = []
       let used = 0
-      let file = ""
-      let sink: ReturnType<typeof createWriteStream> | undefined
+      let file = background?.logPath ?? ""
+      let sink: ReturnType<typeof createWriteStream> | undefined =
+        file === "" ? undefined : createWriteStream(file, { flags: "a" })
       let cut = false
       let headPartial = false
       // Bytes in the most recently completed line and in the trailing line
@@ -564,8 +630,11 @@ export const ShellTool = Tool.define(
       let published = 0
       let pending = false
       let settled = ""
-      const emit = (output?: string) =>
-        publishLock.withPermits(1)(
+      const emit = (output?: string) => {
+        // A background job outlives the tool call: its result is delivered as a
+        // notice instead of streaming into a tool part that no longer exists.
+        if (background) return Effect.void
+        return publishLock.withPermits(1)(
           Effect.suspend(() => {
             pending = false
             published = Date.now()
@@ -575,19 +644,23 @@ export const ShellTool = Tool.define(
             return ctx.metadata({ metadata: { output: text } })
           }),
         )
+      }
       const streamPreview = Effect.suspend(() => {
+        if (background) return Effect.void
         settled = last
         if (Date.now() - published >= METADATA_INTERVAL_MS) return emit()
         pending = true
         return Effect.void
       })
-      const flushPreview = Effect.suspend(() => (pending ? emit() : Effect.void))
+      const flushPreview = Effect.suspend(() => (background || !pending ? Effect.void : emit()))
 
-      yield* ctx.metadata({
-        metadata: {
-          output: "",
-        },
-      })
+      if (!background) {
+        yield* ctx.metadata({
+          metadata: {
+            output: "",
+          },
+        })
+      }
 
       const code: number | null = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -657,7 +730,7 @@ export const ShellTool = Tool.define(
 
           // Warn-only silence guard: lives on its own fiber and must never
           // join the race below — a silence warning may not change exit.kind.
-          if (!input.expectedSilent) {
+          if (!background && !input.expectedSilent) {
             yield* Effect.forkScoped(
               Effect.forever(
                 Effect.gen(function* () {
@@ -672,14 +745,22 @@ export const ShellTool = Tool.define(
             )
           }
 
-          const abort = Effect.callback<void>((resume) => {
-            if (ctx.abort.aborted) return resume(Effect.void)
-            const handler = () => resume(Effect.void)
-            ctx.abort.addEventListener("abort", handler, { once: true })
-            return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
-          })
+          // A background job must not die with the tool call or a client
+          // interrupt: its lifetime is owned by the BackgroundJob scope and
+          // session cancellation, not by ctx.abort.
+          const abort = background
+            ? Effect.never
+            : Effect.callback<void>((resume) => {
+                if (ctx.abort.aborted) return resume(Effect.void)
+                const handler = () => resume(Effect.void)
+                ctx.abort.addEventListener("abort", handler, { once: true })
+                return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
+              })
 
-          const timeout = Effect.sleep(`${input.timeout + 100} millis`)
+          // Background jobs have no default bound; an explicit timeout still
+          // applies as a hard cap on how long the job may run.
+          const timeout =
+            input.timeout === undefined ? Effect.never : Effect.sleep(`${input.timeout + 100} millis`)
 
           const exit = yield* Effect.raceAll([
             handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
@@ -770,10 +851,21 @@ export const ShellTool = Tool.define(
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
+      if (background) {
+        const payload = expired
+          ? `Background shell timed out after ${input.timeout} ms: ${input.command}`
+          : code === null
+            ? `Background shell ended without an exit code: ${input.command}`
+            : code === 0
+              ? `Background shell completed: ${input.command}`
+              : `Background shell failed (exit ${code}): ${input.command}`
+        yield* notifyBackground({ jobID: background.jobID, payload, output, logPath: file }, ctx)
+      }
       // A nonzero exit is a completed command whose output the model still
       // needs, so it stays a normal result. The hook-facing failure is carried
-      // separately; the dispatcher turns it into PostToolUseFailure.
-      const hookFailure = code !== null && code !== 0 ? `Exit code ${code}\n\n${output}` : undefined
+      // separately; the dispatcher turns it into PostToolUseFailure. A
+      // background job has no synchronous tool result to attach hooks to.
+      const hookFailure = !background && code !== null && code !== 0 ? `Exit code ${code}\n\n${output}` : undefined
       return {
         title: input.command,
         metadata: {
@@ -809,7 +901,10 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              const timeout = params.timeout ?? defaultTimeoutMs
+              const backgroundMode = params.background === true
+              // Background jobs have no default bound: a host CI or build may
+              // legitimately run for hours. An explicit timeout still caps it.
+              const timeout = params.timeout ?? (backgroundMode ? undefined : defaultTimeoutMs)
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {
@@ -822,12 +917,67 @@ export const ShellTool = Tool.define(
                 }),
               )
 
+              const env = yield* shellEnv(ctx, cwd)
+              if (backgroundMode) {
+                // Without a prompt context the job could run but never deliver
+                // its result or wake a waiting goal, so refuse it up front.
+                const ops = ctx.extra?.promptOps
+                if (!isTaskPromptOps(ops)) {
+                  throw new Error(
+                    "The shell tool's background mode requires a session prompt context (ctx.extra.promptOps).",
+                  )
+                }
+                const logPath = yield* trunc.write("")
+                const jobID = Identifier.ascending("job")
+                const info = yield* background.start({
+                  id: jobID,
+                  type: "bash",
+                  title: params.command,
+                  metadata: { sessionId: ctx.sessionID, command: params.command },
+                  run: run(
+                    {
+                      shell,
+                      command: params.command,
+                      cwd,
+                      env,
+                      timeout,
+                      expectedSilent: params.expectedSilent === true,
+                      background: { jobID, logPath },
+                    },
+                    ctx,
+                  ).pipe(
+                    Effect.map((result) => result.output),
+                    Effect.onInterrupt(() =>
+                      wakeJob(ctx, jobID, `Background shell cancelled: ${params.command}`, true),
+                    ),
+                    Effect.onExit((exit) => {
+                      if (!Exit.isFailure(exit) || Cause.hasInterruptsOnly(exit.cause)) return Effect.void
+                      return wakeJob(ctx, jobID, `Background shell failed: ${params.command}`, true)
+                    }),
+                  ),
+                })
+                return {
+                  title: params.command,
+                  metadata: {
+                    output: "Background shell started",
+                    exit: null,
+                    truncated: false,
+                  },
+                  output: [
+                    `Background shell started: ${params.command}`,
+                    `job: ${info.id}`,
+                    `log: ${logPath}`,
+                    "The command keeps running after this tool call; completion arrives as a result notice.",
+                    `To wait for it, declare goal intent=await with wait_source=background_job and wait_id=${info.id}. Do not poll with a foreground sleep loop.`,
+                  ].join("\n"),
+                }
+              }
               return yield* run(
                 {
                   shell,
                   command: params.command,
                   cwd,
-                  env: yield* shellEnv(ctx, cwd),
+                  env,
                   timeout,
                   expectedSilent: params.expectedSilent === true,
                 },
