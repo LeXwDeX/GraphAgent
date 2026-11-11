@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { SessionAttention } from "./attention"
+import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 /** Non-blocking internal hook delivery. Producers own the business timing and cancellation. */
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Effect, Layer, Context, Option } from "effect"
@@ -58,10 +59,10 @@ export const layer = Layer.effect(
                 (job) =>
                   job.status === "running" &&
                   job.metadata?.background === true &&
-                  job.metadata?.sessionId === input.sessionID,
+                  sessionIDOf(job.metadata) === input.sessionID,
               )
             : undefined
-          const parent = job?.metadata?.parentSessionId
+          const parent = job ? parentSessionIDOf(job.metadata) : undefined
           if (attention && typeof parent === "string" && (yield* attention.viewing(parent))) {
             yield* settingsHook
               .trigger(

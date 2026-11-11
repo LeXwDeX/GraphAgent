@@ -9,6 +9,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Database } from "@graphagent/core/database/database"
 import { BackgroundJob } from "@/background/job"
+import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { GoalState } from "./state"
 import { GoalOutcomeTable, GoalStateTable } from "@graphagent/core/goal/sql"
@@ -271,12 +272,12 @@ const runningWaitTarget = (sessionID: SessionID) =>
     const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
     if (!background) return undefined
     const jobs = yield* background.list().pipe(Effect.catchCause(() => Effect.succeed([])))
-    // The job's sessionId is the child session for a background task; the
-    // caller is recorded as parentSessionId, so accept either as ownership.
+    // The job's sessionID is the child session for a background task; the
+    // caller is recorded as parentSessionID, so accept either as ownership.
     const owned = jobs.filter(
       (job) =>
         job.status === "running" &&
-        (job.metadata?.sessionId === sessionID || job.metadata?.parentSessionId === sessionID),
+        (sessionIDOf(job.metadata) === sessionID || parentSessionIDOf(job.metadata) === sessionID),
     )
     const newestFirst = (values: ReadonlyArray<BackgroundJob.Info>) =>
       [...values].toSorted((a, b) => b.started_at - a.started_at)

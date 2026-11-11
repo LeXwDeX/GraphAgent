@@ -624,7 +624,7 @@ describe("watch_pr notice and tool", () => {
       expect(result.metadata).toMatchObject({ jobId: "job_test", provider: "github" })
       expect(started).toHaveLength(1)
       expect(started[0]?.metadata).toMatchObject({
-        sessionId: "ses_watch_pr",
+        sessionID: "ses_watch_pr",
         url: "https://github.com/acme/widgets/pull/42",
         provider: "github",
         survivesSessionCancel: true,
@@ -641,7 +641,7 @@ describe("watch_pr notice and tool", () => {
         type: "watch_pr",
         status: "running",
         started_at: 0,
-        metadata: { sessionId: summary.sessionID, url: githubRequest.url, provider: "github", head: "aaa", deadlineAt },
+        metadata: { sessionID: summary.sessionID, url: githubRequest.url, provider: "github", head: "aaa", deadlineAt },
       })
       const tool = yield* (yield* WatchPrTool).init()
       const result = yield* tool.execute({ url: githubRequest.url }, {
@@ -670,7 +670,7 @@ describe("watch_pr notice and tool", () => {
         status: "running",
         started_at: 0,
         metadata: {
-          sessionId: summary.sessionID,
+          sessionID: summary.sessionID,
           url: githubRequest.url,
           provider: "github",
           head: "aaa",

@@ -18,25 +18,25 @@ describe("background.cancel", () => {
       yield* jobs.start({
         id: "cancel-root",
         type: "test",
-        metadata: { sessionId: sessionID },
+        metadata: { sessionID: sessionID },
         run: Effect.never,
       })
       yield* jobs.start({
         id: "cancel-child",
         type: "test",
-        metadata: { sessionId: "cancel-root" },
+        metadata: { sessionID: "cancel-root" },
         run: Effect.never,
       })
       yield* jobs.start({
         id: "cancel-survivor",
         type: "test",
-        metadata: { sessionId: sessionID, survivesSessionCancel: true },
+        metadata: { sessionID: sessionID, survivesSessionCancel: true },
         run: Effect.never,
       })
       yield* jobs.start({
         id: "cancel-other",
         type: "test",
-        metadata: { sessionId: "elsewhere" },
+        metadata: { sessionID: "elsewhere" },
         run: Effect.never,
       })
 
@@ -56,7 +56,7 @@ describe("background.cancel", () => {
       yield* jobs.start({
         id: "coordinated",
         type: "test",
-        metadata: { sessionId: sessionID },
+        metadata: { sessionID: sessionID },
         run: Effect.never,
       })
 
