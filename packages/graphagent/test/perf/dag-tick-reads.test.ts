@@ -13,7 +13,7 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
-import { DagDelivery } from "@/dag/runtime/delivery"
+import { DagDelivery, PAUSED_REMINDER_DELAY_MS } from "@/dag/runtime/delivery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionID } from "@/session/schema"
 import { countingDatabaseLayer, reset, settle, snapshot } from "../lib/engine-probe"
@@ -21,11 +21,13 @@ import { testEffect } from "../lib/effect"
 
 // H0 read budget for the DAG inbox tick (Issue #1021). `scanSessions` is the
 // periodic store scan behind `dag.delivery`; every other trigger is event
-// driven. The tick must read the wake ledger once (the UNION), pay at most one
-// ownership read per returned wake session, and read the mailbox ledger once.
-// Paused reminders belong to the dedicated 30s sweep and must not leak into
-// this budget. The probe counts the production SQL client, so these numbers
-// are the queries the store actually issues, not an assumed shape.
+// driven. The tick reads the wake ledger once (the UNION), the paused
+// workflow ledger once, and the mailbox ledger once, and pays at most one
+// ownership read per returned wake or due paused session. Due paused
+// reminders are part of this tick (#1027 D5): the inbox 30s timer is now
+// their only periodic driver. The probe counts the production SQL client, so
+// these numbers are the queries the store actually issues, not an assumed
+// shape.
 //
 // Metric scope: `sql.read` verifies the tick's read budget; `sql.write === 0`
 // is the hard no-write invariant; `commits === 1` merely reflects the
@@ -134,8 +136,10 @@ function seedWake(input: { sessionID: string; workflowID: string; directory: str
   })
 }
 
-/** A paused workflow whose reminder is due. The 30s sweep owns it, so the tick
- * must not return its session. */
+/** A paused workflow whose reminder is already due. The tick owns the
+ * reminder now, so it must read the paused ledger, see this row as due, pay
+ * one ownership read, and return the session. TestClock starts at 0, so the
+ * row's `time_updated` must be further back than the reminder delay. */
 function seedPausedWorkflow() {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
@@ -152,17 +156,19 @@ function seedPausedWorkflow() {
         seq: 1,
         config: "{}",
         wake_reported: false,
-        time_updated: 0,
+        time_updated: -(PAUSED_REMINDER_DELAY_MS + 1),
       })
       .run()
       .pipe(Effect.orDie)
   })
 }
 
-/** Build the delivery instance inside its own scope and close it immediately:
- * the 250ms mailbox poll and the 30s paused sweep are transitional fallbacks
- * whose fibers stop with that scope. Only the explicit `scanSessions` call
- * below is measured. */
+/** Build the delivery instance inside its own scope and close it immediately.
+ * Construction runs the one-off startup scan (mailbox sweep + paused
+ * reminders) and subscribes to the mailbox change stream for the scope's
+ * lifetime; the scope ends right away, and `settle()` + `reset()` drop those
+ * construction reads. Only the explicit `scanSessions` call below is
+ * measured. */
 const deliveryEffect = Effect.gen(function* () {
   const scope = yield* Scope.Scope
   return yield* DagDelivery.make({
@@ -199,12 +205,12 @@ const measure = (seed: Effect.Effect<void, never, Database.Service> = Effect.voi
     return { sessions, counts: snapshot() }
   }).pipe(Effect.provideService(InstanceRef, instanceRef))
 
-it.effect("the DAG tick reads the two ledgers and writes nothing", () =>
+it.effect("the DAG tick reads the wake, paused, and mailbox ledgers and writes nothing", () =>
   Effect.gen(function* () {
     const { sessions, counts } = yield* measure()
     expect(sessions).toEqual([])
-    // Wake UNION (1) + mailbox recipients (1).
-    expect(counts["sql.read"]).toBe(2)
+    // Wake UNION (1) + paused workflows (1) + mailbox recipients (1).
+    expect(counts["sql.read"]).toBe(3)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
@@ -216,8 +222,9 @@ it.effect("an unreported in-directory wake adds one ownership read and is return
       seedWake({ sessionID: WAKE_SESSION_ID, workflowID: "dag_tick_wake", directory: DIRECTORY }),
     )
     expect(sessions).toEqual([WAKE_SESSION_ID])
-    // Wake UNION (1) + DagLocation.ownsSession (1) + mailbox recipients (1).
-    expect(counts["sql.read"]).toBe(3)
+    // Wake UNION (1) + DagLocation.ownsSession (1) + paused workflows (1) +
+    // mailbox recipients (1).
+    expect(counts["sql.read"]).toBe(4)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
@@ -229,18 +236,19 @@ it.effect("a wake owned by another directory is read but not returned", () =>
       seedWake({ sessionID: WAKE_SESSION_ID, workflowID: "dag_tick_wake", directory: OTHER_DIRECTORY }),
     )
     expect(sessions).toEqual([])
-    expect(counts["sql.read"]).toBe(3)
+    // Wake UNION (1) + ownsSession (1) + paused workflows (1) + mailbox (1).
+    expect(counts["sql.read"]).toBe(4)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
 )
 
-it.effect("a paused session stays out of the tick", () =>
+it.effect("a due paused reminder is returned by the tick and pays one ownership read", () =>
   Effect.gen(function* () {
     const { sessions, counts } = yield* measure(seedPausedWorkflow())
-    expect(sessions).toEqual([])
-    // The paused row matches neither wake arm; the sweep owns the reminder.
-    expect(counts["sql.read"]).toBe(2)
+    expect(sessions).toEqual([SESSION_ID])
+    // Wake UNION (1) + paused workflows (1) + ownsSession (1) + mailbox (1).
+    expect(counts["sql.read"]).toBe(4)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
