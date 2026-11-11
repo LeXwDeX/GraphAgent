@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import { DateTime, Effect } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { RuntimeSlots } from "../../src/session/runtime-slots"
+import { makeSessionRuntimes } from "../../src/session/runtime"
 import { SessionID } from "../../src/session/schema"
 import { it } from "../lib/effect"
 
@@ -89,5 +90,12 @@ describe("RuntimeSlots.Slots", () => {
     slots.set(sessionID, "dag_mode", { parts: ["on"], cleared: "off" })
     slots.forget(sessionID)
     expect(slots.list(sessionID)).toEqual([])
+  })
+
+  test("a session disposal drops its slots through SessionRuntimes", async () => {
+    const runtimes = makeSessionRuntimes()
+    runtimes.runtimeSlots.set(sessionID, "dag_mode", { parts: ["on"], cleared: "off" })
+    await Effect.runPromise(runtimes.remove(sessionID))
+    expect(runtimes.runtimeSlots.list(sessionID)).toEqual([])
   })
 })
