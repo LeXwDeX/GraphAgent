@@ -363,9 +363,6 @@ function normalizeMessages(
 }
 
 function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
-  const system = msgs.filter((msg) => msg.role === "system").slice(0, 2)
-  const final = msgs.filter((msg) => msg.role !== "system").slice(-2)
-
   const providerOptions = {
     anthropic: {
       cacheControl: { type: "ephemeral" },
@@ -399,10 +396,8 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
     return isRecord(local) && local.cache === "none"
   }
 
-  // An ephemeral part can live outside the last two messages (for example the
-  // user turn of a tool-call continuation). That message still needs an
-  // explicit breakpoint on its persisted part, because a later breakpoint
-  // would cache the ephemeral tail too. Providers cap breakpoints at four.
+  // A synthetic attachment is request-only, so neither it nor the tool result
+  // merged into it may carry a breakpoint.
   const syntheticAttachment = (msg: ModelMessage) => {
     if (!Array.isArray(msg.content)) return false
     return msg.content.some((part) => {
@@ -416,7 +411,14 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
     const local = isRecord(options?.[METADATA_NAMESPACE]) ? options[METADATA_NAMESPACE] : undefined
     return local?.cache === "none"
   }
-  const ephemeralMessages = msgs.filter((msg) => Array.isArray(msg.content) && msg.content.some(ephemeral))
+  // Anthropic rejects `cache_control` on thinking blocks, so a breakpoint must
+  // anchor the last non-reasoning part. A message-level marker on a message
+  // whose last block is reasoning is dropped by the SDK, so those messages take
+  // the part-level path instead.
+  const reasoning = (part: unknown) =>
+    typeof part === "object" && part !== null && "type" in part && (part as { type?: unknown }).type === "reasoning"
+  const hasStablePart = (msg: ModelMessage) =>
+    !Array.isArray(msg.content) || msg.content.some((part) => !ephemeral(part) && !reasoning(part))
   // A tool result directly before a synthetic attachment is merged into that
   // user message by Anthropic/Bedrock. A breakpoint there would land on the
   // attachment, so leave the boundary on the preceding persisted user instead.
@@ -426,19 +428,63 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
     const next = msgs[index + 1]
     return index >= 0 && next !== undefined && syntheticAttachment(next)
   }
-  const targets = unique([...system, ...final, ...ephemeralMessages]).filter(
-    (msg) => !uncachedMessage(msg) && !syntheticAttachment(msg) && !mergedIntoSynthetic(msg),
+  const cacheable = (msg: ModelMessage) =>
+    !uncachedMessage(msg) && !syntheticAttachment(msg) && !mergedIntoSynthetic(msg) && hasStablePart(msg)
+  const walkBack = (from: number) => {
+    for (let index = from; index >= 0; index--) {
+      const msg = msgs[index]
+      if (msg && msg.role !== "system" && cacheable(msg)) return msg
+    }
+    return undefined
+  }
+  // Three semantic boundaries, each at most once:
+  // - system_end: the last system message. Anthropic serializes tools before
+  //   system, so this one breakpoint covers both segments.
+  // - previous_request_end: the message that ended the previous request. A tool
+  //   loop appends the newest assistant tool-call and its results before
+  //   rebuilding, so the previous end is the message before the newest
+  //   assistant turn; a new user turn only appends the user message, so its
+  //   previous end is the newest assistant message. applyCaching receives no
+  //   request identity, so this is a structural inference; compaction or
+  //   folding can move the boundary and the walk-back then anchors an earlier
+  //   cacheable message.
+  // - current_end: the newest cacheable message, which becomes the next
+  //   request's hit prefix.
+  const systemEnd = msgs.findLast((msg) => msg.role === "system" && cacheable(msg))
+  const currentEnd = walkBack(msgs.length - 1)
+  const assistantIndex = msgs.findLastIndex((msg) => msg.role === "assistant")
+  const last = msgs[msgs.length - 1]
+  const previousEnd =
+    assistantIndex < 0
+      ? undefined
+      : last && (last.role === "user" || last.role === "assistant")
+        ? walkBack(assistantIndex)
+        : walkBack(assistantIndex - 1)
+  // A request-only part can live outside those boundaries (for example the
+  // todo reminder in the user turn of a long tool loop). Keep a stable
+  // breakpoint on its persisted part so the reminder never enters a cached
+  // prefix; newest first so the four-breakpoint cap keeps the useful tail.
+  const ephemeralMessages = msgs
+    .filter((msg) => Array.isArray(msg.content) && msg.content.some(ephemeral) && cacheable(msg))
+    .reverse()
+  // Providers cap breakpoints at four. Keep the semantic boundaries first so
+  // the system breakpoint is never the one dropped.
+  const targets = unique(
+    [systemEnd, previousEnd, currentEnd, ...ephemeralMessages].filter(
+      (msg): msg is ModelMessage => msg !== undefined,
+    ),
   )
-  for (const msg of targets.length > 4 ? targets.slice(-4) : targets) {
+  for (const msg of targets.slice(0, 4)) {
     const useMessageLevelOptions =
       model.providerID === "anthropic" ||
       model.providerID.includes("bedrock") ||
       model.api.npm === "@ai-sdk/amazon-bedrock"
     const content = Array.isArray(msg.content) ? msg.content : undefined
-    const lastStable = content ? content.findLastIndex((part) => !ephemeral(part)) : -1
+    const lastStable = content ? content.findLastIndex((part) => !ephemeral(part) && !reasoning(part)) : -1
     const hasEphemeral = content ? content.some(ephemeral) : false
+    const unstableTail = content ? content.some((part, index) => index > lastStable && !ephemeral(part)) : false
 
-    if (content && lastStable >= 0 && (hasEphemeral || !useMessageLevelOptions)) {
+    if (content && lastStable >= 0 && (hasEphemeral || !useMessageLevelOptions || unstableTail)) {
       const lastContent = content[lastStable]
       if (
         lastContent &&
@@ -451,7 +497,7 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
       }
     }
 
-    if (hasEphemeral) continue
+    if (hasEphemeral || unstableTail) continue
     msg.providerOptions = mergeDeep(msg.providerOptions ?? {}, providerOptions)
   }
 
