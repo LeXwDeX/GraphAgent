@@ -34,6 +34,7 @@ if (mode === "bare") {
     }).pipe(Effect.provideService(Logger.CurrentLoggers, new Set([...writers, rogue])))
     if (mode === "write-defect-once") yield* Deferred.await(flushed)
     yield* Logging.backgroundDebug("background-second-marker", { source: "fixture" })
+    if (mode === "info") yield* Logging.backgroundInfo("background-info-marker", { source: "fixture" })
   })
   const filesystem =
     mode?.startsWith("write-") || mode?.startsWith("open-") || mode?.startsWith("close-")

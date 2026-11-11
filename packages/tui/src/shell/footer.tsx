@@ -62,7 +62,7 @@ export type FooterProps = {
   agentAction?: string
   /** Right-hand idle hints. Ignored when `right` is present. */
   hints?: readonly FooterHint[]
-  /** Home route directory, MCP count and version. */
+  /** Home route directory, MCP count and version; other routes pass only the trust count. */
   meta?: FooterMeta
   /** DAG mode indicator slot. */
   dag?: JSX.Element
@@ -97,15 +97,17 @@ export function Footer(props: FooterProps) {
 
     const leftWidth = agentWidth + (agent && shownAction ? GAP : 0) + (shownAction ? cellWidth(shownAction, aw) : 0)
 
-    // The shared right slot replaces idle hints and leaves no room for meta.
-    if (props.right)
-      return { agent, action: shownAction, trust: "", trustGap: 0, hints: [] as FooterHint[], meta: "", metaGap: 0, spacer: 0 }
-
+    // The shared right slot replaces idle hints and meta, but the trust warning
+    // stays visible: it is the only footer reminder that project entries await a
+    // decision (#1040), and session routes always mount a right slot.
     const trustText = props.meta?.trust ? t("shell.footer.trust", { count: props.meta.trust }) : ""
     const trustBudget = inner - leftWidth - (leftWidth > 0 ? GAP : 0)
     const trust = trustText && trustBudget > 0 ? truncateCells(trustText, trustBudget, aw) : ""
     const trustWidth = cellWidth(trust, aw)
     const trustGap = leftWidth > 0 && trust ? GAP : 0
+
+    if (props.right)
+      return { agent, action: shownAction, trust, trustGap, hints: [] as FooterHint[], meta: "", metaGap: 0, spacer: 0 }
 
     const rightBudget = inner - leftWidth - trustGap - trustWidth - (leftWidth + trustGap + trustWidth > 0 ? GAP : 0)
 

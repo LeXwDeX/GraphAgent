@@ -720,7 +720,10 @@ export const layer: Layer.Layer<
           const clear = permission.clearHookPolicy(sessionID)
           yield* currentInstance?.directory === session.directory || !instances
             ? clear
-            : instances.provide({ directory: session.directory }, clear)
+            : instances.provide(
+                { directory: session.directory, trustProject: currentInstance?.trustProject === true },
+                clear,
+              )
         }
         if (hasInstance || instances) {
           const [{ SessionAttention }, { SessionStatus }] = yield* Effect.promise(() =>
@@ -737,7 +740,10 @@ export const layer: Layer.Layer<
             // directory context instead of loading it through a closed store.
             yield* currentInstance?.directory === session.directory || !instances
               ? clearAttention
-              : instances.provide({ directory: session.directory }, clearAttention)
+              : instances.provide(
+                  { directory: session.directory, trustProject: currentInstance?.trustProject === true },
+                  clearAttention,
+                )
           }
         }
         if (callSettings?.clearSession) yield* callSettings.clearSession(sessionID)

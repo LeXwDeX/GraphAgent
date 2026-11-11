@@ -266,8 +266,7 @@ export const RunCommand = effectCmd({
       .option("trust-project", {
         type: "boolean",
         describe: "trust every project-layer entry for this run without writing trust.json",
-      })
-      .conflicts("trust-project", "mini"),
+      }),
   handler: Effect.fn("Cli.run")(function* (args) {
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
     const { InstanceRef } = yield* Effect.promise(() => import("@/effect/instance-ref"))
@@ -297,6 +296,12 @@ export const RunCommand = effectCmd({
 
       if (interactive && args.command) {
         die("--mini cannot be used with --command")
+      }
+
+      // yargs' `conflicts` treats the `--mini` default as provided, which would
+      // reject every plain `run --trust-project`; check the resolved values instead.
+      if (interactive && args["trust-project"]) {
+        die("--trust-project cannot be used with --mini")
       }
 
       if (interactive && args._?.[0] !== "mini") {

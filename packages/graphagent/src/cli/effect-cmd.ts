@@ -75,7 +75,7 @@ async function reportSkipped(ctx: InstanceContext) {
   )
   if (skipped.length === 0) return
   await AppRuntime.runPromise(
-    Logging.backgroundDebug("project.trust.skipped", {
+    Logging.backgroundInfo("project.trust.skipped", {
       count: skipped.length,
       ids: skipped.map((entry) => entry.id).join(","),
     }),

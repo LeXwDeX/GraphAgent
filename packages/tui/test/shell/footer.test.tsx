@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { testRender, useRenderer } from "@opentui/solid"
-import { onCleanup, onMount, type JSX, type ParentProps } from "solid-js"
+import { createSignal, onCleanup, onMount, type JSX, type ParentProps } from "solid-js"
 import { TuiKeybind } from "../../src/config/keybind"
 import { setLanguage } from "../../src/i18n"
 import { GraphagentKeymapProvider, registerGraphagentKeymap } from "../../src/keymap"
@@ -206,6 +206,39 @@ test("renders the shared right slot instead of idle hints", async () => {
     expect(frame).not.toContain("~/project:main")
     expect(frame).not.toContain("1.2.3")
     expectWithin(frame, 80, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("keeps the trust reminder next to the right slot and drops it at zero", async () => {
+  await using tmp = await shellState()
+  const [trust, setTrust] = createSignal(1)
+  function ReminderFooter() {
+    return (
+      <Footer
+        agent="build"
+        agentAction="tab"
+        hints={hints}
+        meta={{ trust: trust() }}
+        right={<text>status: indexing</text>}
+      />
+    )
+  }
+  const app = await render(() => <ReminderFooter />, { width: 120, state: tmp.path })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("⚠ 1 条项目命令未信任 · /trust")
+    expect(frame).toContain("status: indexing")
+    expectWithin(frame, 120, 1)
+
+    setTrust(0)
+    await app.renderOnce()
+    await app.renderOnce()
+    const cleared = app.captureCharFrame()
+    expect(cleared).not.toContain("未信任")
+    expect(cleared).toContain("status: indexing")
   } finally {
     app.renderer.destroy()
   }

@@ -94,7 +94,9 @@ export function reconcileWorkflow(
       effect: Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E, R> => {
       const real = directory ? DagLocation.canonicalDirectory(directory) : undefined
-      return instanceStore && real && real !== ambientReal ? instanceStore.provide({ directory: real }, effect) : effect
+      return instanceStore && real && real !== ambientReal
+        ? instanceStore.provide({ directory: real, trustProject: ambient?.trustProject === true }, effect)
+        : effect
     }
     const nodeOwnerDirectory = (nodeConfig?: Pick<NodeConfig, "workspace">) =>
       nodeConfig?.workspace ?? workflowExecutionDirectory
@@ -735,6 +737,7 @@ export function continueRecoveredMessageNode(
     })
     const ambient = yield* Effect.serviceOption(InstanceRef)
     const ambientDirectory = Option.isSome(ambient) ? ambient.value?.directory : undefined
+    const ambientTrustProject = Option.isSome(ambient) && ambient.value?.trustProject === true
     // Lane is imported lazily for the same bootstrap-cycle reason as spawn.ts.
     const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
     const instanceStore = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
@@ -742,7 +745,7 @@ export function continueRecoveredMessageNode(
       instanceStore &&
       (!ambientDirectory ||
         DagLocation.canonicalDirectory(boundExecutionDirectory) !== DagLocation.canonicalDirectory(ambientDirectory))
-        ? instanceStore.provide({ directory: boundExecutionDirectory }, effect)
+        ? instanceStore.provide({ directory: boundExecutionDirectory, trustProject: ambientTrustProject }, effect)
         : effect
     // #946: the continuation resumes an isolated attempt too. The loop enters
     // the owner execution instance before this helper runs, so the Worktree

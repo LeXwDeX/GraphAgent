@@ -76,6 +76,22 @@ test("a bare Effect runtime without a registered file writer stays silent", asyn
   expect(result).toEqual({ code: 0, stdout: "", stderr: "", log: "" })
 })
 
+for (const level of ["INFO", ""]) {
+  test(`background info diagnostics reach only the file writer at the default level (${level || "unset"})`, async () => {
+    const result = await run(level, "1", "info")
+    expect({ code: result.code, stdout: result.stdout, stderr: result.stderr }).toEqual({
+      code: 0,
+      stdout: "",
+      stderr: "",
+    })
+    expect(result.log).toContain("background-info-marker")
+    expect(result.log).toContain("level=INFO")
+    expect(result.log).toContain("source=fixture")
+    expect(result.log).not.toContain("background-debug-marker")
+    expect(result.log).not.toContain("background-second-marker")
+  })
+}
+
 test("a diagnostic logger defect never escapes into console or the caller", async () => {
   const result = await run("DEBUG", "1", "throw")
   expect(result).toEqual({ code: 0, stdout: "", stderr: "", log: "" })

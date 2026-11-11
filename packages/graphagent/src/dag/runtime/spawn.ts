@@ -589,7 +589,9 @@ export function spawnNode(
       effect: Effect.Effect<A, E, R>,
     ): Effect.Effect<A, E, R> => {
       const real = directory ? DagLocation.canonicalDirectory(directory) : undefined
-      return instanceStore && real && real !== ambientReal ? instanceStore.provide({ directory: real }, effect) : effect
+      return instanceStore && real && real !== ambientReal
+        ? instanceStore.provide({ directory: real, trustProject: ambient?.trustProject === true }, effect)
+        : effect
     }
 
     // Resolve timeout and compute the absolute deadline at ADMISSION time

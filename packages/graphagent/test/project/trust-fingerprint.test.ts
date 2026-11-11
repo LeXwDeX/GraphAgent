@@ -137,6 +137,41 @@ describe("fingerprint", () => {
     expect(second).toBe(first)
   })
 
+  test("JSONC comments do not change settings or MCP entry fingerprints", async () => {
+    await using tmp = await tmpdir()
+    const enumerated = (file: string, text: string) =>
+      enumerateProjectEntries({ files: [{ file, text }], isTracked: () => false }).entries
+    const expectSame = (file: string, plain: string, commented: string) => {
+      const before = enumerated(file, plain)
+      const after = enumerated(file, commented)
+      expect(after.map((item) => item.id)).toEqual(before.map((item) => item.id))
+      expect(after.map((item) => fingerprint(item, query(tmp.path)))).toEqual(
+        before.map((item) => fingerprint(item, query(tmp.path))),
+      )
+    }
+
+    expectSame(
+      "settings.json",
+      `{"formatter":{"guard":{"command":["bunx","prettier","--write"]}}}`,
+      `{
+        // A comment must not affect the trust decision.
+        "formatter": {
+          "guard": { "command": ["bunx", "prettier", "--write"] } /* trailing block comment */
+        }
+      }`,
+    )
+    expectSame(
+      "mcp.json",
+      `{"mcpServers":{"tools":{"type":"local","command":["bun","run","server.ts"]}}}`,
+      `{
+        // Project MCP JSONC allows comments.
+        "mcpServers": {
+          "tools": { "type": "local", "command": ["bun", "run", "server.ts"] }
+        }
+      }`,
+    )
+  })
+
   test("key order does not change the fingerprint", async () => {
     await using tmp = await tmpdir()
     write(tmp.path, "guard.sh", "echo guard")
