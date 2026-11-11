@@ -769,10 +769,10 @@
         {
           "purpose": "conversation",
           "messageCount": 44,
-          "toolsHash": "e3b0c44298fc1c14",
+          "toolsHash": "4bf86f26c6b32959",
           "systemHash": "e9e1a26205962279",
-          "prefixHash": "7551299c2d05aef3",
-          "toolChoice": "none"
+          "prefixHash": "43337ac494aaf367",
+          "toolChoice": "auto"
         }
       ],
       "volatile": ["json.parseBytes", "json.encodeBytes", "sha256Bytes", "sql.read", "sql.write"]

@@ -83,6 +83,11 @@ export type Transition =
   | { readonly kind: "check_step_input" }
   /** Start another automatic compaction (`decideOverflow` only). */
   | { readonly kind: "compact" }
+  /**
+   * The terminal step called a tool: run the single closing step with
+   * `tool_choice: "none"`. Stop hooks do not run before it.
+   */
+  | { readonly kind: "close" }
   | { readonly kind: "finish"; readonly outcome: TurnOutcome }
 
 /** The fourth consecutive automatic compaction is refused (three already ran). */
@@ -98,17 +103,33 @@ export function isCompletionCandidate(state: TurnState, signals: CompletionSigna
 /** The top-of-loop agent-input freeze condition (old `!needsStop || boundaryApproved || forceContinue`). */
 export function shouldFreezeAgentInput(state: TurnState, completed: boolean): boolean {
   return (
+    state.final === "none" &&
     state.agentInput !== "blocked" &&
     (!completed || state.agentInput === "boundary_approved" || state.continuing !== undefined)
   )
 }
 
-/** A blocked input owner or a turn error forbids both Stop-block and queued-input continuation. */
+/**
+ * A blocked input owner, a turn error, or a final step forbids both Stop-block
+ * and queued-input continuation.
+ */
 export function continuationAllowed(state: TurnState): boolean {
-  return state.agentInput !== "blocked" && state.error === undefined
+  return state.final === "none" && state.agentInput !== "blocked" && state.error === undefined
 }
 
 export function decide(state: TurnState, signals: Signals): Transition {
+  // The final-step protocol owns the exit once a terminal attempt settled and
+  // is unaffected by completion signals or late input.
+  if (state.final === "violated") return { kind: "close" }
+  if (state.final === "closing") return { kind: "step" }
+  if (state.final === "closed") {
+    // Stop still observes the completed turn exactly once; it cannot grant a
+    // continuation anymore.
+    if (signals.stopHook === "not_run" && signals.stopPolicy.enabled && !signals.ownerDefersStop) {
+      return { kind: "run_stop_hooks", event: signals.stopPolicy.event }
+    }
+    return { kind: "finish", outcome: outcomeOf(state, signals) }
+  }
   if (!isCompletionCandidate(state, signals)) return { kind: "step" }
 
   // A Stop-block continuation runs exactly one more model step. A blocked input

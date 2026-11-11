@@ -1618,7 +1618,7 @@ describe("session.llm.stream", () => {
   )
 
   it.instance(
-    "keeps exhausted Copilot tool budget disabled on the wire",
+    "leaves the wire shape to the turn loop when the tool budget is exhausted",
     () =>
       Effect.gen(function* () {
         const fixture = loadFixture(alibabaQwenFixture.providerID, alibabaQwenFixture.modelID)
@@ -1681,10 +1681,12 @@ describe("session.llm.stream", () => {
         })
 
         const capture = yield* Effect.promise(() => request)
-        expect(capture.body.tool_choice).toBe("none")
+        // The LLM layer no longer rewrites tool_choice or the tool set from the
+        // budget alone; the turn loop selects the final-step request shape.
+        expect(capture.body.tool_choice).not.toBe("none")
         expect(
           (capture.body.tools as Array<{ function?: { name?: string } }>).map((item) => item.function?.name),
-        ).toEqual(["_noop"])
+        ).toEqual(["run"])
         expect(executed).toBe(false)
       }),
     {
