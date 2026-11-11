@@ -148,6 +148,36 @@ describe("lifecycle transition", () => {
     }),
   )
 
+  it.live("validates the DAG domains through the read-only bridge", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: null, to: "pending" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: "pending", to: "running" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: "running", to: "paused" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: "completed", to: "running" })).toEqual({
+        published: false,
+        reason: "invalid",
+      })
+      expect(yield* lifecycle.transition({ ref: ref("node", "node-1"), expect: null, to: "pending" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("node", "node-1"), expect: "running", to: "aborted" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("node", "node-1"), expect: "skipped", to: "running" })).toEqual({
+        published: false,
+        reason: "invalid",
+      })
+    }),
+  )
+
   it.live("rejects duplicate, invalid, unknown-state and unregistered transitions without publishing", () =>
     Effect.gen(function* () {
       const lifecycle = yield* Lifecycle.Service
