@@ -79,6 +79,8 @@ const SESSION_SUMMARY_TYPES = new Set([
   "goal.updated",
   "goal.cleared",
   "dag.workflow.summary.updated",
+  "lifecycle.transitioned",
+  "session.turn.settled",
 ])
 
 const ASK_TYPES = new Set(["permission.asked", "permission.v2.asked", "question.asked", "question.v2.asked"])

@@ -31,6 +31,7 @@ import {
   type Admission,
   type TurnExecution,
   type TurnOutcome,
+  type TurnSettled,
 } from "@/session/turns"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 
@@ -141,6 +142,7 @@ function makeHarness(db: Database.Interface["db"]) {
       return Effect.succeed(completed(assistantMessage(sessionID, user.info.id), user))
     }
     let fence = true
+    const settled: TurnSettled[] = []
 
     const state = {
       startIfIdle: (
@@ -179,6 +181,10 @@ function makeHarness(db: Database.Interface["db"]) {
       withPromptLock: locks.withPromptLock,
       goal: undefined,
       settingsHook: undefined,
+      onSettled: (value) =>
+        Effect.sync(() => {
+          settled.push(value)
+        }),
       admitPrompt: (input) => admit(input),
       fenceRewake: () => Effect.succeed(fence),
       runLoop: (sessionID) => run(sessionID),
@@ -189,6 +195,7 @@ function makeHarness(db: Database.Interface["db"]) {
     return {
       turns,
       runnerFor,
+      settled,
       setAdmit: (next: (input: PromptInput) => Effect.Effect<Admission>) => {
         admit = next
       },
@@ -539,6 +546,15 @@ describe("admission", () => {
         runner_id: String(process.pid),
       })
       expect(rows[0]?.time_ended).not.toBeNull()
+      const timeEnded = rows[0].time_ended!
+      expect(harness.settled).toHaveLength(1)
+      expect(harness.settled[0]).toEqual({
+        sessionID,
+        turnID: rows[0]?.id,
+        outcome: { type: "completed" },
+        steps: 2,
+        timeEnded,
+      })
     }),
   )
 
@@ -651,6 +667,7 @@ describe("admission", () => {
       expect(outcome).toMatchObject({ type: "cancelled" })
       expect(yield* turn.status).toBe("ended")
       expect(yield* turnRows(db, sessionID)).toHaveLength(0)
+      expect(harness.settled).toHaveLength(0)
       expect(ran).toBe(false)
 
       yield* Deferred.succeed(shell, undefined)

@@ -66,13 +66,17 @@ import { LLM } from "./llm"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
-import { Effect, Fiber, Layer, Option, Scope, Context, Schema, Struct } from "effect"
+import { Effect, Fiber, Layer, Option, Scope, Context, DateTime, Schema, Struct } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@graphagent/core/database/database"
+import { turnOutcomePhase } from "@graphagent/core/lifecycle/vocabulary"
+import { ref as stateRef } from "@graphagent/core/lifecycle/state"
+import { LifecycleEvent } from "@graphagent/schema/lifecycle-event"
+import { Lifecycle } from "@/lifecycle/service"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { Todo } from "./todo"
@@ -107,6 +111,7 @@ import {
   type Interface as TurnsInterface,
   type TurnExecution,
   type TurnOrigin,
+  type TurnSettled,
   type TurnStart,
 } from "./turns"
 
@@ -229,6 +234,9 @@ export const layer = Layer.effect(
     const llm = yield* LLM.Service
     const scheduler = yield* AgentScheduler.Service
     const events = yield* EventV2Bridge.Service
+    // Optional so tests and embedders that compose SessionPrompt without the
+    // lifecycle service keep working; mirrors the ToolSourceLedger seam.
+    const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
     const flags = yield* RuntimeFlags.Service
     // Every session cache below is process-wide: one ManagedRuntime cannot
     // see another's InstanceState, but cancellations and followups cross them.
@@ -668,6 +676,30 @@ export const layer = Layer.effect(
 
     const runTurn = (sessionID: SessionID): Effect.Effect<TurnExecution> => loopFns.runTurn(sessionID)
 
+    // Live settlement notification: the durable turn row already exists when
+    // this runs (`Turns.track` calls it after the ended write). The transient
+    // event feeds clients; the lifecycle service records the same observation
+    // in the shared vocabulary when that layer is present.
+    const onSettled = (settled: TurnSettled) =>
+      Effect.gen(function* () {
+        yield* events.publish(LifecycleEvent.TurnSettled, {
+          sessionID: settled.sessionID,
+          turnID: settled.turnID,
+          outcome: settled.outcome,
+          steps: settled.steps,
+          timeEnded: DateTime.makeUnsafe(settled.timeEnded),
+        })
+        if (!lifecycle) return
+        const phase = turnOutcomePhase(settled.outcome.type)
+        yield* lifecycle.transition({
+          ref: stateRef("turn", settled.turnID),
+          expect: "running",
+          to: "ended",
+          ...(phase === undefined ? {} : { phase }),
+          sessionID: settled.sessionID,
+        })
+      })
+
     turnsRef = makeTurns({
       db,
       sessions,
@@ -677,6 +709,7 @@ export const layer = Layer.effect(
       withPromptLock: locks.withPromptLock,
       goal,
       settingsHook,
+      onSettled,
       admitPrompt: admit.admitPrompt,
       fenceRewake: admit.fenceRewake,
       runLoop: runTurn,
