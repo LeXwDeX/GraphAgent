@@ -51,7 +51,7 @@ import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, onCleanup, onMount } from "solid-js"
+import { batch, createMemo, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { TuiLog } from "../util/log"
@@ -213,15 +213,23 @@ export const {
       }
       return pending
     }
+    // The gate calls this once per event; the memo keeps it off the proxy read
+    // path until a permission or question actually changes (#1025 P14).
+    const pendingAskSet = createMemo(pendingAskSessions)
     const interest = createInterestAggregator({
       submit: (full) => sdk.setInterest(full),
-      pendingAsks: pendingAskSessions,
+      pendingAsks: () => pendingAskSet(),
       frame: sdk.frameClock,
     })
     sdk.setEventGate(createEventGate(() => interest.full()))
     const unsubscribeStream = sdk.frameClock.onFlush(() => stream.bump())
     const resyncHandlers = new Set<() => void | Promise<void>>()
     const summarySeen = new Map<string, Set<string>>()
+    // Mirror of `store.summary` in plain objects. The reducer reads it instead
+    // of the Solid proxy: a summary event costs a handful of proxy reads plus
+    // a write, and with many background sessions that dominates the frame
+    // (#1025 P14). Store writes below stay the only notification source.
+    const summaryRaw = new Map<string, SessionSummary>()
     // Hydrated sessions must keep receiving full events; like the route chain,
     // this is an interest source of its own.
     const syncInterest = () => {
@@ -265,7 +273,24 @@ export const {
     }
 
     function writeSummary(sessionID: string, summary: SessionSummary) {
-      setStore("summary", sessionID, reconcile(summary))
+      // Every reducer below returns a complete summary, so a plain replacement
+      // is equivalent to `reconcile` without its deep diff. Background tool
+      // traffic pays this per event per frame (#1025 P14). Activity-only churn
+      // is coalesced below one second: the compact view shows relative times,
+      // and rewriting the node per streamed event is pure frame cost.
+      const previous = summaryRaw.get(sessionID)
+      if (
+        previous &&
+        previous.status === summary.status &&
+        previous.toolCalls === summary.toolCalls &&
+        previous.current === summary.current &&
+        previous.error === summary.error &&
+        summary.lastActivityAt - previous.lastActivityAt < 1_000
+      ) {
+        return
+      }
+      summaryRaw.set(sessionID, summary)
+      setStore("summary", sessionID, summary)
     }
 
     function reduceSummary(event: SdkEvent) {
@@ -273,17 +298,17 @@ export const {
         case "session.created":
         case "session.updated": {
           const info = event.properties.info
-          writeSummary(info.id, mergeSession(store.summary[info.id], info))
+          writeSummary(info.id, mergeSession(summaryRaw.get(info.id), info))
           break
         }
         case "session.status": {
           const { sessionID, status } = event.properties
-          writeSummary(sessionID, mergeStatus(store.summary[sessionID], sessionID, status))
+          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, status))
           break
         }
         case "session.idle": {
           const sessionID = event.properties.sessionID
-          writeSummary(sessionID, mergeStatus(store.summary[sessionID], sessionID, { type: "idle" }))
+          writeSummary(sessionID, mergeStatus(summaryRaw.get(sessionID), sessionID, { type: "idle" }))
           break
         }
         case "session.error": {
@@ -295,7 +320,7 @@ export const {
             typeof data === "object" && data !== null && "message" in data && typeof data.message === "string"
               ? data.message
               : error?.name
-          const previous = store.summary[sessionID] ?? {
+          const previous = summaryRaw.get(sessionID) ?? {
             id: sessionID,
             status: "unknown" as const,
             lastActivityAt: 0,
@@ -314,7 +339,7 @@ export const {
           const at = typeof event.properties.time === "number" ? event.properties.time : undefined
           writeSummary(
             part.sessionID,
-            mergeToolPart(store.summary[part.sessionID], part as ToolPartLike, seenTools(part.sessionID), at),
+            mergeToolPart(summaryRaw.get(part.sessionID), part as ToolPartLike, seenTools(part.sessionID), at),
           )
           const task = taskIndexEntry(part as ToolPartLike)
           if (task) setStore("taskIndex", task.childSessionID, reconcile(task.entry))
@@ -389,6 +414,7 @@ export const {
       const partIDs = messages.flatMap((message) => (store.part[message.id] ?? []).map((part) => part.id))
       stream.clearParts(partIDs)
       summarySeen.delete(sessionID)
+      summaryRaw.delete(sessionID)
       ancillaryAttempts.delete(sessionID)
       fullSyncedSessions.delete(sessionID)
       syncingSessions.delete(sessionID)
@@ -416,15 +442,17 @@ export const {
     }
 
     function seedSummaries(sessions: Session[]) {
+      const next = new Map<string, SessionSummary>()
+      for (const session of sessions) {
+        const status = store.session_status[session.id]
+        const previous = summaryRaw.get(session.id)
+        next.set(session.id, status ? createSummary(session, status, previous) : mergeSession(previous, session))
+      }
+      for (const [id, summary] of next) summaryRaw.set(id, summary)
       setStore(
         "summary",
         produce((draft) => {
-          for (const session of sessions) {
-            const status = store.session_status[session.id]
-            draft[session.id] = status
-              ? createSummary(session, status, draft[session.id])
-              : mergeSession(draft[session.id], session)
-          }
+          for (const [id, summary] of next) draft[id] = summary
         }),
       )
     }
@@ -515,7 +543,7 @@ export const {
       void result.session.sync(sessionID).catch(() => {})
     }
 
-    event.subscribe((event, { workspace, decision }) => {
+    event.subscribeAll((event, { workspace, decision }) => {
       // The summary reducer runs after the gate and before any store write.
       // "summary" events stop here: they only update the compact view.
       reduceSummary(event)

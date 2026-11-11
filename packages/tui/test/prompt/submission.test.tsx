@@ -42,7 +42,9 @@ import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../fixture/tui-sdk"
 
-async function wait(fn: () => boolean, timeout = 2000) {
+// Wall-clock polling races the other test files when the suite runs in
+// parallel; keep the budget well above the longest expected settle.
+async function wait(fn: () => boolean, timeout = 10_000) {
   const start = Date.now()
   while (!fn()) {
     if (Date.now() - start > timeout) throw new Error("timed out waiting for condition")

@@ -126,6 +126,13 @@ async function renderHookFooter() {
     { width: 80, height: 1 },
   )
   await settled
+  // `settled` resolves from the root provider; under a loaded suite the child
+  // component's `onReady` can land a render later. Wait for it before a test
+  // drives the hook store.
+  for (let attempt = 0; attempt < 100 && (!hooks || !toast); attempt++) {
+    await app.renderOnce()
+    await Bun.sleep(5)
+  }
   await app.renderOnce()
   return { app, fake, hooks: () => hooks, toast: () => toast }
 }

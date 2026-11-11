@@ -192,8 +192,10 @@ export function backgroundEvent(part: Part, tick: number): GlobalEvent {
 
 export function makeFetchFixture(fixture: PerfFixture, url: URL): Response | undefined {
   if (url.pathname === "/session") return Response.json(fixture.sessions)
-  if (url.pathname === `/session/${SESSION_ID}`) return Response.json(fixture.session)
-  if (url.pathname === `/session/${SESSION_ID}/message`) return Response.json(fixture.messages)
+  const session = fixture.sessions.find((item) => url.pathname === `/session/${item.id}`)
+  if (session) return Response.json(session)
+  const messages = fixture.sessions.find((item) => url.pathname === `/session/${item.id}/message`)
+  if (messages) return Response.json(messages.id === SESSION_ID ? fixture.messages : [])
   if (url.pathname === "/project/directories") return Response.json([])
   if (url.pathname.endsWith("/todo") || url.pathname.endsWith("/diff") || url.pathname.endsWith("/goal"))
     return Response.json([])

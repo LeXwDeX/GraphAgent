@@ -35,7 +35,12 @@ function braille(frame: string) {
 async function sample(harness: Awaited<ReturnType<typeof mountHarness>>, rounds = 6) {
   const frames: string[] = []
   for (let index = 0; index < rounds; index++) {
-    await Bun.sleep(120)
+    // The harness drives the shared ticker from its ManualClock, so advance
+    // virtual time instead of sleeping; a real sleep never moves the spinner.
+    harness.clock.advance(120)
+    // Two passes: the first applies ticker-driven updates, the second settles
+    // layout before the frame is sampled.
+    await harness.app.renderOnce()
     await harness.app.renderOnce()
     frames.push(harness.app.captureCharFrame())
   }

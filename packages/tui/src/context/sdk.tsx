@@ -46,6 +46,13 @@ export interface SdkEventEmitter {
   emit(type: "reconnected"): void
   on(type: "event", handler: (event: GlobalEvent) => void): () => void
   on(type: "reconnected", handler: () => void): () => void
+  /**
+   * Summary-scoped events reach only compact consumers (`sync`). Broadcasting
+   * them over the full subscriber set costs every subscriber a pass per
+   * background event (#1025 P14).
+   */
+  emitSummary(event: GlobalEvent): void
+  onSummary(handler: (event: GlobalEvent) => void): () => void
 }
 
 const URGENT_TYPES = new Set([
@@ -119,6 +126,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let sdk = createSDK()
 
     const eventHandlers = new Set<(event: GlobalEvent) => void>()
+    const summaryHandlers = new Set<(event: GlobalEvent) => void>()
     const reconnectHandlers = new Set<() => void>()
     const emitter: SdkEventEmitter = {
       emit(type: "event" | "reconnected", event?: GlobalEvent) {
@@ -126,6 +134,15 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           for (const handler of eventHandlers) handler(event!)
         } else {
           for (const handler of reconnectHandlers) handler()
+        }
+      },
+      emitSummary(event: GlobalEvent) {
+        for (const handler of summaryHandlers) handler(event)
+      },
+      onSummary(handler: (event: GlobalEvent) => void) {
+        summaryHandlers.add(handler)
+        return () => {
+          summaryHandlers.delete(handler)
         }
       },
       on(type: "event" | "reconnected", handler: ((event: GlobalEvent) => void) | (() => void)) {
@@ -142,13 +159,30 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       },
     }
 
+    // Dispatch evaluates the gate exactly once per event and routes by the
+    // result, so subscribers never repeat the work (#1025 P14).
+    const decide = (event: Event): GateDecision => eventGate?.(event) ?? "deliver"
+
     let pending: GlobalEvent[] = []
     const dispatch = () => {
       const events = pending
       pending = []
       if (events.length === 0) return
       batch(() => {
-        for (const event of events) emitter.emit("event", event)
+        for (const event of events) {
+          const payload = event.payload
+          // Durable replay frames and hot-read config writes bypass the gate.
+          if (payload.type === "sync" || payload.type === "config.updated") {
+            emitter.emit("event", event)
+            continue
+          }
+          // Route once per event here instead of letting every subscriber
+          // evaluate the gate and discard on its own (#1025 P14).
+          const decision = decide(payload)
+          if (decision === "drop") continue
+          if (decision === "summary") emitter.emitSummary(event)
+          else emitter.emit("event", event)
+        }
       })
     }
 
@@ -183,6 +217,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       pending = []
       frameClock.dispose()
       eventHandlers.clear()
+      summaryHandlers.clear()
       reconnectHandlers.clear()
     })
 
@@ -198,6 +233,8 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       get eventGate() {
         return eventGate
       },
+      /** The client-side gate used by dispatch; exposed for callers that need the route. */
+      decide,
       setEventGate(gate: ((event: Event) => GateDecision) | undefined) {
         eventGate = gate
       },
