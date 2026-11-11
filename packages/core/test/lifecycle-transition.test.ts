@@ -8,7 +8,12 @@ import {
   getValidNextNodeStatuses,
   getValidNextWorkflowStatuses,
 } from "@graphagent/core/dag/core/types"
-import { checkTransition, TURN_TRANSITION_TABLE, type TransitionTable } from "@graphagent/core/lifecycle/transition"
+import {
+  checkTransition,
+  JOB_TRANSITION_TABLE,
+  TURN_TRANSITION_TABLE,
+  type TransitionTable,
+} from "@graphagent/core/lifecycle/transition"
 import { VOCABULARY, valuesOf } from "@graphagent/core/lifecycle/vocabulary"
 
 const isWorkflowStatus = (value: string): value is WorkflowStatus => valuesOf("workflow").includes(value)
@@ -119,6 +124,39 @@ describe("DAG tables as lifecycle tables", () => {
     expect(checkTransition(dagNodeTable, { expect: "skipped", to: "running" })).toEqual({
       kind: "invalid",
       allowed: [],
+    })
+  })
+})
+
+describe("job transitions", () => {
+  it("admits creation and the optional settling phase", () => {
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: null, to: "running" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "running", to: "settling" })).toEqual({
+      kind: "allowed",
+      phase: "settling",
+    })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "running", to: "completed" })).toEqual({
+      kind: "allowed",
+      phase: "succeeded",
+    })
+  })
+
+  it("settles only into terminal states and leaves terminal values empty", () => {
+    for (const to of ["completed", "error", "cancelled"])
+      expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "settling", to })).toMatchObject({ kind: "allowed" })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "settling", to: "running" })).toEqual({
+      kind: "invalid",
+      allowed: ["completed", "error", "cancelled"],
+    })
+    for (const terminal of VOCABULARY.job.terminal) expect(JOB_TRANSITION_TABLE.next(terminal)).toEqual([])
+  })
+
+  it("reports a repeated status as duplicate", () => {
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "settling", to: "settling" })).toEqual({
+      kind: "duplicate",
     })
   })
 })

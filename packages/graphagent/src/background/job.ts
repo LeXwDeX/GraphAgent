@@ -1,8 +1,9 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { BackgroundJob as CoreBackgroundJob } from "@graphagent/core/background-job"
 import { InstanceState } from "@/effect/instance-state"
+import { Lifecycle } from "@/lifecycle/service"
 import { SessionCancellation } from "@/session/cancellation"
-import { Effect, Layer, Scope } from "effect"
+import { Effect, Layer, Option, Scope } from "effect"
 
 export {
   Service,
@@ -25,7 +26,24 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const state = yield* InstanceState.make(() =>
       Effect.gen(function* () {
-        const jobs = yield* CoreBackgroundJob.make
+        const jobs = yield* CoreBackgroundJob.makeWith({
+          // Resolve the lifecycle service from the caller's context at
+          // transition time. The registry is built inside layers that do not
+          // see sibling AppLayer outputs, while tools and job fibers run with
+          // the full environment. Tests without Lifecycle simply skip the
+          // observation (#1069 P4).
+          onTransition: (transition) =>
+            Effect.gen(function* () {
+              const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
+              if (!lifecycle) return
+              yield* lifecycle.transition({
+                ref: { domain: "job", id: transition.id },
+                expect: transition.from,
+                to: transition.to,
+                sessionID: transition.sessionID,
+              })
+            }),
+        })
         const scope = yield* Scope.Scope
         const owners = new Set<() => void>()
         const active = new Map<CoreBackgroundJob.Captured, CoreBackgroundJob.Info>()
@@ -119,6 +137,7 @@ export const layer = Layer.effect(
             }).pipe(Effect.ensuring(Effect.sync(() => requests.forEach(({ request }) => request.release())))),
           )
         }),
+      beginSettling: (id) => InstanceState.useEffect(state, ({ jobs }) => jobs.beginSettling(id)),
       extend: (input) => InstanceState.useEffect(state, ({ jobs }) => jobs.extend(input)),
       wait: (input) => InstanceState.useEffect(state, ({ jobs }) => jobs.wait(input)),
       waitForPromotion: (id) => InstanceState.useEffect(state, ({ jobs }) => jobs.waitForPromotion(id)),

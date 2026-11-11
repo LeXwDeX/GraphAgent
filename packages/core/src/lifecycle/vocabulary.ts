@@ -45,8 +45,14 @@ const TABLE = {
     authority: "live",
   },
   job: {
-    values: ["running", "completed", "error", "cancelled"],
-    phases: { running: "running", completed: "succeeded", error: "failed", cancelled: "cancelled" },
+    values: ["running", "settling", "completed", "error", "cancelled"],
+    phases: {
+      running: "running",
+      settling: "settling",
+      completed: "succeeded",
+      error: "failed",
+      cancelled: "cancelled",
+    },
     terminal: ["completed", "error", "cancelled"],
     settled: ["completed"],
     authority: "live",

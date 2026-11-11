@@ -70,7 +70,7 @@ describe("lifecycle vocabulary", () => {
 
   it("keeps the other domain values identical to their owning vocabularies", () => {
     expect(VOCABULARY.session.values).toEqual(["idle", "retry", "busy"])
-    expect(VOCABULARY.job.values).toEqual(["running", "completed", "error", "cancelled"])
+    expect(VOCABULARY.job.values).toEqual(["running", "settling", "completed", "error", "cancelled"])
     expect(VOCABULARY.goal.values).toEqual(["active", "waiting", "paused", "done"])
   })
 
