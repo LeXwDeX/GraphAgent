@@ -64,3 +64,20 @@ export const TURN_TRANSITION_TABLE: TransitionTable = {
   domain: "turn",
   next: (from) => (from === null ? ["running"] : from === "running" ? ["ended"] : []),
 }
+
+/**
+ * Background jobs keep their owner-specific rule: a job may finish without
+ * settling (short work with no delivered side effect), and `settling` only
+ * admits terminal states (#1069 P4).
+ */
+export const JOB_TRANSITION_TABLE: TransitionTable = {
+  domain: "job",
+  next: (from) =>
+    from === null
+      ? ["running"]
+      : from === "running"
+        ? ["settling", "completed", "error", "cancelled"]
+        : from === "settling"
+          ? ["completed", "error", "cancelled"]
+          : [],
+}

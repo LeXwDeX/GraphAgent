@@ -84,6 +84,41 @@ describe("lifecycle transition", () => {
     }),
   )
 
+  it.live("registers the job table so settling is observable but one-way", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+      const seen = yield* watchLifecycle()
+
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: null, to: "running", sessionID: "ses_job" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: "running", to: "settling", sessionID: "ses_job" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: "settling", to: "running" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: false, reason: "invalid" })
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: "settling", to: "completed" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+
+      yield* Effect.sleep("20 millis")
+      expect((yield* Ref.get(seen)).map((event) => event.data)).toMatchObject([
+        { domain: "job", stateID: "job-1", sessionID: "ses_job", to: "running" },
+        { domain: "job", stateID: "job-1", sessionID: "ses_job", to: "settling", phase: "settling" },
+        { domain: "job", stateID: "job-1", to: "completed", phase: "succeeded" },
+      ])
+    }),
+  )
+
   it.live("carries the declared from, phase, reason and session", () =>
     Effect.gen(function* () {
       const lifecycle = yield* Lifecycle.Service

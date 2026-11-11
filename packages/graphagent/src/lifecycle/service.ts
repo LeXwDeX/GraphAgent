@@ -7,6 +7,7 @@ import { LayerNode } from "@graphagent/core/effect/layer-node"
 import type { LifecycleState, StateRef } from "@graphagent/core/lifecycle/state"
 import {
   checkTransition,
+  JOB_TRANSITION_TABLE,
   TURN_TRANSITION_TABLE,
   type TransitionRequest,
   type TransitionTable,
@@ -53,7 +54,10 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/Lifecycle") {}
 
-const tables = new Map<Domain, TransitionTable>([["turn", TURN_TRANSITION_TABLE]])
+const tables = new Map<Domain, TransitionTable>([
+  ["turn", TURN_TRANSITION_TABLE],
+  ["job", JOB_TRANSITION_TABLE],
+])
 
 export const layer = Layer.effect(
   Service,
