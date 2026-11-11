@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
+import { BackgroundJob } from "@graphagent/core/background-job"
 import { Agent } from "../../src/agent/agent"
 import { Goal } from "../../src/goal/goal"
 import { GoalState } from "../../src/goal/state"
 import { GoalTool } from "../../src/tool/goal"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { Truncate } from "@/tool/truncate"
-import type { Tool } from "@/tool/tool"
+import { Tool } from "@/tool/tool"
 import { testEffect } from "../lib/effect"
 
 // Goal.Service is INTENTIONALLY absent from this build context — it mirrors the
@@ -154,6 +155,198 @@ describe("tool.goal — service resolution phase", () => {
       const result = yield* tool.execute({ action: "status" }, ctx())
 
       expect(result.output).toContain("not available in this runtime")
+    }),
+  )
+})
+
+const failureOf = (exit: Exit.Exit<unknown, unknown>) => {
+  if (!Exit.isFailure(exit)) return undefined
+  for (const reason of exit.cause.reasons) {
+    if (Cause.isFailReason(reason)) return reason.error
+    if (Cause.isDieReason(reason)) return reason.defect
+  }
+  return undefined
+}
+
+const finishedJob = (id: string, status: BackgroundJob.Status): BackgroundJob.Info => ({
+  id,
+  type: "watch_pr",
+  status,
+  started_at: 0,
+  metadata: { sessionId: "ses_goal_tool" },
+})
+
+const watchJob = (deadlineAt: number): BackgroundJob.Info => ({
+  id: "job_watch",
+  type: "watch_pr",
+  status: "running",
+  started_at: 0,
+  metadata: { sessionId: "ses_goal_tool", url: "https://github.com/acme/widgets/pull/42", deadlineAt },
+})
+
+const waitingState = (intent: GoalState.Intent): GoalState.Info =>
+  new GoalState.Info({
+    goal: activeGoal.goal,
+    status: "waiting",
+    turns_used: activeGoal.turns_used,
+    max_turns: activeGoal.max_turns,
+    created_at: activeGoal.created_at,
+    last_turn_at: activeGoal.last_turn_at,
+    consecutive_parse_failures: 0,
+    subgoals: [],
+    intent,
+  })
+
+describe("tool.goal — await intent validation (#1067)", () => {
+  it.instance("rejects a missing or terminal job without changing goal state", () =>
+    Effect.gen(function* () {
+      const info = yield* GoalTool
+      const tool = yield* info.init()
+      let intentCalls = 0
+      const goalLayer = Layer.mock(Goal.Service, {
+        setIntent: () =>
+          Effect.sync(() => {
+            intentCalls += 1
+            return activeGoal
+          }),
+      })
+      const cases = [
+        {
+          jobs: [] as BackgroundJob.Info[],
+          source: "background_job" as const,
+          id: "job_missing",
+          detail: "no background job with id",
+        },
+        {
+          jobs: [finishedJob("job_done", "completed")],
+          source: "watch_pr" as const,
+          id: "job_done",
+          detail: "already completed",
+        },
+        {
+          jobs: [finishedJob("job_cancelled", "cancelled")],
+          source: "watch_pr" as const,
+          id: "job_cancelled",
+          detail: "was cancelled",
+        },
+      ]
+      for (const entry of cases) {
+        const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => entry.jobs) })
+        const exit = yield* tool
+          .execute({ action: "intent", intent: "await", wait_source: entry.source, wait_id: entry.id }, ctx())
+          .pipe(Effect.provide(Layer.merge(goalLayer, jobs)), Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        const error = failureOf(exit)
+        if (!(error instanceof Tool.InvalidArgumentsError))
+          throw new Error(`expected InvalidArgumentsError, got ${String(error)}`)
+        expect(error.message).toContain(entry.detail)
+      }
+      expect(intentCalls).toBe(0)
+    }),
+  )
+
+  it.instance("accepts a background task owned through parentSessionId", () =>
+    Effect.gen(function* () {
+      const info = yield* GoalTool
+      const tool = yield* info.init()
+      let captured: GoalState.Intent | undefined
+      const goalLayer = Layer.mock(Goal.Service, {
+        setIntent: (_sessionID: SessionID, intent: GoalState.Intent) =>
+          Effect.sync(() => {
+            captured = intent
+            return waitingState(intent)
+          }),
+      })
+      // A background task records the child session as sessionId and the
+      // caller as parentSessionId; the caller must still own the wait.
+      const child: BackgroundJob.Info = {
+        id: "ses_child",
+        type: "general",
+        status: "running",
+        started_at: 0,
+        metadata: { sessionId: "ses_child", parentSessionId: "ses_goal_tool" },
+      }
+      const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [child]) })
+
+      const result = yield* tool
+        .execute({ action: "intent", intent: "await", wait_source: "background_job", wait_id: "ses_child" }, ctx())
+        .pipe(Effect.provide(Layer.merge(goalLayer, jobs)))
+
+      expect(captured?.kind).toBe("await")
+      expect(result.output).toContain("Waiting for: background_job:ses_child")
+    }),
+  )
+
+  it.instance("derives the default await deadline from the running watch's remaining time", () =>
+    Effect.gen(function* () {
+      const info = yield* GoalTool
+      const tool = yield* info.init()
+      const deadlineAt = Date.now() + 120_000
+      let captured: GoalState.Intent | undefined
+      const goalLayer = Layer.mock(Goal.Service, {
+        setIntent: (_sessionID: SessionID, intent: GoalState.Intent) =>
+          Effect.sync(() => {
+            captured = intent
+            return waitingState(intent)
+          }),
+      })
+      const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [watchJob(deadlineAt)]) })
+
+      const result = yield* tool
+        .execute(
+          {
+            action: "intent",
+            intent: "await",
+            wait_source: "watch_pr",
+            // A watch_pr wait may name either the job id or the watched URL.
+            wait_id: "https://github.com/acme/widgets/pull/42",
+          },
+          ctx(),
+        )
+        .pipe(Effect.provide(Layer.merge(goalLayer, jobs)))
+
+      expect(result.output).toContain("Waiting for: watch_pr:")
+      const wait = captured?.kind === "await" ? captured.wait : undefined
+      expect(wait?.wait_id).toBe("https://github.com/acme/widgets/pull/42")
+      // The watch's own deadline plus the delivery margin, not the fixed 30 min.
+      expect(wait?.deadline).toBeGreaterThanOrEqual(deadlineAt + 59_000)
+      expect(wait?.deadline).toBeLessThanOrEqual(deadlineAt + 61_000)
+    }),
+  )
+
+  it.instance("hints when an explicit deadline expires before the watch does", () =>
+    Effect.gen(function* () {
+      const info = yield* GoalTool
+      const tool = yield* info.init()
+      const before = Date.now()
+      const deadlineAt = before + 120_000
+      let captured: GoalState.Intent | undefined
+      const goalLayer = Layer.mock(Goal.Service, {
+        setIntent: (_sessionID: SessionID, intent: GoalState.Intent) =>
+          Effect.sync(() => {
+            captured = intent
+            return waitingState(intent)
+          }),
+      })
+      const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [watchJob(deadlineAt)]) })
+
+      const result = yield* tool
+        .execute(
+          {
+            action: "intent",
+            intent: "await",
+            wait_source: "watch_pr",
+            wait_id: "job_watch",
+            deadline_ms: 10_000,
+          },
+          ctx(),
+        )
+        .pipe(Effect.provide(Layer.merge(goalLayer, jobs)))
+
+      expect(result.output).toContain("shorter than the watch's remaining")
+      const wait = captured?.kind === "await" ? captured.wait : undefined
+      expect(wait?.deadline).toBeGreaterThanOrEqual(before + 10_000)
+      expect(wait?.deadline).toBeLessThanOrEqual(Date.now() + 10_000)
     }),
   )
 })

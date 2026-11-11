@@ -4,6 +4,7 @@
 import { describe, expect } from "bun:test"
 import { eq } from "drizzle-orm"
 import { Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
+import { BackgroundJob } from "@graphagent/core/background-job"
 import { Goal } from "@/goal/goal"
 import { GoalEvent } from "@/goal/events"
 import { GoalPrompts } from "@/goal/prompts"
@@ -24,7 +25,13 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
 // resolve to a different instance, missing every published event.
 // Each test uses a unique SessionID so rows never collide across tests
 // (goal_state.session_id is the primary key).
+// #1067: the blocked-verdict downgrade consults the process-local background
+// registry through serviceOption at CALL time, so it must be merged into the
+// test context (provideMerge), not only fed into Goal's build context.
+const runningJobs: BackgroundJob.Info[] = []
+
 const testLayer = Goal.layer.pipe(
+  Layer.provideMerge(Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [...runningJobs]) })),
   Layer.provide(SessionStatus.defaultLayer),
   Layer.provide(Database.defaultLayer),
   Layer.provideMerge(EventV2Bridge.defaultLayer),
@@ -202,6 +209,79 @@ describe("Goal.updateAfterJudge — blocked branch", () => {
       expect(result?.state.last_verdict).toBe("blocked")
       expect(result?.message).toContain("已阻塞")
       expect(seen.some((event) => event.status === "done")).toBe(false)
+    }),
+  )
+})
+
+describe("Goal.updateAfterJudge — blocked with running work (#1067)", () => {
+  const watchJob = (sessionID: string, deadlineAt: number): BackgroundJob.Info => ({
+    id: "job_watch_blocked",
+    type: "watch_pr",
+    title: "watch https://example.test/pr/9",
+    status: "running",
+    started_at: Date.now(),
+    metadata: { sessionId: sessionID, url: "https://example.test/pr/9", deadlineAt },
+  })
+
+  it.live("downgrades to awaiting the session's running watch instead of pausing", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const sessionID = SessionID.descending()
+      const state = yield* goal.set(sessionID, "merge the PR", 10)
+      const deadlineAt = Date.now() + 90_000
+      runningJobs.push(watchJob(sessionID, deadlineAt))
+
+      const result = yield* goal.updateAfterJudge(sessionID, "blocked", "waiting on CI", false, {
+        goalID: state.goal_id ?? "legacy",
+        revision: state.revision ?? 0,
+      })
+
+      expect(result?.shouldContinue).toBe(false)
+      expect(result?.state.status).toBe("waiting")
+      expect(result?.state.last_verdict).toBe("blocked")
+      expect(result?.state.intent).toMatchObject({
+        kind: "await",
+        wait: { source: "watch_pr", wait_id: "job_watch_blocked" },
+      })
+      // The wait outlives the watch by the delivery margin.
+      expect(result?.state.intent?.kind === "await" ? result.state.intent.wait.deadline : 0).toBe(deadlineAt + 60_000)
+      expect(result?.message).toContain("已改为等待该任务完成")
+      expect((yield* goal.load(sessionID))?.status).toBe("waiting")
+    }),
+  )
+
+  it.live("still pauses when the session owns no running job", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const sessionID = SessionID.descending()
+      const state = yield* goal.set(sessionID, "deploy production", 10)
+
+      const result = yield* goal.updateAfterJudge(sessionID, "blocked", "missing credentials", false, {
+        goalID: state.goal_id ?? "legacy",
+        revision: state.revision ?? 0,
+      })
+
+      expect(result?.state.status).toBe("paused")
+      expect(result?.message).toContain("已阻塞")
+    }),
+  )
+
+  it.live("never overrides an explicitly declared blocked intent", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const sessionID = SessionID.descending()
+      yield* goal.set(sessionID, "deploy production", 10)
+      yield* goal.setIntent(sessionID, { kind: "blocked", reason: "missing production credentials" })
+      runningJobs.push(watchJob(sessionID, Date.now() + 90_000))
+      const before = yield* goal.load(sessionID)
+
+      const result = yield* goal.updateAfterJudge(sessionID, "blocked", "missing credentials", false, {
+        goalID: before?.goal_id ?? "legacy",
+        revision: before?.revision ?? 0,
+      })
+
+      expect(result?.state.status).toBe("paused")
+      expect(result?.state.paused_reason).toBe("missing credentials")
     }),
   )
 })

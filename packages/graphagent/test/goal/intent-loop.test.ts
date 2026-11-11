@@ -4,6 +4,7 @@
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- mocked service slices use `as never` shims.
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Option } from "effect"
+import { BackgroundJob } from "@graphagent/core/background-job"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
 import { Goal } from "@/goal/goal"
 import { GoalState } from "@/goal/state"
@@ -16,12 +17,15 @@ import { SessionID } from "@/session/schema"
 import { testEffect, pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 
-// Loop-level regressions for #989 waits: an expired wait must pause visibly,
-// and a wake only for the registered source/identity flips the goal back to
-// work without racing the caller's own notice prompt.
+// Loop-level regressions for #989 waits and #1067 two-stage expiry: the first
+// expiry dispatches one bounded review turn (not a pause), the next idle
+// without a declared intent pauses visibly, and a blocked judge verdict
+// downgrades to awaiting the session's running watch instead of pausing.
 
 const promptCalls: { noReply?: boolean; text: string }[] = []
 let judgeCalls = 0
+let judgeVerdict = "continue"
+const runningJobs: BackgroundJob.Info[] = []
 
 const assistant = {
   info: { id: "asst-1", role: "assistant", time: { created: Date.now() } },
@@ -50,12 +54,13 @@ const layer = GoalLoop.layer.pipe(
   Layer.provide(Layer.mock(Session.Service, { messages: () => Effect.sync(() => [assistant]) })),
   Layer.provide(recordingPrompt),
   Layer.provide(Layer.mock(Provider.Service, {})),
+  Layer.provide(Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [...runningJobs]) })),
   Layer.provide(
     Layer.succeed(GoalLoopJudgeLLM, {
       call: () =>
         Effect.sync(() => {
           judgeCalls += 1
-          return JSON.stringify({ verdict: "continue", reason: "not yet" })
+          return JSON.stringify({ verdict: judgeVerdict, reason: "not yet" })
         }),
     }),
   ),
@@ -69,6 +74,8 @@ const it = testEffect(layer)
 const reset = () => {
   promptCalls.length = 0
   judgeCalls = 0
+  judgeVerdict = "continue"
+  runningJobs.length = 0
 }
 
 const awaitWatch = (deadline: number): GoalState.Intent => ({
@@ -83,7 +90,7 @@ const awaitWatch = (deadline: number): GoalState.Intent => ({
 })
 
 describe("GoalLoop — waits", () => {
-  it.instance("an expired wait pauses the goal visibly at idle", () =>
+  it.instance("an expired wait dispatches one bounded review turn before pausing", () =>
     Effect.gen(function* () {
       reset()
       const loop = yield* GoalLoop.Service
@@ -98,15 +105,80 @@ describe("GoalLoop — waits", () => {
       yield* events.publish(SessionStatus.Event.Status, { sessionID: sid, status: { type: "idle" } })
       yield* pollWithTimeout(
         Effect.gen(function* () {
-          return (yield* goal.load(sid))?.status === "paused" && promptCalls.length > 0 ? true : undefined
+          const state = yield* goal.load(sid)
+          return state?.status === "active" && state.intent?.kind === "blocked" && promptCalls.length > 0
+            ? true
+            : undefined
         }),
-        "the expired wait never paused the goal visibly",
+        "the expired wait never dispatched its review turn",
+        "5 seconds",
+      )
+
+      // #1067 stage one: the expiry marker returns the goal to active and
+      // asks for one bounded check instead of pausing immediately.
+      const reviewed = yield* goal.load(sid)
+      expect(reviewed?.paused_reason).toBeUndefined()
+      expect(reviewed?.last_reason).toContain("job_1")
+      expect(promptCalls).toEqual([{ noReply: undefined, text: expect.stringContaining("[等待超时复核]") }])
+      expect(promptCalls[0]?.text).toContain("有界检查")
+      expect(judgeCalls).toBe(0)
+
+      // Stage two: the review turn declared nothing, so the next idle pauses.
+      for (let i = 0; i < 10; i++) yield* Effect.yieldNow
+      yield* events.publish(SessionStatus.Event.Status, { sessionID: sid, status: { type: "idle" } })
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          return (yield* goal.load(sid))?.status === "paused" ? true : undefined
+        }),
+        "the review turn without a new intent never paused the goal",
         "5 seconds",
       )
 
       expect(String((yield* goal.load(sid))?.paused_reason)).toContain("watch_pr:job_1")
-      expect(promptCalls).toEqual([{ noReply: true, text: expect.stringContaining("⏸ 目标已暂停") }])
+      expect(promptCalls.some((call) => call.noReply === true && call.text.includes("⏸ 目标已暂停"))).toBe(true)
       expect(judgeCalls).toBe(0)
+    }),
+  )
+
+  it.instance("a judge-blocked verdict awaits this session's running watch instead of pausing", () =>
+    Effect.gen(function* () {
+      reset()
+      judgeVerdict = "blocked"
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      const events = yield* EventV2Bridge.Service
+      yield* loop.init()
+      const sid = SessionID.descending()
+      yield* goal.set(sid, "merge the PR", 10)
+      const deadlineAt = Date.now() + 120_000
+      runningJobs.push({
+        id: "job_watch_1",
+        type: "watch_pr",
+        title: "watch https://example.test/pr/1",
+        status: "running",
+        started_at: Date.now(),
+        metadata: { sessionId: sid, url: "https://example.test/pr/1", deadlineAt },
+      })
+      yield* Effect.yieldNow
+
+      yield* events.publish(SessionStatus.Event.Status, { sessionID: sid, status: { type: "idle" } })
+      yield* pollWithTimeout(
+        Effect.sync(() => (promptCalls.some((call) => call.text.includes("已改为等待该任务完成")) ? true : undefined)),
+        "the blocked verdict never downgraded to a wait",
+        "5 seconds",
+      )
+
+      const state = yield* goal.load(sid)
+      expect(state?.status).toBe("waiting")
+      expect(state?.intent).toMatchObject({
+        kind: "await",
+        wait: { source: "watch_pr", wait_id: "job_watch_1" },
+      })
+      expect(state?.intent?.kind === "await" ? state.intent.wait.deadline : 0).toBe(deadlineAt + 60_000)
+      expect(promptCalls.every((call) => !call.text.includes("⏸ 目标已暂停"))).toBe(true)
+      const downgrade = promptCalls.find((call) => call.text.includes("已改为等待该任务完成"))
+      expect(downgrade?.noReply).toBe(true)
+      expect(judgeCalls).toBe(1)
     }),
   )
 

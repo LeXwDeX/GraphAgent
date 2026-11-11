@@ -67,20 +67,25 @@ describe("goal intent and waiting", () => {
     }),
   )
 
-  it.effect("expires a waiting goal past its deadline", () =>
+  it.effect("expires a waiting goal past its deadline into a review marker", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
       const id = sessionID()
       yield* goal.set(id, "wait for the job", 5)
       yield* goal.setIntent(id, awaitIntent({ deadline: Date.now() - 1 }))
 
+      // #1067: the first expiry does not pause; it hands the goal back to
+      // active with a blocked-review marker so GoalLoop can run one bounded
+      // review turn before pausing.
       const expired = yield* goal.expireWait(id)
-      expect(expired?.status).toBe("paused")
-      expect(expired?.paused_reason).toContain("job_1")
+      expect(expired?.status).toBe("active")
+      expect(expired?.intent).toMatchObject({ kind: "blocked" })
+      expect(expired?.last_reason).toContain("超时")
+      expect(expired?.last_reason).toContain("job_1")
     }),
   )
 
-  it.effect("expires a waiting goal after its wake budget", () =>
+  it.effect("expires a waiting goal after its wake budget into a review marker", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
       const id = sessionID()
@@ -88,7 +93,9 @@ describe("goal intent and waiting", () => {
       yield* goal.setIntent(id, awaitIntent({ max_wakes: GoalState.nni(0) }))
 
       const expired = yield* goal.expireWait(id)
-      expect(expired?.status).toBe("paused")
+      expect(expired?.status).toBe("active")
+      expect(expired?.intent?.kind).toBe("blocked")
+      expect(expired?.last_reason).toContain("最大唤醒次数")
     }),
   )
 
@@ -104,7 +111,7 @@ describe("goal intent and waiting", () => {
     }),
   )
 
-  it.effect("resume clears the intent that paused the goal", () =>
+  it.effect("resume clears the blocked intent left by an unpaused expiry", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
       const id = sessionID()
@@ -113,6 +120,9 @@ describe("goal intent and waiting", () => {
       const expired = yield* goal.expireWait(id)
       expect(expired?.intent?.kind).toBe("blocked")
 
+      // The review turn declared nothing, so the loop pauses the goal. Resume
+      // must clear the stale blocked intent it carried into the pause.
+      yield* goal.pause(id, "等待超时；复核回合未取得进展")
       const resumed = yield* goal.resume(id)
       expect(resumed?.status).toBe("active")
       expect(resumed?.intent).toBeUndefined()
