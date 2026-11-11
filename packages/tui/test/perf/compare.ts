@@ -37,7 +37,9 @@ export const P99_TIMING_RATIO = 1.5
 /**
  * Timing floor for the ratio check. A sub-millisecond sample moves by tens of
  * microseconds under background load, so a 1.30x comparison there measures the
- * scheduler rather than the frame.
+ * scheduler rather than the frame. The floor applies to both sides: a
+ * sub-millisecond baseline is not a stable reference either, so it must not
+ * gate an otherwise healthy report.
  */
 export const MIN_COMPARE_MS = 1
 /** Absolute ceiling for any interactive frame (Issue #1025 7.4). */
@@ -98,7 +100,7 @@ export function compareReports(baseline: PerfReport, current: PerfReport): { row
         // past the ratio. It is gated by the absolute ceiling below instead.
         if (!name.endsWith("Ms") || name === "maxMs") continue
         const adjusted = value / factor
-        if (adjusted < MIN_COMPARE_MS) continue
+        if (old < MIN_COMPARE_MS || adjusted < MIN_COMPARE_MS) continue
         const tolerance = name.endsWith("p99Ms") ? P99_TIMING_RATIO : TIMING_RATIO
         if (adjusted > old * tolerance) {
           fail(
@@ -138,7 +140,13 @@ export function compareReports(baseline: PerfReport, current: PerfReport): { row
     // P14: background sessions must not write the active session's store.
     check("P14", "nonCurrentMessageWrites", "0", (value) => value === 0)
     check("P14", "nonCurrentPartWrites", "0", (value) => value === 0)
-    check("P14", "relativeIncrease", "≤ 0.10", (value) => value <= 0.1)
+    // A sub-millisecond input measurement moves by tens of microseconds under
+    // scheduler noise, so a 10% relative increase there measures the scheduler
+    // rather than background work. The floor matches the timing ratio check.
+    const p14P95 = metric(current, size, "P14", "p95Ms")
+    if (p14P95 === undefined || p14P95 >= MIN_COMPARE_MS) {
+      check("P14", "relativeIncrease", "≤ 0.10", (value) => value <= 0.1)
+    }
 
     // P15-P19: timer and mouse frames.
     const tickLimit = Math.ceil((2 * 1_000) / TICK_MS) + 2
