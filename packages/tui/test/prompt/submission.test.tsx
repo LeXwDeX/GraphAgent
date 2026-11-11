@@ -1332,6 +1332,84 @@ test("/btw on the home view keeps the draft and creates no session", async () =>
   }
 })
 
+test("/btw with no arguments reopens a dismissed session that has history", async () => {
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    async (url, request) => {
+      if (url.pathname !== `/session/${routeSessionID}/btw` || request.method !== "POST") return undefined
+      return json({
+        id: "btw_answer",
+        answer: "because",
+        model: { providerID: "test", modelID: "m" },
+        usage: { inputTokens: 3, outputTokens: 5 },
+        context: { messages: 2, estimatedTokens: 10, truncated: false, inFlightDropped: false },
+      })
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+
+    prompt!.set({ input: "/btw why?", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => route.btw.latest(routeSessionID)?.status === "done")
+
+    route.btw.dismiss(routeSessionID)
+    expect(route.btw.isDismissed(routeSessionID)).toBe(true)
+
+    prompt!.set({ input: "/btw", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => !route.btw.isDismissed(routeSessionID))
+    expect(prompt!.current.input).toBe("")
+  } finally {
+    await route.dispose()
+  }
+})
+
+test("/btw cancels an in-flight side question when leaving the session", async () => {
+  const cancels: string[] = []
+  const route = await mountRoute(
+    "prompt",
+    [],
+    false,
+    async (url, request) => {
+      if (url.pathname === `/session/${routeSessionID}/btw` && request.method === "POST") {
+        return new Promise<Response>(() => {})
+      }
+      if (url.pathname.startsWith(`/session/${routeSessionID}/btw/`) && request.method === "DELETE") {
+        cancels.push(url.pathname)
+        return json({})
+      }
+      return undefined
+    },
+    routeSessionID,
+  )
+  try {
+    configureModel(route)
+    route.navigation.navigate({ type: "session", sessionID: routeSessionID })
+    route.mount()
+    await wait(() => Boolean(prompt))
+
+    prompt!.set({ input: "/btw pending?", parts: [] })
+    prompt!.focus()
+    prompt!.submit()
+    await wait(() => route.btw.latest(routeSessionID)?.status === "pending")
+
+    route.navigation.navigate({ type: "home" })
+    await wait(() => cancels.length === 1)
+    expect(route.btw.latest(routeSessionID)?.status).toBe("cancelled")
+  } finally {
+    await route.dispose()
+  }
+})
+
 test("server slash commands submit through session.command exactly once", async () => {
   const commandBodies: Array<Record<string, unknown>> = []
   const route = await mountRoute(

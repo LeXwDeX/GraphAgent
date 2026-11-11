@@ -676,11 +676,22 @@ export function Prompt(props: PromptProps) {
   }
 
   function submitBtw(ctx: CommandRunContext) {
+    const sessionID = props.sessionID
     if (ctx.origin !== "slash" || !ctx.args.trim()) {
-      prefillBtw()
+      // An empty `/btw` reopens the answer panel when this session already has
+      // history; otherwise it starts a fresh question in the input box.
+      if (ctx.origin === "slash" && sessionID && btw?.latest(sessionID)) {
+        btw.show(sessionID)
+        input.extmarks.clear()
+        input.clear()
+        setStore("prompt", { input: "", parts: [] })
+        setStore("extmarkToPartIndex", new Map())
+        input.focus()
+      } else {
+        prefillBtw()
+      }
       return
     }
-    const sessionID = props.sessionID
     if (!sessionID) {
       toast.show({ text: t("prompt.btw.no_session"), level: "warning", dedupeKey: "prompt.btw.no_session" })
       return
