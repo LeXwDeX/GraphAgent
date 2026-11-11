@@ -32,7 +32,7 @@ import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { SyncProvider, useSync } from "./context/sync"
-import { BtwProvider } from "./context/btw"
+import { BtwProvider, useBtw } from "./context/btw"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { ThemeProvider, useTheme } from "./context/theme"
@@ -46,6 +46,7 @@ import { useDiffFooterHints } from "./routes/diff/footer-hints"
 import { AppFrame } from "./shell/app-frame"
 import { BottomZone, BottomZoneProvider, createBottomZoneState } from "./shell/bottom-zone"
 import { AgentPanel } from "./panel/agent"
+import { BtwPanel } from "./panel/btw"
 import { ConfigPanel } from "./panel/config"
 import { HelpPanel } from "./panel/help"
 import { McpPanel } from "./panel/mcp"
@@ -378,6 +379,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     route.data.type === "session" ? <HookProgress sessionID={route.data.sessionID} /> : undefined,
   )
   const bottomZone = createBottomZoneState()
+  const btw = useBtw()
   const homeMeta = useHomeFooterMeta()
   const drawer = useDrawer()
   const diffFooterHints = useDiffFooterHints()
@@ -558,10 +560,22 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     return workspace
   })
 
-  const openPanel = (id: string, render: () => JSX.Element) => {
+  const openPanel = (id: string, render: () => JSX.Element, onClose?: () => void) => {
     if (bottomZone.host.top()?.id === id) return
-    bottomZone.host.push({ id, render })
+    bottomZone.host.push({ id, render, onClose })
   }
+  const openBtwPanel = (sessionID: string) =>
+    openPanel("btw", () => <BtwPanel sessionID={sessionID} />, () => btw.dismiss(sessionID))
+  // #1023: a side question opens its answer panel without touching the prompt
+  // queue. The panel is non-modal; Escape closes it and marks the session
+  // dismissed without cancelling the request, so a later `/btw` reopens it.
+  createEffect(() => {
+    if (route.data.type !== "session") return
+    const sessionID = route.data.sessionID
+    if (!btw.latest(sessionID) || btw.isDismissed(sessionID)) return
+    if (bottomZone.host.depth() !== 0) return
+    openBtwPanel(sessionID)
+  })
   const openSessionList = () => openPanel("sessions", () => <SessionListPanel />)
   const openVariant = () => openPanel("variant", () => <VariantPanel />)
   const newSession = () => {

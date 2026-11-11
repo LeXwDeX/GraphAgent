@@ -182,6 +182,18 @@ describe("btw controller", () => {
     expect(fixture.result.isDismissed("ses_1")).toBe(false)
   })
 
+  test("show reopens a dismissed session only when it has history", async () => {
+    const fixture = controller({})
+    fixture.result.dismiss("ses_1")
+    fixture.result.show("ses_1")
+    expect(fixture.result.isDismissed("ses_1")).toBe(true)
+
+    await fixture.result.ask("ses_1", "first")
+    fixture.result.dismiss("ses_1")
+    fixture.result.show("ses_1")
+    expect(fixture.result.isDismissed("ses_1")).toBe(false)
+  })
+
   test("server-side cancellation settles as cancelled", async () => {
     const fixture = controller({ request: () => Promise.resolve({ type: "cancelled" }) })
     const result = await fixture.result.ask("ses_1", "why?")

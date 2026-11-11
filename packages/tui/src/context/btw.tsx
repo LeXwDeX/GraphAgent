@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Identifier } from "@graphagent/core/id/id"
-import { onCleanup, useContext } from "solid-js"
+import { createEffect, onCleanup, useContext } from "solid-js"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useEvent } from "./event"
+import { useRoute } from "./route"
 import { useSDK } from "./sdk"
 import { errorMessage } from "../util/error"
 import { TuiLog } from "../util/log"
@@ -69,6 +70,8 @@ export interface BtwController {
   latest(sessionID: string): BtwEntry | undefined
   dismiss(sessionID: string): void
   isDismissed(sessionID: string): boolean
+  /** Reopens the answer panel for the latest entry; a no-op without history. */
+  show(sessionID: string): void
   /** Drops a deleted session's history; exported for the `session.deleted` subscription. */
   forget(sessionID: string): void
 }
@@ -233,6 +236,11 @@ export function createBtwController(deps: BtwControllerDependencies): BtwControl
     return store.dismissed[sessionID] ?? false
   }
 
+  function show(sessionID: string) {
+    if (entries(sessionID).length === 0) return
+    setStore("dismissed", sessionID, false)
+  }
+
   function forget(sessionID: string) {
     setStore(
       "entries",
@@ -255,6 +263,7 @@ export function createBtwController(deps: BtwControllerDependencies): BtwControl
     latest: (sessionID) => entries(sessionID).at(-1),
     dismiss,
     isDismissed,
+    show,
     forget,
   }
 }
@@ -323,6 +332,21 @@ const btw = createSimpleContext({
     })
     const offDeleted = useEvent().on("session.deleted", (event) => controller.forget(event.properties.info.id))
     onCleanup(offDeleted)
+
+    // A side question belongs to the session that asked it: leaving that
+    // session or exiting the TUI cancels whatever is still in flight.
+    const route = useRoute()
+    let activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
+    createEffect(() => {
+      const next = route.data.type === "session" ? route.data.sessionID : undefined
+      if (next === activeSessionID) return
+      const previous = activeSessionID
+      activeSessionID = next
+      if (previous) void controller.cancel(previous)
+    })
+    onCleanup(() => {
+      if (activeSessionID) void controller.cancel(activeSessionID)
+    })
     return controller
   },
 })

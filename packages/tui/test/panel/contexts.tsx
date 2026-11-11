@@ -13,6 +13,7 @@ import { ClipboardProvider } from "../../src/context/clipboard"
 import { ExitProvider } from "../../src/context/exit"
 import { LocalProvider, useLocal } from "../../src/context/local"
 import { LocationProvider } from "../../src/context/location"
+import { BtwProvider, useBtw, type BtwController } from "../../src/context/btw"
 import { ProjectProvider, useProject } from "../../src/context/project"
 import { RouteProvider, useRoute } from "../../src/context/route"
 import { SDKProvider, useSDK } from "../../src/context/sdk"
@@ -116,6 +117,7 @@ export interface AppPanelTestContext {
   hooks: ReturnType<typeof useHookStatus>
   sdk: ReturnType<typeof useSDK>
   kv: ReturnType<typeof useKV>
+  btw: BtwController
   /** Shared ask state so confirm/choice promises can be driven from tests. */
   bottomZone: BottomZoneStateApi
 }
@@ -173,23 +175,25 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
                             <SyncProvider>
                               <ThemeProvider mode="dark">
                                 <LocalProvider>
-                                  <LocationProvider>
-                                    <PromptStashProvider>
-                                      <CommandRegistryProvider>
-                                        <PromptRefProvider>
-                                          <BottomZoneProvider>
-                                            <AppPanelSetup
-                                              language={props.language}
-                                              setup={props.setup}
-                                              onReady={props.onReady}
-                                            >
-                                              <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
-                                            </AppPanelSetup>
-                                          </BottomZoneProvider>
-                                        </PromptRefProvider>
-                                      </CommandRegistryProvider>
-                                    </PromptStashProvider>
-                                  </LocationProvider>
+                                  <BtwProvider>
+                                    <LocationProvider>
+                                      <PromptStashProvider>
+                                        <CommandRegistryProvider>
+                                          <PromptRefProvider>
+                                            <BottomZoneProvider>
+                                              <AppPanelSetup
+                                                language={props.language}
+                                                setup={props.setup}
+                                                onReady={props.onReady}
+                                              >
+                                                <TickerProvider ticker={props.ticker}>{props.children}</TickerProvider>
+                                              </AppPanelSetup>
+                                            </BottomZoneProvider>
+                                          </PromptRefProvider>
+                                        </CommandRegistryProvider>
+                                      </PromptStashProvider>
+                                    </LocationProvider>
+                                  </BtwProvider>
                                 </LocalProvider>
                               </ThemeProvider>
                             </SyncProvider>
@@ -225,6 +229,7 @@ function AppPanelSetup(
   const hooks = useHookStatus()
   const sdk = useSDK()
   const kv = useKV()
+  const btw = useBtw()
   const bottomZone = useBottomZone()
   let seeded = false
 
@@ -236,7 +241,7 @@ function AppPanelSetup(
     // not depend on the host locale.
     setLanguage(props.language ?? "zh-CN")
     void Promise.resolve(
-      props.setup?.({ sync, project, route, local, theme, stash, toast, hooks, sdk, kv, bottomZone }),
+      props.setup?.({ sync, project, route, local, theme, stash, toast, hooks, sdk, kv, btw, bottomZone }),
     ).then(() => {
       props.onReady?.()
     })
