@@ -56,6 +56,7 @@ import { SessionLifecycle } from "@/session/lifecycle"
 import { Npm } from "@graphagent/core/npm"
 import { memoMap } from "@graphagent/core/effect/memo-map"
 import { BackgroundJob } from "@/background/job"
+import { BackgroundLifecycle } from "@/background/lifecycle"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookStartContext } from "@/hook/start-context"
@@ -177,6 +178,10 @@ const BaseAppLayer = Layer.mergeAll(
   Layer.provideMerge(SettingsHook.defaultLayer),
   Layer.provideMerge(Notification.defaultLayer),
   Layer.provideMerge(SessionAttention.defaultLayer),
+  // #1069 P7: register the job domain with the lifecycle service. Its
+  // defaultLayer self-provides BackgroundJob and Lifecycle; memoMap dedups them
+  // with the instances built above.
+  Layer.provideMerge(BackgroundLifecycle.defaultLayer),
 )
 
 export const AppLayer = Layer.mergeAll(HookCwd.layer, HookTodo.layer).pipe(Layer.provideMerge(BaseAppLayer))

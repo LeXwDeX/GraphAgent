@@ -16,9 +16,22 @@ export type Verdict = Schema.Schema.Type<typeof Verdict>
 export const WaitSource = Schema.Literals(["background_job", "watch_pr", "hook", "timer", "dag"])
 export type WaitSource = Schema.Schema.Type<typeof WaitSource>
 
+/**
+ * #1069 P7: unified identity of the awaited object. New declarations write
+ * this field and wake matching prefers it; `source` / `wait_id` stay required
+ * because waits persisted before the field existed (and the human-readable
+ * wake source) still have to decode and match.
+ */
+export const WaitRef = Schema.Struct({
+  domain: Schema.Literal("job"),
+  id: Schema.String,
+})
+export type WaitRef = Schema.Schema.Type<typeof WaitRef>
+
 export const Wait = Schema.Struct({
   source: WaitSource,
   wait_id: Schema.String,
+  ref: Schema.optional(WaitRef),
   deadline: Schema.Number,
   max_wakes: NonNegativeInt,
   wakes: NonNegativeInt,

@@ -12,6 +12,8 @@ import * as Observability from "@graphagent/core/observability"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
+import { BackgroundLifecycle } from "@/background/lifecycle"
+import { Lifecycle } from "@/lifecycle/service"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Command } from "@/command"
 import { Config } from "@/config/config"
@@ -189,6 +191,10 @@ export const app = LayerNode.group([
   DagStore.node,
   RuntimeFlags.node,
   EventV2Bridge.node,
+  Lifecycle.node,
+  // #1069 P7: job-domain resolver for the lifecycle contract; needs both the
+  // registry and the lifecycle service in this graph.
+  BackgroundLifecycle.node,
   Dag.node,
   DagMessages.node,
   SessionRunState.node,

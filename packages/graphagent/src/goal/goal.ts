@@ -289,6 +289,7 @@ const awaitWaitFor = (job: BackgroundJob.Info, now: number): GoalState.Wait => {
   return {
     source,
     wait_id: job.id,
+    ref: { domain: "job", id: job.id },
     deadline:
       source === "watch_pr" && typeof deadlineAt === "number"
         ? Math.max(now, deadlineAt) + WATCH_AWAIT_MARGIN_MS
@@ -933,7 +934,9 @@ const serviceLayer = Layer.effect(
       })
     })
 
-    // Wake a waiting goal only for the exact registered source and identity.
+    // Wake a waiting goal only for the exact registered identity. A wait with
+    // a StateRef (#1069 P7) matches on `ref.id` and the job domain; a wait
+    // persisted before the field keeps matching by source plus `wait_id`.
     // An exhausted wake budget is left to expireWait, which owns the visible
     // pause.
     const wake = Effect.fn("Goal.wake")(function* (sessionID: SessionID, match: WakeMatch, payload?: string) {
@@ -941,12 +944,14 @@ const serviceLayer = Layer.effect(
         if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
           return { tag: "noop", value: false }
         const wait = state.intent.wait
-        if (wait.source !== match.source || !match.ids.includes(wait.wait_id)) return { tag: "noop", value: false }
+        const target = wait.ref?.id ?? wait.wait_id
+        const sourceMatches = wait.ref ? wait.ref.domain === "job" : wait.source === match.source
+        if (!sourceMatches || !match.ids.includes(target)) return { tag: "noop", value: false }
         if (wait.wakes >= wait.max_wakes) return { tag: "noop", value: false }
         const next = GoalState.advance(state, {
           status: "active",
           intent: { kind: "progress" },
-          last_reason: payload ?? `wake ${wait.source}:${wait.wait_id}`,
+          last_reason: payload ?? `wake ${wait.source}:${target}`,
           last_turn_at: Date.now(),
         })
         return { tag: "save", state: next, value: true }
@@ -965,10 +970,11 @@ const serviceLayer = Layer.effect(
           return { tag: "noop", value: undefined }
         const wait = state.intent.wait
         if (now < wait.deadline && wait.wakes < wait.max_wakes) return { tag: "noop", value: undefined }
+        const target = wait.ref?.id ?? wait.wait_id
         const expiredReason =
           now >= wait.deadline
-            ? `等待 ${wait.source}:${wait.wait_id} 超时`
-            : `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`
+            ? `等待 ${wait.source}:${target} 超时`
+            : `等待 ${wait.source}:${target} 超过最大唤醒次数`
         const next = GoalState.advance(state, {
           status: "active",
           intent: { kind: "blocked", reason: `${expiredReason}；复核回合未取得进展` },
