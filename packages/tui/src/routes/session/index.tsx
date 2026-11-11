@@ -1,4 +1,5 @@
 import {
+  batch,
   createContext,
   createEffect,
   createMemo,
@@ -99,6 +100,20 @@ import {
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import { isQueuedMessage, orderedBefore } from "../../prompt/queued-message"
+import {
+  createRowMeasurements,
+  createSessionViewState,
+  estimateRowHeight,
+  PART_OVERSCAN,
+  prefixPositions,
+  rowRevision,
+  stableRows,
+  TAIL_ALWAYS,
+  visibleRange,
+  WINDOW_MIN_ROWS,
+  type Row,
+  type SessionViewState,
+} from "./rows"
 
 addDefaultParsers(parsers.parsers)
 
@@ -153,6 +168,9 @@ const context = createContext<{
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
+  view: SessionViewState
+  rowHeight: (row: Row, index: number) => number
+  measureRow: (row: Row, el: BoxRenderable) => void
   shortcuts: {
     childFirst: Accessor<string>
     background: Accessor<string>
@@ -228,6 +246,212 @@ export function Main() {
   const lastAssistant = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant")
   })
+
+  const revertInfo = createMemo(() => session()?.revert)
+  const revertMessageID = createMemo(() => revertInfo()?.messageID)
+  const revertBoundary = createMemo(() => {
+    const messageID = revertMessageID()
+    if (!messageID) return undefined
+    return messages().find((m) => m.id === messageID)
+  })
+
+  const atOrAfterRevert = (message: Message) => {
+    const boundary = revertBoundary()
+    return boundary !== undefined && !orderedBefore(message, boundary)
+  }
+
+  const revertDiffFiles = createMemo(() => getRevertDiffFiles(revertInfo()?.diff ?? ""))
+
+  const revertRevertedMessages = createMemo(() => {
+    const boundary = revertBoundary()
+    if (!boundary) return []
+    return messages().filter((x) => x.role === "user" && !orderedBefore(x, boundary))
+  })
+
+  const revert = createMemo(() => {
+    const info = revertInfo()
+    if (!info) return
+    if (!info.messageID) return
+    return {
+      messageID: info.messageID,
+      reverted: revertRevertedMessages(),
+      diff: info.diff,
+      diffFiles: revertDiffFiles(),
+    }
+  })
+
+  // The transcript is a flat row table. Windowing, scroll commands and height
+  // estimates all read this table instead of mounted render nodes, so an
+  // unmounted row can still be located and scrolled to.
+  const view = createSessionViewState()
+  const measurements = createRowMeasurements()
+  let previousRows: ReadonlyMap<string, Row> = new Map()
+
+  const rowData = createMemo(() => {
+    const list: Row[] = []
+    const chars = new Map<string, number>()
+    const streaming = new Set<string>()
+    const textLines = (text: string) => Math.max(1, ...text.split("\n").map((line) => line.length))
+
+    for (const message of messages()) {
+      if (message.id === revertMessageID()) {
+        list.push({
+          key: `revert:${message.id}`,
+          messageID: message.id,
+          kind: "revert",
+          revision: rowRevision(revert()?.reverted.length, revertInfo()?.diff),
+        })
+      }
+      if (atOrAfterRevert(message)) continue
+      const parts = sync.data.part[message.id] ?? []
+
+      if (message.role === "user") {
+        const texts: string[] = []
+        for (const part of parts) {
+          if (part.type === "text" && !part.synthetic) texts.push(renderUserTextPart(part, { key: "" }))
+        }
+        const text = texts.join("\n\n")
+        const compaction = parts.some((part) => part.type === "compaction")
+        if (text || compaction) {
+          const key = `user:${message.id}`
+          list.push({
+            key,
+            messageID: message.id,
+            kind: "user",
+            revision: rowRevision(text, compaction),
+          })
+          chars.set(key, textLines(text))
+        }
+        continue
+      }
+
+      for (const part of parts) {
+        if (part.type === "text") {
+          const text = sync.readPartText(part).trim()
+          if (!text) continue
+          const key = `part:${part.id}`
+          const done = part.time?.end !== undefined
+          list.push({
+            key,
+            messageID: message.id,
+            partID: part.id,
+            kind: "text",
+            revision: rowRevision(text, done),
+          })
+          chars.set(key, textLines(text))
+          if (!done) streaming.add(key)
+        } else if (part.type === "reasoning") {
+          const text = sync.readPartText(part).replace("[REDACTED]", "").trim()
+          if (!text) continue
+          const key = `part:${part.id}`
+          const done = part.time.end !== undefined
+          list.push({
+            key,
+            messageID: message.id,
+            partID: part.id,
+            kind: "reasoning",
+            revision: rowRevision(text, done, view.get(part.id, "expanded")),
+          })
+          chars.set(key, textLines(text))
+          if (!done) streaming.add(key)
+        } else if (part.type === "tool") {
+          if (hideToolDetails(part.tool, part.state, showDetails())) continue
+          const key = `part:${part.id}`
+          const output = part.state.status === "completed" ? part.state.output : ""
+          list.push({
+            key,
+            messageID: message.id,
+            partID: part.id,
+            kind: "tool",
+            revision: rowRevision(
+              part.state.status,
+              output.length,
+              part.state.status === "pending" ? false : Boolean(part.state.metadata?.background),
+              view.get(part.id, "expanded"),
+              view.get(part.id, "errorExpanded"),
+            ),
+          })
+          if (part.state.status === "pending" || part.state.status === "running") streaming.add(key)
+        }
+      }
+
+      if (parts.some((part) => part.type === "tool" && part.tool === "task")) {
+        const key = `task:${message.id}`
+        list.push({
+          key,
+          messageID: message.id,
+          kind: "notice",
+          revision: rowRevision(
+            parts.some(
+              (part) =>
+                part.type === "tool" &&
+                part.tool === "task" &&
+                part.state.status === "running" &&
+                part.state.metadata?.background !== true,
+            ),
+          ),
+        })
+      }
+
+      if (message.error && message.error.name !== "MessageAbortedError") {
+        list.push({
+          key: `error:${message.id}`,
+          messageID: message.id,
+          kind: "notice",
+          revision: rowRevision(errorMessage(message.error), message.error.name),
+        })
+      }
+
+      const final = message.finish && !["tool-calls", "unknown"].includes(message.finish)
+      if (lastAssistant()?.id === message.id || final || message.error?.name === "MessageAbortedError") {
+        list.push({
+          key: `summary:${message.id}`,
+          messageID: message.id,
+          kind: "meta",
+          revision: rowRevision(
+            message.finish,
+            message.time.completed,
+            message.error?.name,
+            message.agent,
+            message.mode,
+          ),
+        })
+      }
+    }
+
+    const stable = stableRows(previousRows, list)
+    previousRows = stable.byKey
+    return { rows: stable.rows, chars, streaming }
+  })
+
+  const rows = createMemo(() => rowData().rows)
+
+  const rowIndexByMessage = createMemo(() => {
+    const index = new Map<string, number>()
+    rows().forEach((row, position) => {
+      if (!index.has(row.messageID)) index.set(row.messageID, position)
+    })
+    return index
+  })
+
+  const heightFor = (row: Row, index: number) => {
+    const width = contentWidth()
+    const measured = measurements.get(row.key, row.revision, width)
+    if (measured !== undefined) return measured
+    const expanded = view.get(row.partID, "expanded") || view.get(row.partID, "errorExpanded")
+    return estimateRowHeight(row, width, rowData().chars.get(row.key) ?? 0, expanded) + (row.kind === "tool" ? 1 : 0)
+  }
+
+  const positions = createMemo(() => {
+    measurements.version()
+    view.state()
+    return prefixPositions(rows(), heightFor)
+  })
+
+  const measureRow = (row: Row, el: BoxRenderable) => {
+    if (el.isDestroyed || el.height <= 0) return
+    measurements.report(row.key, row.revision, contentWidth(), el.height)
+  }
 
   const dimensions = useTerminalDimensions()
   const drawer = useDrawer()
@@ -408,11 +632,39 @@ export function Main() {
 
   onCleanup(commands.setHandler("hooks.list", () => openBottomPanel("hooks", () => <HooksPanel />)))
 
+  const windowed = () => rows().length >= WINDOW_MIN_ROWS
+
+  // Small sessions stay fully mounted, so keep using the rendered nodes for
+  // exact positions. Windowed sessions locate the target in the row table.
+  const scrollToMessageID = (messageID: string) => {
+    if (!scroll || scroll.isDestroyed) return false
+    if (!windowed()) {
+      const child = scroll.getChildren().find((item) => item.id === messageID)
+      if (!child) return false
+      scroll.scrollBy(child.y - scroll.y - 1)
+      return true
+    }
+    const index = rowIndexByMessage().get(messageID)
+    if (index === undefined) return false
+    scroll.scrollTo(positions()[index])
+    return true
+  }
+
   function previewMessage(messageID?: string) {
-    if (!messageID) return
-    if (!scroll || scroll.isDestroyed) return
-    const child = scroll.getChildren().find((item) => item.id === messageID)
-    if (child) scroll.scrollBy(child.y - scroll.y - 1)
+    if (messageID) scrollToMessageID(messageID)
+  }
+
+  function openMessagePanel(message: UserMessage) {
+    if (renderer.getSelection()?.getSelectedText()) return
+    openBottomPanel("message", () => (
+      <MessagePanel
+        messageID={message.id}
+        sessionID={route.sessionID}
+        queued={isQueuedMessage(message, pending())}
+        setPrompt={(promptInfo) => prompt?.set(promptInfo)}
+        editPrompt={(request) => prompt?.edit(request)}
+      />
+    ))
   }
 
   const attention = createSessionAttention({
@@ -449,35 +701,35 @@ export function Main() {
     void backgroundAttention.close()
   })
 
-  // Helper: Find next visible message boundary in direction
+  // Helper: Find the next user row above or below the viewport. Positions come
+  // from the row table, so the target does not need to be mounted.
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
-    const children = scroll.getChildren()
-    const messagesList = messages()
-    const scrollTop = scroll.y
-
-    // Get visible messages sorted by position, filtering for valid non-synthetic, non-ignored content
-    const visibleMessages = children
-      .filter((c) => {
-        if (!c.id) return false
-        const message = messagesList.find((m) => m.id === c.id)
-        if (!message) return false
-
-        // Check if message has valid non-synthetic, non-ignored text parts
-        const parts = sync.data.part[message.id]
-        if (!parts || !Array.isArray(parts)) return false
-
-        return parts.some((part) => part && part.type === "text" && !part.synthetic && !part.ignored)
-      })
-      .sort((a, b) => a.y - b.y)
-
-    if (visibleMessages.length === 0) return null
-
-    if (direction === "next") {
-      // Find first message below current position
-      return visibleMessages.find((c) => c.y > scrollTop + 10)?.id ?? null
+    if (!scroll || scroll.isDestroyed) return null
+    if (!windowed()) {
+      const scrollTop = scroll.y
+      const visibleMessages = scroll
+        .getChildren()
+        .filter((child) => {
+          if (!child.id) return false
+          const message = messages().find((item) => item.id === child.id)
+          if (!message) return false
+          const parts = sync.data.part[message.id]
+          if (!parts || !Array.isArray(parts)) return false
+          return parts.some((part) => part && part.type === "text" && !part.synthetic && !part.ignored)
+        })
+        .sort((left, right) => left.y - right.y)
+      if (visibleMessages.length === 0) return null
+      if (direction === "next") return visibleMessages.find((child) => child.y > scrollTop + 10)?.id ?? null
+      return visibleMessages.findLast((child) => child.y < scrollTop - 10)?.id ?? null
     }
-    // Find last message above current position
-    return [...visibleMessages].reverse().find((c) => c.y < scrollTop - 10)?.id ?? null
+    const top = scroll.scrollTop
+    const userRows = rows().flatMap((row, index) => (row.kind === "user" ? [{ row, index }] : []))
+    if (direction === "next") {
+      const target = userRows.find((item) => positions()[item.index] > top + 10)
+      return target?.row.messageID ?? null
+    }
+    const target = userRows.findLast((item) => positions()[item.index] < top - 10)
+    return target?.row.messageID ?? null
   }
 
   // Helper: Scroll to message in direction or fallback to page scroll
@@ -489,8 +741,7 @@ export function Main() {
       return
     }
 
-    const child = scroll.getChildren().find((c) => c.id === targetID)
-    if (child) scroll.scrollBy(child.y - scroll.y - 1)
+    scrollToMessageID(targetID)
   }
 
   function toBottom() {
@@ -811,10 +1062,7 @@ export function Main() {
           )
 
           if (hasValidTextPart) {
-            const child = scroll.getChildren().find((child) => {
-              return child.id === message.id
-            })
-            if (child) scroll.scrollBy(child.y - scroll.y - 1)
+            scrollToMessageID(message.id)
             break
           }
         }
@@ -1160,39 +1408,6 @@ export function Main() {
     bindings: tuiConfig.keybinds.get("session.background"),
   }))
 
-  const revertInfo = createMemo(() => session()?.revert)
-  const revertMessageID = createMemo(() => revertInfo()?.messageID)
-  const revertBoundary = createMemo(() => {
-    const messageID = revertMessageID()
-    if (!messageID) return undefined
-    return messages().find((m) => m.id === messageID)
-  })
-
-  const atOrAfterRevert = (message: Message) => {
-    const boundary = revertBoundary()
-    return boundary !== undefined && !orderedBefore(message, boundary)
-  }
-
-  const revertDiffFiles = createMemo(() => getRevertDiffFiles(revertInfo()?.diff ?? ""))
-
-  const revertRevertedMessages = createMemo(() => {
-    const boundary = revertBoundary()
-    if (!boundary) return []
-    return messages().filter((x) => x.role === "user" && !orderedBefore(x, boundary))
-  })
-
-  const revert = createMemo(() => {
-    const info = revertInfo()
-    if (!info) return
-    if (!info.messageID) return
-    return {
-      messageID: info.messageID,
-      reverted: revertRevertedMessages(),
-      diff: info.diff,
-      diffFiles: revertDiffFiles(),
-    }
-  })
-
   // snap to bottom when session changes
   createEffect(on(() => route.sessionID, toBottom))
 
@@ -1225,6 +1440,9 @@ export function Main() {
           providers,
           sync,
           tui: tuiConfig,
+          view,
+          rowHeight: heightFor,
+          measureRow,
           shortcuts,
         }}
       >
@@ -1250,102 +1468,119 @@ export function Main() {
                 scrollAcceleration={scrollAcceleration()}
               >
                 <box height={1} />
-                <For each={messages()}>
-                  {(message, index) => (
-                    <Switch>
-                      <Match when={message.id === revert()?.messageID}>
-                        {(function () {
-                          const [hover, setHover] = createSignal(false)
+                <Show
+                  when={rows().length >= WINDOW_MIN_ROWS}
+                  fallback={
+                    <For each={messages()}>
+                      {(message, index) => (
+                        <Switch>
+                          <Match when={message.id === revert()?.messageID}>
+                            {(function () {
+                              const [hover, setHover] = createSignal(false)
 
-                          const handleUnrevert = async () => {
-                            if (!bottomZone) return
-                            const confirmed = await askConfirm(bottomZone, {
-                              title: "Confirm Redo",
-                              body: "Are you sure you want to restore the reverted messages?",
-                              confirmLabel: t("ask.confirm.confirm"),
-                              cancelLabel: t("ask.confirm.cancel"),
-                            })
-                            if (confirmed) {
-                              keymap.dispatchCommand("session.redo")
-                            }
-                          }
+                              const handleUnrevert = async () => {
+                                if (!bottomZone) return
+                                const confirmed = await askConfirm(bottomZone, {
+                                  title: "Confirm Redo",
+                                  body: "Are you sure you want to restore the reverted messages?",
+                                  confirmLabel: t("ask.confirm.confirm"),
+                                  cancelLabel: t("ask.confirm.cancel"),
+                                })
+                                if (confirmed) {
+                                  keymap.dispatchCommand("session.redo")
+                                }
+                              }
 
-                          return (
-                            <box
-                              onMouseOver={() => setHover(true)}
-                              onMouseOut={() => setHover(false)}
-                              onMouseUp={handleUnrevert}
-                              marginTop={1}
-                              flexShrink={0}
-                              border={["left"]}
-                              customBorderChars={SplitBorder.customBorderChars}
-                              borderColor={theme.backgroundPanel}
-                            >
-                              <box
-                                paddingTop={1}
-                                paddingBottom={1}
-                                paddingLeft={2}
-                                backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-                              >
-                                <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
-                                <text fg={theme.textMuted}>
-                                  <span style={{ fg: theme.text }}>{shortcuts.redo()}</span> or /redo to restore
-                                </text>
-                                <Show when={revert()!.diffFiles?.length}>
-                                  <box marginTop={1}>
-                                    <For each={revert()!.diffFiles}>
-                                      {(file) => (
-                                        <text fg={theme.text}>
-                                          {file.filename}
-                                          <Show when={file.additions > 0}>
-                                            <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
-                                          </Show>
-                                          <Show when={file.deletions > 0}>
-                                            <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
-                                          </Show>
-                                        </text>
-                                      )}
-                                    </For>
+                              return (
+                                <box
+                                  onMouseOver={() => setHover(true)}
+                                  onMouseOut={() => setHover(false)}
+                                  onMouseUp={handleUnrevert}
+                                  marginTop={1}
+                                  flexShrink={0}
+                                  border={["left"]}
+                                  customBorderChars={SplitBorder.customBorderChars}
+                                  borderColor={theme.backgroundPanel}
+                                >
+                                  <box
+                                    paddingTop={1}
+                                    paddingBottom={1}
+                                    paddingLeft={2}
+                                    backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+                                  >
+                                    <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
+                                    <text fg={theme.textMuted}>
+                                      <span style={{ fg: theme.text }}>{shortcuts.redo()}</span> or /redo to restore
+                                    </text>
+                                    <Show when={revert()!.diffFiles?.length}>
+                                      <box marginTop={1}>
+                                        <For each={revert()!.diffFiles}>
+                                          {(file) => (
+                                            <text fg={theme.text}>
+                                              {file.filename}
+                                              <Show when={file.additions > 0}>
+                                                <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
+                                              </Show>
+                                              <Show when={file.deletions > 0}>
+                                                <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
+                                              </Show>
+                                            </text>
+                                          )}
+                                        </For>
+                                      </box>
+                                    </Show>
                                   </box>
-                                </Show>
-                              </box>
-                            </box>
-                          )
-                        })()}
-                      </Match>
-                      <Match when={atOrAfterRevert(message)}>
-                        <></>
-                      </Match>
-                      <Match when={message.role === "user"}>
-                        <UserMessage
-                          index={index()}
-                          onMouseUp={() => {
-                            if (renderer.getSelection()?.getSelectedText()) return
-                            openBottomPanel("message", () => (
-                              <MessagePanel
-                                messageID={message.id}
-                                sessionID={route.sessionID}
-                                queued={isQueuedMessage(message as UserMessage, pending())}
-                                setPrompt={(promptInfo) => prompt?.set(promptInfo)}
-                                editPrompt={(request) => prompt?.edit(request)}
-                              />
-                            ))
-                          }}
-                          message={message as UserMessage}
-                          parts={sync.data.part[message.id] ?? []}
-                          pending={pending()}
-                        />
-                      </Match>
-                      <Match when={message.role === "assistant"}>
-                        <AssistantMessage
-                          last={lastAssistant()?.id === message.id}
-                          message={message as AssistantMessage}
-                          parts={sync.data.part[message.id] ?? []}
-                        />
-                      </Match>
-                    </Switch>
-                  )}
-                </For>
+                                </box>
+                              )
+                            })()}
+                          </Match>
+                          <Match when={atOrAfterRevert(message)}>
+                            <></>
+                          </Match>
+                          <Match when={message.role === "user"}>
+                            <UserMessage
+                              index={index()}
+                              onMouseUp={() => {
+                                if (renderer.getSelection()?.getSelectedText()) return
+                                openBottomPanel("message", () => (
+                                  <MessagePanel
+                                    messageID={message.id}
+                                    sessionID={route.sessionID}
+                                    queued={isQueuedMessage(message as UserMessage, pending())}
+                                    setPrompt={(promptInfo) => prompt?.set(promptInfo)}
+                                    editPrompt={(request) => prompt?.edit(request)}
+                                  />
+                                ))
+                              }}
+                              message={message as UserMessage}
+                              parts={sync.data.part[message.id] ?? []}
+                              pending={pending()}
+                            />
+                          </Match>
+                          <Match when={message.role === "assistant"}>
+                            <AssistantMessage
+                              last={lastAssistant()?.id === message.id}
+                              message={message as AssistantMessage}
+                              parts={sync.data.part[message.id] ?? []}
+                            />
+                          </Match>
+                        </Switch>
+                      )}
+                    </For>
+                  }
+                >
+                  <SessionTranscript
+                    rows={rows()}
+                    positions={positions()}
+                    pinned={(row) =>
+                      rowData().streaming.has(row.key) ||
+                      view.get(row.partID, "expanded") ||
+                      view.get(row.partID, "errorExpanded")
+                    }
+                    revert={revert()}
+                    onUserMouseUp={openMessagePanel}
+                  />
+                </Show>
               </scrollbox>
               <box flexShrink={0}>
                 <Show when={session()?.parentID}>
@@ -1368,6 +1603,224 @@ export function Main() {
         </box>
       </context.Provider>
     </LocationProvider>
+  )
+}
+
+type RevertState = {
+  messageID: string
+  reverted: readonly unknown[]
+  diffFiles: ReturnType<typeof getRevertDiffFiles>
+}
+
+function RevertRow(props: { revert: RevertState | undefined }) {
+  const { theme } = useTheme()
+  const bottomZone = useBottomZoneOptional()
+  const keymap = useGraphagentKeymap()
+  const ctx = use()
+  const [hover, setHover] = createSignal(false)
+
+  const handleUnrevert = async () => {
+    if (!bottomZone) return
+    const confirmed = await askConfirm(bottomZone, {
+      title: "Confirm Redo",
+      body: "Are you sure you want to restore the reverted messages?",
+      confirmLabel: t("ask.confirm.confirm"),
+      cancelLabel: t("ask.confirm.cancel"),
+    })
+    if (confirmed) keymap.dispatchCommand("session.redo")
+  }
+
+  return (
+    <Show when={props.revert}>
+      <box
+        onMouseOver={() => setHover(true)}
+        onMouseOut={() => setHover(false)}
+        onMouseUp={handleUnrevert}
+        marginTop={1}
+        flexShrink={0}
+        border={["left"]}
+        customBorderChars={SplitBorder.customBorderChars}
+        borderColor={theme.backgroundPanel}
+      >
+        <box
+          paddingTop={1}
+          paddingBottom={1}
+          paddingLeft={2}
+          backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+        >
+          <text fg={theme.textMuted}>{props.revert!.reverted.length} message reverted</text>
+          <text fg={theme.textMuted}>
+            <span style={{ fg: theme.text }}>{ctx.shortcuts.redo()}</span> or /redo to restore
+          </text>
+          <Show when={props.revert!.diffFiles.length}>
+            <box marginTop={1}>
+              <For each={props.revert!.diffFiles}>
+                {(file) => (
+                  <text fg={theme.text}>
+                    {file.filename}
+                    <Show when={file.additions > 0}>
+                      <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
+                    </Show>
+                    <Show when={file.deletions > 0}>
+                      <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
+                    </Show>
+                  </text>
+                )}
+              </For>
+            </box>
+          </Show>
+        </box>
+      </box>
+    </Show>
+  )
+}
+
+function SessionTranscript(props: {
+  rows: Row[]
+  positions: number[]
+  pinned: (row: Row) => boolean
+  revert: RevertState | undefined
+  onUserMouseUp: (message: UserMessage) => void
+}) {
+  const ctx = use()
+  const renderer = useRenderer()
+  const [first, setFirst] = createSignal(0)
+  const [last, setLast] = createSignal(0)
+  let controller: BoxRenderable | undefined
+
+  onCleanup(() => {
+    if (controller) renderer.unregisterLifecyclePass(controller)
+  })
+
+  const mounted = (row: Row, index: number) =>
+    props.pinned(row) ||
+    index >= props.rows.length - TAIL_ALWAYS ||
+    (index >= first() - PART_OVERSCAN && index <= last() + PART_OVERSCAN)
+
+  const gaps = createMemo(() => {
+    const result = new Map<number, number>()
+    let index = 0
+    while (index < props.rows.length) {
+      if (mounted(props.rows[index], index)) {
+        index++
+        continue
+      }
+      const start = index
+      while (index < props.rows.length && !mounted(props.rows[index], index)) index++
+      result.set(start, props.positions[index] - props.positions[start])
+    }
+    return result
+  })
+
+  return (
+    <>
+      <box
+        height={0}
+        ref={(el) => {
+          controller = el
+          el.onLifecyclePass = () => {
+            const scroll = ctx.scroll()
+            if (!scroll || scroll.isDestroyed) return
+            const range = visibleRange(props.positions, scroll.scrollTop, scroll.viewport.height)
+            if (range.first === first() && range.last === last()) return
+            batch(() => {
+              setFirst(range.first)
+              setLast(range.last)
+            })
+          }
+          renderer.registerLifecyclePass(el)
+        }}
+      />
+      <For each={props.rows}>
+        {(row, index) => (
+          <Switch>
+            <Match when={mounted(row, index())}>
+              <SessionRow row={row} revert={props.revert} onUserMouseUp={props.onUserMouseUp} />
+            </Match>
+            <Match when={gaps().has(index())}>
+              <box height={gaps().get(index())!} />
+            </Match>
+          </Switch>
+        )}
+      </For>
+    </>
+  )
+}
+
+function SessionRow(props: {
+  row: Row
+  revert: RevertState | undefined
+  onUserMouseUp: (message: UserMessage) => void
+}) {
+  const ctx = use()
+  const renderer = useRenderer()
+  const sync = useSync()
+  const messages = createMemo(() => sync.data.message[ctx.sessionID] ?? [])
+  const message = createMemo(() => messages().find((item) => item.id === props.row.messageID))
+  const parts = createMemo(() => sync.data.part[props.row.messageID] ?? [])
+  const part = createMemo(() => {
+    if (!props.row.partID) return undefined
+    return parts().find((item) => item.id === props.row.partID)
+  })
+  const index = createMemo(() => messages().findIndex((item) => item.id === props.row.messageID))
+  const pending = createMemo(() => {
+    const completed = messages().findLast((item) => item.role === "assistant" && item.time.completed)
+    return messages().findLast(
+      (item) => item.role === "assistant" && !item.time.completed && (!completed || !orderedBefore(item, completed)),
+    )
+  })
+  const last = createMemo(() => {
+    const current = message()
+    return current?.role === "assistant" && messages().findLast((item) => item.role === "assistant")?.id === current.id
+  })
+  let node: BoxRenderable | undefined
+  onCleanup(() => {
+    if (node) renderer.unregisterLifecyclePass(node)
+  })
+
+  return (
+    <box
+      flexShrink={0}
+      paddingTop={props.row.kind === "tool" ? 1 : 0}
+      ref={(el) => {
+        node = el
+        el.onLifecyclePass = () => ctx.measureRow(props.row, el)
+        renderer.registerLifecyclePass(el)
+      }}
+    >
+      <Switch>
+        <Match when={props.row.kind === "revert"}>
+          <RevertRow revert={props.revert} />
+        </Match>
+        <Match when={props.row.kind === "user" && message()?.role === "user"}>
+          <UserMessage
+            index={index()}
+            message={message() as UserMessage}
+            parts={parts()}
+            pending={pending()}
+            onMouseUp={() => props.onUserMouseUp(message() as UserMessage)}
+          />
+        </Match>
+        <Match when={props.row.kind === "text" && part()?.type === "text"}>
+          <TextPart last={false} part={part() as TextPart} message={message() as AssistantMessage} />
+        </Match>
+        <Match when={props.row.kind === "reasoning" && part()?.type === "reasoning"}>
+          <ReasoningPart last={false} part={part() as ReasoningPart} message={message() as AssistantMessage} />
+        </Match>
+        <Match when={props.row.kind === "tool" && part()?.type === "tool"}>
+          <ToolPart last={false} part={part() as ToolPart} message={message() as AssistantMessage} />
+        </Match>
+        <Match when={props.row.kind === "notice" && props.row.key.startsWith("task:")}>
+          <AssistantTaskHint parts={parts()} />
+        </Match>
+        <Match when={props.row.kind === "notice" && props.row.key.startsWith("error:")}>
+          <AssistantError message={message() as AssistantMessage} />
+        </Match>
+        <Match when={props.row.kind === "meta"}>
+          <AssistantSummary message={message() as AssistantMessage} last={last()} />
+        </Match>
+      </Switch>
+    </box>
   )
 }
 
@@ -1478,34 +1931,6 @@ function UserMessage(props: {
 }
 
 function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
-  const ctx = use()
-  const local = useLocal()
-  const { theme } = useTheme()
-  const sync = useSync()
-  const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
-  const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
-
-  const final = createMemo(() => {
-    return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
-  })
-
-  const duration = createMemo(() => {
-    if (!final()) return 0
-    if (!props.message.time.completed) return 0
-    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    if (!user || !user.time) return 0
-    return props.message.time.completed - user.time.created
-  })
-
-  const childShortcut = ctx.shortcuts.childFirst
-  const backgroundShortcut = ctx.shortcuts.background
-  const retryBlocked = createMemo(() => {
-    const error = recordValue(props.message.error)
-    if (error?.name !== "APIError") return false
-    const metadata = recordValue(recordValue(error.data)?.metadata)
-    return typeof metadata?.retryBlockedBy === "string"
-  })
-
   return (
     <>
       <For each={props.parts}>
@@ -1523,74 +1948,120 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           )
         }}
       </For>
-      <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
-        <box paddingTop={1} paddingLeft={3}>
-          <text fg={theme.text}>
-            {childShortcut()}
-            <span style={{ fg: theme.textMuted }}> view subagents</span>
-            <Show
-              when={props.parts.some(
-                (x) =>
-                  x.type === "tool" &&
-                  x.tool === "task" &&
-                  x.state.status === "running" &&
-                  x.state.metadata?.background !== true,
-              )}
+      <AssistantTaskHint parts={props.parts} />
+      <AssistantError message={props.message} />
+      <AssistantSummary message={props.message} last={props.last} />
+    </>
+  )
+}
+
+function AssistantTaskHint(props: { parts: Part[] }) {
+  const ctx = use()
+  const { theme } = useTheme()
+  return (
+    <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
+      <box paddingTop={1} paddingLeft={3}>
+        <text fg={theme.text}>
+          {ctx.shortcuts.childFirst()}
+          <span style={{ fg: theme.textMuted }}> view subagents</span>
+          <Show
+            when={props.parts.some(
+              (x) =>
+                x.type === "tool" &&
+                x.tool === "task" &&
+                x.state.status === "running" &&
+                x.state.metadata?.background !== true,
+            )}
+          >
+            <span style={{ fg: theme.textMuted }}> · </span>
+            {ctx.shortcuts.background()}
+            <span style={{ fg: theme.textMuted }}> background</span>
+          </Show>
+        </text>
+      </box>
+    </Show>
+  )
+}
+
+function AssistantError(props: { message: AssistantMessage }) {
+  const { theme } = useTheme()
+  const retryBlocked = createMemo(() => {
+    const error = recordValue(props.message.error)
+    if (error?.name !== "APIError") return false
+    const metadata = recordValue(recordValue(error.data)?.metadata)
+    return typeof metadata?.retryBlockedBy === "string"
+  })
+  return (
+    <Show when={props.message.error && props.message.error.name !== "MessageAbortedError"}>
+      <box
+        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+        border={["left"]}
+        paddingTop={1}
+        paddingBottom={1}
+        paddingLeft={2}
+        marginTop={1}
+        backgroundColor={theme.backgroundPanel}
+        customBorderChars={SplitBorder.customBorderChars}
+        borderColor={theme.error}
+      >
+        <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
+        <Show when={retryBlocked()}>
+          <text fg={theme.textMuted}>
+            Tools started in this turn, so it was not replayed automatically. Retry manually.
+          </text>
+        </Show>
+      </box>
+    </Show>
+  )
+}
+
+function AssistantSummary(props: { message: AssistantMessage; last: boolean }) {
+  const local = useLocal()
+  const ctx = use()
+  const sync = useSync()
+  const { theme } = useTheme()
+  const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
+  const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
+
+  const final = createMemo(() => {
+    return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
+  })
+
+  const duration = createMemo(() => {
+    if (!final()) return 0
+    if (!props.message.time.completed) return 0
+    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
+    if (!user || !user.time) return 0
+    return props.message.time.completed - user.time.created
+  })
+
+  return (
+    <Switch>
+      <Match when={props.last || final() || props.message.error?.name === "MessageAbortedError"}>
+        <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
+          <text marginTop={1}>
+            <span
+              style={{
+                fg:
+                  props.message.error?.name === "MessageAbortedError"
+                    ? theme.textMuted
+                    : local.agent.color(props.message.agent),
+              }}
             >
-              <span style={{ fg: theme.textMuted }}> · </span>
-              {backgroundShortcut()}
-              <span style={{ fg: theme.textMuted }}> background</span>
+              ▣{" "}
+            </span>{" "}
+            <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
+            <span style={{ fg: theme.textMuted }}> · {model()}</span>
+            <Show when={duration()}>
+              <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
+            </Show>
+            <Show when={props.message.error?.name === "MessageAbortedError"}>
+              <span style={{ fg: theme.textMuted }}> · interrupted</span>
             </Show>
           </text>
         </box>
-      </Show>
-      <Show when={props.message.error && props.message.error.name !== "MessageAbortedError"}>
-        <box
-          ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-          border={["left"]}
-          paddingTop={1}
-          paddingBottom={1}
-          paddingLeft={2}
-          marginTop={1}
-          backgroundColor={theme.backgroundPanel}
-          customBorderChars={SplitBorder.customBorderChars}
-          borderColor={theme.error}
-        >
-          <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
-          <Show when={retryBlocked()}>
-            <text fg={theme.textMuted}>
-              Tools started in this turn, so it was not replayed automatically. Retry manually.
-            </text>
-          </Show>
-        </box>
-      </Show>
-      <Switch>
-        <Match when={props.last || final() || props.message.error?.name === "MessageAbortedError"}>
-          <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
-            <text marginTop={1}>
-              <span
-                style={{
-                  fg:
-                    props.message.error?.name === "MessageAbortedError"
-                      ? theme.textMuted
-                      : local.agent.color(props.message.agent),
-                }}
-              >
-                ▣{" "}
-              </span>{" "}
-              <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
-              <span style={{ fg: theme.textMuted }}> · {model()}</span>
-              <Show when={duration()}>
-                <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
-              </Show>
-              <Show when={props.message.error?.name === "MessageAbortedError"}>
-                <span style={{ fg: theme.textMuted }}> · interrupted</span>
-              </Show>
-            </text>
-          </box>
-        </Match>
-      </Switch>
-    </>
+      </Match>
+    </Switch>
   )
 }
 
@@ -1607,7 +2078,9 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   const ctx = use()
   // Collapsed by default in hide mode: a single line throughout, so the
   // layout never shifts. Click to open the full markdown block, click to close.
-  const [expanded, setExpanded] = createSignal(false)
+  // Expansion lives in the session view state so unmounting a windowed row
+  // does not lose it.
+  const expanded = () => ctx.view.get(props.part.id, "expanded")
 
   const content = createMemo(() => {
     // OpenRouter encrypts some reasoning blocks; drop the placeholder.
@@ -1626,7 +2099,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
 
   const toggle = () => {
     if (!inMinimal()) return
-    setExpanded((prev) => !prev)
+    ctx.view.set(props.part.id, "expanded", !expanded())
   }
 
   return (
@@ -1849,7 +2322,7 @@ function GenericTool(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
   const output = createMemo(() => props.output?.trim() ?? "")
-  const [expanded, setExpanded] = createSignal(false)
+  const expanded = () => ctx.view.get(props.part.id, "expanded")
   const maxLines = 3
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
   const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
@@ -1870,7 +2343,7 @@ function GenericTool(props: ToolProps) {
       <BlockTool
         title={attention() ? `# ${props.tool}: blocked` : `# ${props.tool} ${input(props.input)}`}
         part={props.part}
-        onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+        onClick={collapsed().overflow ? () => ctx.view.set(props.part.id, "expanded", !expanded()) : undefined}
       >
         <box gap={1}>
           <Show when={attention()}>{(reason) => <text fg={theme.error}>{reason()}</text>}</Show>
@@ -1902,7 +2375,7 @@ function InlineTool(props: {
   const sync = useSync()
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
-  const [errorExpanded, setErrorExpanded] = createSignal(false)
+  const errorExpanded = () => ctx.view.get(props.part.id, "errorExpanded")
 
   const permission = createMemo(() => {
     const callID = sync.data.permission[ctx.sessionID]?.at(0)?.tool?.callID
@@ -1951,7 +2424,7 @@ function InlineTool(props: {
       onMouseUp={() => {
         if (renderer.getSelection()?.getSelectedText()) return
         if (failed()) {
-          setErrorExpanded((value) => !value)
+          ctx.view.set(props.part.id, "errorExpanded", !errorExpanded())
           return
         }
         props.onClick?.()
@@ -2100,7 +2573,7 @@ function Shell(props: ToolProps) {
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
   const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
-  const [expanded, setExpanded] = createSignal(false)
+  const expanded = () => ctx.view.get(props.part.id, "expanded")
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
   const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
@@ -2129,7 +2602,7 @@ function Shell(props: ToolProps) {
         <BlockTool
           title={title()}
           part={props.part}
-          onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+          onClick={collapsed().overflow ? () => ctx.view.set(props.part.id, "expanded", !expanded()) : undefined}
         >
           <box gap={1}>
             <Show when={isRunning()} fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}>
