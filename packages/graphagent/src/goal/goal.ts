@@ -3,11 +3,12 @@
 
 export * as Goal from "./goal"
 
-import { Effect, Layer, Context, Schema, Fiber, Cause, Exit } from "effect"
+import { Effect, Layer, Context, Schema, Fiber, Cause, Exit, Option } from "effect"
 import { desc, eq, sql } from "drizzle-orm"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Database } from "@graphagent/core/database/database"
+import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { GoalState } from "./state"
 import { GoalOutcomeTable, GoalStateTable } from "@graphagent/core/goal/sql"
@@ -249,6 +250,53 @@ export interface Interface {
   }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/Goal") {}
+
+const DEFAULT_AWAIT_DEADLINE_MS = 30 * 60_000
+// A wait on a watch should outlive the watch itself: the terminal notice (or
+// the wake it produces) needs time to arrive before the wait expires.
+const WATCH_AWAIT_MARGIN_MS = 60_000
+
+/**
+ * #1067: a judge that says "blocked" while the session still has running work
+ * is usually looking at an external wait (CI, a background task), not at a
+ * real dead end. Prefer the newest running watch_pr job, then any running job
+ * owned by the session, so the verdict can be downgraded to `await` instead of
+ * pausing the goal.
+ *
+ * Resolved at call time: headless runtimes may omit the background registry,
+ * in which case no downgrade is possible and the verdict behaves as before.
+ */
+const runningWaitTarget = (sessionID: SessionID) =>
+  Effect.gen(function* () {
+    const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
+    if (!background) return undefined
+    const jobs = yield* background.list().pipe(Effect.catchCause(() => Effect.succeed([])))
+    // The job's sessionId is the child session for a background task; the
+    // caller is recorded as parentSessionId, so accept either as ownership.
+    const owned = jobs.filter(
+      (job) =>
+        job.status === "running" &&
+        (job.metadata?.sessionId === sessionID || job.metadata?.parentSessionId === sessionID),
+    )
+    const newestFirst = (values: ReadonlyArray<BackgroundJob.Info>) =>
+      [...values].toSorted((a, b) => b.started_at - a.started_at)
+    return newestFirst(owned.filter((job) => job.type === "watch_pr"))[0] ?? newestFirst(owned)[0]
+  })
+
+const awaitWaitFor = (job: BackgroundJob.Info, now: number): GoalState.Wait => {
+  const source = job.type === "watch_pr" ? ("watch_pr" as const) : ("background_job" as const)
+  const deadlineAt = job.metadata?.deadlineAt
+  return {
+    source,
+    wait_id: job.id,
+    deadline:
+      source === "watch_pr" && typeof deadlineAt === "number"
+        ? Math.max(now, deadlineAt) + WATCH_AWAIT_MARGIN_MS
+        : now + DEFAULT_AWAIT_DEADLINE_MS,
+    max_wakes: GoalState.nni(1),
+    wakes: GoalState.nni(0),
+  }
+}
 
 const serviceLayer = Layer.effect(
   Service,
@@ -905,19 +953,28 @@ const serviceLayer = Layer.effect(
       })
     })
 
+    // #1067: two-stage expiry. The first expiry is not a pause — it turns the
+    // expired await into a blocked-review marker and returns the goal to
+    // active. GoalLoop.expireWaiting then dispatches ONE bounded review turn.
+    // A review turn that declares a new intent replaces the marker; one that
+    // declares nothing leaves it in place, and the next idle pauses the goal
+    // visibly through afterIdle's blocked-intent branch.
     const expireWait = Effect.fn("Goal.expireWait")(function* (sessionID: SessionID, now = Date.now()) {
       return yield* transition(sessionID, (state) => {
         if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
           return { tag: "noop", value: undefined }
         const wait = state.intent.wait
         if (now < wait.deadline && wait.wakes < wait.max_wakes) return { tag: "noop", value: undefined }
+        const expiredReason =
+          now >= wait.deadline
+            ? `等待 ${wait.source}:${wait.wait_id} 超时`
+            : `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`
         const next = GoalState.advance(state, {
-          status: "paused",
-          paused_reason:
-            now >= wait.deadline
-              ? `等待 ${wait.source}:${wait.wait_id} 超时`
-              : `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`,
-          intent: { kind: "blocked", reason: "wait expired" },
+          status: "active",
+          intent: { kind: "blocked", reason: `${expiredReason}；复核回合未取得进展` },
+          paused_reason: undefined,
+          last_reason: expiredReason,
+          last_turn_at: now,
         })
         return { tag: "save", state: next, value: next }
       })
@@ -1041,6 +1098,9 @@ const serviceLayer = Layer.effect(
       expected: { readonly goalID: string; readonly revision: number },
       judged?: string,
     ) {
+      // Resolve outside the transaction: the downgrade must not pause a goal
+      // that still has running work the judge could not see.
+      const waitTarget = verdict === "blocked" ? yield* runningWaitTarget(sessionID) : undefined
       return yield* transition(sessionID, (state) => {
         if (!state || state.status !== "active" || !matchesExpected(state, expected))
           return { tag: "noop", value: undefined }
@@ -1067,6 +1127,29 @@ const serviceLayer = Layer.effect(
         }
 
         if (verdict === "blocked") {
+          // The judge cannot see running background work, so "blocked" while
+          // this session owns a running job usually means "waiting on CI".
+          // Downgrade to an await of that job instead of pausing; an explicit
+          // agent-declared blocked intent is never overridden.
+          if (waitTarget && state.intent?.kind !== "blocked") {
+            const updated = GoalState.advance(state, {
+              status: "waiting",
+              last_turn_at: now,
+              last_verdict: "blocked",
+              last_reason: reason,
+              intent: { kind: "await", wait: awaitWaitFor(waitTarget, now) },
+              consecutive_parse_failures: GoalState.nni(newParseFailures),
+            })
+            return {
+              tag: "save",
+              state: updated,
+              value: {
+                state: updated,
+                shouldContinue: false,
+                message: `⏳ 评审判定 blocked，但本会话仍有运行中的 ${waitTarget.type} 任务（${waitTarget.id}）；已改为等待该任务完成，不暂停。`,
+              },
+            }
+          }
           const updated = GoalState.advance(state, {
             status: "paused",
             last_turn_at: now,

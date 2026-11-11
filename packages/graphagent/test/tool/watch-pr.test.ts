@@ -569,8 +569,16 @@ describe("watch_pr notice and tool", () => {
 
   const started: BackgroundJob.StartInput[] = []
   const running: BackgroundJob.Info[] = []
+  const cancelled: string[] = []
   const layer = Layer.mock(BackgroundJob.Service, {
     list: () => Effect.sync(() => running),
+    cancel: (id) =>
+      Effect.sync(() => {
+        cancelled.push(id)
+        const info = running.find((job) => job.id === id)
+        if (info) info.status = "cancelled"
+        return info
+      }),
     start: (input) =>
       Effect.sync(() => {
         started.push(input)
@@ -588,6 +596,7 @@ describe("watch_pr notice and tool", () => {
   const reset = () => {
     started.length = 0
     running.length = 0
+    cancelled.length = 0
     sessionMessages = []
     sessionMissing = false
   }
@@ -620,22 +629,111 @@ describe("watch_pr notice and tool", () => {
   withBackground.instance("reuses a running watch for the same session and URL", () =>
     Effect.gen(function* () {
       reset()
+      const deadlineAt = Date.now() + 90_000
       running.push({
         id: "job_existing",
         type: "watch_pr",
         status: "running",
         started_at: 0,
-        metadata: { sessionId: summary.sessionID, url: githubRequest.url, provider: "github" },
+        metadata: { sessionId: summary.sessionID, url: githubRequest.url, provider: "github", head: "aaa", deadlineAt },
       })
       const tool = yield* (yield* WatchPrTool).init()
       const result = yield* tool.execute({ url: githubRequest.url }, {
         ...summary,
-        extra: { promptOps },
+        extra: {
+          promptOps,
+          watchPrRunner: (() => Effect.succeed(githubResult(snapshot({ head: "aaa" })))) as Runner,
+        },
       } as Tool.Context)
-      expect(result.metadata).toMatchObject({ jobId: "job_existing" })
+      expect(result.metadata).toMatchObject({ jobId: "job_existing", head: "aaa", deadlineAt })
       expect(result.output).toContain("Already watching")
+      expect(result.output).toContain("head: aaa")
+      expect(result.output).toContain(new Date(deadlineAt).toISOString())
+      expect(result.output).toMatch(/\d+s remaining/)
       expect(started).toHaveLength(0)
+      expect(cancelled).toHaveLength(0)
     }),
+  )
+
+  withBackground.instance("a re-watch after a head change cancels the stale watch and starts a new one", () =>
+    Effect.gen(function* () {
+      reset()
+      running.push({
+        id: "job_existing",
+        type: "watch_pr",
+        status: "running",
+        started_at: 0,
+        metadata: {
+          sessionId: summary.sessionID,
+          url: githubRequest.url,
+          provider: "github",
+          head: "aaa",
+          deadlineAt: Date.now() + 90_000,
+        },
+      })
+      const tool = yield* (yield* WatchPrTool).init()
+      const result = yield* tool.execute({ url: githubRequest.url }, {
+        ...summary,
+        extra: {
+          promptOps,
+          watchPrRunner: (() => Effect.succeed(githubResult(snapshot({ head: "bbb" })))) as Runner,
+        },
+      } as Tool.Context)
+      expect(cancelled).toEqual(["job_existing"])
+      expect(started).toHaveLength(1)
+      expect(result.metadata).toMatchObject({ jobId: "job_test" })
+      expect(result.output).toContain("Replaced job job_existing")
+      expect(result.output).toContain("watched head aaa")
+      expect(result.output).toContain("current head bbb")
+    }),
+  )
+
+  withBackground.instance("a re-watch from the terminal notice turn starts a new job", () =>
+    Effect.gen(function* () {
+      reset()
+      const tool = yield* (yield* WatchPrTool).init()
+      let rewatching = false
+      let secondOutput: string | undefined
+      yield* tool.execute({ url: githubRequest.url, deadline_seconds: 10, poll_seconds: 5 }, {
+        ...summary,
+        extra: {
+          promptOps: {
+            ...promptOps,
+            prompt: () =>
+              Effect.gen(function* () {
+                if (rewatching) {
+                  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                  return {} as unknown as SessionV1.WithParts
+                }
+                rewatching = true
+                const again = yield* tool.execute({ url: githubRequest.url }, {
+                  ...summary,
+                  extra: {
+                    promptOps,
+                    watchPrRunner: (() => Effect.die("the re-watch is deduped or replaced without polling")) as Runner,
+                  },
+                } as Tool.Context)
+                secondOutput = again.output
+                // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- prompt acknowledgement is unused
+                return {} as unknown as SessionV1.WithParts
+              }),
+          },
+          watchPrRunner: (() => Effect.succeed(githubResult(snapshot({ head: "a" })))) as Runner,
+        },
+      } as Tool.Context)
+      expect(started).toHaveLength(1)
+      // The first job's terminal notice is being delivered while the registry
+      // still reports it as running; the finishing marker must let the
+      // re-watch start a replacement instead of being deduplicated away.
+      const run = started[0]?.run
+      if (!run) throw new Error("expected a started job")
+      const fiber = yield* Effect.forkChild(run)
+      yield* TestClock.adjust(Duration.seconds(11))
+      yield* Fiber.join(fiber)
+      expect(rewatching).toBe(true)
+      expect(started).toHaveLength(2)
+      expect(secondOutput).toContain("job_test")
+    }).pipe(Effect.provide(TestClock.layer())),
   )
 
   withBackground.instance("delivers a stopped notice when the job defects", () =>

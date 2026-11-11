@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Effect, Option, Schema } from "effect"
+import { BackgroundJob } from "@/background/job"
 import * as Tool from "./tool"
 import DESCRIPTION from "./goal.txt"
 import { Goal } from "../goal/goal"
@@ -46,6 +47,61 @@ export const Parameters = Schema.Struct({
     description: "Required for pause or complete. Explain the pause or summarize what was delivered.",
   }),
 })
+
+const DEFAULT_AWAIT_DEADLINE_MS = 30 * 60_000
+// A wait on a watch should outlive the watch itself: the terminal notice (or
+// the wake it produces) needs time to arrive before the wait expires.
+const WATCH_AWAIT_MARGIN_MS = 60_000
+
+type AwaitTarget =
+  { readonly ok: true; readonly job: BackgroundJob.Info } | { readonly ok: false; readonly detail: string }
+
+/**
+ * An `await` intent is only meaningful while its target can still wake the
+ * goal. Validate existence, ownership, and a running status up front so a
+ * typo or an already-finished job cannot silently park the goal until the
+ * deadline. `watch_pr` accepts either the job ID or the watched URL.
+ */
+function findAwaitTarget(
+  jobs: ReadonlyArray<BackgroundJob.Info>,
+  sessionID: string,
+  source: "background_job" | "watch_pr",
+  waitID: string,
+): AwaitTarget {
+  const matches = jobs.filter((job) =>
+    source === "watch_pr"
+      ? job.type === "watch_pr" && (job.id === waitID || job.metadata?.url === waitID)
+      : job.id === waitID,
+  )
+  if (matches.length === 0)
+    return {
+      ok: false,
+      detail:
+        source === "watch_pr"
+          ? `no watch_pr job or watched URL matches \`${waitID}\` in this session; start a watch first.`
+          : `no background job with id \`${waitID}\` exists in this session.`,
+    }
+  // A background task's job carries the child session as `sessionId` and the
+  // caller as `parentSessionId`; accept either so a task started from this
+  // session can be awaited by its task id.
+  const owned = matches.filter(
+    (job) => job.metadata?.sessionId === sessionID || job.metadata?.parentSessionId === sessionID,
+  )
+  if (owned.length === 0) return { ok: false, detail: `the job matching \`${waitID}\` belongs to another session.` }
+  const running = owned.find((job) => job.status === "running")
+  if (running) return { ok: true, job: running }
+  const finished = owned[owned.length - 1]
+  const status =
+    finished?.status === "completed"
+      ? "already completed"
+      : finished?.status === "cancelled"
+        ? "was cancelled"
+        : "failed"
+  return {
+    ok: false,
+    detail: `the job matching \`${waitID}\` ${status}; a terminal job cannot wake this wait. Declare progress and start a new operation if more waiting is needed.`,
+  }
+}
 
 type Metadata = {
   goal?: {
@@ -144,6 +200,7 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
               })
             }
             let intent: GoalState.Intent
+            let awaitHint: string | undefined
             if (params.intent === "await") {
               if (!params.wait_source || !params.wait_id) {
                 throw new Tool.InvalidArgumentsError({
@@ -151,12 +208,39 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
                   detail: "`wait_source` and `wait_id` are required when intent is `await`.",
                 })
               }
+              // Resolved at execute time: headless runtimes may omit the
+              // background registry, in which case the declaration is
+              // accepted without validation rather than failing the tool.
+              const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
+              let target: BackgroundJob.Info | undefined
+              if (background) {
+                const jobs = yield* background.list().pipe(Effect.catchCause(() => Effect.succeed([])))
+                const found = findAwaitTarget(jobs, ctx.sessionID, params.wait_source, params.wait_id)
+                if (!found.ok) {
+                  throw new Tool.InvalidArgumentsError({
+                    tool: "goal",
+                    detail: `Cannot await ${params.wait_source}:${params.wait_id}: ${found.detail}`,
+                  })
+                }
+                target = found.job
+              }
+              const now = Date.now()
+              let deadlineMs = params.deadline_ms
+              const watchDeadline = target?.metadata?.deadlineAt
+              if (params.wait_source === "watch_pr" && typeof watchDeadline === "number") {
+                const remaining = Math.max(0, watchDeadline - now)
+                // A watch's own deadline is the meaningful bound; the margin
+                // keeps the wait alive through the terminal notice delivery.
+                if (deadlineMs === undefined) deadlineMs = remaining + WATCH_AWAIT_MARGIN_MS
+                else if (deadlineMs < remaining)
+                  awaitHint = `Note: deadline_ms=${deadlineMs} is shorter than the watch's remaining ${remaining} ms; the wait may expire (and ask for a bounded review) while the watch is still running.`
+              }
               intent = {
                 kind: "await",
                 wait: {
                   source: params.wait_source,
                   wait_id: params.wait_id,
-                  deadline: Date.now() + (params.deadline_ms ?? 30 * 60_000),
+                  deadline: now + (deadlineMs ?? DEFAULT_AWAIT_DEADLINE_MS),
                   max_wakes: GoalState.nni(params.max_wakes ?? 1),
                   wakes: GoalState.nni(0),
                 },
@@ -191,6 +275,7 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
                 state.status === "waiting" && state.intent?.kind === "await"
                   ? `Waiting for: ${state.intent.wait.source}:${state.intent.wait.wait_id} until ${new Date(state.intent.wait.deadline).toISOString()}`
                   : "Finish this turn; the goal loop applies the intent when the session becomes idle.",
+                ...(awaitHint ? [awaitHint] : []),
               ].join("\n"),
               metadata: {
                 goal: {

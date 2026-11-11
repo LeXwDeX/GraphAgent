@@ -55,6 +55,11 @@ export const MAX_DEADLINE_SECONDS = 3600
 export const MIN_POLL_SECONDS = 5
 export const MAX_POLL_SECONDS = 300
 
+// One bounded forge read is allowed before reusing an existing watch, so a
+// re-watch after a head change replaces the stale watch instead of being
+// deduplicated away. A slow or unavailable forge falls back to reuse.
+export const HEAD_CHECK_TIMEOUT_MS = 15_000
+
 const GITHUB_HOSTS = ["github.com"]
 const GITLAB_HOSTS = ["gitlab.com"]
 
@@ -379,6 +384,12 @@ export type WatchInput = {
   deadlineMs: number
   pollMs: number
   deliver: (notice: Notice) => Effect.Effect<void>
+  /**
+   * Reports the first successful snapshot and the absolute deadline to the
+   * caller once. The tool records both in the job metadata so a later
+   * watch_pr call can tell which head an existing watch follows.
+   */
+  onBaseline?: (baseline: Snapshot, deadlineAt: number) => Effect.Effect<void>
 }
 
 export function watch(input: WatchInput): Effect.Effect<Notice> {
@@ -397,6 +408,7 @@ export function watch(input: WatchInput): Effect.Effect<Notice> {
     if (Option.isNone(first)) return yield* deadlineNotice(undefined, "deadline reached while querying the forge")
     if (!first.value.ok) return yield* missing(undefined, first.value.reason)
     const baseline = first.value.snapshot
+    if (input.onBaseline) yield* input.onBaseline(baseline, deadline)
     let current = baseline
     const initial = classify(baseline, baseline)
     if (initial) return yield* finish({ outcome: initial, request: input.request, snapshot: current })
@@ -476,25 +488,67 @@ export const WatchPrTool = Tool.define(
           const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
           if (!ops) return yield* Effect.fail(new Error("watch_pr requires promptOps in ctx.extra"))
           const runner = (ctx.extra?.watchPrRunner as Runner | undefined) ?? processRunner
-          const existing = (yield* background.list()).find(
-            (job) =>
-              job.status === "running" &&
-              job.type === "watch_pr" &&
-              job.metadata?.sessionId === ctx.sessionID &&
-              job.metadata?.url === request.url,
-          )
+          // A watch that is delivering its terminal notice is effectively
+          // finished: it must not swallow a re-watch from the notice turn.
+          const findRunningWatch = (jobs: ReadonlyArray<BackgroundJob.Info>) =>
+            jobs.find(
+              (job) =>
+                job.status === "running" &&
+                job.type === "watch_pr" &&
+                job.metadata?.sessionId === ctx.sessionID &&
+                job.metadata?.url === request.url &&
+                job.metadata?.finishing !== true,
+            )
+          let existing = findRunningWatch(yield* background.list())
+          let replaced: { id: string; watchedHead: string; currentHead: string } | undefined
           if (existing) {
-            const metadata = { jobId: existing.id, provider: request.provider, url: request.url }
-            yield* ctx.metadata({ title: `watch ${request.url}`, metadata })
-            return {
-              title: `watch ${request.url}`,
-              metadata,
-              output: [
-                `Already watching ${request.url} (job ${existing.id}).`,
-                "No new job was started; the existing watch delivers its notice.",
-                `If no notice arrives, run one bounded check: ${inspectCommand(request)}`,
-                `If an autonomous goal has nothing else to do until this notice, declare goal intent=await with wait_source=watch_pr and wait_id=${existing.id}.`,
-              ].join("\n"),
+            const watchedHead =
+              typeof existing.metadata?.head === "string" && existing.metadata.head ? existing.metadata.head : undefined
+            let currentHead: string | undefined
+            let checkFailure: string | undefined
+            if (watchedHead) {
+              const checked = yield* readSnapshot(runner, request).pipe(
+                Effect.timeoutOption(Duration.millis(HEAD_CHECK_TIMEOUT_MS)),
+              )
+              if (Option.isSome(checked)) {
+                if (checked.value.ok) currentHead = checked.value.snapshot.head
+                else checkFailure = checked.value.reason
+              } else checkFailure = "head check timed out"
+            }
+            if (watchedHead && currentHead && currentHead !== watchedHead) {
+              // The caller is re-watching a newer head; the old watch would
+              // only report `superseded` later, so replace it now.
+              yield* background.cancel(existing.id)
+              replaced = { id: existing.id, watchedHead, currentHead }
+              existing = undefined
+            } else {
+              const deadlineAt =
+                typeof existing.metadata?.deadlineAt === "number" ? existing.metadata.deadlineAt : undefined
+              const remaining = deadlineAt === undefined ? undefined : Math.max(0, deadlineAt - Date.now())
+              const metadata = {
+                jobId: existing.id,
+                provider: request.provider,
+                url: request.url,
+                ...(watchedHead ? { head: watchedHead } : {}),
+                ...(deadlineAt !== undefined ? { deadlineAt } : {}),
+              }
+              yield* ctx.metadata({ title: `watch ${request.url}`, metadata })
+              return {
+                title: `watch ${request.url}`,
+                metadata,
+                output: [
+                  `Already watching ${request.url} (job ${existing.id}).`,
+                  `head: ${watchedHead ?? "unknown"}; deadline: ${
+                    deadlineAt === undefined ? "unknown" : new Date(deadlineAt).toISOString()
+                  }${remaining === undefined ? "" : ` (${Math.ceil(remaining / 1000)}s remaining)`}.`,
+                  ...(checkFailure
+                    ? [`Could not verify the current head (${checkFailure}); reusing the existing watch.`]
+                    : []),
+                  "No new job was started; the existing watch delivers its notice.",
+                  `If no notice arrives, run one bounded check: ${inspectCommand(request)}`,
+                  `If an autonomous goal has nothing else to do until this notice, declare goal intent=await with wait_source=watch_pr and wait_id=${existing.id}.`,
+                ].join("\n"),
+              }
             }
           }
           const deadline = (params.deadline_seconds ?? DEFAULT_DEADLINE_SECONDS) * 1000
@@ -551,22 +605,38 @@ export const WatchPrTool = Tool.define(
                 }),
               ),
             )
+          // The job metadata object is owned by this watch and mutated as the
+          // watch advances; background snapshots copy its current fields, so a
+          // re-watch sees the watched head, the absolute deadline, and whether
+          // this watch has started delivering its terminal notice.
+          const jobMetadata: Record<string, unknown> = {
+            sessionId: ctx.sessionID,
+            url: request.url,
+            provider: request.provider,
+            survivesSessionCancel: true,
+          }
+          const markFinishing = Effect.sync(() => {
+            jobMetadata.finishing = true
+          })
           const info = yield* background.start({
             type: "watch_pr",
             title: `watch ${request.url}`,
-            metadata: {
-              sessionId: ctx.sessionID,
-              url: request.url,
-              provider: request.provider,
-              survivesSessionCancel: true,
-            },
+            metadata: jobMetadata,
             run: watch({
               request,
               runner,
               deadlineMs: deadline,
               pollMs: poll,
+              onBaseline: (baseline, deadlineAt) =>
+                Effect.sync(() => {
+                  jobMetadata.head = baseline.head
+                  jobMetadata.deadlineAt = deadlineAt
+                }),
               deliver: (notice) =>
                 Effect.gen(function* () {
+                  // Delivery is the terminal step of this watch: a re-watch
+                  // issued from the notice turn must start a new job.
+                  yield* markFinishing
                   // Flip the goal back to active before the notice turn; that
                   // turn's idle event drives the next goal evaluation, so the
                   // goal neither races the notice nor runs a turn without it.
@@ -579,6 +649,10 @@ export const WatchPrTool = Tool.define(
                 if (!Exit.isFailure(exit)) return Effect.void
                 const reason = Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : Cause.pretty(exit.cause)
                 return Effect.gen(function* () {
+                  // The failed job settles only after this handler, so mark it
+                  // finishing too — a stopped notice must not swallow a
+                  // re-watch while the job still reads as running.
+                  yield* markFinishing
                   // No notice prompt follows a failed job, so evaluate now.
                   yield* wakeGoal(`watch_pr stopped (${reason}) for ${request.url}`, true)
                   yield* deliverNotice(renderStopped(request, reason))
@@ -595,6 +669,11 @@ export const WatchPrTool = Tool.define(
             title: `watch ${request.url}`,
             metadata: { jobId: info.id, provider: request.provider, url: request.url },
             output: [
+              ...(replaced
+                ? [
+                    `Replaced job ${replaced.id} (watched head ${replaced.watchedHead}, current head ${replaced.currentHead}); the replacement follows the current head.`,
+                  ]
+                : []),
               `Started a read-only background watch (job ${info.id}) for ${request.url}.`,
               "Continue with other work; do not sleep or poll in the foreground.",
               "A notice will report checks settled, a failure, merge/close, a review change, a head change, the deadline, or forge unavailability.",

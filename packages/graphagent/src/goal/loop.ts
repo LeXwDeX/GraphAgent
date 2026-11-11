@@ -215,18 +215,66 @@ const serviceLayer = Layer.effect(
       return true
     })
 
-    // An expired wait pauses like any other loop pause: release the goal's
-    // automation registration and tell the user why, instead of only flipping
-    // the durable row.
+    // The instance scope for fibers started by handlers defined above the
+    // InstanceState handle. Resolving `InstanceState.get(state)` here would
+    // make the handle's inferred type depend on expireWaiting, which the
+    // builder's startup-scan chain calls back into, producing a type cycle.
+    // The builder sets this ref before handing out the scope it already has.
+    const instanceScopeRef: { current: Scope.Scope | undefined } = { current: undefined }
+
+    // #1067: the first expiry is a two-stage transition. Goal.expireWait turns
+    // the expired await into a blocked-review marker and returns the goal to
+    // active; this handler dispatches ONE bounded review turn that asks the
+    // agent to check external state and declare the next intent. If that turn
+    // declares nothing, afterIdle's blocked-intent branch pauses the goal
+    // visibly. The prompt is forked because triggerEvaluation also calls this
+    // from the inbox drain, which must not await a whole agent turn.
     const expireWaiting = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const paused = yield* goal.expireWait(sessionID)
-      if (!paused || paused.status !== "paused") return false
-      yield* automation.unregister(sessionID, { kind: "goal", id: paused.goal_id ?? "legacy" })
+      const expired = yield* goal.expireWait(sessionID)
+      if (!expired) return false
+      if (expired.status === "active" && expired.intent?.kind === "blocked") {
+        const reviewText = [
+          "[等待超时复核]",
+          `目标：${expired.goal}`,
+          `${expired.last_reason ?? "等待已超时"}。`,
+          "先做一次有界检查（例如查看 PR/MR 状态或后台任务状态），不要空等。",
+          "然后在本轮用 goal 工具声明下一步意图：",
+          "- progress：继续推进；",
+          "- await：等待新的 wait_source/wait_id；",
+          "- done：目标已完成（需给出 evidence）；",
+          "- blocked：确实无法推进（需说明原因）。",
+          "本轮结束仍未声明进展时，目标将暂停。",
+        ].join("\n")
+        const scope = instanceScopeRef.current
+        if (!scope) {
+          yield* Effect.logWarning("goal wait review skipped: instance scope not resolved", { sessionID })
+          return false
+        }
+        yield* Effect.gen(function* () {
+          yield* goal.markTurnDriven(sessionID)
+          yield* promptSvc.prompt({
+            sessionID,
+            parts: [{ type: "text", text: reviewText, synthetic: true }],
+          })
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.void
+              : Effect.logWarning("goal wait review turn failed", { sessionID, cause: Cause.pretty(cause) }),
+          ),
+          Effect.forkIn(scope, { startImmediately: true }),
+        )
+        return true
+      }
+      // Defensive: a direct pause transition (kept for callers that still
+      // pause immediately) releases the registration and tells the user why.
+      if (expired.status !== "paused") return false
+      yield* automation.unregister(sessionID, { kind: "goal", id: expired.goal_id ?? "legacy" })
       yield* promptSvc
         .prompt({
           sessionID,
           noReply: true,
-          parts: [{ type: "text", text: `⏸ 目标已暂停 — ${paused.paused_reason ?? "等待结束"}` }],
+          parts: [{ type: "text", text: `⏸ 目标已暂停 — ${expired.paused_reason ?? "等待结束"}` }],
         })
         .pipe(Effect.ignore)
       return true
@@ -570,6 +618,7 @@ const serviceLayer = Layer.effect(
         // right after the wake. Evaluations they start must live as long as
         // this instance, like the ones started by the inbox drain.
         const scope = yield* Scope.Scope
+        instanceScopeRef.current = scope
         // Idle events no longer drive this loop directly: SessionInbox owns
         // the single per-instance SessionStatus subscription (Issue #1021,
         // PR1) and calls the goal.continue source's claim, which carries the
@@ -964,6 +1013,22 @@ const serviceLayer = Layer.effect(
         evaluatedRevisions.set(sessionID, updateResult.state.revision ?? 0)
 
         if (!updateResult.shouldContinue) {
+          // #1067: a judge-blocked verdict downgraded to an await keeps the
+          // goal waiting and registered; show the explanation without
+          // starting another turn or announcing a pause.
+          if (updateResult.state.status === "waiting" && updateResult.state.intent?.kind === "await") {
+            yield* promptSvc
+              .prompt({ sessionID, noReply: true, parts: [{ type: "text", text: updateResult.message }] })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("goal wait downgrade message delivery failed", {
+                    sessionID,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              )
+            return
+          }
           yield* automation.unregister(sessionID, goalOwner)
           evaluatedRevisions.delete(sessionID)
           if (verdict.verdict === "done") {
