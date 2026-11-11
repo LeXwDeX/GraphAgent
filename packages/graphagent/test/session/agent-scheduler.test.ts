@@ -83,6 +83,52 @@ describe("AgentScheduler request permits", () => {
     ),
   )
 
+  it.effect("interactive outranks queued side and auxiliary waiters, and side outranks auxiliary", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scheduler = schedulerWith(limits({ global: 1 }))
+        const order: string[] = []
+        const held = yield* request(scheduler, "interactive", "held")
+        const side = yield* acquireAndRelease(scheduler, "side", "side", order).pipe(Effect.forkScoped)
+        yield* waitForQueued(scheduler, 1)
+        const auxiliary = yield* acquireAndRelease(scheduler, "auxiliary", "auxiliary", order).pipe(
+          Effect.forkScoped,
+        )
+        yield* waitForQueued(scheduler, 2)
+        const interactive = yield* acquireAndRelease(scheduler, "interactive", "interactive", order).pipe(
+          Effect.forkScoped,
+        )
+        yield* waitForQueued(scheduler, 3)
+        yield* held.release
+        yield* Fiber.join(interactive)
+        yield* Fiber.join(side)
+        yield* Fiber.join(auxiliary)
+        expect(order).toEqual(["interactive", "side", "auxiliary"])
+      }),
+    ),
+  )
+
+  it.effect("a second side request queues behind the one reserved side permit", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scheduler = schedulerWith(limits({ global: 4 }))
+        const order: string[] = []
+        const first = yield* request(scheduler, "side", "first")
+        const second = yield* acquireAndRelease(scheduler, "side", "second", order).pipe(Effect.forkScoped)
+        yield* waitForQueued(scheduler, 1)
+        // Interactive still admits while the side lane is capped.
+        const interactive = yield* acquireAndRelease(scheduler, "interactive", "interactive", order).pipe(
+          Effect.forkScoped,
+        )
+        yield* Fiber.join(interactive)
+        expect((yield* scheduler.capacity()).laneQueued.side).toBe(1)
+        yield* first.release
+        yield* Fiber.join(second)
+        expect(order).toEqual(["interactive", "second"])
+      }),
+    ),
+  )
+
   it.effect("waiters in the same lane are served FIFO", () =>
     Effect.scoped(
       Effect.gen(function* () {

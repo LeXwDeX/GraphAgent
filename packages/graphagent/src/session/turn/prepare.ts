@@ -1555,7 +1555,15 @@ export function makePrepare(deps: PrepareDeps) {
         sys.mcp(agent, session.permission, nativePermission),
         sys.goal(sessionID),
         sys.hooks(),
-        prepareStage("memory", sys.memory({ sessionID, messages: msgs, main: !session.parentID })),
+        prepareStage(
+          "memory",
+          sys.memory({
+            sessionID,
+            messages: msgs,
+            main: !session.parentID,
+            lane: session.parentID ? "child" : "interactive",
+          }),
+        ),
         MessageV2.toModelMessagesEffect(msgs, model, {
           reasoningDistillationEnabled: yield* reasoningDistillationEnabled(model),
         }),

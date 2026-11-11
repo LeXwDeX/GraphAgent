@@ -689,29 +689,31 @@ export const layer = Layer.effect(
       }),
 
       getSessionsWithUnreportedWakes: Effect.fn("DagStore.getSessionsWithUnreportedWakes")(function* () {
-        const workflowRows = yield* db
+        // One UNION instead of two sequential scans: the inbox tick budgets
+        // its reads, and both ledgers only need the owning session ID.
+        const rows = yield* db
           .select({ sessionId: WorkflowTable.session_id })
           .from(WorkflowTable)
           .where(and(
             eq(WorkflowTable.wake_reported, false),
             inArray(WorkflowTable.status, [...WORKFLOW_TERMINAL_STATUS_VALUES]),
           ))
+          .union(
+            db
+              .select({ sessionId: WorkflowTable.session_id })
+              .from(WorkflowNodeTable)
+              .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
+              .where(and(
+                eq(WorkflowNodeTable.wake_reported, false),
+                // See wakeDeliverableNodePredicate — escalated nodes count as
+                // unreported wakes so the bootstrap sweep finds a session whose
+                // only outstanding item is an escalation.
+                wakeDeliverableNodePredicate,
+              )),
+          )
           .all()
           .pipe(Effect.orDie)
-        const nodeRows = yield* db
-          .select({ sessionId: WorkflowTable.session_id })
-          .from(WorkflowNodeTable)
-          .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
-          .where(and(
-            eq(WorkflowNodeTable.wake_reported, false),
-            // See wakeDeliverableNodePredicate — escalated nodes count as
-            // unreported wakes so the bootstrap sweep finds a session whose
-            // only outstanding item is an escalation.
-            wakeDeliverableNodePredicate,
-          ))
-          .all()
-          .pipe(Effect.orDie)
-        return [...new Set([...workflowRows, ...nodeRows].map((row) => row.sessionId))]
+        return [...new Set(rows.map((row) => row.sessionId))]
       }),
 
       hasReportedWakeNodes: Effect.fn("DagStore.hasReportedWakeNodes")(function* (sessionID) {

@@ -961,13 +961,15 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
 
   /** Sessions this instance should try on the inbox tick. Store lists are
    * global; the directory guard keeps sibling worktrees out, and the drain's
-   * own ownership gates remain authoritative. */
+   * own ownership gates remain authoritative. Paused reminders are deliberately
+   * not scanned here: the dedicated 30s sweep owns them (see init), keeping
+   * this tick at three reads while the whole 30-second cycle stays at four. */
   const scanSessions = (): Effect.Effect<ReadonlyArray<string>> =>
     Effect.gen(function* () {
       const sessions = new Set<string>()
       // Each ledger degrades independently: one broken query must not hide
-      // the other two from this tick. The final catch below covers the
-      // ownership reads and the union itself.
+      // the other from this tick. The final catch below covers the ownership
+      // reads and the union itself.
       const wakes = yield* store.getSessionsWithUnreportedWakes().pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("DagDelivery wake scan failed", { cause }).pipe(
@@ -977,18 +979,6 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       )
       for (const sessionID of wakes) {
         if (yield* DagLocation.ownsSession(sessionID, directory)) sessions.add(sessionID)
-      }
-      const now = yield* Clock.currentTimeMillis
-      const paused = yield* store.listByStatus("paused").pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("DagDelivery paused scan failed", { cause }).pipe(
-            Effect.as([] as ReadonlyArray<DagStore.WorkflowRow>),
-          ),
-        ),
-      )
-      for (const workflow of paused) {
-        if (!isPausedReminderDue(workflow, now)) continue
-        if (yield* DagLocation.ownsSession(workflow.sessionId, directory)) sessions.add(workflow.sessionId)
       }
       if (messages) {
         const recipients = yield* messages.pendingRecipients({ projectID, directory, limit: 64 }).pipe(
@@ -1060,7 +1050,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
 
   // Transitional fallbacks until H2's per-instance inbox tick and E2 remove
   // them: an immediate scan at init, then the 250ms mailbox poll and the 30s
-  // paused-reminder sweep.
+  // paused-reminder sweep. Paused reminders stay outside the inbox tick, as
+  // the read budget counts them separately: goal + wakes + mailbox (3) plus
+  // this sweep (1) is the 30-second cycle's four reads.
   yield* scan()
   if (messages) {
     yield* Effect.forever(Effect.sleep(250).pipe(Effect.andThen(pollAgentMailboxes))).pipe(Effect.forkIn(scope))

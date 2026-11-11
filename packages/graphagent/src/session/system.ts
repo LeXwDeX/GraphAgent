@@ -20,6 +20,7 @@ import { GoalPrompts } from "@/goal/prompts"
 import { SettingsHook } from "@/hook"
 import { Memory } from "@/memory/memory"
 import type { SessionID } from "@/session/schema"
+import type { Lane } from "@/session/agent-scheduler-state"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 import { resolveLanguage } from "@graphagent/core/config/language"
 import { RequestCache } from "./request-cache"
@@ -53,6 +54,8 @@ export interface Interface {
     sessionID: SessionID
     messages: SessionV1.WithParts[]
     main: boolean
+    /** Lane of the triggering turn; memory model calls inherit it. */
+    lane?: Lane
   }) => Effect.Effect<string[]>
 }
 
@@ -265,7 +268,7 @@ export const layer = Layer.effect(
         if (!input.main) return []
         const memory = Option.getOrUndefined(yield* Effect.serviceOption(Memory.Service))
         if (!memory) return []
-        yield* memory.prepare({ sessionID: input.sessionID, messages: input.messages })
+        yield* memory.prepare({ sessionID: input.sessionID, messages: input.messages, lane: input.lane })
         return yield* memory.context(input.sessionID)
       }),
     })

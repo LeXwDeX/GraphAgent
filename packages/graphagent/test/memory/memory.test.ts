@@ -24,6 +24,7 @@ import { MemoryStore } from "@/memory/store"
 import { Project } from "@/project/project"
 import { Provider } from "@/provider/provider"
 import { MessageID, PartID, SessionID } from "@/session/schema"
+import type { Lane } from "@/session/agent-scheduler-state"
 import { Token } from "@/util/token"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
@@ -302,6 +303,7 @@ function recallFixture() {
   const provider = ProviderTest.fake({ model })
   const state: {
     queries: string[]
+    lanes: (Lane | undefined)[]
     reads: number
     topics: MemorySchema.Topic[]
     failQueries: Set<string>
@@ -315,6 +317,7 @@ function recallFixture() {
     parkReads?: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
   } = {
     queries: [],
+    lanes: [],
     reads: 0,
     topics: [topic()],
     failQueries: new Set<string>(),
@@ -348,6 +351,7 @@ function recallFixture() {
           generate: (input) =>
             Effect.gen(function* () {
               state.budgets.push(input.maxOutputTokens)
+              state.lanes.push(input.lane)
               if (input.system === MemoryPrompts.MATCH_SYSTEM) {
                 const request: unknown = JSON.parse(input.prompt)
                 const query =
@@ -402,6 +406,7 @@ function recallFixture() {
     state,
     reset: () => {
       state.queries.length = 0
+      state.lanes.length = 0
       state.reads = 0
       state.topics = [topic()]
       state.failQueries.clear()
@@ -987,9 +992,10 @@ describe("memory turn-scoped retrieval", () => {
         const firstID = MessageID.ascending()
         const first = user(firstID, sessionID, "继续之前确认的架构边界")
 
-        expect((yield* prompt.memory({ sessionID, messages: [first], main: true })).join("\n")).toContain(
-          "architecture-boundaries",
-        )
+        expect(
+          (yield* prompt.memory({ sessionID, messages: [first], main: true, lane: "interactive" })).join("\n"),
+        ).toContain("architecture-boundaries")
+        expect(recall.state.lanes).toEqual(["interactive"])
 
         const second = user(MessageID.ascending(), sessionID, "处理一个没有自动记忆的新问题")
         const secondTurn = [

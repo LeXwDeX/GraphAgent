@@ -30,6 +30,7 @@ import { Provider } from "@/provider/provider"
 import { Project } from "@/project/project"
 import { InstanceState } from "@/effect/instance-state"
 import { MessageID, SessionID } from "@/session/schema"
+import type { Lane } from "@/session/agent-scheduler-state"
 import { Token } from "@/util/token"
 import { MemoryConfig } from "./config"
 import { MemoryIdentityFence } from "./identity-fence"
@@ -66,7 +67,12 @@ export type SearchResult =
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
-  readonly prepare: (input: { sessionID: SessionID; messages: SessionV1.WithParts[] }) => Effect.Effect<void>
+  readonly prepare: (input: {
+    sessionID: SessionID
+    messages: SessionV1.WithParts[]
+    /** Lane of the turn that triggered preparation; model calls inherit it. */
+    lane?: Lane
+  }) => Effect.Effect<void>
   readonly context: (sessionID: SessionID) => Effect.Effect<string[]>
   readonly search: (input: {
     sessionID: SessionID
@@ -323,6 +329,8 @@ export const layer: Layer.Layer<
       config: MemorySchema.Config
       topics: MemorySchema.Topic[]
       text: string
+      sessionID?: SessionID
+      lane?: Lane
     }) {
       if (!input.text || input.topics.length === 0) return []
       const output = yield* modelCalls.generate({
@@ -335,6 +343,8 @@ export const layer: Layer.Layer<
         }),
         schema: MemorySchema.MatchResponse,
         maxOutputTokens: MATCH_OUTPUT_TOKENS,
+        sessionID: input.sessionID,
+        lane: input.lane,
       })
       const decoded = Schema.decodeUnknownOption(MemorySchema.MatchResponse)(output)
       if (Option.isNone(decoded))
@@ -360,6 +370,8 @@ export const layer: Layer.Layer<
       config: MemorySchema.Config
       topics: MemorySchema.Topic[]
       messages: SessionV1.WithParts[]
+      sessionID?: SessionID
+      lane?: Lane
     }) {
       const evidence = maintenanceEvidence(input.messages)
       if (!evidence) return
@@ -368,6 +380,8 @@ export const layer: Layer.Layer<
         config: input.config,
         topics: input.topics,
         text: evidence,
+        sessionID: input.sessionID,
+        lane: input.lane,
       })
       const byID = new Map(input.topics.map((topic) => [topic.id, topic]))
       const output = yield* modelCalls.generate({
@@ -385,6 +399,8 @@ export const layer: Layer.Layer<
         }),
         schema: MemorySchema.MaintenanceResponse,
         maxOutputTokens: MAINTAIN_OUTPUT_TOKENS,
+        sessionID: input.sessionID,
+        lane: input.lane,
       })
       const decoded = Schema.decodeUnknownOption(MemorySchema.MaintenanceResponse)(output)
       if (Option.isNone(decoded))
@@ -401,6 +417,8 @@ export const layer: Layer.Layer<
       topics: MemorySchema.Topic[]
       text: string
       projectID: Project.Info["id"]
+      sessionID?: SessionID
+      lane?: Lane
     }) {
       const topicIDs = yield* match(input)
       const committed = yield* applyUpdate(input.projectID, (topics) => {
@@ -436,6 +454,8 @@ export const layer: Layer.Layer<
       config: MemorySchema.Config
       messages: SessionV1.WithParts[]
       projectID: ProjectV2.ID
+      sessionID?: SessionID
+      lane?: Lane
     }
     const backgroundMaintain = Effect.fn("Memory.backgroundMaintain")(function* (input: MaintenanceInput) {
       const topics = yield* store.readTopics(input.projectID)
@@ -444,6 +464,8 @@ export const layer: Layer.Layer<
         config: input.config,
         topics,
         messages: input.messages,
+        sessionID: input.sessionID,
+        lane: input.lane,
       })
       if (!actions) return
       yield* applyUpdate(input.projectID, (current) => ({
@@ -510,6 +532,7 @@ export const layer: Layer.Layer<
     const prepareUnsafe = Effect.fn("Memory.prepareUnsafe")(function* (input: {
       sessionID: SessionID
       messages: SessionV1.WithParts[]
+      lane?: Lane
     }) {
       const user = latestRealUser(input.messages)
       if (!user) return
@@ -543,6 +566,8 @@ export const layer: Layer.Layer<
         config: current.loaded.config,
         messages: input.messages,
         projectID: current.project.id,
+        sessionID: input.sessionID,
+        lane: input.lane,
       }
 
       if (!shouldMatch) {
@@ -579,6 +604,8 @@ export const layer: Layer.Layer<
           topics: yield* store.readTopics(current.project.id),
           text: user.text,
           projectID: current.project.id,
+          sessionID: input.sessionID,
+          lane: input.lane,
         })
         if (!selected) {
           data.sessions.delete(input.sessionID)
@@ -757,6 +784,7 @@ export const layer: Layer.Layer<
             topics: yield* store.readTopics(current.project.id),
             text: query,
             projectID: current.project.id,
+            sessionID: input.sessionID,
           })
         }).pipe(
           Effect.tap((selected) => {
@@ -825,6 +853,7 @@ export const layer: Layer.Layer<
         topics: yield* store.readTopics(current.project.id),
         text: user?.text ?? "",
         projectID: current.project.id,
+        sessionID: input.sessionID,
       })
       if (!selected) {
         yield* clearSession(input.sessionID)
@@ -839,6 +868,7 @@ export const layer: Layer.Layer<
         config: current.loaded.config,
         messages: input.messages,
         projectID: current.project.id,
+        sessionID: input.sessionID,
       })
       if (Option.isNone(kicked)) yield* clearSession(input.sessionID)
       return selected.rendered

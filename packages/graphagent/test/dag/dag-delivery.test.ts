@@ -649,7 +649,7 @@ describe("DagDelivery drain", () => {
     )
   })
 
-  it("scanSessions unions the ledgers, filters by directory, and degrades per query", async () => {
+  it("scanSessions unions the wake and mailbox ledgers, filters by directory, and degrades per query", async () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -669,7 +669,10 @@ describe("DagDelivery drain", () => {
           yield* Effect.gen(function* () {
             yield* seedWake
             const { db } = yield* Database.Service
-            // A due paused reminder in this directory.
+            // A due paused reminder in this directory: the dedicated 30s
+            // sweep owns paused reminders (they stay outside the inbox tick
+            // so the tick's read budget remains three queries). The row must
+            // therefore not appear in scanSessions.
             yield* db
               .insert(SessionTable)
               .values({
@@ -754,7 +757,7 @@ describe("DagDelivery drain", () => {
             const deps = yield* services()
             const delivery = yield* startDelivery({ ...deps, messages })
             const scanned = yield* delivery.scanSessions()
-            expect([...scanned].sort()).toEqual([PARENT, "ses_paused_scan", mailSession].sort())
+            expect([...scanned].sort()).toEqual([PARENT, mailSession].sort())
 
             // One broken ledger must not hide the others.
             const broken = yield* startDelivery({
@@ -766,7 +769,7 @@ describe("DagDelivery drain", () => {
               },
             })
             const degraded = yield* broken.scanSessions()
-            expect([...degraded].sort()).toEqual(["ses_paused_scan", mailSession].sort())
+            expect([...degraded].sort()).toEqual([mailSession])
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
         }),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),
