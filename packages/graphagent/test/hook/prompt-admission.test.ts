@@ -321,9 +321,7 @@ goalIt.live("goal handoff abandons a start invalidated while holding the exclusi
         const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
         yield* awaitWithTimeout(Deferred.await(unregistering), "goal pause did not reach lease release")
         yield* Deferred.succeed(release, undefined)
-        expect(Option.isNone(yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff did not settle"))).toBe(
-          true,
-        )
+        expect((yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff did not settle")).tag).toBe("cancelled")
         yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancel deadlocked on the handoff")
         expect((yield* goal.load(session.id))?.status).toBe("paused")
         expect(yield* llm.calls).toBe(0)
@@ -407,7 +405,7 @@ goalIt.live("goal handoff releases its lease when a later prompt holds the admis
         yield* awaitWithTimeout(Deferred.await(laterRequested), "later prompt did not reach cancellation admission")
         expect(yield* llm.calls).toBe(0)
         yield* Deferred.succeed(release, undefined)
-        expect(Option.isNone(yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff deadlocked"))).toBe(true)
+        expect((yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff deadlocked")).tag).toBe("cancelled")
         yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancel deadlocked")
         yield* awaitWithTimeout(Fiber.join(later), "later prompt did not complete")
         expect(yield* llm.calls).toBe(1)
@@ -1959,7 +1957,8 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
           },
           { continueToolBudget: true },
         )
-        yield* Option.getOrThrow(run)
+        if (run.tag !== "admitted") throw new Error(`admission did not run: ${run.tag}`)
+        yield* run.turn
         expect(yield* auditText(file)).toContain("ups")
       }
 
@@ -1986,7 +1985,8 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
           { continueToolBudget: true },
           Effect.void,
         )
-        yield* Option.getOrThrow(run)
+        if (run.tag !== "admitted") throw new Error(`admission did not run: ${run.tag}`)
+        yield* run.turn
         expect(yield* auditText(file)).toContain("ups")
       }
 
@@ -2008,7 +2008,8 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
             },
           ],
         })
-        yield* Option.getOrThrow(run)
+        if (run.tag !== "admitted") throw new Error(`admission did not run: ${run.tag}`)
+        yield* run.turn
         expect(yield* auditText(file)).toContain("ups")
       }
 

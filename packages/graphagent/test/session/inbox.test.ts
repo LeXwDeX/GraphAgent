@@ -9,7 +9,8 @@ import { Project } from "@graphagent/core/project"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
-import { SessionInbox, type InboxItem, type InboxSource } from "@/session/inbox"
+import { SessionCancellation } from "@/session/cancellation"
+import { SessionInbox, type InboxItem, type InboxSource, type InboxSourceContext } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import type { TurnStart } from "@/session/turns"
@@ -397,6 +398,59 @@ describe("SessionInbox", () => {
 
       outcome = start({ kind: "not_started", reason: "test" })
       expect(yield* submit()).toEqual({ state: "pending" })
+    }),
+  )
+})
+
+describe("SessionInbox claim epoch", () => {
+  it.instance("passes the claim-time cancellation epoch to the source", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const sessionID = SessionID.descending()
+      const claimed = yield* Ref.make<ReadonlyArray<number>>([])
+      yield* inbox.register(
+        source("goal.continue", 10, (_sid, ctx) =>
+          Ref.update(claimed, (epochs) => [...epochs, ctx.claimEpoch]).pipe(Effect.as(false)),
+        ),
+      )
+
+      yield* inbox.drain(sessionID)
+      expect(yield* Ref.get(claimed)).toEqual([SessionCancellation.epoch(sessionID)])
+    }),
+  )
+
+  it.instance("a cancellation after the capture fences every source in the same drain", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const sessionID = SessionID.descending()
+      const delivered = yield* Ref.make<ReadonlyArray<string>>([])
+      const claimed = yield* Ref.make<ReadonlyArray<number>>([])
+      // Models a real source: the drain's captured epoch is the only fence a
+      // fenced admission may use.
+      const attempt = (label: string, cancel: boolean) => (id: SessionID, ctx: InboxSourceContext) =>
+        Effect.gen(function* () {
+          yield* Ref.update(claimed, (epochs) => [...epochs, ctx.claimEpoch])
+          if (cancel) {
+            // ESC lands after the drain captured its epoch, before this
+            // claim's admission.
+            const abort = SessionCancellation.begin(id)
+            abort.finish()
+          }
+          const request = SessionCancellation.requestIfEpoch(id, ctx.claimEpoch)
+          if (!request) return false
+          request.release()
+          yield* Ref.update(delivered, (labels) => [...labels, label])
+          return true
+        })
+      yield* inbox.register(source("goal.continue", 10, attempt("first", true)))
+      yield* inbox.register(source("watch_pr", 20, attempt("second", false)))
+
+      yield* inbox.drain(sessionID)
+      expect(yield* Ref.get(delivered)).toEqual([])
+      const epochs = yield* Ref.get(claimed)
+      expect(epochs).toHaveLength(2)
+      expect(epochs[0]).toBe(epochs[1])
+      expect(SessionCancellation.epoch(sessionID)).toBe(epochs[0] + 1)
     }),
   )
 })

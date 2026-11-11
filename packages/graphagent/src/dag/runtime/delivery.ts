@@ -20,6 +20,7 @@ import { Database } from "@graphagent/core/database/database"
 import { Hash } from "@graphagent/core/util/hash"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionCancellation } from "@/session/cancellation"
 import { SessionInbox } from "@/session/inbox"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
@@ -109,8 +110,11 @@ export interface Interface {
    * triggers the next one. */
   readonly drain: (sessionID: string) => Effect.Effect<void>
   /** Claim form of `drain`: true only when a wake or mailbox admission
-   * actually happened, so the inbox can fall through to the next source. */
-  readonly deliver: (sessionID: string) => Effect.Effect<boolean, unknown>
+   * actually happened, so the inbox can fall through to the next source.
+   * `claimEpoch` is the inbox drain's cancellation-epoch observation; an ESC
+   * after that capture fences the wake admission instead of delivering into
+   * it. */
+  readonly deliver: (sessionID: string, claimEpoch?: number) => Effect.Effect<boolean, unknown>
   /** Fire-and-forget trigger: nudge is idempotent and safe to call for every
    * event source. The in-flight reservations coalesce concurrent attempts. */
   readonly nudge: (sessionID: string) => Effect.Effect<void>
@@ -351,8 +355,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           ),
         )
 
-  let tryDeliverWake: (sessionID: string) => Effect.Effect<boolean> = () => Effect.succeed(false)
-  const deliverWake = Effect.fn("DagDelivery.deliverWake")(function* (sessionID: string) {
+  let tryDeliverWake: (sessionID: string, claimEpoch?: number) => Effect.Effect<boolean> = () => Effect.succeed(false)
+  const deliverWake = Effect.fn("DagDelivery.deliverWake")(function* (sessionID: string, claimEpoch?: number) {
     // Cross-instance guard via the execution-location authority: wake
     // delivery is store-global (idle Status events, node-terminal
     // handlers, the startup sweep). Only the instance whose DIRECTORY
@@ -711,10 +715,13 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
               },
               { continueToolBudget: true },
               store.markWakeBatchReported(batch),
+              claimEpoch,
             )
-            if (Option.isNone(delivered)) return false
+            // A fenced skip/cancel committed nothing: the durable receipt and
+            // the wake rows stay as they are for the next trigger.
+            if (delivered.tag !== "admitted") return false
             deliveredWakeSummaries.set(sessionID, wakeIdentity.messageID)
-            wakeTurn = delivered.value
+            wakeTurn = delivered.turn
           }
 
           // New admission already committed its mark atomically. An old
@@ -806,8 +813,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   // reservation (and re-forks a wake that was queued behind it), so a
   // queued or periodic stimulus retries through the ordinary idle
   // admission gate.
-  tryDeliverWake = (sessionID) =>
-    deliverWake(sessionID).pipe(
+  tryDeliverWake = (sessionID, claimEpoch) =>
+    deliverWake(sessionID, claimEpoch).pipe(
       Effect.timeoutOption("7 minutes"),
       Effect.flatMap(
         Option.match({
@@ -822,7 +829,11 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
 
   const mailboxInFlight = new Set<string>()
   const deliverAgentMessages = Effect.fn("DagDelivery.deliverAgentMessages")(
-    function* (sessionID: string) {
+    function* (sessionID: string, inboxClaimEpoch?: number) {
+      // An inbox drain passes the epoch observed before its sources ran; poll
+      // and mailbox-change triggers have none, so those attempts capture their
+      // own observation before any durable read.
+      const claimEpoch = inboxClaimEpoch ?? SessionCancellation.epoch(sessionID)
       if (!messages || mailboxInFlight.has(sessionID)) return false
       mailboxInFlight.add(sessionID)
       return yield* Effect.gen(function* () {
@@ -872,23 +883,33 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         return yield* Effect.gen(function* () {
           const token = yield* automation.claim(SessionID.make(sessionID), { kind: "dag" })
           if (Option.isNone(token)) return false
-          const admitted = yield* SessionPrompt.admitIdleUnderFence(prompts, automation, token.value, {
-            sessionID: SessionID.make(sessionID),
-            messageID: MessageID.make(message.transcriptID),
-            parts: [
-              {
-                id: PartID.make(message.partID),
-                type: "text",
-                text: DagMessages.renderMessage(message),
-                synthetic: true,
-              },
-            ],
-          })
-          if (Option.isNone(admitted)) return false
+          const admitted = yield* SessionPrompt.admitIdleUnderFence(
+            prompts,
+            automation,
+            token.value,
+            {
+              sessionID: SessionID.make(sessionID),
+              messageID: MessageID.make(message.transcriptID),
+              parts: [
+                {
+                  id: PartID.make(message.partID),
+                  type: "text",
+                  text: DagMessages.renderMessage(message),
+                  synthetic: true,
+                },
+              ],
+            },
+            undefined,
+            undefined,
+            claimEpoch,
+          )
+          // A fenced skip/cancel committed nothing: the agent message stays
+          // queued and the next trigger retries it.
+          if (admitted.tag !== "admitted") return false
           // Admission alone leaves delivery queued. SessionPrompt freezes
           // and associates the actual model input, then advances delivery.
           yield* automation.unregister(SessionID.make(sessionID), owner)
-          yield* admitted.value
+          yield* admitted.turn
           return true
         }).pipe(Effect.ensuring(automation.unregister(SessionID.make(sessionID), owner)))
       }).pipe(Effect.ensuring(Effect.sync(() => mailboxInFlight.delete(sessionID))))
@@ -924,7 +945,10 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     )
     for (const sessionID of pausedSessions) {
       if (!(yield* DagLocation.ownsSession(sessionID, directory))) continue
-      yield* tryDeliverWake(sessionID).pipe(guarded("PausedReminder"), Effect.forkIn(scope))
+      yield* tryDeliverWake(sessionID, SessionCancellation.epoch(sessionID)).pipe(
+        guarded("PausedReminder"),
+        Effect.forkIn(scope),
+      )
     }
   }).pipe(guarded("PausedReminderSweep"))
 
@@ -990,12 +1014,14 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
    * happen". A wake reservation that is still held (or queued behind one)
    * must not fall through to the mailbox: that would turn wake-first into
    * mailbox-first and race the wake retry against a busy session. */
-  const deliver = (sessionID: string): Effect.Effect<boolean, unknown> =>
+  const deliver = (sessionID: string, claimEpoch?: number): Effect.Effect<boolean, unknown> =>
     Effect.gen(function* () {
-      const delivered = yield* tryDeliverWake(sessionID)
+      const delivered = yield* tryDeliverWake(sessionID, claimEpoch)
       if (delivered) return true
       if (wakeInFlight.has(sessionID) || wakePending.has(sessionID)) return false
-      return yield* deliverAgentMessages(sessionID)
+      // The mailbox attempt reuses the drain's epoch observation when the
+      // caller has one, so an ESC during the wake attempt fences it too.
+      return yield* deliverAgentMessages(sessionID, claimEpoch)
     })
 
   /** One serialized attempt: durable wakes first, mailbox second when no wake
@@ -1052,7 +1078,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       mode: "idle_only",
       hint: () => true,
       scan: () => scanSessions().pipe(Effect.map((ids) => ids.map((id) => SessionID.make(id)))),
-      claim: (sessionID) => deliver(sessionID),
+      claim: (sessionID, ctx) => deliver(sessionID, ctx.claimEpoch),
     })
     // Hint-only for now: E1's freeze/associate remains the only delivery and
     // confirmation path. A false hint would skip `clearBoundaryApproval` and
