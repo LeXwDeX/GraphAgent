@@ -1240,7 +1240,6 @@ packages/tui/src/theme/assets/zenburn.json
 packages/tui/src/theme/index.ts
 packages/tui/src/ui/border.ts
 packages/tui/src/ui/link.tsx
-packages/tui/src/ui/spinner.ts
 packages/tui/src/ui/toast.tsx
 packages/tui/src/util/collapse-tool-output.ts
 packages/tui/src/util/error.ts
