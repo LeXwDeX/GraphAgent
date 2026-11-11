@@ -9,7 +9,7 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { Effect, Schema } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { Memory } from "@/memory/memory"
 import { MemoryModel } from "@/memory/model"
@@ -18,6 +18,8 @@ import { MemorySchema } from "@/memory/schema"
 import { MemoryStore } from "@/memory/store"
 import { Project } from "@/project/project"
 import { Provider } from "@/provider/provider"
+import { AgentScheduler } from "@/session/agent-scheduler"
+import type { Lane } from "@/session/agent-scheduler-state"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
@@ -80,6 +82,128 @@ const wireGenerate = (schema: Schema.Decoder<unknown>, system: string) =>
       maxOutputTokens: 2_048,
     })
   })
+
+const schedulerFixture = () => {
+  const requests: AgentScheduler.RequestInput[] = []
+  const releases: AgentScheduler.RequestInput[] = []
+  const layer = Layer.mock(AgentScheduler.Service, {
+    request: (input) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          requests.push(input)
+          return {
+            release: Effect.sync(() => {
+              releases.push(input)
+            }),
+          }
+        }),
+        (permit) => permit.release,
+      ),
+  })
+  return { requests, releases, layer }
+}
+
+const scheduledWireIt = (fixture: ReturnType<typeof schedulerFixture>) =>
+  testEffect(
+    LayerNode.buildLayer(
+      LayerNode.group([
+        Provider.node,
+        MemoryModel.node,
+        CrossSpawnSpawner.node,
+        LayerNode.make(TestLLMServer.layer, []),
+      ]),
+      { replacements: [LayerNode.replace(AgentScheduler.node, fixture.layer)] },
+    ),
+  )
+
+// Same model layer without any scheduler in context: optional access must
+// degrade to an unscheduled call.
+const unscheduledWireIt = testEffect(
+  LayerNode.buildLayer(
+    LayerNode.group([
+      Provider.node,
+      LayerNode.make(MemoryModel.layer, [Provider.node]),
+      CrossSpawnSpawner.node,
+      LayerNode.make(TestLLMServer.layer, []),
+    ]),
+  ),
+)
+
+const scheduledGenerate = (input: { sessionID?: string; lane?: Lane }) =>
+  Effect.gen(function* () {
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ref.providerID, ref.modelID)
+    return yield* (yield* MemoryModel.Service).generate({
+      model,
+      system: MemoryPrompts.MATCH_SYSTEM,
+      prompt: "User confirmed: replies stay concise.",
+      schema: MemorySchema.MatchResponse,
+      maxOutputTokens: 2_048,
+      ...input,
+    })
+  })
+
+describe("memory model scheduler (issue #1021)", () => {
+  const withSession = schedulerFixture()
+  const withSessionIt = scheduledWireIt(withSession)
+
+  withSessionIt.live("takes a permit for the triggering session and lane, then releases it", () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          yield* llm.pushMatch(
+            (hit) => JSON.stringify(hit.body).includes("topic_ids"),
+            reply().text('{"topic_ids":[]}').stop(),
+          )
+          yield* scheduledGenerate({ sessionID: "ses_memory_scheduled", lane: "child" })
+          expect(withSession.requests).toEqual([
+            {
+              lane: "child",
+              providerID: ProviderV2.ID.make("test"),
+              modelID: ModelV2.ID.make("test-model"),
+              sessionID: "ses_memory_scheduled",
+            },
+          ])
+          expect(withSession.releases).toHaveLength(1)
+          expect(withSession.releases[0]).toBe(withSession.requests[0])
+        }),
+      { config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  const withoutSession = schedulerFixture()
+  const withoutSessionIt = scheduledWireIt(withoutSession)
+
+  withoutSessionIt.live("does not take a permit when the request carries no session", () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          yield* llm.pushMatch(
+            (hit) => JSON.stringify(hit.body).includes("topic_ids"),
+            reply().text('{"topic_ids":[]}').stop(),
+          )
+          yield* scheduledGenerate({ lane: "interactive" })
+          expect(withoutSession.requests).toHaveLength(0)
+          expect(withoutSession.releases).toHaveLength(0)
+        }),
+      { config: (url) => testProviderConfig(url) },
+    ),
+  )
+
+  unscheduledWireIt.live("still generates when no scheduler is available", () =>
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          yield* llm.pushMatch(
+            (hit) => JSON.stringify(hit.body).includes("topic_ids"),
+            reply().text('{"topic_ids":[]}').stop(),
+          )
+          yield* scheduledGenerate({ sessionID: "ses_memory_unscheduled", lane: "child" })
+        }),
+      { config: (url) => testProviderConfig(url) },
+    ),
+  )
+})
 
 describe("memory model wire schema (issue #395)", () => {
   wireIt.live("carries the maintenance schema on the wire so the model can conform", () =>

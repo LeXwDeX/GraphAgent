@@ -4,9 +4,11 @@
 export * as MemoryModel from "./model"
 
 import { LayerNode } from "@graphagent/core/effect/layer-node"
-import { Context, Duration, Effect, Layer, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Option, Schema } from "effect"
 import { streamObject } from "ai"
 import { Provider } from "@/provider/provider"
+import { AgentScheduler } from "@/session/agent-scheduler"
+import type { Lane } from "@/session/agent-scheduler-state"
 
 // Liveness is judged per-part, never by a whole-call wall clock: a stream
 // that keeps delivering parts is alive, however long the call runs. Two
@@ -26,6 +28,10 @@ export interface Request {
   readonly prompt: string
   readonly schema: Schema.Decoder<unknown>
   readonly maxOutputTokens: number
+  /** Triggering session. With a scheduler available, the call takes a request permit for it. */
+  readonly sessionID?: string
+  /** Lane inherited from the triggering turn; auxiliary when omitted. */
+  readonly lane?: Lane
 }
 
 export interface Interface {
@@ -247,24 +253,46 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const provider = yield* Provider.Service
+    // Optional: narrow test layers and `make`-built services keep working
+    // without a scheduler, in which case calls run unscheduled.
+    const scheduler = yield* Effect.serviceOption(AgentScheduler.Service)
     return make({
       execute: Effect.fnUntraced(function* (input) {
-        const language = yield* provider.getLanguage(input.model)
-        return yield* streamGenerate({
-          language,
-          system: input.system,
-          prompt: input.prompt,
-          schema: input.schema,
-          temperature: input.model.capabilities.temperature ? 0 : undefined,
-          maxOutputTokens: input.maxOutputTokens,
-          connectTimeout: CONNECT_TIMEOUT,
-          idleTimeout: IDLE_TIMEOUT,
+        const generate = Effect.gen(function* () {
+          const language = yield* provider.getLanguage(input.model)
+          return yield* streamGenerate({
+            language,
+            system: input.system,
+            prompt: input.prompt,
+            schema: input.schema,
+            temperature: input.model.capabilities.temperature ? 0 : undefined,
+            maxOutputTokens: input.maxOutputTokens,
+            connectTimeout: CONNECT_TIMEOUT,
+            idleTimeout: IDLE_TIMEOUT,
+          })
         })
+        const sessionID = input.sessionID
+        if (Option.isNone(scheduler) || sessionID === undefined) return yield* generate
+        // One permit covers the whole model call: it is released when the
+        // stream ends, fails, or is interrupted, never earlier.
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* scheduler.value
+              .request({
+                lane: input.lane ?? "auxiliary",
+                providerID: input.model.providerID,
+                modelID: input.model.id,
+                sessionID,
+              })
+              .pipe(Effect.catchTag("AgentSchedulerTimeout", (cause) => Effect.fail(new GenerateError({ cause }))))
+            return yield* generate
+          }),
+        )
       }),
     })
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Provider.defaultLayer))
+export const defaultLayer = layer.pipe(Layer.provide(Provider.defaultLayer), Layer.provide(AgentScheduler.defaultLayer))
 
-export const node = LayerNode.make(layer, [Provider.node])
+export const node = LayerNode.make(layer, [Provider.node, AgentScheduler.node])

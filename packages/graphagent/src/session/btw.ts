@@ -282,6 +282,10 @@ export const layer = (options: LayerOptions = {}) =>
             sessionID: btwSessionID,
             retries: 1,
             messages: selected.messages,
+            // A side question is user-initiated: keep `purpose` for telemetry
+            // and cache policy, but schedule it on the side lane instead of
+            // the lowest-priority auxiliary lane.
+            lane: "side",
             purpose: "auxiliary",
             maxOutputTokens: options.maxOutputTokens ?? cfg.btw?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
             onThinkingInvalidated: () => Effect.void,
