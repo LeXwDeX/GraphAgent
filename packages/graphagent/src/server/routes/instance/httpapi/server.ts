@@ -14,6 +14,7 @@ import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
 import { Lifecycle } from "@/lifecycle/service"
+import { RuntimeJobRecovery } from "@/background/recovery"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Command } from "@/command"
 import { Config } from "@/config/config"
@@ -293,6 +294,11 @@ export const app = LayerNode.group([
   // serving processes build this node graph without AppLayer, and the sweep
   // is idempotent (a second pass in AppLayer processes removes nothing).
   EventResidueSweep.node,
+  // RuntimeJobRecovery (#1069 P5): the sidecar and headless serving paths
+  // build this node graph without AppLayer, so the restart sweep must be
+  // listed here as well. Rows written by this process are excluded, making a
+  // second instance in the same process convergent rather than destructive.
+  RuntimeJobRecovery.node,
 ])
 
 export function createRoutes(options?: {

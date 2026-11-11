@@ -57,6 +57,7 @@ import { Npm } from "@graphagent/core/npm"
 import { memoMap } from "@graphagent/core/effect/memo-map"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
+import { RuntimeJobRecovery } from "@/background/recovery"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookStartContext } from "@/hook/start-context"
@@ -175,6 +176,11 @@ const BaseAppLayer = Layer.mergeAll(
   // sweep: one pass per process start, forked into the layer scope,
   // soft-degrading — never blocks or fails startup.
   Layer.provideMerge(EventResidueSweep.defaultLayer),
+  // #1069 P5: one pass per process start fails durable runtime_job rows left
+  // running/settling by an earlier process, publishing lifecycle transitions
+  // so waiters wake instead of hanging until their deadline. Host-level and
+  // soft-degrading for the same reasons as the residue sweep above.
+  Layer.provideMerge(RuntimeJobRecovery.defaultLayer),
   Layer.provideMerge(SettingsHook.defaultLayer),
   Layer.provideMerge(Notification.defaultLayer),
   Layer.provideMerge(SessionAttention.defaultLayer),

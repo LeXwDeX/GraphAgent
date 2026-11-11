@@ -169,17 +169,32 @@ describe("BackgroundJob", () => {
   it.live("reports every job transition to the optional sink", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make()
-      const observed: Array<{ from: string | null; to: string; sessionID?: string }> = []
+      const observed: Array<{
+        from: string | null
+        to: string
+        sessionID?: string
+        title?: string
+        output?: string
+        started?: boolean
+      }> = []
       const jobs = yield* BackgroundJob.makeWith({
         onTransition: (transition) =>
           Effect.sync(() => {
-            observed.push({ from: transition.from, to: transition.to, sessionID: transition.sessionID })
+            observed.push({
+              from: transition.from,
+              to: transition.to,
+              sessionID: transition.sessionID,
+              title: transition.title,
+              output: transition.output,
+              started: typeof transition.started_at === "number",
+            })
           }),
       }).pipe(Scope.provide(scope))
       const latch = yield* Deferred.make<void>()
       const job = yield* jobs.start({
         id: "observed",
         type: "test",
+        title: "observed job",
         metadata: { sessionId: "ses_observed" },
         run: Deferred.await(latch).pipe(Effect.as("ok")),
       })
@@ -188,10 +203,19 @@ describe("BackgroundJob", () => {
       yield* Deferred.succeed(latch, undefined)
       yield* jobs.wait({ id: job.id })
 
+      // Every transition carries the complete snapshot: a durable observer
+      // never has to merge a partial delta (#1069 P5).
       expect(observed).toEqual([
-        { from: null, to: "running", sessionID: "ses_observed" },
-        { from: "running", to: "settling", sessionID: "ses_observed" },
-        { from: "settling", to: "completed", sessionID: "ses_observed" },
+        { from: null, to: "running", sessionID: "ses_observed", title: "observed job", started: true },
+        { from: "running", to: "settling", sessionID: "ses_observed", title: "observed job", started: true },
+        {
+          from: "settling",
+          to: "completed",
+          sessionID: "ses_observed",
+          title: "observed job",
+          output: "ok",
+          started: true,
+        },
       ])
       yield* Scope.close(scope, Exit.void)
     }),
