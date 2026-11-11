@@ -37,7 +37,9 @@ export const P99_TIMING_RATIO = 1.5
 /**
  * Timing floor for the ratio check. A sub-millisecond sample moves by tens of
  * microseconds under background load, so a 1.30x comparison there measures the
- * scheduler rather than the frame.
+ * scheduler rather than the frame. The floor applies to both sides: a
+ * sub-millisecond baseline is not a stable reference either, so it must not
+ * gate an otherwise healthy report.
  */
 export const MIN_COMPARE_MS = 1
 /** Absolute ceiling for any interactive frame (Issue #1025 7.4). */
@@ -98,7 +100,7 @@ export function compareReports(baseline: PerfReport, current: PerfReport): { row
         // past the ratio. It is gated by the absolute ceiling below instead.
         if (!name.endsWith("Ms") || name === "maxMs") continue
         const adjusted = value / factor
-        if (adjusted < MIN_COMPARE_MS) continue
+        if (old < MIN_COMPARE_MS || adjusted < MIN_COMPARE_MS) continue
         const tolerance = name.endsWith("p99Ms") ? P99_TIMING_RATIO : TIMING_RATIO
         if (adjusted > old * tolerance) {
           fail(
