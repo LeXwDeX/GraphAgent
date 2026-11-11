@@ -1715,14 +1715,13 @@ export function Prompt(props: PromptProps) {
     return agent ? local.agent.color(agent.name) : theme.border
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
+  // A panel or ask surface replaces the composer. The Prompt stays mounted so
+  // its draft survives, but its spinners must stop driving frames (#1025 P17b).
+  const composerShown = () => props.visible !== false && (bottomZone?.composerVisible() ?? true)
 
   return (
     <>
-      <box
-        ref={(r: BoxRenderable) => (anchor = r)}
-        visible={props.visible !== false && (bottomZone?.composerVisible() ?? true)}
-        width="100%"
-      >
+      <box ref={(r: BoxRenderable) => (anchor = r)} visible={composerShown()} width="100%">
         <box
           width="100%"
           border={["left"]}
@@ -1927,7 +1926,7 @@ export function Prompt(props: PromptProps) {
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <box marginLeft={1}>
                     <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                      <Spinner color={spinnerColor()} />
+                      <Spinner color={spinnerColor()} visible={composerShown} />
                     </Show>
                   </box>
                   <box flexDirection="row" gap={1} flexShrink={0}>
@@ -2029,7 +2028,7 @@ export function Prompt(props: PromptProps) {
               {(label) => (
                 <box paddingLeft={3} flexDirection="row" gap={1}>
                   <Show when={workspace.creating()}>
-                    <Spinner color={theme.accent} />
+                    <Spinner color={theme.accent} visible={composerShown} />
                   </Show>
                   <text fg={workspace.creating() ? theme.accent : theme.text}>
                     {(() => {
@@ -2056,7 +2055,7 @@ export function Prompt(props: PromptProps) {
             <Match when={move.progress()}>
               {(progress) => (
                 <box paddingLeft={3}>
-                  <Spinner color={theme.accent}>
+                  <Spinner color={theme.accent} visible={composerShown}>
                     {progress()}
                     <span style={{ fg: theme.textMuted }}>{".".repeat(move.creatingDots())}</span>
                   </Spinner>

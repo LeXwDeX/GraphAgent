@@ -38,6 +38,9 @@ function key(sessionIDs: ReadonlySet<string>) {
 
 export function createInterestAggregator(options: InterestAggregatorOptions): InterestAggregator {
   const sources = new Map<string, Set<string>>()
+  // The gate reads the union once per event, so a per-frame recomputation is
+  // pure overhead while sources are stable (#1025 P14).
+  let explicitCache: ReadonlySet<string> | undefined
   let submitted: string | undefined
   let scheduled = false
   let submitting = false
@@ -45,11 +48,13 @@ export function createInterestAggregator(options: InterestAggregatorOptions): In
   let disposed = false
   let waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }> = []
 
-  function explicitSet() {
+  function explicitSet(): ReadonlySet<string> {
+    if (explicitCache) return explicitCache
     const union = new Set<string>()
     for (const ids of sources.values()) {
       for (const id of ids) union.add(id)
     }
+    explicitCache = union
     return union
   }
 
@@ -131,6 +136,7 @@ export function createInterestAggregator(options: InterestAggregatorOptions): In
         return Promise.resolve()
       }
       sources.set(source, next)
+      explicitCache = undefined
       return new Promise<void>((resolve, reject) => {
         waiters.push({ resolve, reject })
         ensureScheduled()
@@ -138,6 +144,7 @@ export function createInterestAggregator(options: InterestAggregatorOptions): In
     },
     delete(source) {
       if (!sources.delete(source)) return Promise.resolve()
+      explicitCache = undefined
       return new Promise<void>((resolve, reject) => {
         waiters.push({ resolve, reject })
         ensureScheduled()
@@ -155,6 +162,7 @@ export function createInterestAggregator(options: InterestAggregatorOptions): In
     dispose() {
       disposed = true
       sources.clear()
+      explicitCache = undefined
       resolveWaiters()
     },
   }

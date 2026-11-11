@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { compareReports, type PerfReport } from "./compare"
 import { createFixture, type FixtureSize } from "./fixtures"
 import { mountHarness } from "./harness"
 import { runCharacterProfile, runScenarios, runSlashProfile, type ScenarioResult } from "./scenarios"
@@ -15,8 +16,9 @@ function arg(name: string) {
   return process.argv.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1)
 }
 
-function baselineFile(name: string) {
-  return path.join(import.meta.dir, `baseline-${name}.json`)
+/** `--baseline=<name>` reads `baseline-<name>.json`; the default is `baseline.json`. */
+function baselineFile(name?: string) {
+  return path.join(import.meta.dir, name ? `baseline-${name}.json` : "baseline.json")
 }
 
 function median(values: number[]) {
@@ -80,7 +82,15 @@ async function main() {
     return
   }
 
+  // `--update-baseline` (no value) writes baseline.json; `--update-baseline=<name>`
+  // writes the historical comparison file baseline-<name>.json.
+  const updateBaseline = process.argv.some(
+    (value) => value === "--update-baseline" || value.startsWith("--update-baseline="),
+  )
   const baselineName = arg("--update-baseline")
+  const baselineRef = arg("--baseline")
+  const enforce = process.argv.includes("--enforce")
+  const out = arg("--out")
   const repeats = Number(arg("--repeats") ?? process.env.PERF_REPEATS ?? 5)
   const samples: Record<FixtureSize, Record<string, ScenarioResult[]>> = {
     S: {},
@@ -136,8 +146,27 @@ async function main() {
     scenarios,
   }
 
-  if (baselineName) await Bun.write(baselineFile(baselineName), JSON.stringify(report, null, 2) + "\n")
+  if (updateBaseline) await Bun.write(baselineFile(baselineName), JSON.stringify(report, null, 2) + "\n")
+  if (out) await Bun.write(path.resolve(out), JSON.stringify(report, null, 2) + "\n")
   console.log(JSON.stringify(report, null, 2))
+
+  if (!enforce) return
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- generated benchmark report
+  const before = (await Bun.file(baselineFile(baselineRef)).json()) as PerfReport
+  const { rows, failures } = compareReports(before, report)
+  if (failures.length === 0) {
+    console.log(`bench gate passed: ${rows.length} metric(s) compared against ${path.basename(baselineFile(baselineRef))}`)
+    return
+  }
+  console.error(`bench gate failed: ${failures.length} regression(s) against ${path.basename(baselineFile(baselineRef))}`)
+  for (const failure of failures) {
+    const row = rows.find(
+      (item) => item.size === failure.size && item.id === failure.id && item.metric === failure.metric,
+    )
+    const measured = row ? `baseline=${row.baseline} current=${row.current} ratio=${row.ratio}` : `value=${failure.value}`
+    console.error(`  ${failure.size} ${failure.id} ${failure.metric}: ${measured} limit ${failure.limit}`)
+  }
+  process.exit(1)
 }
 
 await main()

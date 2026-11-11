@@ -6,7 +6,7 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { ScrollBoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
 import { ManualClock } from "@opentui/core/testing"
-import { onCleanup, onMount } from "solid-js"
+import { createSignal, onCleanup, onMount } from "solid-js"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
@@ -18,17 +18,27 @@ import { LocalProvider } from "../../src/context/local"
 import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
 import { PromptRefProvider, usePromptRef } from "../../src/context/prompt"
-import { RouteProvider } from "../../src/context/route"
-import { SDKProvider } from "../../src/context/sdk"
+import { RouteProvider, useRoute } from "../../src/context/route"
+import { SDKProvider, useSDK } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
+import type { Event } from "@graphagent/sdk"
+import type { GateDecision } from "../../src/context/event-gate"
 import { TickerProvider } from "../../src/context/ticker-context"
+import { createTicker, type Ticker } from "../../src/context/ticker"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../src/keymap"
-import { Prompt, type PromptRef } from "../../src/component/prompt"
+import type { PromptRef } from "../../src/component/prompt"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
+import {
+  BottomZone,
+  BottomZoneProvider,
+  createBottomZoneState,
+  type BottomZoneStateApi,
+} from "../../src/shell/bottom-zone"
+import { AppFrame } from "../../src/shell/app-frame"
 import { FooterToastProvider } from "../../src/ui/toast"
 import { HookStatusProvider } from "../../src/context/hook-status"
 import { TestTuiContexts } from "../fixture/tui-environment"
@@ -43,12 +53,19 @@ export type PerfHarness = {
   fixture: PerfFixture
   clock: ManualClock
   counters: PerfCounters
+  ticker: Ticker
+  /** Live animation subscriptions; only visible spinners may hold one. */
+  subscriptions(): number
   sync: ReturnType<typeof useSync>
   prompt: PromptRef
   emit(event: Parameters<ReturnType<typeof createEventSource>["emit"]>[0]): void
   updateStream(text: string, time: number): void
   tickBackground(tick: number): void
   hideAutocomplete(): void
+  navigate(route: Parameters<ReturnType<typeof useRoute>["navigate"]>[0]): void
+  /** Replaces the composer with a bottom-zone panel, as a real detail view does. */
+  openPanel(): void
+  closePanel(): void
   reset(): Promise<void>
   scroll(): ScrollBoxRenderable | undefined
   snapshot(): CounterSnapshot
@@ -110,34 +127,86 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     sync?: ReturnType<typeof useSync>
     promptRef?: ReturnType<typeof usePromptRef>
     prompt?: NonNullable<ReturnType<typeof usePromptRef>["current"]>
-    directPrompt?: PromptRef
+    bottomZone?: BottomZoneStateApi
+    route?: ReturnType<typeof useRoute>
+    gate?: (event: Event) => GateDecision
   }
   let counters!: PerfCounters
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
+  let harnessTicker: Ticker | undefined
+  let activeSubscriptions = 0
 
-  function Probe() {
+  function Probe(props: { bottomZone: BottomZoneStateApi }) {
     const sync = useSync()
     const promptRef = usePromptRef()
+    const route = useRoute()
+    const sdk = useSDK()
     state.sync = sync
     state.promptRef = promptRef
+    state.route = route
+    state.gate = sdk.eventGate
     onMount(() => {
       state.sync = sync
       state.promptRef = promptRef
+      state.route = route
+      state.gate = sdk.eventGate
     })
     return (
-      <>
+      <AppFrame
+        topBar={{ path: directory }}
+        footer={{ agent: "build" }}
+        bottomZone={<BottomZone state={props.bottomZone} composer={<></>} />}
+      >
         <Main />
-        <Prompt sessionID={fixture.session.id} visible={true} ref={(value) => (state.directPrompt = value)} />
-      </>
+      </AppFrame>
     )
   }
 
   function Harness() {
     const renderer = useRenderer()
+    // The real app owns the bottom-zone state above AppFrame; the composer is
+    // rendered by Main's session route, not by the frame (#1025 P17/P17b).
+    const bottomZone = createBottomZoneState()
+    state.bottomZone = bottomZone
     keymap = createDefaultOpenTuiKeymap(renderer)
     counters = createCounters(renderer, keymap)
+    // Drive the TUI ticker from the manual clock so idle/busy frame counts are
+    // deterministic. Focus/blur mirrors TickerProvider's production wiring.
+    const [focused, setFocused] = createSignal(true)
+    const onFocus = () => setFocused(true)
+    const onBlur = () => setFocused(false)
+    renderer.on("focus", onFocus)
+    renderer.on("blur", onBlur)
+    const ticker = createTicker({
+      now: () => clock.now(),
+      focused,
+      // ManualClock hands out its own opaque `TimerHandle`, while the ticker
+      // options use the ambient `setTimeout` return type. The handle is stored
+      // and returned unchanged, never inspected.
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- opaque timer handle
+      setTimer: (callback, delay) => clock.setTimeout(callback, delay) as unknown as ReturnType<typeof setTimeout>,
+      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- opaque timer handle
+      clearTimer: (handle) => clock.clearTimeout(handle as unknown as Parameters<typeof clock.clearTimeout>[0]),
+    })
+    const subscribeTicker = ticker.subscribe.bind(ticker)
+    ticker.subscribe = () => {
+      activeSubscriptions++
+      const release = subscribeTicker()
+      let done = false
+      return () => {
+        if (done) return
+        done = true
+        activeSubscriptions--
+        release()
+      }
+    }
+    harnessTicker = ticker
     onCleanup(registerGraphagentKeymap(keymap, renderer, config))
     onCleanup(() => counters.dispose())
+    onCleanup(() => {
+      renderer.off("focus", onFocus)
+      renderer.off("blur", onBlur)
+    })
     return (
       <TestTuiContexts cwd={directory} paths={{ home: stateDir.path, state: stateDir.path, worktree: "/tmp/opencode" }}>
         <ExitProvider exit={() => {}}>
@@ -146,7 +215,7 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
               <GraphagentKeymapProvider keymap={keymap}>
                 <ArgsProvider>
                   <KVProvider>
-                    <TickerProvider>
+                    <TickerProvider ticker={ticker}>
                       <FooterToastProvider>
                         <HookStatusProvider>
                           <RouteProvider initialRoute={{ type: "session", sessionID: fixture.session.id }}>
@@ -167,7 +236,9 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
                                               <PromptRefProvider>
                                                 <EditorContextProvider integration={{}}>
                                                   <LocationProvider>
-                                                    <Probe />
+                                                    <BottomZoneProvider state={bottomZone}>
+                                                      <Probe bottomZone={bottomZone} />
+                                                    </BottomZoneProvider>
                                                   </LocationProvider>
                                                 </EditorContextProvider>
                                               </PromptRefProvider>
@@ -211,8 +282,7 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     state.prompt = state.promptRef?.current
     if (!state.prompt) await app.renderOnce()
   }
-  const prompt = state.directPrompt ?? findPrompt(app.renderer.root)
-  if (!prompt) {
+  if (!state.prompt && !findPrompt(app.renderer.root)) {
     const names = findNodes(app.renderer.root).map((node) => node.constructor.name)
     const frame = app.captureCharFrame()
     app.renderer.destroy()
@@ -222,10 +292,26 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     )
   }
 
+  // Resolve the live Prompt each time: route and panel changes may remount it,
+  // which destroys the previous EditBuffer.
+  const currentPrompt = (): PromptRef => {
+    const live = findPrompt(app.renderer.root) ?? state.promptRef?.current
+    if (!live) throw new Error("Session Prompt is not mounted")
+    return live
+  }
+
   const emit = (event: Parameters<typeof events.emit>[0]) => {
     const type = event.payload.type
-    if (type === "message.updated" || type === "message.removed") counters.countStoreWrite("message")
-    if (type === "message.part.updated" || type === "message.part.removed") counters.countStoreWrite("part")
+    // Only events the gate delivers reach the session store; summary/drop
+    // events must not count as message or part writes (Issue #1025 P14).
+    const decision =
+      event.payload.type === "sync" || event.payload.type === "config.updated"
+        ? "deliver"
+        : (state.gate?.(event.payload) ?? "deliver")
+    if (decision === "deliver") {
+      if (type === "message.updated" || type === "message.removed") counters.countStoreWrite("message")
+      if (type === "message.part.updated" || type === "message.part.removed") counters.countStoreWrite("part")
+    }
     events.emit(event)
   }
 
@@ -234,8 +320,17 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     fixture,
     clock,
     counters,
+    get ticker() {
+      if (!harnessTicker) throw new Error("ticker not mounted")
+      return harnessTicker
+    },
+    subscriptions() {
+      return activeSubscriptions
+    },
     sync: state.sync,
-    prompt,
+    get prompt() {
+      return currentPrompt()
+    },
     emit,
     updateStream(text, time) {
       const part =
@@ -257,10 +352,20 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     hideAutocomplete() {
       keymap.dispatchCommand("prompt.autocomplete.hide")
     },
+    navigate(route) {
+      state.route?.navigate(route)
+    },
+    openPanel() {
+      state.bottomZone?.host.push({ id: "perf-panel", render: () => <text>panel</text> })
+    },
+    closePanel() {
+      state.bottomZone?.host.clear()
+    },
     async reset() {
-      prompt.reset()
+      const live = currentPrompt()
+      live.reset()
       keymap.dispatchCommand("prompt.autocomplete.hide")
-      prompt.focus()
+      live.focus()
       findScroll(app.renderer.root)?.scrollTo(0)
       await app.renderOnce()
     },

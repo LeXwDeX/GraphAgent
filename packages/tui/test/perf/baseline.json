@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "commit": "643c4e7fbf7a47b79fb87bc3f3e07817c6646042",
+  "generatedAt": "2026-11-11T07:06:58.485Z",
+  "opentuiVersion": "0.8.3",
+  "bun": "1.4.2",
+  "machine": {
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "13th Gen Intel(R) Core(TM) i7-13700F",
+    "cpuCount": 24
+  },
+  "calibration": {
+    "fixedLoopMs": 0.79,
+    "fixedLoopValue": 240,
+    "fixedLayoutMsMedian": 23.29
+  },
+  "repeats": 5,
+  "scenarios": {
+    "S": {
+      "P1": {
+        "id": "P1",
+        "size": "S",
+        "p50Ms": 0.33,
+        "p95Ms": 0.47,
+        "p99Ms": 1.28
+      },
+      "P3": {
+        "id": "P3",
+        "size": "S",
+        "registerLayer": 0
+      },
+      "P4": {
+        "id": "P4",
+        "size": "S",
+        "selectorEvaluations": 0,
+        "selectorEvaluationsPerKey": 0
+      },
+      "P5": {
+        "id": "P5",
+        "size": "S",
+        "openP95Ms": 0.52,
+        "maxFrame": 250,
+        "sequenceP95Ms": 0.83
+      },
+      "P6": {
+        "id": "P6",
+        "size": "S",
+        "filterP95Ms": 0.84,
+        "escapeP95Ms": 0.13
+      },
+      "P7": {
+        "id": "P7",
+        "size": "S",
+        "registerLayer": 0
+      },
+      "P5'": {
+        "id": "P5'",
+        "size": "S",
+        "openP95Ms": 0,
+        "sequenceP95Ms": 0,
+        "maxFrame": 0
+      },
+      "P8": {
+        "id": "P8",
+        "size": "S",
+        "p99Ms": 1.05,
+        "maxMs": 3.1
+      },
+      "P8'": {
+        "id": "P8'",
+        "size": "S",
+        "p99Ms": 3.04,
+        "maxMs": 6.12
+      },
+      "P9": {
+        "id": "P9",
+        "size": "S",
+        "p99Ms": 7.03
+      },
+      "P11": {
+        "id": "P11",
+        "size": "S",
+        "driftPx": 0,
+        "stepMismatches": 119
+      },
+      "P10": {
+        "id": "P10",
+        "size": "S",
+        "mountedRows": 20,
+        "scrollChildren": 23,
+        "viewportRows": 19
+      },
+      "P12": {
+        "id": "P12",
+        "size": "S",
+        "p95Ms": 1.16
+      },
+      "P13": {
+        "id": "P13",
+        "size": "S",
+        "messageWritesPerFrame": 0,
+        "partWritesPerFrame": 1
+      },
+      "P14": {
+        "id": "P14",
+        "size": "S",
+        "p95Ms": 0.14,
+        "relativeIncrease": -0.18,
+        "nonCurrentMessageWrites": 0,
+        "nonCurrentPartWrites": 0
+      },
+      "P15": {
+        "id": "P15",
+        "size": "S",
+        "frames": 0
+      },
+      "P16": {
+        "id": "P16",
+        "size": "S",
+        "frames": 22
+      },
+      "P17": {
+        "id": "P17",
+        "size": "S",
+        "framesEmpty": 22,
+        "framesEight": 22,
+        "limit": 24.22
+      },
+      "P17b": {
+        "id": "P17b",
+        "size": "S",
+        "frames": 0
+      },
+      "P18": {
+        "id": "P18",
+        "size": "S",
+        "frames": 0
+      },
+      "P19": {
+        "id": "P19",
+        "size": "S",
+        "frames": 0,
+        "moves": 200
+      },
+      "P20": {
+        "id": "P20",
+        "size": "S",
+        "nodes2": 0,
+        "nodes3": 0,
+        "growth": 0,
+        "heap2": 0,
+        "heap3": 0,
+        "heapGrowth": 0
+      },
+      "P2": {
+        "id": "P2",
+        "size": "S",
+        "p95Scale": 1
+      }
+    },
+    "M": {
+      "P1": {
+        "id": "P1",
+        "size": "M",
+        "p50Ms": 0.35,
+        "p95Ms": 0.61,
+        "p99Ms": 1.66
+      },
+      "P3": {
+        "id": "P3",
+        "size": "M",
+        "registerLayer": 0
+      },
+      "P4": {
+        "id": "P4",
+        "size": "M",
+        "selectorEvaluations": 0,
+        "selectorEvaluationsPerKey": 0
+      },
+      "P5": {
+        "id": "P5",
+        "size": "M",
+        "openP95Ms": 0.36,
+        "maxFrame": 250,
+        "sequenceP95Ms": 0.64
+      },
+      "P6": {
+        "id": "P6",
+        "size": "M",
+        "filterP95Ms": 0.68,
+        "escapeP95Ms": 0.09
+      },
+      "P7": {
+        "id": "P7",
+        "size": "M",
+        "registerLayer": 0
+      },
+      "P5'": {
+        "id": "P5'",
+        "size": "M",
+        "openP95Ms": 3.3,
+        "sequenceP95Ms": 3.3,
+        "maxFrame": 5
+      },
+      "P8": {
+        "id": "P8",
+        "size": "M",
+        "p99Ms": 5.08,
+        "maxMs": 6.87
+      },
+      "P8'": {
+        "id": "P8'",
+        "size": "M",
+        "p99Ms": 5.43,
+        "maxMs": 11.95
+      },
+      "P9": {
+        "id": "P9",
+        "size": "M",
+        "p99Ms": 13.43
+      },
+      "P11": {
+        "id": "P11",
+        "size": "M",
+        "driftPx": 0,
+        "stepMismatches": 0
+      },
+      "P10": {
+        "id": "P10",
+        "size": "M",
+        "mountedRows": 26,
+        "scrollChildren": 30,
+        "viewportRows": 19
+      },
+      "P12": {
+        "id": "P12",
+        "size": "M",
+        "p95Ms": 2.3
+      },
+      "P13": {
+        "id": "P13",
+        "size": "M",
+        "messageWritesPerFrame": 0,
+        "partWritesPerFrame": 1
+      },
+      "P14": {
+        "id": "P14",
+        "size": "M",
+        "p95Ms": 0.12,
+        "relativeIncrease": 0.09,
+        "nonCurrentMessageWrites": 0,
+        "nonCurrentPartWrites": 0
+      },
+      "P15": {
+        "id": "P15",
+        "size": "M",
+        "frames": 0
+      },
+      "P16": {
+        "id": "P16",
+        "size": "M",
+        "frames": 22
+      },
+      "P17": {
+        "id": "P17",
+        "size": "M",
+        "framesEmpty": 22,
+        "framesEight": 22,
+        "limit": 24.22
+      },
+      "P17b": {
+        "id": "P17b",
+        "size": "M",
+        "frames": 0
+      },
+      "P18": {
+        "id": "P18",
+        "size": "M",
+        "frames": 0
+      },
+      "P19": {
+        "id": "P19",
+        "size": "M",
+        "frames": 0,
+        "moves": 200
+      },
+      "P20": {
+        "id": "P20",
+        "size": "M",
+        "nodes2": 201,
+        "nodes3": 201,
+        "growth": 0,
+        "heap2": 74931305,
+        "heap3": 80127549,
+        "heapGrowth": 0.07
+      },
+      "P2": {
+        "id": "P2",
+        "size": "M",
+        "p95Scale": 1.3
+      }
+    },
+    "L": {
+      "P1": {
+        "id": "P1",
+        "size": "L",
+        "p50Ms": 0.32,
+        "p95Ms": 0.49,
+        "p99Ms": 0.97
+      },
+      "P3": {
+        "id": "P3",
+        "size": "L",
+        "registerLayer": 0
+      },
+      "P4": {
+        "id": "P4",
+        "size": "L",
+        "selectorEvaluations": 0,
+        "selectorEvaluationsPerKey": 0
+      },
+      "P5": {
+        "id": "P5",
+        "size": "L",
+        "openP95Ms": 0.5,
+        "maxFrame": 250,
+        "sequenceP95Ms": 0.8
+      },
+      "P6": {
+        "id": "P6",
+        "size": "L",
+        "filterP95Ms": 0.89,
+        "escapeP95Ms": 0.12
+      },
+      "P7": {
+        "id": "P7",
+        "size": "L",
+        "registerLayer": 0
+      },
+      "P5'": {
+        "id": "P5'",
+        "size": "L",
+        "openP95Ms": 0,
+        "sequenceP95Ms": 0,
+        "maxFrame": 0
+      },
+      "P8": {
+        "id": "P8",
+        "size": "L",
+        "p99Ms": 6.4,
+        "maxMs": 7.87
+      },
+      "P8'": {
+        "id": "P8'",
+        "size": "L",
+        "p99Ms": 0.12,
+        "maxMs": 0.25
+      },
+      "P9": {
+        "id": "P9",
+        "size": "L",
+        "p99Ms": 12.84
+      },
+      "P11": {
+        "id": "P11",
+        "size": "L",
+        "driftPx": 0,
+        "stepMismatches": 0
+      },
+      "P10": {
+        "id": "P10",
+        "size": "L",
+        "mountedRows": 21,
+        "scrollChildren": 25,
+        "viewportRows": 19
+      },
+      "P12": {
+        "id": "P12",
+        "size": "L",
+        "p95Ms": 0.15
+      },
+      "P13": {
+        "id": "P13",
+        "size": "L",
+        "messageWritesPerFrame": 0,
+        "partWritesPerFrame": 1
+      },
+      "P14": {
+        "id": "P14",
+        "size": "L",
+        "p95Ms": 0.14,
+        "relativeIncrease": -0.06,
+        "nonCurrentMessageWrites": 0,
+        "nonCurrentPartWrites": 0
+      },
+      "P15": {
+        "id": "P15",
+        "size": "L",
+        "frames": 0
+      },
+      "P16": {
+        "id": "P16",
+        "size": "L",
+        "frames": 22
+      },
+      "P17": {
+        "id": "P17",
+        "size": "L",
+        "framesEmpty": 22,
+        "framesEight": 22,
+        "limit": 24.22
+      },
+      "P17b": {
+        "id": "P17b",
+        "size": "L",
+        "frames": 0
+      },
+      "P18": {
+        "id": "P18",
+        "size": "L",
+        "frames": 0
+      },
+      "P19": {
+        "id": "P19",
+        "size": "L",
+        "frames": 0,
+        "moves": 200
+      },
+      "P20": {
+        "id": "P20",
+        "size": "L",
+        "nodes2": 0,
+        "nodes3": 0,
+        "growth": 0,
+        "heap2": 0,
+        "heap3": 0,
+        "heapGrowth": 0
+      },
+      "P2": {
+        "id": "P2",
+        "size": "L",
+        "p95Scale": 1.04
+      }
+    }
+  }
+}

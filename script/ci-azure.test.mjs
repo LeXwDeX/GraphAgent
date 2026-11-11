@@ -16,6 +16,7 @@ await test("CI keeps the required gate names", () => {
     "displayName: Unit Tests (workspace)\n",
     "displayName: Unit Tests (graphagent ${{ shard }}/${{ length(parameters.shards) }})\n",
     "displayName: Unit Tests (HttpAPI)\n",
+    "displayName: Bench (TUI)\n",
     "displayName: Unit Tests (linux)\n",
   ])
     assert(ci.includes(name), name)
@@ -37,7 +38,7 @@ await test("the unit aggregate fails unless every unit job succeeded", () => {
     assert(aggregate.includes(`$[ dependencies.${job}.result ]`), `reads ${job} result`)
   }
   assert(aggregate.includes('if [ "$result" != "Succeeded" ]'))
-  assert(aggregate.includes("expected=$(( 2 + ${{ length(parameters.shards) }} ))"))
+  assert(aggregate.includes("expected=$(( 3 + ${{ length(parameters.shards) }} ))"))
   assert(aggregate.includes("- checkout: none"), "aggregate runs no repository code")
 })
 
@@ -55,6 +56,7 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
     "bun run check:generated",
     "--shard=${{ shard }}/${{ length(parameters.shards) }} --timings=test/ci-timings.json",
     "bun run test:httpapi:ci",
+    "bun run bench:tui -- --repeats=5 --enforce",
   ])
     assert(ci.includes(command), command)
   assert.match(ci, /bun run test:httpapi:ci\n\s+displayName: [^\n]+\n\s+workingDirectory: [^\n]+\n\s+timeoutInMinutes: \d+/)

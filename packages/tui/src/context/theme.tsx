@@ -307,21 +307,42 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
   },
 })
 
+/**
+ * Destroys a syntax style after the frame that still references it has been
+ * presented. `renderer.idle()` deliberately is not used: while the renderer
+ * keeps producing frames it never resolves, and every pending release then
+ * retains the disposed component scope through its callback (one leaked
+ * session view per switch, #1025 P20).
+ */
+function releaseSyntaxStyle(renderer: ReturnType<typeof useRenderer>, retained: Set<SyntaxStyle>, style: SyntaxStyle) {
+  retained.add(style)
+  const done = () => {
+    if (!retained.delete(style)) return
+    style.destroy()
+  }
+  if (renderer.isDestroyed) {
+    done()
+    return
+  }
+  const onFrame = () => {
+    renderer.off(CliRenderEvents.FRAME, onFrame)
+    renderer.off(CliRenderEvents.DESTROY, onDestroy)
+    done()
+  }
+  const onDestroy = () => {
+    renderer.off(CliRenderEvents.FRAME, onFrame)
+    done()
+  }
+  renderer.on(CliRenderEvents.FRAME, onFrame)
+  renderer.on(CliRenderEvents.DESTROY, onDestroy)
+}
+
 export function createSyntaxStyleMemo(factory: (owner: NativeResourceOwner) => SyntaxStyle) {
   const renderer = useRenderer()
   const retained = new Set<SyntaxStyle>()
   let current: SyntaxStyle | undefined
 
-  const release = (style: SyntaxStyle) => {
-    retained.add(style)
-    void renderer
-      .idle()
-      .catch(() => {})
-      .finally(() => {
-        if (!retained.delete(style)) return
-        style.destroy()
-      })
-  }
+  const release = (style: SyntaxStyle) => releaseSyntaxStyle(renderer, retained, style)
 
   onCleanup(() => {
     if (current) release(current)

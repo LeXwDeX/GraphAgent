@@ -11,6 +11,7 @@
 #                                     and generated-code checks
 #           Unit Tests (graphagent N/4) — graphagent tests in parallel shards
 #           Unit Tests (HttpAPI)    — HttpAPI exerciser gates
+#           Bench (TUI)             — TUI frame-budget and store-write gate
 #           Unit Tests (linux)      — aggregate; succeeds only when every
 #                                     unit job succeeded
 # Gate    : Typecheck and Unit Tests (linux) are the merge
@@ -156,6 +157,24 @@ jobs:
             env:
               GRAPHAGENT_DISABLE_FILEWATCHER: "false"
 
+  # #1025 7.7: hard counters fail outright; timing metrics compare against
+  # the committed baseline with a machine-calibration factor. The baseline is
+  # regenerated only with a reviewed change to the gate.
+  - job: unit_bench_tui
+    displayName: Bench (TUI)
+    pool:
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
+    timeoutInMinutes: 30
+    steps:
+      - checkout: self
+        fetchDepth: 1
+      - template: templates/toolchain.yml
+      - bash: bun run bench:tui -- --repeats=5 --enforce
+        displayName: Run TUI performance gate
+        workingDirectory: packages/tui
+        timeoutInMinutes: 25
+
   - job: unit_httpapi
     displayName: Unit Tests (HttpAPI)
     pool:
@@ -188,6 +207,7 @@ jobs:
     dependsOn:
       - unit_workspace
       - unit_httpapi
+      - unit_bench_tui
       - ${{ each shard in parameters.shards }}:
           - unit_graphagent_${{ shard }}
     condition: always()
@@ -198,13 +218,14 @@ jobs:
     variables:
       UNIT_RESULT_WORKSPACE: $[ dependencies.unit_workspace.result ]
       UNIT_RESULT_HTTPAPI: $[ dependencies.unit_httpapi.result ]
+      UNIT_RESULT_BENCH_TUI: $[ dependencies.unit_bench_tui.result ]
       ${{ each shard in parameters.shards }}:
         UNIT_RESULT_GRAPHAGENT_${{ shard }}: $[ dependencies.unit_graphagent_${{ shard }}.result ]
     steps:
       - checkout: none
       - bash: |
           set -euo pipefail
-          expected=$(( 2 + ${{ length(parameters.shards) }} ))
+          expected=$(( 3 + ${{ length(parameters.shards) }} ))
           count=0
           while IFS='=' read -r name result; do
             count=$((count + 1))
