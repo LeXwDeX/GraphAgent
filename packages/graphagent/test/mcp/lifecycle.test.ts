@@ -1,9 +1,20 @@
 import path from "node:path"
+import fs from "node:fs/promises"
+import os from "node:os"
 import { pathToFileURL } from "node:url"
 import { expect, mock, beforeEach, afterAll } from "bun:test"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Context, Effect, Exit, Layer } from "effect"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Project } from "@graphagent/core/project"
+import { InstanceRef } from "../../src/effect/instance-ref"
+import { Git } from "../../src/git"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
+import type { InstanceContext } from "../../src/project/instance-context"
+import { ProjectTrust } from "../../src/project/trust"
+import { McpAuth } from "../../src/mcp/auth"
 import type { MCP as MCPNS } from "../../src/mcp/index"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
 
 // --- Mock infrastructure ---
@@ -267,6 +278,86 @@ const { MCP } = await import("../../src/mcp/index")
 const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
 
 const it = testEffect(MCP.defaultLayer)
+
+/**
+ * The real MCP service with an isolated ProjectTrust store so project-layer
+ * servers can be exercised before and after a decision. `it.instance` always
+ * boots a trusted instance, so these tests provide their own InstanceRef.
+ */
+const mcpWithTrust = (stateDirectory: string) =>
+  MCP.layer.pipe(
+    Layer.provideMerge(ProjectTrust.makeLayer({ stateDirectory })),
+    Layer.provide(McpAuth.defaultLayer),
+    Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(CrossSpawnSpawner.defaultLayer),
+    Layer.provide(FSUtil.defaultLayer),
+    Layer.provide(Git.defaultLayer),
+  )
+
+const trustIt = testEffect(Layer.empty)
+
+trustIt.live("a project MCP server starts no client before trust, starts after it and closes on revoke", () =>
+  Effect.gen(function* () {
+    const root = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-trust-root-")))
+    const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-trust-state-")))
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(async () => {
+        await fs.rm(root, { recursive: true, force: true })
+        await fs.rm(stateDirectory, { recursive: true, force: true })
+      }),
+    )
+    yield* Effect.promise(async () => {
+      await fs.mkdir(path.join(root, ".agents"), { recursive: true })
+      await fs.writeFile(
+        path.join(root, ".agents", "mcp.json"),
+        JSON.stringify({ mcpServers: { "project-trusted": { type: "local", command: ["echo", "test"] } } }),
+      )
+    })
+
+    const services = yield* Layer.build(mcpWithTrust(stateDirectory))
+    const mcp = Context.get(services, MCP.Service)
+    const trust = Context.get(services, ProjectTrust.Service)
+    const ctx: InstanceContext = {
+      directory: root,
+      worktree: root,
+      root,
+      project: { id: Project.ID.global, worktree: root, time: { created: 0, updated: 0 }, sandboxes: [] },
+    }
+    const inInstance = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provideService(InstanceRef, ctx))
+
+    lastCreatedClientName = "project-trusted"
+    const serverState = getOrCreateClientState("project-trusted")
+
+    expect((yield* inInstance(mcp.status()))["project-trusted"]).toEqual({ status: "disabled" })
+    expect(clientCreateCount).toBe(0)
+    const entries = yield* inInstance(trust.list())
+    expect(entries.map((entry) => entry.category)).toEqual(["mcp"])
+
+    yield* inInstance(trust.decide([{ id: entries[0].id, state: "trusted" }]))
+    yield* inInstance(
+      pollWithTimeout(
+        mcp
+          .status()
+          .pipe(Effect.map((status) => (status["project-trusted"]?.status === "connected" ? true : undefined))),
+        "the trusted MCP server did not start",
+      ),
+    )
+    expect(clientCreateCount).toBe(1)
+    expect(serverState.closed).toBe(false)
+
+    yield* inInstance(trust.decide([{ id: entries[0].id, state: "revoked" }]))
+    yield* inInstance(
+      pollWithTimeout(
+        mcp
+          .status()
+          .pipe(Effect.map((status) => (status["project-trusted"]?.status === "disabled" ? true : undefined))),
+        "revocation did not stop the MCP server",
+      ),
+    )
+    expect(serverState.closed).toBe(true)
+    expect(clientCreateCount).toBe(1)
+  }),
+)
 
 function statusName(status: Record<string, MCPNS.Status> | MCPNS.Status, server: string) {
   if ("status" in status) return status.status

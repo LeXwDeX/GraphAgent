@@ -131,9 +131,12 @@ Lifecycle hooks compatible with the Claude Code hooks protocol: 33 recognised ev
 `agent`). `PermissionDenied` and `TeammateIdle` are accepted for configuration compatibility but have no runtime
 producer in this build.
 
-- `hooks.json` is read from the global opencode config directory and from project/worktree `.opencode` directories,
-  merged by appending and hot-reloaded; hooks can also be registered per session over HTTP. Hooks do not require a
-  workspace trust-list entry.
+- `hooks.json` is read from the global opencode config directory and from project/worktree `.agents` directories,
+  merged by appending and hot-reloaded; hooks can also be registered per session over HTTP. Project-layer hooks are
+  trust-gated: when entries are pending, the TUI asks before the first session, and `/trust` reviews, trusts, declines,
+  or revokes entries at any time. Decisions live only in `trust.json` in the local state directory, never in the
+  project; non-interactive `graphagent run` skips untrusted entries (pass `--trust-project` to allow them for that
+  run), and user-level hooks are unaffected.
 - Hooks of every execution type can declare `inputFormat: "claude-code"` to receive Claude Code tool names and input keys. This gives
   naming compatibility, not full behavioral parity.
 - Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude` reviews and converts them into

@@ -17,7 +17,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { isClosingOnlyCause } from "@/session/prompt"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { randomBytes } from "node:crypto"
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 import { hookCommand } from "../fixture/claude-hook"
@@ -272,6 +272,123 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
     120_000,
   )
 }
+
+cliIt.live(
+  "an untrusted project hook is skipped in a DAG worker without permission or question requests",
+  ({ opencode, home, llm }) =>
+    Effect.gen(function* () {
+      const directory = path.join(yield* Effect.promise(() => realpath(home)), "workspace")
+      const marker = path.join(home, "untrusted-hook-ran.txt")
+      const reportFile = path.join(directory, "untrusted-report.json")
+      const spec = path.join(directory, ".agents", "untrusted-hook.yaml")
+      yield* Effect.promise(async () => {
+        await mkdir(path.join(directory, ".agents"), { recursive: true })
+        await writeFile(
+          path.join(directory, ".agents", "hooks.json"),
+          JSON.stringify({
+            PreToolUse: [
+              {
+                matcher: "*",
+                hooks: [
+                  {
+                    type: "command",
+                    command: hookCommand(`require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`),
+                  },
+                ],
+              },
+            ],
+          }),
+        )
+        await writeFile(
+          spec,
+          JSON.stringify({
+            title: "Untrusted project hook",
+            config: {
+              name: "untrusted-project-hook",
+              delivery_node: "verify",
+              max_concurrency: 1,
+              nodes: [
+                {
+                  id: "verify",
+                  name: "Verification",
+                  worker_type: "general",
+                  depends_on: [],
+                  required: true,
+                  prompt_template: {
+                    inline: `ISSUE1040_UNTRUSTED: Write ${reportFile} with {"ok":true}, then report completion.`,
+                  },
+                },
+              ],
+            },
+          }),
+        )
+      })
+      // The project hook stays pending: it was never submitted through
+      // /project/trust, so the worker must run with an empty hook chain.
+      const workerMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("ISSUE1040_UNTRUSTED")
+      yield* llm.toolMatch(({ body }) => JSON.stringify(body).includes("ISSUE1040-START"), "workflow", {
+        params: { action: "start", spec_path: spec },
+      })
+      yield* llm.pushMatch(
+        workerMatch,
+        reply().tool("write", { filePath: reportFile, content: JSON.stringify({ ok: true }) }, "untrusted_write"),
+      )
+      yield* llm.textMatch(workerMatch, "Written with project hooks still pending.")
+      const server = yield* opencode.host({ readyTimeoutMs: 30_000 })
+      yield* Effect.promise(async () => {
+        const request = async (route: string, body?: unknown): Promise<any> => {
+          const response = await fetch(server.url + route, {
+            method: body === undefined ? "GET" : "POST",
+            headers: { "x-graphagent-directory": directory, "content-type": "application/json" },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          if (!response.ok) throw new Error(`${route}: HTTP ${response.status}`)
+          return response.json()
+        }
+        const trust: Row = await request("/project/trust")
+        expect(trust.entries.map((entry: Row) => [entry.category, entry.state])).toEqual([["hook", "pending"]])
+        const parent = await request("/session", {
+          title: "Untrusted hook chain",
+          model: { providerID: "test", id: "test-model" },
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        await request(`/session/${parent.id}/message`, {
+          parts: [{ type: "text", text: "ISSUE1040-START" }],
+        })
+        const workflows: Row[] = await request(`/dag/session/${parent.id}`)
+        const workflow = workflows[0]
+        if (!workflow) throw new Error("workflow tool did not start a workflow")
+        const deadline = Date.now() + 60_000
+        const waitUntil = async <A>(read: () => Promise<A>, ready: (value: A) => boolean): Promise<A> => {
+          for (;;) {
+            const value = await read()
+            if (ready(value)) return value
+            if (Date.now() > deadline) throw new Error(`Timed out waiting for the workflow: ${JSON.stringify(value)}`)
+            await new Promise((resolve) => setTimeout(resolve, 25))
+          }
+        }
+        const terminal = await waitUntil(
+          () => request(`/dag/${workflow.id}`),
+          (row) => ["completed", "failed", "cancelled"].includes(row.status),
+        )
+        expect(terminal.status).toBe("completed")
+        const nodes: Row[] = await request(`/dag/${workflow.id}/nodes`)
+        expect(nodes.map((row) => [row.id, row.status])).toEqual([["verify", "completed"]])
+        expect(JSON.parse(await readFile(reportFile, "utf8"))).toEqual({ ok: true })
+        expect(
+          await access(marker)
+            .then(() => true)
+            .catch(() => false),
+        ).toBe(false)
+        // The non-interactive path must skip the entries instead of asking:
+        // both pending permission and question lists stay empty.
+        expect(await request("/permission")).toEqual([])
+        expect(await request("/question")).toEqual([])
+        expect((await request("/project/trust")).entries[0].state).toBe("pending")
+      })
+    }),
+  120_000,
+)
 
 async function observeFinalizerReason(
   existing?: SessionAbortReason.Info,

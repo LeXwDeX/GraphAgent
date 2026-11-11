@@ -101,6 +101,21 @@ export function backgroundDebug(
   }).pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void)))
 }
 
+/** Best-effort operator-facing diagnostics routed only to file writers, visible at the default level. */
+export function backgroundInfo(
+  message: string,
+  fields: Readonly<Record<string, string | number | boolean | null | undefined>> = {},
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const current = yield* Effect.service(Logger.CurrentLoggers)
+    const writers = new Set([...current].filter((logger) => fileWriters.has(logger)))
+    if (writers.size === 0) return
+    yield* Effect.logInfo(message, { ...fields, pid: process.pid, threadId }).pipe(
+      Effect.provideService(Logger.CurrentLoggers, writers),
+    )
+  }).pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.void)))
+}
+
 const stderrLogger = Logger.make((options) => process.stderr.write(formatter().log(options) + "\n"))
 
 export function minimumLogLevel() {

@@ -1114,7 +1114,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             agent: local.agent.current()?.name,
             agentAction: footerKeys().agent,
             hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
-            meta: route.data.type === "home" ? homeMeta() : undefined,
+            meta: route.data.type === "home" ? homeMeta() : { trust: homeMeta().trust },
             right: footerStatus(),
           }}
           bottomZone={<BottomZone state={bottomZone} composer={<></>} />}

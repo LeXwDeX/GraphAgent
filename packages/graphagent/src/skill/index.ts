@@ -108,8 +108,8 @@ export interface Interface {
 
 /**
  * Roots owned by the operator rather than by the workspace being opened. Keep
- * that provenance on scoped hooks for policy evaluation; all sources can
- * register hooks without a workspace trust list.
+ * that provenance on scoped hooks for policy evaluation; hooks sourced from the
+ * project layer are still filtered by ProjectTrust before execution.
  */
 const userSkillRoots = () => [
   Global.Path.config,

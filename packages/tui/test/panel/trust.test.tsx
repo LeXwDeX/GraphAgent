@@ -139,6 +139,40 @@ test("first-open panel lists pending entries at 120x40", async () => {
   }
 })
 
+test("first-open panel renders at 120x40 with ambiguous_width 2", async () => {
+  await using tmp = await shellState({ ambiguous_width: 2 })
+  const calls = recording([safe, risky])
+  const { app } = await renderTrust({ mode: "first", handler: calls.handler, state: tmp.path, width: 120, height: 40 })
+
+  try {
+    await waitFor(app, () => app.captureCharFrame().includes("先看一下这个项目会做什么"), "trust title")
+    expect(app.captureCharFrame()).toMatchSnapshot()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("first-open panel renders its English copy", async () => {
+  await using tmp = await shellState()
+  const calls = recording([safe, risky])
+  const { app } = await renderTrust({ mode: "first", handler: calls.handler, state: tmp.path, width: 120, height: 40 })
+
+  try {
+    await waitFor(app, () => app.captureCharFrame().includes("先看一下这个项目会做什么"), "trust title")
+    // The bootstrap pins the fixture language; switch after it settles so the
+    // panel reads the same message catalog the language change refreshes.
+    setLanguage("en")
+    await settle(app)
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Check what this project will run")
+    expect(frame).toContain("Trust checked and continue")
+    expect(frame).toContain("Decline all")
+    expect(frame).not.toContain("先看一下这个项目会做什么")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("first-open panel renders at 80x24", async () => {
   await using tmp = await shellState()
   const calls = recording([safe, risky])
@@ -265,6 +299,35 @@ test("changed panel shows new and modified entries with the unchanged count", as
     expect(frame).toContain("新增")
     expect(frame).toContain("改过")
     expect(frame).toContain("另有 1 条未变化，保持信任")
+
+    // The modified row's detail body shows both sides of the change.
+    app.mockInput.pressArrow("down")
+    await settle(app)
+    const detail = app.captureCharFrame()
+    expect(detail).toContain("- bun run lint")
+    expect(detail).toContain("+ bun run lint --write")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("manage panel toggles the selected entry between trusted and declined", async () => {
+  await using tmp = await shellState()
+  const trusted = entry({ id: "trusted", command: "bun run typecheck", state: "trusted" })
+  const calls = recording([trusted, risky])
+  const { app } = await renderTrust({ mode: "manage", handler: calls.handler, state: tmp.path, width: 120, height: 40 })
+
+  try {
+    await waitFor(app, () => app.captureCharFrame().includes("项目信任"), "manage title")
+    app.mockInput.pressKey(" ")
+    await waitFor(app, () => calls.posts.length === 1, "first toggle request")
+    expect(calls.posts[0]?.decisions).toEqual([{ id: "trusted", state: "declined" }])
+
+    await settle(app)
+    app.mockInput.pressKey(" ")
+    await waitFor(app, () => calls.posts.length === 2, "second toggle request")
+    expect(calls.posts[1]?.decisions).toEqual([{ id: "trusted", state: "trusted" }])
+    expect(calls.sessions.every((method) => method === "GET")).toBe(true)
   } finally {
     app.renderer.destroy()
   }
