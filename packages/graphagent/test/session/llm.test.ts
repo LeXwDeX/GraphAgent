@@ -3402,6 +3402,9 @@ describe("session.llm scheduling lane (issue #1021)", () => {
     const requests: AgentScheduler.RequestInput[] = []
     const releases: AgentScheduler.RequestInput[] = []
     const layer = Layer.mock(AgentScheduler.Service, {
+      // The real scheduler primes the shared cache group on first streamed
+      // content; this test records reservations only.
+      prime: () => Effect.void,
       request: (input) =>
         Effect.acquireRelease(
           Effect.sync(() => {
@@ -3515,6 +3518,7 @@ describe("session.llm scheduling lane (issue #1021)", () => {
             [laneProvider]: {
               name: "OpenCode Test",
               npm: "@ai-sdk/openai-compatible",
+              // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- fixture model config mirrors the other live provider blocks in this file
               models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },
               options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
             },

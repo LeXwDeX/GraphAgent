@@ -876,7 +876,7 @@ describe("session.btw scheduling lane (issue #1021)", () => {
           // provider stream was requested; the captured input is the subject.
           expect(failure._tag).toBe("BtwUpstreamError")
           expect(laneStreams).toHaveLength(1)
-          const input = laneStreams[0]!
+          const input = laneStreams[0]
           expect(input.lane).toBe("side")
           expect(input.purpose).toBe("auxiliary")
           // The btw turn runs in its own descending session, never the

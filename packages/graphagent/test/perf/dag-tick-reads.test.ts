@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+// oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the H0 probe narrows instance and service stubs with `as never` shims while measuring the real store's reads.
+
 import { expect } from "bun:test"
 import { Effect, Layer, Scope } from "effect"
 import { Database } from "@graphagent/core/database/database"
