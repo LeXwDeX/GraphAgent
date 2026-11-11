@@ -2,7 +2,7 @@ import { SessionAttention } from "@/notification/attention"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "./schema"
-import { Effect, Layer, Context, Fiber, Scope, Option } from "effect"
+import { Effect, Layer, Context, Fiber, Scope, Option, Schema } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
 import { Notification } from "@/notification"
@@ -11,6 +11,8 @@ import { BackgroundJob } from "@/background/job"
 export const Info = SessionStatusEvent.Info
 export type Info = SessionStatusEvent.Info
 export const Event = SessionStatusEvent
+const idle: Info = { type: "idle" }
+const equivalence = Schema.toEquivalence(Info)
 export interface Interface {
   readonly get: (sessionID: SessionID) => Effect.Effect<Info>
   readonly list: () => Effect.Effect<Map<SessionID, Info>>
@@ -62,6 +64,12 @@ export const layer = Layer.effect(
     const set = Effect.fn("SessionStatus.set")(function* (sessionID: SessionID, status: Info) {
       const data = yield* InstanceState.get(state)
       const previous = data.statuses.get(sessionID)
+      // A repeated value is not a transition: the runner re-asserts `busy` at
+      // every model step and cancel paths re-assert `idle`. Consumers act on
+      // transitions, so re-publishing the same value is pure noise (it also
+      // used to cancel a pending idle_prompt timer). Idle is represented by
+      // the absence of a map entry, so compare against the synthetic idle.
+      if (equivalence(status, previous ?? idle)) return
       const timer = data.timers.get(sessionID)
       data.timers.delete(sessionID)
       if (timer) yield* Fiber.interrupt(timer)

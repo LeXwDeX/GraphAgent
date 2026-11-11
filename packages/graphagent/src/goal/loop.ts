@@ -1118,15 +1118,15 @@ const serviceLayer = Layer.effect(
             // goal.pauseForUserCancel (prompt.ts) BEFORE state.cancel lets the
             // interrupt propagate — by the time this catchCause observes the
             // cause, the goal is already paused, and pausing again HERE would
-            // double-publish. The session still ALWAYS re-emits idle
-            // afterwards, which re-drives this loop: SessionRunState.cancel
-            // (run-state.ts) and the runner's onIdle callback both call
-            // status.set(idle), and SessionStatus.set (status.ts) publishes
-            // the Status+Idle event pair unconditionally — even when the
-            // session was already idle. On that next cycle shouldPreempt is
-            // only the DB-failure fallback for a pauseForUserCancel that could
-            // not persist. Real dispatch failures (provider fault, session
-            // write error) still get the recoverable pause below.
+            // double-publish. The interrupt path itself needs no idle to
+            // re-drive this loop: SessionStatus.set publishes only real
+            // transitions (status dedup), so a cancel that finds the session
+            // already idle emits nothing. The next busy-to-idle transition or
+            // the inbox fallback tick (goal.continue registers scan) drives
+            // the re-evaluation, and shouldPreempt is only the DB-failure
+            // fallback for a pauseForUserCancel that could not persist. Real
+            // dispatch failures (provider fault, session write error) still
+            // get the recoverable pause below.
             // F1: hasInterrupts is a structural check; Cause.interruptors only
             // collects DEFINED fiber ids and silently ignores interrupts
             // carrying none (e.g. Cause.interrupt()), which would otherwise be

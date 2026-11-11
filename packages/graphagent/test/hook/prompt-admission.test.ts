@@ -467,7 +467,10 @@ goalIt.live("cancel during real goal command startup retains the goal until paus
         const set = status.set
         const statusSpy = spyOn(status, "set").mockImplementation((id, info) =>
           id === session.id && info.type === "busy"
-            ? Deferred.succeed(starting, undefined).pipe(Effect.andThen(Effect.never))
+            ? // Record the real busy transition before blocking. The runner's
+              // onBusy never returns in this scenario, and the later idle must
+              // remain a real transition for the goal loop to observe it.
+              set(id, info).pipe(Effect.andThen(Deferred.succeed(starting, undefined)), Effect.andThen(Effect.never))
             : id === session.id && info.type === "idle"
               ? Effect.gen(function* () {
                   goalAtIdle.push((yield* goal.load(id))?.status)
