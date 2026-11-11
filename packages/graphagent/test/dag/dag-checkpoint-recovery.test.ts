@@ -27,6 +27,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionStatus } from "@/session/status"
 import { awaitWithTimeout, it, pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface Probe {
   readonly childCreated: Deferred.Deferred<string>
@@ -83,7 +84,7 @@ function checkpointLayer(probe: Probe) {
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag, AgentScheduler.defaultLayer)
   const session = Layer.mock(Session.Service, {
     getPart: () => Effect.succeed(undefined),
     get: () => Effect.succeed({ id: "ses_checkpoint_parent", permission: [], agent: "build" } as never),

@@ -30,6 +30,7 @@ import { ProviderTest } from "../fake/provider"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { makeNodeRow } from "./fixtures"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface PromptGate {
   readonly title: string
@@ -115,7 +116,7 @@ function wakeLayer(input: {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const session = Layer.mock(Session.Service, {
@@ -388,11 +389,11 @@ it("keeps the final report and a completion wake after earlier checkpoint wakes 
         "5 seconds",
       )
       yield* pollWithTimeout(
-        store.getCurrentNodes(dagID).pipe(
+        store
+          .getCurrentNodes(dagID)
+          .pipe(
           Effect.map((nodes) =>
-            ["w1", "w2"].every((id) => nodes.find((node) => node.id === id)?.status === "running")
-              ? true
-              : undefined,
+              ["w1", "w2"].every((id) => nodes.find((node) => node.id === id)?.status === "running") ? true : undefined,
           ),
         ),
         "downstream workers did not enter the running state",
@@ -413,7 +414,9 @@ it("keeps the final report and a completion wake after earlier checkpoint wakes 
       yield* Deferred.succeed(wake.release, "success")
 
       yield* pollWithTimeout(
-        store.getCurrentNodes(dagID).pipe(
+        store
+          .getCurrentNodes(dagID)
+          .pipe(
           Effect.map((nodes) =>
             checkpointIDs.every((id) => nodes.find((node) => node.id === id)?.wakeReported) ? true : undefined,
           ),

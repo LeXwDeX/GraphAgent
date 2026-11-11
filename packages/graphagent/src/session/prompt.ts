@@ -18,6 +18,7 @@ import { SessionID, MessageID, PartID } from "./schema"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
 import { EngineProcess } from "./engine-process"
+import { AgentScheduler } from "./agent-scheduler"
 import { makeSessionLocks } from "./locks"
 import { Token } from "@/util/token"
 import { SessionRevert } from "./revert"
@@ -220,6 +221,7 @@ export const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
+    const scheduler = yield* AgentScheduler.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     // Every session cache below is process-wide: one ManagedRuntime cannot
@@ -268,35 +270,49 @@ export const layer = Layer.effect(
             const cfg = yield* config.get()
             const organizer = yield* llm.organizer({ model: input.model })
             if (!organizer) return undefined
-            const outcome = yield* runReasoningRewrite({
-              budget: rewrite.budget,
-              sessionID: input.sessionID,
-              slot: { messageID: part.messageID, partID: part.id, text: part.text },
-              language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
-              call: organizer.call,
-              // Organization only queues a candidate; the next step commits it before reading history.
-              adopt: (replacement) => Effect.succeed(replacement),
-            })
-            yield* Effect.logInfo(
-              "reasoning distillation",
-              rewriteLogFields(outcome, {
-                runtime: "opencode",
-                mode: "async",
-                "session.id": input.sessionID,
-                model: organizer.model,
-                transport: organizer.transport,
+            return yield* Effect.scoped(
+              Effect.gen(function* () {
+                // Reasoning rewriting is background work: when no stream
+                // permit is free it is dropped, exactly like the queue's own
+                // per-session bound, instead of delaying the turn.
+                const permit = yield* scheduler.tryRequest({
+                  lane: "background",
+                  providerID: organizer.providerID,
+                  modelID: organizer.modelID,
+                  sessionID: input.sessionID,
+                })
+                if (Option.isNone(permit)) return undefined
+                const outcome = yield* runReasoningRewrite({
+                  budget: rewrite.budget,
+                  sessionID: input.sessionID,
+                  slot: { messageID: part.messageID, partID: part.id, text: part.text },
+                  language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
+                  call: organizer.call,
+                  // Organization only queues a candidate; the next step commits it before reading history.
+                  adopt: (replacement) => Effect.succeed(replacement),
+                })
+                yield* Effect.logInfo(
+                  "reasoning distillation",
+                  rewriteLogFields(outcome, {
+                    runtime: "opencode",
+                    mode: "async",
+                    "session.id": input.sessionID,
+                    model: organizer.model,
+                    transport: organizer.transport,
+                  }),
+                )
+                if (!outcome.adopted) return undefined
+                return adoptReasoning({
+                  sessionID: input.sessionID,
+                  part,
+                  replacement: outcome.adopted,
+                  canAdopt: reasoningDistillationEnabled(input.model),
+                }).pipe(
+                  Effect.provideService(Database.Service, database),
+                  Effect.provideService(Session.Service, sessions),
+                  Effect.provideService(EventV2Bridge.Service, events),
+                )
               }),
-            )
-            if (!outcome.adopted) return undefined
-            return adoptReasoning({
-              sessionID: input.sessionID,
-              part,
-              replacement: outcome.adopted,
-              canAdopt: reasoningDistillationEnabled(input.model),
-            }).pipe(
-              Effect.provideService(Database.Service, database),
-              Effect.provideService(Session.Service, sessions),
-              Effect.provideService(EventV2Bridge.Service, events),
             )
           }),
         )
@@ -1063,6 +1079,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(
       Layer.mergeAll(
         Agent.defaultLayer,
+        AgentScheduler.defaultLayer,
         Database.defaultLayer,
         DagMessages.defaultLayer,
         DagStore.defaultLayer,
@@ -1203,6 +1220,7 @@ export const node = LayerNode.make(layer, [
   SessionStatus.node,
   Session.node,
   Agent.node,
+  AgentScheduler.node,
   Provider.node,
   SessionProcessor.node,
   SessionCompaction.node,

@@ -46,6 +46,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 /** Child release: reply text (node completes) or a simulated exec failure. */
 type ChildOutcome = { text: string } | { fail: true }
@@ -63,10 +64,12 @@ interface ParentPromptGate {
 function takeWithin<A>(queue: Queue.Queue<A>, message: string) {
   return Queue.take(queue).pipe(
     Effect.timeoutOption("2 seconds"),
-    Effect.flatMap(Option.match({
+    Effect.flatMap(
+      Option.match({
       onNone: () => Effect.fail(new Error(message)),
       onSome: Effect.succeed,
-    })),
+      }),
+    ),
   )
 }
 
@@ -121,15 +124,9 @@ function loopLayer(input: {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
-  )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   const projectID = ProjectV2.ID.make("project-1")
@@ -156,9 +153,7 @@ function loopLayer(input: {
   })
   const deliver = Effect.fn("test.SessionPrompt.deliver")(function* (value: SessionPrompt.PromptInput) {
     const sessionID = value.sessionID as string
-    const text = value.parts
-      .map((part) => (part.type === "text" ? (part as { text: string }).text : ""))
-      .join("\n")
+    const text = value.parts.map((part) => (part.type === "text" ? (part as { text: string }).text : "")).join("\n")
     if (sessionID === "ses_parent") {
       const release = yield* Deferred.make<"success" | "failure">()
       yield* Queue.offer(input.parentPrompts, { text, release })
@@ -178,13 +173,17 @@ function loopLayer(input: {
     if ("fail" in outcome) return yield* Effect.die(new Error("simulated exec failure"))
     return reply(sessionID, outcome.text)
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: () => Effect.void,
     prompt: deliver,
     deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
-    get: () => Effect.succeed({
+    get: () =>
+      Effect.succeed({
       name: "build",
       mode: "all",
       permission: [],
@@ -223,19 +222,27 @@ function runLoopTest<A>(
       const database = yield* Database.Service
       const projectID = ProjectV2.ID.make("project-1")
       const parentSessionID = SessionID.make("ses_parent")
-      yield* database.db.insert(ProjectTable).values({
+      yield* database.db
+        .insert(ProjectTable)
+        .values({
         id: projectID,
         worktree: AbsolutePath.make(process.cwd()),
         sandboxes: [],
-      }).run().pipe(Effect.orDie)
-      yield* database.db.insert(SessionTable).values({
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* database.db
+        .insert(SessionTable)
+        .values({
         id: parentSessionID,
         project_id: projectID,
         slug: "parent",
         directory: process.cwd(),
         title: "Parent",
         version: "test",
-      }).run().pipe(Effect.orDie)
+        })
+        .run()
+        .pipe(Effect.orDie)
       yield* loop.init()
       return yield* test({ dag, store, childPrompts, parentPrompts })
     }).pipe(
@@ -299,9 +306,9 @@ describe("Train A rev-view (durable data untouched, view = current revision only
           const gateC = yield* takeWithin(childPrompts, "c did not start")
           yield* Deferred.succeed(gateC.release, { fail: true })
           yield* pollWithTimeout(
-            store.getNode(dagID, "c").pipe(
-              Effect.map((n) => (n?.status === "failed" && n.errorClass === "exec_failed" ? n : undefined)),
-            ),
+            store
+              .getNode(dagID, "c")
+              .pipe(Effect.map((n) => (n?.status === "failed" && n.errorClass === "exec_failed" ? n : undefined))),
             "c did not fail with exec_failed",
           )
 
@@ -361,9 +368,9 @@ describe("Train A rev-view (durable data untouched, view = current revision only
           yield* Deferred.succeed(gateZ.release, { text: "z done" })
 
           const terminal = yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((wf) => (wf && (wf.status === "completed" || wf.status === "failed") ? wf : undefined)),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((wf) => (wf && (wf.status === "completed" || wf.status === "failed") ? wf : undefined))),
             "workflow did not reach terminal after the new path completed",
           )
           expect(terminal.status).toBe("completed")
@@ -394,9 +401,7 @@ describe("Train A rev-view (durable data untouched, view = current revision only
           yield* Deferred.succeed(gate.release, { fail: true })
 
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((wf) => (wf?.status === "failed" ? wf : undefined)),
-            ),
+            store.getWorkflow(dagID).pipe(Effect.map((wf) => (wf?.status === "failed" ? wf : undefined))),
             "workflow did not fail on the genuine required failure",
           )
 
@@ -445,9 +450,9 @@ describe("Train A rev-view (durable data untouched, view = current revision only
           const gateC = yield* takeWithin(childPrompts, "c did not start")
           yield* Deferred.succeed(gateC.release, { fail: true })
           yield* pollWithTimeout(
-            store.getNode(dagID, "c").pipe(
-              Effect.map((n) => (n?.status === "failed" && n.errorClass === "exec_failed" ? n : undefined)),
-            ),
+            store
+              .getNode(dagID, "c")
+              .pipe(Effect.map((n) => (n?.status === "failed" && n.errorClass === "exec_failed" ? n : undefined))),
             "c did not fail with exec_failed",
           )
 
@@ -461,18 +466,16 @@ describe("Train A rev-view (durable data untouched, view = current revision only
           const gateG = yield* takeWithin(childPrompts, "g did not start after replan")
           yield* Deferred.succeed(gateG.release, { fail: true })
           yield* pollWithTimeout(
-            store.getNode(dagID, "g").pipe(
-              Effect.map((n) => (n?.status === "failed" && n.errorClass === "exec_failed" ? n : undefined)),
-            ),
+            store
+              .getNode(dagID, "g")
+              .pipe(Effect.map((n) => (n?.status === "failed" && n.errorClass === "exec_failed" ? n : undefined))),
             "g did not fail with exec_failed",
           )
 
           // Z completes; the required G failure then fails the workflow.
           yield* Deferred.succeed(gateZ.release, { text: "z done" })
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((wf) => (wf?.status === "failed" ? wf : undefined)),
-            ),
+            store.getWorkflow(dagID).pipe(Effect.map((wf) => (wf?.status === "failed" ? wf : undefined))),
             "workflow did not fail on the current-rev required failure",
           )
 
@@ -495,8 +498,8 @@ describe("Train A rev-view (durable data untouched, view = current revision only
           // Attribution block format: `- "<name>" (<errorClass>): <reason>`.
           // The current-rev failure G is attributed; the superseded replaced
           // failure C must not be attributed on ANY delivered wake.
-          expect(terminalWake).toContain("- \"g\" (exec_failed)")
-          for (const text of wakes) expect(text.includes("- \"c\"")).toBe(false)
+          expect(terminalWake).toContain('- "g" (exec_failed)')
+          for (const text of wakes) expect(text.includes('- "c"')).toBe(false)
         }),
       ),
     )

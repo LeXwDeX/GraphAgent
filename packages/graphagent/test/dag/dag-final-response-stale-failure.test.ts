@@ -4,7 +4,7 @@
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- Narrow model service fixtures retain real DAG events and durable mailbox guards.
 import { describe, expect } from "bun:test"
 import { sql } from "drizzle-orm"
-import { Effect, Exit, Fiber, Layer, Semaphore } from "effect"
+import { Effect, Exit, Fiber, Layer } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -14,12 +14,19 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
 import { continueRecoveredMessageNode, reconcileWorkflow } from "@/dag/runtime/recovery"
-import { spawnNode } from "@/dag/runtime/spawn"
+import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 const parent = { projectID: "p", directory: process.cwd(), sessionID: "ses_parent" }
 const child = { ...parent, sessionID: "ses_child" }
@@ -33,7 +40,7 @@ function services() {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const messages = DagMessages.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
-  const dependencies = Layer.mergeAll(database, events, bridge, store, messages, projector)
+  const dependencies = Layer.mergeAll(database, events, bridge, store, messages, projector, AgentScheduler.defaultLayer)
   return Layer.merge(dependencies, Dag.layer.pipe(Layer.provide(dependencies)))
 }
 const it = testEffect(services())
@@ -186,14 +193,17 @@ describe("final-response failure freshness", () => {
             create: () => Effect.succeed({ id: SessionID.make(child.sessionID), directory: child.directory } as never),
           })
           const node = (yield* dag.store.getNode(workflowID, "n"))!
-          const spawned = yield* spawnNode(Semaphore.makeUnsafe(1), {
+          const input: NodeSpawnInput = {
             dagID: workflowID,
             nodeID: "n",
             node,
             parentSessionID: parent.sessionID,
             promptParts: [{ type: "text", text: "work" }],
             outputSchema: schema,
-          }).pipe(Effect.provide(Layer.mergeAll(agent, sessions, prompt)))
+          }
+          const spawned = yield* spawnNode(spawnSchedule(input, 1), input).pipe(
+            Effect.provide(Layer.mergeAll(agent, sessions, prompt, AgentScheduler.defaultLayer)),
+          )
           expect(Exit.isSuccess(yield* Fiber.await(spawned.fiber))).toBe(true)
           expect({ prompts, loops }).toEqual({ prompts: 1, loops: 1 })
         } else if (mode === "continue") {

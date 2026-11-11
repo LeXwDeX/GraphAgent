@@ -29,6 +29,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 // GOAL-FP-01-02: the final DAG lease unregister (U2) lands AFTER the wake
 // turn's idle event. GoalLoop's claim runs on idle while the dag registration
@@ -87,7 +88,9 @@ function reply(sessionID: string, text: string): SessionV1.WithParts {
       time: { created: Date.now() },
       finish: "stop",
     },
-    parts: text ? [{ id: PartID.ascending(), sessionID: SessionID.make(sessionID), messageID: id, type: "text", text }] : [],
+    parts: text
+      ? [{ id: PartID.ascending(), sessionID: SessionID.make(sessionID), messageID: id, type: "text", text }]
+      : [],
   }
 }
 
@@ -141,20 +144,20 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
       ).pipe(Layer.provide(DagStore.layer.pipe(Layer.provide(database))))
     : DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
-  const projector = DagProjector.layer.pipe(
-    Layer.provide(events),
-    Layer.provide(database),
+  const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const goal = Goal.layer.pipe(Layer.provide(bridge), Layer.provide(database), Layer.provide(status))
+  const base = Layer.mergeAll(
+    database,
+    events,
+    bridge,
+    store,
+    projector,
+    dag,
+    goal,
+    status,
+    AgentScheduler.defaultLayer,
   )
-  const dag = Dag.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(store),
-  )
-  const goal = Goal.layer.pipe(
-    Layer.provide(bridge),
-    Layer.provide(database),
-    Layer.provide(status),
-  )
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, goal, status)
   const childTitles = new Map<string, string>()
   const created: string[] = []
   let lastAssistant = mkAssistant()
@@ -228,11 +231,14 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
     yield* Queue.offer(input.childPrompts, { title: childTitles.get(sessionID) ?? sessionID, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: () => Effect.void,
     prompt: deliver,
     deliver: (value: SessionPrompt.PromptInput) => deliver(value).pipe(Effect.map(Option.some)),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({
@@ -379,18 +385,16 @@ describe("DagLoop final wake delivery re-triggers the goal (GOAL-FP-01-02)", () 
           // releases the dag registration and forks the wake delivery.
           yield* Deferred.succeed(child.release, "done")
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined)),
-            ),
+            store
+              .getWorkflow(dagID)
+              .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
             "workflow did not complete",
           )
 
           // The final wake delivery succeeded and reported (U2 unregistered the
           // terminal workflow inside the delivery tap).
           yield* pollWithTimeout(
-            store.getWorkflow(dagID).pipe(
-              Effect.map((workflow) => (workflow?.wakeReported ? workflow : undefined)),
-            ),
+            store.getWorkflow(dagID).pipe(Effect.map((workflow) => (workflow?.wakeReported ? workflow : undefined))),
             "wake was never reported",
           )
 
@@ -453,9 +457,9 @@ describe("DagLoop wake delivery — a mark failure retry must not re-inject the 
             const child = yield* takeWithin(childPrompts, "implement did not start")
             yield* Deferred.succeed(child.release, "done")
             yield* pollWithTimeout(
-              store.getWorkflow(dagID).pipe(
-                Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined)),
-              ),
+              store
+                .getWorkflow(dagID)
+                .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
               "workflow did not complete",
             )
 
@@ -468,9 +472,7 @@ describe("DagLoop wake delivery — a mark failure retry must not re-inject the 
               "5 seconds",
             )
             yield* pollWithTimeout(
-              store.getWorkflow(dagID).pipe(
-                Effect.map((workflow) => (workflow?.wakeReported ? workflow : undefined)),
-              ),
+              store.getWorkflow(dagID).pipe(Effect.map((workflow) => (workflow?.wakeReported ? workflow : undefined))),
               "wake was never reported",
             )
 

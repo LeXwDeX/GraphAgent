@@ -281,6 +281,13 @@ export function policy(opts: {
   onGated?: () => void
   /** Gate state logged when the gate or the attempt cap stops a retry. */
   gates?: () => Record<string, unknown>
+  /**
+   * Called with the computed backoff when the dispatch table classifies the
+   * failure as a provider rate limit, so the process scheduler can penalize
+   * that provider/model lane before the retry is resent (#1021). The callback
+   * carries no error channel: it must not fail the retry schedule.
+   */
+  onRateLimit?: (input: { message: string; retryAfterMs: number }) => Effect.Effect<void>
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
   return Schedule.fromStepWithMetadata(
@@ -313,6 +320,9 @@ export function policy(opts: {
             : decision.branch === "rate_limit"
               ? delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
               : delay(meta.attempt)
+        if (decision.branch === "rate_limit" && opts.onRateLimit) {
+          yield* opts.onRateLimit({ message: decision.message, retryAfterMs: wait })
+        }
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
           attempt: meta.attempt,

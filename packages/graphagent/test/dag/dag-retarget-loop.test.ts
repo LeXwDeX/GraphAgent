@@ -29,6 +29,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 interface PromptGate {
   readonly title: string
@@ -93,7 +94,7 @@ function loopLayer(input: {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const projectID = ProjectV2.ID.make("project-retarget-loop")
   const sessionInfo = (id: SessionSchema.ID, title: string, directory: string): Session.Info => ({
     id,
@@ -134,13 +135,17 @@ function loopLayer(input: {
     const outcome = yield* Deferred.await(release)
     return reply(sessionID, outcome)
   })
-  const prompt = Layer.mock(SessionPrompt.Service, withIdleAdmission({
+  const prompt = Layer.mock(
+    SessionPrompt.Service,
+    withIdleAdmission({
     cancel: (sessionID) => Effect.sync(() => input.cancelled.push(sessionID)),
     prompt: deliver,
     deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
-  }))
+    }),
+  )
   const agent = Layer.mock(Agent.Service, {
-    get: () => Effect.succeed({
+    get: () =>
+      Effect.succeed({
       name: "build",
       mode: "all",
       permission: [],
@@ -182,19 +187,27 @@ function runLoop<A>(
       const database = yield* Database.Service
       const projectID = ProjectV2.ID.make("project-retarget-loop")
       const parent = SessionID.make(parentSessionID)
-      yield* database.db.insert(ProjectTable).values({
+      yield* database.db
+        .insert(ProjectTable)
+        .values({
         id: projectID,
         worktree: AbsolutePath.make(directory),
         sandboxes: [],
-      }).run().pipe(Effect.orDie)
-      yield* database.db.insert(SessionTable).values({
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* database.db
+        .insert(SessionTable)
+        .values({
         id: parent,
         project_id: projectID,
         slug: "parent",
         directory,
         title: "Parent",
         version: "test",
-      }).run().pipe(Effect.orDie)
+        })
+        .run()
+        .pipe(Effect.orDie)
       yield* loop.init()
       return yield* test({ dag, store, childPrompts, cancelled, created })
     }).pipe(
@@ -218,10 +231,12 @@ function runLoop<A>(
 function takeGate(queue: Queue.Queue<PromptGate>, title: string) {
   return Queue.take(queue).pipe(
     Effect.timeoutOption("5 seconds"),
-    Effect.flatMap(Option.match({
+    Effect.flatMap(
+      Option.match({
       onNone: () => Effect.fail(new Error(`${title} did not start`)),
       onSome: (gate) => Effect.succeed(gate),
-    })),
+      }),
+    ),
   )
 }
 
@@ -267,9 +282,9 @@ describe("Dag retarget through the live loop", () => {
           expect(created.filter((child) => child.title === "build")).toHaveLength(1)
           yield* Deferred.succeed(restarted.release, "review fresh")
           yield* pollWithTimeout(
-            store.getNode(dagID, "review").pipe(
-              Effect.map((item) => (item?.status === "completed" ? item : undefined)),
-            ),
+            store
+              .getNode(dagID, "review")
+              .pipe(Effect.map((item) => (item?.status === "completed" ? item : undefined))),
             "the fresh review attempt did not complete",
           )
           expect(yield* store.getNode(dagID, "review")).toMatchObject({

@@ -4,7 +4,7 @@
 import { SettingsHook } from "@/hook"
 import { $ } from "bun"
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer, Semaphore, Fiber, Deferred, Option } from "effect"
+import { Effect, Layer, Fiber, Deferred, Option } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -17,6 +17,7 @@ import { Project } from "@graphagent/core/project"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { boundedCancel, spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
@@ -151,6 +152,10 @@ function makeFailingPromptLayer(error: string): Layer.Layer<SessionPrompt.Servic
   })
 }
 
+function workflowSchedule() {
+  return { limit: { kind: "workflow" as const, workflowID: "wf-1" }, cap: 1 }
+}
+
 function makeSpawnInput(): NodeSpawnInput {
   return {
     dagID: "wf-1",
@@ -162,8 +167,8 @@ function makeSpawnInput(): NodeSpawnInput {
 }
 
 async function runSpawn(dagLayer: Layer.Layer<never>, extraLayer: Layer.Layer<never>) {
-  const semaphore = Semaphore.makeUnsafe(1)
-  const fullLayer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, extraLayer)
+  const semaphore = workflowSchedule()
+  const fullLayer = Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessionLayer, extraLayer)
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -194,7 +199,7 @@ describe("spawnNode completion bridge", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), { ...makeSpawnInput(), directory: tmp.path })
+          const result = yield* spawnNode(workflowSchedule(), { ...makeSpawnInput(), directory: tmp.path })
           yield* Fiber.await(result.fiber)
         }),
       ).pipe(
@@ -204,6 +209,7 @@ describe("spawnNode completion bridge", () => {
               getWorkflow: () => Effect.succeed(makeWorkflowRow({ directory: tmp.path })),
             }).dagLayer,
             agentLayer,
+            AgentScheduler.defaultLayer,
             sessionLayer,
             prompt,
           ),
@@ -249,7 +255,7 @@ describe("spawnNode completion bridge", () => {
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+            const result = yield* spawnNode(workflowSchedule(), {
               ...makeSpawnInput(),
               directory: tmp.path,
               executionDirectory: workspace,
@@ -257,7 +263,7 @@ describe("spawnNode completion bridge", () => {
             yield* Fiber.await(result.fiber)
           }),
         ).pipe(
-          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)),
+          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessions, prompt)),
           Effect.provideService(InstanceStore.Service, instanceStore),
           Effect.orDie,
         ),
@@ -320,7 +326,7 @@ describe("spawnNode completion bridge", () => {
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+            const result = yield* spawnNode(workflowSchedule(), {
               ...makeSpawnInput(),
               directory: tmp.path,
               executionDirectory: workspace,
@@ -328,7 +334,7 @@ describe("spawnNode completion bridge", () => {
             yield* Fiber.await(result.fiber)
           }),
         ).pipe(
-          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)),
+          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessions, prompt)),
           Effect.provideService(InstanceStore.Service, instanceStore),
           Effect.orDie,
         ),
@@ -391,7 +397,7 @@ describe("spawnNode completion bridge", () => {
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
-            const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+            const result = yield* spawnNode(workflowSchedule(), {
               ...makeSpawnInput(),
               directory: tmp.path,
               executionDirectory: workspace,
@@ -400,7 +406,7 @@ describe("spawnNode completion bridge", () => {
             yield* Fiber.await(result.fiber)
           }),
         ).pipe(
-          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)),
+          Effect.provide(Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessions, prompt)),
           Effect.provideService(InstanceStore.Service, instanceStore),
           Effect.orDie,
         ),
@@ -456,13 +462,14 @@ describe("spawnNode completion bridge", () => {
     const instanceStore = instanceStoreWith(
       <A, E, R>(_input: InstanceStore.LoadInput, effect: Effect.Effect<A, E, R>) => effect,
     )
-    const fullLayer: Layer.Layer<Dag.Service | Agent.Service | Session.Service | SessionPrompt.Service> =
-      Layer.mergeAll(dagLayer, agentLayer, sessions, prompt)
+    const fullLayer: Layer.Layer<
+      Dag.Service | Agent.Service | Session.Service | SessionPrompt.Service | AgentScheduler.Service
+    > = Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessions, prompt)
 
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+          const result = yield* spawnNode(workflowSchedule(), {
             ...makeSpawnInput(),
             directory: tmp.path,
             executionDirectory: plain,
@@ -514,10 +521,15 @@ describe("spawnNode completion bridge", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput())
+          const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentWithoutModel, parentWithModel, prompt)), Effect.orDie),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(dagLayer, agentWithoutModel, parentWithModel, prompt, AgentScheduler.defaultLayer),
+        ),
+        Effect.orDie,
+      ),
     )
 
     expect(promptModel as unknown).toEqual({
@@ -541,7 +553,7 @@ describe("spawnNode completion bridge", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+          const result = yield* spawnNode(workflowSchedule(), {
             ...makeSpawnInput(),
             fallbackModel: {
               providerID: "configured",
@@ -550,7 +562,10 @@ describe("spawnNode completion bridge", () => {
           })
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, prompt)), Effect.orDie),
+      ).pipe(
+        Effect.provide(Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessionLayer, prompt)),
+        Effect.orDie,
+      ),
     )
 
     expect(promptModel as unknown).toEqual({
@@ -574,7 +589,7 @@ describe("spawnNode completion bridge", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), {
+          const result = yield* spawnNode(workflowSchedule(), {
             ...makeSpawnInput(),
             node: makeNodeRow({
               modelId: "local-proxy-compatible/glm-5.2",
@@ -583,7 +598,10 @@ describe("spawnNode completion bridge", () => {
           })
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, prompt)), Effect.orDie),
+      ).pipe(
+        Effect.provide(Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessionLayer, prompt)),
+        Effect.orDie,
+      ),
     )
 
     expect(promptModel as unknown).toEqual({
@@ -854,8 +872,14 @@ describe("spawnNode completion bridge", () => {
 
   it("releases its permit for the next node", async () => {
     const { events, dagLayer } = makeEventTracker()
-    const semaphore = Semaphore.makeUnsafe(1)
-    const fullLayer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, makePromptLayer(reply("done")))
+    const semaphore = workflowSchedule()
+    const fullLayer = Layer.mergeAll(
+      dagLayer,
+      agentLayer,
+      AgentScheduler.defaultLayer,
+      sessionLayer,
+      makePromptLayer(reply("done")),
+    )
 
     await Effect.runPromise(
       Effect.scoped(
@@ -895,8 +919,8 @@ describe("spawnNode terminalization during spawn window", () => {
         }),
     })
 
-    const semaphore = Semaphore.makeUnsafe(1)
-    const fullLayer = Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer)
+    const semaphore = workflowSchedule()
+    const fullLayer = Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessionLayer, promptLayer)
 
     await Effect.runPromise(
       Effect.scoped(
@@ -942,10 +966,12 @@ describe("spawnNode terminalization during spawn window", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(Semaphore.makeUnsafe(1), makeSpawnInput())
+          const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
           yield* Fiber.await(result.fiber)
         }),
-      ).pipe(Effect.provide(Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer))) as Effect.Effect<never>,
+      ).pipe(
+        Effect.provide(Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessionLayer, promptLayer)),
+      ) as Effect.Effect<never>,
     )
 
     expect(promptCalled).toBe(false)

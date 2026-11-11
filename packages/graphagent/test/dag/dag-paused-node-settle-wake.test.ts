@@ -32,6 +32,7 @@ import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 function reply(sessionID: string, text: string): SessionV1.WithParts {
   return {
@@ -109,7 +110,16 @@ describe("DagLoop node settling inside a paused workflow", () => {
         const status = SessionStatus.layer.pipe(Layer.provide(bridge))
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
         const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-        const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
+        const base = Layer.mergeAll(
+          database,
+          events,
+          bridge,
+          store,
+          projector,
+          dag,
+          status,
+          AgentScheduler.defaultLayer,
+        )
         const session = Layer.mock(Session.Service, {
           getPart: () => Effect.succeed(undefined),
           get: () =>

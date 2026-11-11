@@ -33,6 +33,7 @@ import { SessionStatus } from "@/session/status"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 const PROJECT_ID = "project-1"
 // #948: adoption now requires the stamped execution directory to exist.
@@ -76,7 +77,17 @@ describe("DagLoop session move with a running workflow", () => {
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
         const sessionProjector = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
         const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-        const base = Layer.mergeAll(database, events, bridge, store, projector, sessionProjector, dag, status)
+        const base = Layer.mergeAll(
+          database,
+          events,
+          bridge,
+          store,
+          projector,
+          sessionProjector,
+          dag,
+          status,
+          AgentScheduler.defaultLayer,
+        )
         const session = Layer.mock(Session.Service, {
           getPart: () => Effect.succeed(undefined),
           get: () => Effect.succeed({ id: SES, permission: [], agent: "build" } as never),

@@ -15,6 +15,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { SessionRunState } from "../../src/session/run-state"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionCompaction } from "../../src/session/compaction"
+import { AgentScheduler } from "../../src/session/agent-scheduler"
 import { Instruction } from "../../src/session/instruction"
 import { SystemPrompt } from "../../src/session/system"
 import { Image } from "../../src/image/image"
@@ -196,6 +197,7 @@ const deps = Layer.mergeAll(
   DagStore.defaultLayer,
   EventV2Bridge.defaultLayer,
   ToolSourceLedger.defaultLayer,
+  AgentScheduler.defaultLayer,
 ).pipe(Layer.provideMerge(infra))
 
 const question = Question.layer.pipe(Layer.provideMerge(deps))

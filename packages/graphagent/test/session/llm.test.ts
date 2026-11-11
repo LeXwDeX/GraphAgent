@@ -4,11 +4,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { SessionV1 } from "@graphagent/core/v1/session"
 import path from "path"
 import { InvalidResponseDataError, InvalidToolInputError, tool, type ModelMessage } from "ai"
-import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Option, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/http"
 import z from "zod"
 import { LLM, strictJSON } from "../../src/session/llm"
+import { AgentScheduler } from "../../src/session/agent-scheduler"
+import * as AgentSchedulerState from "../../src/session/agent-scheduler-state"
 import { LLMClient, RequestExecutor, WebSocketExecutor } from "@graphagent/llm/route"
 import { LLMEvent } from "@graphagent/llm"
 import { Auth } from "@/auth"
@@ -85,7 +87,11 @@ const drainWith = (layer: Layer.Layer<LLM.Service>, input: LLM.StreamInput) =>
     )
   })
 
-function llmLayerWithExecutor(executor: Layer.Layer<RequestExecutor.Service>, flags: Partial<RuntimeFlags.Info> = {}) {
+function llmLayerWithExecutor(
+  executor: Layer.Layer<RequestExecutor.Service>,
+  flags: Partial<RuntimeFlags.Info> = {},
+  scheduler: Layer.Layer<AgentScheduler.Service> = AgentScheduler.defaultLayer,
+) {
   return LLM.layer.pipe(
     Layer.provide(Auth.defaultLayer),
     Layer.provide(Config.defaultLayer),
@@ -93,6 +99,7 @@ function llmLayerWithExecutor(executor: Layer.Layer<RequestExecutor.Service>, fl
     Layer.provide(ProviderAdapters.defaultLayer),
     Layer.provide(LLMClient.layer.pipe(Layer.provide(Layer.mergeAll(executor, WebSocketExecutor.layer)))),
     Layer.provide(RuntimeFlags.layer(flags)),
+    Layer.provide(scheduler),
   )
 }
 
@@ -896,6 +903,49 @@ function createChatStream(text: string) {
   return new ReadableStream<Uint8Array>({
     start(controller) {
       controller.enqueue(encoder.encode(payload))
+      controller.close()
+    },
+  })
+}
+
+/**
+ * A chat-completions response that finalizes one `lookup` tool call and then
+ * closes its body. The AI SDK executes local tools inside the same response
+ * stream: once the tool call is parsed the SDK starts `execute` and keeps the
+ * output stream open until it settles. The fixture's tool blocks on a gate, so
+ * the permit must be released while the stream is still running — the exact
+ * parent/child deadlock shape #1021 must not regress to.
+ */
+function toolCallChatStream() {
+  const encoder = new TextEncoder()
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      const push = (chunk: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+      push({ id: "chatcmpl-tool", object: "chat.completion.chunk", choices: [{ delta: { role: "assistant" } }] })
+      push({
+        id: "chatcmpl-tool",
+        object: "chat.completion.chunk",
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_permit",
+                  type: "function",
+                  function: { name: "lookup", arguments: '{"query":"weather"}' },
+                },
+              ],
+            },
+          },
+        ],
+      })
+      push({
+        id: "chatcmpl-tool",
+        object: "chat.completion.chunk",
+        choices: [{ delta: {}, finish_reason: "tool_calls" }],
+      })
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"))
       controller.close()
     },
   })
@@ -1939,6 +1989,7 @@ describe("session.llm.stream", () => {
             Layer.provide(ProviderAdapters.defaultLayer),
             Layer.provide(failingNativeClient),
             Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: false })),
+            Layer.provide(AgentScheduler.defaultLayer),
           ),
           {
             user: {
@@ -3209,6 +3260,134 @@ describe("session.llm.stream", () => {
           },
         },
       }),
+    },
+  )
+})
+
+describe("session.llm model-stream permits", () => {
+  const permitFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
+  const permitProvider = "opencode-test"
+
+  // #1021 acceptance: with the global pool at one, a tool that is still
+  // running must not keep the model-stream permit. The AI SDK executes local
+  // tools inside the provider response stream; if the permit were held to
+  // stream end, a parent whose tool waits on a child would block the child's
+  // own model stream permanently (global = 1). The permit is released as soon
+  // as the tool call is admitted.
+  it.instance(
+    "releases the permit when a tool call is admitted while the stream is still open",
+    () =>
+      Effect.gen(function* () {
+        const fixture = loadFixture(permitFixture.providerID, permitFixture.modelID)
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(permitProvider),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const limits = { ...AgentSchedulerState.DEFAULT_LIMITS, global: 1, perProvider: 1 }
+        const scheduler = AgentScheduler.make(AgentSchedulerState.makeState(limits), () => Effect.succeed(limits))
+        const schedulerLayer = Layer.succeed(AgentScheduler.Service, scheduler)
+        const gate = deferred<true>()
+        let toolStarted = false
+        // The first provider response admits one tool call; a second request
+        // (only if the SDK chose another step) completes normally.
+        void waitRequest(
+          "/chat/completions",
+          new Response(toolCallChatStream(), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+        )
+        void waitRequest(
+          "/chat/completions",
+          new Response(createChatStream("done"), { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+        )
+        const sessionID = SessionID.make("session-test-scheduler-permit")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const input: LLM.StreamInput = {
+          user: {
+            id: MessageID.make("msg_user-scheduler-permit"),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderV2.ID.make(permitProvider), modelID: resolved.id },
+          } satisfies SessionV1.User,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Use lookup" }],
+          tools: {
+            lookup: tool({
+              description: "Lookup data",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async () => {
+                toolStarted = true
+                await gate.promise
+                return "looked up"
+              },
+            }),
+          },
+        }
+        const ctx = yield* InstanceRef
+        if (!ctx) return yield* Effect.die("InstanceRef not provided")
+        const layer = llmLayerWithExecutor(RequestExecutor.defaultLayer, {}, schedulerLayer)
+
+        yield* Effect.promise(() =>
+          Effect.runPromise(
+            Effect.scoped(
+              Effect.gen(function* () {
+                const fiber = yield* LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain)).pipe(
+                  Effect.forkScoped,
+                )
+                yield* Effect.gen(function* () {
+                  for (let attempt = 0; attempt < 24; attempt++) {
+                    const capacity = yield* scheduler.capacity()
+                    const exit = fiber.pollUnsafe()
+                    if (exit) {
+                      if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
+                      throw new Error("the stream finished before the permit was released")
+                    }
+                    if (toolStarted && capacity.requests.inflight === 0) return
+                    yield* Effect.sleep("500 millis")
+                  }
+                  throw new Error("the model-stream permit stayed held while the admitted tool was still running")
+                })
+                // The freed permit is immediately usable by another request —
+                // in production, the child stream the tool is waiting on.
+                const admitted = yield* scheduler.tryRequest({
+                  lane: "interactive",
+                  providerID: "provider",
+                  modelID: "model",
+                  sessionID: "child-session",
+                })
+                expect(Option.isSome(admitted)).toBe(true)
+                if (Option.isSome(admitted)) yield* admitted.value.release
+                gate.resolve(true)
+                yield* Fiber.join(fiber)
+              }),
+            ).pipe(Effect.provide(layer), Effect.provideService(InstanceRef, ctx)),
+          ),
+        )
+        expect(toolStarted).toBe(true)
+      }),
+    {
+      config: () => {
+        const fixture = loadFixture(permitFixture.providerID, permitFixture.modelID)
+        return {
+          enabled_providers: [permitProvider],
+          provider: {
+            [permitProvider]: {
+              name: "OpenCode Test",
+              npm: "@ai-sdk/openai-compatible",
+              models: { [fixture.model.id]: configModel(fixture.model) as ConfigModel },
+              options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+            },
+          },
+        }
+      },
     },
   )
 })

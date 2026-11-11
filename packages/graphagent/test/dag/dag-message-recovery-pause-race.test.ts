@@ -25,6 +25,7 @@ import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
+import { AgentScheduler } from "@/session/agent-scheduler"
 
 const parent = SessionID.make("ses_recovery_parent")
 const child = SessionID.make("ses_recovery_child")
@@ -64,7 +65,7 @@ function recoveryLayer(probe: {
   const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag)
+  const base = Layer.mergeAll(database, events, bridge, store, projector, status, dag, AgentScheduler.defaultLayer)
   const messages = Layer.mock(DagMessages.Service, {
     pendingRecipients: () => Effect.succeed([]),
     latestSnapshot: () => Effect.succeed({ ok: true, value: undefined }),

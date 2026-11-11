@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import { writeFile } from "node:fs/promises"
 import { tmpdir } from "../../../core/test/fixture/tmpdir"
-import { Context, Effect, Fiber, Layer, Schema, Semaphore, Option } from "effect"
+import { Context, Effect, Fiber, Layer, Schema, Option } from "effect"
 import { Dag, StaleMessageInputError } from "@/dag/dag"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -17,8 +17,15 @@ import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { hasCaptureSlot } from "@/dag/runtime/capture"
-import { spawnNode } from "@/dag/runtime/spawn"
+import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
+import { AgentScheduler } from "@/session/agent-scheduler"
+
+/** The per-workflow child-run schedule the loop hands to `spawnNode`. */
+const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
+  limit: { kind: "workflow" as const, workflowID: input.dagID },
+  cap,
+})
 
 function reply(text: string, finish: "stop" | "length" = "stop"): SessionV1.WithParts {
   const id = MessageID.ascending(),
@@ -106,7 +113,6 @@ async function exercise(options: Case = {}) {
   let newInputQueued = false
   let permitReleased = false
   let captureRegistered = false
-  const semaphore = Semaphore.makeUnsafe(1)
   let receipts = 0
   let created = 0,
     loops = 0,
@@ -121,7 +127,8 @@ async function exercise(options: Case = {}) {
         : (options.artifactPath ?? (options.structured ? JSON.stringify({ result: "old" }) : "old")),
     ),
     updated = reply(
-      options.artifactPath ?? (options.structured || options.repair ? JSON.stringify({ result: "updated" }) : "updated"),
+      options.artifactPath ??
+        (options.structured || options.repair ? JSON.stringify({ result: "updated" }) : "updated"),
     )
   if (options.modelError && initial.info.role === "assistant")
     initial.info.error = { name: "UnknownError", data: { message: "blocked" } }
@@ -310,11 +317,18 @@ async function exercise(options: Case = {}) {
       }),
     cancel: () => Effect.void,
   })
-  const layer = Layer.mergeAll(dagLayer, agentLayer, sessionsLayer, promptLayer, messagesLayer)
+  const layer = Layer.mergeAll(
+    dagLayer,
+    agentLayer,
+    sessionsLayer,
+    promptLayer,
+    messagesLayer,
+    AgentScheduler.defaultLayer,
+  )
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const spawned = yield* spawnNode(semaphore, {
+        const input: NodeSpawnInput = {
           dagID: "dag_live",
           nodeID: "node-1",
           node: makeNodeRow(),
@@ -325,7 +339,8 @@ async function exercise(options: Case = {}) {
             : options.structured
               ? { outputSchema: { type: "object" } }
               : {}),
-        })
+        }
+        const spawned = yield* spawnNode(spawnSchedule(input, 1), input)
         if (
           options.paused ||
           options.deadline ||
@@ -347,9 +362,12 @@ async function exercise(options: Case = {}) {
           )
         yield* Fiber.join(spawned.fiber)
         captureRegistered = hasCaptureSlot("ses_child")
-        const available = yield* semaphore.take(1).pipe(Effect.timeoutOption(100))
+        // The child-run slot must be free again once the spawn settled.
+        const scheduler = yield* AgentScheduler.Service
+        const available = yield* Effect.scoped(
+          scheduler.childSlot({ kind: "workflow", workflowID: input.dagID }, 1),
+        ).pipe(Effect.timeoutOption(100))
         permitReleased = Option.isSome(available)
-        if (permitReleased) yield* semaphore.release(1)
       }),
     ).pipe(Effect.provide(layer)),
   )

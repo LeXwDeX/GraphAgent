@@ -38,13 +38,15 @@ import { HookLifecycle } from "@/hook/lifecycle"
 import { SettingsHook } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { Logging } from "@graphagent/core/observability/logging"
-import { Effect, Semaphore, Scope, Fiber, Option, Clock, Cause, Exit } from "effect"
+import { Effect, Scope, Fiber, Option, Clock, Cause, Exit } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionID, MessageID, PartID } from "@/session/schema"
 import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
+import { AgentScheduler } from "@/session/agent-scheduler"
+import type { LimitKey } from "@/session/agent-scheduler-state"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
 import { isReviewWorker, type VerdictEvidence } from "../review-lifecycle"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -443,18 +445,19 @@ export const forkCancel = <E, R>(
   )
 
 export function spawnNode(
-  semaphore: Semaphore.Semaphore,
+  schedule: { readonly limit: LimitKey; readonly cap: number },
   input: NodeSpawnInput,
 ): Effect.Effect<
   NodeSpawnResult,
   Error,
-  Dag.Service | Agent.Service | Session.Service | SessionPrompt.Service | Scope.Scope
+  Dag.Service | Agent.Service | Session.Service | SessionPrompt.Service | AgentScheduler.Service | Scope.Scope
 > {
   return Effect.gen(function* () {
     const dag = yield* Dag.Service
     const agentService = yield* Agent.Service
     const sessions = yield* Session.Service
     const promptSvc = yield* SessionPrompt.Service
+    const scheduler = yield* AgentScheduler.Service
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const scope = yield* Scope.Scope
     const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
@@ -647,7 +650,7 @@ export function spawnNode(
     const fiber = yield* Effect.forkIn(scope)(
       Effect.gen(function* () {
         // P1(#1): Acquire permit with a deadline-bounded timeout so the node
-        // doesn't wait unbounded in the semaphore queue. If the deadline
+        // doesn't wait unbounded in the scheduler queue. If the deadline
         // elapses while waiting, fail immediately.
         const queueTime = yield* Clock.currentTimeMillis
         const queueRemaining = deadlineMs - queueTime
@@ -667,9 +670,15 @@ export function spawnNode(
             )
           return
         }
-        // Race permit acquisition against the remaining queue budget
+        // Race permit acquisition against the remaining queue budget. The
+        // scheduler wait itself is unbounded: this option is the single
+        // timeout path, and an interrupt cancels the queued reservation
+        // through the permit's acquireRelease.
+        let slot: AgentScheduler.SlotPermit | undefined
         const permitAcquired = yield* Effect.gen(function* () {
-          yield* semaphore.take(1)
+          slot = yield* scheduler.childSlot(schedule.limit, schedule.cap, {
+            rootSessionID: input.parentSessionID,
+          })
         }).pipe(Effect.timeoutOption(queueRemaining))
         if (Option.isNone(permitAcquired)) {
           yield* dag
@@ -707,11 +716,18 @@ export function spawnNode(
           )
           if ((yield* readPauseStatus) === "paused") {
             yield* Effect.logWarning(
-              `Workflow ${input.dagID} paused while node ${input.nodeID} was queued — holding spawn until resume`,
+              `Workflow ${input.dagID} paused while node ${input.nodeID} was queued — releasing its child slot until resume`,
             )
+            // A paused node must not keep a child-run slot: another workflow
+            // and the foreground task pool have to be able to run while this
+            // one is paused. Resume re-queues the node for a fresh slot.
+            if (slot) yield* slot.release
             while ((yield* readPauseStatus) === "paused") {
               yield* Effect.sleep(250)
             }
+            slot = yield* scheduler.childSlot(schedule.limit, schedule.cap, {
+              rootSessionID: input.parentSessionID,
+            })
           }
           // #270 window-2 spawn-admission fence (C4): the node was durably
           // admitted (nodeQueued above) but the child session is about to
@@ -1061,16 +1077,33 @@ export function spawnNode(
             let node = yield* dag.store.getNode(input.dagID, input.nodeID)
             if (!isCurrent(node)) return false
             let currentWorkflow = yield* dag.store.getWorkflow(input.dagID)
+            // A paused workflow must not keep a child-run slot while this
+            // continuation waits for resume, exactly like a queued spawn. The
+            // slot is taken again once the workflow resumes and the attempt is
+            // still current; every abandonment path above returns first.
+            let releasedForPause = false
             for (;;) {
               const paused = currentWorkflow?.status === "paused"
               const overdue =
                 node !== undefined && node.deadlineMs !== null && (yield* Clock.currentTimeMillis) >= node.deadlineMs
               if (!paused && !overdue) break
+              if (paused && slot && !releasedForPause) {
+                yield* Effect.logWarning(
+                  `Workflow ${input.dagID} paused while node ${input.nodeID} waited for continuation admission — releasing its child slot until resume`,
+                )
+                yield* slot.release
+                releasedForPause = true
+              }
               yield* Effect.sleep(250)
               currentWorkflow = yield* dag.store.getWorkflow(input.dagID)
               node = yield* dag.store.getNode(input.dagID, input.nodeID)
               if (!isCurrent(node)) return false
               if (!currentWorkflow || !["running", "stepping", "paused"].includes(currentWorkflow.status)) return false
+            }
+            if (releasedForPause) {
+              slot = yield* scheduler.childSlot(schedule.limit, schedule.cap, {
+                rootSessionID: input.parentSessionID,
+              })
             }
             return !!currentWorkflow && ["running", "stepping"].includes(currentWorkflow.status)
           })
@@ -1506,7 +1539,7 @@ export function spawnNode(
               result = yield* nodeExecution(promptSvc.loop({ sessionID: childSession.id }, { kind: "child_run" }))
             }
           }).pipe(Effect.ensuring(notifyStop))
-        }).pipe(Effect.ensuring(semaphore.release(1)))
+        }).pipe(Effect.ensuring(slot ? slot.release : Effect.void))
       }).pipe(
         Effect.ensuring(
           Effect.gen(function* () {
