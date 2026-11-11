@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+// oxlint-disable typescript-eslint/no-unsafe-type-assertion -- narrow session and prompt service fixtures use `as never` shims.
+
 // Issue #1021 gap 2: an idle admission fenced by the cancellation epoch
 // observed at its claim. A stale epoch must not enter prepare (nothing is
 // committed); an unchanged epoch keeps the old busy/lease classification.
