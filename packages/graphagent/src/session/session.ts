@@ -13,6 +13,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { serviceUse } from "@graphagent/core/effect/service-use"
 import path from "path"
 import { PROJECT_DIR } from "@graphagent/core/brand"
+import { cancelSessionJobs } from "@/background/cancel"
 import { BackgroundJob } from "@/background/job"
 import { Decimal } from "decimal.js"
 import type { ProviderMetadata, Usage } from "@graphagent/llm"
@@ -689,7 +690,7 @@ export const layer: Layer.Layer<
         const currentInstance = yield* InstanceState.context.pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         const hasInstance = currentInstance !== undefined
 
-        if (hasInstance) yield* cancelBackgroundJobs(background, sessionID)
+        if (hasInstance) yield* cancelSessionJobs(background, sessionID)
         const kids = yield* children(sessionID)
         for (const child of kids) {
           yield* remove(child.id)
@@ -1382,23 +1383,6 @@ export const defaultLayer = layer.pipe(
   Layer.provide(HookConfigChange.defaultLayer),
   Layer.provide(HookStartContext.defaultLayer),
 )
-
-const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function* (
-  background: BackgroundJob.Interface,
-  sessionID: SessionID,
-) {
-  const jobs = yield* background.list()
-  yield* Effect.forEach(
-    jobs.filter((job) => {
-      if (job.status !== "running") return false
-      if (job.id === sessionID) return true
-      if (job.metadata?.sessionId === sessionID) return true
-      return job.metadata?.parentSessionId === sessionID
-    }),
-    (job) => background.cancel(job.id),
-    { concurrency: "unbounded", discard: true },
-  )
-})
 
 function listByProject(
   db: Database.Interface["db"],

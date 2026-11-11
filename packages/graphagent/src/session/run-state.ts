@@ -4,6 +4,7 @@ import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Runner } from "@/effect/runner"
+import { cancelSessionJobs } from "@/background/cancel"
 import { BackgroundJob } from "@/background/job"
 import { Cause, Deferred, Effect, Exit, Latch, Layer, Option, Scope, Context } from "effect"
 import { Session } from "./session"
@@ -243,7 +244,7 @@ export const layer = Layer.effect(
     })
 
     const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID) {
-      yield* cancelBackgroundJobs(background, sessionID)
+      yield* cancelSessionJobs(background, sessionID)
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
       // A session with no runner in this instance has no turn to stop. Publishing
@@ -336,7 +337,7 @@ export const layer = Layer.effect(
     return Service.of({
       assertNotBusy,
       cancel,
-      cancelBackground: (sessionID, skipCoordinated) => cancelBackgroundJobs(background, sessionID, skipCoordinated),
+      cancelBackground: (sessionID, skipCoordinated) => cancelSessionJobs(background, sessionID, skipCoordinated),
       ensureRunning,
       ensureRunningHandle,
       ensureRunningHandleClassified,
@@ -351,47 +352,6 @@ export const defaultLayer = layer.pipe(
   Layer.provide(BackgroundJob.defaultLayer),
   Layer.provide(SessionStatus.defaultLayer),
 )
-
-const cancelBackgroundJobs = Effect.fn("SessionRunState.cancelBackgroundJobs")(function* (
-  background: BackgroundJob.Interface,
-  sessionID: SessionID,
-  skipCoordinated = false,
-) {
-  const jobs = yield* background.list()
-  const pending = new Set<string>([sessionID])
-  const cancelled = new Set<string>()
-  const matches = (job: BackgroundJob.Info) => {
-    if (job.status !== "running") return false
-    if (job.metadata?.survivesSessionCancel === true) return false
-    if (cancelled.has(job.id)) return false
-    if (pending.has(job.id)) return true
-    if (typeof job.metadata?.sessionId === "string" && pending.has(job.metadata.sessionId)) return true
-    return typeof job.metadata?.parentSessionId === "string" && pending.has(job.metadata.parentSessionId)
-  }
-  let batch = jobs.filter(matches)
-  while (batch.length > 0) {
-    yield* Effect.forEach(
-      batch,
-      (job) =>
-        Effect.gen(function* () {
-          const captured = skipCoordinated ? yield* background.capture(job) : undefined
-          // The owner snapshot has the old identities; this local list may include later jobs.
-          if (captured && BackgroundJob.isCoordinated(captured.identity)) return
-          yield* captured ? captured.cancel : background.cancel(job.id)
-        }).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              cancelled.add(job.id)
-              pending.add(job.id)
-              if (typeof job.metadata?.sessionId === "string") pending.add(job.metadata.sessionId)
-            }),
-          ),
-        ),
-      { concurrency: "unbounded", discard: true },
-    )
-    batch = jobs.filter(matches)
-  }
-})
 
 function busyError(sessionID: SessionID) {
   return new Session.BusyError({ sessionID })
