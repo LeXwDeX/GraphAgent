@@ -70,6 +70,7 @@ import { DagControl } from "@/dag/control"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagLoop } from "@/dag/runtime/loop"
+import { DagNodePublisher } from "@/dag/runtime/node-publisher"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventResidueSweep } from "@graphagent/core/event/residue-sweep"
@@ -164,6 +165,7 @@ const BaseAppLayer = Layer.mergeAll(
   Layer.provideMerge(GoalLoop.defaultLayer),
   Layer.provideMerge(DagLoop.defaultLayer),
   Layer.provideMerge(DagSummaryPublisher.defaultLayer),
+  Layer.provideMerge(DagNodePublisher.defaultLayer),
   // Host-level deadline-supervision sweep (production incident 2026-08-18):
   // forks its repeating fiber at construction into the LAYER scope — unlike
   // DagLoop it must NOT die with a per-directory instance teardown, or a
