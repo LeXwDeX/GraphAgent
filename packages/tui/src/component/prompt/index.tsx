@@ -29,7 +29,8 @@ import { normalizePromptContent, openEditor } from "../../editor"
 import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { useCommands, useCommandScope } from "../../commands/context"
-import { resolveSlashInput, serverCommandSpec } from "../../commands/registry"
+import { resolveSlashInput, serverCommandSpec, type CommandRunContext } from "../../commands/registry"
+import { parseBtwArgs, useBtwOptional } from "../../context/btw"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
@@ -130,6 +131,13 @@ function randomIndex(count: number) {
   return Math.floor(Math.random() * count)
 }
 
+/** Same first-token rule as `resolveSlashInput`, used before scope filtering. */
+function isBtwCommandInput(input: string) {
+  if (!input.startsWith("/")) return false
+  const firstLine = input.split("\n", 1)[0] ?? ""
+  return firstLine.split(" ")[0] === "/btw"
+}
+
 function hasEditorRangeSelection(selection: EditorSelection["ranges"][number]) {
   return (
     selection.selection.start.line !== selection.selection.end.line ||
@@ -218,6 +226,7 @@ export function Prompt(props: PromptProps) {
     return current.type === "busy" && current.preparation?.stage !== "memory" ? current.preparation : undefined
   })
   const history = usePromptHistory()
+  const btw = useBtwOptional()
   const stash = usePromptStash()
   const keymap = useGraphagentKeymap()
   const agentShortcut = useCommandShortcut("agent.cycle")
@@ -652,6 +661,7 @@ export function Prompt(props: PromptProps) {
   onCleanup(commands.setHandler("prompt.skills", openSkillsDialog))
   onCleanup(commands.setHandler("workspace.set", () => workspace.open()))
   onCleanup(commands.setHandler("session.move", () => move.open()))
+  onCleanup(commands.setHandler("session.btw", submitBtw))
 
   function submitServerCommand(name: string, args: string) {
     if (!input || input.isDestroyed) return
@@ -660,6 +670,45 @@ export function Prompt(props: PromptProps) {
     setStore("prompt", { input: text, parts: [] })
     input.gotoBufferEnd()
     void submit()
+  }
+
+  function prefillBtw() {
+    ref.set({ input: "/btw ", parts: [] })
+    ref.focus()
+  }
+
+  function submitBtw(ctx: CommandRunContext) {
+    if (ctx.origin !== "slash" || !ctx.args.trim()) {
+      prefillBtw()
+      return
+    }
+    const sessionID = props.sessionID
+    if (!sessionID) {
+      toast.show({ text: t("prompt.btw.no_session"), level: "warning", dedupeKey: "prompt.btw.no_session" })
+      return
+    }
+    const parsed = parseBtwArgs(ctx.args)
+    if (!parsed) {
+      toast.show({ text: t("prompt.btw.invalid_model"), level: "warning", dedupeKey: "prompt.btw.invalid_model" })
+      return
+    }
+    if (!parsed.question || !btw) return
+    // History is memory-only: side questions can carry sensitive text and
+    // must not be written to prompt-history.jsonl.
+    const recalled = unwrap(store.prompt).input
+    void btw
+      .ask(sessionID, parsed.question, { model: parsed.model })
+      .then((result) => {
+        if (result.type !== "busy") return
+        toast.show({ text: t("prompt.btw.busy"), level: "warning", dedupeKey: "prompt.btw.busy" })
+      })
+      .catch((error) => TuiLog.write("error", "Side question failed", error))
+    if (recalled) history.appendEphemeral({ input: recalled, parts: [] })
+    input.extmarks.clear()
+    input.clear()
+    setStore("prompt", { input: "", parts: [] })
+    setStore("extmarkToPartIndex", new Map())
+    input.focus()
   }
 
   createEffect(() => {
@@ -1133,6 +1182,13 @@ export function Prompt(props: PromptProps) {
     if (!store.prompt.input) return false
     const editSend = edit !== undefined
     if (editSend) setEditing(undefined)
+    // `/btw` is session-scoped, so `resolveSlashInput` treats it as a message on
+    // the home view. Intercept it there to avoid creating a session, and keep
+    // the draft: the user only gets a hint.
+    if (store.mode !== "shell" && !props.sessionID && isBtwCommandInput(store.prompt.input)) {
+      toast.show({ text: t("prompt.btw.no_session"), level: "warning", dedupeKey: "prompt.btw.no_session" })
+      return false
+    }
     if (store.mode === "shell" && props.sessionID && local.model.commandActive(props.sessionID)) {
       toast.show({
         text: t("prompt.submit.unconfirmed.toast"),
@@ -1147,18 +1203,32 @@ export function Prompt(props: PromptProps) {
       ? ({ kind: "message" } as const)
       : resolveSlashInput(commands, commandScope(), store.prompt.input)
     if (builtin.kind === "builtin") {
-      input.extmarks.clear()
-      input.clear()
-      setStore("prompt", { input: "", parts: [] })
-      setStore("extmarkToPartIndex", new Map())
-      void commands.run(builtin.spec.id, { args: builtin.args, origin: "slash" }).catch((error) => {
-        toast.show({
-          text: errorMessage(error),
-          level: "error",
+      // `/btw` owns clearing and focus so empty, invalid or session-less input
+      // stays in the composer. Shell mode never intercepts it.
+      if (builtin.spec.id === "session.btw") {
+        if (store.mode !== "shell") {
+          void commands.run(builtin.spec.id, { args: builtin.args, origin: "slash" }).catch((error) => {
+            toast.show({
+              text: errorMessage(error),
+              level: "error",
+            })
+          })
+          return true
+        }
+      } else {
+        input.extmarks.clear()
+        input.clear()
+        setStore("prompt", { input: "", parts: [] })
+        setStore("extmarkToPartIndex", new Map())
+        void commands.run(builtin.spec.id, { args: builtin.args, origin: "slash" }).catch((error) => {
+          toast.show({
+            text: errorMessage(error),
+            level: "error",
+          })
         })
-      })
-      props.onSubmit?.()
-      return true
+        props.onSubmit?.()
+        return true
+      }
     }
     const selectedModel = structuredClone(unwrap(local.model.current()))
     if (!selectedModel) {
