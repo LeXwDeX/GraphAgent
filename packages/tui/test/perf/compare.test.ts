@@ -60,3 +60,24 @@ test("the machine factor normalizes the current timing", () => {
 
   expect(compareReports(baseline, current).failures).toEqual([])
 })
+
+function p14(p95Ms: number, relativeIncrease: number): PerfReport {
+  return { scenarios: { L: { P14: { p95Ms, relativeIncrease } } } }
+}
+
+test("a sub-millisecond P14 sample does not gate the relative increase", () => {
+  const baseline = p14(0.12, 0.09)
+  const current = p14(0.3, 0.11)
+
+  expect(compareReports(baseline, current).failures).toEqual([])
+})
+
+test("a P14 sample at the floor still gates the relative increase", () => {
+  const baseline = p14(2, 0.09)
+  const current = p14(2, 0.11)
+
+  const { failures } = compareReports(baseline, current)
+
+  expect(failures).toHaveLength(1)
+  expect(failures[0]?.metric).toBe("relativeIncrease")
+})
