@@ -57,6 +57,35 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       return DagNodeView.observed(node(row), metadata.ok ? metadata.value : undefined)
     })
 
+    // One batch read for the whole list: four constant-cost statements instead
+    // of four per node (D4).
+    const observedNodes = Effect.fn("DagHttpApi.observedNodes")(function* (
+      rows: ReadonlyArray<DagStore.NodeRow>,
+      ownerSessionID: string,
+    ) {
+      const first = rows[0]
+      if (first === undefined) return []
+      const instance = yield* InstanceState.context
+      const metadata = yield* messages.metadataForWorkflow(
+        {
+          projectID: instance.project.id,
+          directory: instance.directory,
+          sessionID: ownerSessionID,
+        },
+        first.workflowId,
+        rows.map((row) => row.id),
+        // The rows are already current: skip the batch reader's own node read.
+        rows.map((row) => ({
+          id: row.id,
+          workflow_id: row.workflowId,
+          child_session_id: row.childSessionId,
+          replan_attempts: row.replanAttempts,
+        })),
+      )
+      const byNode: ReadonlyMap<string, DagMessages.Metadata> = metadata.ok ? metadata.value : new Map()
+      return rows.map((row) => DagNodeView.observed(node(row), byNode.get(row.id)))
+    })
+
     const workflowInProject = Effect.fn("DagHttpApi.workflowInProject")(function* (dagID: string) {
       const row = yield* dag.store.getWorkflow(dagID).pipe(Effect.orDie)
       if (row?.projectId !== (yield* InstanceState.context).project.id) return undefined
@@ -80,9 +109,10 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
     })
 
     const list = Effect.fn("DagHttpApi.list")(function* () {
-      const rows = yield* dag.store.listWorkflows().pipe(Effect.orDie)
       const projectID = (yield* InstanceState.context).project.id
-      return rows.filter((row) => row.projectId === projectID).map(wf)
+      // Project-scoped read: never materialize other projects' workflows.
+      const rows = yield* dag.store.listByProject(projectID).pipe(Effect.orDie)
+      return rows.map(wf)
     })
 
     const bySession = Effect.fn("DagHttpApi.bySession")(function* (ctx: { params: { sessionID: string } }) {
@@ -121,7 +151,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       // server filters). nodeDetail below keeps the unfiltered read so a
       // superseded node's durable state stays auditable by id.
       const rows = yield* dag.store.getCurrentNodes(ctx.params.dagID).pipe(Effect.orDie)
-      return yield* Effect.forEach(rows, (row) => observedNode(row, workflow.sessionId))
+      return yield* observedNodes(rows, workflow.sessionId)
     })
 
     const nodeDetail = Effect.fn("DagHttpApi.nodeDetail")(function* (ctx: {

@@ -308,7 +308,11 @@ describe("DagNodePublisher behavior", () => {
     }
     const messages = Layer.mock(DagMessages.Service, {
       changed: Stream.fromQueue(queue),
-      metadata: () => Effect.succeed({ ok: true as const, value: metadata }),
+      metadataForWorkflow: (_caller, _workflowID, nodeIDs) =>
+        Effect.succeed({
+          ok: true as const,
+          value: new Map((nodeIDs ?? []).map((id) => [id, metadata])),
+        }),
     })
     return withCollector((collector) =>
       Effect.gen(function* () {

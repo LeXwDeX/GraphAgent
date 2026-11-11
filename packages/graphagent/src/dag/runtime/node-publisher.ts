@@ -103,18 +103,36 @@ export const layer = Layer.effect(
           dirty.set(workflowID, set)
         }
 
-        const readView = (row: DagStore.NodeRow, ownerSessionID: string) =>
+        const readViews = (rows: ReadonlyArray<DagStore.NodeRow>, ownerSessionID: string) =>
           Effect.gen(function* () {
-            const base = DagNodeView.base(row)
-            if (messages._tag === "None") return base
-            const result = yield* messages.value
-              .metadata(
+            const views = new Map<string, DagSummary.NodeView>()
+            if (rows.length === 0) return views
+            if (messages._tag === "None") {
+              for (const row of rows) views.set(row.id, DagNodeView.base(row))
+              return views
+            }
+            const first = rows[0]
+            if (first === undefined) return views
+            // One batch read for every candidate row (D4): a coalesced publish
+            // no longer costs four statements per changed node.
+            const batch = yield* messages.value
+              .metadataForWorkflow(
                 { projectID: ctx.project.id, directory: ctx.directory, sessionID: ownerSessionID },
-                row.workflowId,
-                row.id,
+                first.workflowId,
+                rows.map((row) => row.id),
+                // The candidate rows were just read: skip the reader's own read.
+                rows.map((row) => ({
+                  id: row.id,
+                  workflow_id: row.workflowId,
+                  child_session_id: row.childSessionId,
+                  replan_attempts: row.replanAttempts,
+                })),
               )
               .pipe(Effect.catchCause(() => Effect.succeed({ ok: false as const })))
-            return DagNodeView.observed(base, result.ok ? result.value : undefined)
+            const byNode: ReadonlyMap<string, DagMessages.Metadata> = batch.ok ? batch.value : new Map()
+            for (const row of rows)
+              views.set(row.id, DagNodeView.observed(DagNodeView.base(row), byNode.get(row.id)))
+            return views
           })
 
         const emit = (
@@ -191,14 +209,16 @@ export const layer = Layer.effect(
 
             const nodes: DagSummary.NodeView[] = []
             const nextRows = new Map(previous.rows)
-            for (const id of candidates) {
-              const row = rowByID.get(id)
-              if (row === undefined) continue
-              const view = yield* readView(row, wf.sessionId)
+            const candidateRows = [...candidates]
+              .map((id) => rowByID.get(id))
+              .filter((row): row is DagStore.NodeRow => row !== undefined)
+            const views = yield* readViews(candidateRows, wf.sessionId)
+            for (const row of candidateRows) {
+              const view = views.get(row.id)!
               const serialized = serialize(view)
-              if (serialized === previous.rows.get(id)) continue
+              if (serialized === previous.rows.get(row.id)) continue
               nodes.push(view)
-              nextRows.set(id, serialized)
+              nextRows.set(row.id, serialized)
             }
             for (const id of removed) nextRows.delete(id)
             if (nodes.length === 0 && removed.length === 0) return

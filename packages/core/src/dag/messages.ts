@@ -137,6 +137,20 @@ export interface Interface {
     input?: { workflowID?: string; afterSequence?: number; limit?: number; queuedOnly?: boolean },
   ) => Effect.Effect<Result<Message[]>>
   metadata: (caller: Caller, workflowID: string, nodeID?: string, attemptID?: string) => Effect.Effect<Result<Metadata>>
+  /**
+   * Batch metadata for a workflow's current nodes (D4). One authorization read
+   * plus constant-cost reads for the whole set, instead of four statements per
+   * node. A node caller only ever sees its own entry; a parent-session caller
+   * sees every current node, optionally narrowed by `nodeIDs`. Callers that
+   * already hold the current node rows pass them as `nodes` to skip the
+   * duplicate read.
+   */
+  metadataForWorkflow: (
+    caller: Caller,
+    workflowID: string,
+    nodeIDs?: ReadonlyArray<string>,
+    nodes?: ReadonlyArray<NodeRef>,
+  ) => Effect.Effect<Result<Map<string, Metadata>>>
   freeze: (caller: Caller, logicalTurnID: string) => Effect.Effect<Result<Snapshot>>
   /** Call only after assembling actual input; persisted transcript parts are verified here. */
   associate: (caller: Caller, snapshotID: string) => Effect.Effect<Result<Snapshot>>
@@ -177,6 +191,13 @@ type Node = {
   replan_attempts: number
 }
 type Session = { id: string; project_id: string; directory: string; time_created: number; parent_id: string | null }
+/** The node columns needed to derive a node mailbox endpoint. */
+export type NodeRef = {
+  id: string
+  workflow_id: string
+  child_session_id: string | null
+  replan_attempts: number
+}
 type Mailbox = {
   id: string
   session_id: string
@@ -214,6 +235,32 @@ type StoredSnapshot = {
   message_ids: string
   associated: number
   stop_reason: string | null
+}
+/** One authorization row: workflow, caller session, parent session and caller node. */
+type OwnerRow = {
+  wf_id: string
+  wf_project_id: string
+  wf_session_id: string
+  wf_directory: string
+  wf_execution_directory: string | null
+  wf_status: string
+  caller_id: string | null
+  caller_project_id: string | null
+  caller_directory: string | null
+  caller_time_created: number | null
+  caller_parent_id: string | null
+  parent_session_id: string | null
+  parent_project_id: string | null
+  parent_directory: string | null
+  parent_time_created: number | null
+  parent_parent_id: string | null
+  node_id: string | null
+  node_workflow_id: string | null
+  node_child_session_id: string | null
+  node_directory: string | null
+  node_status: string | null
+  node_superseded: number | null
+  node_replan_attempts: number | null
 }
 const success = <A>(value: A): Result<A> => ({ ok: true, value })
 const reject = (reason: Rejection["reason"]): Rejection => ({ ok: false, reason })
@@ -316,26 +363,111 @@ export const layer = Layer.effect(
       kind: "main",
       sessionID: s.id,
     })
-    const child = (n: Node): Endpoint => ({
+    const child = (n: NodeRef): Endpoint => ({
       id: JSON.stringify(["node", n.workflow_id, n.id, n.child_session_id, n.replan_attempts]),
       kind: "node",
       sessionID: n.child_session_id!,
       workflowID: n.workflow_id,
       nodeID: n.id,
-      attemptID: attempt(n),
+      attemptID: nodeAttemptID(n.child_session_id!, n.replan_attempts),
     })
+    // Authorization is a pure decision over rows, so the single-workflow
+    // `owner` and the batch reader share one implementation and cannot drift.
+    const ownerFrom = (
+      caller: Caller,
+      wf: Workflow,
+      s: Session | undefined,
+      parent: Session | undefined,
+      n: Node | undefined,
+    ): Endpoint | undefined => {
+      if (
+        !authorizedSession(caller, s) ||
+        wf.project_id !== caller.projectID ||
+        !parent ||
+        !wf.directory ||
+        parent.project_id !== wf.project_id ||
+        resolvePath(parent.directory) !== resolvePath(wf.directory)
+      )
+        return undefined
+      if (wf.session_id === caller.sessionID) return main(s!)
+      return n && !n.superseded && n.status !== "pending" && n.status !== "queued" && boundChild(wf, n, s)
+        ? child(n)
+        : undefined
+    }
     const owner = (tx: Tx, caller: Caller, wf: Workflow) =>
       Effect.gen(function* () {
         const s = yield* session(tx, caller.sessionID)
-        if (!authorizedSession(caller, s) || wf.project_id !== caller.projectID || !(yield* workflowParent(tx, wf)))
-          return undefined
+        const parent = yield* workflowParent(tx, wf)
+        if (!authorizedSession(caller, s) || wf.project_id !== caller.projectID || !parent) return undefined
         if (wf.session_id === caller.sessionID) return main(s!)
         const n = yield* tx.get<Node>(
           sql`SELECT * FROM workflow_node WHERE workflow_id = ${wf.id} AND child_session_id = ${caller.sessionID}`,
         )
-        return n && !n.superseded && n.status !== "pending" && n.status !== "queued" && boundChild(wf, n, s)
-          ? child(n)
-          : undefined
+        return ownerFrom(caller, wf, s, parent, n)
+      })
+    // One read for the workflow, the caller session, the parent session and the
+    // caller's node binding: the batch reader's whole authorization cost.
+    const ownerContext = (tx: Tx, caller: Caller, workflowID: string) =>
+      Effect.gen(function* () {
+        const row = yield* tx.get<OwnerRow>(
+          sql`SELECT wf.id AS wf_id, wf.project_id AS wf_project_id, wf.session_id AS wf_session_id,
+                     wf.directory AS wf_directory, wf.execution_directory AS wf_execution_directory, wf.status AS wf_status,
+                     cs.id AS caller_id, cs.project_id AS caller_project_id, cs.directory AS caller_directory,
+                     cs.time_created AS caller_time_created, cs.parent_id AS caller_parent_id,
+                     ps.id AS parent_session_id, ps.project_id AS parent_project_id, ps.directory AS parent_directory,
+                     ps.time_created AS parent_time_created, ps.parent_id AS parent_parent_id,
+                     n.id AS node_id, n.workflow_id AS node_workflow_id, n.child_session_id AS node_child_session_id,
+                     n.directory AS node_directory, n.status AS node_status, n.superseded AS node_superseded,
+                     n.replan_attempts AS node_replan_attempts
+              FROM workflow wf
+              LEFT JOIN session cs ON cs.id = ${caller.sessionID}
+              LEFT JOIN session ps ON ps.id = wf.session_id
+              LEFT JOIN workflow_node n ON n.workflow_id = wf.id AND n.child_session_id = ${caller.sessionID}
+              WHERE wf.id = ${workflowID}`,
+        )
+        if (!row) return undefined
+        const wf: Workflow = {
+          id: row.wf_id,
+          project_id: row.wf_project_id,
+          session_id: row.wf_session_id,
+          directory: row.wf_directory,
+          execution_directory: row.wf_execution_directory,
+          status: row.wf_status,
+        }
+        const s: Session | undefined =
+          row.caller_id === null
+            ? undefined
+            : {
+                id: row.caller_id,
+                project_id: row.caller_project_id!,
+                directory: row.caller_directory!,
+                time_created: row.caller_time_created!,
+                parent_id: row.caller_parent_id,
+              }
+        const parent: Session | undefined =
+          row.parent_session_id === null
+            ? undefined
+            : {
+                id: row.parent_session_id,
+                project_id: row.parent_project_id!,
+                directory: row.parent_directory!,
+                time_created: row.parent_time_created!,
+                parent_id: row.parent_parent_id,
+              }
+        const n: Node | undefined =
+          row.node_id === null
+            ? undefined
+            : {
+                id: row.node_id,
+                workflow_id: row.node_workflow_id!,
+                child_session_id: row.node_child_session_id,
+                directory: row.node_directory,
+                status: row.node_status!,
+                superseded: row.node_superseded!,
+                replan_attempts: row.node_replan_attempts!,
+              }
+        const endpoint = ownerFrom(caller, wf, s, parent, n)
+        return endpoint ? { wf, endpoint } : undefined
       })
     const self = (tx: Tx, caller: Caller) =>
       Effect.gen(function* () {
@@ -436,6 +568,82 @@ export const layer = Layer.effect(
           if (!closed) continue
           changes.push(change(box, box.session_directory, "closed", closed.change_seq))
         }
+      })
+    // Batch metadata for a whole node set. Authorization is already done, so
+    // this is four reads total no matter how many nodes are current: one joined
+    // mailbox/snapshot read and one message-aggregate read, plus its BEGIN and
+    // COMMIT. Boxes and message aggregates are joined in SQL rather than read
+    // separately so the node count never changes the statement count.
+    const metadataMap = (tx: Tx, workflowID: string, nodes: readonly NodeRef[]) =>
+      Effect.gen(function* () {
+        const result = new Map<string, Metadata>()
+        const endpoints = nodes.filter((n) => n.child_session_id !== null).map((n) => child(n))
+        if (endpoints.length === 0) return result
+        const ids = endpoints.map((endpoint) => endpoint.id)
+        const inIDs = sql.join(
+          ids.map((id) => sql`${id}`),
+          sql`, `,
+        )
+        const boxes = yield* tx.all<{
+          id: string
+          revision: number
+          closed_reason: string | null
+          snapshot_id: string | null
+          snapshot_revision: number | null
+        }>(
+          sql`SELECT b.id, b.revision, b.closed_reason, s.id AS snapshot_id, s.revision AS snapshot_revision
+              FROM agent_mailbox b
+              LEFT JOIN (
+                SELECT mailbox_id, id, revision,
+                       ROW_NUMBER() OVER (PARTITION BY mailbox_id ORDER BY revision DESC, time_created DESC, rowid DESC) AS rn
+                FROM agent_input_snapshot WHERE associated = 1 AND mailbox_id IN (${inIDs})
+              ) s ON s.mailbox_id = b.id AND s.rn = 1
+              WHERE b.id IN (${inIDs})`,
+        )
+        const boxByID = new Map(boxes.map((box) => [box.id, box]))
+        // Per-state counts and the workflow-scoped latest timestamp in one
+        // read: UNION ALL keeps both aggregates in a single statement.
+        const aggregates = yield* tx.all<{
+          recipient_id: string
+          state: string | null
+          n: number | null
+          at: number | null
+        }>(
+          sql`SELECT recipient_id, state, COUNT(*) AS n, NULL AS at
+              FROM agent_message WHERE recipient_id IN (${inIDs}) GROUP BY recipient_id, state
+              UNION ALL
+              SELECT recipient_id, NULL AS state, NULL AS n, MAX(time_created) AS at
+              FROM agent_message WHERE recipient_id IN (${inIDs}) AND workflow_id = ${workflowID} GROUP BY recipient_id`,
+        )
+        const statesByBox = new Map<string, Record<string, number>>()
+        const latestByBox = new Map<string, number>()
+        for (const row of aggregates) {
+          if (row.state !== null) {
+            const states = statesByBox.get(row.recipient_id) ?? {}
+            states[row.state] = row.n ?? 0
+            statesByBox.set(row.recipient_id, states)
+          }
+          if (row.at !== null) latestByBox.set(row.recipient_id, row.at)
+        }
+        for (const endpoint of endpoints) {
+          const box = boxByID.get(endpoint.id)
+          const states = statesByBox.get(endpoint.id) ?? {}
+          const at = latestByBox.get(endpoint.id)
+          result.set(endpoint.nodeID!, {
+            endpoint,
+            accepted: box?.revision ?? 0,
+            snapshot: box?.snapshot_revision ?? 0,
+            ...(box?.snapshot_id !== null && box?.snapshot_id !== undefined
+              ? { snapshotID: box.snapshot_id }
+              : {}),
+            queued: states.queued ?? 0,
+            delivered: states.delivered ?? 0,
+            undeliverable: states.undeliverable ?? 0,
+            ...(box !== undefined && box.closed_reason !== null ? { closedReason: box.closed_reason } : {}),
+            ...(at !== undefined ? { lastMessageAt: at } : {}),
+          })
+        }
+        return result
       })
     const metadata = (tx: Tx, endpoint: Endpoint, workflowID?: string) =>
       Effect.gen(function* () {
@@ -665,6 +873,34 @@ export const layer = Layer.effect(
             if (!n?.child_session_id) return reject("stale_attempt")
             if (!attemptID || attemptID === attempt(n)) return success(yield* metadata(tx, child(n), workflowID))
             return reject(sender.kind === "main" ? "stale_attempt" : "unauthorized")
+          }),
+        ),
+      metadataForWorkflow: (caller, workflowID, nodeIDs, nodes) =>
+        read((tx) =>
+          Effect.gen(function* () {
+            const auth = yield* ownerContext(tx, caller, workflowID)
+            if (!auth) return reject("unauthorized")
+            const requested = nodeIDs === undefined ? undefined : new Set(nodeIDs)
+            const scope: readonly NodeRef[] =
+              nodes ??
+              (yield* tx.all<NodeRef>(
+                sql`SELECT id, workflow_id, child_session_id, replan_attempts FROM workflow_node WHERE workflow_id = ${workflowID} AND superseded = 0 ${
+                  requested
+                    ? sql`AND id IN (${sql.join(
+                        [...requested].map((id) => sql`${id}`),
+                        sql`, `,
+                      )})`
+                    : sql``
+                } ORDER BY id`,
+              ))
+            const visible = scope.filter(
+              (row) =>
+                row.child_session_id !== null &&
+                (requested === undefined || requested.has(row.id)) &&
+                // A node caller owns exactly one mailbox: never expose siblings.
+                (auth.endpoint.kind === "main" || row.id === auth.endpoint.nodeID),
+            )
+            return success(yield* metadataMap(tx, workflowID, visible))
           }),
         ),
       freeze: (caller, logicalTurnID) =>
