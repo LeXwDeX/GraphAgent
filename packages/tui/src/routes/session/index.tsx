@@ -33,7 +33,6 @@ import {
   addDefaultParsers,
   TextAttributes,
   RGBA,
-  type SyntaxStyle,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import { PatchDiff } from "../../component/patch-diff"
@@ -90,6 +89,7 @@ import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode 
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { getRevertDiffFiles } from "../../util/revert-diff"
+import { AdaptiveMarkdown } from "../../ui/adaptive-markdown"
 import {
   EscapePriority,
   GRAPHAGENT_BASE_MODE,
@@ -2082,13 +2082,16 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   // does not lose it.
   const expanded = () => ctx.view.get(props.part.id, "expanded")
 
-  const content = createMemo(() => {
-    // OpenRouter encrypts some reasoning blocks; drop the placeholder.
-    return ctx.sync.readPartText(props.part).replace("[REDACTED]", "").trim()
-  })
   // Reasoning is finalized when the server sets `time.end` (see processor.ts).
   // Flips independently of the parent message completing.
   const isDone = createMemo(() => props.part.time.end !== undefined)
+  const raw = createMemo(() => {
+    // OpenRouter encrypts some reasoning blocks; drop the placeholder.
+    return ctx.sync.readPartText(props.part).replace("[REDACTED]", "")
+  })
+  // While streaming only leading blank lines are dropped; the full body is
+  // trimmed once, when it stops changing.
+  const content = createMemo(() => (isDone() ? raw().trim() : raw().trimStart()))
   const inMinimal = createMemo(() => ctx.thinkingMode() === "hide")
   const duration = createMemo(() => {
     const end = props.part.time.end
@@ -2122,7 +2125,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         </box>
         <Show when={(!inMinimal() || expanded()) && summary().body}>
           <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
-            <ReasoningMarkdown
+            <AdaptiveMarkdown
               content={summary().body}
               streaming={!isDone()}
               syntaxStyle={syntax()}
@@ -2132,37 +2135,6 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
           </box>
         </Show>
       </box>
-    </Show>
-  )
-}
-
-export function ReasoningMarkdown(props: {
-  content: string
-  streaming: boolean
-  syntaxStyle: SyntaxStyle
-  conceal: boolean
-  fg: RGBA
-}) {
-  // A complete rewrite of a long markdown body reparses every block. Plain text keeps the full thought
-  // responsive; markdown markers remain visible instead of being concealed as formatting syntax.
-  const large = createMemo(() => Buffer.byteLength(props.content, "utf8") > 4 * 1024)
-  return (
-    <Show
-      when={large()}
-      fallback={
-        <markdown
-          streaming={props.streaming}
-          internalBlockMode="top-level"
-          syntaxStyle={props.syntaxStyle}
-          content={props.content}
-          conceal={props.conceal}
-          fg={props.fg}
-        />
-      }
-    >
-      <text fg={props.fg} wrapMode="word">
-        {props.content}
-      </text>
     </Show>
   )
 }
@@ -2214,15 +2186,19 @@ function ReasoningHeader(props: {
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
-  const content = createMemo(() => ctx.sync.readPartText(props.part).trim())
+  // `time.end` marks the final text part. Until then the trailing block stays
+  // in streaming mode, and only leading blank lines are dropped; the full body
+  // is trimmed once when it stops changing.
+  const isDone = createMemo(() => props.part.time?.end !== undefined)
+  const raw = createMemo(() => ctx.sync.readPartText(props.part))
+  const content = createMemo(() => (isDone() ? raw().trim() : raw().trimStart()))
   return (
     <Show when={content()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <markdown
-          syntaxStyle={syntax()}
-          streaming={true}
-          internalBlockMode="top-level"
+        <AdaptiveMarkdown
           content={content()}
+          streaming={!isDone()}
+          syntaxStyle={syntax()}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
           fg={theme.markdownText}
