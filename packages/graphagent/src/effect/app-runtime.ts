@@ -57,6 +57,7 @@ import { Npm } from "@graphagent/core/npm"
 import { memoMap } from "@graphagent/core/effect/memo-map"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
+import { GoalLifecycle } from "@/goal/lifecycle"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookStartContext } from "@/hook/start-context"
@@ -182,6 +183,10 @@ const BaseAppLayer = Layer.mergeAll(
   // defaultLayer self-provides BackgroundJob and Lifecycle; memoMap dedups them
   // with the instances built above.
   Layer.provideMerge(BackgroundLifecycle.defaultLayer),
+  // #1069 scope 3: the goal domain resolver reads the durable goal row on
+  // every query. Self-providing Goal + Lifecycle keeps it on the same
+  // instances as the rest of the runtime.
+  Layer.provideMerge(GoalLifecycle.defaultLayer),
 )
 
 export const AppLayer = Layer.mergeAll(HookCwd.layer, HookTodo.layer).pipe(Layer.provideMerge(BaseAppLayer))
