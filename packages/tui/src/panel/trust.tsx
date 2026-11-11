@@ -19,7 +19,7 @@ import { DetailPanel, type DetailRow } from "./detail"
 import { usePanelHost } from "./host"
 import type { PanelHint } from "./shell"
 
-export type TrustPanelMode = "first" | "changed" | "manage"
+export type TrustPanelMode = "first" | "changed" | "manage" | "imported"
 
 const CATEGORY_KEYS: Record<ProjectTrustEntry["category"], MessageKey> = {
   hook: "trust.category.hook",
@@ -100,7 +100,7 @@ function riskLabel(risk: ProjectTrustRisk): string {
  * state belongs to this panel until a decision is submitted, except in manage
  * mode where a toggle writes immediately.
  */
-export function TrustPanel(props: { mode: TrustPanelMode }) {
+export function TrustPanel(props: { mode: TrustPanelMode; imported?: readonly string[] }) {
   const sync = useSync()
   const host = usePanelHost()
   const toast = useToast()
@@ -116,10 +116,13 @@ export function TrustPanel(props: { mode: TrustPanelMode }) {
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
   const noProjectLayer = () => sync.path.worktree === paths.home
 
+  const importedIds = createMemo(() => new Set(props.imported ?? []))
+
   const listed = createMemo(() => {
     const entries = sync.data.trust
     if (props.mode === "manage") return entries
     const pending = entries.filter((entry) => entry.state === "pending")
+    if (props.mode === "imported") return pending.filter((entry) => importedIds().has(entry.id))
     return props.mode === "changed" ? pending.filter((entry) => entry.change !== undefined) : pending
   })
 
@@ -134,6 +137,9 @@ export function TrustPanel(props: { mode: TrustPanelMode }) {
 
   function triggerLabel(entry: ProjectTrustEntry): string {
     const when = whenLabel(entry.when)
+    if (props.mode === "imported") {
+      return importedIds().has(entry.id) ? `${t("trust.change.imported")} · ${when}` : when
+    }
     if (props.mode === "manage" || entry.change === undefined) return when
     return `${changeLabel(entry.change)} · ${when}`
   }
@@ -239,6 +245,8 @@ export function TrustPanel(props: { mode: TrustPanelMode }) {
     setSubmitting(true)
     try {
       await sync.trust.decide(decisions)
+      // #1223: the imported review is resolved once its entries were decided.
+      if (props.mode === "imported") sync.trust.clearImportedReview()
       if (close) host.close()
       return true
     } catch (error) {
@@ -319,6 +327,7 @@ export function TrustPanel(props: { mode: TrustPanelMode }) {
   function title(): string {
     if (props.mode === "manage") return t("trust.title.manage")
     if (props.mode === "changed") return t("trust.title.changed")
+    if (props.mode === "imported") return t("trust.title.imported")
     return t("trust.title.first")
   }
 
@@ -327,6 +336,7 @@ export function TrustPanel(props: { mode: TrustPanelMode }) {
       return noProjectLayer() ? t("trust.noProject") : t("trust.summary.manage", { count: listed().length })
     }
     if (props.mode === "changed") return t("trust.summary.changed", { count: listed().length })
+    if (props.mode === "imported") return t("trust.summary.imported", { count: listed().length })
     return t("trust.summary.first", { count: listed().length })
   }
 

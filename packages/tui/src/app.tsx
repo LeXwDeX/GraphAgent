@@ -552,6 +552,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     openTrustPanel(pending.some((entry) => entry.change !== undefined) ? "changed" : "first")
   })
 
+  // #1223: after `/import-claude` finishes, review the entries it wrote in the
+  // same trust panel. The review signal stays until decisions are submitted or
+  // another import replaces it, so `/trust` can still mark those entries.
+  let importedPrompted: object | undefined
+  createEffect(() => {
+    const review = sync.trust.importedReview
+    if (!review || review === importedPrompted) return
+    if (bottomZone.host.depth() !== 0) return
+    importedPrompted = review
+    openTrustPanel("imported", review.ids)
+  })
+
   const currentWorktreeWorkspace = createMemo(() => {
     const workspaceID = project.workspace.current()
     if (!workspaceID) return
@@ -594,7 +606,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     ))
   const openAgentList = () => openPanel("agent", () => <AgentPanel />)
   const openMcpList = () => openPanel("mcp", () => <McpPanel />)
-  const openTrustPanel = (mode: TrustPanelMode) => openPanel("trust", () => <TrustPanel mode={mode} />)
+  const openTrustPanel = (mode: TrustPanelMode, imported?: readonly string[]) =>
+    openPanel("trust", () => <TrustPanel mode={mode} imported={imported} />)
   const connectProvider = () =>
     openProviderPanel({ host: bottomZone.host, onConnected: (providerID) => openModelList(providerID) })
   const openStatus = () => openPanel("status", () => <StatusPanel />)
@@ -635,7 +648,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     "model.list": () => openModelList(),
     "agent.list": openAgentList,
     "mcp.list": openMcpList,
-    "trust.open": () => openTrustPanel("manage"),
+    "trust.open": () => openTrustPanel("manage", sync.trust.importedReview?.ids),
     "provider.connect": connectProvider,
     "graphagent.status": openStatus,
     "theme.switch": openThemeList,

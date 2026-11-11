@@ -1478,6 +1478,9 @@ export function Prompt(props: PromptProps) {
         accepted: () => {
           accepted = true
           clearPending()
+          // #1223: mark an import run so the idle transition can present the
+          // entries it wrote for confirmation.
+          if (submission.name === "import-claude") void sync.trust.beginImport(sessionID)
         },
         failed,
         interrupted,
