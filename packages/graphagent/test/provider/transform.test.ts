@@ -149,6 +149,230 @@ describe("ProviderTransform.message - todo reminder cache boundary", () => {
   })
 })
 
+describe("ProviderTransform.message - cache breakpoint layout (#1028)", () => {
+  const model: Provider.Model = {
+    id: ModelV2.ID.make("claude-3-5-sonnet-20241022"),
+    providerID: ProviderV2.ID.make("anthropic"),
+    api: {
+      id: "claude-3-5-sonnet-20241022",
+      url: "https://api.anthropic.com",
+      npm: "@ai-sdk/anthropic",
+    },
+    name: "Claude 3.5 Sonnet",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, audio: false, image: true, video: false, pdf: true },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 200000, output: 8192 },
+    status: "active",
+    options: {},
+    headers: {},
+    release_date: "",
+  }
+
+  const providerOptions = (value: unknown) =>
+    isRecord(value) && isRecord(value.providerOptions) ? value.providerOptions : undefined
+  const anthropicOptions = (value: unknown) => {
+    const options = providerOptions(value)
+    return isRecord(options?.anthropic) ? options.anthropic : undefined
+  }
+  const hasCachePoint = (value: unknown) => anthropicOptions(value)?.cacheControl !== undefined
+  const cachePointCount = (message: ModelMessage) =>
+    (hasCachePoint(message) ? 1 : 0) +
+    (Array.isArray(message.content) ? message.content.filter(hasCachePoint).length : 0)
+  const reminder = (text: string) => ({
+    type: "text" as const,
+    text,
+    providerOptions: { graphagent: { cache: "none" } },
+  })
+  const toolCall = (id: string) => ({
+    role: "assistant" as const,
+    content: [{ type: "tool-call" as const, toolCallId: id, toolName: "read", input: {} }],
+  })
+  const toolResult = (id: string) => ({
+    role: "tool" as const,
+    content: [
+      { type: "tool-result" as const, toolCallId: id, toolName: "read", output: { type: "text" as const, value: id } },
+    ],
+  })
+
+  test("anchors system_end on the last system message", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "first system" },
+        { role: "system", content: "second system" },
+        { role: "user", content: "hello" },
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed).toHaveLength(3)
+    expect(providerOptions(transformed[0])).toBeUndefined()
+    expect(anthropicOptions(transformed[1])?.cacheControl).toEqual({ type: "ephemeral" })
+    expect(anthropicOptions(transformed[2])?.cacheControl).toEqual({ type: "ephemeral" })
+  })
+
+  test("anchors previous_request_end before the newest assistant turn in a tool loop", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "do work" }] },
+        toolCall("call_1"),
+        toolResult("call_1"),
+        toolCall("call_2"),
+        toolResult("call_2"),
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed).toHaveLength(6)
+    expect(hasCachePoint(transformed[0])).toBe(true)
+    expect(hasCachePoint(transformed[1])).toBe(false)
+    expect(hasCachePoint(transformed[2])).toBe(false)
+    expect(hasCachePoint(transformed[3])).toBe(true)
+    expect(hasCachePoint(transformed[4])).toBe(false)
+    expect(hasCachePoint(transformed[5])).toBe(true)
+  })
+
+  test("anchors previous_request_end on the newest assistant message for a new user turn", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "first question" }] },
+        { role: "assistant", content: [{ type: "text", text: "first answer" }] },
+        { role: "user", content: [{ type: "text", text: "second question" }] },
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed).toHaveLength(4)
+    expect(hasCachePoint(transformed[0])).toBe(true)
+    expect(hasCachePoint(transformed[1])).toBe(false)
+    expect(hasCachePoint(transformed[2])).toBe(true)
+    expect(hasCachePoint(transformed[3])).toBe(true)
+  })
+
+  test("omits previous_request_end when history has no assistant message", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "first request" }] },
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed.map(cachePointCount)).toEqual([1, 1])
+  })
+
+  test("skips a request-only runtime context when choosing current_end", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "question" }] },
+        { role: "assistant", content: [{ type: "text", text: "answer" }] },
+        {
+          role: "user",
+          providerOptions: { graphagent: { context: true, cache: "none" } },
+          content: [{ type: "text", text: "<context>" }],
+        },
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed).toHaveLength(4)
+    expect(hasCachePoint(transformed[0])).toBe(true)
+    expect(hasCachePoint(transformed[1])).toBe(false)
+    expect(hasCachePoint(transformed[2])).toBe(true)
+    expect(hasCachePoint(transformed[3])).toBe(false)
+  })
+
+  test("ignores a request-only final-step instruction when inferring boundaries", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "do work" }] },
+        toolCall("call_1"),
+        toolResult("call_1"),
+        toolCall("call_2"),
+        toolResult("call_2"),
+        {
+          role: "assistant",
+          providerOptions: { graphagent: { cache: "none" } },
+          content: "Final step: reply in text only; tool calls will be refused.",
+        },
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed).toHaveLength(7)
+    expect(hasCachePoint(transformed[0])).toBe(true)
+    expect(cachePointCount(transformed[3])).toBe(1)
+    expect(cachePointCount(transformed[5])).toBe(1)
+    expect(cachePointCount(transformed[6])).toBe(0)
+  })
+
+  test("keeps system_end and semantic boundaries when more than four targets exist", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "u1" }, reminder("[todo 1]")] },
+        toolCall("call_1"),
+        toolResult("call_1"),
+        { role: "user", content: [{ type: "text", text: "u2" }, reminder("[todo 2]")] },
+        toolCall("call_2"),
+        toolResult("call_2"),
+        { role: "user", content: [{ type: "text", text: "u3" }, reminder("[todo 3]")] },
+      ],
+      model,
+      {},
+    )
+
+    expect(transformed).toHaveLength(8)
+    expect(transformed.reduce((count, message) => count + cachePointCount(message), 0)).toBe(4)
+    expect(hasCachePoint(transformed[0])).toBe(true)
+    // The oldest reminder supplement is the one dropped by the four-point cap.
+    expect(cachePointCount(transformed[1])).toBe(0)
+    expect(cachePointCount(transformed[4])).toBe(1)
+    expect(cachePointCount(transformed[7])).toBe(1)
+  })
+
+  test("anchors the breakpoint on the last non-reasoning part", () => {
+    const transformed = ProviderTransform.message(
+      [
+        { role: "system", content: "system" },
+        { role: "user", content: [{ type: "text", text: "go" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "answer" },
+            { type: "reasoning", text: "internal", providerOptions: { anthropic: { signature: "sig" } } },
+          ],
+        },
+      ],
+      model,
+      {},
+    )
+
+    const assistant = transformed[2]
+    if (!assistant || !Array.isArray(assistant.content)) throw new Error("Expected assistant content parts")
+    expect(providerOptions(assistant)).toBeUndefined()
+    expect(anthropicOptions(assistant.content[0])?.cacheControl).toEqual({ type: "ephemeral" })
+    expect(anthropicOptions(assistant.content[1])?.cacheControl).toBeUndefined()
+  })
+})
+
 describe("ProviderTransform.sortVariants", () => {
   test("orders known reasoning efforts independently of insertion order", () => {
     const variants = Object.fromEntries(
