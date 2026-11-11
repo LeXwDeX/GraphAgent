@@ -8,7 +8,7 @@ import { performance } from "node:perf_hooks"
 import { RGBA, SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal, Show } from "solid-js"
-import { ReasoningMarkdown } from "../../../../src/routes/session"
+import { AdaptiveMarkdown } from "../../../../src/ui/adaptive-markdown"
 
 const fg = RGBA.fromHex("#888888")
 const sample = (sections: number, alternate = false) =>
@@ -69,7 +69,7 @@ async function measure(input: Case) {
                     fg={fg}
                   />
                 ) : (
-                  <ReasoningMarkdown
+                  <AdaptiveMarkdown
                     content={contents[index][0]()}
                     streaming={false}
                     syntaxStyle={syntaxStyle}

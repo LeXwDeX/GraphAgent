@@ -6,7 +6,7 @@ import { afterEach, expect, test } from "bun:test"
 import { CodeRenderable, RGBA, SyntaxStyle, type BaseRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { testRender, useRenderer, type JSX } from "@opentui/solid"
 import { createSignal } from "solid-js"
-import { ReasoningMarkdown } from "../../../../src/routes/session"
+import { AdaptiveMarkdown } from "../../../../src/ui/adaptive-markdown"
 
 const fg = RGBA.fromHex("#888888")
 const createSyntax = (renderer: ReturnType<typeof useRenderer>) =>
@@ -57,7 +57,7 @@ test("replaces a streamed thought with distilled markdown in the same rendered s
     withSyntax((syntaxStyle) => (
       <box width={56}>
         <text>Thought: Plan</text>
-        <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
+        <AdaptiveMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
         <text>Final answer</text>
       </box>
     )),
@@ -78,7 +78,7 @@ test("shows appended text while the thought is still streaming", async () => {
   const [content, setContent] = createSignal("Initial thought")
   app = await testRender(
     withSyntax((syntaxStyle) => (
-      <ReasoningMarkdown content={content()} streaming={true} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
+      <AdaptiveMarkdown content={content()} streaming={true} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
     )),
     { width: 48, height: 5 },
   )
@@ -93,7 +93,7 @@ test("one mounted thought streams, finalizes, then replaces its first and last b
   const [streaming, setStreaming] = createSignal(true)
   app = await testRender(
     withSyntax((syntaxStyle) => (
-      <ReasoningMarkdown
+      <AdaptiveMarkdown
         content={content()}
         streaming={streaming()}
         syntaxStyle={syntaxStyle}
@@ -118,7 +118,7 @@ test("one mounted thought streams, finalizes, then replaces its first and last b
   expect(frame).not.toContain("OLD LAST")
 })
 
-test("switches at exactly 4096/4097 UTF-8 bytes without leaving old content", async () => {
+test("switches at exactly 4096/4097 UTF-8 bytes while streaming without leaving old content", async () => {
   const body = (bytes: number, marker: string) => {
     const head = `### ${marker}\n`
     const tail = `\n${marker} END`
@@ -133,7 +133,7 @@ test("switches at exactly 4096/4097 UTF-8 bytes without leaving old content", as
   app = await testRender(
     withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} width={56} height={6}>
-        <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={true} fg={fg} />
+        <AdaptiveMarkdown content={content()} streaming={true} syntaxStyle={syntaxStyle} conceal={true} fg={fg} />
       </scrollbox>
     )),
     { width: 56, height: 6 },
@@ -174,7 +174,7 @@ test("switches at exactly 4096/4097 UTF-8 bytes without leaving old content", as
   expect(fifth.bottom).toContain("替换 END")
 })
 
-test("shows an entire long replacement as readable plain text without stale content", async () => {
+test("shows an entire long streaming replacement as readable plain text without stale content", async () => {
   const original = Array.from({ length: 800 }, (_, i) => `### Step ${i}: original evidence`).join("\n")
   const replacement = Array.from({ length: 800 }, (_, i) => `### Task ${i}: distilled evidence`).join("\n")
   const [content, setContent] = createSignal(original)
@@ -182,7 +182,7 @@ test("shows an entire long replacement as readable plain text without stale cont
   app = await testRender(
     withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} width={64} height={8}>
-        <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
+        <AdaptiveMarkdown content={content()} streaming={true} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
       </scrollbox>
     )),
     { width: 64, height: 8 },
@@ -206,7 +206,7 @@ test("shortening a thought below the viewport keeps the earlier reading position
     withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} width={48} height={5}>
         <text>{Array.from({ length: 10 }, (_, i) => `Earlier row ${i}`).join("\n")}</text>
-        <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
+        <AdaptiveMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
         <text>Later anchor</text>
       </scrollbox>
     )),
@@ -230,7 +230,7 @@ test("growing a thought while following the bottom keeps the later anchor visibl
     withSyntax((syntaxStyle) => (
       <scrollbox ref={scroll} stickyScroll={true} stickyStart="bottom" width={48} height={5}>
         <text>{Array.from({ length: 10 }, (_, i) => `Earlier row ${i}`).join("\n")}</text>
-        <ReasoningMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
+        <AdaptiveMarkdown content={content()} streaming={false} syntaxStyle={syntaxStyle} conceal={false} fg={fg} />
         <text>Later anchor</text>
       </scrollbox>
     )),
