@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Option } from "effect"
 import { BackgroundJob } from "@graphagent/core/background-job"
+import { stateOf, type StateRef } from "@graphagent/core/lifecycle/state"
+import type { Domain } from "@graphagent/schema/lifecycle-status"
 import { Agent } from "../../src/agent/agent"
 import { Goal } from "../../src/goal/goal"
 import { GoalState } from "../../src/goal/state"
+import { Lifecycle } from "../../src/lifecycle/service"
 import { GoalTool } from "../../src/tool/goal"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { Truncate } from "@/tool/truncate"
@@ -273,6 +276,7 @@ describe("tool.goal — await intent validation (#1067)", () => {
         .pipe(Effect.provide(Layer.merge(goalLayer, jobs)))
 
       expect(captured?.kind).toBe("await")
+      expect(captured?.kind === "await" ? captured.wait.ref : undefined).toEqual({ domain: "job", id: "ses_child" })
       expect(result.output).toContain("Waiting for: background_job:ses_child")
     }),
   )
@@ -308,6 +312,8 @@ describe("tool.goal — await intent validation (#1067)", () => {
       expect(result.output).toContain("Waiting for: watch_pr:")
       const wait = captured?.kind === "await" ? captured.wait : undefined
       expect(wait?.wait_id).toBe("https://github.com/acme/widgets/pull/42")
+      // The resolved job id, not the caller's URL spelling, is the wait's identity.
+      expect(wait?.ref).toEqual({ domain: "job", id: "job_watch" })
       // The watch's own deadline plus the delivery margin, not the fixed 30 min.
       expect(wait?.deadline).toBeGreaterThanOrEqual(deadlineAt + 59_000)
       expect(wait?.deadline).toBeLessThanOrEqual(deadlineAt + 61_000)
@@ -347,6 +353,38 @@ describe("tool.goal — await intent validation (#1067)", () => {
       const wait = captured?.kind === "await" ? captured.wait : undefined
       expect(wait?.deadline).toBeGreaterThanOrEqual(before + 10_000)
       expect(wait?.deadline).toBeLessThanOrEqual(Date.now() + 10_000)
+    }),
+  )
+  it.instance("rejects a job the lifecycle contract reports as terminal", () =>
+    Effect.gen(function* () {
+      const info = yield* GoalTool
+      const tool = yield* info.init()
+      let intentCalls = 0
+      const goalLayer = Layer.mock(Goal.Service, {
+        setIntent: () =>
+          Effect.sync(() => {
+            intentCalls += 1
+            return activeGoal
+          }),
+      })
+      // The registry still lists the job as running; the contract disagrees.
+      const jobs = Layer.mock(BackgroundJob.Service, {
+        list: () => Effect.sync(() => [watchJob(Date.now() + 60_000)]),
+      })
+      const lifecycle = Layer.mock(Lifecycle.Service, {
+        get: <D extends Domain>(target: StateRef<D>) =>
+          Effect.succeed(Option.some(stateOf({ ref: target, value: "completed", source: "live" }))),
+      })
+
+      const exit = yield* tool
+        .execute({ action: "intent", intent: "await", wait_source: "watch_pr", wait_id: "job_watch" }, ctx())
+        .pipe(Effect.provide(Layer.mergeAll(goalLayer, jobs, lifecycle)), Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      const error = failureOf(exit)
+      if (!(error instanceof Tool.InvalidArgumentsError))
+        throw new Error(`expected InvalidArgumentsError, got ${String(error)}`)
+      expect(error.message).toContain("terminal")
+      expect(intentCalls).toBe(0)
     }),
   )
 })

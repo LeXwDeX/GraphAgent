@@ -67,6 +67,24 @@ describe("goal intent and waiting", () => {
     }),
   )
 
+  it.effect("matches a StateRef wait by job domain and id, ignoring the wake source", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the job", 5)
+      yield* goal.setIntent(id, awaitIntent({ source: "watch_pr", ref: { domain: "job", id: "job_ref" } }))
+
+      expect(yield* goal.wake(id, { source: "watch_pr", ids: ["job_other"] })).toBe(false)
+      // watch_pr and background_job both name the job domain; the ref id is
+      // the only identity that decides the match.
+      expect(yield* goal.wake(id, { source: "background_job", ids: ["job_ref"] }, "the job finished")).toBe(true)
+      const loaded = yield* goal.load(id)
+      expect(loaded?.status).toBe("active")
+      expect(loaded?.intent?.kind).toBe("progress")
+      expect(loaded?.last_reason).toBe("the job finished")
+    }),
+  )
+
   it.effect("expires a waiting goal past its deadline into a review marker", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
