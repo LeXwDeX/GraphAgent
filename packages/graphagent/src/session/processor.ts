@@ -13,7 +13,8 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
-import { isOverflow } from "./overflow"
+import { isOverflow, serializedTools } from "./overflow"
+import { counters, fingerprintOf, recordStep, type PrefixFingerprint } from "./step-metrics"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import {
@@ -246,6 +247,16 @@ export const layer = Layer.effect(
       let displayPending = ""
       let displayIndex = 0
       let displayFinished = false
+      // HS14 step observability (#1028 PR1). `handleEvent` and `process` share
+      // this closure: the request fingerprint is taken once per provider
+      // request, and the counters are scoped to the span between two
+      // step-finish events (the first span starts at process entry).
+      let metricsProcessStartedAt = 0
+      let metricsStepStartedAt = 0
+      let metricsFirstTokenAt: number | undefined
+      let metricsFingerprint: PrefixFingerprint | undefined
+      let metricsCounterBase = counters()
+      let metricsStep = 0
       const displayParts: SessionV1.TextPart[] = []
       let displaySegments: Array<{ part: SessionV1.TextPart; length: number }> = []
       let lastDisplayPart: SessionV1.TextPart | undefined
@@ -555,6 +566,7 @@ export const layer = Layer.effect(
           }
 
           case "reasoning-delta":
+            metricsFirstTokenAt ??= performance.now()
             ctx.attemptReasoningActivity = true
             if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
             ctx.attemptReasoningLength += value.text.length
@@ -581,6 +593,7 @@ export const layer = Layer.effect(
             return
 
           case "tool-input-start":
+            metricsFirstTokenAt ??= performance.now()
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
@@ -756,6 +769,8 @@ export const layer = Layer.effect(
 
           case "step-start":
             ctx.stepToolActivity = false
+            metricsStepStartedAt = performance.now()
+            metricsFirstTokenAt = undefined
             if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
             yield* session.updatePart({
               id: PartID.ascending(),
@@ -791,6 +806,31 @@ export const layer = Layer.effect(
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
             accumulateUsage(ctx.assistantMessage, usage)
+            // HS14 (#1028 PR1): one record per completed provider response.
+            // The counter span runs from the previous step-finish (or process
+            // entry) so settle writes and tool work between steps stay
+            // attributed to the step that caused them.
+            const fingerprint = metricsFingerprint
+            if (fingerprint) {
+              const current = counters()
+              const now = performance.now()
+              metricsStep += 1
+              yield* recordStep({
+                sessionID: ctx.sessionID,
+                step: metricsStep,
+                prepareMs: metricsStepStartedAt - metricsProcessStartedAt,
+                requestMs: now - metricsStepStartedAt,
+                ttftMs: metricsFirstTokenAt === undefined ? 0 : metricsFirstTokenAt - metricsStepStartedAt,
+                cacheRead: usage.tokens.cache.read,
+                cacheWrite: usage.tokens.cache.write,
+                input: usage.tokens.input,
+                sqlCount: current.sqlCount - metricsCounterBase.sqlCount,
+                commits: current.commits - metricsCounterBase.commits,
+                gitSpawns: current.gitSpawns - metricsCounterBase.gitSpawns,
+                fingerprint,
+              })
+              metricsCounterBase = current
+            }
             // One settle batch: the step-finish part, the assistant message and
             // the optional patch part commit as a single durable transaction.
             const settled: SessionV1.Part[] = [
@@ -846,6 +886,7 @@ export const layer = Layer.effect(
             return
 
           case "text-delta":
+            metricsFirstTokenAt ??= performance.now()
             ctx.attemptTextLength += value.text.length
             if (!ctx.currentText) return
             ctx.currentText.text += value.text
@@ -1077,6 +1118,16 @@ export const layer = Layer.effect(
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
+        })
+        metricsProcessStartedAt = performance.now()
+        metricsStepStartedAt = metricsProcessStartedAt
+        metricsFirstTokenAt = undefined
+        metricsCounterBase = counters()
+        metricsFingerprint = fingerprintOf({
+          tools: serializedTools(streamInput.tools),
+          system: streamInput.system,
+          messages: streamInput.messages,
+          toolChoice: streamInput.toolChoice,
         })
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true

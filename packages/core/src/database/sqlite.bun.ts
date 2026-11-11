@@ -14,6 +14,7 @@ import type { Connection } from "effect/sql/SqlConnection"
 import { classifySqliteError, SqlError } from "effect/sql/SqlError"
 import * as Statement from "effect/sql/Statement"
 import { Sqlite } from "./sqlite"
+import { DatabaseMetrics } from "./metrics"
 
 const ATTR_DB_SYSTEM_NAME = "db.system.name"
 
@@ -55,6 +56,7 @@ const make = (options: Config) =>
 
     const run = (query: string, params: ReadonlyArray<unknown> = []) =>
       Effect.withFiber<Array<Record<string, unknown>>, SqlError>((fiber) => {
+        DatabaseMetrics.recordSql(query)
         const statement = native.query(query)
         // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
         statement.safeIntegers(Context.get(fiber.context, Client.SafeIntegers))
@@ -71,6 +73,7 @@ const make = (options: Config) =>
 
     const runValues = (query: string, params: ReadonlyArray<unknown> = []) =>
       Effect.withFiber<Array<unknown[]>, SqlError>((fiber) => {
+        DatabaseMetrics.recordSql(query)
         const statement = native.query(query)
         // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
         statement.safeIntegers(Context.get(fiber.context, Client.SafeIntegers))

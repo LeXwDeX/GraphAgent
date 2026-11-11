@@ -10,6 +10,7 @@ import { Hash } from "@graphagent/core/util/hash"
 import { Config } from "@/config/config"
 import { Global } from "@graphagent/core/global"
 import { Info } from "@graphagent/schema/file-diff"
+import { recordGitSpawn } from "@/session/step-metrics"
 import { TrackCoordinator } from "./track-coordinator"
 
 export const Patch = Schema.Struct({
@@ -81,6 +82,7 @@ export const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Serv
 
         const git = Effect.fnUntraced(
           function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string>; stdin?: string }) {
+            recordGitSpawn()
             const result = yield* appProcess.run(
               ChildProcess.make("git", cmd, { cwd: opts?.cwd, env: opts?.env, extendEnv: true }),
               { stdin: opts?.stdin },
