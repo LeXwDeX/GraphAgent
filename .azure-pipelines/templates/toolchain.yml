@@ -111,11 +111,24 @@ steps:
       - bash: |
           set -euo pipefail
           if ! command -v rg >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ripgrep
+            # Hosted agents occasionally lose DNS for the apt mirror. Retry the
+            # whole update+install sequence with backoff; one transient failure
+            # must not fail every unit job.
+            for attempt in 1 2 3 4 5; do
+              if sudo apt-get -o Acquire::Retries=5 update -qq \
+                && sudo apt-get -o Acquire::Retries=5 install -y -qq ripgrep; then
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "ripgrep installation failed after $attempt attempts" >&2
+                exit 1
+              fi
+              sleep $((attempt * 10))
+            done
           fi
           rg --version | head -1
         displayName: Setup ripgrep
+        retryCountOnTaskFailure: 2
 
   - ${{ if parameters.gitIdentity }}:
       - bash: |
