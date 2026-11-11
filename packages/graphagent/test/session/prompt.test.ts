@@ -364,9 +364,12 @@ function memoryContext(input?: PromptLayerOptions) {
 }
 
 function makePrompt(input?: PromptLayerOptions) {
-  const flags = RuntimeFlags.layer({
-    ...input?.runtimeFlags,
-  })
+  // Production parses flags from the active ConfigProvider at layer build
+  // time. Stable tests exercise that same default; only a case that needs a
+  // specific flag (for example plan mode) builds a private override layer.
+  const flags = input?.runtimeFlags ? RuntimeFlags.layer({ ...input.runtimeFlags }) : RuntimeFlags.defaultLayer
+  // Native LLM is an experimental runtime, so it is absent from the production
+  // defaults and builds its own layer set with the flag enabled (below).
   // goal: false exercises the Goal-absent degradation path (serviceOption None)
   const goalLayer: Layer.Layer<Goal.Service> =
     input?.goal === false
