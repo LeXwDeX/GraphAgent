@@ -49,6 +49,7 @@ import { SessionReminders } from "../reminders"
 import { TodoReminders } from "../todo-reminders"
 import { RuntimeContext } from "../runtime-context"
 import { MAX_STEPS_PROMPT } from "../max-steps"
+import { FINAL_STEP_INSTRUCTION, type FinalPolicy } from "./final-policy"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { decodeDataUrl } from "@/util/data-url"
 import { estimateOverhead } from "../overflow"
@@ -252,9 +253,11 @@ export interface TurnRequestInput {
   readonly messages: SessionV1.WithParts[]
   readonly budget: ToolBudget.Budget
   readonly model: Provider.Model
-  readonly format: NonNullable<SessionV1.User["format"]>
   readonly toolBatch: HookToolBatchState
-  readonly toolsDisabled: boolean
+  /** Request shape for this model step; see `FinalPolicy`. */
+  readonly finalPolicy: FinalPolicy
+  /** Forwarded to `LLM.StreamInput.onToolRefused` for the terminal step. */
+  readonly onToolRefused?: () => void
   readonly user: SessionV1.User
   readonly agent: Agent.Info
   readonly handle: ProcessorHandle
@@ -1404,9 +1407,9 @@ export function makePrepare(deps: PrepareDeps) {
       session,
       budget,
       model,
-      format,
       toolBatch,
-      toolsDisabled,
+      finalPolicy,
+      onToolRefused,
       user: lastUser,
       agent,
       handle,
@@ -1423,7 +1426,19 @@ export function makePrepare(deps: PrepareDeps) {
     const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
     const promptOps = yield* ops()
 
-    const tools = toolsDisabled
+    // `closing` and `structuredTerminal` use an empty tool set and
+    // `tool_choice: "none"`; `terminal` keeps the normal tool set and refuses
+    // execution in the LLM layer instead. `terminal`/`closing` append the
+    // fixed final-step instruction; only the structured terminal keeps the
+    // legacy max-steps text.
+    const closing = finalPolicy === "closing"
+    const legacyToolsDisabled = closing || finalPolicy === "structuredTerminal"
+    // Only a normal step may advertise the structured-output tool; the
+    // structured terminal keeps the legacy empty-tool shape.
+    const structuredFormat = finalPolicy === "normal" ? lastUser.format : undefined
+    const refuseTools = finalPolicy === "terminal" || closing
+
+    const tools = legacyToolsDisabled
       ? {}
       : yield* prepareStage(
           "tools",
@@ -1466,9 +1481,9 @@ export function makePrepare(deps: PrepareDeps) {
       Effect.provideService(FSUtil.Service, fsys),
       Effect.provideService(Session.Service, sessions),
     )
-    if (!toolsDisabled && lastUser.format?.type === "json_schema") {
+    if (structuredFormat?.type === "json_schema") {
       tools["StructuredOutput"] = createStructuredOutputTool({
-        schema: lastUser.format.schema,
+        schema: structuredFormat.schema,
         onSuccess(output) {
           onStructured(output)
         },
@@ -1552,7 +1567,7 @@ export function makePrepare(deps: PrepareDeps) {
       custom: EngineProcess.runtimes.runtimeSlots.list(input.sessionID),
     })
     const runtimeEvents: string[] = []
-    if (!toolsDisabled && format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+    if (structuredFormat?.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
     const processInput: LLM.StreamInput = {
       user: lastUser,
       agent,
@@ -1563,24 +1578,28 @@ export function makePrepare(deps: PrepareDeps) {
       system,
       messages: [
         ...modelMsgs,
-        ...(toolsDisabled
+        ...(finalPolicy === "structuredTerminal"
           ? [
               {
                 role: "assistant" as const,
                 content: toolLimitReached ? ToolBudget.renderExhaustedPrompt(budget.max) : MAX_STEPS_PROMPT,
               },
             ]
-          : []),
+          : refuseTools
+            ? [{ role: "assistant" as const, content: FINAL_STEP_INSTRUCTION }]
+            : []),
       ],
       tools,
       toolBudget: budget,
       toolBatch,
       model,
-      toolChoice: toolsDisabled
+      toolChoice: legacyToolsDisabled
         ? "none"
-        : format.type === "json_schema" && Provider.supportsForcedToolChoice(model)
+        : structuredFormat?.type === "json_schema" && Provider.supportsForcedToolChoice(model)
           ? "required"
           : undefined,
+      toolPolicy: refuseTools ? "refuse" : undefined,
+      onToolRefused,
       purpose: "conversation",
       contextFolding: contextFoldingHistory,
     }
@@ -1634,7 +1653,7 @@ export function makePrepare(deps: PrepareDeps) {
         // structured-output tool is added afterwards, so that request
         // re-serializes instead of reusing a stale fragment (Issue #1022, PR5).
         toolsJson:
-          toolsDisabled || lastUser.format?.type === "json_schema"
+          legacyToolsDisabled || lastUser.format?.type === "json_schema"
             ? undefined
             : SessionTools.serializedFragment(processInput.tools),
       }),

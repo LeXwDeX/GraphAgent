@@ -33,6 +33,17 @@ export interface StopState {
   readonly cap: number
 }
 
+/**
+ * Where this turn is in the final-step protocol (Issue #1028, H6 PR2).
+ *
+ * - `none`: no terminal step has run.
+ * - `violated`: the terminal step called a local tool; one closing step with
+ *   `tool_choice: "none"` runs next.
+ * - `closing`: that closing step is in flight; its attempt is the last one.
+ * - `closed`: the final step completed; only Stop hooks and the exit remain.
+ */
+export type FinalPhase = "none" | "violated" | "closing" | "closed"
+
 export interface TurnState {
   /** Model-step counter for this loop invocation. */
   readonly step: number
@@ -51,6 +62,8 @@ export interface TurnState {
    * step. Replaces the old `forceContinue` flag; consumed by `beginStep`.
    */
   readonly continuing: "stop_block" | undefined
+  /** Final-step protocol progress; see {@link FinalPhase}. */
+  readonly final: FinalPhase
 }
 
 export function initial(input: { stopCap: number }): TurnState {
@@ -63,6 +76,7 @@ export function initial(input: { stopCap: number }): TurnState {
     stop: { active: false, continuations: 0, cap: input.stopCap },
     compactions: 0,
     continuing: undefined,
+    final: "none",
   }
 }
 
@@ -97,6 +111,27 @@ export function afterAttempt(
   return { ...state, stopped: input.broke, error: input.broke ? input.error : state.error }
 }
 
+/**
+ * The terminal step called a local tool. An errored attempt never reaches this
+ * transition: the error path owns the exit and must not run an extra step.
+ */
+export function markFinalViolated(state: TurnState): TurnState {
+  if (state.error !== undefined || state.final !== "none") return state
+  return { ...state, final: "violated" }
+}
+
+/** Start the single closing step after a terminal-step violation. */
+export function beginClosing(state: TurnState): TurnState {
+  if (state.final !== "violated") return state
+  return { ...state, final: "closing" }
+}
+
+/** The final step is over; only Stop hooks and the exit remain. */
+export function markClosed(state: TurnState): TurnState {
+  if (state.final !== "none" && state.final !== "closing") return state
+  return { ...state, final: "closed" }
+}
+
 export function blockAgentInput(state: TurnState): TurnState {
   if (state.agentInput === "blocked") return state
   return { ...state, agentInput: "blocked" }
@@ -110,6 +145,7 @@ export function clearBoundaryApproval(state: TurnState): TurnState {
 
 /** A Stop block granted another model turn: arm `stop_hook_active` and the one-shot continuation. */
 export function continueFromStopBlock(state: TurnState): TurnState {
+  if (state.final !== "none") return state
   return {
     ...state,
     continuing: "stop_block",
@@ -119,6 +155,7 @@ export function continueFromStopBlock(state: TurnState): TurnState {
 
 /** A Stop exit found queued input: allow one more boundary crossing and clear the stopped marker. */
 export function continueFromQueuedInput(state: TurnState): TurnState {
+  if (state.final !== "none") return state
   return { ...state, agentInput: "boundary_approved", stopped: false }
 }
 

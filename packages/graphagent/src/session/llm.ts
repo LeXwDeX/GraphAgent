@@ -25,6 +25,7 @@ import * as OtelTracer from "@effect/opentelemetry/OtelTracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { ToolRefusedError } from "./llm/refusal"
 import { ThinkingReplay } from "./thinking-replay"
 import { AgentScheduler } from "./agent-scheduler"
 import type { Lane as SchedulerLane } from "./agent-scheduler-state"
@@ -161,6 +162,13 @@ export type StreamInput = {
   /** Caps the model output limit for this request, after provider adapter params. */
   maxOutputTokens?: number
   toolChoice?: "auto" | "required" | "none"
+  /**
+   * `refuse` keeps the request shape (tools and `tool_choice`) but rejects
+   * local execution of every call. Used by the terminal step of a turn.
+   */
+  toolPolicy?: "allow" | "refuse"
+  /** Called for every local tool call on a `refuse` request, before execution. */
+  onToolRefused?: () => void
   purpose?: RequestPurpose
   /** Scheduling lane; derived from purpose and parent session when omitted. */
   lane?: SchedulerLane
@@ -230,7 +238,11 @@ const live: Layer.Layer<
       )
 
       const toolBudget = input.toolBudget ?? ToolBudget.create(cfg.maxToolCalls)
-      const toolChoice = toolBudget.exhausted ? "none" : input.toolChoice
+      // Budget exhaustion no longer rewrites the request: the turn loop owns
+      // the final-step policy, and a rewritten `tool_choice` would invalidate
+      // the cached prefix on every budget-exhausted step.
+      const toolChoice = input.toolChoice
+      const refuseTools = input.toolPolicy === "refuse"
       const prepared = yield* LLMRequestPrep.prepare({
         ...input,
         tools: toolChoice === "none" ? {} : input.tools,
@@ -250,9 +262,17 @@ const live: Layer.Layer<
       }
       const observeToolCall = (event: LLMEvent) =>
         Effect.sync(() => {
+          if (event.type !== "tool-call" || event.providerExecuted) return
+          // The stream event is the earliest proof that the model ignored the
+          // final-step instruction; execution may never happen for an invalid
+          // or unexecutable call.
+          if (refuseTools) {
+            input.onToolRefused?.()
+            return
+          }
           // Invalid arguments may fail before the executor. Completed local
           // calls still consume budget, without charging execution a second time.
-          if (event.type === "tool-call" && !event.providerExecuted && toolChoice !== "none") admitToolCall(event.id)
+          if (toolChoice !== "none") admitToolCall(event.id)
         })
       if (toolChoice === "none") {
         // Copilot requires a placeholder definition when history contains tool
@@ -283,6 +303,10 @@ const live: Layer.Layer<
                   // A failed stream closes its request scope. Refuse any SDK
                   // callback that arrives after that scope has been aborted.
                   if (input.abort.aborted) throw new DOMException("Aborted", "AbortError")
+                  if (refuseTools) {
+                    input.onToolRefused?.()
+                    throw new ToolRefusedError()
+                  }
                   const admission = admitToolCall(args[1].toolCallId)
                   if (!admission.allowed) throw new Error(ToolBudget.exhaustedMessage(toolBudget.max))
                   if (admission.executed) throw new Error(`Duplicate tool call: ${args[1].toolCallId}`)

@@ -36,6 +36,7 @@ import { SessionTools } from "../tools"
 import type { ToolSourceLedger } from "../tool-source-ledger"
 import type { TurnExecution } from "../turns"
 import { Decide } from "./decide"
+import type { FinalPolicy } from "./final-policy"
 import type { PrepareApi, TurnRequestInput } from "./prepare"
 import { Settle } from "./settle"
 import { State, type TurnState } from "./state"
@@ -495,7 +496,12 @@ function makeOverflowGate(deps: LoopDeps) {
   })
 }
 
-type ModelStepResult = { readonly state: TurnState; readonly outcome: "break" | "continue" }
+type ModelStepResult = {
+  readonly state: TurnState
+  readonly outcome: "break" | "continue"
+  /** At least one local tool call reached the `toolPolicy: "refuse"` gate. */
+  readonly toolRefused: boolean
+}
 
 function makeModelStep(deps: LoopDeps) {
   const { prepareFns, settleFns, instruction } = deps
@@ -512,7 +518,7 @@ function makeModelStep(deps: LoopDeps) {
     handle: ProcessorHandle
     agent: Agent.Info
     toolBatch: ReturnType<typeof HookToolBatch.create>
-    toolsDisabled: boolean
+    finalPolicy: FinalPolicy
     isLastStep: boolean
     toolLimitReached: boolean
     agentSnapshot: DagMessages.Snapshot | undefined
@@ -524,6 +530,7 @@ function makeModelStep(deps: LoopDeps) {
     // A later input must produce its own structured response.
     let state = State.clearStructured(input.state)
     let structured: unknown
+    let toolRefused = false
     const outcome: "break" | "continue" = yield* Effect.gen(function* () {
       const format = input.lastUser.format ?? { type: "text" as const }
       const { processInput } = yield* prepareFns.buildTurnRequest({
@@ -532,9 +539,11 @@ function makeModelStep(deps: LoopDeps) {
         messages: input.msgs,
         budget: input.budget,
         model: input.model,
-        format,
         toolBatch: input.toolBatch,
-        toolsDisabled: input.toolsDisabled,
+        finalPolicy: input.finalPolicy,
+        onToolRefused: () => {
+          toolRefused = true
+        },
         user: input.lastUser,
         agent: input.agent,
         handle: input.handle,
@@ -566,7 +575,7 @@ function makeModelStep(deps: LoopDeps) {
         format,
         result,
         structured,
-        toolsDisabled: input.toolsDisabled,
+        finalPolicy: input.finalPolicy,
         isLastStep: input.isLastStep,
         toolLimitReached: input.toolLimitReached,
         agentInputBlocked: state.agentInput === "blocked",
@@ -578,7 +587,7 @@ function makeModelStep(deps: LoopDeps) {
       return settled.outcome
     }).pipe(Effect.ensuring(instruction.clear(input.handle.message.id)), Effect.onError(input.finalizeFailedAssistant))
     state = structured === undefined ? State.clearStructured(state) : State.setStructured(state, structured)
-    return { state, outcome }
+    return { state, outcome, toolRefused }
   })
 }
 
@@ -629,7 +638,17 @@ function makeAttemptRunner(deps: LoopDeps) {
     const maxSteps = agent.steps ?? Infinity
     const isLastStep = input.step >= maxSteps
     const toolLimitReached = input.budget.exhausted
-    const toolsDisabled = isLastStep || toolLimitReached
+    // The closing step is chosen by the Stop gate; every other final step is
+    // the budget/max-step terminal, and only a `json_schema` turn keeps the
+    // legacy structured-output shape (C2 owns forced-tool-choice support).
+    const finalPolicy: FinalPolicy =
+      input.state.final === "closing"
+        ? "closing"
+        : toolLimitReached || isLastStep
+          ? input.lastUser.format?.type === "json_schema"
+            ? "structuredTerminal"
+            : "terminal"
+          : "normal"
 
     const msg: SessionV1.Assistant = {
       id: input.modelMessageID,
@@ -701,7 +720,7 @@ function makeAttemptRunner(deps: LoopDeps) {
       handle,
       agent,
       toolBatch,
-      toolsDisabled,
+      finalPolicy,
       isLastStep,
       toolLimitReached,
       agentSnapshot: input.agentSnapshot,
@@ -732,6 +751,13 @@ function makeAttemptRunner(deps: LoopDeps) {
     // Stop hook and returns once the agent is truly done. `stopped` covers
     // blocked turns (permission rejected) whose finish is still "tool-calls".
     state = State.afterAttempt(state, { broke: step.outcome === "break", error: handle.message.error })
+    // The closing attempt is the last one whatever it produced. A terminal
+    // attempt that ignored the instruction earns exactly one closing step; an
+    // errored attempt closes without another request.
+    if (finalPolicy === "closing") state = State.markClosed(state)
+    else if (finalPolicy === "terminal" && handle.message.error === undefined)
+      state = step.toolRefused ? State.markFinalViolated(state) : State.markClosed(state)
+    else if (finalPolicy === "terminal") state = State.markClosed(state)
     return { kind: "continue", state }
   })
 }
@@ -757,7 +783,10 @@ function makeStopGate(deps: LoopDeps) {
       userBeforeAssistant: !!input.lastAssistant && MessageV2.before(input.lastUser, input.lastAssistant),
       pendingLocalTools: input.lastAssistantMsg?.parts.some(isPendingLocalTool) ?? false,
     }
-    if (!Decide.isCompletionCandidate(input.state, completion)) return { kind: "step", state: input.state }
+    // A final-step transition owns the exit even when the assistant did not
+    // look "finished" (for example a refused tool left a tool part behind).
+    if (input.state.final === "none" && !Decide.isCompletionCandidate(input.state, completion))
+      return { kind: "step", state: input.state }
     const orphan = input.lastAssistantMsg?.parts.find(
       (part): part is SessionV1.ToolPart => part.type === "tool" && Stop.isOrphanedInterruptedTool(part),
     )
@@ -793,6 +822,9 @@ function makeStopGate(deps: LoopDeps) {
       assistantFinish: input.lastAssistant?.finish,
     }
     let transition = Decide.decide(input.state, signals)
+    // The terminal step called a tool: run the single closing step before any
+    // Stop hook observes the turn.
+    if (transition.kind === "close") return { kind: "step", state: State.beginClosing(input.state) }
     if (transition.kind === "run_stop_hooks") {
       const result = yield* stopFns.runStopHooks({
         sessionID: input.sessionID,

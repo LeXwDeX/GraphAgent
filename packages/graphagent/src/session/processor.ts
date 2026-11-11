@@ -1209,6 +1209,14 @@ export const layer = Layer.effect(
                 }
                 streamInput.onAttemptActivity?.(activity)
               },
+              // A refused final-step tool call is still real activity: it must
+              // close the incomplete-response and retry gates exactly like a
+              // tool that executed.
+              onToolRefused: () => {
+                if (generation !== attemptGeneration) return
+                ctx.anyToolCalled = true
+                streamInput.onToolRefused?.()
+              },
             })
             const stream = streamInput.purpose === "compaction" ? watchCompactionStream(source) : source
 

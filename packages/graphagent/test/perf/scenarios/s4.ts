@@ -14,9 +14,9 @@ import type { Measurement, Scenario } from "./types"
 
 // S4: a tool-dense turn. Each step is a full provider round-trip through the
 // engine: assistant message, tool part, tool result and the next request. The
-// agent may make 20 tool calls; `steps` counts assistant requests, and the
-// request that reaches the budget runs with tools disabled, so the budget is
-// one larger than the number of tool calls.
+// agent may make 20 tool calls; `steps` counts assistant requests. The request
+// that reaches the budget keeps the same tool set (H6 final-step protocol), so
+// the budget is one larger than the number of tool calls.
 const STEPS = 20
 
 export interface S4Result extends Measurement {
