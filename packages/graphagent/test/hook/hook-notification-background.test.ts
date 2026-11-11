@@ -51,7 +51,7 @@ const layer = Layer.mergeAll(
   Session.defaultLayer,
   SessionRunState.defaultLayer,
   Truncate.defaultLayer,
-  RuntimeFlags.layer({ experimentalBackgroundSubagents: true }),
+  RuntimeFlags.layer(),
   Permission.layer,
   Notification.layer,
 ).pipe(

@@ -197,7 +197,6 @@ describe("run interactive runtime", () => {
         variant: undefined,
         files: [],
         thinking: true,
-        backgroundSubagents: false,
       },
       {
         createRuntimeLifecycle: async () => ({
@@ -281,7 +280,6 @@ test("local mini creates attention only after ensureSession, switches on /new, a
       variant: undefined,
       files: [],
       thinking: false,
-      backgroundSubagents: false,
     },
     {
       createRuntimeLifecycle: async (input) => {
@@ -376,7 +374,6 @@ for (const ignoresSignal of [false, true]) {
         variant: undefined,
         files: [],
         thinking: false,
-        backgroundSubagents: false,
       },
       {
         createRuntimeLifecycle: async () => ({

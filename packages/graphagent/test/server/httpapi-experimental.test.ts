@@ -36,9 +36,7 @@ describe("experimental HttpApi", () => {
         )
 
         expect(capabilities.status).toBe(200)
-        expect(yield* json<{ backgroundSubagents: boolean }>(capabilities)).toEqual({
-          backgroundSubagents: expect.any(Boolean),
-        })
+        expect(yield* json(capabilities)).toEqual({})
 
         expect(resources.status).toBe(200)
         expect(yield* json(resources)).toEqual({})

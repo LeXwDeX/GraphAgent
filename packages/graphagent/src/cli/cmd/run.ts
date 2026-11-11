@@ -270,10 +270,8 @@ export const RunCommand = effectCmd({
       .conflicts("trust-project", "mini"),
   handler: Effect.fn("Cli.run")(function* (args) {
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
-    const { RuntimeFlags } = yield* Effect.promise(() => import("@/effect/runtime-flags"))
     const { InstanceRef } = yield* Effect.promise(() => import("@/effect/instance-ref"))
     const agentSvc = yield* Agent.Service
-    const flags = yield* RuntimeFlags.Service
     const localInstance = yield* InstanceRef
     const { SettingsHook } = yield* Effect.promise(() => import("@/hook"))
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
@@ -916,7 +914,6 @@ export const RunCommand = effectCmd({
             initialInput,
             createSession: createFreshSession,
             thinking,
-            backgroundSubagents: flags.experimentalBackgroundSubagents,
             demo: args.demo,
           })
         } catch (error) {
@@ -949,7 +946,6 @@ export const RunCommand = effectCmd({
               files,
               initialInput,
               thinking,
-              backgroundSubagents: flags.experimentalBackgroundSubagents,
               demo: args.demo,
             })
           } catch (error) {

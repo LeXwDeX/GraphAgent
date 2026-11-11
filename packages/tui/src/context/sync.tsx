@@ -101,9 +101,6 @@ export const {
       provider: Provider[]
       provider_default: Record<string, string>
       provider_next: ProviderListResponse
-      capabilities: {
-        experimentalBackgroundSubagents: boolean
-      }
       provider_auth: Record<string, ProviderAuthMethod[]>
       agent: Agent[]
       command: Command[]
@@ -167,9 +164,6 @@ export const {
         all: [],
         default: {},
         connected: [],
-      },
-      capabilities: {
-        experimentalBackgroundSubagents: false,
       },
       provider_auth: {},
       config: {},
@@ -890,16 +884,11 @@ export const {
       const headers = locationHeaders({ workspace })
       const providersPromise = sdk.client.config.providers({ throwOnError: true, headers })
       const providerListPromise = sdk.client.provider.list({ throwOnError: true, headers })
-      const capabilitiesPromise = sdk.client.experimental.capabilities
-        .get({ throwOnError: true, headers })
-        .then((x) => x.data)
-        .catch(() => undefined)
       const agentsPromise = sdk.client.app.agents({ throwOnError: true, headers })
       const configPromise = sdk.client.config.get({ throwOnError: true, headers })
       await Promise.all([
         providersPromise,
         providerListPromise,
-        capabilitiesPromise,
         agentsPromise,
         configPromise,
         projectPromise,
@@ -909,7 +898,6 @@ export const {
           if (disposed || attempt !== bootstrapAttempt) return undefined
           const providersResponse = providersPromise.then((x) => x.data!)
           const providerListResponse = providerListPromise.then((x) => x.data!)
-          const capabilitiesResponse = capabilitiesPromise
           const agentsResponse = agentsPromise.then((x) => x.data ?? [])
           const configResponse = configPromise.then((x) => x.data!)
           const sessionListResponse = args.continue ? sessionListPromise : undefined
@@ -917,23 +905,20 @@ export const {
           return Promise.all([
             providersResponse,
             providerListResponse,
-            capabilitiesResponse,
             agentsResponse,
             configResponse,
             ...(sessionListResponse ? [sessionListResponse] : []),
           ]).then((responses) => {
             const providers = responses[0]
             const providerList = responses[1]
-            const capabilities = responses[2]
-            const agents = responses[3]
-            const config = responses[4]
-            const sessions = responses[5]
+            const agents = responses[2]
+            const config = responses[3]
+            const sessions = responses[4]
 
             batch(() => {
               setStore("provider", reconcile(providers.providers))
               setStore("provider_default", reconcile(providers.default))
               setStore("provider_next", reconcile(providerList))
-              setStore("capabilities", "experimentalBackgroundSubagents", capabilities?.backgroundSubagents === true)
               setStore("agent", reconcile(agents))
               initLanguage(config.language)
               setStore("config", reconcile(config))

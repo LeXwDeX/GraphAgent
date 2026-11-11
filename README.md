@@ -404,7 +404,7 @@ Curated reference topologies — design decision deep-dive, parallel project del
 
 ## Other changes in this fork
 
-- **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents with completion notifications are available behind `GRAPHAGENT_EXPERIMENTAL_BACKGROUND_SUBAGENTS`.
+- **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents are available and notify on completion automatically.
 - **Unified system prompt**: every model receives the same system prompt — identity, the hooks and DAG entry points, working rules and safety — instead of a provider-specific prompt. Per-tool usage text lives in the tool descriptions, so the prompt no longer repeats it, and the always-on DAG and hooks guidance stays in entry form while detailed topics load on demand.
 - **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~31 KB to ~20 KB, 36.5 percent), strict `edit` matching that lists ambiguous candidate lines and the closest line when one is close instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
 - **CJK & IME**: terminal input behavior depends on the terminal and input method.

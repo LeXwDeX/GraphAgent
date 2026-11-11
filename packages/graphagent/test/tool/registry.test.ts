@@ -15,7 +15,6 @@ import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderTest } from "../fake/provider"
 import { SystemPrompt } from "@/session/system"
@@ -119,20 +118,27 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("hides task background parameter unless experimental background subagents are enabled", () =>
+  it.instance("exposes the task background parameter unconditionally", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
-      const agent = yield* Agent.Service
-      const build = yield* agent.get("build")
+      const agents = yield* Agent.Service
+      const build = yield* agents.get("build")
       if (!build) throw new Error("build agent not found")
-      const task = (yield* registry.tools({
-        providerID: ProviderV2.ID.make("test"),
-        modelID: ModelV2.ID.make("test"),
-        agent: build,
-      })).find((tool) => tool.id === "task")
+      const directory = yield* InstanceState.directory
+      const session = {
+        id: SessionID.make("ses_registry_task_background"),
+        slug: "registry-task-background",
+        projectID: ProjectV2.ID.global,
+        directory,
+        title: "registry task background",
+        version: "1.0.0",
+        time: { created: 1, updated: 1 },
+      } as Session.Info
+      const model = ProviderTest.model()
+      const task = (yield* registry.resolve({ model, agent: build, session })).find((entry) => entry.id === "task")
 
       expect(task?.jsonSchema).toBeDefined()
-      expect((task?.jsonSchema?.properties as Record<string, unknown> | undefined)?.background).toBeUndefined()
+      expect((task?.jsonSchema?.properties as Record<string, unknown> | undefined)?.background).toBeDefined()
     }),
   )
 

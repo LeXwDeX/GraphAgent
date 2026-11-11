@@ -11668,12 +11668,6 @@
       },
       "ExperimentalCapabilities": {
         "type": "object",
-        "properties": {
-          "backgroundSubagents": {
-            "type": "boolean"
-          }
-        },
-        "required": ["backgroundSubagents"],
         "additionalProperties": false
       },
       "AttachmentConfig": {

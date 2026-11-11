@@ -160,7 +160,6 @@ async function renderFooter(
     currentModel?: RunInput["model"]
     currentVariant?: string
     subagents?: FooterSubagentState
-    backgroundSubagents?: boolean
     width?: number
     height?: number
     state?: Partial<FooterState>
@@ -198,7 +197,6 @@ async function renderFooter(
           subagent={subagents}
           theme={input.theme ?? (() => RUN_THEME_FALLBACK)}
           tuiConfig={config}
-          backgroundSubagents={input.backgroundSubagents ?? true}
           agent="opencode"
           onSubmit={input.onSubmit ?? (() => true)}
           onPermissionReply={() => {}}
@@ -988,7 +986,6 @@ test("direct footer shows editable prompts and additional queued work while runn
           ]}
           theme={() => RUN_THEME_FALLBACK}
           tuiConfig={tuiConfig}
-          backgroundSubagents={true}
           agent="opencode"
           onSubmit={() => true}
           onPermissionReply={() => {}}
@@ -1073,7 +1070,6 @@ test("direct footer separates a lone context hint from model and command hint", 
       permissions: [],
       questions: [],
     },
-    backgroundSubagents: false,
     width: 160,
   })
 
@@ -1082,8 +1078,7 @@ test("direct footer separates a lone context hint from model and command hint", 
     const frame = app.captureCharFrame()
 
     expect(frame).toContain("GPT-5")
-    expect(frame).toContain("xhigh · ctrl+x down subagents · ctrl+p cmd")
-    expect(frame).not.toContain("ctrl+x w background")
+    expect(frame).toContain("xhigh · ctrl+x w background · ctrl+x down subagents · ctrl+p cmd")
     expect(frame).not.toContain("queued")
   } finally {
     app.cleanup()
@@ -1101,7 +1096,6 @@ test("direct footer hides the subagent hint when only completed subagents remain
       permissions: [],
       questions: [],
     },
-    backgroundSubagents: false,
     width: 160,
   })
 

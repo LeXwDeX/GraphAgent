@@ -15,7 +15,6 @@ export class Service extends ConfigService.Service<Service>()("@graphagent/Runti
   enableParallel: bool("GRAPHAGENT_ENABLE_PARALLEL"),
   enableExperimentalModels: bool("GRAPHAGENT_ENABLE_EXPERIMENTAL_MODELS"),
   enableQuestionTool: bool("GRAPHAGENT_ENABLE_QUESTION_TOOL"),
-  experimentalBackgroundSubagents: bool("GRAPHAGENT_EXPERIMENTAL_BACKGROUND_SUBAGENTS"),
   experimentalLspTy: bool("GRAPHAGENT_LSP_TY"),
   experimentalLspTool: bool("GRAPHAGENT_LSP_TOOL"),
   experimentalOxfmt: bool("GRAPHAGENT_OXFMT"),

@@ -353,7 +353,6 @@ type PromptLayerOptions = {
   agentLayer?: Layer.Layer<AgentSvc.Service>
   ripgrepLayer?: Layer.Layer<Ripgrep.Service>
   native?: boolean
-  experimentalBackgroundSubagents?: boolean
   runtimeFlags?: Partial<RuntimeFlags.Info>
 }
 
@@ -364,7 +363,6 @@ function memoryContext(input?: PromptLayerOptions) {
 
 function makePrompt(input?: PromptLayerOptions) {
   const flags = RuntimeFlags.layer({
-    experimentalBackgroundSubagents: input?.experimentalBackgroundSubagents ?? false,
     ...input?.runtimeFlags,
   })
   // goal: false exercises the Goal-absent degradation path (serviceOption None)
@@ -533,7 +531,7 @@ const stableGlobRipgrepLayer = Layer.effect(
 
 const it = testEffect(makeHttp())
 const nativeIt = testEffect(makeHttp({ native: true }))
-const backgroundIt = testEffect(makeHttp({ experimentalBackgroundSubagents: true }))
+const backgroundIt = testEffect(makeHttp())
 const stableFoldingIt = testEffect(makeHttp({ ripgrepLayer: stableGlobRipgrepLayer }))
 const stableNativeFoldingIt = testEffect(makeHttp({ native: true, ripgrepLayer: stableGlobRipgrepLayer }))
 const mcpOverrideMarker = `mcp-context-folding-override-${"m".repeat(24_000)}`
