@@ -41,9 +41,10 @@ describe("RuntimeSlots.state", () => {
   })
 
   test("the date slot changes with the calendar day", () => {
-    const first = RuntimeSlots.date(new Date("2026-11-11T23:59:00Z"))
-    const same = RuntimeSlots.date(new Date("2026-11-11T10:00:00Z"))
-    const next = RuntimeSlots.date(new Date("2026-11-12T00:01:00Z"))
+    // Local-time constructors keep the assertion valid in every timezone.
+    const first = RuntimeSlots.date(new Date(2026, 10, 11, 23, 59))
+    const same = RuntimeSlots.date(new Date(2026, 10, 11, 10, 0))
+    const next = RuntimeSlots.date(new Date(2026, 10, 12, 0, 1))
     expect(first).toEqual(same)
     expect(next.parts).not.toEqual(first.parts)
   })

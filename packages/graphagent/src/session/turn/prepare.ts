@@ -1548,7 +1548,7 @@ export function makePrepare(deps: PrepareDeps) {
       goal: goalDocs.context,
       memory: memoryDocs,
       environment: { directory: ctx.directory, root: ctx.root, git: ctx.project.vcs === "git" },
-      now: new Date(DateTime.toEpochMillis(yield* DateTime.now)),
+      now: yield* DateTime.nowAsDate,
       custom: EngineProcess.runtimes.runtimeSlots.list(input.sessionID),
     })
     const runtimeEvents: string[] = []

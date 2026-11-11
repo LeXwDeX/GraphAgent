@@ -254,12 +254,10 @@ export const layer = (options: LayerOptions = {}) =>
         // protect, so the directory and date stay in its system text. The main
         // loop carries them in runtime-context slots instead.
         const ctx = yield* InstanceState.context
-        const slots = RuntimeSlots.state({
-          goal: [],
-          memory: [],
-          environment: { directory: ctx.directory, root: ctx.root, git: ctx.project.vcs === "git" },
-          now: new Date(DateTime.toEpochMillis(yield* DateTime.now)),
-        }).flatMap((slot) => slot.parts)
+        const slots = [
+          RuntimeSlots.environment({ directory: ctx.directory, root: ctx.root, git: ctx.project.vcs === "git" }),
+          RuntimeSlots.date(yield* DateTime.nowAsDate),
+        ].flatMap((slot) => slot.parts)
         const system = [...language, ...(environment === undefined ? [] : [environment]), ...slots]
 
         const id = input.id ?? randomUUID()

@@ -537,6 +537,11 @@ it.live("answers from the session history without writing to the database", () =
         expect(parsed.maxTokens).toBe(2_000)
         expect(JSON.stringify(parsed.system)).toContain("You are answering a side question")
         expect(JSON.stringify(parsed.system)).toContain("Reply to the user in English")
+        // A side question has no cache prefix to protect, so it keeps the
+        // directory and date in the system text that the main loop moved to
+        // runtime-context slots.
+        expect(JSON.stringify(parsed.system)).toContain("Working directory:")
+        expect(JSON.stringify(parsed.system)).toContain("Today's date:")
         expect(lastUserTexts(parsed.messages)).toEqual(["What did I ask you to inspect?", "What did I ask about?"])
       }),
     { config: (url) => configFor(url) },

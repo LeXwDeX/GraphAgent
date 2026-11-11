@@ -110,7 +110,7 @@ export function make(): Slots {
     set(sessionID, key, value) {
       if (RESERVED.has(key)) throw new Error(`Runtime slot "${key}" is owned by the request builder`)
       const current = sessions.get(sessionID) ?? new Map<string, Slot>()
-      current.set(key, { key, ...value })
+      current.set(key, { ...value, key })
       sessions.set(sessionID, current)
     },
     delete(sessionID, key) {

@@ -106,7 +106,9 @@ export const layer = Layer.effect(
           [
             `Configured model ID: ${model.providerID}/${model.id}. Provider API model ID: ${model.api.id}.`,
             `Here is some useful information about the environment you are running in:`,
+            `<env>`,
             `  Platform: ${process.platform}`,
+            `</env>`,
           ].join("\n"),
           references.length === 0
             ? undefined
