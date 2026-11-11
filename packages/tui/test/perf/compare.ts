@@ -42,6 +42,14 @@ export const P99_TIMING_RATIO = 1.5
  * gate an otherwise healthy report.
  */
 export const MIN_COMPARE_MS = 1
+/**
+ * Absolute allowance for p99 regressions, in normalized milliseconds. p99 is
+ * the second-worst of 200 samples, while the machine factor comes from a median
+ * layout duration; a scheduler tail does not scale with that median. Hosted CI
+ * moves the same scenario's p99 by several milliseconds between runs, so a p99
+ * must exceed both the ratio and this allowance before it fails.
+ */
+export const P99_NOISE_ALLOWANCE_MS = 5
 /** Absolute ceiling for any interactive frame (Issue #1025 7.4). */
 export const FRAME_CEILING_MS = 100
 const SIZE_ORDER = ["S", "M", "L"]
@@ -101,15 +109,15 @@ export function compareReports(baseline: PerfReport, current: PerfReport): { row
         if (!name.endsWith("Ms") || name === "maxMs") continue
         const adjusted = value / factor
         if (old < MIN_COMPARE_MS || adjusted < MIN_COMPARE_MS) continue
-        const tolerance = name.endsWith("p99Ms") ? P99_TIMING_RATIO : TIMING_RATIO
-        if (adjusted > old * tolerance) {
-          fail(
-            size,
-            id,
-            name,
-            `≤ ${(old * tolerance).toFixed(2)} (${tolerance.toFixed(2)}× baseline, machine factor ${factor.toFixed(3)})`,
-            adjusted,
-          )
+        const p99 = name.endsWith("p99Ms")
+        const tolerance = p99 ? P99_TIMING_RATIO : TIMING_RATIO
+        const allowance = p99 ? P99_NOISE_ALLOWANCE_MS : 0
+        const limit = Math.max(old * tolerance, old + allowance)
+        if (adjusted > limit) {
+          const rule = p99
+            ? `${tolerance.toFixed(2)}× baseline or +${allowance} ms p99 allowance`
+            : `${tolerance.toFixed(2)}× baseline`
+          fail(size, id, name, `≤ ${limit.toFixed(2)} (${rule}, machine factor ${factor.toFixed(3)})`, adjusted)
         }
       }
     }

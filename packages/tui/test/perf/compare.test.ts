@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { expect, test } from "bun:test"
-import { compareReports, MIN_COMPARE_MS, P99_TIMING_RATIO, TIMING_RATIO, type PerfReport } from "./compare"
+import {
+  compareReports,
+  MIN_COMPARE_MS,
+  P99_NOISE_ALLOWANCE_MS,
+  P99_TIMING_RATIO,
+  TIMING_RATIO,
+  type PerfReport,
+} from "./compare"
 
 function report(metrics: Record<string, number>, calibration?: { fixedLayoutMsMedian?: number }): PerfReport {
   return { calibration, scenarios: { L: { P1: metrics } } }
@@ -18,14 +25,56 @@ test("a sub-millisecond baseline does not gate the ratio check", () => {
   expect(rows).toHaveLength(1)
 })
 
-test("a baseline at the floor still gates the ratio check", () => {
+test("a baseline at the floor still gates a regression beyond the p99 allowance", () => {
   const baseline = report({ p99Ms: MIN_COMPARE_MS })
-  const current = report({ p99Ms: MIN_COMPARE_MS * P99_TIMING_RATIO + 0.1 })
+  const current = report({ p99Ms: MIN_COMPARE_MS + P99_NOISE_ALLOWANCE_MS + 0.1 })
 
   const { failures } = compareReports(baseline, current)
 
   expect(failures).toHaveLength(1)
   expect(failures[0]?.metric).toBe("p99Ms")
+})
+
+test("the p99 allowance absorbs a hosted-CI scheduler tail", () => {
+  // Observed on the hosted runner: the same scenario moved from 7.03 to
+  // 14.02 ms while the layout calibration moved from 23.29 to 30.24 ms.
+  const baseline = report({ p99Ms: 7.03 }, { fixedLayoutMsMedian: 23.29 })
+  const current = report({ p99Ms: 14.02 }, { fixedLayoutMsMedian: 30.24 })
+
+  expect(compareReports(baseline, current).failures).toEqual([])
+})
+
+test("the p99 allowance absorbs the smaller-factor hosted runs", () => {
+  // Build 854 (M P1): 1.66 → 3.39 ms with a 1.331 factor; build 851 (S P1):
+  // 1.28 → 3.90 ms with a 1.450 factor. The factor shrinks the ratio limit,
+  // so the absolute allowance is what keeps these runs from failing.
+  const cases = [
+    { baseline: 1.66, current: 3.39, factor: 1.331 },
+    { baseline: 1.28, current: 3.9, factor: 1.45 },
+  ]
+  for (const item of cases) {
+    const baseline = report({ p99Ms: item.baseline }, { fixedLayoutMsMedian: 23.29 })
+    const current = report({ p99Ms: item.current }, { fixedLayoutMsMedian: 23.29 * item.factor })
+
+    expect(compareReports(baseline, current).failures).toEqual([])
+  }
+})
+
+test("a p99 regression beyond both the ratio and the allowance still fails", () => {
+  const baseline = report({ p99Ms: 7.03 }, { fixedLayoutMsMedian: 23.29 })
+  const current = report({ p99Ms: 30 }, { fixedLayoutMsMedian: 30.24 })
+
+  const { failures } = compareReports(baseline, current)
+
+  expect(failures).toHaveLength(1)
+  expect(failures[0]?.metric).toBe("p99Ms")
+})
+
+test("the p99 allowance does not relax other percentiles", () => {
+  const baseline = report({ p95Ms: 7.03 }, { fixedLayoutMsMedian: 23.29 })
+  const current = report({ p95Ms: 12 }, { fixedLayoutMsMedian: 30.24 })
+
+  expect(compareReports(baseline, current).failures).toHaveLength(1)
 })
 
 test("a sub-millisecond current sample stays below the floor", () => {
