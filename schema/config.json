@@ -1228,6 +1228,15 @@
               "minimum": 0,
               "maximum": 9007199254740991,
               "description": "Token buffer for compaction. Leaves enough window to avoid overflow during compaction."
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "small",
+                "shared",
+                "auto"
+              ],
+              "description": "Compaction request shape: 'small' sends a stripped request, 'shared' reuses the main request's cached system+tools prefix, and 'auto' picks the cheaper shape from model prices (default: small)"
             }
           },
           "additionalProperties": true

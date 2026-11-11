@@ -6,7 +6,7 @@ import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { APICallError } from "ai"
+import { APICallError, jsonSchema, tool } from "ai"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import * as TestClock from "effect/testing/TestClock"
@@ -18,6 +18,9 @@ import { Image } from "@/image/image"
 import { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { EngineProcess } from "../../src/session/engine-process"
+import type { RequestPrefix } from "../../src/session/runtime"
+import { InstanceState } from "@/effect/instance-state"
 import { AgentScheduler } from "../../src/session/agent-scheduler"
 import { Token } from "@/util/token"
 import { Permission } from "../../src/permission"
@@ -3508,4 +3511,263 @@ describe("SessionNs.getUsage", () => {
     expect(result.tokens.cache.read).toBe(200)
     expect(result.tokens.cache.write).toBe(300)
   })
+})
+
+describe("shared compaction", () => {
+  const buildAgent: Agent.Info = {
+    name: "build",
+    mode: "primary",
+    permission: [],
+    options: {},
+    prompt: "You are the build agent.",
+  }
+
+  const readTool = () =>
+    tool({
+      description: "Read a file",
+      inputSchema: jsonSchema({ type: "object", properties: {} }),
+    })
+
+  const prefixFor = (input: {
+    directory: string
+    agent: Agent.Info
+    model: Provider.Model
+    overrides?: Partial<RequestPrefix>
+  }): RequestPrefix => ({
+    directory: input.directory,
+    agent: input.agent,
+    model: { providerID: input.model.providerID, id: input.model.id },
+    system: ["<environment>\nworking directory: test\n</environment>"],
+    userSystem: "System note for this message.",
+    tools: { read_file: readTool() },
+    toolChoice: "auto",
+    prefixTokens: 90_000,
+    recordedAt: 1,
+    ...input.overrides,
+  })
+
+  const dropPrefix = (sessionID: SessionID) =>
+    Effect.ensuring(Effect.sync(() => EngineProcess.runtimes.forgetRequestPrefix(sessionID)))
+
+  itCompaction.instance(
+    "sends the recorded prefix and forgets it after a successful compaction",
+    () => {
+      const stub = llm()
+      const captured: LLM.StreamInput[] = []
+      stub.push(reply("summary", (input) => captured.push(input)))
+      return Effect.gen(function* () {
+        const ctx = yield* InstanceState.context
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        yield* ssn.updateMessage({ ...msg, system: "System note for this message." })
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const prefix = prefixFor({ directory: ctx.directory, agent: buildAgent, model: wide().model })
+        EngineProcess.runtimes.rememberRequestPrefix(session.id, prefix)
+
+        yield* SessionCompaction.use
+          .process({ parentID: msg.id, messages: msgs, sessionID: session.id, auto: false })
+          .pipe(dropPrefix(session.id))
+
+        expect(captured).toHaveLength(1)
+        const request = captured[0]
+        expect(request.user.id).toBe(msg.id)
+        expect(request.user.system).toBeUndefined()
+        expect(request.agent.name).toBe("build")
+        expect(request.agent.prompt).toBe(buildAgent.prompt)
+        expect(request.system).toEqual([...prefix.system, prefix.userSystem!])
+        expect(Object.keys(request.tools)).toEqual(["read_file"])
+        expect(request.tools.read_file).toBe(prefix.tools.read_file)
+        expect(request.toolChoice).toBe("auto")
+        expect(request.toolPolicy).toBe("refuse")
+        expect(request.purpose).toBe("compaction")
+        expect(request.retries).toBe(0)
+        expect(JSON.stringify(request.messages.at(-1))).toContain("You summarize coding-session context")
+        expect(EngineProcess.runtimes.requestPrefixes.has(session.id)).toBe(false)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ mode: "shared" }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "falls back to a clean request when the shared attempt calls a tool",
+    () => {
+      const stub = llm()
+      const captured: LLM.StreamInput[] = []
+      stub.push((input) => {
+        captured.push(input)
+        input.onToolRefused?.()
+        return reply("summary")(input)
+      })
+      stub.push(reply("summary", (input) => captured.push(input)))
+      return Effect.gen(function* () {
+        const ctx = yield* InstanceState.context
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const msg = yield* createUserMessage(session.id, "hello")
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        EngineProcess.runtimes.rememberRequestPrefix(
+          session.id,
+          prefixFor({ directory: ctx.directory, agent: buildAgent, model: wide().model }),
+        )
+
+        const result = yield* SessionCompaction.use
+          .process({ parentID: msg.id, messages: msgs, sessionID: session.id, auto: false })
+          .pipe(dropPrefix(session.id))
+
+        expect(result).toBe("continue")
+        expect(captured).toHaveLength(2)
+        expect(captured[0].toolPolicy).toBe("refuse")
+        expect(captured[1].toolPolicy).toBeUndefined()
+        expect(captured[1].tools).toEqual({})
+        expect(captured[1].system).toEqual([])
+        expect(captured[1].agent.name).toBe("compaction")
+        const saved = (yield* ssn.messages({ sessionID: session.id })).filter(
+          (message) => message.info.role === "assistant",
+        )
+        expect(saved).toHaveLength(1)
+        expect(saved[0].info.summary).toBe(true)
+        expect(EngineProcess.runtimes.requestPrefixes.has(session.id)).toBe(false)
+      }).pipe(withCompaction({ llm: stub.layer, config: cfg({ mode: "shared" }) }))
+    },
+    { git: true },
+  )
+
+  const unusable: Array<[string, (prefix: RequestPrefix) => RequestPrefix | undefined]> = [
+    ["there is no snapshot", () => undefined],
+    ["the directory changed", (prefix) => ({ ...prefix, directory: "/other" })],
+    ["the agent changed", (prefix) => ({ ...prefix, agent: { ...prefix.agent, name: "other" } })],
+    [
+      "the model no longer resolves",
+      (prefix) => ({
+        ...prefix,
+        model: { providerID: ProviderV2.ID.make("ghost"), id: ModelV2.ID.make("ghost") },
+      }),
+    ],
+  ]
+
+  for (const [name, adjust] of unusable) {
+    itCompaction.instance(
+      `sends a clean request when ${name}`,
+      () => {
+        const stub = llm()
+        const captured: LLM.StreamInput[] = []
+        stub.push(reply("summary", (input) => captured.push(input)))
+        return Effect.gen(function* () {
+          const ctx = yield* InstanceState.context
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          const msg = yield* createUserMessage(session.id, "hello")
+          const msgs = yield* ssn.messages({ sessionID: session.id })
+          const prefix = adjust(prefixFor({ directory: ctx.directory, agent: buildAgent, model: wide().model }))
+          if (prefix) EngineProcess.runtimes.rememberRequestPrefix(session.id, prefix)
+
+          yield* SessionCompaction.use
+            .process({ parentID: msg.id, messages: msgs, sessionID: session.id, auto: false })
+            .pipe(dropPrefix(session.id))
+
+          expect(captured).toHaveLength(1)
+          expect(captured[0].tools).toEqual({})
+          expect(captured[0].system).toEqual([])
+          expect(captured[0].agent.name).toBe("compaction")
+          expect(captured[0].toolPolicy).toBeUndefined()
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ mode: "shared" }) }))
+      },
+      { git: true },
+    )
+  }
+
+  for (const overflow of [false, true]) {
+    itCompaction.instance(
+      `auto prices the shared prefix as ${overflow ? "cold" : "warm"} when overflow is ${overflow}`,
+      () => {
+        const stub = llm()
+        const captured: LLM.StreamInput[] = []
+        stub.push(reply("summary", (input) => captured.push(input)))
+        const priced = createModel({
+          context: 100_000,
+          output: 32_000,
+          cost: { input: 10, output: 10, cache: { read: 1, write: 0 } },
+        })
+        const provider = ProviderTest.fake({ model: priced })
+        return Effect.gen(function* () {
+          const ctx = yield* InstanceState.context
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          const msg = yield* createUserMessage(session.id, "hello")
+          const msgs = yield* ssn.messages({ sessionID: session.id })
+          EngineProcess.runtimes.rememberRequestPrefix(
+            session.id,
+            prefixFor({
+              directory: ctx.directory,
+              agent: buildAgent,
+              model: priced,
+              overrides: { prefixTokens: 90_000 },
+            }),
+          )
+
+          yield* SessionCompaction.use
+            .process({ parentID: msg.id, messages: msgs, sessionID: session.id, auto: false, overflow })
+            .pipe(dropPrefix(session.id))
+
+          expect(captured).toHaveLength(1)
+          expect(captured[0].agent.name).toBe(overflow ? "compaction" : "build")
+        }).pipe(withCompaction({ llm: stub.layer, provider, config: cfg({ mode: "auto" }) }))
+      },
+      { git: true },
+    )
+  }
+
+  for (const failure of ["timeout", "compact"] as const) {
+    itCompaction.instance(
+      `falls back to a clean request after the shared attempt reports ${failure}`,
+      () => {
+        const stub = llm()
+        const captured: LLM.StreamInput[] = []
+        stub.push((input) => {
+          captured.push(input)
+          return failure === "timeout"
+            ? Stream.fail(new CompactionTimeoutError({ message: "shared attempt timed out" }))
+            : Stream.fail(
+                new APICallError({
+                  message: "maximum context length exceeded",
+                  url: "https://example.com",
+                  requestBodyValues: {},
+                  statusCode: 400,
+                  isRetryable: false,
+                }),
+              )
+        })
+        stub.push(reply("summary", (input) => captured.push(input)))
+        return Effect.gen(function* () {
+          const ctx = yield* InstanceState.context
+          const ssn = yield* SessionNs.Service
+          const session = yield* ssn.create({})
+          const msg = yield* createUserMessage(session.id, "hello")
+          const msgs = yield* ssn.messages({ sessionID: session.id })
+          EngineProcess.runtimes.rememberRequestPrefix(
+            session.id,
+            prefixFor({ directory: ctx.directory, agent: buildAgent, model: wide().model }),
+          )
+
+          const result = yield* SessionCompaction.use
+            .process({ parentID: msg.id, messages: msgs, sessionID: session.id, auto: false })
+            .pipe(dropPrefix(session.id))
+
+          expect(result).toBe("continue")
+          expect(captured).toHaveLength(2)
+          expect(captured[0].agent.name).toBe("build")
+          expect(captured[0].toolPolicy).toBe("refuse")
+          expect(captured[1].agent.name).toBe("compaction")
+          expect(captured[1].tools).toEqual({})
+          const saved = (yield* ssn.messages({ sessionID: session.id })).filter(
+            (message) => message.info.role === "assistant",
+          )
+          expect(saved).toHaveLength(1)
+          expect(saved[0].info.summary).toBe(true)
+        }).pipe(withCompaction({ llm: stub.layer, config: cfg({ mode: "shared" }) }))
+      },
+      { git: true },
+    )
+  }
 })
