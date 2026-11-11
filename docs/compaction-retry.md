@@ -23,6 +23,77 @@ Each attempt converts the original summary input for its own model. Discarded
 partial summaries are removed; only the final attempt can publish a completed
 compaction, run PostCompact hooks, or enqueue an automatic continuation.
 
+The first three stages above form the clean ladder: each sends a clean request
+with no tools, no system text, and size-reduced history. `compaction.mode`
+selects whether compaction uses only that ladder or also tries a shared request.
+
+## Compaction request modes
+
+`compaction.mode` accepts `small` (default), `shared`, and `auto`. The legacy
+and current configuration formats both accept it, and migration preserves the
+value.
+
+| Mode | Request shape | Attempt order |
+| --- | --- | --- |
+| `small` | Clean request. | The clean ladder, unchanged. |
+| `shared` | Reuses the main request's cached system and tool prefix. | The shared request first, then the clean ladder. |
+| `auto` | Prices both shapes. | Estimated cost ascending. |
+
+```jsonc
+{
+  "compaction": {
+    "mode": "shared"
+  }
+}
+```
+
+`small` is the default and needs no configuration.
+
+### Shared prefix
+
+A shared request reuses the system text, tool set, `tool_choice`, and permission
+rules of the session's last canonical main request, and appends only the
+summarization directive. The message segment is rebuilt from persisted history,
+so the cache guarantee covers the system and tool prefix, not the whole prompt.
+Turns that reshape the tool set or `tool_choice` — structured-output turns and
+the closing step — do not record a prefix.
+
+The shared request is used only when all of these guards hold:
+
+- the session recorded a prefix from a prior canonical request;
+- the prefix belongs to the same instance directory;
+- it was recorded for the same agent;
+- the recorded provider/model still resolves.
+
+Otherwise compaction silently falls back to the clean ladder. Because the prefix
+is in-memory only, a process restart also loses it. A committed compaction
+invalidates it, and deleting the session or disposing its directory clears it.
+
+### Tool refusal
+
+A shared request sets `toolPolicy: "refuse"`. Tools stay in the request so the
+prefix remains intact, but no tool can execute. If the model still calls a
+tool, that attempt is discarded even when the stream finished normally: its
+message is removed, no summary is persisted, and compaction moves to the next
+candidate. When the shared request was the last candidate, compaction reports
+an error and returns to idle instead of saving the summary.
+
+### Automatic selection
+
+`auto` compares clean and shared requests using the price usage accounting would
+charge: the applicable context tier, the over-200K schedule, or the base price,
+plus a fixed output-token estimate. For a non-overflow compaction the shared
+shape is credited with a conservative cache discount for the recorded prefix
+only. Cache writes are ignored because the main request already paid for the
+prefix. A zero cache-read price counts as no discount.
+
+Candidates are ordered by estimated cost ascending. Equal costs break ties by
+shape in the order `small`, `shared`, `agent`, `conversation`, then by provider
+and model ID, so selection is deterministic. Under common price structures
+`auto` still chooses `small`. The value of `shared` is that it uses the main
+model's own context window and capabilities and avoids a second model; it is
+not a promise of lower cost.
+
 ## Provider retry dispatch
 
 Every provider failure goes through one dispatch table before any backoff is
