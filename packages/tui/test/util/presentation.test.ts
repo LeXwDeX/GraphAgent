@@ -1,6 +1,3 @@
-// SPDX-FileCopyrightText: 2026 LeXwDeX
-// SPDX-License-Identifier: Apache-2.0
-
 import { afterEach, expect, test } from "bun:test"
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import stripAnsi from "strip-ansi"
