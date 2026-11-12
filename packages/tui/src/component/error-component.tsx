@@ -4,8 +4,10 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, For, Show } from "solid-js"
 import { getScrollAcceleration } from "../util/scroll"
 import { useClipboard } from "../context/clipboard"
+import { APP_TITLE } from "@graphagent/core/brand"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { useExit } from "../context/exit"
+import { t } from "../i18n"
 
 export function ErrorComponent(props: { error: Error; reset: () => void; mode?: "dark" | "light" }) {
   const term = useTerminalDimensions()
@@ -40,8 +42,8 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
         success: "#a9a8a1",
       }
 
-  const message = props.error.message || "An unknown error occurred."
-  const stack = props.error.stack || "No stack trace available."
+  const message = props.error.message || t("crash.unknownError")
+  const stack = props.error.stack || t("crash.noStack")
   const issueURL = buildIssueURL(message, stack)
 
   const copyReport = () => {
@@ -49,9 +51,14 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
   }
 
   const actions = [
-    { key: "c", label: () => (copied() ? "✓ Copied" : "Copy report"), copy: true, onUse: copyReport },
-    { key: "r", label: () => "Restart", onUse: props.reset },
-    { key: "q", label: () => "Quit", onUse: () => exit() },
+    {
+      key: "c",
+      label: () => (copied() ? t("crash.action.copied") : t("crash.action.copy")),
+      copy: true,
+      onUse: copyReport,
+    },
+    { key: "r", label: () => t("crash.action.restart"), onUse: props.reset },
+    { key: "q", label: () => t("crash.action.quit"), onUse: () => exit() },
   ]
   const [selected, setSelected] = createSignal(0)
   const move = (delta: number) => setSelected((prev) => (prev + delta + actions.length) % actions.length)
@@ -108,10 +115,10 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
         {/* Headline */}
         <box flexDirection="column" alignItems="center" flexShrink={0}>
           <text attributes={TextAttributes.BOLD} fg={colors.text}>
-            opencode crashed
+            {t("crash.title")}
           </text>
           <Show when={showSubtext()}>
-            <text fg={colors.muted}>An unexpected error stopped the session.</text>
+            <text fg={colors.muted}>{t("crash.subtitle")}</text>
           </Show>
         </box>
 
@@ -121,7 +128,7 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
           border
           borderStyle="rounded"
           borderColor={colors.error}
-          title=" Error "
+          title={` ${t("crash.panel.error")} `}
           titleColor={colors.error}
           paddingLeft={2}
           paddingRight={2}
@@ -168,9 +175,9 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
           border
           borderStyle="rounded"
           borderColor={colors.borderSubtle}
-          title=" Stack trace "
+          title={` ${t("crash.panel.stack")} `}
           titleColor={colors.muted}
-          bottomTitle=" ↑↓ scroll "
+          bottomTitle={` ${t("crash.hint.scroll")} `}
           bottomTitleAlignment="right"
           paddingLeft={1}
           paddingRight={1}
@@ -187,12 +194,10 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
         {/* Footer */}
         <Show when={showFooter()}>
           <box flexDirection="column" alignItems="center" flexShrink={0}>
+            <text fg={colors.muted}>{copied() ? t("crash.footer.copied") : t("crash.footer.copy")}</text>
             <text fg={colors.muted}>
-              {copied()
-                ? "Report copied — paste it into a new GitHub issue."
-                : "Copy the report and open a GitHub issue to help us fix this."}
+              {APP_TITLE} {InstallationVersion}
             </text>
-            <text fg={colors.muted}>opencode {InstallationVersion}</text>
           </box>
         </Show>
       </box>
