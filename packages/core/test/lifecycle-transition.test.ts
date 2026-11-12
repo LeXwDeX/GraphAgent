@@ -2,30 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
+import { NODE_TRANSITION_TABLE, WORKFLOW_TRANSITION_TABLE } from "@graphagent/core/lifecycle/dag"
 import {
-  type NodeStatus,
-  type WorkflowStatus,
-  getValidNextNodeStatuses,
-  getValidNextWorkflowStatuses,
-} from "@graphagent/core/dag/core/types"
-import { checkTransition, TURN_TRANSITION_TABLE, type TransitionTable } from "@graphagent/core/lifecycle/transition"
-import { VOCABULARY, valuesOf } from "@graphagent/core/lifecycle/vocabulary"
+  checkTransition,
+  GOAL_TRANSITION_TABLE,
+  JOB_TRANSITION_TABLE,
+  TURN_TRANSITION_TABLE,
+  type TransitionTable,
+} from "@graphagent/core/lifecycle/transition"
+import { VOCABULARY } from "@graphagent/core/lifecycle/vocabulary"
 
-const isWorkflowStatus = (value: string): value is WorkflowStatus => valuesOf("workflow").includes(value)
-const isNodeStatus = (value: string): value is NodeStatus => valuesOf("node").includes(value)
-
-// One-line adapters over the DAG state machine prove its tables are reusable
-// as TransitionTable sources. They stay in the test: production code must not
-// import the DAG rules into the lifecycle vocabulary (#1069 P1).
-const dagWorkflowTable: TransitionTable = {
-  domain: "workflow",
-  next: (from) => (from === null ? ["pending"] : isWorkflowStatus(from) ? getValidNextWorkflowStatuses(from) : []),
-}
-
-const dagNodeTable: TransitionTable = {
-  domain: "node",
-  next: (from) => (from === null ? ["pending"] : isNodeStatus(from) ? getValidNextNodeStatuses(from) : []),
-}
+// The production bridge (#1069 P8) is the only adapter over the DAG state
+// machine; asserts below pin that it exposes exactly the DAG's own edges.
+const dagWorkflowTable: TransitionTable = WORKFLOW_TRANSITION_TABLE
+const dagNodeTable: TransitionTable = NODE_TRANSITION_TABLE
 
 describe("turn transitions", () => {
   it("allows creation into running", () => {
@@ -119,6 +109,80 @@ describe("DAG tables as lifecycle tables", () => {
     expect(checkTransition(dagNodeTable, { expect: "skipped", to: "running" })).toEqual({
       kind: "invalid",
       allowed: [],
+    })
+  })
+})
+
+describe("goal transitions", () => {
+  it("admits creation, waiting, pause and resume", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: null, to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "waiting" })).toEqual({
+      kind: "allowed",
+      phase: "waiting",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "waiting", to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "paused" })).toEqual({
+      kind: "allowed",
+      phase: "paused",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "waiting", to: "paused" })).toEqual({
+      kind: "allowed",
+      phase: "paused",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "paused", to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+  })
+
+  it("keeps done out of the live table and terminal", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "done" })).toEqual({
+      kind: "invalid",
+      allowed: ["waiting", "paused"],
+    })
+    expect(GOAL_TRANSITION_TABLE.next("done")).toEqual([])
+  })
+
+  it("reports a repeated status as duplicate", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "active" })).toEqual({ kind: "duplicate" })
+  })
+})
+
+describe("job transitions", () => {
+  it("admits creation and the optional settling phase", () => {
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: null, to: "running" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "running", to: "settling" })).toEqual({
+      kind: "allowed",
+      phase: "settling",
+    })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "running", to: "completed" })).toEqual({
+      kind: "allowed",
+      phase: "succeeded",
+    })
+  })
+
+  it("settles only into terminal states and leaves terminal values empty", () => {
+    for (const to of ["completed", "error", "cancelled"])
+      expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "settling", to })).toMatchObject({ kind: "allowed" })
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "settling", to: "running" })).toEqual({
+      kind: "invalid",
+      allowed: ["completed", "error", "cancelled"],
+    })
+    for (const terminal of VOCABULARY.job.terminal) expect(JOB_TRANSITION_TABLE.next(terminal)).toEqual([])
+  })
+
+  it("reports a repeated status as duplicate", () => {
+    expect(checkTransition(JOB_TRANSITION_TABLE, { expect: "settling", to: "settling" })).toEqual({
+      kind: "duplicate",
     })
   })
 })

@@ -4,7 +4,7 @@
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- JSON responses and ctx.extra are untyped boundaries */
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
-import { Cause, Clock, Duration, Effect, Exit, Option, Schema, Stream } from "effect"
+import { Cause, Clock, Deferred, Duration, Effect, Exit, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { ChildProcessSpawner as Spawner } from "effect/process/ChildProcessSpawner"
 import type { TaskPromptOps } from "./task"
@@ -488,16 +488,15 @@ export const WatchPrTool = Tool.define(
           const ops = ctx.extra?.promptOps as TaskPromptOps | undefined
           if (!ops) return yield* Effect.fail(new Error("watch_pr requires promptOps in ctx.extra"))
           const runner = (ctx.extra?.watchPrRunner as Runner | undefined) ?? processRunner
-          // A watch that is delivering its terminal notice is effectively
-          // finished: it must not swallow a re-watch from the notice turn.
+          // A watch that is delivering its terminal notice is settling, not
+          // running: it must not swallow a re-watch from the notice turn.
           const findRunningWatch = (jobs: ReadonlyArray<BackgroundJob.Info>) =>
             jobs.find(
               (job) =>
                 job.status === "running" &&
                 job.type === "watch_pr" &&
                 job.metadata?.sessionId === ctx.sessionID &&
-                job.metadata?.url === request.url &&
-                job.metadata?.finishing !== true,
+                job.metadata?.url === request.url,
             )
           let existing = findRunningWatch(yield* background.list())
           let replaced: { id: string; watchedHead: string; currentHead: string } | undefined
@@ -553,16 +552,22 @@ export const WatchPrTool = Tool.define(
           }
           const deadline = (params.deadline_seconds ?? DEFAULT_DEADLINE_SECONDS) * 1000
           const poll = (params.poll_seconds ?? DEFAULT_POLL_SECONDS) * 1000
-          // A goal waiting on this watch registers either the job ID (known
-          // once the job starts) or the watched URL. Wake only that wait.
-          let jobID: string | undefined
+          // The job ID is known only after `start` returns while the run may
+          // already be delivering. The deferred closes that gap: settling,
+          // goal wake and the notice all wait for the actual job ID.
+          const jobReady = yield* Deferred.make<string>()
+          const settledJob = Effect.gen(function* () {
+            const id = yield* Deferred.await(jobReady)
+            yield* background.beginSettling(id)
+            return id
+          })
           const wakeGoal = (payload: string, evaluate: boolean): Effect.Effect<void> =>
             Effect.gen(function* () {
               const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
               const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
               if (!loops) return
-              const ids = jobID ? [jobID, request.url] : [request.url]
-              yield* loops.wake(ctx.sessionID, { source: "watch_pr", ids }, payload, { evaluate })
+              const id = yield* Deferred.await(jobReady)
+              yield* loops.wake(ctx.sessionID, { source: "watch_pr", ids: [id, request.url] }, payload, { evaluate })
             }).pipe(Effect.ignore)
           const shouldNotifyWithoutReply = Effect.gen(function* () {
             const messages = yield* sessions.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)
@@ -607,17 +612,13 @@ export const WatchPrTool = Tool.define(
             )
           // The job metadata object is owned by this watch and mutated as the
           // watch advances; background snapshots copy its current fields, so a
-          // re-watch sees the watched head, the absolute deadline, and whether
-          // this watch has started delivering its terminal notice.
+          // re-watch sees the watched head and the absolute deadline.
           const jobMetadata: Record<string, unknown> = {
             sessionId: ctx.sessionID,
             url: request.url,
             provider: request.provider,
             survivesSessionCancel: true,
           }
-          const markFinishing = Effect.sync(() => {
-            jobMetadata.finishing = true
-          })
           const info = yield* background.start({
             type: "watch_pr",
             title: `watch ${request.url}`,
@@ -634,9 +635,10 @@ export const WatchPrTool = Tool.define(
                 }),
               deliver: (notice) =>
                 Effect.gen(function* () {
-                  // Delivery is the terminal step of this watch: a re-watch
-                  // issued from the notice turn must start a new job.
-                  yield* markFinishing
+                  // Delivery is the terminal side effect of this watch: mark
+                  // the job settling first so a re-watch issued from the
+                  // notice turn starts a new job instead of being deduped.
+                  yield* settledJob
                   // Flip the goal back to active before the notice turn; that
                   // turn's idle event drives the next goal evaluation, so the
                   // goal neither races the notice nor runs a turn without it.
@@ -650,9 +652,9 @@ export const WatchPrTool = Tool.define(
                 const reason = Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : Cause.pretty(exit.cause)
                 return Effect.gen(function* () {
                   // The failed job settles only after this handler, so mark it
-                  // finishing too — a stopped notice must not swallow a
+                  // settling too — a stopped notice must not swallow a
                   // re-watch while the job still reads as running.
-                  yield* markFinishing
+                  yield* settledJob
                   // No notice prompt follows a failed job, so evaluate now.
                   yield* wakeGoal(`watch_pr stopped (${reason}) for ${request.url}`, true)
                   yield* deliverNotice(renderStopped(request, reason))
@@ -660,7 +662,7 @@ export const WatchPrTool = Tool.define(
               }),
             ),
           })
-          jobID = info.id
+          yield* Deferred.succeed(jobReady, info.id)
           yield* ctx.metadata({
             title: `watch ${request.url}`,
             metadata: { jobId: info.id, provider: request.provider, url: request.url },

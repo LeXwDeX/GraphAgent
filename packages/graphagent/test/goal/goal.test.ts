@@ -241,7 +241,11 @@ describe("Goal.updateAfterJudge — blocked with running work (#1067)", () => {
       expect(result?.state.last_verdict).toBe("blocked")
       expect(result?.state.intent).toMatchObject({
         kind: "await",
-        wait: { source: "watch_pr", wait_id: "job_watch_blocked" },
+        wait: {
+          source: "watch_pr",
+          wait_id: "job_watch_blocked",
+          ref: { domain: "job", id: "job_watch_blocked" },
+        },
       })
       // The wait outlives the watch by the delivery margin.
       expect(result?.state.intent?.kind === "await" ? result.state.intent.wait.deadline : 0).toBe(deadlineAt + 60_000)

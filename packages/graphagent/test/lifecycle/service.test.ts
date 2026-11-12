@@ -84,6 +84,41 @@ describe("lifecycle transition", () => {
     }),
   )
 
+  it.live("registers the job table so settling is observable but one-way", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+      const seen = yield* watchLifecycle()
+
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: null, to: "running", sessionID: "ses_job" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: "running", to: "settling", sessionID: "ses_job" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: "settling", to: "running" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: false, reason: "invalid" })
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("job", "job-1"), expect: "settling", to: "completed" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+
+      yield* Effect.sleep("20 millis")
+      expect((yield* Ref.get(seen)).map((event) => event.data)).toMatchObject([
+        { domain: "job", stateID: "job-1", sessionID: "ses_job", to: "running" },
+        { domain: "job", stateID: "job-1", sessionID: "ses_job", to: "settling", phase: "settling" },
+        { domain: "job", stateID: "job-1", to: "completed", phase: "succeeded" },
+      ])
+    }),
+  )
+
   it.live("carries the declared from, phase, reason and session", () =>
     Effect.gen(function* () {
       const lifecycle = yield* Lifecycle.Service
@@ -113,6 +148,60 @@ describe("lifecycle transition", () => {
     }),
   )
 
+  it.live("registers the goal table with overwrite-on-set semantics", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+
+      expect(
+        yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: null, to: "active", sessionID: "ses_goal" }),
+      ).toEqual({ published: true })
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "active", to: "waiting" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "waiting", to: "paused" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "paused", to: "active" })).toEqual({
+        published: true,
+      })
+      // Completion deletes the live row; `done` is durable history only.
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "active", to: "done" })).toEqual({
+        published: false,
+        reason: "invalid",
+      })
+    }),
+  )
+
+  it.live("validates the DAG domains through the read-only bridge", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: null, to: "pending" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: "pending", to: "running" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: "running", to: "paused" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("workflow", "wf-1"), expect: "completed", to: "running" })).toEqual({
+        published: false,
+        reason: "invalid",
+      })
+      expect(yield* lifecycle.transition({ ref: ref("node", "node-1"), expect: null, to: "pending" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("node", "node-1"), expect: "running", to: "aborted" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("node", "node-1"), expect: "skipped", to: "running" })).toEqual({
+        published: false,
+        reason: "invalid",
+      })
+    }),
+  )
+
   it.live("rejects duplicate, invalid, unknown-state and unregistered transitions without publishing", () =>
     Effect.gen(function* () {
       const lifecycle = yield* Lifecycle.Service
@@ -130,7 +219,7 @@ describe("lifecycle transition", () => {
         published: false,
         reason: "unknown-state",
       })
-      expect(yield* lifecycle.transition({ ref: ref("goal", "goal-1"), expect: null, to: "active" })).toEqual({
+      expect(yield* lifecycle.transition({ ref: ref("mailbox", "mb-1"), expect: null, to: "queued" })).toEqual({
         published: false,
         reason: "unregistered-domain",
       })

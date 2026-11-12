@@ -773,6 +773,7 @@ test("idle polling keeps one event read pending and closes it on exit", async ()
     events,
     "parent",
     () => waiting.resolve({ done: true, value: undefined }),
+    () => true,
     5,
   )) {
     expect(event.type).toBe("session.status")
@@ -781,3 +782,215 @@ test("idle polling keeps one event read pending and closes it on exit", async ()
   expect(reads).toBe(2)
   expect(closed).toBe(1)
 })
+
+function statusEvent(id: string, sessionID: string, type: "busy" | "idle"): Event {
+  return { id, type: "session.status", properties: { sessionID, status: { type } } } as Event
+}
+
+function summaryEvent(id: string, sessionID: string): Event {
+  return { id, type: "dag.workflow.summary.updated", properties: { sessionID, summaries: [] } } as Event
+}
+
+function userMessageEvent(id: string, sessionID: string): Event {
+  return {
+    id,
+    type: "message.updated",
+    properties: { sessionID, info: { id: `msg_${id}`, role: "user", sessionID, time: { created: 0 } } },
+  } as unknown as Event
+}
+
+function reportPartEvent(id: string, sessionID: string): Event {
+  return {
+    id,
+    type: "message.part.updated",
+    properties: {
+      sessionID,
+      time: 0,
+      part: {
+        id: "prt_report",
+        sessionID,
+        messageID: "msg_report",
+        type: "text",
+        text: "report",
+        metadata: { dag_delivery: { kind: "answer" } },
+      },
+    },
+  } as Event
+}
+
+/** A push-driven event source: the consumer blocks on `next()` until a test
+ * pushes a value or closes the feed. */
+class Feed implements AsyncIterable<Event> {
+  private readonly values: Event[] = []
+  private waiting: (() => void) | undefined
+  private closed = false
+  push(event: Event): void {
+    this.values.push(event)
+    this.waiting?.()
+    this.waiting = undefined
+  }
+  close(): void {
+    this.closed = true
+    this.waiting?.()
+    this.waiting = undefined
+  }
+  async *[Symbol.asyncIterator](): AsyncGenerator<Event> {
+    while (true) {
+      const next = this.values.shift()
+      if (next) {
+        yield next
+        continue
+      }
+      if (this.closed) return
+      await new Promise<void>((resolve) => {
+        this.waiting = resolve
+      })
+    }
+  }
+}
+
+test("re-checks an idle session on DAG pushes and report parts instead of polling", async () => {
+  const feed = new Feed()
+  const ids: string[] = []
+  const consumed = (async () => {
+    for await (const event of DagHold.pollEvents(feed, "parent", () => {}, undefined, 10)) ids.push(event.id)
+  })()
+  // The synthetic check reuses the real idle event so the run loop evaluates
+  // the same break rule it applies to a genuine idle edge. A push arms one
+  // delayed re-check rather than an immediate one, giving a wake admission the
+  // same settle window the old one-second tick provided.
+  feed.push(statusEvent("evt_idle", "parent", "idle"))
+  await Bun.sleep(5)
+  feed.push(summaryEvent("evt_summary", "parent"))
+  await Bun.sleep(40)
+  // The user message event is what makes the request latch observable, so it
+  // must re-check too: the idle edge can arrive before the message row.
+  feed.push(userMessageEvent("evt_user", "parent"))
+  await Bun.sleep(40)
+  feed.push(reportPartEvent("evt_part", "parent"))
+  await Bun.sleep(40)
+  // Another session's summary and user message arm nothing; a busy edge stops
+  // re-checks.
+  feed.push(summaryEvent("evt_summary_other", "other"))
+  feed.push(userMessageEvent("evt_user_other", "other"))
+  feed.push(statusEvent("evt_busy", "parent", "busy"))
+  await Bun.sleep(40)
+  feed.push(summaryEvent("evt_summary_busy", "parent"))
+  await Bun.sleep(40)
+  feed.close()
+  await consumed
+  expect(ids).toEqual([
+    "evt_idle",
+    "evt_summary",
+    "dag-hold-poll",
+    "evt_user",
+    "dag-hold-poll",
+    "evt_part",
+    "dag-hold-poll",
+    "evt_summary_other",
+    "evt_user_other",
+    "evt_busy",
+    "evt_summary_busy",
+  ])
+})
+
+test("a quiet idle session issues no re-check at all", async () => {
+  const feed = new Feed()
+  const ids: string[] = []
+  const consumed = (async () => {
+    for await (const event of DagHold.pollEvents(feed, "parent", () => {}, undefined, 20)) ids.push(event.id)
+  })()
+  feed.push(statusEvent("evt_idle", "parent", "idle"))
+  await Bun.sleep(90)
+  // Without a pending request or a DAG push there is no timer left to fire:
+  // a sixty-second quiet window is the same code path, just longer.
+  expect(ids).toEqual(["evt_idle"])
+  feed.close()
+  await consumed
+})
+
+test("a hold re-check signal synthesizes one delayed idle after the interval", async () => {
+  const feed = new Feed()
+  const kick: DagHold.DagHoldRecheck = { pending: false }
+  const ids: string[] = []
+  const consumed = (async () => {
+    for await (const event of DagHold.pollEvents(feed, "parent", () => {}, undefined, 20, kick)) {
+      ids.push(event.id)
+      // Mirror the run loop: a grace verdict arms the signal inside the event
+      // body, while the generator is suspended at its yield.
+      if (event.id === "evt_arm") kick.pending = true
+    }
+  })()
+  feed.push(statusEvent("evt_idle", "parent", "idle"))
+  await Bun.sleep(40)
+  expect(ids).toEqual(["evt_idle"])
+  // No DAG push and no pending request will ever wake the loop; the hold's
+  // signal is the only thing that squares the grace poll with the break rule.
+  feed.push({ id: "evt_arm", type: "server.heartbeat", properties: {} } as unknown as Event)
+  await Bun.sleep(60)
+  expect(ids).toEqual(["evt_idle", "evt_arm", "dag-hold-poll"])
+  // A signal consumes itself: the wrapper synthesizes exactly one check.
+  await Bun.sleep(60)
+  expect(ids).toEqual(["evt_idle", "evt_arm", "dag-hold-poll"])
+  feed.close()
+  await consumed
+})
+
+test("a grace verdict asks the event loop for one more check", async () => {
+  const rows: Snapshot[] = [
+    [wf("W1", "running")],
+    [wf("W1", "completed", false)],
+    [wf("W1", "completed", false)],
+  ]
+  let cursor = 0
+  const hold = DagHold.createDagHold(() => Promise.resolve(rows[cursor++]))
+  await hold.onBusy()
+  expect(await hold.onIdle()).toBe("hold")
+  expect(hold.needsRecheck()).toBe(true)
+  // The next sample is the grace poll's reward: the same quiescent snapshot
+  // breaks without any new event.
+  expect(await hold.onIdle()).toBe("break")
+  expect(hold.needsRecheck()).toBe(false)
+})
+
+test("re-checks once when the initial request settles while idle", async () => {
+  const feed = new Feed()
+  let pendingRequest = true
+  const ids: string[] = []
+  const consumed = (async () => {
+    for await (const event of DagHold.pollEvents(feed, "parent", () => {}, () => pendingRequest, 5_000)) ids.push(event.id)
+  })()
+  feed.push(statusEvent("evt_idle", "parent", "idle"))
+  await Bun.sleep(20)
+  // The idle edge fired while the request was pending, so the loop held. The
+  // request settling must itself wake one more check; the next stream event
+  // (a heartbeat in production) is what lets the generator observe it.
+  pendingRequest = false
+  feed.push({ id: "evt_heartbeat", type: "server.heartbeat", properties: {} } as unknown as Event)
+  await Bun.sleep(20)
+  expect(ids).toEqual(["evt_idle", "evt_heartbeat", "dag-hold-poll"])
+  feed.close()
+  await consumed
+})
+
+test("runs no timer once the initial request settles", async () => {
+  const feed = new Feed()
+  let pendingRequest = true
+  const ids: string[] = []
+  const consumed = (async () => {
+    for await (const event of DagHold.pollEvents(feed, "parent", () => {}, () => pendingRequest, 20)) ids.push(event.id)
+  })()
+  feed.push(statusEvent("evt_idle", "parent", "idle"))
+  await Bun.sleep(90)
+  // The pending initial request keeps the re-check timer alive.
+  expect(ids.length).toBeGreaterThan(1)
+  pendingRequest = false
+  // Let the timer that was already armed fire once, then sample a quiet window.
+  await Bun.sleep(60)
+  const settled = ids.length
+  await Bun.sleep(120)
+  expect(ids.length).toBe(settled)
+  feed.close()
+  await consumed
+})
+

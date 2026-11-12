@@ -11,6 +11,7 @@ import { Effect, Layer, Scope } from "effect"
 import { Config } from "@/config/config"
 import { GoalLoop } from "@/goal/loop"
 import { DagLoop } from "@/dag/runtime/loop"
+import { DagNodePublisher } from "@/dag/runtime/node-publisher"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { Service } from "./bootstrap-service"
 import { Memory } from "@/memory/memory"
@@ -38,6 +39,7 @@ export const layer = Layer.effect(
     const database = yield* Effect.serviceOption(Database.Service)
     const dagLoop = yield* DagLoop.Service
     const dagPublisher = yield* DagSummaryPublisher.Service
+    const dagNodePublisher = yield* DagNodePublisher.Service
     const format = yield* Format.Service
     const lsp = yield* LSP.Service
     const adapters = yield* Effect.serviceOption(ProviderAdapters.Service)
@@ -105,6 +107,11 @@ export const layer = Layer.effect(
       yield* dagPublisher
         .init()
         .pipe(Effect.catchCause((cause) => Effect.logWarning("dag summary publisher init failed", { cause })))
+      // DagNodePublisher: incremental per-workflow node rows on the same
+      // ephemeral GlobalBus channel as the summary push.
+      yield* dagNodePublisher
+        .init()
+        .pipe(Effect.catchCause((cause) => Effect.logWarning("dag node publisher init failed", { cause })))
     }).pipe(Effect.withSpan("InstanceBootstrap"))
 
     return Service.of({ run })
@@ -117,6 +124,7 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
     Database.defaultLayer,
     DagLoop.defaultLayer,
     DagSummaryPublisher.defaultLayer,
+    DagNodePublisher.defaultLayer,
     Format.defaultLayer,
     LSP.defaultLayer,
     Project.defaultLayer,
@@ -130,6 +138,7 @@ export const node = LayerNode.make(layer, [
   Database.node,
   DagLoop.node,
   DagSummaryPublisher.node,
+  DagNodePublisher.node,
   Format.node,
   LSP.node,
   Project.node,

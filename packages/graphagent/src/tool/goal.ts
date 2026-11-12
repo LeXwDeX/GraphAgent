@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Effect, Option, Schema } from "effect"
+import { ref } from "@graphagent/core/lifecycle/state"
+import type { LifecycleState } from "@graphagent/core/lifecycle/state"
 import { BackgroundJob } from "@/background/job"
+import { Lifecycle } from "@/lifecycle/service"
 import * as Tool from "./tool"
 import DESCRIPTION from "./goal.txt"
 import { Goal } from "../goal/goal"
@@ -224,6 +227,23 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
                 }
                 target = found.job
               }
+              // #1069 P7: re-check the live value through the lifecycle
+              // contract. The registry lookup above owns existence and
+              // ownership; `Lifecycle.get` is the shared view a waiter must
+              // trust, so a terminal state is rejected even if the two ever
+              // disagree. Without the service (headless) the check degrades.
+              const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
+              if (lifecycle && target) {
+                const observed = yield* lifecycle
+                  .get(ref("job", target.id))
+                  .pipe(Effect.catchCause(() => Effect.succeed(Option.none<LifecycleState<"job">>())))
+                if (Option.isSome(observed) && observed.value.terminal) {
+                  throw new Tool.InvalidArgumentsError({
+                    tool: "goal",
+                    detail: `Cannot await ${params.wait_source}:${params.wait_id}: the state is terminal (${observed.value.value}).`,
+                  })
+                }
+              }
               const now = Date.now()
               let deadlineMs = params.deadline_ms
               const watchDeadline = target?.metadata?.deadlineAt
@@ -240,6 +260,9 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
                 wait: {
                   source: params.wait_source,
                   wait_id: params.wait_id,
+                  // The resolved job id is the wait's unified identity; the
+                  // caller's spelling (`wait_id`) stays for display.
+                  ...(target ? { ref: { domain: "job" as const, id: target.id } } : {}),
                   deadline: now + (deadlineMs ?? DEFAULT_AWAIT_DEADLINE_MS),
                   max_wakes: GoalState.nni(params.max_wakes ?? 1),
                   wakes: GoalState.nni(0),

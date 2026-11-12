@@ -106,6 +106,12 @@ import type {
   GlobalUpgradeResponses,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
+  LifecycleDomain,
+  LifecycleGetErrors,
+  LifecycleGetResponses,
+  LifecycleStateRef,
+  LifecycleStatesErrors,
+  LifecycleStatesResponses,
   LspStatusErrors,
   LspStatusResponses,
   McpAddErrors,
@@ -3544,6 +3550,62 @@ export class Dag extends HeyApiClient {
   }
 }
 
+export class Lifecycle extends HeyApiClient {
+  /**
+   * Get lifecycle state
+   *
+   * Read a live lifecycle observation for one state reference. Returns 404 when the ref is unknown to this instance or belongs to another directory.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      domain: LifecycleDomain
+      id: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<LifecycleGetResponses, LifecycleGetErrors, ThrowOnError> {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "domain" },
+            { in: "path", key: "id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<LifecycleGetResponses, LifecycleGetErrors, ThrowOnError>({
+      url: "/lifecycle/state/{domain}/{id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get lifecycle states
+   *
+   * Batch-read lifecycle observations for a set of state references. Entries whose ref is unknown to this instance carry a null state.
+   */
+  public states<ThrowOnError extends boolean = false>(
+    parameters: {
+      refs: Array<LifecycleStateRef>
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<LifecycleStatesResponses, LifecycleStatesErrors, ThrowOnError> {
+    const params = buildClientParams([parameters], [{ args: [{ in: "body", key: "refs" }] }])
+    return (options?.client ?? this.client).post<LifecycleStatesResponses, LifecycleStatesErrors, ThrowOnError>({
+      url: "/lifecycle/states",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Client extends HeyApiClient {
   public static readonly __registry: HeyApiRegistry<Client> = new HeyApiRegistry<Client>()
 
@@ -3665,5 +3727,10 @@ export class Client extends HeyApiClient {
   private _dag?: Dag
   get dag(): Dag {
     return (this._dag ??= new Dag({ client: this.client }))
+  }
+
+  private _lifecycle?: Lifecycle
+  get lifecycle(): Lifecycle {
+    return (this._lifecycle ??= new Lifecycle({ client: this.client }))
   }
 }

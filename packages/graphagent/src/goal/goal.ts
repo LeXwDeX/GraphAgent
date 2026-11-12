@@ -20,6 +20,7 @@ import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionCancellation } from "@/session/cancellation"
 import { SessionLocation } from "@/session/location"
 import { DagLocation } from "@/dag/location"
+import { Lifecycle } from "@/lifecycle/service"
 import { SessionGoal } from "@graphagent/schema/session-goal"
 
 /** Public HTTP/event shape of a durable goal row. */
@@ -289,6 +290,7 @@ const awaitWaitFor = (job: BackgroundJob.Info, now: number): GoalState.Wait => {
   return {
     source,
     wait_id: job.id,
+    ref: { domain: "job", id: job.id },
     deadline:
       source === "watch_pr" && typeof deadlineAt === "number"
         ? Math.max(now, deadlineAt) + WATCH_AWAIT_MARGIN_MS
@@ -312,6 +314,28 @@ const serviceLayer = Layer.effect(
       events.publish(GoalEvent.Updated, {
         sessionID,
         goal: toPublic(state),
+      })
+
+    // #1069: mirror a changed goal status onto the shared lifecycle contract.
+    // Persistence and the goal.updated event stay authoritative; this only
+    // feeds lifecycle subscribers and is skipped when the runtime graph has no
+    // Lifecycle service (headless fixtures). Same-value saves publish nothing:
+    // the contract has no self-transition.
+    const publishStatusTransition = (
+      sessionID: SessionID,
+      previous: GoalState.Info | undefined,
+      next: GoalState.Info,
+    ) =>
+      Effect.gen(function* () {
+        if (previous?.status === next.status) return
+        const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
+        if (!lifecycle) return
+        yield* lifecycle.transition({
+          ref: { domain: "goal", id: sessionID },
+          expect: previous?.status ?? null,
+          to: next.status,
+          sessionID,
+        })
       })
 
     const fibers = new Map<SessionID, Fiber.Fiber<unknown, unknown>>()
@@ -501,6 +525,10 @@ const serviceLayer = Layer.effect(
           // goal.cleared — that event is the presentation contract for a real
           // removal, not for a command that found nothing to remove.
           let deletedRow = false
+          // The pre-transition row, captured by the same seam read that feeds
+          // `decide`, so the lifecycle mirror can assert the exact previous
+          // status without a second read.
+          let previousState: GoalState.Info | undefined
           const result = yield* db
             .transaction(
               (tx) =>
@@ -511,6 +539,7 @@ const serviceLayer = Layer.effect(
                     .where(eq(GoalStateTable.session_id, sessionID))
                     .get()
                   const decoded = row ? decodePayload(row.payload) : undefined
+                  previousState = decoded?.ok ? decoded.state : undefined
                   // An undecodable row reads as "no goal" so clear/purge can
                   // still remove it; any other mutation of it fails as before
                   // rather than overwriting data this build cannot read.
@@ -574,7 +603,10 @@ const serviceLayer = Layer.effect(
               { behavior: "immediate" },
             )
             .pipe(Effect.orDie)
-          if (result.tag === "save") yield* publishGoal(sessionID, result.state)
+          if (result.tag === "save") {
+            yield* publishGoal(sessionID, result.state)
+            yield* publishStatusTransition(sessionID, previousState, result.state)
+          }
           if (result.tag === "delete" && deletedRow) {
             if (result.terminal) yield* publishGoal(sessionID, result.terminal)
             yield* events.publish(GoalEvent.Cleared, { sessionID })
@@ -933,7 +965,9 @@ const serviceLayer = Layer.effect(
       })
     })
 
-    // Wake a waiting goal only for the exact registered source and identity.
+    // Wake a waiting goal only for the exact registered identity. A wait with
+    // a StateRef (#1069 P7) matches on `ref.id` and the job domain; a wait
+    // persisted before the field keeps matching by source plus `wait_id`.
     // An exhausted wake budget is left to expireWait, which owns the visible
     // pause.
     const wake = Effect.fn("Goal.wake")(function* (sessionID: SessionID, match: WakeMatch, payload?: string) {
@@ -941,12 +975,14 @@ const serviceLayer = Layer.effect(
         if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
           return { tag: "noop", value: false }
         const wait = state.intent.wait
-        if (wait.source !== match.source || !match.ids.includes(wait.wait_id)) return { tag: "noop", value: false }
+        const target = wait.ref?.id ?? wait.wait_id
+        const sourceMatches = wait.ref ? wait.ref.domain === "job" : wait.source === match.source
+        if (!sourceMatches || !match.ids.includes(target)) return { tag: "noop", value: false }
         if (wait.wakes >= wait.max_wakes) return { tag: "noop", value: false }
         const next = GoalState.advance(state, {
           status: "active",
           intent: { kind: "progress" },
-          last_reason: payload ?? `wake ${wait.source}:${wait.wait_id}`,
+          last_reason: payload ?? `wake ${wait.source}:${target}`,
           last_turn_at: Date.now(),
         })
         return { tag: "save", state: next, value: true }
@@ -965,10 +1001,11 @@ const serviceLayer = Layer.effect(
           return { tag: "noop", value: undefined }
         const wait = state.intent.wait
         if (now < wait.deadline && wait.wakes < wait.max_wakes) return { tag: "noop", value: undefined }
+        const target = wait.ref?.id ?? wait.wait_id
         const expiredReason =
           now >= wait.deadline
-            ? `等待 ${wait.source}:${wait.wait_id} 超时`
-            : `等待 ${wait.source}:${wait.wait_id} 超过最大唤醒次数`
+            ? `等待 ${wait.source}:${target} 超时`
+            : `等待 ${wait.source}:${target} 超过最大唤醒次数`
         const next = GoalState.advance(state, {
           status: "active",
           intent: { kind: "blocked", reason: `${expiredReason}；复核回合未取得进展` },

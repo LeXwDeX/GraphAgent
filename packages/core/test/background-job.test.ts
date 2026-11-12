@@ -117,4 +117,107 @@ describe("BackgroundJob", () => {
       expect((yield* jobs.get(job.id))?.status).toBe("running")
     }),
   )
+
+  it.live("moves running work to settling without resolving waiters before the terminal status", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const latch = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        id: "settling",
+        type: "test",
+        run: Deferred.await(latch).pipe(Effect.as("done")),
+      })
+
+      expect((yield* jobs.beginSettling(job.id))?.status).toBe("settling")
+      expect(yield* jobs.beginSettling(job.id)).toMatchObject({ id: job.id, status: "settling" })
+      expect(yield* jobs.wait({ id: job.id, timeout: 0 })).toMatchObject({
+        timedOut: true,
+        info: { status: "settling" },
+      })
+      expect((yield* jobs.get(job.id))?.status).toBe("settling")
+
+      yield* Deferred.succeed(latch, undefined)
+      expect(yield* jobs.wait({ id: job.id })).toMatchObject({
+        timedOut: false,
+        info: { status: "completed", output: "done" },
+      })
+    }).pipe(Effect.provide(BackgroundJob.layer)),
+  )
+
+  it.live("settles settling work as failed or cancelled and never starts a second job under the same id", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const failingLatch = yield* Deferred.make<void>()
+      const failing = yield* jobs.start({
+        id: "failing",
+        type: "test",
+        run: Deferred.await(failingLatch).pipe(Effect.flatMap(() => Effect.fail(new Error("boom")))),
+      })
+      yield* jobs.beginSettling(failing.id)
+      yield* Deferred.succeed(failingLatch, undefined)
+      expect((yield* jobs.wait({ id: failing.id })).info?.status).toBe("error")
+
+      const held = yield* Deferred.make<void>()
+      const cancelling = yield* jobs.start({ id: "cancelling", type: "test", run: Deferred.await(held).pipe(Effect.as("done")) })
+      yield* jobs.beginSettling(cancelling.id)
+      expect((yield* jobs.start({ id: "cancelling", type: "other", run: Effect.succeed("new") }))?.type).toBe("test")
+      expect((yield* jobs.cancel(cancelling.id))?.status).toBe("cancelled")
+      expect((yield* jobs.get(cancelling.id))?.status).toBe("cancelled")
+    }).pipe(Effect.provide(BackgroundJob.layer)),
+  )
+
+  it.live("reports every job transition to the optional sink", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const observed: Array<{
+        from: string | null
+        to: string
+        sessionID?: string
+        title?: string
+        output?: string
+        started?: boolean
+      }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            observed.push({
+              from: transition.from,
+              to: transition.to,
+              sessionID: transition.sessionID,
+              title: transition.title,
+              output: transition.output,
+              started: typeof transition.started_at === "number",
+            })
+          }),
+      }).pipe(Scope.provide(scope))
+      const latch = yield* Deferred.make<void>()
+      const job = yield* jobs.start({
+        id: "observed",
+        type: "test",
+        title: "observed job",
+        metadata: { sessionId: "ses_observed" },
+        run: Deferred.await(latch).pipe(Effect.as("ok")),
+      })
+
+      yield* jobs.beginSettling(job.id)
+      yield* Deferred.succeed(latch, undefined)
+      yield* jobs.wait({ id: job.id })
+
+      // Every transition carries the complete snapshot: a durable observer
+      // never has to merge a partial delta (#1069 P5).
+      expect(observed).toEqual([
+        { from: null, to: "running", sessionID: "ses_observed", title: "observed job", started: true },
+        { from: "running", to: "settling", sessionID: "ses_observed", title: "observed job", started: true },
+        {
+          from: "settling",
+          to: "completed",
+          sessionID: "ses_observed",
+          title: "observed job",
+          output: "ok",
+          started: true,
+        },
+      ])
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
 })
