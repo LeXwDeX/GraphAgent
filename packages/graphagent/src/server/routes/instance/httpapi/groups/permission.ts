@@ -2,7 +2,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Permission } from "@/permission"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
-import { PermissionNotFoundError } from "../errors"
+import { InvalidRequestError, PermissionNotFoundError } from "../errors"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -30,12 +30,13 @@ export const PermissionApi = HttpApi.make("permission")
           params: { requestID: PermissionV1.ID },
           payload: ReplyPayload,
           success: described(Schema.Boolean, "Permission processed successfully"),
-          error: [HttpApiError.BadRequest, PermissionNotFoundError],
+          error: [HttpApiError.BadRequest, InvalidRequestError, PermissionNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "permission.reply",
             summary: "Respond to permission request",
-            description: "Approve or deny a permission request from the AI assistant.",
+            description:
+              "Approve or deny a permission request from the AI assistant. A request raised by a child session accepts only a fixed reply: a `message` is refused with 400.",
           }),
         ),
       )

@@ -11,11 +11,16 @@ import { afterEach, describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/http"
 import { OpenApi } from "effect/http-api"
+import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Ripgrep } from "@graphagent/core/ripgrep"
 import { Database } from "@graphagent/core/database/database"
+import { Permission } from "../../src/permission"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { Project } from "../../src/project/project"
+import { Question } from "../../src/question"
+import { QuestionID } from "../../src/question/schema"
 import { SessionApi, SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { PublicApi } from "../../src/server/routes/instance/httpapi/public"
 import {
@@ -27,7 +32,7 @@ import { MessageID, PartID } from "../../src/session/schema"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { httpApiLayer } from "./httpapi-layer"
+import { httpApiLayer, httpApiLayerWith } from "./httpapi-layer"
 
 const instanceStoreLayer = InstanceStore.defaultLayer.pipe(
   Layer.provide(Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))),
@@ -42,7 +47,47 @@ const it = testEffect(
   ).pipe(Layer.provide(Ripgrep.defaultLayer)),
 )
 
+// Pending permission/question requests live in memory inside the server's own
+// services, so the free-text tests replace those two with doubles that hold a
+// canned pending list and record what the handler passes on. The real route
+// tree, middleware and Session store stay in place.
+const permissionReplies: Array<{ requestID: string; reply: string; message?: string }> = []
+const questionReplies: Array<{ requestID: string; answers: ReadonlyArray<ReadonlyArray<string>> }> = []
+let pendingPermissions: PermissionV1.Request[] = []
+let pendingQuestions: Question.Request[] = []
+
+const permissionDouble = Layer.mock(Permission.Service)({
+  list: () => Effect.sync(() => pendingPermissions),
+  reply: (input) =>
+    pendingPermissions.some((item) => item.id === input.requestID)
+      ? Effect.sync(() => void permissionReplies.push({ ...input, requestID: String(input.requestID) }))
+      : Effect.fail(new PermissionV1.NotFoundError({ requestID: input.requestID })),
+})
+const questionDouble = Layer.mock(Question.Service)({
+  list: () => Effect.sync(() => pendingQuestions),
+  reply: (input) =>
+    pendingQuestions.some((item) => item.id === input.requestID)
+      ? Effect.sync(() => void questionReplies.push({ ...input, requestID: String(input.requestID) }))
+      : Effect.fail(new Question.NotFoundError({ requestID: input.requestID })),
+})
+const itInteractive = testEffect(
+  Layer.mergeAll(
+    instanceStoreLayer,
+    Project.defaultLayer,
+    Session.defaultLayer,
+    Database.defaultLayer,
+    httpApiLayerWith([
+      LayerNode.replace(Permission.node, permissionDouble),
+      LayerNode.replace(Question.node, questionDouble),
+    ]),
+  ).pipe(Layer.provide(Ripgrep.defaultLayer)),
+)
+
 afterEach(async () => {
+  permissionReplies.length = 0
+  questionReplies.length = 0
+  pendingPermissions = []
+  pendingQuestions = []
   await disposeAllInstances()
   await resetDatabase()
 })
@@ -316,6 +361,116 @@ describe("child session read-only guard", () => {
         const warp = yield* call(directory, "POST", "/experimental/workspace/warp", { id: null, sessionID: child.id })
         expect(warp.status).toBe(409)
         expect(yield* warp.json).toMatchObject({ name: "ChildSessionReadOnlyError", data: { sessionID: child.id } })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+})
+
+// A reply's free text (a rejection `message`, a custom answer) becomes the child
+// agent's tool result, so for a request raised by a child session the server
+// takes only a fixed choice. Which session raised the request is read from the
+// service's pending record.
+describe("free text on replies to child-session requests", () => {
+  const permissionRequest = (id: string, sessionID: Session.Info["id"]): PermissionV1.Request => ({
+    id: PermissionV1.ID.make(id),
+    sessionID,
+    permission: "bash",
+    patterns: ["ls"],
+    metadata: {},
+    always: [],
+  })
+  const questionRequest = (id: string, sessionID: Session.Info["id"]): Question.Request => ({
+    id: QuestionID.make(id),
+    sessionID,
+    questions: [
+      {
+        question: "Proceed?",
+        header: "Proceed",
+        options: [
+          { label: "Yes", description: "go" },
+          { label: "No", description: "stop" },
+        ],
+      },
+      {
+        question: "Which?",
+        header: "Which",
+        options: [{ label: "A", description: "a" }],
+        multiple: true,
+      },
+    ],
+  })
+
+  itInteractive.instance(
+    "refuses a permission message on a child's request and passes everything else",
+    () =>
+      Effect.gen(function* () {
+        const { directory, parent, child } = yield* family
+        pendingPermissions = [
+          permissionRequest("per_child_free_text", child.id),
+          permissionRequest("per_top_free_text", parent.id),
+        ]
+        const reply = (id: string, body: unknown) => call(directory, "POST", `/permission/${id}/reply`, body)
+
+        const refused = yield* reply("per_child_free_text", { reply: "reject", message: "do it differently" })
+        expect(refused.status).toBe(400)
+        expect(yield* refused.json).toMatchObject({
+          name: "InvalidRequestError",
+          data: { field: "message", message: expect.any(String) },
+        })
+        expect(permissionReplies).toEqual([])
+
+        // The fixed reply goes through, with or without an empty message.
+        expect((yield* reply("per_child_free_text", { reply: "reject" })).status).toBe(200)
+        expect(permissionReplies).toEqual([{ requestID: "per_child_free_text", reply: "reject" }])
+
+        // A top-level session's request still takes feedback.
+        const top = yield* reply("per_top_free_text", { reply: "reject", message: "use the other branch" })
+        expect(top.status).toBe(200)
+        expect(permissionReplies.at(-1)).toEqual({
+          requestID: "per_top_free_text",
+          reply: "reject",
+          message: "use the other branch",
+        })
+
+        // An unknown request is still the service's 404.
+        const unknown = yield* reply("per_unknown_free_text", { reply: "reject", message: "x" })
+        expect(unknown.status).toBe(404)
+        expect(yield* unknown.json).toMatchObject({ name: "PermissionNotFoundError" })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  itInteractive.instance(
+    "refuses a custom question answer on a child's request and accepts offered options",
+    () =>
+      Effect.gen(function* () {
+        const { directory, parent, child } = yield* family
+        pendingQuestions = [
+          questionRequest("que_child_free_text", child.id),
+          questionRequest("que_top_free_text", parent.id),
+        ]
+        const reply = (id: string, answers: unknown) => call(directory, "POST", `/question/${id}/reply`, { answers })
+
+        const custom = yield* reply("que_child_free_text", [["Yes"], ["something else"]])
+        expect(custom.status).toBe(400)
+        expect(yield* custom.json).toMatchObject({
+          name: "InvalidRequestError",
+          data: { field: "answers", message: expect.any(String) },
+        })
+        // An answer beyond the offered questions has no options to match either.
+        expect((yield* reply("que_child_free_text", [["Yes"], ["A"], ["extra"]])).status).toBe(400)
+        expect(questionReplies).toEqual([])
+
+        expect((yield* reply("que_child_free_text", [["Yes"], ["A"]])).status).toBe(200)
+        expect(questionReplies).toEqual([{ requestID: "que_child_free_text", answers: [["Yes"], ["A"]] }])
+
+        // A top-level session's question still takes a custom answer.
+        expect((yield* reply("que_top_free_text", [["anything"], []])).status).toBe(200)
+        expect(questionReplies.at(-1)).toEqual({ requestID: "que_top_free_text", answers: [["anything"], []] })
+
+        const unknown = yield* reply("que_unknown_free_text", [["whatever"]])
+        expect(unknown.status).toBe(404)
+        expect(yield* unknown.json).toMatchObject({ name: "QuestionNotFoundError" })
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

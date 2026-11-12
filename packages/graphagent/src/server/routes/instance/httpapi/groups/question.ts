@@ -2,7 +2,7 @@ import { Question } from "@/question"
 import { QuestionID } from "@/question/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
-import { QuestionNotFoundError } from "../errors"
+import { InvalidRequestError, QuestionNotFoundError } from "../errors"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -31,12 +31,13 @@ export const QuestionApi = HttpApi.make("question")
           params: { requestID: QuestionID },
           payload: ReplyPayload,
           success: described(Schema.Boolean, "Question answered successfully"),
-          error: [HttpApiError.BadRequest, QuestionNotFoundError],
+          error: [HttpApiError.BadRequest, InvalidRequestError, QuestionNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "question.reply",
             summary: "Reply to question request",
-            description: "Provide answers to a question request from the AI assistant.",
+            description:
+              "Provide answers to a question request from the AI assistant. A request raised by a child session accepts only its offered options: a custom answer is refused with 400.",
           }),
         ),
         HttpApiEndpoint.post("reject", `${root}/:requestID/reject`, {
