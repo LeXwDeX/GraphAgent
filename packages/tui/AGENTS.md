@@ -138,7 +138,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 | selector 求值 | 每次按键的 keymap 选择器求值次数，S 档与 L 档相同（硬） | P4 |
 | store 写入 | 流式 delta 对 `store.part` 写入为 0；每帧对 `store.message`/`store.part` 写入 ≤ 1（硬） | P13 |
 | 干扰 | 非当前会话对 `store.message`/`store.part` 写入为 0（硬）；主会话输入 p95 增幅 ≤ 10% | P14 |
-| 挂载行数 | ≤ 视口行数 + 2 × `PART_OVERSCAN` + `TAIL_ALWAYS`（硬） | P10 |
+| 挂载行数（仅超过 `WINDOW_MIN_ROWS` 的窗口化会话） | ≤ 视口行数 + 2 × `PART_OVERSCAN` + `TAIL_ALWAYS`（硬） | P10 |
 | 延迟 | 输入 p95 ≤ 16ms、p99 ≤ 33ms；`/` 打开 p95 ≤ 33ms 且无 > 100ms 的帧；冷滚动 p99 ≤ 33ms 且无 > 100ms 的帧 | P1、P5、P8 |
 
 - 用户报告的两个场景（P5 `/`、P8 滚动）的"无 > 100ms 的帧"是写死的绝对上限，只许收紧，放宽需用户确认。
@@ -175,7 +175,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 ### 消息列表
 
-- 行数 ≥ `WINDOW_MIN_ROWS`（30）时窗口化：视口上下各 `PART_OVERSCAN = 6` 行，末尾 `TAIL_ALWAYS = 4` 行始终挂载，`streaming` 行、选中行、展开中的行始终挂载。未挂载的连续行合并成一个占位盒。
+- 行数 ≥ `WINDOW_MIN_ROWS`（2000，依据见 `test/perf/README.md` 的“窗口化阈值”：OpenTUI 0.8.3 上约 2000 行以内全挂载满足全部延迟预算，窗口化的滚动反而更贵）时窗口化：视口上下各 `PART_OVERSCAN = 6` 行，末尾 `TAIL_ALWAYS = 4` 行始终挂载，`streaming` 行、选中行、展开中的行始终挂载。未挂载的连续行合并成一个占位盒。
 - 行模型是 `Row { key, messageID, partID?, kind, revision }`，`RowKind` 现为 `user | text | reasoning | tool | meta | revert | notice`。
 - 新增消息类型必须同时给出：新的 `RowKind`、高度估算、`revision` 的定义（内容变化时重新测量）。现有估算：`text` 按字符数除以内容宽度向上取整加边距，`tool` 2 行，`reasoning` 折叠态 1 行，`user` 按文本行数加内边距，其余 3 行（F2 3.3）。
 - 组件内局部状态（展开、选中）一律提升到 `SessionViewState = Map<partID, …>`，卸载后再挂载不丢。滚动定位走行表，不依赖渲染节点。
