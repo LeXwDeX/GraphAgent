@@ -33,7 +33,7 @@ describe("run startup authorisation", () => {
   })
 
   test("forged headers and bodies cannot create a startup mark", () => {
-    const target = "http://graphagent.internal/session/ses_target/message"
+    const target = "http://example.com/session/ses_target/message"
     const forged = new Request(target, {
       method: "POST",
       headers: {
