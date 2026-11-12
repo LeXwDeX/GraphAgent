@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+// oxlint-disable typescript-eslint/no-unsafe-type-assertion -- the mocked EventV2 listener receives partial event payloads via `as never` shims.
+
 import { describe, expect } from "bun:test"
 import { Cause, DateTime, Deferred, Effect, Layer } from "effect"
 import { DagStore, type WorkflowRow, type WorkflowSummary } from "@graphagent/core/dag/store"
 import { DagEvent } from "@graphagent/schema/dag-event"
+import { SessionV1 } from "@graphagent/core/v1/session"
 import { logLines } from "effect/testing/TestConsole"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
@@ -35,6 +38,9 @@ interface StoreControl {
   projects: Map<string, string>
   sessions: Map<string, string>
   summaries: Map<string, WorkflowSummary[]>
+  /** #1027 D6: childSessionID → durable attempt-ledger owner. */
+  childOwners: Map<string, { workflowId: string; sessionId: string; projectId: string; directory?: string }>
+  childLookups: Map<string, number>
 }
 
 interface EventControl {
@@ -50,6 +56,8 @@ function control(): StoreControl {
     projects: new Map<string, string>(),
     sessions: new Map<string, string>(),
     summaries: new Map<string, WorkflowSummary[]>(),
+    childOwners: new Map(),
+    childLookups: new Map<string, number>(),
   }
 }
 
@@ -74,7 +82,11 @@ function workflow(id: string, sessionId: string, projectId: string): WorkflowRow
   }
 }
 
-function summary(id: string, completedNodes: number, graphRev = 1): WorkflowSummary {
+function summary(
+  id: string,
+  completedNodes: number,
+  graphRev = 1,
+): WorkflowSummary & { coverageCount: number; quality: null } {
   return {
     id,
     title: id,
@@ -88,6 +100,12 @@ function summary(id: string, completedNodes: number, graphRev = 1): WorkflowSumm
     abortedNodes: 0,
     queuedNodes: 0,
     escalatedNodes: 0,
+    tokens: 0,
+    tokensCacheRead: 0,
+    checkpointPending: false,
+    // The publisher enriches every emission with the D6a fixed-shape fields.
+    coverageCount: 0,
+    quality: null,
   }
 }
 
@@ -123,6 +141,14 @@ function runtime(state: StoreControl, bus: EventControl) {
           throw new Error("simulated summary read failure after gate")
         }
         return summaries
+      }),
+    getWorkflowByChildSession: (childSessionID) =>
+      Effect.gen(function* () {
+        state.childLookups.set(childSessionID, (state.childLookups.get(childSessionID) ?? 0) + 1)
+        const owner = state.childOwners.get(childSessionID)
+        if (!owner) return undefined
+        const ctx = yield* InstanceState.context
+        return { ...owner, directory: owner.directory ?? ctx.directory }
       }),
   })
   const events = Layer.mock(EventV2Bridge.Service, {
@@ -217,6 +243,34 @@ function withCollector<A, E, R>(use: (collector: ReturnType<typeof startCollecto
     use,
     (collector) => Effect.sync(collector.stop),
   )
+}
+
+function publishNodeStarted(bus: EventControl, dagID: string, childSessionID: string) {
+  if (!bus.listener) return Effect.die(new Error("publisher listener is not ready"))
+  return Effect.gen(function* () {
+    const instance = yield* InstanceState.context
+    yield* bus.listener!({
+      type: DagEvent.NodeStarted.type,
+      data: { dagID, nodeID: `${dagID}-node`, childSessionID, timestamp: ts(1) },
+      location: { directory: instance.directory },
+    } as never)
+  })
+}
+
+function publishChildStepFinish(bus: EventControl, sessionID: string, foreignDirectory = false) {
+  if (!bus.listener) return Effect.die(new Error("publisher listener is not ready"))
+  return Effect.gen(function* () {
+    const instance = yield* InstanceState.context
+    yield* bus.listener!({
+      type: SessionV1.Event.PartUpdated.type,
+      data: {
+        sessionID,
+        part: { type: "step-finish", id: "part-1", messageID: "msg-1", sessionID, reason: "stop" },
+        time: 1,
+      },
+      location: { directory: foreignDirectory ? `${instance.directory}-foreign` : instance.directory },
+    } as never)
+  })
 }
 
 describe("DagSummaryPublisher behavior", () => {
@@ -581,5 +635,110 @@ describe("DagSummaryPublisher interrupt discipline (DAG-04)", () => {
       yield* Effect.sleep("150 millis")
       expect(JSON.stringify(yield* logLines)).not.toContain("failed to publish summaries")
     }).pipe(Effect.provide(runtime(state, bus)))
+  })
+})
+
+// #1027 D6: child session usage is written on step-finish (a session event,
+// not a dag.* event), so the publisher routes those events to the owning
+// parent session through the attempt ledger or a live NodeStarted.
+describe("DagSummaryPublisher child usage routing (#1027 D6)", () => {
+  it.instance("routes a child step-finish to the parent session across directories", () => {
+    const state = control()
+    const bus = {} satisfies EventControl
+    state.summaries.set("ses-parent", [summary("dag-child", 0)])
+    state.childOwners.set("ses-child", { workflowId: "dag-child", sessionId: "ses-parent", projectId: "global" })
+
+    const mine = (collector: ReturnType<typeof startCollector>) =>
+      collector.emissions.filter((emission) => emission.sessionID === "ses-parent")
+
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishChildStepFinish(bus, "ses-child", true)
+        yield* pollWithTimeout(
+          Effect.sync(() => (mine(collector).length === 1 ? true : undefined)),
+          "child usage did not reach the parent summary",
+        )
+        expect(mine(collector)[0].summaries[0].id).toBe("dag-child")
+        expect(state.childLookups.get("ses-child")).toBe(1)
+        expect(state.reads.get("ses-parent")).toBe(1)
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+
+  it.instance("a live NodeStarted registers the child so usage skips the durable lookup", () => {
+    const state = control()
+    const bus = {} satisfies EventControl
+    state.sessions.set("dag-live", "ses-live")
+    state.summaries.set("ses-live", [summary("dag-live", 0)])
+
+    const mine = (collector: ReturnType<typeof startCollector>) =>
+      collector.emissions.filter((emission) => emission.sessionID === "ses-live")
+
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishNodeStarted(bus, "dag-live", "ses-live-child")
+        yield* pollWithTimeout(
+          Effect.sync(() => (mine(collector).length === 1 ? true : undefined)),
+          "NodeStarted did not publish a summary",
+        )
+        yield* publishChildStepFinish(bus, "ses-live-child", true)
+        yield* pollWithTimeout(
+          Effect.sync(() => (mine(collector).length === 2 ? true : undefined)),
+          "child usage did not publish after a live start",
+        )
+        expect(state.childLookups.get("ses-live-child")).toBeUndefined()
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+
+  it.instance("an unknown session is probed once and never published", () => {
+    const state = control()
+    const bus = {} satisfies EventControl
+
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishChildStepFinish(bus, "ses-unknown", true)
+        yield* Effect.sleep("150 millis")
+        yield* publishChildStepFinish(bus, "ses-unknown", true)
+        yield* Effect.sleep("150 millis")
+        expect(collector.emissions).toHaveLength(0)
+        expect(state.childLookups.get("ses-unknown")).toBe(1)
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+
+  it.instance("a burst of child usage emits at most once per second", () => {
+    const state = control()
+    const bus = {} satisfies EventControl
+    state.summaries.set("ses-burst", [summary("dag-child", 0)])
+    state.childOwners.set("ses-child", { workflowId: "dag-child", sessionId: "ses-burst", projectId: "global" })
+
+    const mine = (collector: ReturnType<typeof startCollector>) =>
+      collector.emissions.filter((emission) => emission.sessionID === "ses-burst")
+
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishChildStepFinish(bus, "ses-child", true)
+        yield* pollWithTimeout(
+          Effect.sync(() => (mine(collector).length === 1 ? true : undefined)),
+          "leading usage publish did not fire",
+        )
+        yield* publishChildStepFinish(bus, "ses-child", true)
+        yield* publishChildStepFinish(bus, "ses-child", true)
+        yield* Effect.sleep("100 millis")
+        expect(mine(collector)).toHaveLength(1)
+        // The trailing slot delivers everything from the burst window.
+        yield* pollWithTimeout(
+          Effect.sync(() => (mine(collector).length === 2 ? true : undefined)),
+          "trailing usage publish did not fire",
+        )
+        yield* Effect.sleep("1 second")
+        expect(mine(collector)).toHaveLength(2)
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
   })
 })

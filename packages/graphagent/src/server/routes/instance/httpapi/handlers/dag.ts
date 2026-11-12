@@ -137,6 +137,13 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
         abortedNodes: s.abortedNodes,
         queuedNodes: s.queuedNodes,
         escalatedNodes: s.escalatedNodes,
+        tokens: s.tokens,
+        tokensCacheRead: s.tokensCacheRead,
+        checkpointPending: s.checkpointPending,
+        // D6b owns the real values; fixed here so HTTP and the publisher
+        // event expose the same shape.
+        coverageCount: 0,
+        quality: null,
       }))
     })
 

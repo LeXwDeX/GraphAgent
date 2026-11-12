@@ -28,6 +28,7 @@ import {
   TerminalViolationError,
   WorkflowStatus,
   NodeStatus,
+  PAUSE_REASON_CHECKPOINT,
 } from "@graphagent/core/dag/core/types"
 import type { PauseReason } from "@graphagent/core/dag/core/types"
 import { ResumeGuard } from "./resume-guard"
@@ -923,7 +924,9 @@ export const layer = Layer.effect(
         return "inactive" as const
       }
 
-      yield* pause(lock, dagID)
+      // #1027 D6: stamp the durable reason so the summary can tell a
+      // checkpoint pause (waiting for the main agent) from a manual one.
+      yield* pause(lock, dagID, PAUSE_REASON_CHECKPOINT)
       return "paused" as const
     })
     const resume = Effect.fn("Dag.resume")(function* (lock: WorkflowLock, dagID: string) {

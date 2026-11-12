@@ -12,12 +12,12 @@ describe("background.job", () => {
       const jobs = yield* BackgroundJob.Service
       const id = "captured-child"
       const parent = "captured-parent"
-      yield* jobs.start({ id, type: "test", metadata: { sessionId: id, parentSessionId: parent }, run: Effect.never })
+      yield* jobs.start({ id, type: "test", metadata: { sessionID: id, parentSessionID: parent }, run: Effect.never })
       const abort = SessionCancellation.begin(parent)
       yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
       expect(abort.owners).toHaveLength(1)
       yield* jobs.cancel(id)
-      yield* jobs.start({ id, type: "test", metadata: { sessionId: id, parentSessionId: parent }, run: Effect.never })
+      yield* jobs.start({ id, type: "test", metadata: { sessionID: id, parentSessionID: parent }, run: Effect.never })
       yield* Effect.all(abort.owners)
       expect((yield* jobs.get(id))?.status).toBe("running")
       abort.finish()
@@ -38,7 +38,7 @@ describe("background.job", () => {
       const second = yield* Deferred.make<void>()
       const job = yield* jobs.start({
         type: "test",
-        metadata: { parentSessionId: parent },
+        metadata: { parentSessionID: parent },
         run: Deferred.await(first).pipe(Effect.as("first")),
       })
       yield* jobs.extend({ id: job.id, run: Deferred.await(second).pipe(Effect.as("second")) })
@@ -66,16 +66,16 @@ describe("background.job", () => {
       yield* jobs.start({
         id: "nested-child",
         type: "test",
-        metadata: { sessionId: "nested-child", parentSessionId: "nested-parent" },
+        metadata: { sessionID: "nested-child", parentSessionId: "nested-parent" },
         run: Effect.never,
       })
       yield* jobs.start({
         id: "nested-grandchild",
         type: "test",
-        metadata: { sessionId: "nested-grandchild", parentSessionId: "nested-child" },
+        metadata: { sessionID: "nested-grandchild", parentSessionId: "nested-child" },
         run: Effect.never,
       })
-      const unrelated = yield* jobs.start({ type: "test", metadata: { sessionId: "unrelated" }, run: Effect.never })
+      const unrelated = yield* jobs.start({ type: "test", metadata: { sessionID: "unrelated" }, run: Effect.never })
       const abort = SessionCancellation.begin("nested-parent")
       yield* Effect.addFinalizer(() => Effect.sync(abort.finish))
       yield* Effect.all(abort.owners)
@@ -288,7 +288,7 @@ describe("background.job", () => {
       const promoted = yield* Deferred.make<void>()
       const job = yield* jobs.start({
         type: "test",
-        metadata: { parentSessionId: "parent" },
+        metadata: { parentSessionID: "parent" },
         onPromote: Deferred.succeed(promoted, undefined).pipe(Effect.asVoid),
         run: Deferred.await(latch).pipe(Effect.as("done")),
       })

@@ -208,7 +208,7 @@ it.effect(
         yield* drain
         yield* TestClock.adjust("60 seconds")
       }
-      const job = yield* jobs.start({ type: "task", metadata: { parentSessionId: id }, run: Effect.never })
+      const job = yield* jobs.start({ type: "task", metadata: { parentSessionID: id }, run: Effect.never })
       yield* status.set(id, { type: "busy" })
       yield* status.set(id, { type: "idle" })
       yield* drain

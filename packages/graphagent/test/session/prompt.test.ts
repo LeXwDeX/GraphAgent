@@ -5817,7 +5817,7 @@ it.instance("failed subtask preserves metadata on error tool state", () =>
 
     expect(tool.state.error).toContain("Tool execution failed")
     expect(tool.state.metadata).toBeDefined()
-    expect(tool.state.metadata?.sessionId).toBeDefined()
+    expect(tool.state.metadata?.sessionID).toBeDefined()
     expect(tool.state.metadata?.model).toEqual({
       providerID: ProviderV2.ID.make("test"),
       modelID: ModelV2.ID.make("missing-model"),
@@ -5901,13 +5901,13 @@ it.instance(
           const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
           const taskMsg = msgs.find((item) => item.info.role === "assistant" && item.info.agent === "general")
           const tool = taskMsg?.parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
-          if (tool?.state.status === "running" && tool.state.metadata?.sessionId) return tool
+          if (tool?.state.status === "running" && tool.state.metadata?.sessionID) return tool
         }),
         "timed out waiting for running subtask metadata",
       )
 
       if (tool.state.status !== "running") return
-      expect(typeof tool.state.metadata?.sessionId).toBe("string")
+      expect(typeof tool.state.metadata?.sessionID).toBe("string")
       expect(tool.state.title).toBeDefined()
       expect(tool.state.metadata?.model).toBeDefined()
 
@@ -5945,13 +5945,13 @@ it.instance(
           const tool = assistant?.parts.find(
             (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "task",
           )
-          if (tool?.state.status === "running" && tool.state.metadata?.sessionId) return tool
+          if (tool?.state.status === "running" && tool.state.metadata?.sessionID) return tool
         }),
         "timed out waiting for running task metadata",
       )
 
       if (tool.state.status !== "running") return
-      expect(typeof tool.state.metadata?.sessionId).toBe("string")
+      expect(typeof tool.state.metadata?.sessionID).toBe("string")
       expect(tool.state.title).toBe("inspect bug")
       expect(tool.state.metadata?.model).toBeDefined()
 
@@ -6261,7 +6261,7 @@ it.instance(
       const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
       const taskMsg = msgs.find((item) => item.info.role === "assistant" && item.info.agent === "general")
       const tool = taskMsg ? toolPart(taskMsg.parts) : undefined
-      const sessionID = tool?.state.status === "running" ? tool.state.metadata?.sessionId : undefined
+      const sessionID = tool?.state.status === "running" ? tool.state.metadata?.sessionID : undefined
       expect(typeof sessionID).toBe("string")
       if (typeof sessionID !== "string") throw new Error("missing child session id")
       const childID = SessionID.make(sessionID)

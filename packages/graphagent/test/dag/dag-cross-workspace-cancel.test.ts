@@ -658,13 +658,13 @@ test("cancel stops an idle moved session's background job in its origin workspac
               const started = yield* Deferred.make<void>()
               const movedJob = yield* jobs.start({
                 type: "test",
-                metadata: { sessionId: moved.id },
+                metadata: { sessionID: moved.id },
                 run: Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
               })
               yield* awaitWithTimeout(Deferred.await(started), "moved background job did not start", "10 seconds")
               const controlJob = yield* jobs.start({
                 type: "test",
-                metadata: { sessionId: control.id },
+                metadata: { sessionID: control.id },
                 run: Effect.never,
               })
               expect((yield* status.get(moved.id)).type).toBe("idle")
@@ -680,7 +680,7 @@ test("cancel stops an idle moved session's background job in its origin workspac
 
               const other = yield* inChild(sessions.create({ title: "target control" }))
               const targetJob = yield* inChild(
-                jobs.start({ type: "test", metadata: { sessionId: other.id }, run: Effect.never }),
+                jobs.start({ type: "test", metadata: { sessionID: other.id }, run: Effect.never }),
               )
 
               // The moved session is idle, but its background job still runs in
