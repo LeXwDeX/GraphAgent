@@ -177,7 +177,7 @@ function repairBackgroundArgument(value: unknown): unknown {
 
 function renderOutput(input: {
   sessionID: SessionID
-  state: "running" | "completed" | "error"
+  state: "running" | "completed" | "error" | "cancelled"
   summary?: string
   text: string
 }) {
@@ -270,6 +270,42 @@ export const TaskTool = Tool.define(
         }),
       )
 
+    // A background task is cancelled by the main agent through its child run:
+    // the run ends cancelled first (so no result is delivered for it), then the
+    // job that carries it. Foreground tasks and tasks of other conversations are refused.
+    const cancelTask = Effect.fn("TaskTool.cancel")(function* (
+      children: Tool.ChildRuns,
+      taskID: string,
+      ctx: Tool.Context,
+    ): Effect.fn.Return<Tool.ExecuteResult, Error> {
+      const sessionID = Option.getOrUndefined(Schema.decodeUnknownOption(SessionID)(taskID))
+      const view = sessionID ? Option.getOrUndefined(yield* children.latest(sessionID)) : undefined
+      if (!sessionID || !view || view.ownerKind !== "task") return yield* Effect.fail(new Error(notOwned(taskID)))
+      const finished = new Error(`Task ${taskID} has already finished; there is nothing to cancel.`)
+      if (view.state === "ended") return yield* Effect.fail(finished)
+      const job = yield* background.get(taskID)
+      if (!view.detached && job?.metadata?.background !== true) {
+        return yield* Effect.fail(
+          new Error(
+            `Task ${taskID} is a foreground task. A foreground task is cancelled by stopping this session, not with action="cancel".`,
+          ),
+        )
+      }
+      const cancelled = yield* children.cancel(view.id, { kind: "main_agent_tool", toolCallID: ctx.callID ?? "" })
+      if (cancelled === "not_active") return yield* Effect.fail(finished)
+      yield* background.cancel(taskID)
+      return {
+        title: "Task cancelled",
+        metadata: { parentSessionID: ctx.sessionID, sessionID, background: true, jobId: taskID },
+        output: renderOutput({
+          sessionID,
+          state: "cancelled",
+          summary: "Background task cancelled",
+          text: "The background task was cancelled. No result will be delivered for it.",
+        }),
+      }
+    })
+
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
@@ -284,13 +320,9 @@ export const TaskTool = Tool.define(
       const children = ctx.children
       if (!children) return yield* Effect.fail(new Error("TaskTool requires ctx.children"))
       if (params.action === "cancel") {
-        // Registered by C2 for H3 (#1026). The child-run cancellation service
-        // does not exist yet, so fail closed instead of starting a task.
-        return yield* Effect.fail(
-          new Error(
-            "Task cancellation is not implemented in this build; stop the parent session to cancel a foreground task.",
-          ),
-        )
+        if (params.task_id === undefined)
+          return yield* Effect.fail(new Error('task_id is required when action is "cancel"'))
+        return yield* cancelTask(children, params.task_id, ctx)
       }
       if (params.description === undefined || params.prompt === undefined || params.subagent_type === undefined) {
         return yield* Effect.fail(

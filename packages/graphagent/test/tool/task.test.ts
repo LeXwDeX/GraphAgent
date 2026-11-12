@@ -2306,6 +2306,128 @@ describe("tool.task child runs", () => {
     }),
   )
 
+  const cancelFixture = Effect.gen(function* () {
+    const { chat, assistant } = yield* seed()
+    const cancels: string[] = []
+    const jobCancels: SessionID[] = []
+    const def = yield* initTaskTool(yield* TaskTool, (sessionID, options) =>
+      Effect.sync(() => {
+        cancels.push(`${sessionID}:${options?.reason?.reason}:${options?.reason?.actor}`)
+      }),
+    )
+    const release = yield* Deferred.make<void>()
+    const injected: SessionPrompt.PromptInput[] = []
+    const promptOps: TaskPromptOps = {
+      cancel: (sessionID) =>
+        Effect.sync(() => {
+          jobCancels.push(sessionID)
+        }),
+      resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+      prompt: (input) => {
+        if (input.sessionID === chat.id) {
+          injected.push(input)
+          return Effect.succeed(reply(input, "noted"))
+        }
+        return Deferred.await(release).pipe(Effect.as(reply(input, "late answer")))
+      },
+    }
+    return { chat, assistant, def, cancels, jobCancels, release, injected, promptOps }
+  })
+
+  background.instance("action cancel stops a background task: run cancelled, job cancelled, no result delivered", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant, def, cancels, jobCancels, release, injected, promptOps } = yield* cancelFixture
+      const started = yield* def.execute(
+        { ...general, background: true },
+        taskCtx(chat, assistant, promptOps, { callID: "call_start" }),
+      )
+      const child = SessionID.make(started.metadata.sessionID)
+      yield* pollWithTimeout(
+        runsOf(child).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? true : undefined))),
+        "task run never reached running",
+      )
+
+      const result = yield* def.execute(
+        { action: "cancel", task_id: child },
+        taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }),
+      )
+
+      expect(result.output).toContain(`<task id="${child}" state="cancelled">`)
+      const ended = yield* endedRun(child)
+      expect(ended.outcome).toEqual({ type: "cancelled", by: { kind: "main_agent_tool", toolCallID: "call_cancel" } })
+      expect((yield* jobs.get(child))?.status).toBe("cancelled")
+      // The child's turn was told to stop, with a reason naming the main agent.
+      yield* pollWithTimeout(
+        Effect.sync(() => (cancels.length > 0 ? true : undefined)),
+        "the child turn was never cancelled",
+      )
+      expect(cancels).toEqual([`${child}:task-cancelled:main-agent`])
+      expect(jobCancels).toContain(child)
+      // A late answer from the cancelled child must not reach the parent.
+      yield* Deferred.succeed(release, undefined)
+      yield* Effect.sleep("100 millis")
+      expect(injected).toEqual([])
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  background.instance("action cancel refuses foreground, foreign, unknown and finished tasks", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant, def, release, promptOps } = yield* cancelFixture
+      const other = yield* seed("Other conversation")
+      const cancel = (task_id: string) =>
+        def.execute({ action: "cancel", task_id }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" })).pipe(
+          Effect.exit,
+          Effect.map((exit) => (Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "cancelled")),
+        )
+
+      // A running foreground task of this conversation.
+      const foreground = yield* def
+        .execute(general, taskCtx(chat, assistant, promptOps, { callID: "call_fg" }))
+        .pipe(Effect.forkChild)
+      const foregroundChild = yield* pollWithTimeout(
+        sessions.children(chat.id).pipe(Effect.map((kids) => kids[0]?.id)),
+        "foreground task was never created",
+      )
+      yield* pollWithTimeout(
+        runsOf(foregroundChild).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? true : undefined))),
+        "foreground run never reached running",
+      )
+      expect(yield* cancel(foregroundChild)).toContain("is a foreground task")
+      expect((yield* runsOf(foregroundChild))[0]?.state).toBe("running")
+
+      // Another conversation's background task, an unknown id, a top-level session.
+      const theirs = yield* sessions.create({ parentID: other.chat.id, title: "their task" })
+      const theirRun = yield* def.children
+        .forParent(other.chat.id)
+        .start({ childSessionID: theirs.id, owner: { kind: "task" }, detached: true })
+      expect(yield* cancel(theirs.id)).toContain("is not a task started by this conversation")
+      expect(yield* cancel("ses_does_not_exist")).toContain("is not a task started by this conversation")
+      expect(yield* cancel("not even a session id")).toContain("is not a task started by this conversation")
+      expect(yield* cancel(other.chat.id)).toContain("is not a task started by this conversation")
+      expect(ChildRegistry.activeFor(theirs.id)?.id).toBe(theirRun.id)
+
+      // A task that already finished.
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(foreground)
+      yield* endedRun(foregroundChild)
+      expect(yield* cancel(foregroundChild)).toContain("already finished")
+      yield* theirRun.settle({ type: "completed" })
+    }),
+  )
+
+  it.instance("action cancel without a task_id is rejected by the schema", () =>
+    Effect.gen(function* () {
+      const { chat, assistant, def, promptOps } = yield* cancelFixture
+      const exit = yield* executeRaw(def.execute)({ action: "cancel" }, taskCtx(chat, assistant, promptOps)).pipe(
+        Effect.exit,
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+    }),
+  )
+
   it.instance("fails closed without a children capability", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
