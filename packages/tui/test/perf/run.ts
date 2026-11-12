@@ -163,18 +163,30 @@ async function main() {
   if (!enforce) return
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- generated benchmark report
   const before = (await Bun.file(baselineFile(baselineRef)).json()) as PerfReport
-  const { rows, failures } = compareReports(before, report)
-  if (failures.length === 0) {
-    console.log(`bench gate passed: ${rows.length} metric(s) compared against ${path.basename(baselineFile(baselineRef))}`)
+  const { rows, failures, missing, pending } = compareReports(before, report)
+  const name = path.basename(baselineFile(baselineRef))
+  if (pending.length > 0) {
+    console.log(
+      `bench gate: baseline-relative timing check skipped for ${pending.join(", ")} (pending baseline regeneration)`,
+    )
+  }
+  if (failures.length === 0 && missing.length === 0) {
+    console.log(`bench gate passed: ${rows.length} metric(s) compared against ${name}`)
     return
   }
-  console.error(`bench gate failed: ${failures.length} regression(s) against ${path.basename(baselineFile(baselineRef))}`)
+  if (failures.length > 0) console.error(`bench gate failed: ${failures.length} regression(s) against ${name}`)
   for (const failure of failures) {
     const row = rows.find(
       (item) => item.size === failure.size && item.id === failure.id && item.metric === failure.metric,
     )
     const measured = row ? `baseline=${row.baseline} current=${row.current} ratio=${row.ratio}` : `value=${failure.value}`
     console.error(`  ${failure.size} ${failure.id} ${failure.metric}: ${measured} limit ${failure.limit}`)
+  }
+  if (missing.length > 0) {
+    console.error(
+      `bench gate failed: ${missing.length} gate metric(s) missing from the report (a scenario stopped emitting them)`,
+    )
+    for (const item of missing) console.error(`  ${item.size} ${item.id} ${item.metric}`)
   }
   process.exit(1)
 }
