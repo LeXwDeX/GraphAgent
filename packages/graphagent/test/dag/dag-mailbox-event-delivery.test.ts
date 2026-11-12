@@ -390,9 +390,9 @@ describe("DagDelivery event-driven mailboxes (#1027 D5)", () => {
   it.effect("the 30s tick reaches mailboxes beyond a first ledger page that keeps its queue", () =>
     Effect.gen(function* () {
       const state = probe()
-      // The tick drains its page serially, so an admitted turn that never ends
-      // would park the whole pass behind the first admitted recipient.
-      state.hold = false
+      // `hold` stays true: an admitted turn never ends. The tick forks its
+      // drains, so those long turns neither park the rest of the pass nor the
+      // ticks after it.
       seedPages(state)
       yield* run(
         state,
@@ -401,8 +401,10 @@ describe("DagDelivery event-driven mailboxes (#1027 D5)", () => {
           yield* initAll
           // The rows appear after the startup scan, with no change event: only
           // the periodic scan can find them. A sentinel source scanned after
-          // `dag.delivery` marks the end of each pass, so the next tick is not
-          // advanced before this one re-armed its timer.
+          // `dag.delivery` marks the end of each scan pass, so the next tick is
+          // not advanced before this one re-armed its timer. The drains the
+          // pass forked finish on their own schedule, so each step below also
+          // waits for its observable result.
           let passes = 0
           yield* (yield* SessionInbox.Service).register({
             id: "watch_pr",
@@ -428,12 +430,27 @@ describe("DagDelivery event-driven mailboxes (#1027 D5)", () => {
           // Tick 1 drains the first page: every mailbox there is refused, so
           // nothing is admitted and the cursor stays inside the ledger.
           yield* tick(1)
+          yield* settleUntil(() => state.receives >= LEDGER_PAGE, "the first page was not drained")
           expect(state.admissions).toEqual([])
           expect(state.receives).toBe(LEDGER_PAGE)
           // Tick 2 starts after the first page and reaches the later mailboxes.
+          // Every admitted turn then hangs, which must not hold the tick back.
           yield* tick(2)
+          yield* settleUntil(
+            () => state.admissions.length >= laterIDs.length,
+            "the later mailboxes were not admitted",
+          )
           expect(state.admissions.toSorted()).toEqual(laterIDs.map((id) => SessionID.make(id)))
-          expect(state.pageReads).toEqual([undefined, stuckIDs.at(-1)])
+          // A mailbox queued while those turns are still running is admitted by
+          // a later tick: the cursor wraps to the first page (tick 3), then
+          // reads the page after it again (tick 4).
+          const extra = "ses_page_070"
+          state.messages.set(extra, messageFor(extra, pageIDs.length + 1))
+          yield* tick(3)
+          yield* tick(4)
+          yield* settleUntil(() => state.admissions.length >= laterIDs.length + 1, "the next tick was held back")
+          expect(state.admissions.toSorted()).toEqual([...laterIDs, extra].map((id) => SessionID.make(id)))
+          expect(state.pageReads).toEqual([undefined, stuckIDs.at(-1), undefined, stuckIDs.at(-1)])
         }),
       )
     }),
