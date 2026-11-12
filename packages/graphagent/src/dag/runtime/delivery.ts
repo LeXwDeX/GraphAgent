@@ -1038,12 +1038,23 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   const nudge = (sessionID: string): Effect.Effect<void> =>
     drain(sessionID).pipe(guarded("DeliveryNudge"), Effect.forkIn(scope), Effect.asVoid)
 
+  /** Nudge for one queued mailbox message. With an inbox the nudge is routed to
+   * the instance that owns the directory (another process can share the
+   * database). `inbox.nudge` resolves only after that drain ends, and the drain
+   * awaits the admitted model turn (or its 7-minute lease), so it is forked
+   * here exactly like the local `nudge`: the change stream must stay free to
+   * take the next recipient's event. The inbox already coalesces repeats per
+   * session (a nudge during a drain only marks one more pass), and the fiber
+   * belongs to the instance scope, so disposing the instance interrupts it. */
+  const nudgeRecipient = (sessionID: string): Effect.Effect<void> =>
+    inbox
+      ? inbox.nudge(SessionID.make(sessionID)).pipe(guarded("MailboxChangeNudge"), Effect.forkIn(scope), Effect.asVoid)
+      : nudge(sessionID)
+
   // H2 owns the nudge port: a queued message in this instance's directory
-  // nudges the owning session's inbox, which routes it back to the instance
-  // that owns the directory (another process can share the database). The
-  // subscription may be an unimplemented test mock; it must never kill the
-  // instance. Without an inbox (isolated unit graphs) the local drain is the
-  // only target.
+  // nudges its recipient (`nudgeRecipient`). The subscription may be an
+  // unimplemented test mock; it must never kill the instance. Without an inbox
+  // (isolated unit graphs) the local drain is the only target.
   if (messages) {
     yield* Effect.suspend(() => {
       const mailbox = messages
@@ -1051,9 +1062,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         Stream.filter((change) => change.kind === "queued"),
         Stream.runForEach((change) =>
           change.directory !== "" && DagLocation.canonicalDirectory(change.directory) === DagLocation.canonicalDirectory(directory)
-            ? inbox
-              ? inbox.nudge(SessionID.make(change.recipientSessionID))
-              : nudge(change.recipientSessionID)
+            ? nudgeRecipient(change.recipientSessionID)
             : Effect.void,
         ),
       )

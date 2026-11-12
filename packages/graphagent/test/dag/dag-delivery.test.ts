@@ -9,7 +9,7 @@
 // wake, and the fixed wake-before-mailbox order.
 import { describe, expect, it } from "bun:test"
 import { and, eq } from "drizzle-orm"
-import { Deferred, Effect, Fiber, Layer, Option, Scope, Stream, type Context } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Stream, type Context } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -34,6 +34,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
+import { awaitWithTimeout } from "../lib/effect"
 
 const DIRECTORY = process.cwd()
 const PROJECT_ID = "project-1"
@@ -233,6 +234,16 @@ const expectReported = Effect.gen(function* () {
   expect(yield* store.getUnreportedWakeWorkflows(PARENT)).toEqual([])
   expect(yield* store.getUnreportedWakeNodes(PARENT)).toEqual([])
 })
+
+/** Service graph for probes that never reach a model turn: inert session and prompt slices. */
+function inertGraph() {
+  const session = Layer.mock(Session.Service, {
+    get: () => Effect.succeed(sessionInfo),
+    messages: () => Effect.succeed([]),
+    getPart: () => Effect.succeed(undefined),
+  })
+  return Layer.mergeAll(baseLayers().all, session, Layer.mock(SessionPrompt.Service, {}))
+}
 
 describe("DagDelivery drain", () => {
   it("admits one durable wake even when drain is triggered one hundred times", async () => {
@@ -869,6 +880,57 @@ describe("DagDelivery drain", () => {
             yield* expectReported
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
         }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("forks every mailbox change nudge so a pending inbox drain neither blocks the stream nor outlives the instance (#1027 D5)", async () => {
+    const started: string[] = []
+    const interrupted: string[] = []
+    const bothStarted = Deferred.makeUnsafe<void>()
+    // The real `inbox.nudge` resolves only after the whole drain, and the drain
+    // awaits the admitted model turn: model it as a drain that never ends.
+    const inbox = {
+      init: () => Effect.void,
+      register: () => Effect.void,
+      registerStep: () => Effect.void,
+      drain: () => Effect.void,
+      nudge: (sessionID: SessionID) =>
+        Effect.sync(() => {
+          started.push(sessionID)
+          if (started.length === 2) Deferred.doneUnsafe(bothStarted, Effect.void)
+        }).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() => Effect.sync(() => void interrupted.push(sessionID))),
+        ),
+      pullForStep: () => Effect.succeed(true),
+      submit: () => Effect.fail(new SessionInbox.InboxNotWired({ source: "goal.continue" })),
+    } satisfies SessionInbox.Interface
+    const recipients = ["ses_long_turn_a", "ses_long_turn_b"]
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const changes = yield* Queue.unbounded<DagMessages.Change>()
+          const messages = {
+            receive: () => Effect.succeed({ ok: false as const }),
+            pendingRecipients: () => Effect.succeed([]),
+            changed: Stream.fromQueue(changes),
+          } as unknown as DagMessages.Interface
+          const instance = yield* Scope.make()
+          const deps = yield* services()
+          yield* startDelivery({ ...deps, scope: instance, messages, inbox })
+          for (const recipientSessionID of recipients) {
+            Queue.offerUnsafe(changes, { recipientSessionID, directory: DIRECTORY, kind: "queued", mailboxVersion: 1 })
+          }
+          // The first recipient's drain never ends, yet the second event is
+          // consumed and nudged: the stream does not wait on the inbox.
+          yield* awaitWithTimeout(Deferred.await(bothStarted), "the second recipient's nudge was never issued")
+          expect(started).toEqual(recipients)
+          expect(interrupted).toEqual([])
+          // The pending nudges belong to the instance scope.
+          yield* Scope.close(instance, Exit.void)
+          expect(interrupted.toSorted()).toEqual(recipients)
+        }).pipe(Effect.provide(inertGraph())),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),
     )
   })

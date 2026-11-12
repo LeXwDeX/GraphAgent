@@ -7,10 +7,12 @@
 // These probes pin the three acceptance behaviours that replaced it:
 // a lost change event is recovered by the inbox 30s tick (virtual clock), a
 // nudge burst coalesces into one admission, and send-to-admission latency
-// stays inside the p95 budget without a model turn.
+// stays inside the p95 budget without a model turn. They also pin what the
+// event-driven design must not break: a recipient's long model turn never
+// holds back another recipient's change event.
 
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Option, Queue, Stream } from "effect"
+import { Deferred, Effect, Layer, Option, Queue, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -40,6 +42,10 @@ interface Probe {
   queued: boolean
   /** When true the admitted turn never settles, so the in-flight fence holds. */
   hold: boolean
+  /** Sessions whose admitted turn waits on a gate the test opens: a long model turn. */
+  gates: Map<string, Deferred.Deferred<void>>
+  /** Sessions whose awaited turn was interrupted, which is what disposing the instance does to it. */
+  interrupted: string[]
   admissions: SessionID[]
   receives: number
   /** Admission timestamps for the latency probe, in performance.now() units. */
@@ -48,7 +54,16 @@ interface Probe {
 }
 
 function probe(): Probe {
-  return { queued: false, hold: true, admissions: [], receives: 0, admittedAt: [], messages: new Map() }
+  return {
+    queued: false,
+    hold: true,
+    gates: new Map(),
+    interrupted: [],
+    admissions: [],
+    receives: 0,
+    admittedAt: [],
+    messages: new Map(),
+  }
 }
 
 function reply(sessionID: SessionID): SessionV1.WithParts {
@@ -70,6 +85,17 @@ function reply(sessionID: SessionID): SessionV1.WithParts {
     },
     parts: [{ type: "text", text: "handled" }] as never,
   }
+}
+
+/** What the admitted turn's model run does: wait on a test-owned gate, hang, or finish at once. */
+function turnResult(state: Probe, sessionID: SessionID): Effect.Effect<SessionV1.WithParts> {
+  const gate = state.gates.get(sessionID)
+  if (gate)
+    return Deferred.await(gate).pipe(
+      Effect.as(reply(sessionID)),
+      Effect.onInterrupt(() => Effect.sync(() => void state.interrupted.push(sessionID))),
+    )
+  return state.hold ? Effect.never : Effect.succeed(reply(sessionID))
 }
 
 function messageFor(sessionID: string, sequence: number): DagMessages.Message {  return {
@@ -126,7 +152,7 @@ function mailboxLayer(state: Probe, changes: Stream.Stream<DagMessages.Change>) 
           turn: undefined,
           run: true,
           activate: Effect.void,
-          result: state.hold ? Effect.never : Effect.succeed(reply(input.sessionID)),
+          result: turnResult(state, input.sessionID),
           abort: Effect.void,
         })
       }),
@@ -259,6 +285,47 @@ describe("DagDelivery event-driven mailboxes (#1027 D5)", () => {
           expect(p95).toBeLessThanOrEqual(100)
         }),
       )
+    }),
+  )
+
+  it.live("a long model turn for one recipient does not hold back another recipient's change event", () =>
+    Effect.gen(function* () {
+      const state = probe()
+      state.hold = false
+      const long = "ses_long_turn"
+      const next = "ses_next_recipient"
+      state.messages.set(long, messageFor(long, 1))
+      state.messages.set(next, messageFor(next, 2))
+      // The first recipient's admitted turn runs until the test opens the gate
+      // (never, here): `inbox.nudge` resolves only after that drain ends.
+      state.gates.set(long, Deferred.makeUnsafe<void>())
+      const changes = yield* Queue.unbounded<DagMessages.Change>()
+      yield* run(
+        state,
+        Stream.fromQueue(changes),
+        Effect.gen(function* () {
+          yield* initAll
+          state.queued = true
+          Queue.offerUnsafe(changes, change(long))
+          yield* pollWithTimeout(
+            Effect.sync(() => (state.admissions.includes(SessionID.make(long)) ? true : undefined)),
+            "the long-turn mailbox was not admitted",
+          )
+          // The long turn is now in flight and holds its session's drain. The
+          // next recipient's event must still be consumed and admitted.
+          Queue.offerUnsafe(changes, change(next))
+          yield* pollWithTimeout(
+            Effect.sync(() => (state.admissions.includes(SessionID.make(next)) ? true : undefined)),
+            "the next recipient was held back behind the long model turn",
+            "2 seconds",
+          )
+          expect(state.admissions).toEqual([SessionID.make(long), SessionID.make(next)])
+          expect(state.interrupted).toEqual([])
+        }),
+      )
+      // Disposing the instance interrupts the forked nudge still waiting on
+      // the long turn instead of leaking it.
+      expect(state.interrupted).toEqual([long])
     }),
   )
 })
