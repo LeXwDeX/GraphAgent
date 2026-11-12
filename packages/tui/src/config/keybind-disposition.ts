@@ -13,6 +13,7 @@ export type DispositionKind = "keep" | "change" | "new"
 export type KeybindLayer =
   | "global"
   | "session"
+  | "session-unfocused"
   | "input"
   | "interrupt"
   | "autocomplete"
@@ -65,6 +66,13 @@ export const Layers = {
       "Session route layers: `session` (base mode), `session.global`, `session.global.unfocused` and " +
       "`session.background` (priority 1). Live while a session is open, including with the composer focused.",
     coactive: ["global"],
+  },
+  "session-unfocused": {
+    summary:
+      "`session.global.unfocused`: session bindings that only fire while no editor is focused (plain Home/End jump to " +
+      "the first/last message). Their modifier alternatives (ctrl+g, ctrl+alt+g) are re-registered in an always-on " +
+      "base-mode layer, so only the plain keys are scoped here.",
+    coactive: ["global", "session"],
   },
   input: {
     summary:
@@ -252,14 +260,12 @@ export const Disposition = {
   messages_half_page_up: keep("session"),
   messages_half_page_down: keep("session"),
   messages_first: keep(
-    "session",
-    "Also gathered by session.global.unfocused (no editor focused); the plain home alternative is live in the " +
-      "always-on session layer as well",
+    "session-unfocused",
+    "Plain home fires only with no editor focused; the ctrl+g alternative stays always-on through the modifier layer",
   ),
   messages_last: keep(
-    "session",
-    "Also gathered by session.global.unfocused (no editor focused); the plain end alternative is live in the " +
-      "always-on session layer as well",
+    "session-unfocused",
+    "Plain end fires only with no editor focused; the ctrl+alt+g alternative stays always-on through the modifier layer",
   ),
   messages_next: keep("session"),
   messages_previous: keep("session"),

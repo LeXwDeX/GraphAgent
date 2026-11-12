@@ -195,25 +195,6 @@ const KNOWN_CONFLICTS: ReadonlyArray<Conflict & { kind: "by design" | "defect"; 
     issue: "#886",
   },
   {
-    sequence: "home",
-    names: ["input_buffer_home", "messages_first"],
-    kind: "defect",
-    reason:
-      "session.first is gathered into the always-on session layer as well as session.global.unfocused, so Home in a " +
-      "focused composer scrolls the transcript instead of moving the cursor (verified against the real keymap). " +
-      "Plain home belongs in the unfocused layer only; ctrl+g stays always-on (spec 4.4).",
-    issue: "#886",
-  },
-  {
-    sequence: "end",
-    names: ["input_buffer_end", "messages_last"],
-    kind: "defect",
-    reason:
-      "Same as home: session.last is also gathered into the always-on session layer, so End in a focused composer " +
-      "scrolls the transcript. Plain end belongs in the unfocused layer only; ctrl+alt+g stays always-on.",
-    issue: "#886",
-  },
-  {
     sequence: "tab",
     names: ["agent_cycle", "diff_switch_focus"],
     kind: "by design",
