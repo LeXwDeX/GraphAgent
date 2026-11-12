@@ -1900,6 +1900,17 @@ const scenarios: Scenario[] = [
     .at((ctx) => ({ path: route("/session/{sessionID}/message", { sessionID: ctx.state.id }), headers: ctx.headers() }))
     .json(200, array),
 
+  // A child session is never created from a public payload.
+  http.protected
+    .post("/session", "session.create.rejectsParentID")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Would-be parent" }))
+    .at((ctx) => ({
+      path: "/session",
+      headers: ctx.headers(),
+      body: { title: "Smuggled child", parentID: ctx.state.id },
+    }))
+    .status(400),
   http.protected
     .post("/global/upgrade", "global.upgrade")
     .global()

@@ -112,13 +112,21 @@ describe("Session input schemas", () => {
     expect(decode(undefined)).toBeUndefined()
 
     const populated = {
-      parentID: sessionID,
-      title: "child",
+      title: "session",
       metadata: { source: "test" },
       permission: [{ action: "ask" as const, pattern: "*", permission: "bash" }],
       workspaceID,
     }
     expect(decode(populated)).toEqual(populated)
+  })
+
+  // #1026: child sessions come only from ChildRun owners through
+  // Session.Service.create. The public payload must fail on parentID rather
+  // than strip it and quietly create a top-level session.
+  test("CreateInput rejects parentID", () => {
+    const decode = decodeUnknown(Session.CreateInput)
+    expect(() => decode({ parentID: sessionID, title: "child" })).toThrow()
+    expect(() => decode({ parentID: sessionIDChild })).toThrow()
   })
 
   test("ForkInput round-trips", () => {

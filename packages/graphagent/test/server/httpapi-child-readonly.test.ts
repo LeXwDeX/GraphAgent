@@ -285,6 +285,23 @@ describe("child session read-only guard", () => {
   )
 
   it.instance(
+    "rejects parentID on session create and still creates top-level sessions",
+    () =>
+      Effect.gen(function* () {
+        const { directory, parent } = yield* family
+        const rejected = yield* call(directory, "POST", SessionPaths.create, { parentID: parent.id, title: "smuggled" })
+        expect(rejected.status).toBe(400)
+        // Rejected, not stripped into a top-level session.
+        expect((yield* Session.use.children(parent.id)).map((item) => item.title)).toEqual(["child"])
+
+        const created = yield* call(directory, "POST", SessionPaths.create, { title: "top level" })
+        expect(created.status).toBe(200)
+        expect(yield* created.json).toMatchObject({ title: "top level" })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
     "guards the experimental routes that address a session outside the group",
     () =>
       Effect.gen(function* () {

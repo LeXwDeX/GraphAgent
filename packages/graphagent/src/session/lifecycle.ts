@@ -26,7 +26,13 @@ export interface CreateOptions {
 }
 
 export interface Interface {
-  readonly create: (input?: Session.CreateInput, options?: CreateOptions) => Effect.Effect<Session.Info>
+  /**
+   * Creates a session and fires its startup lifecycle. Takes the in-process
+   * input (`parentID` allowed) rather than the public `Session.CreateInput`:
+   * the HTTP payload can no longer carry `parentID`, but a child created here
+   * still skips the top-level startup below.
+   */
+  readonly create: (input?: Session.InternalCreateInput, options?: CreateOptions) => Effect.Effect<Session.Info>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionLifecycle") {}
@@ -43,7 +49,7 @@ export const layer = Layer.effect(
     const skills = yield* Skill.Service
 
     const create = Effect.fn("SessionLifecycle.create")(function* (
-      input?: Session.CreateInput,
+      input?: Session.InternalCreateInput,
       options?: CreateOptions,
     ) {
       const result = yield* session.create(input)

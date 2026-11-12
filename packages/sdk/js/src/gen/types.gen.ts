@@ -4598,7 +4598,6 @@ export type SessionListResponse = SessionListResponses[keyof SessionListResponse
 
 export type SessionCreateData = {
   body?: {
-    parentID?: string
     title?: string
     agent?: string
     model?: {

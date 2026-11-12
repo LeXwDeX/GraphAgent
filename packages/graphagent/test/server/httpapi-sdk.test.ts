@@ -326,8 +326,8 @@ function seedMessage(directory: string, sessionID: string) {
   )
 }
 
-// #1026: a child session is read-only over HTTP, so one is seeded in-process,
-// the way the task tool and DAG spawn make one.
+// #1026: the public create payload no longer takes `parentID`, so a child
+// session is seeded in-process, the way the task tool and DAG spawn make one.
 function seedChildSession(directory: string, parentID: string) {
   return InstanceStore.Service.use((store) =>
     store.provide(
@@ -903,6 +903,18 @@ describe("HttpApi SDK", () => {
       Effect.gen(function* () {
         const parent = yield* capture(() => sdk.session.create({ title: "parent" }))
         const parentID = String(record(parent.data).id)
+        // The SDK no longer offers `parentID` and drops it from the body; a raw
+        // payload that still carries it is rejected instead of being stripped
+        // into a top-level session.
+        const rawFetch = yield* serverFetch(serverPath)
+        const smuggled = yield* call(() =>
+          rawFetch("http://localhost/session", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-graphagent-directory": directory },
+            body: JSON.stringify({ title: "smuggled", parentID }),
+          }),
+        )
+        expect(smuggled.status).toBe(400)
         const childID = String((yield* seedChildSession(directory, parentID)).id)
         const get = yield* capture(() => sdk.session.get({ sessionID: parentID }))
         const update = yield* capture(() => sdk.session.update({ sessionID: parentID, title: "renamed" }))

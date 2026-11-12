@@ -2302,7 +2302,6 @@ export class Session2 extends HeyApiClient {
    */
   public create<ThrowOnError extends boolean = false>(
     parameters?: {
-      parentID?: string
       title?: string
       agent?: string
       model?: {
@@ -2324,7 +2323,6 @@ export class Session2 extends HeyApiClient {
       [
         {
           args: [
-            { in: "body", key: "parentID" },
             { in: "body", key: "title" },
             { in: "body", key: "agent" },
             { in: "body", key: "model" },

@@ -133,6 +133,13 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
             : operation.requestBody.content?.["application/json"]?.schema?.properties
           if (properties?.id) properties.id = { anyOf: [properties.id, { type: "null" }] }
         }
+        if (path === "/session" && method === "post") {
+          // #1026: a child session is never created from a public payload. The
+          // schema declares `parentID` as `Never` so the decoder answers 400;
+          // keep the impossible field out of the generated SDK surface.
+          const properties = operation.requestBody.content?.["application/json"]?.schema?.properties
+          if (properties) delete properties.parentID
+        }
         if (path === "/session/{sessionID}" && method === "patch") {
           // #1013 (C1 PR5): dagMode/dagBudgetTokens are creation-time only.
           // The request schema declares them as `Never` so the decoder rejects
