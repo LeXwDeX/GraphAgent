@@ -122,6 +122,7 @@ const sessionBindingCommands = [
   "session.undo",
   "session.redo",
   "session.drawer.toggle",
+  "session.dagmode.toggle",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
@@ -935,6 +936,17 @@ export function Main() {
       },
     },
     {
+      title: t("help.dagmode.toggle"),
+      value: "session.dagmode.toggle",
+      category: "Session",
+      // Sub-agent views have no mode switch: the key is inert and unlisted there.
+      hidden: !!session()?.parentID,
+      enabled: !session()?.parentID,
+      run: () => {
+        toggleDagMode()
+      },
+    },
+    {
       title: conceal() ? "Disable code concealment" : "Enable code concealment",
       value: "session.toggle.conceal",
       category: "Session",
@@ -1357,6 +1369,35 @@ export function Main() {
       sessionID: route.sessionID,
       title,
     })
+  }
+
+  // The DAG mode lives on the server (#886 3.9). The key asks for the opposite
+  // of what `Session.dagMode` says right now and sends nothing else; the
+  // result returns through `session.updated`, so no mode is kept or flipped
+  // optimistically here.
+  function toggleDagMode() {
+    const info = session()
+    if (!info || info.parentID) return
+    const agent = local.agent.current()
+    const model = local.model.current()
+    void sdk.client.session
+      .command(
+        {
+          sessionID: info.id,
+          hookMode: "interactive",
+          command: "dag-mode",
+          arguments: info.dagMode === "on" ? "off" : "on",
+          agent: agent?.name,
+          model: model ? `${model.providerID}/${model.modelID}` : undefined,
+        },
+        { throwOnError: true },
+      )
+      .catch((error) => {
+        // A failing command also raises `session.error`, whose toast is keyed by
+        // its text: reuse the text as the key so the two merge into one.
+        const text = errorMessage(error)
+        toast.show({ text, level: "error", dedupeKey: text })
+      })
   }
 
   const registryCommandIds = new Set([

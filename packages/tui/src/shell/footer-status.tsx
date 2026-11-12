@@ -46,12 +46,12 @@ function LeaderPendingKeys() {
   )
 }
 
-function ToastLine(props: { toast: CurrentToast }) {
+function ToastLine(props: { toast: CurrentToast; reserve: number }) {
   const { theme } = useTheme()
   const kv = useKV()
   const dimensions = useTerminalDimensions()
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
-  const budget = () => Math.max(TOAST_MIN_BUDGET, dimensions().width - LEFT_RESERVE)
+  const budget = () => Math.max(TOAST_MIN_BUDGET, dimensions().width - LEFT_RESERVE - props.reserve)
 
   const color = () => {
     if (props.toast.level === "success") return theme.success
@@ -93,7 +93,11 @@ function ToastLine(props: { toast: CurrentToast }) {
  * leader hint taking precedence over a toast and hook progress. The footer owns
  * toast timing because it is the only component here inside `TickerProvider`.
  */
-export function useFooterStatus(progress?: Accessor<JSX.Element | undefined>): Accessor<JSX.Element | undefined> {
+export function useFooterStatus(
+  progress?: Accessor<JSX.Element | undefined>,
+  /** Left-hand footer columns taken beyond the default reserve, such as the DAG indicator. */
+  leftExtra?: Accessor<number>,
+): Accessor<JSX.Element | undefined> {
   const toast = useToast()
   const leader = useLeaderActive()
   const ticker = useTicker()
@@ -113,7 +117,7 @@ export function useFooterStatus(progress?: Accessor<JSX.Element | undefined>): A
   return createMemo(() => {
     if (leader()) return <LeaderPendingKeys />
     const current = toast.currentToast
-    if (current) return <ToastLine toast={current} />
+    if (current) return <ToastLine toast={current} reserve={leftExtra?.() ?? 0} />
     return progress?.()
   })
 }

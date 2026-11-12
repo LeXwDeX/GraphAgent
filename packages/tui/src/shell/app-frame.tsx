@@ -6,6 +6,7 @@ import { createMemo, Show, type JSX } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
+import type { DagIndicatorState } from "./dag-indicator"
 import { Drawer } from "./drawer"
 import { Footer, type FooterHint, type FooterMeta } from "./footer"
 import { StatusBand } from "./status-band"
@@ -25,7 +26,8 @@ export type AppFrameFooter = {
   agentAction?: string
   hints?: readonly FooterHint[]
   meta?: FooterMeta
-  dag?: JSX.Element
+  /** DAG mode indicator state; omitted where the session has no mode switch. */
+  dag?: DagIndicatorState
   right?: JSX.Element
 }
 
