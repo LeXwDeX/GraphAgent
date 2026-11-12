@@ -426,6 +426,10 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
       return counters.snapshot()
     },
     async dispose() {
+      // A prompt stashes the text it holds when it unmounts, in a slot the next prompt mounted in this
+      // process restores. A harness torn down with a draft in the composer (a scenario that types ends on
+      // one) would hand it to whatever test mounts a prompt next, and a snapshot of that composer shows it.
+      if (!app.renderer.isDestroyed) state.promptRef?.current?.reset()
       if (!app.renderer.isDestroyed) app.renderer.destroy()
       await stateDir[Symbol.asyncDispose]()
     },

@@ -40,12 +40,14 @@ async function frameWithout(harness: Awaited<ReturnType<typeof mountHarness>>, t
 /**
  * Render until two consecutive frames match. After a scroll the windowed list
  * mounts the rows that came into view over the next few passes; sampling before
- * that settles would count layout changes as spinner motion.
+ * that settles would count layout changes as spinner motion. Their text
+ * highlights on a parser worker and appears when it answers, which on a slower
+ * machine is after two frames that look alike, so every pass waits for it.
  */
 async function settledFrame(harness: Awaited<ReturnType<typeof mountHarness>>) {
   let previous = ""
   for (let attempt = 0; attempt < 100; attempt++) {
-    await harness.app.renderOnce()
+    await settleHighlights(harness)
     const frame = harness.app.captureCharFrame()
     if (frame === previous) return frame
     previous = frame
