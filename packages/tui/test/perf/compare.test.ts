@@ -11,6 +11,8 @@ import {
   P14_ABSOLUTE_INCREASE_MS,
   P2_MAX_SCALE,
   P2_NOISE_FLOOR_MS,
+  P95_ALLOWANCE_BELOW_MS,
+  P95_NOISE_ALLOWANCE_MS,
   P99_NOISE_ALLOWANCE_MS,
   P99_TIMING_RATIO,
   PENDING_BASELINE_COMMIT,
@@ -61,10 +63,11 @@ test("the in-memory regressions from the audit now fail", () => {
 })
 
 test("the sub-millisecond allowance does not relax baselines at or above the floor", () => {
-  const baseline = report({ p95Ms: MIN_COMPARE_MS })
+  // p50, not p95: a p95 under 3 ms has its own allowance, tested below.
+  const baseline = report({ p50Ms: MIN_COMPARE_MS })
 
-  expect(compareReports(baseline, report({ p95Ms: MIN_COMPARE_MS * TIMING_RATIO - 0.01 })).failures).toEqual([])
-  expect(compareReports(baseline, report({ p95Ms: MIN_COMPARE_MS * TIMING_RATIO + 0.01 })).failures).toHaveLength(1)
+  expect(compareReports(baseline, report({ p50Ms: MIN_COMPARE_MS * TIMING_RATIO - 0.01 })).failures).toEqual([])
+  expect(compareReports(baseline, report({ p50Ms: MIN_COMPARE_MS * TIMING_RATIO + 0.01 })).failures).toHaveLength(1)
 })
 
 test("a baseline at the floor still gates a regression beyond the p99 allowance", () => {
@@ -127,10 +130,11 @@ test("an improvement never fails, whatever the baseline", () => {
 })
 
 test("p99 uses the wider ratio while other percentiles use the relative one", () => {
-  const baseline = report({ p95Ms: 2, p99Ms: 2 })
+  // At 10 ms neither percentile gets an absolute allowance, so the ratios decide.
+  const baseline = report({ p95Ms: 10, p99Ms: 10 })
   const current = report({
-    p95Ms: 2 * TIMING_RATIO + 0.01,
-    p99Ms: 2 * P99_TIMING_RATIO - 0.01,
+    p95Ms: 10 * TIMING_RATIO + 0.01,
+    p99Ms: 10 * P99_TIMING_RATIO - 0.01,
   })
 
   const { failures } = compareReports(baseline, current)
@@ -150,6 +154,67 @@ test("the machine factor normalizes the current timing", () => {
   const current = report({ p99Ms: 3.9 }, { fixedLayoutMsMedian: 20 })
 
   expect(compareReports(baseline, current).failures).toEqual([])
+})
+
+test("a p95 under 3 ms gets an absolute allowance on top of the ratio", () => {
+  // Measured: S P5 open p95 moved from a 1.83 ms baseline to 3.62 ms with nothing changed.
+  const baseline = report({ openP95Ms: 1.83 }, undefined, "P5")
+  const compare = (value: number) => compareReports(baseline, report({ openP95Ms: value }, undefined, "P5")).failures
+
+  expect(compare(3.62)).toEqual([])
+  // The limit is the baseline plus the allowance; the ratio (2.38) is the smaller of the two.
+  expect(compare(1.83 + P95_NOISE_ALLOWANCE_MS)).toEqual([])
+  expect(compare(1.83 + P95_NOISE_ALLOWANCE_MS + 0.01)).toHaveLength(1)
+  // A real regression still fails.
+  const regressed = compare(8)
+  expect(regressed).toHaveLength(1)
+  expect(regressed[0]?.limit).toContain(`+${P95_NOISE_ALLOWANCE_MS} ms p95 allowance`)
+})
+
+test("the p95 allowance covers every p95 metric and only those", () => {
+  const baseline = report({ p95Ms: 1.83, openP95Ms: 1.83, escapeP95Ms: 1.83, p50Ms: 1.83, p99Ms: 1.83 })
+
+  // 3.62 ms: inside baseline + 2 ms for the three p95 names; p50 has only the ratio (2.38) and p99 its own 5 ms.
+  const { failures } = compareReports(
+    baseline,
+    report({ p95Ms: 3.62, openP95Ms: 3.62, escapeP95Ms: 3.62, p50Ms: 3.62, p99Ms: 3.62 }),
+  )
+
+  expect(failures.map((failure) => failure.metric)).toEqual(["p50Ms"])
+})
+
+test("the p95 allowance ends at the baseline it was written for", () => {
+  const compare = (before: number, now: number) =>
+    compareReports(report({ p95Ms: before }), report({ p95Ms: now })).failures
+
+  // Just under 3 ms: baseline + 2 ms is 4.99.
+  expect(compare(P95_ALLOWANCE_BELOW_MS - 0.01, 4.9)).toEqual([])
+  expect(compare(P95_ALLOWANCE_BELOW_MS - 0.01, 5.0)).toHaveLength(1)
+  // At 3 ms the ratio decides alone: 3.9.
+  expect(compare(P95_ALLOWANCE_BELOW_MS, 3.9)).toEqual([])
+  expect(compare(P95_ALLOWANCE_BELOW_MS, 4.0)).toHaveLength(1)
+})
+
+test("a machine faster than the baseline's does not tighten the ratio", () => {
+  // P5' open p95 on M: baseline 4.89 ms. 6.1 ms is 1.25x, inside the 1.30x ratio.
+  const baseline = report({ openP95Ms: 4.89 }, { fixedLayoutMsMedian: 20 }, "P5'")
+  const faster = report({ openP95Ms: 6.1 }, { fixedLayoutMsMedian: 18 }, "P5'")
+  const same = report({ openP95Ms: 6.1 }, { fixedLayoutMsMedian: 20 }, "P5'")
+
+  // A calibration 10% faster would have scaled 6.1 ms up to 6.78 and failed it.
+  expect(compareReports(baseline, faster).failures).toEqual([])
+  expect(compareReports(baseline, same).failures).toEqual([])
+  // The ratio is still enforced on that machine.
+  const over = report({ openP95Ms: 6.4 }, { fixedLayoutMsMedian: 18 }, "P5'")
+  expect(compareReports(baseline, over).failures).toHaveLength(1)
+})
+
+test("a slower machine is still normalized by its factor", () => {
+  const baseline = report({ openP95Ms: 4.89 }, { fixedLayoutMsMedian: 20 }, "P5'")
+
+  // 1.5x slower: 9.0 ms normalizes to 6.0 ms, inside 6.36.
+  expect(compareReports(baseline, report({ openP95Ms: 9 }, { fixedLayoutMsMedian: 30 }, "P5'")).failures).toEqual([])
+  expect(compareReports(baseline, report({ openP95Ms: 10 }, { fixedLayoutMsMedian: 30 }, "P5'")).failures).toHaveLength(1)
 })
 
 function scenarioReport(id: string, metrics: Record<string, number>, calibration?: { fixedLayoutMsMedian?: number }) {

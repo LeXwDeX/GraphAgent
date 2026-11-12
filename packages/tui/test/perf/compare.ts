@@ -75,6 +75,21 @@ export const SUB_MS_ALLOWANCE_MS = 2
  * must exceed both the ratio and this allowance before it fails.
  */
 export const P99_NOISE_ALLOWANCE_MS = 5
+/**
+ * Below this baseline a p95 is a short, fast sample (a slash menu opening in
+ * 1.8 ms), and one process in a few lands well above its median: S `P5` open
+ * p95 went from a 1.83 ms baseline to 3.62 ms with nothing changed, on a
+ * machine running other work. The ratio alone reads that as a 2x regression.
+ */
+export const P95_ALLOWANCE_BELOW_MS = 3
+/**
+ * Absolute allowance, in normalized milliseconds, for a p95 under
+ * `P95_ALLOWANCE_BELOW_MS`: it fails only when it exceeds both the ratio and
+ * baseline + this. 3.62 ms against 1.83 passes; a real regression, 1.83 to
+ * 8 ms, still fails, and the absolute ceilings above still cap the budget itself.
+ * A baseline at or above `P95_ALLOWANCE_BELOW_MS` is compared by ratio alone.
+ */
+export const P95_NOISE_ALLOWANCE_MS = 2
 /** Absolute ceiling for any interactive frame (Issue #1025 7.4). */
 export const FRAME_CEILING_MS = 100
 /** P2: input latency may not grow with transcript length (p95 L / p95 S). */
@@ -167,9 +182,11 @@ function scenario(report: PerfReport, size: string, id: string): ScenarioMetrics
 }
 
 /**
- * Noise floors compare two samples taken in the same run, so a faster machine
- * has no reason to tighten them; the calibration that sets the factor is itself
- * noisy (0.5x to 1.1x on one machine). A slower runner still gets the headroom.
+ * A faster machine has no reason to hold anything tighter: the calibration that
+ * sets the factor is itself noisy (0.5x to 1.1x on one machine, 0.91 in a run
+ * that otherwise matched its baseline), so a factor below 1 would only shrink a
+ * limit by the calibration's own noise. A slower runner still gets the headroom.
+ * The noise floors, the absolute ceilings, and the ratio checks all scale by it.
  */
 const noiseScale = (factor: number) => Math.max(1, factor)
 
@@ -234,19 +251,23 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
         // `maxMs` is one worst frame; a single scheduler hiccup moves it far
         // past the ratio. It is gated by the absolute ceilings below instead.
         if (!name.endsWith("Ms") || NO_RATIO.has(name) || skipped) continue
-        const adjusted = value / factor
+        const scale = noiseScale(factor)
+        const adjusted = value / scale
         const p99 = name.endsWith("p99Ms")
+        const lowP95 = /p95ms$/i.test(name) && old < P95_ALLOWANCE_BELOW_MS
         const tolerance = p99 ? P99_TIMING_RATIO : TIMING_RATIO
         const subMillisecond = old < MIN_COMPARE_MS
-        const allowance = p99 ? P99_NOISE_ALLOWANCE_MS : subMillisecond ? SUB_MS_ALLOWANCE_MS : 0
+        const allowance = p99
+          ? P99_NOISE_ALLOWANCE_MS
+          : Math.max(subMillisecond ? SUB_MS_ALLOWANCE_MS : 0, lowP95 ? P95_NOISE_ALLOWANCE_MS : 0)
         const limit = Math.max(old * tolerance, old + allowance)
         if (adjusted > limit) {
-          const rule = p99
-            ? `${tolerance.toFixed(2)}× baseline or +${allowance} ms p99 allowance`
-            : allowance > 0
-              ? `${tolerance.toFixed(2)}× baseline or +${allowance} ms sub-millisecond allowance`
+          const kind = p99 ? "p99" : subMillisecond ? "sub-millisecond" : "p95"
+          const rule =
+            allowance > 0
+              ? `${tolerance.toFixed(2)}× baseline or +${allowance} ms ${kind} allowance`
               : `${tolerance.toFixed(2)}× baseline`
-          fail(size, id, name, `≤ ${limit.toFixed(2)} (${rule}, machine factor ${factor.toFixed(3)})`, adjusted)
+          fail(size, id, name, `≤ ${limit.toFixed(2)} (${rule}, machine factor ${scale.toFixed(3)})`, adjusted)
         }
       }
     }
