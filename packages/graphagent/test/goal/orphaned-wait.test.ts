@@ -17,8 +17,10 @@ import { testEffect } from "../lib/effect"
  * Issue #1069 (acceptance 5b): a goal waiting on a job must not sleep until its
  * deadline when the job can no longer wake it. A process restart drops the
  * in-process registry that would have delivered the wake, so the durable
- * `runtime_job` row is the only record left. `Goal.wakeOrphanedWait` is the
- * decision the goal startup scan applies to every waiting goal.
+ * `runtime_job` row is the only record left. `Goal.orphanedWait` is the decision
+ * the goal startup scan takes for every waiting goal, and
+ * `Goal.expireOrphanedWait` ends exactly that wait with the review marker a
+ * timed-out wait gets; the reason is what the review turn tells the agent.
  */
 
 const testLayer = Goal.layer.pipe(
@@ -61,80 +63,102 @@ const waitingGoal = (jobID: string, options?: { ref?: boolean; wakes?: number })
     return sid
   })
 
-describe("Goal.wakeOrphanedWait", () => {
-  it.live("wakes a goal whose job the restart recovery already failed", () =>
+/** What the startup scan does for one goal: decide, then end exactly that wait. */
+const expireOrphaned = (sid: SessionID) =>
+  Effect.gen(function* () {
+    const goal = yield* Goal.Service
+    const orphan = yield* goal.orphanedWait(sid)
+    return orphan ? yield* goal.expireOrphanedWait(sid, orphan) : undefined
+  })
+
+/**
+ * The wait ended: the goal is active again with the blocked-review marker, and
+ * the reason is the one the agent reads in the review prompt.
+ */
+const expectReviewMarker = (state: GoalState.Info | undefined, ...parts: string[]) => {
+  expect(state?.status).toBe("active")
+  expect(state?.intent).toEqual({ kind: "blocked", reason: expect.stringContaining("复核回合未取得进展") })
+  expect(state?.paused_reason).toBeUndefined()
+  for (const part of ["process_restart", "请决定重跑或放弃", ...parts]) expect(state?.last_reason).toContain(part)
+}
+
+describe("Goal.orphanedWait and Goal.expireOrphanedWait", () => {
+  it.live("ends the wait of a job the restart recovery already failed, naming it", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
       yield* insertJob({
         id: "orphan_job_recovered",
+        title: "watch https://github.com/acme/widgets/pull/42",
         process_id: "proc_dead",
         status: "error",
         error: "process_restart",
       })
       const sid = yield* waitingGoal("orphan_job_recovered")
 
-      expect(yield* goal.wakeOrphanedWait(sid)).toBe(true)
+      // Deciding is a read: the goal still waits until the expiry is applied.
+      const orphan = yield* goal.orphanedWait(sid)
+      expect(orphan?.jobID).toBe("orphan_job_recovered")
+      expect((yield* goal.load(sid))?.status).toBe("waiting")
 
-      const state = yield* goal.load(sid)
-      expect(state?.status).toBe("active")
-      expect(state?.intent).toEqual({ kind: "progress" })
-      expect(state?.last_reason).toContain("process_restart")
-      expect(state?.last_reason).toContain("orphan_job_recovered")
+      const expired = yield* expireOrphaned(sid)
+
+      expectReviewMarker(
+        expired,
+        "等待的后台任务",
+        "watch https://github.com/acme/widgets/pull/42",
+        "orphan_job_recovered",
+        "因进程重启已终止（状态 error",
+      )
+      // What was returned is what was stored, and the wait is over: a second
+      // pass finds an ordinary active goal.
+      expectReviewMarker(yield* goal.load(sid), "orphan_job_recovered")
+      expect(yield* expireOrphaned(sid)).toBeUndefined()
     }),
   )
 
-  it.live("wakes a goal whose job finished but whose wake never arrived", () =>
+  it.live("ends the wait of a job that finished but whose wake never arrived", () =>
     Effect.gen(function* () {
-      const goal = yield* Goal.Service
       yield* insertJob({ id: "orphan_job_finished", process_id: "proc_dead", status: "completed" })
       const sid = yield* waitingGoal("orphan_job_finished")
 
-      expect(yield* goal.wakeOrphanedWait(sid)).toBe(true)
-
-      const state = yield* goal.load(sid)
-      expect(state?.status).toBe("active")
-      expect(state?.last_reason).toContain("process_restart")
-      expect(state?.last_reason).toContain("completed")
+      expectReviewMarker(
+        yield* expireOrphaned(sid),
+        "orphan_job_finished",
+        "已结束（状态 completed）",
+        "唤醒因进程重启（process_restart）丢失",
+      )
     }),
   )
 
-  it.live("wakes a goal whose job already ended in this process without waking it", () =>
+  it.live("ends the wait of a job that already ended in this process without waking it", () =>
     Effect.gen(function* () {
-      const goal = yield* Goal.Service
       // An earlier instance generation of this process finished the job; the
       // owner of the wake went away with that generation's registry.
       yield* insertJob({ id: "orphan_job_ended_here", process_id: runtimeJobProcessID, status: "cancelled" })
       const sid = yield* waitingGoal("orphan_job_ended_here")
 
-      expect(yield* goal.wakeOrphanedWait(sid)).toBe(true)
-      expect((yield* goal.load(sid))?.status).toBe("active")
+      expectReviewMarker(yield* expireOrphaned(sid), "orphan_job_ended_here", "已结束（状态 cancelled）")
     }),
   )
 
-  it.live("wakes a goal whose job row an earlier process left running, before recovery reached it", () =>
+  it.live("ends the wait of a job an earlier process left running, before recovery reached it", () =>
     Effect.gen(function* () {
-      const goal = yield* Goal.Service
       yield* insertJob({ id: "orphan_job_leftover", process_id: "proc_dead", status: "settling" })
       const sid = yield* waitingGoal("orphan_job_leftover")
 
-      expect(yield* goal.wakeOrphanedWait(sid)).toBe(true)
-
-      const state = yield* goal.load(sid)
-      expect(state?.status).toBe("active")
-      expect(state?.last_reason).toContain("process_restart")
+      expectReviewMarker(
+        yield* expireOrphaned(sid),
+        "orphan_job_leftover",
+        "因进程重启已丢失（状态 settling，由已退出的进程留下",
+      )
     }),
   )
 
-  it.live("wakes a goal whose job was never recorded", () =>
+  it.live("ends the wait of a job that was never recorded", () =>
     Effect.gen(function* () {
-      const goal = yield* Goal.Service
       const sid = yield* waitingGoal("orphan_job_unrecorded")
 
-      expect(yield* goal.wakeOrphanedWait(sid)).toBe(true)
-
-      const state = yield* goal.load(sid)
-      expect(state?.status).toBe("active")
-      expect(state?.last_reason).toContain("process_restart")
+      expectReviewMarker(yield* expireOrphaned(sid), "orphan_job_unrecorded", "没有持久记录")
     }),
   )
 
@@ -144,7 +168,8 @@ describe("Goal.wakeOrphanedWait", () => {
       yield* insertJob({ id: "orphan_job_alive", process_id: runtimeJobProcessID, status: "running" })
       const sid = yield* waitingGoal("orphan_job_alive")
 
-      expect(yield* goal.wakeOrphanedWait(sid)).toBe(false)
+      expect(yield* goal.orphanedWait(sid)).toBeUndefined()
+      expect(yield* expireOrphaned(sid)).toBeUndefined()
 
       const state = yield* goal.load(sid)
       expect(state?.status).toBe("waiting")
@@ -157,24 +182,68 @@ describe("Goal.wakeOrphanedWait", () => {
       const goal = yield* Goal.Service
       const sid = yield* waitingGoal("orphan_job_legacy", { ref: false })
 
-      expect(yield* goal.wakeOrphanedWait(sid)).toBe(false)
+      // No decision is taken for it at all, whatever the job table holds.
+      expect(yield* goal.orphanedWait(sid)).toBeUndefined()
+      expect(yield* expireOrphaned(sid)).toBeUndefined()
       expect((yield* goal.load(sid))?.status).toBe("waiting")
     }),
   )
 
-  it.live("ignores goals that are not waiting and waits whose wake budget is spent", () =>
+  it.live("ignores goals that are not waiting", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
       const active = SessionID.descending()
       yield* goal.set(active, "ship it", 10)
-      expect(yield* goal.wakeOrphanedWait(active)).toBe(false)
-      expect(yield* goal.wakeOrphanedWait(SessionID.descending())).toBe(false)
 
-      // The deadline path owns an exhausted budget and its visible pause.
+      expect(yield* expireOrphaned(active)).toBeUndefined()
+      expect((yield* goal.load(active))?.status).toBe("active")
+      expect(yield* expireOrphaned(SessionID.descending())).toBeUndefined()
+    }),
+  )
+
+  it.live("ends a wait whose wake budget is spent too: the job is gone either way", () =>
+    Effect.gen(function* () {
       yield* insertJob({ id: "orphan_job_spent", process_id: "proc_dead", status: "error", error: "process_restart" })
-      const spent = yield* waitingGoal("orphan_job_spent", { wakes: 1 })
-      expect(yield* goal.wakeOrphanedWait(spent)).toBe(false)
-      expect((yield* goal.load(spent))?.status).toBe("waiting")
+      const sid = yield* waitingGoal("orphan_job_spent", { wakes: 1 })
+
+      expectReviewMarker(yield* expireOrphaned(sid), "orphan_job_spent")
+    }),
+  )
+
+  // The decision and its expiry are two steps: the compare-and-swap keeps the
+  // expiry from landing on a wait the goal replaced or consumed in between.
+  it.live("expires only the wait whose job was checked, not one declared since", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* insertJob({ id: "orphan_job_stale", process_id: "proc_dead", status: "error", error: "process_restart" })
+      const sid = yield* waitingGoal("orphan_job_stale")
+      const orphan = yield* goal.orphanedWait(sid)
+      if (!orphan) throw new Error("expected an orphaned wait")
+
+      // The agent re-declares its wait on another job before the expiry lands.
+      yield* goal.setIntent(sid, awaitJob("orphan_job_replacement"))
+
+      expect(yield* goal.expireOrphanedWait(sid, orphan)).toBeUndefined()
+      const state = yield* goal.load(sid)
+      expect(state?.status).toBe("waiting")
+      expect(state?.intent?.kind === "await" ? state.intent.wait.ref?.id : undefined).toBe("orphan_job_replacement")
+    }),
+  )
+
+  it.live("does not expire a wait that was woken since the decision", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      yield* insertJob({ id: "orphan_job_woken", process_id: "proc_dead", status: "error", error: "process_restart" })
+      const sid = yield* waitingGoal("orphan_job_woken")
+      const orphan = yield* goal.orphanedWait(sid)
+      if (!orphan) throw new Error("expected an orphaned wait")
+
+      expect(yield* goal.wake(sid, { source: "watch_pr", ids: ["orphan_job_woken"] }, "checks passed")).toBe(true)
+
+      expect(yield* goal.expireOrphanedWait(sid, orphan)).toBeUndefined()
+      const state = yield* goal.load(sid)
+      expect(state?.status).toBe("active")
+      expect(state?.intent).toEqual({ kind: "progress" })
     }),
   )
 })

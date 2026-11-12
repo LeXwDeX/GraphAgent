@@ -222,50 +222,59 @@ const serviceLayer = Layer.effect(
     // The builder sets this ref before handing out the scope it already has.
     const instanceScopeRef: { current: Scope.Scope | undefined } = { current: undefined }
 
-    // #1067: the first expiry is a two-stage transition. Goal.expireWait turns
-    // the expired await into a blocked-review marker and returns the goal to
-    // active; this handler dispatches ONE bounded review turn that asks the
-    // agent to check external state and declare the next intent. If that turn
-    // declares nothing, afterIdle's blocked-intent branch pauses the goal
-    // visibly. The prompt is forked because triggerEvaluation also calls this
-    // from the inbox drain, which must not await a whole agent turn.
+    // #1067: a wait that ended without its wake is a two-stage transition. The
+    // goal first returns to active with a blocked-review marker (Goal.expireWait
+    // for a deadline, Goal.expireOrphanedWait for a lost job); this dispatches
+    // ONE bounded review turn that asks the agent to check external state and
+    // declare the next intent. If that turn declares nothing, afterIdle's
+    // blocked-intent branch pauses the goal visibly. The marker's reason is part
+    // of the prompt, so the agent learns why the wait ended. The prompt is
+    // forked because triggerEvaluation also calls this from the inbox drain,
+    // which must not await a whole agent turn.
+    const dispatchWaitReview = Effect.fnUntraced(function* (
+      sessionID: SessionID,
+      expired: GoalState.Info,
+      title: string,
+    ) {
+      const reviewText = [
+        title,
+        `目标：${expired.goal}`,
+        `${expired.last_reason ?? "等待已超时"}。`,
+        "先做一次有界检查（例如查看 PR/MR 状态或后台任务状态），不要空等。",
+        "然后在本轮用 goal 工具声明下一步意图：",
+        "- progress：继续推进；",
+        "- await：等待新的 wait_source/wait_id；",
+        "- done：目标已完成（需给出 evidence）；",
+        "- blocked：确实无法推进（需说明原因）。",
+        "本轮结束仍未声明进展时，目标将暂停。",
+      ].join("\n")
+      const scope = instanceScopeRef.current
+      if (!scope) {
+        yield* Effect.logWarning("goal wait review skipped: instance scope not resolved", { sessionID })
+        return false
+      }
+      yield* Effect.gen(function* () {
+        yield* goal.markTurnDriven(sessionID)
+        yield* promptSvc.prompt({
+          sessionID,
+          parts: [{ type: "text", text: reviewText, synthetic: true }],
+        })
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.void
+            : Effect.logWarning("goal wait review turn failed", { sessionID, cause: Cause.pretty(cause) }),
+        ),
+        Effect.forkIn(scope, { startImmediately: true }),
+      )
+      return true
+    })
+
     const expireWaiting = Effect.fnUntraced(function* (sessionID: SessionID) {
       const expired = yield* goal.expireWait(sessionID)
       if (!expired) return false
-      if (expired.status === "active" && expired.intent?.kind === "blocked") {
-        const reviewText = [
-          "[等待超时复核]",
-          `目标：${expired.goal}`,
-          `${expired.last_reason ?? "等待已超时"}。`,
-          "先做一次有界检查（例如查看 PR/MR 状态或后台任务状态），不要空等。",
-          "然后在本轮用 goal 工具声明下一步意图：",
-          "- progress：继续推进；",
-          "- await：等待新的 wait_source/wait_id；",
-          "- done：目标已完成（需给出 evidence）；",
-          "- blocked：确实无法推进（需说明原因）。",
-          "本轮结束仍未声明进展时，目标将暂停。",
-        ].join("\n")
-        const scope = instanceScopeRef.current
-        if (!scope) {
-          yield* Effect.logWarning("goal wait review skipped: instance scope not resolved", { sessionID })
-          return false
-        }
-        yield* Effect.gen(function* () {
-          yield* goal.markTurnDriven(sessionID)
-          yield* promptSvc.prompt({
-            sessionID,
-            parts: [{ type: "text", text: reviewText, synthetic: true }],
-          })
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.void
-              : Effect.logWarning("goal wait review turn failed", { sessionID, cause: Cause.pretty(cause) }),
-          ),
-          Effect.forkIn(scope, { startImmediately: true }),
-        )
-        return true
-      }
+      if (expired.status === "active" && expired.intent?.kind === "blocked")
+        return yield* dispatchWaitReview(sessionID, expired, "[等待超时复核]")
       // Defensive: a direct pause transition (kept for callers that still
       // pause immediately) releases the registration and tells the user why.
       if (expired.status !== "paused") return false
@@ -1478,27 +1487,30 @@ const serviceLayer = Layer.effect(
     // left running, but that is a transient lifecycle event nobody subscribes
     // to, and the goal's own wake died with the in-process registry; without
     // this a wait on such a job sleeps until its deadline (30 minutes by
-    // default). Goal.wakeOrphanedWait decides from the durable job row; a goal
-    // it wakes is an ordinary active goal again and takes the same resume path
-    // as the active snapshot (busy sessions are deferred to their own idle).
-    // Waits on live work, or on anything without a StateRef, are untouched.
+    // default). Goal.orphanedWait decides from the durable job row, and
+    // Goal.expireOrphanedWait ends the wait the way a timed-out one ends: the
+    // review turn carries the lost job to the agent, and a review that declares
+    // nothing pauses the goal visibly. Waits on live work, or on anything
+    // without a StateRef, are untouched.
     const scanForWaitingGoals = Effect.fnUntraced(function* (snapshot: ReadonlyArray<SessionID>) {
-      const woken: SessionID[] = []
       for (const sessionID of snapshot) {
-        const wokeOne = yield* goal.wakeOrphanedWait(sessionID).pipe(
+        yield* Effect.gen(function* () {
+          const orphan = yield* goal.orphanedWait(sessionID)
+          if (!orphan) return
+          const expired = yield* goal.expireOrphanedWait(sessionID, orphan)
+          if (expired) yield* dispatchWaitReview(sessionID, expired, "[等待任务丢失复核]")
+        }).pipe(
+          // One bad row never stops the rest of the scan; interrupts stay silent.
           Effect.catchCause((cause) =>
-            // One bad row never stops the rest of the scan; interrupts stay silent.
             Cause.hasInterrupts(cause)
               ? Effect.interrupt
               : Effect.logWarning("goal startup wait scan failed for session", {
                   sessionID,
                   cause: Cause.pretty(cause),
-                }).pipe(Effect.as(false)),
+                }),
           ),
         )
-        if (wokeOne) woken.push(sessionID)
       }
-      yield* scanForActiveGoals(woken)
     })
 
     const wake = Effect.fn("GoalLoop.wake")(function* (

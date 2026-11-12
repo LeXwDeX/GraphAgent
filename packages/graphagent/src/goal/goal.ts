@@ -87,6 +87,15 @@ export type WakeMatch = {
   readonly ids: ReadonlyArray<string>
 }
 
+/**
+ * A wait whose job can no longer wake the goal (#1069): the job the wait names
+ * and the reason the agent will read in the review prompt.
+ */
+export type OrphanedWait = {
+  readonly jobID: string
+  readonly reason: string
+}
+
 export interface Interface {
   /** Controls issued inside a model turn; never starts or interrupts a prompt. */
   readonly controlDuringTurn: (sessionID: SessionID, input: TurnControl) => Effect.Effect<TurnControlResult>
@@ -110,19 +119,31 @@ export interface Interface {
   readonly wake: (sessionID: SessionID, match: WakeMatch, payload?: string) => Effect.Effect<boolean>
   readonly expireWait: (sessionID: SessionID, now?: number) => Effect.Effect<GoalState.Info | undefined>
   /**
-   * #1069 startup reconciliation: wake a waiting goal whose awaited job can no
-   * longer wake it. A process restart drops the in-process registry that would
-   * have delivered the wake, so the durable `runtime_job` row is the only
+   * #1069 startup reconciliation, read-only: the wait of this goal if its job
+   * can no longer wake it. A process restart drops the in-process registry that
+   * would have delivered the wake, so the durable `runtime_job` row is the only
    * record left, and the job is gone when that row is terminal, was left
    * running by another process, or was never recorded. A row owned by this
-   * process and still running is kept: its owner may be alive. Only a wait
-   * that names its job by StateRef is checked; any other keeps its deadline.
+   * process and still running is kept: its owner may be alive. Only a wait that
+   * names its job by StateRef is checked; any other keeps its deadline.
    *
    * Call it from a scan over a freshly built instance only: that is what makes
-   * "no live registry entry" a fact rather than a guess. Resolves to true when
-   * the goal was woken.
+   * "no live registry entry" a fact rather than a guess.
    */
-  readonly wakeOrphanedWait: (sessionID: SessionID) => Effect.Effect<boolean>
+  readonly orphanedWait: (sessionID: SessionID) => Effect.Effect<OrphanedWait | undefined>
+  /**
+   * #1069: end the wait `orphanedWait` decided on, the way a timed-out one ends
+   * (see `expireWait`): the goal returns to active with a blocked-review marker
+   * whose reason names the lost job, and the caller dispatches the same bounded
+   * review turn, so the agent is told what happened and decides to rerun or
+   * give up; a review turn that declares nothing pauses the goal visibly. The
+   * expiry applies only while the goal still waits on that job. Resolves to the
+   * marker state, or undefined when the wait changed in the meantime.
+   */
+  readonly expireOrphanedWait: (
+    sessionID: SessionID,
+    orphan: OrphanedWait,
+  ) => Effect.Effect<GoalState.Info | undefined>
   readonly clearIntent: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   /** Session-deletion cleanup: remove goal_state AND all goal_outcome rows. */
   readonly purgeSession: (sessionID: SessionID) => Effect.Effect<void>
@@ -318,18 +339,41 @@ const awaitWaitFor = (job: BackgroundJob.Info, now: number): GoalState.Wait => {
 }
 
 /**
- * Why a job's durable row can no longer lead to a wake, or undefined when its
- * owner may still deliver one (#1069). A terminal row is a job that ended
- * without its wake arriving or that restart recovery failed; a non-terminal
- * row of another process is one recovery has not reached yet; a row that was
- * never written leaves nothing to wait for either.
+ * The review reason for a wait whose job can no longer wake it, or undefined
+ * when its owner may still deliver a wake (#1069). A terminal row is a job that
+ * ended without its wake arriving, or that restart recovery failed as
+ * `process_restart`; a non-terminal row of another process is one recovery has
+ * not reached yet; a row that was never written leaves nothing to wait for
+ * either. The text reaches the agent in the review prompt, so it names the job
+ * (title and id), its state, and the decision that is wanted.
  */
-const orphanDetail = (row: PersistedJob | undefined): string | undefined => {
-  if (!row) return "没有持久记录"
-  if (isTerminalValue("job", row.status)) return `任务已结束（${row.status}${row.error ? `，${row.error}` : ""}）`
-  if (row.process_id !== runtimeJobProcessID) return `任务由已退出的进程留下（${row.status}）`
+const orphanReason = (jobID: string, row: PersistedJob | undefined): string | undefined => {
+  const subject = `等待的后台任务 ${row?.title ? `${row.title}（${jobID}）` : jobID}`
+  const decision = "请决定重跑或放弃"
+  if (!row) return `${subject} 因进程重启已丢失（没有持久记录；process_restart），${decision}`
+  if (isTerminalValue("job", row.status))
+    return row.error === "process_restart"
+      ? `${subject} 因进程重启已终止（状态 ${row.status}：process_restart），${decision}`
+      : `${subject} 已结束（状态 ${row.status}${row.error ? `：${row.error}` : ""}），唤醒因进程重启（process_restart）丢失，${decision}`
+  if (row.process_id !== runtimeJobProcessID)
+    return `${subject} 因进程重启已丢失（状态 ${row.status}，由已退出的进程留下；process_restart），${decision}`
   return undefined
 }
+
+/**
+ * The two-stage expiry marker (#1067): an await that ended without its wake
+ * becomes a blocked intent and the goal returns to active, so the loop can
+ * dispatch ONE bounded review turn. Shared by a deadline that passed and by a
+ * wait whose job is gone (#1069).
+ */
+const reviewMarker = (state: GoalState.Info, reason: string, now: number) =>
+  GoalState.advance(state, {
+    status: "active",
+    intent: { kind: "blocked", reason: `${reason}；复核回合未取得进展` },
+    paused_reason: undefined,
+    last_reason: reason,
+    last_turn_at: now,
+  })
 
 const serviceLayer = Layer.effect(
   Service,
@@ -1020,25 +1064,6 @@ const serviceLayer = Layer.effect(
       })
     })
 
-    // #1069: the wait's own wake can no longer arrive. See the interface note
-    // for the contract; `wake` stays the single transition, so a wait that was
-    // replaced or already woken meanwhile is left alone by its identity match.
-    const wakeOrphanedWait = Effect.fn("Goal.wakeOrphanedWait")(function* (sessionID: SessionID) {
-      const state = yield* loadState(sessionID)
-      if (!state || state.status !== "waiting" || state.intent?.kind !== "await") return false
-      const wait = state.intent.wait
-      if (wait.ref?.domain !== "job") return false
-      const jobID = wait.ref.id
-      const row = yield* readPersistedJob(db, jobID).pipe(Effect.orDie)
-      const detail = orphanDetail(row)
-      if (detail === undefined) return false
-      return yield* wake(
-        sessionID,
-        { source: wait.source, ids: [jobID] },
-        `等待 ${wait.source}:${jobID} 的后台任务已随进程重启丢失（process_restart）：${detail}。请核对其实际结果后继续。`,
-      )
-    })
-
     // #1067: two-stage expiry. The first expiry is not a pause — it turns the
     // expired await into a blocked-review marker and returns the goal to
     // active. GoalLoop.expireWaiting then dispatches ONE bounded review turn.
@@ -1056,13 +1081,37 @@ const serviceLayer = Layer.effect(
           now >= wait.deadline
             ? `等待 ${wait.source}:${target} 超时`
             : `等待 ${wait.source}:${target} 超过最大唤醒次数`
-        const next = GoalState.advance(state, {
-          status: "active",
-          intent: { kind: "blocked", reason: `${expiredReason}；复核回合未取得进展` },
-          paused_reason: undefined,
-          last_reason: expiredReason,
-          last_turn_at: now,
-        })
+        const next = reviewMarker(state, expiredReason, now)
+        return { tag: "save", state: next, value: next }
+      })
+    })
+
+    // #1069: see the interface notes. The decision is a read; the expiry is the
+    // compare-and-swap, so a wait replaced or woken in between is left alone.
+    // The marker is the one `expireWait` writes, so the loop's review turn and
+    // its visible pause apply unchanged.
+    const orphanedWait = Effect.fn("Goal.orphanedWait")(function* (sessionID: SessionID) {
+      const state = yield* loadState(sessionID)
+      if (!state || state.status !== "waiting" || state.intent?.kind !== "await") return undefined
+      const jobID = state.intent.wait.ref?.domain === "job" ? state.intent.wait.ref.id : undefined
+      if (jobID === undefined) return undefined
+      const reason = orphanReason(jobID, yield* readPersistedJob(db, jobID).pipe(Effect.orDie))
+      return reason === undefined ? undefined : { jobID, reason }
+    })
+
+    const expireOrphanedWait = Effect.fn("Goal.expireOrphanedWait")(function* (
+      sessionID: SessionID,
+      orphan: OrphanedWait,
+    ) {
+      return yield* transition(sessionID, (state) => {
+        if (
+          !state ||
+          state.status !== "waiting" ||
+          state.intent?.kind !== "await" ||
+          state.intent.wait.ref?.id !== orphan.jobID
+        )
+          return { tag: "noop", value: undefined }
+        const next = reviewMarker(state, orphan.reason, Date.now())
         return { tag: "save", state: next, value: next }
       })
     })
@@ -1539,7 +1588,8 @@ const serviceLayer = Layer.effect(
       setIntent,
       wake,
       expireWait,
-      wakeOrphanedWait,
+      orphanedWait,
+      expireOrphanedWait,
       clearIntent,
       purgeSession,
       markDone,

@@ -261,14 +261,16 @@ describe("GoalLoop — waits", () => {
   )
 
   // #1069 acceptance 5b: after a restart, recovery fails the job the dead
-  // process left running, and the startup scan wakes the goal waiting on it
-  // instead of leaving it parked until the deadline; the woken goal continues
-  // like any other.
-  it.instance("a waiting goal whose job did not survive the restart is woken and continued by the startup scan", () =>
+  // process left running, and the startup scan ends the wait of the goal
+  // waiting on it instead of leaving it parked until the deadline. The wait ends
+  // like a timed-out one: one bounded review turn whose prompt names the lost
+  // job, and a visible pause if that turn declares nothing.
+  it.instance("a waiting goal whose job did not survive the restart gets a review turn that names the job", () =>
     Effect.gen(function* () {
       reset()
       const loop = yield* GoalLoop.Service
       const goal = yield* Goal.Service
+      const events = yield* EventV2Bridge.Service
       const { db } = yield* Database.Service
       const instance = yield* requireInstance
       const alive = SessionID.descending()
@@ -307,12 +309,14 @@ describe("GoalLoop — waits", () => {
       })
       // Durable state written by the previous process: one job it left running,
       // plus a running job owned by this very process.
+      const watchTitle = "watch https://github.com/acme/widgets/pull/42"
       yield* db
         .insert(RuntimeJobTable)
         .values([
           {
             id: "job_restart_lost",
             type: "watch_pr",
+            title: watchTitle,
             process_id: "proc_dead",
             session_id: lost,
             status: "running",
@@ -343,23 +347,60 @@ describe("GoalLoop — waits", () => {
       yield* loop.init()
       yield* pollWithTimeout(
         Effect.sync(() => (promptCalls.some((call) => !call.noReply) ? true : undefined)),
-        "the orphaned wait was never woken and continued",
+        "the orphaned wait never got its review turn",
         "5 seconds",
       )
 
-      // The wake itself (and its process_restart reason) is covered by the
-      // Goal.wakeOrphanedWait tests; here the woken goal must have been picked
-      // up like any resumed goal: one turn spent, one continuation dispatched.
-      const woken = yield* goal.load(lost)
-      expect(woken?.status).toBe("active")
-      expect(woken?.intent).toBeUndefined()
-      expect(Number(woken?.turns_used)).toBe(1)
-      // A wait on a live job of this process is left alone.
+      // One review prompt, and the agent can read in it which job was lost and why.
+      const prompts = promptCalls.filter((call) => !call.noReply)
+      expect(prompts).toHaveLength(1)
+      const review = prompts[0]?.text ?? ""
+      expect(review).toContain("[等待任务丢失复核]")
+      expect(review).toContain("目标：merge the PR")
+      for (const part of [
+        "等待的后台任务",
+        watchTitle,
+        "job_restart_lost",
+        "因进程重启已终止（状态 error：process_restart）",
+        "请决定重跑或放弃",
+        "本轮结束仍未声明进展时，目标将暂停",
+      ]) {
+        expect(review).toContain(part)
+      }
+      expect(review).not.toContain("job_restart_alive")
+      // The wait ended as a timed-out one does: active with the review marker,
+      // no turn spent, no judge call. A wait on a live job of this process stays.
+      const marked = yield* goal.load(lost)
+      expect(marked?.status).toBe("active")
+      expect(marked?.intent?.kind).toBe("blocked")
+      expect(marked?.last_reason).toContain("process_restart")
+      expect(Number(marked?.turns_used)).toBe(0)
+      expect(judgeCalls).toBe(0)
       const kept = yield* goal.load(alive)
       expect(kept?.status).toBe("waiting")
       expect(Number(kept?.turns_used)).toBe(0)
+
+      // The review turn ends without a declared intent: the goal pauses visibly.
+      for (let i = 0; i < 10; i++) yield* Effect.yieldNow
+      yield* events.publish(SessionStatus.Event.Status, { sessionID: lost, status: { type: "idle" } })
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          return (yield* goal.load(lost))?.status === "paused" ? true : undefined
+        }),
+        "the review turn without a new intent never paused the goal",
+        "5 seconds",
+      )
+      const paused = yield* goal.load(lost)
+      expect(String(paused?.paused_reason)).toContain("job_restart_lost")
+      expect(String(paused?.paused_reason)).toContain("复核回合未取得进展")
+      expect(
+        promptCalls.some(
+          (call) =>
+            call.noReply === true && call.text.includes("⏸ 目标已暂停") && call.text.includes("job_restart_lost"),
+        ),
+      ).toBe(true)
       expect(promptCalls.filter((call) => !call.noReply)).toHaveLength(1)
-      expect(judgeCalls).toBe(0)
+      expect((yield* goal.load(alive))?.status).toBe("waiting")
     }),
   )
 
