@@ -36,8 +36,15 @@ import { ConfigPaths } from "./paths"
 import { changedTopLevelKeys } from "./hot-reload"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
-import { filterSettingsValue, LOCAL_PROJECT_FILES, settingsEntries } from "@/project/trust/entries"
+import {
+  filterSettingsValue,
+  hasProjectShell,
+  LOCAL_PROJECT_FILES,
+  settingsEntries,
+  stripProjectShell,
+} from "@/project/trust/entries"
 import { ProjectTrust } from "@/project/trust/service"
+import type { GateEntry } from "@/project/trust/service"
 import { watchTrustState } from "@/project/trust/subscribe"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -329,12 +336,23 @@ export const layer = Layer.effect(
       if (!trust) return parsed
       const raw = ConfigParse.jsonc(text, source)
       const entries = settingsEntries(relative, raw)
-      if (entries.length === 0) return parsed
+      // #1040: a project-layer `shell` is not enumerated as a TrustEntry (it
+      // names no per-occurrence declaration the panel could ever show), so it
+      // rides the same not-enumerated gate item as the rest of the project
+      // layer and always fails closed. See `stripProjectShell`.
+      const shellDeclared = hasProjectShell(raw)
+      if (entries.length === 0 && !shellDeclared) return parsed
       const scope = LOCAL_PROJECT_FILES.includes(relative) ? "local" : "project"
-      const result = yield* trust.gate(entries.map((entry) => ({ scope, file: relative, entry })))
-      if (result.allowed.every(Boolean)) return parsed
-      const allowed = new Set(entries.filter((_, index) => result.allowed[index]).map((entry) => entry.id))
-      return filterSettingsValue(relative, parsed, (entry) => allowed.has(entry.id))
+      const items: GateEntry[] = entries.map((entry) => ({ scope, file: relative, entry }))
+      if (shellDeclared) items.push({ scope, file: relative, entry: undefined })
+      const result = yield* trust.gate(items)
+      let value = parsed
+      if (!result.allowed.slice(0, entries.length).every(Boolean)) {
+        const allowed = new Set(entries.filter((_, index) => result.allowed[index]).map((entry) => entry.id))
+        value = filterSettingsValue(relative, value, (entry) => allowed.has(entry.id))
+      }
+      if (shellDeclared && !result.allowed[entries.length]) value = stripProjectShell(value)
+      return value
     })
 
     const loadConfig = Effect.fnUntraced(function* (

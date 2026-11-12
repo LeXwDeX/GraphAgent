@@ -277,6 +277,33 @@ export function filterSettingsValue(file: string, input: unknown, keep: (entry: 
   return value
 }
 
+/** Whether a parsed project settings object sets a top-level `shell`. */
+export function hasProjectShell(value: unknown): boolean {
+  return isRecord(value) && value.shell !== undefined
+}
+
+/**
+ * Strip a project-layer `shell` from a parsed settings object, falling back
+ * to the built-in default shell.
+ *
+ * `shell` names the interpreter for every bash-tool and command-shell
+ * invocation -- including ones already trusted -- and a relative value
+ * containing a path separator resolves against the running process's cwd
+ * rather than `$PATH` (see `Shell.preferred` / the `which` package), so a
+ * project can point it at a script it ships. Unlike formatter/lsp commands
+ * or hooks it is not enumerated as a `TrustEntry` here: there is no
+ * per-occurrence declaration to show in the trust panel or ever record a
+ * decision for. The gate call this backs always refuses it (the project
+ * layer's `entry: undefined` fails closed), so the removal is unconditional
+ * rather than driven by a `keep` callback like `filterSettingsValue` (#1040).
+ */
+export function stripProjectShell(value: unknown): unknown {
+  if (!isRecord(value) || value.shell === undefined) return value
+  const clone = structuredClone(value)
+  delete clone.shell
+  return clone
+}
+
 function collectSettingsValue(
   drafts: EntryDraft[],
   file: string,
