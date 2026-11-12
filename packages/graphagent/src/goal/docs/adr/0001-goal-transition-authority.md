@@ -7,7 +7,7 @@
 
 Goal commands and GoalLoop previously loaded a row and later performed an unconditional upsert. A legal `pause` or `clear` racing a delayed judge result could therefore be overwritten or resurrected. Judge completion also persisted `done` and deleted it in a second operation, so a process failure between them left a terminal row that no loop would process.
 
-GoalLoop admitted continuation with `SessionPrompt.prompt`, while DagLoop admitted parent wakes with `promptIfIdle` (now `SessionPrompt.prepareTurn`). Both could observe the same idle Session and independently start automation.
+GoalLoop admitted continuation with `SessionPrompt.prompt`, while DagLoop admitted parent wakes through its own idle-only prompt helper. Both could observe the same idle Session and independently start automation. That helper has since been removed: every automatic input, including both of these, now enters through the session inbox (`SessionInbox`), which drains each Session serially and keeps `SessionPrompt.prepareTurn` as the final idle-state guard.
 
 The judge also encoded blocked or unachievable work as successful completion, so presentation reported an achieved Goal without a deliverable.
 
