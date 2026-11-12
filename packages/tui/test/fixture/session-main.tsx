@@ -3,6 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
+import { ManualClock } from "@opentui/core/testing"
 import { testRender, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
 import { TuiConfigProvider } from "../../src/config"
@@ -29,6 +30,7 @@ import { PromptStashProvider } from "../../src/prompt/stash"
 import { Main } from "../../src/routes/session"
 import { FooterToastProvider } from "../../src/ui/toast"
 import { tmpdir } from "./fixture"
+import { nextTurn } from "./frames"
 import { TestTuiContexts } from "./tui-environment"
 import { createTuiResolvedConfig } from "./tui-runtime"
 import { createEventSource, createFetch, directory, type FetchHandler } from "./tui-sdk"
@@ -36,7 +38,8 @@ import { createEventSource, createFetch, directory, type FetchHandler } from "./
 /**
  * Mounts the production `Main` session view under the provider order of the
  * app, backed by the fake SDK. `fetch` answers the session routes a test cares
- * about; everything else falls through to the shared defaults.
+ * about; everything else falls through to the shared defaults. The renderer
+ * runs on a manual clock: time only passes when `waitForFrame` advances it.
  */
 export async function mountSessionMain(input: {
   sessionID: string
@@ -48,6 +51,8 @@ export async function mountSessionMain(input: {
   await Bun.write(`${tmp.path}/kv.json`, "{}")
   const events = createEventSource()
   const calls = createFetch(input.fetch, events)
+  const clock = new ManualClock()
+  clock.setTime(Date.now())
   let sync!: ReturnType<typeof useSync>
 
   function Probe() {
@@ -116,11 +121,12 @@ export async function mountSessionMain(input: {
         </TestTuiContexts>
       )
     },
-    { width: input.width ?? 100, height: input.height ?? 30 },
+    { width: input.width ?? 100, height: input.height ?? 30, clock },
   )
 
   return {
     app,
+    clock,
     events,
     calls,
     get sync() {
@@ -133,13 +139,26 @@ export async function mountSessionMain(input: {
   }
 }
 
-/** Renders until `text` shows up on screen and returns that frame. */
-export async function waitForFrame(app: Awaited<ReturnType<typeof testRender>>, text: string) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    await app.renderOnce()
-    const frame = app.captureCharFrame()
+/** One frame of the renderer's manual clock. */
+const FRAME_MS = 16
+
+/**
+ * Renders frame after frame until `text` shows up on screen and returns that
+ * frame. Each round advances the manual clock by one frame, renders (which also
+ * flushes the events queued for it), and yields one event-loop turn so requests
+ * in flight can finish. The bound is a number of frames, not a duration.
+ */
+export async function waitForFrame(
+  view: { app: Awaited<ReturnType<typeof testRender>>; clock: ManualClock },
+  text: string,
+  rounds = 500,
+) {
+  for (let round = 0; round < rounds; round++) {
+    view.clock.advance(FRAME_MS)
+    await view.app.renderOnce()
+    const frame = view.app.captureCharFrame()
     if (frame.includes(text)) return frame
-    await Bun.sleep(10)
+    await nextTurn()
   }
-  throw new Error(`Timed out waiting for ${text}:\n${app.captureCharFrame()}`)
+  throw new Error(`"${text}" did not show up after ${rounds} frames:\n${view.app.captureCharFrame()}`)
 }

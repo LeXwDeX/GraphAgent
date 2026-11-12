@@ -5,8 +5,9 @@
 import { describe, expect, test } from "bun:test"
 import type { AssistantMessage, GlobalEvent, ToolPart } from "@graphagent/sdk"
 import { tmpdir } from "../../../fixture/fixture"
+import { advanceUntil } from "../../../fixture/frames"
 import { mountSessionMain, waitForFrame } from "../../../fixture/session-main"
-import { directory, json, mount, wait } from "./sync-fixture"
+import { directory, json, mount } from "./sync-fixture"
 
 // #886 5.4 / acceptance "Task laziness": the summary of a loaded session and
 // the taskIndex links are rebuilt from the snapshot on hydration and on
@@ -169,7 +170,7 @@ describe("cold start", () => {
   test("entering one child makes its count exact and the others stay unknown", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, sync } = await mount(routesFor(parentRows, coldMessages()), tmp.path)
+    const { app, emit, sdk, sync } = await mount(routesFor(parentRows, coldMessages()), tmp.path)
 
     try {
       await sync.session.sync("ses_parent")
@@ -184,7 +185,8 @@ describe("cold start", () => {
       emit(toolEvent("evt_c1_again", tool("prt_c1_d", "ses_c1", "msg_c1", "edit", "fix the typo"), 30))
       // ...a part the snapshot did not hold is one more.
       emit(toolEvent("evt_c1_next", tool("prt_c1_e", "ses_c1", "msg_c1", "bash", "run lint"), 31))
-      await wait(() => sync.data.summary.ses_c1.toolCalls === 5)
+      sdk.frameClock.flushNow()
+      expect(sync.data.summary.ses_c1.toolCalls).toBe(5)
       expect(sync.data.summary.ses_c1.current).toEqual({ tool: "bash", title: "run lint" })
     } finally {
       app.renderer.destroy()
@@ -201,7 +203,7 @@ describe("cold start", () => {
     })
 
     try {
-      const cold = await waitForFrame(view.app, "↳ —")
+      const cold = await waitForFrame(view, "↳ —")
       const unknown = (frame: string) => frame.split("\n").filter((line) => line.includes("↳ —")).length
       // Every finished child shows the em dash, never 0 toolcalls.
       expect(cold).toContain("Explore Task — Inspect area 1")
@@ -211,7 +213,7 @@ describe("cold start", () => {
       expect(unknown(cold)).toBe(3)
 
       await view.sync.session.sync("ses_c1")
-      const entered = await waitForFrame(view.app, "4 toolcalls")
+      const entered = await waitForFrame(view, "4 toolcalls")
       expect(unknown(entered)).toBe(2)
     } finally {
       await view.dispose()
@@ -232,23 +234,25 @@ describe("reconnect", () => {
     const messages: Loaded = {
       ses_a: [{ info: assistant("msg_ses_a", "ses_a"), parts: toolsFor("ses_a", 2) }],
     }
-    const { app, emit, reconnect, sync } = await mount(routesFor(rows, messages), tmp.path)
+    const { app, emit, reconnect, sdk, sync } = await mount(routesFor(rows, messages), tmp.path)
 
     try {
       await sync.session.activate("ses_a")
       expect(sync.data.summary.ses_a.toolCalls).toBe(2)
 
       emit(toolEvent("evt_a_live", tool("prt_ses_a_live", "ses_a", "msg_ses_a", "bash", "live"), 20))
-      await wait(() => sync.data.summary.ses_a.toolCalls === 3)
+      sdk.frameClock.flushNow()
+      expect(sync.data.summary.ses_a.toolCalls).toBe(3)
       // ses_b is not loaded; its tool events reach the reducer as summaries.
       emit(toolEvent("evt_b_1", tool("prt_b_1", "ses_b", "msg_b", "bash", "one"), 21))
       emit(toolEvent("evt_b_2", tool("prt_b_2", "ses_b", "msg_b", "read", "two"), 22))
-      await wait(() => sync.data.summary.ses_b.toolCalls === 2)
+      sdk.frameClock.flushNow()
+      expect(sync.data.summary.ses_b.toolCalls).toBe(2)
 
       // While the stream was down ses_a ran more tools than the events show.
       messages.ses_a = [{ info: assistant("msg_ses_a", "ses_a"), parts: toolsFor("ses_a", 6) }]
       reconnect()
-      await wait(() => sync.data.summary.ses_a.toolCalls === 6)
+      await advanceUntil(sdk, () => sync.data.summary.ses_a.toolCalls === 6)
 
       expect(sync.data.summary.ses_a.current).toEqual({ tool: "bash", title: "step 5" })
       expect(sync.data.summary.ses_b.toolCalls).toBe(2)
@@ -264,7 +268,7 @@ describe("reconnect", () => {
     const messages: Loaded = {
       ses_a: [{ info: assistant("msg_ses_a", "ses_a"), parts: toolsFor("ses_a", 3) }],
     }
-    const { app, reconnect, sync } = await mount(routesFor(rows, messages), tmp.path)
+    const { app, reconnect, sdk, sync } = await mount(routesFor(rows, messages), tmp.path)
 
     try {
       await sync.session.activate("ses_a")
@@ -273,7 +277,7 @@ describe("reconnect", () => {
       // Two tool messages were reverted while the stream was down.
       messages.ses_a = [{ info: assistant("msg_ses_a", "ses_a"), parts: toolsFor("ses_a", 1) }]
       reconnect()
-      await wait(() => sync.data.summary.ses_a.toolCalls === 1)
+      await advanceUntil(sdk, () => sync.data.summary.ses_a.toolCalls === 1)
     } finally {
       app.renderer.destroy()
     }
@@ -294,7 +298,7 @@ describe("a snapshot cut at the message limit", () => {
   test("never lowers a count the events built up", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, sync } = await mount(routesFor(rows, window(100)), tmp.path)
+    const { app, emit, sdk, sync } = await mount(routesFor(rows, window(100)), tmp.path)
 
     try {
       for (let index = 0; index < 150; index++) {
@@ -302,7 +306,8 @@ describe("a snapshot cut at the message limit", () => {
           toolEvent(`evt_long_${index}`, tool(`prt_old_${index}`, "ses_long", "msg_old", "bash", "old"), 100 + index),
         )
       }
-      await wait(() => sync.data.summary.ses_long.toolCalls === 150)
+      sdk.frameClock.flushNow()
+      expect(sync.data.summary.ses_long.toolCalls).toBe(150)
 
       await sync.session.sync("ses_long")
       expect(sync.data.message.ses_long).toHaveLength(100)
@@ -312,7 +317,8 @@ describe("a snapshot cut at the message limit", () => {
       // stay known: an update of one is not a new tool call, a new part is.
       emit(toolEvent("evt_old_again", tool("prt_old_5", "ses_long", "msg_old", "bash", "old"), 400))
       emit(toolEvent("evt_fresh", tool("prt_fresh", "ses_long", "msg_fresh", "bash", "fresh"), 401))
-      await wait(() => sync.data.summary.ses_long.toolCalls === 151)
+      sdk.frameClock.flushNow()
+      expect(sync.data.summary.ses_long.toolCalls).toBe(151)
     } finally {
       app.renderer.destroy()
     }

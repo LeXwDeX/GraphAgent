@@ -2,16 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import type { GlobalEvent } from "@graphagent/sdk"
 import { LIFECYCLE_MIRROR_MAX } from "../../../../src/context/lifecycle-mirror"
+import type { useSDK } from "../../../../src/context/sdk"
 import { tmpdir } from "../../../fixture/fixture"
+import { advanceUntil, nextTurn } from "../../../fixture/frames"
 import type { FetchHandler } from "../../../fixture/tui-sdk"
-import { directory, json, mount, wait } from "./sync-fixture"
+import { directory, json, mount } from "./sync-fixture"
 
 // #1069 TUI mirror: `lifecycle.transitioned` seeds the mirror, the owner is
 // asked about the queued refs in one `POST /lifecycle/states` per frame, and
 // a reconnect asks about everything held, goals included.
+//
+// Time is driven by hand: events reach the store when a test flushes the frame
+// clock, and a read counts as answered when the promise `sdk.client.lifecycle`
+// returned for it settles. No test waits for a duration.
 
 type Ref = { domain: string; id: string }
 
@@ -112,8 +118,24 @@ function gate() {
   return { opened, open }
 }
 
-/** Long enough for several frames of the fallback frame clock. */
-const frames = () => Bun.sleep(60)
+/**
+ * Watches the SDK call that sends the batch. The call itself is synchronous, so
+ * its count shows what one flush of the frame clock sent; the promise it
+ * returned is the one the sync layer chained its answer handling onto, so
+ * awaiting `answered(n)` means read `n` came back and its answer was applied.
+ */
+function watchReads(sdk: ReturnType<typeof useSDK>) {
+  const spy = spyOn(sdk.client.lifecycle, "states")
+  return {
+    sent: () => spy.mock.calls.length,
+    answered: (index: number) => {
+      const read = spy.mock.results[index]
+      if (!read) throw new Error(`read ${index} was never sent`)
+      return read.value
+    },
+    restore: () => spy.mockRestore(),
+  }
+}
 
 const key = (ref: Ref) => `${ref.domain}:${ref.id}`
 
@@ -126,7 +148,8 @@ describe("lifecycle mirror", () => {
       await release.opened
       return json(refs.map((ref) => answer(ref, "completed", "succeeded")))
     })
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       // `lifecycle.transitioned` is a summary-scope event: it is delivered
@@ -141,20 +164,28 @@ describe("lifecycle mirror", () => {
           phase: "settling",
         }),
       )
-      await wait(() => sync.data.lifecycle["job:job_1"] !== undefined)
+      sdk.frameClock.flushNow()
       expect(sync.data.lifecycle["job:job_1"]).toMatchObject({
         value: "settling",
         phase: "settling",
         sessionID: "ses_a",
       })
 
-      await wait(() => server.calls.length === 1)
+      // The same flush asked the owner.
+      expect(reads.sent()).toBe(1)
+      await advanceUntil(sdk, () => server.calls.length === 1)
       expect(server.calls[0]).toEqual([{ domain: "job", id: "job_1" }])
       release.open()
-      await wait(() => sync.data.lifecycle["job:job_1"]?.value === "completed")
+      await reads.answered(0)
       // The answer does not name the session; it stays with the entry.
-      expect(sync.data.lifecycle["job:job_1"]).toMatchObject({ phase: "succeeded", sessionID: "ses_a", at: 5_000 })
+      expect(sync.data.lifecycle["job:job_1"]).toMatchObject({
+        value: "completed",
+        phase: "succeeded",
+        sessionID: "ses_a",
+        at: 5_000,
+      })
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -163,7 +194,8 @@ describe("lifecycle mirror", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const server = lifecycleServer((refs) => json(refs.map((ref) => answer(ref, "running", "running"))))
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "job", id: "job_a", to: "running", phase: "running" }))
@@ -173,23 +205,26 @@ describe("lifecycle mirror", () => {
       emit(
         transition({ domain: "turn", id: "turn_1", sessionID: sid, from: "running", to: "ended", phase: "succeeded" }),
       )
-      await wait(() => server.calls.length === 1)
-      await frames()
+      sdk.frameClock.flushNow()
+      expect(reads.sent()).toBe(1)
 
-      expect(server.calls).toHaveLength(1)
+      await advanceUntil(sdk, () => server.calls.length === 1)
       expect(server.calls[0]).toEqual([
         { domain: "job", id: "job_a" },
         { domain: "job", id: "job_b" },
         { domain: "goal", id: sid },
         { domain: "turn", id: "turn_1" },
       ])
-      await wait(() => sync.data.lifecycle["job:job_a"]?.value === "running")
+      await reads.answered(0)
+      expect(sync.data.lifecycle["job:job_a"]?.value).toBe("running")
 
       // A later frame is a later request.
       emit(transition({ domain: "job", id: "job_c", to: "running", phase: "running" }))
-      await wait(() => server.calls.length === 2)
+      await advanceUntil(sdk, () => server.calls.length === 2)
       expect(server.calls[1]).toEqual([{ domain: "job", id: "job_c" }])
+      expect(reads.sent()).toBe(2)
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -202,26 +237,34 @@ describe("lifecycle mirror", () => {
       if (call === 1) await first.opened
       return json(refs.map((ref) => answer(ref, "running", "running")))
     })
-    const { app, emit } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "job", id: "job_a", to: "running", phase: "running" }))
-      await wait(() => server.calls.length === 1)
+      sdk.frameClock.flushNow()
+      await advanceUntil(sdk, () => server.calls.length === 1)
+
+      // Two more frames while the first read is out: nothing goes out for them.
       emit(transition({ domain: "job", id: "job_b", to: "running", phase: "running" }))
-      await frames()
+      sdk.frameClock.flushNow()
       emit(transition({ domain: "job", id: "job_c", to: "running", phase: "running" }))
-      await frames()
-      expect(server.calls).toHaveLength(1)
+      sdk.frameClock.flushNow()
+      expect(reads.sent()).toBe(1)
 
       first.open()
-      await wait(() => server.calls.length === 2)
+      await advanceUntil(sdk, () => server.calls.length === 2)
       expect(server.calls[1]).toEqual([
         { domain: "job", id: "job_b" },
         { domain: "job", id: "job_c" },
       ])
-      await frames()
-      expect(server.calls).toHaveLength(2)
+      await reads.answered(1)
+      // Everything queued has been sent: another frame sends nothing.
+      await nextTurn()
+      sdk.frameClock.flushNow()
+      expect(reads.sent()).toBe(2)
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -237,23 +280,29 @@ describe("lifecycle mirror", () => {
         refs.map((ref) => (call === 1 ? answer(ref, "running", "running") : answer(ref, "completed", "succeeded"))),
       )
     })
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "job", id: "job_x", to: "running", phase: "running" }))
-      await wait(() => server.calls.length === 1)
+      sdk.frameClock.flushNow()
+      await advanceUntil(sdk, () => server.calls.length === 1)
       emit(transition({ domain: "job", id: "job_x", from: "running", to: "completed", phase: "succeeded" }))
-      await wait(() => sync.data.lifecycle["job:job_x"]?.value === "completed")
+      sdk.frameClock.flushNow()
+      expect(sync.data.lifecycle["job:job_x"]?.value).toBe("completed")
 
       // The first read was asked before the transition: its answer is stale.
       first.open()
-      await wait(() => server.calls.length === 2)
+      await reads.answered(0)
       expect(sync.data.lifecycle["job:job_x"]?.value).toBe("completed")
 
+      // The transition queued its own read, which confirms it.
+      await advanceUntil(sdk, () => server.calls.length === 2)
       second.open()
-      await frames()
-      expect(sync.data.lifecycle["job:job_x"]).toMatchObject({ value: "completed", phase: "succeeded" })
+      await reads.answered(1)
+      expect(sync.data.lifecycle["job:job_x"]).toMatchObject({ value: "completed", phase: "succeeded", at: 5_000 })
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -269,23 +318,29 @@ describe("lifecycle mirror", () => {
       }
       return json(refs.map((ref) => answer(ref, "completed", "succeeded")))
     })
-    const { app, emit, reconnect, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, reconnect, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "job", id: "job_h", sessionID: "ses_h", to: "running", phase: "running" }))
-      await wait(() => server.calls.length === 1)
+      sdk.frameClock.flushNow()
+      await advanceUntil(sdk, () => server.calls.length === 1)
 
+      // The refill goes out at once although the first read is still out.
       reconnect()
-      await wait(() => server.calls.length === 2)
+      expect(reads.sent()).toBe(2)
+      await advanceUntil(sdk, () => server.calls.length === 2)
       expect(server.calls[1]).toEqual([{ domain: "job", id: "job_h" }])
-      await wait(() => sync.data.lifecycle["job:job_h"]?.value === "completed")
+      await reads.answered(1)
+      expect(sync.data.lifecycle["job:job_h"]?.value).toBe("completed")
 
       // The old read finally comes back; what it carries predates the refill.
       hung.open()
-      await frames()
+      await reads.answered(0)
       expect(sync.data.lifecycle["job:job_h"]).toMatchObject({ value: "completed", phase: "succeeded" })
-      expect(server.calls).toHaveLength(2)
+      expect(reads.sent()).toBe(2)
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -298,15 +353,20 @@ describe("lifecycle mirror", () => {
       await release.opened
       return json(refs.map(unknown))
     })
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "turn", id: "turn_9", from: "running", to: "ended", phase: "succeeded" }))
-      await wait(() => sync.data.lifecycle["turn:turn_9"] !== undefined)
-      await wait(() => server.calls.length === 1)
+      sdk.frameClock.flushNow()
+      expect(sync.data.lifecycle["turn:turn_9"]).toBeDefined()
+      await advanceUntil(sdk, () => server.calls.length === 1)
+
       release.open()
-      await wait(() => sync.data.lifecycle["turn:turn_9"] === undefined)
+      await reads.answered(0)
+      expect(sync.data.lifecycle["turn:turn_9"]).toBeUndefined()
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -315,14 +375,17 @@ describe("lifecycle mirror", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const server = lifecycleServer(() => Response.json({ message: "failed" }, { status: 500 }))
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "job", id: "job_f", to: "settling", phase: "settling" }))
-      await wait(() => server.calls.length === 1)
-      await frames()
+      sdk.frameClock.flushNow()
+      await advanceUntil(sdk, () => server.calls.length === 1)
+      await reads.answered(0)
       expect(sync.data.lifecycle["job:job_f"]).toMatchObject({ value: "settling", phase: "settling" })
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -331,7 +394,8 @@ describe("lifecycle mirror", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const server = lifecycleServer(() => json([]))
-    const { app, emit, reconnect } = await mount(server.handler, tmp.path)
+    const { app, emit, reconnect, sdk } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(
@@ -341,10 +405,14 @@ describe("lifecycle mirror", () => {
           properties: { sessionID: "ses_idle", status: { type: "idle" } },
         }),
       )
+      sdk.frameClock.flushNow()
+      // The reconnect handlers run inline: a read would already have been sent.
       reconnect()
-      await frames()
+      expect(reads.sent()).toBe(0)
+      await nextTurn()
       expect(server.calls).toHaveLength(0)
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -353,13 +421,16 @@ describe("lifecycle mirror", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const server = lifecycleServer((refs) => json(refs.map((ref) => answer(ref, "running", "running"))))
-    const { app, emit, reconnect, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, reconnect, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "job", id: "job_gone", sessionID: "ses_gone", to: "running", phase: "running" }))
       emit(transition({ domain: "job", id: "job_kept", sessionID: "ses_kept", to: "running", phase: "running" }))
-      await wait(() => server.calls.length === 1)
-      await wait(() => sync.data.lifecycle["job:job_gone"]?.at === 5_000)
+      sdk.frameClock.flushNow()
+      await advanceUntil(sdk, () => server.calls.length === 1)
+      await reads.answered(0)
+      expect(sync.data.lifecycle["job:job_gone"]?.at).toBe(5_000)
 
       emit(
         global({
@@ -368,13 +439,15 @@ describe("lifecycle mirror", () => {
           properties: { sessionID: "ses_gone", info: { id: "ses_gone" } },
         }),
       )
-      await wait(() => sync.data.lifecycle["job:job_gone"] === undefined)
+      sdk.frameClock.flushNow()
+      expect(sync.data.lifecycle["job:job_gone"]).toBeUndefined()
       expect(sync.data.lifecycle["job:job_kept"]).toBeDefined()
 
       reconnect()
-      await wait(() => server.calls.length === 2)
+      await advanceUntil(sdk, () => server.calls.length === 2)
       expect(server.calls[1]).toEqual([{ domain: "job", id: "job_kept" }])
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -383,7 +456,8 @@ describe("lifecycle mirror", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const server = lifecycleServer(() => Response.json({ message: "failed" }, { status: 500 }))
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
     const live = 100
     const finished = LIFECYCLE_MIRROR_MAX - live + 24
 
@@ -402,7 +476,9 @@ describe("lifecycle mirror", () => {
           }),
         )
       }
-      await wait(() => server.calls.length === 1)
+      sdk.frameClock.flushNow()
+      await advanceUntil(sdk, () => server.calls.length === 1)
+      await reads.answered(0)
 
       const keys = Object.keys(sync.data.lifecycle)
       expect(keys).toHaveLength(LIFECYCLE_MIRROR_MAX)
@@ -415,6 +491,7 @@ describe("lifecycle mirror", () => {
       // The evicted refs are not asked about.
       expect(server.calls[0]).toHaveLength(LIFECYCLE_MIRROR_MAX)
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -429,23 +506,28 @@ describe("goal slice through the lifecycle mirror", () => {
       await release.opened
       return json(refs.map((ref) => answer(ref, "waiting", "waiting")))
     })
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(goalUpdated())
-      await wait(() => sync.data.goal[sid] !== undefined)
+      sdk.frameClock.flushNow()
+      expect(sync.data.goal[sid]).toBeDefined()
 
       emit(transition({ domain: "goal", id: sid, sessionID: sid, from: "active", to: "paused", phase: "paused" }))
-      await wait(() => sync.data.goal[sid]?.status === "paused")
+      sdk.frameClock.flushNow()
+      expect(sync.data.goal[sid]?.status).toBe("paused")
       // The transition carries the status only; the goal itself stays.
       expect(sync.data.goal[sid]).toMatchObject({ goal: "ship the feature", maxTurns: 20 })
 
-      await wait(() => server.calls.length === 1)
+      await advanceUntil(sdk, () => server.calls.length === 1)
       expect(server.calls[0]).toEqual([{ domain: "goal", id: sid }])
       release.open()
-      await wait(() => sync.data.goal[sid]?.status === "waiting")
+      await reads.answered(0)
+      expect(sync.data.goal[sid]?.status).toBe("waiting")
       expect(sync.data.lifecycle[`goal:${sid}`]).toMatchObject({ value: "waiting", sessionID: sid })
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -454,13 +536,17 @@ describe("goal slice through the lifecycle mirror", () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const server = lifecycleServer((refs) => json(refs.map((ref) => answer(ref, "paused", "paused"))))
-    const { app, emit, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "goal", id: sid, sessionID: sid, to: "paused", phase: "paused" }))
-      await wait(() => sync.data.lifecycle[`goal:${sid}`]?.at === 5_000)
+      sdk.frameClock.flushNow()
+      await reads.answered(0)
+      expect(sync.data.lifecycle[`goal:${sid}`]?.at).toBe(5_000)
       expect(sync.data.goal[sid]).toBeUndefined()
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -476,23 +562,32 @@ describe("goal slice through the lifecycle mirror", () => {
         }),
       ),
     )
-    const { app, emit, reconnect, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, reconnect, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(transition({ domain: "job", id: "job_r", sessionID: "ses_r", to: "running", phase: "running" }))
-      await wait(() => sync.data.lifecycle["job:job_r"]?.at === 5_000)
+      sdk.frameClock.flushNow()
+      await advanceUntil(sdk, () => server.calls.length === 1)
+      await reads.answered(0)
+      expect(sync.data.lifecycle["job:job_r"]?.at).toBe(5_000)
       emit(goalUpdated())
-      await wait(() => sync.data.goal[sid] !== undefined)
+      sdk.frameClock.flushNow()
+      expect(sync.data.goal[sid]).toBeDefined()
 
+      // One batch, sent by the reconnect itself.
       reconnect()
-      await wait(() => server.calls.length === 2)
+      expect(reads.sent()).toBe(2)
+      await advanceUntil(sdk, () => server.calls.length === 2)
       expect(server.calls[1].map(key).toSorted()).toEqual(["goal:ses_goal_1", "job:job_r"])
 
-      // The job is gone for its owner; the goal followed the answer.
-      await wait(() => sync.data.lifecycle["job:job_r"] === undefined)
-      await wait(() => sync.data.goal[sid]?.status === "paused")
-      expect(server.calls).toHaveLength(2)
+      // The job is gone for its owner; the goal status followed the answer.
+      await reads.answered(1)
+      expect(sync.data.lifecycle["job:job_r"]).toBeUndefined()
+      expect(sync.data.goal[sid]?.status).toBe("paused")
+      expect(reads.sent()).toBe(2)
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })
@@ -505,23 +600,27 @@ describe("goal slice through the lifecycle mirror", () => {
       await release.opened
       return json(refs.map((ref) => answer(ref, "paused", "paused")))
     })
-    const { app, emit, reconnect, sync } = await mount(server.handler, tmp.path)
+    const { app, emit, reconnect, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
 
     try {
       emit(goalUpdated(1))
-      await wait(() => sync.data.goal[sid]?.turnsUsed === 1)
+      sdk.frameClock.flushNow()
+      expect(sync.data.goal[sid]?.turnsUsed).toBe(1)
 
       reconnect()
-      await wait(() => server.calls.length === 1)
+      await advanceUntil(sdk, () => server.calls.length === 1)
       emit(goalUpdated(7))
-      await wait(() => sync.data.goal[sid]?.turnsUsed === 7)
+      sdk.frameClock.flushNow()
+      expect(sync.data.goal[sid]?.turnsUsed).toBe(7)
 
       release.open()
-      await frames()
+      await reads.answered(0)
       expect(sync.data.goal[sid]).toMatchObject({ status: "active", turnsUsed: 7 })
       // The skipped answer left no stale entry behind either.
       expect(sync.data.lifecycle[`goal:${sid}`]).toBeUndefined()
     } finally {
+      reads.restore()
       app.renderer.destroy()
     }
   })

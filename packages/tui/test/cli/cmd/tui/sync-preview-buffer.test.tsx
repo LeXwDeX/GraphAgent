@@ -4,14 +4,17 @@
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
 import type { AssistantMessage, GlobalEvent, ToolPart } from "@graphagent/sdk"
-import { createComputed, createRoot } from "solid-js"
 import { tmpdir } from "../../../fixture/fixture"
 import { mountSessionMain, waitForFrame } from "../../../fixture/session-main"
-import { directory, json, mount, wait } from "./sync-fixture"
+import { probeStoreWrites } from "../../../fixture/store-write-probe"
+import { directory, json, mount } from "./sync-fixture"
 
 // #886 5.3 / acceptance "preview events": the running output window of a tool
 // part replaces itself inside the stream buffer. `store.part` is not written
 // while it runs; the durable snapshot that ends the run settles the buffer.
+//
+// Events reach the store when a test flushes the frame clock, so every
+// assertion below sees exactly the events emitted before it.
 
 const sessionID = "ses_preview"
 const messageID = "msg_preview"
@@ -67,30 +70,6 @@ function partUpdated(part: ReturnType<typeof toolPart>, id: string) {
   return global({ id, type: "message.part.updated", properties: { sessionID, time: 3, part } })
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null
-}
-
-/** Reads everything reachable so the computation reruns once per store notification. */
-function touch(value: unknown, seen: Set<object>) {
-  if (!isObject(value) || seen.has(value)) return
-  seen.add(value)
-  for (const key of Object.keys(value)) touch(value[key], seen)
-}
-
-/** Counts reactive notifications of a store slice; writes of one batch count once. */
-function watchWrites(read: () => unknown) {
-  let runs = 0
-  const dispose = createRoot((dispose) => {
-    createComputed(() => {
-      touch(read(), new Set())
-      runs++
-    })
-    return dispose
-  })
-  return { writes: () => runs - 1, dispose }
-}
-
 async function mountPreview(tmpPath: string) {
   const routes = (url: URL) => {
     if (url.pathname === "/session") return json([row(sessionID)])
@@ -112,24 +91,26 @@ async function mountPreview(tmpPath: string) {
     const current = part()
     return current?.type === "tool" ? current.state.status : undefined
   }
-  return { ...mounted, part, status }
+  /** Delivers everything emitted so far to the store. */
+  const deliver = () => mounted.sdk.frameClock.flushNow()
+  return { ...mounted, part, status, deliver }
 }
 
 describe("preview events use the stream buffer", () => {
   test("100 previews in one frame keep only the latest window and write no store.part", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, sync, part } = await mountPreview(tmp.path)
-    const probe = watchWrites(() => sync.data.part)
+    const { app, deliver, emit, part, sync } = await mountPreview(tmp.path)
+    const probe = probeStoreWrites(sync.data, ["part"])
 
     try {
       const running = part()
       if (!running) throw new Error("expected the hydrated tool part")
       for (let seq = 1; seq <= 100; seq++) emit(preview(seq, `tail ${seq}`, seq * 10))
-      await wait(() => sync.readPartPreview(running)?.seq === 100)
+      deliver()
 
       expect(sync.readPartPreview(running)).toEqual({ tail: "tail 100", totalLength: 1000, seq: 100 })
-      expect(probe.writes()).toBe(0)
+      expect(probe.writes("part")).toBe(0)
       // The snapshot in the store is what it was before the first preview.
       expect(part()).toEqual(toolPart("running", ""))
     } finally {
@@ -141,23 +122,27 @@ describe("preview events use the stream buffer", () => {
   test("a window with a lower or equal seq does not replace a newer one", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, sync, part } = await mountPreview(tmp.path)
+    const { app, deliver, emit, part, sync } = await mountPreview(tmp.path)
 
     try {
       const running = part()
       if (!running) throw new Error("expected the hydrated tool part")
       emit(preview(5, "newest"))
-      await wait(() => sync.readPartPreview(running)?.seq === 5)
+      deliver()
+      expect(sync.readPartPreview(running)?.seq).toBe(5)
 
       emit(preview(3, "older"))
       emit(preview(5, "repeat"))
+      deliver()
+      expect(sync.readPartPreview(running)).toEqual({ tail: "newest", totalLength: 6, seq: 5 })
+
       emit(preview(6, "sentinel"))
-      await wait(() => sync.readPartPreview(running)?.seq === 6)
-      expect(sync.readPartPreview(running)?.tail).toBe("sentinel")
+      deliver()
+      expect(sync.readPartPreview(running)).toEqual({ tail: "sentinel", totalLength: 8, seq: 6 })
 
       // Reordered delivery after the sentinel: ignored, the window stays put.
       emit(preview(2, "late"))
-      await Bun.sleep(40)
+      deliver()
       expect(sync.readPartPreview(running)).toEqual({ tail: "sentinel", totalLength: 8, seq: 6 })
     } finally {
       app.renderer.destroy()
@@ -167,17 +152,19 @@ describe("preview events use the stream buffer", () => {
   test("the durable snapshot that ends the run settles the buffer with one store.part write", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, sync, part, status } = await mountPreview(tmp.path)
+    const { app, deliver, emit, part, status, sync } = await mountPreview(tmp.path)
 
     try {
       const running = part()
       if (!running) throw new Error("expected the hydrated tool part")
       emit(preview(1, "partial\n", 8))
-      await wait(() => sync.readPartPreview(running)?.seq === 1)
+      deliver()
+      expect(sync.readPartPreview(running)?.seq).toBe(1)
 
-      const probe = watchWrites(() => sync.data.part)
+      const probe = probeStoreWrites(sync.data, ["part"])
       emit(partUpdated(toolPart("completed", "partial\ndone\n"), "evt_preview_done"))
-      await wait(() => status() === "completed")
+      deliver()
+      expect(status()).toBe("completed")
       const settled = part()
       if (!settled) throw new Error("expected the settled tool part")
 
@@ -185,7 +172,7 @@ describe("preview events use the stream buffer", () => {
       expect(settled.type === "tool" && settled.state.status === "completed" && settled.state.output).toBe(
         "partial\ndone\n",
       )
-      expect(probe.writes()).toBe(1)
+      expect(probe.writes("part")).toBe(1)
       probe.dispose()
     } finally {
       app.renderer.destroy()
@@ -195,21 +182,21 @@ describe("preview events use the stream buffer", () => {
   test("a durable snapshot of a part that is still running also settles the window", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, sync, part } = await mountPreview(tmp.path)
+    const { app, deliver, emit, part, sync } = await mountPreview(tmp.path)
 
     try {
       const running = part()
       if (!running) throw new Error("expected the hydrated tool part")
       emit(preview(1, "window", 6))
-      await wait(() => sync.readPartPreview(running)?.seq === 1)
+      deliver()
+      expect(sync.readPartPreview(running)?.seq).toBe(1)
 
       emit(partUpdated(toolPart("running", "snapshot output", { phase: "second" }), "evt_preview_running"))
-      await wait(() => {
-        const current = part()
-        return current !== undefined && sync.readPartPreview(current) === undefined
-      })
+      deliver()
       const next = part()
-      expect(next?.type === "tool" && next.state.status === "running" && next.state.metadata?.output).toBe(
+      if (!next) throw new Error("expected the running tool part")
+      expect(sync.readPartPreview(next)).toBeUndefined()
+      expect(next.type === "tool" && next.state.status === "running" && next.state.metadata?.output).toBe(
         "snapshot output",
       )
     } finally {
@@ -220,23 +207,19 @@ describe("preview events use the stream buffer", () => {
   test("previews for a settled part or for a part the store does not know create no window", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, sync, part, status } = await mountPreview(tmp.path)
+    const { app, deliver, emit, part, status, sync } = await mountPreview(tmp.path)
 
     try {
       emit(partUpdated(toolPart("completed", "all done"), "evt_preview_finished"))
-      await wait(() => status() === "completed")
+      deliver()
+      expect(status()).toBe("completed")
       const settled = part()
       if (!settled) throw new Error("expected the settled tool part")
 
       emit(preview(1, "too late"))
       // A window for an unknown part id: no identity to read it back against.
       emit(preview(1, "orphan", 6, "prt_unknown"))
-      // Events are applied in order, so the marker proves both previews ran.
-      emit(partUpdated(toolPart("completed", "marker"), "evt_preview_marker"))
-      await wait(() => {
-        const current = part()
-        return current?.type === "tool" && current.state.status === "completed" && current.state.output === "marker"
-      })
+      deliver()
 
       expect(sync.readPartPreview(settled)).toBeUndefined()
       expect(sync.readPartPreview({ ...toolPart("running", ""), id: "prt_unknown" })).toBeUndefined()
@@ -248,13 +231,14 @@ describe("preview events use the stream buffer", () => {
   test("a reconnect drops the windows together with the un-settled deltas", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, emit, reconnect, sync, part } = await mountPreview(tmp.path)
+    const { app, deliver, emit, part, reconnect, sync } = await mountPreview(tmp.path)
 
     try {
       const running = part()
       if (!running) throw new Error("expected the hydrated tool part")
       emit(preview(1, "before the drop"))
-      await wait(() => sync.readPartPreview(running)?.seq === 1)
+      deliver()
+      expect(sync.readPartPreview(running)?.seq).toBe(1)
 
       reconnect()
       expect(sync.readPartPreview(running)).toBeUndefined()
@@ -322,7 +306,7 @@ describe("bash block renders the buffered preview", () => {
     })
 
     try {
-      await waitForFrame(view.app, "tail -f build.log")
+      await waitForFrame(view, "tail -f build.log")
       const hydrated = view.sync.data.part[bashMessageID]?.[0]
       const beforeWrite = JSON.stringify(hydrated)
 
@@ -340,11 +324,11 @@ describe("bash block renders the buffered preview", () => {
           },
         })
       view.events.emit(previewEvent(1, "compiling alpha"))
-      const first = await waitForFrame(view.app, "compiling alpha")
+      const first = await waitForFrame(view, "compiling alpha")
       expect(first).toContain("tail -f build.log")
 
       view.events.emit(previewEvent(2, "compiling beta"))
-      const second = await waitForFrame(view.app, "compiling beta")
+      const second = await waitForFrame(view, "compiling beta")
       expect(second).not.toContain("compiling alpha")
       // Nothing was written to the store while the output streamed in.
       expect(JSON.stringify(view.sync.data.part[bashMessageID]?.[0])).toBe(beforeWrite)
@@ -367,7 +351,7 @@ describe("bash block renders the buffered preview", () => {
           },
         }),
       )
-      const done = await waitForFrame(view.app, "build finished")
+      const done = await waitForFrame(view, "build finished")
       expect(done).not.toContain("compiling beta")
     } finally {
       await view.dispose()
