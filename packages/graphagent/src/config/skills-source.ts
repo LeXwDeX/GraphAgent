@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+export * as ConfigSkillsSource from "./skills-source"
+
 /**
  * Which config layer declared `skills.paths` / `skills.urls` on a merged
  * `Info` (#1040). `mergeDeep` replaces an array key wholesale rather than
