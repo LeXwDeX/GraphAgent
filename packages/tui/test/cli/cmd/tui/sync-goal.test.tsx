@@ -104,42 +104,69 @@ describe("tui sync goal slice", () => {
   })
 })
 
-for (const status of [200, 404, 500]) {
-  test(`Goal reconnect handles HTTP ${status}`, async () => {
+// #1069: the reconnect refill of the goal slice is the lifecycle batch. The
+// owner's answer for the goal ref replaces the status, an unknown ref clears
+// the goal, and a failed read leaves it alone.
+const goalState = {
+  domain: "goal",
+  id: sid,
+  value: "paused",
+  phase: "paused",
+  terminal: false,
+  settled: false,
+  source: "persisted",
+  observedAt: 1,
+}
+
+const refills = [
+  {
+    label: "a known state",
+    outcome: "status",
+    reply: () => Response.json([{ domain: "goal", id: sid, state: goalState }]),
+  },
+  {
+    label: "an unknown ref",
+    outcome: "cleared",
+    reply: () => Response.json([{ domain: "goal", id: sid, state: null }]),
+  },
+  {
+    label: "HTTP 500",
+    outcome: "kept",
+    reply: () => Response.json({ message: "failed" }, { status: 500 }),
+  },
+] as const
+
+for (const refill of refills) {
+  test(`Goal reconnect handles ${refill.label}`, async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    let reads = 0
-    const { app, emit, reconnect, sync } = await mount((url) => {
-      if (!url.pathname.endsWith("/goal")) return
-      reads++
-      return Response.json(
-        status === 200
-          ? {
-              goal: "updated goal",
-              status: "paused",
-              turnsUsed: 3,
-              maxTurns: 20,
-              subgoals: [],
-            }
-          : { message: "failed" },
-        { status },
-      )
+    const bodies: unknown[] = []
+    const { app, emit, reconnect, sync } = await mount(async (url, request) => {
+      if (url.pathname !== "/lifecycle/states") return undefined
+      bodies.push(await request?.json())
+      return refill.reply()
     }, tmp.path)
     try {
       emit(goalUpdated())
       await wait(() => sync.data.goal[sid] !== undefined)
       reconnect()
-      await wait(() => reads === 1)
-      if (status === 404) {
+      await wait(() => bodies.length === 1)
+      // One batched read, naming the goal of the session that has one.
+      expect(bodies[0]).toEqual({ refs: [{ domain: "goal", id: sid }] })
+      if (refill.outcome === "cleared") {
         await wait(() => sync.data.goal[sid] === undefined)
         expect(sync.data.goal[sid]).toBeUndefined()
+      } else if (refill.outcome === "status") {
+        await wait(() => sync.data.goal[sid]?.status === "paused")
+        // Only the status comes from the contract; the goal itself stays.
+        expect(sync.data.goal[sid]?.goal).toBe("ship the feature")
       } else {
         // Starting another request proves the first reconnect finished.
         await wait(() => {
           reconnect()
-          return reads >= 2
+          return bodies.length >= 2
         })
-        expect(sync.data.goal[sid]?.goal).toBe(status === 200 ? "updated goal" : "ship the feature")
+        expect(sync.data.goal[sid]).toMatchObject({ goal: "ship the feature", status: "active" })
       }
     } finally {
       app.renderer.destroy()
