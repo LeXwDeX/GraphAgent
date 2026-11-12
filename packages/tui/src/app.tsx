@@ -61,9 +61,11 @@ import { VariantPanel } from "./panel/variant"
 import { useDrawer } from "./shell/drawer"
 import { useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
+import { dagIndicatorReserve } from "./shell/dag-indicator"
 import { HookProgress } from "./shell/hook-progress"
 import { HookStatusProvider } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
+import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
@@ -375,8 +377,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const disposeNotifications = createTuiNotifications({ event, sessions: sync.session, attention })
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
-  const footerStatus = useFooterStatus(() =>
-    route.data.type === "session" ? <HookProgress sessionID={route.data.sessionID} /> : undefined,
+  const dagIndicator = useDagIndicator()
+  const footerStatus = useFooterStatus(
+    () => (route.data.type === "session" ? <HookProgress sessionID={route.data.sessionID} /> : undefined),
+    () => dagIndicatorReserve(dagIndicator(), dimensions().width, kv.get("ambiguous_width", 1) === 2 ? 2 : 1),
   )
   const bottomZone = createBottomZoneState()
   const btw = useBtw()
@@ -1115,6 +1119,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             agentAction: footerKeys().agent,
             hints: route.data.type === "diff" ? diffFooterHints() : footerKeys().hints,
             meta: route.data.type === "home" ? homeMeta() : { trust: homeMeta().trust },
+            dag: dagIndicator(),
             right: footerStatus(),
           }}
           bottomZone={<BottomZone state={bottomZone} composer={<></>} />}

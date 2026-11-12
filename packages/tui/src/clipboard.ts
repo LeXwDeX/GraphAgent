@@ -29,7 +29,7 @@ function writeOsc52(text: string) {
 
 export async function read() {
   if (platform() === "darwin") {
-    const file = path.join(tmpdir(), "opencode-clipboard.png")
+    const file = path.join(tmpdir(), "graphagent-clipboard.png")
     try {
       await exec("osascript", [
         "-e",

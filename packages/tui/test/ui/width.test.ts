@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { expect, test } from "bun:test"
-import { cellWidth, truncateCells } from "../../src/ui/width"
+import { cellWidth, cursorWidth, truncateCells } from "../../src/ui/width"
 
 test("ambiguous width defaults to one cell", () => {
   expect(cellWidth("◆")).toBe(1)
@@ -48,4 +48,17 @@ test("truncation follows ambiguous width", () => {
   expect(truncateCells("◆◆◆", 2)).toBe("◆…")
   expect(truncateCells("◆◆◆", 4, 2)).toBe("◆…")
   expect(cellWidth(truncateCells("a◆b◆c", 7, 2), 2)).toBeLessThanOrEqual(7)
+})
+
+test("cursor width measures textarea offsets and ignores ambiguous width", () => {
+  expect(cursorWidth("")).toBe(0)
+  expect(cursorWidth("abc")).toBe(3)
+  expect(cursorWidth("中文")).toBe(4)
+  expect(cursorWidth("👨‍👩‍👧‍👦")).toBe(2)
+  expect(cursorWidth("@src/中文.ts")).toBe(Bun.stringWidth("@src/中文.ts"))
+  // Layout counts ambiguous glyphs as two cells with `ambiguous_width = 2`; the textarea does not.
+  expect(cellWidth("◆─◇", 2)).toBe(6)
+  expect(cursorWidth("◆─◇")).toBe(3)
+  // Newlines are zero-width here; promptOffsetWidth adds them back as one position each.
+  expect(cursorWidth("a\nb")).toBe(2)
 })

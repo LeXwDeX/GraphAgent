@@ -19,11 +19,9 @@ import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
 import { PromptRefProvider, usePromptRef } from "../../src/context/prompt"
 import { RouteProvider, useRoute } from "../../src/context/route"
-import { SDKProvider, useSDK } from "../../src/context/sdk"
+import { SDKProvider } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
-import type { Event } from "@graphagent/sdk"
-import type { GateDecision } from "../../src/context/event-gate"
 import { TickerProvider } from "../../src/context/ticker-context"
 import { createTicker, type Ticker } from "../../src/context/ticker"
 import { registerGraphagentKeymap, GraphagentKeymapProvider } from "../../src/keymap"
@@ -44,6 +42,7 @@ import { HookStatusProvider } from "../../src/context/hook-status"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { createEventSource, createFetch, directory } from "../fixture/tui-sdk"
+import { probeStoreWrites } from "../fixture/store-write-probe"
 import { tmpdir } from "../fixture/fixture"
 import { backgroundEvent, makeFetchFixture, type PerfFixture, updatePartEvent } from "./fixtures"
 import { createCounters, type CounterSnapshot, type PerfCounters } from "./counters"
@@ -129,7 +128,6 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     prompt?: NonNullable<ReturnType<typeof usePromptRef>["current"]>
     bottomZone?: BottomZoneStateApi
     route?: ReturnType<typeof useRoute>
-    gate?: (event: Event) => GateDecision
   }
   let counters!: PerfCounters
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
@@ -140,16 +138,17 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     const sync = useSync()
     const promptRef = usePromptRef()
     const route = useRoute()
-    const sdk = useSDK()
     state.sync = sync
     state.promptRef = promptRef
     state.route = route
-    state.gate = sdk.eventGate
+    // Count the writes the sync store really performs. Inferring them from the
+    // event type cannot see a delta that starts writing `store.part`.
+    const probe = probeStoreWrites(sync.data, ["message", "part"], (slice) => counters.countStoreWrite(slice))
+    onCleanup(() => probe.dispose())
     onMount(() => {
       state.sync = sync
       state.promptRef = promptRef
       state.route = route
-      state.gate = sdk.eventGate
     })
     return (
       <AppFrame
@@ -301,17 +300,6 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
   }
 
   const emit = (event: Parameters<typeof events.emit>[0]) => {
-    const type = event.payload.type
-    // Only events the gate delivers reach the session store; summary/drop
-    // events must not count as message or part writes (Issue #1025 P14).
-    const decision =
-      event.payload.type === "sync" || event.payload.type === "config.updated"
-        ? "deliver"
-        : (state.gate?.(event.payload) ?? "deliver")
-    if (decision === "deliver") {
-      if (type === "message.updated" || type === "message.removed") counters.countStoreWrite("message")
-      if (type === "message.part.updated" || type === "message.part.removed") counters.countStoreWrite("part")
-    }
     events.emit(event)
   }
 

@@ -232,6 +232,19 @@ describe("settings.json entries", () => {
   })
 })
 
+describe("environment-only formatter entries", () => {
+  test("a formatter that only sets environment is enumerated for trust", () => {
+    const text = `{"formatter":{"prettier":{"environment":{"NODE_OPTIONS":"--require ./x.js"}},"empty":{"environment":{}}}}`
+    const { entries } = enumerate([{ file: "settings.json", text }])
+
+    expect(entries.map((entry) => entry.id)).toEqual(["settings.json|formatter|prettier||1"])
+    expect(entries[0]?.display.envKeys).toEqual(["NODE_OPTIONS"])
+    expect(entries[0]?.display.commands).toEqual([])
+    expect(entries[0]?.display.text).toBe("environment: NODE_OPTIONS")
+    expect(entries[0]?.references).toEqual([])
+  })
+})
+
 describe("local project files", () => {
   const hook = `{"Stop":[{"hooks":[{"type":"command","command":"echo local"}]}]}`
 

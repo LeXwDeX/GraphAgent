@@ -1,4 +1,5 @@
 /// <reference path="../audio.d.ts" />
+import { APP_TITLE } from "@graphagent/core/brand"
 import { AttentionSoundName, type TuiConfig } from "../config"
 import { Schema } from "effect"
 import stripAnsi from "strip-ansi"
@@ -97,7 +98,7 @@ type TuiAttentionHost = TuiAttention & {
   dispose(): void
 }
 
-const DEFAULT_TITLE = "opencode"
+const DEFAULT_TITLE = APP_TITLE
 const DEFAULT_PACK_ID = "graphagent.default"
 const KV_SOUND_PACK = "attention_sound_pack"
 const TITLE_LIMIT = 80

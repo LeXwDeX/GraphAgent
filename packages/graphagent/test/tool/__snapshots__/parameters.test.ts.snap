@@ -211,6 +211,10 @@ exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "background": {
+      "description": "Run the command as a background job. The call returns a job id immediately, the full output is written to a log file, and completion arrives as a result notice that can wake a goal waiting on background_job:<job id>. Use this for long-running local processes (CI, builds, watches) instead of foreground sleep/poll loops. No default timeout applies unless \`timeout\` is given.",
+      "type": "boolean",
+    },
     "command": {
       "description": "The command to execute",
       "type": "string",

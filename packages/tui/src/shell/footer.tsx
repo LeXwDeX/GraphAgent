@@ -8,6 +8,7 @@ import { useTheme } from "../context/theme"
 import { t } from "../i18n"
 import { useCommandShortcut } from "../keymap"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
+import { DagIndicator, dagIndicatorCompact, dagIndicatorText, type DagIndicatorState } from "./dag-indicator"
 
 export type FooterHint = {
   key: string
@@ -64,8 +65,8 @@ export type FooterProps = {
   hints?: readonly FooterHint[]
   /** Home route directory, MCP count and version; other routes pass only the trust count. */
   meta?: FooterMeta
-  /** DAG mode indicator slot. */
-  dag?: JSX.Element
+  /** DAG mode indicator shown after the agent name; omitted where the session has no mode switch. */
+  dag?: DagIndicatorState
   /** Shared right-hand slot for transient footer content. */
   right?: JSX.Element
 }
@@ -86,16 +87,23 @@ export function Footer(props: FooterProps) {
   const layout = createMemo(() => {
     const aw = ambiguousWidth()
     const inner = Math.max(1, width() - PADDING)
+    const compact = dagIndicatorCompact(width())
 
-    const agent = props.agent ? truncateCells(props.agent, inner, aw) : ""
+    // The DAG indicator follows the agent name and outranks it: the name is
+    // shortened first so the mode stays readable on narrow terminals.
+    const dag = props.dag ? dagIndicatorText(props.dag, compact) : ""
+    const dagWidth = cellWidth(dag, aw)
+
+    const agent = props.agent ? truncateCells(props.agent, inner - (dag ? dagWidth + GAP : 0), aw) : ""
     const agentWidth = cellWidth(agent, aw)
+    const head = agentWidth + (dag ? (agent ? GAP : 0) + dagWidth : 0)
     const action = props.agentAction ? `${props.agentAction} ${t("shell.footer.switchAgent")}` : ""
-    const actionBudget = inner - agentWidth - (agent ? GAP : 0)
+    const actionBudget = inner - head - (head > 0 ? GAP : 0)
     const actionWidth = action ? cellWidth(action, aw) : 0
     const shownAction =
       action && actionBudget > 0 ? (actionWidth <= actionBudget ? action : truncateCells(action, actionBudget, aw)) : ""
 
-    const leftWidth = agentWidth + (agent && shownAction ? GAP : 0) + (shownAction ? cellWidth(shownAction, aw) : 0)
+    const leftWidth = head + (shownAction ? (head > 0 ? GAP : 0) + cellWidth(shownAction, aw) : 0)
 
     // The shared right slot replaces idle hints and meta, but the trust warning
     // stays visible: it is the only footer reminder that project entries await a
@@ -106,8 +114,27 @@ export function Footer(props: FooterProps) {
     const trustWidth = cellWidth(trust, aw)
     const trustGap = leftWidth > 0 && trust ? GAP : 0
 
-    if (props.right)
-      return { agent, action: shownAction, trust, trustGap, hints: [] as FooterHint[], meta: "", metaGap: 0, spacer: 0 }
+    if (props.right) {
+      // The renderer lays ambiguous glyphs out one cell wide; at ambiguous_width 2
+      // the terminal draws them two cells wide and would push the flush-right
+      // slot past the edge, so pull the slot back by the cells the left side gains.
+      const shift =
+        aw === 2
+          ? [agent, dag, shownAction, trust].reduce((sum, text) => sum + cellWidth(text, 2) - cellWidth(text, 1), 0)
+          : 0
+      return {
+        agent,
+        compact,
+        action: shownAction,
+        trust,
+        trustGap,
+        hints: [] as FooterHint[],
+        meta: "",
+        metaGap: 0,
+        spacer: 0,
+        shift,
+      }
+    }
 
     const rightBudget = inner - leftWidth - trustGap - trustWidth - (leftWidth + trustGap + trustWidth > 0 ? GAP : 0)
 
@@ -146,6 +173,7 @@ export function Footer(props: FooterProps) {
 
     return {
       agent,
+      compact,
       action: shownAction,
       trust,
       trustGap,
@@ -153,11 +181,12 @@ export function Footer(props: FooterProps) {
       meta,
       metaGap,
       spacer,
+      shift: 0,
     }
   })
 
   return (
-    <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
+    <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1 + layout().shift}>
       <Show when={layout().agent || props.dag || layout().action}>
         <box flexDirection="row" gap={GAP}>
           <Show when={layout().agent}>
@@ -165,7 +194,7 @@ export function Footer(props: FooterProps) {
               <b>{layout().agent}</b>
             </text>
           </Show>
-          <Show when={props.dag}>{props.dag}</Show>
+          <Show when={props.dag}>{(state) => <DagIndicator state={state()} compact={layout().compact} />}</Show>
           <Show when={layout().action}>
             <text fg={theme.textMuted} wrapMode="none">
               {layout().action}

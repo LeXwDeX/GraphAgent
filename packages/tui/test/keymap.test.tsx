@@ -5,7 +5,15 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onCleanup } from "solid-js"
 import { TuiKeybind } from "../src/config/keybind"
-import { getGraphagentModeStack, GRAPHAGENT_BASE_MODE, GraphagentKeymapProvider, registerGraphagentKeymap } from "../src/keymap"
+import {
+  displaySequence,
+  formatKeySequence,
+  getGraphagentModeStack,
+  GRAPHAGENT_BASE_MODE,
+  GraphagentKeymapProvider,
+  modifiedBindings,
+  registerGraphagentKeymap,
+} from "../src/keymap"
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   const keybinds = TuiKeybind.parse(input)
@@ -183,4 +191,138 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
   } finally {
     app.renderer.destroy()
   }
+})
+
+async function withKeymap<T>(run: (keymap: ReturnType<typeof createDefaultOpenTuiKeymap>) => T) {
+  let result!: T
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    onCleanup(registerGraphagentKeymap(keymap, renderer, createResolvedKeymapConfig()))
+    result = run(keymap)
+    return <box />
+  }
+  const app = await testRender(() => <Harness />)
+  app.renderer.destroy()
+  return result
+}
+
+test("modifiedBindings keeps the modified keys of the default jump bindings", async () => {
+  const config = createResolvedKeymapConfig()
+  const kept = await withKeymap((keymap) => ({
+    first: modifiedBindings(keymap, config.keybinds.get("session.first")),
+    last: modifiedBindings(keymap, config.keybinds.get("session.last")),
+  }))
+  expect(kept.first).toEqual([{ desc: "Navigate to first message", key: "ctrl+g", cmd: "session.first" }])
+  expect(kept.last).toEqual([{ desc: "Navigate to last message", key: "ctrl+alt+g", cmd: "session.last" }])
+})
+
+test("modifiedBindings drops plain and shift-only keys and keeps ctrl, alt, super, hyper and leader keys", async () => {
+  const kept = await withKeymap((keymap) =>
+    modifiedBindings(keymap, [
+      { key: "home,end,shift+home,f6,a", cmd: "plain" },
+      { key: "ctrl+home,alt+h,super+h,hyper+h,<leader>h", cmd: "modified" },
+      { key: "  ctrl+f6 , f7  ", cmd: "spaced" },
+      { key: { name: "g", ctrl: true }, cmd: "stroke" },
+      { key: { name: "g" }, cmd: "plain-stroke" },
+    ]),
+  )
+  expect(kept.map((binding) => [binding.cmd, binding.key])).toEqual([
+    ["modified", "ctrl+home"],
+    ["modified", "alt+h"],
+    ["modified", "super+h"],
+    ["modified", "hyper+h"],
+    ["modified", "<leader>h"],
+    ["spaced", "ctrl+f6"],
+    ["stroke", { name: "g", ctrl: true }],
+  ])
+})
+
+test("modifiedBindings keeps the other binding fields and tolerates keys the parser rejects", async () => {
+  const kept = await withKeymap((keymap) =>
+    modifiedBindings(keymap, [
+      { key: "ctrl+g", cmd: "x", desc: "Jump", event: "release", preventDefault: false, fallthrough: true },
+      { key: "ctrl+", cmd: "broken" },
+      { key: "", cmd: "empty" },
+    ]),
+  )
+  expect(kept).toEqual([
+    { key: "ctrl+g", cmd: "x", desc: "Jump", event: "release", preventDefault: false, fallthrough: true },
+  ])
+})
+
+const TMUX_SESSION = "/tmp/tmux-1000/default,4242,0"
+
+/**
+ * The shortcut text `useCommandShortcut` shows for `command`, with `TMUX` set to
+ * `options.tmux` (or removed) while the bindings are read.
+ */
+async function shortcutText(
+  command: string,
+  options: { tmux: string | undefined; overrides?: TuiKeybind.KeybindOverrides },
+) {
+  const previous = process.env.TMUX
+  if (options.tmux === undefined) delete process.env.TMUX
+  else process.env.TMUX = options.tmux
+  try {
+    let text = ""
+
+    function Harness() {
+      const renderer = useRenderer()
+      const keymap = createDefaultOpenTuiKeymap(renderer)
+      const config = createResolvedKeymapConfig(options.overrides)
+      const offKeymap = registerGraphagentKeymap(keymap, renderer, config)
+      const offLayer = keymap.registerLayer({
+        commands: [{ name: command, run() {} }],
+        bindings: config.keybinds.gather("test.display", [command]),
+      })
+      const bindings = keymap.getCommandBindings({ visibility: "registered", commands: [command] }).get(command)
+      text = formatKeySequence(displaySequence(command, bindings), config)
+      onCleanup(() => {
+        offLayer()
+        offKeymap()
+      })
+
+      return (
+        <GraphagentKeymapProvider keymap={keymap}>
+          <box />
+        </GraphagentKeymapProvider>
+      )
+    }
+
+    const app = await testRender(() => <Harness />)
+    try {
+      return text
+    } finally {
+      app.renderer.destroy()
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TMUX
+    else process.env.TMUX = previous
+  }
+}
+
+test("shows ctrl+b for the drawer toggle outside tmux", async () => {
+  expect(await shortcutText("session.drawer.toggle", { tmux: undefined })).toBe("ctrl+b")
+  // An empty TMUX is the same as no tmux.
+  expect(await shortcutText("session.drawer.toggle", { tmux: "" })).toBe("ctrl+b")
+})
+
+test("shows the leader alternative for the drawer toggle inside tmux", async () => {
+  expect(await shortcutText("session.drawer.toggle", { tmux: TMUX_SESSION })).toBe("ctrl+x b")
+})
+
+test("keeps the only drawer toggle binding inside tmux when it has no leader alternative", async () => {
+  expect(
+    await shortcutText("session.drawer.toggle", {
+      tmux: TMUX_SESSION,
+      overrides: { session_drawer_toggle: "f9" },
+    }),
+  ).toBe("f9")
+})
+
+test("inside tmux only the drawer toggle prefers its leader alternative", async () => {
+  const overrides = { help_show: "?,<leader>h" }
+  expect(await shortcutText("help.show", { tmux: undefined, overrides })).toBe("?")
+  expect(await shortcutText("help.show", { tmux: TMUX_SESSION, overrides })).toBe("?")
 })
