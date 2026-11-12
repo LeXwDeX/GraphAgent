@@ -4,7 +4,7 @@ exports[`renders the on receipt in zh-CN 1`] = `
 "                                                                                                    
   ┃                                                                                                 
   ┃  DAG 模式已开启（本会话，自下一次请求起生效）；token 消耗通常成倍增加；并发上限 4（所有会话共   
-  ┃  享）、单工作流节点上限 32、token 预算 200000；关闭：/dag-mode off 或                           
+  ┃  享）、单工作流节点上限 32、token 预算 200000；关闭：/dag-mode off 或 ctrl+x d                  
   ┃                                                                                                 
                                                                                                     
                                                                                                     
@@ -39,7 +39,7 @@ exports[`renders the on receipt in en 1`] = `
   ┃                                                                                                 
   ┃  DAG mode is on for this session, starting with the next request. Token usage usually           
   ┃  multiplies; concurrency cap 4 (shared by all sessions), per-workflow node cap 32, token        
-  ┃  budget 200000. Turn it off with /dag-mode off or .                                             
+  ┃  budget 200000. Turn it off with /dag-mode off or ctrl+x d.                                     
   ┃                                                                                                 
                                                                                                     
                                                                                                     

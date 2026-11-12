@@ -11,6 +11,7 @@ import {
   getGraphagentModeStack,
   GRAPHAGENT_BASE_MODE,
   GraphagentKeymapProvider,
+  modifiedBindings,
   registerGraphagentKeymap,
 } from "../src/keymap"
 
@@ -190,6 +191,64 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
   } finally {
     app.renderer.destroy()
   }
+})
+
+async function withKeymap<T>(run: (keymap: ReturnType<typeof createDefaultOpenTuiKeymap>) => T) {
+  let result!: T
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    onCleanup(registerGraphagentKeymap(keymap, renderer, createResolvedKeymapConfig()))
+    result = run(keymap)
+    return <box />
+  }
+  const app = await testRender(() => <Harness />)
+  app.renderer.destroy()
+  return result
+}
+
+test("modifiedBindings keeps the modified keys of the default jump bindings", async () => {
+  const config = createResolvedKeymapConfig()
+  const kept = await withKeymap((keymap) => ({
+    first: modifiedBindings(keymap, config.keybinds.get("session.first")),
+    last: modifiedBindings(keymap, config.keybinds.get("session.last")),
+  }))
+  expect(kept.first).toEqual([{ desc: "Navigate to first message", key: "ctrl+g", cmd: "session.first" }])
+  expect(kept.last).toEqual([{ desc: "Navigate to last message", key: "ctrl+alt+g", cmd: "session.last" }])
+})
+
+test("modifiedBindings drops plain and shift-only keys and keeps ctrl, alt, super, hyper and leader keys", async () => {
+  const kept = await withKeymap((keymap) =>
+    modifiedBindings(keymap, [
+      { key: "home,end,shift+home,f6,a", cmd: "plain" },
+      { key: "ctrl+home,alt+h,super+h,hyper+h,<leader>h", cmd: "modified" },
+      { key: "  ctrl+f6 , f7  ", cmd: "spaced" },
+      { key: { name: "g", ctrl: true }, cmd: "stroke" },
+      { key: { name: "g" }, cmd: "plain-stroke" },
+    ]),
+  )
+  expect(kept.map((binding) => [binding.cmd, binding.key])).toEqual([
+    ["modified", "ctrl+home"],
+    ["modified", "alt+h"],
+    ["modified", "super+h"],
+    ["modified", "hyper+h"],
+    ["modified", "<leader>h"],
+    ["spaced", "ctrl+f6"],
+    ["stroke", { name: "g", ctrl: true }],
+  ])
+})
+
+test("modifiedBindings keeps the other binding fields and tolerates keys the parser rejects", async () => {
+  const kept = await withKeymap((keymap) =>
+    modifiedBindings(keymap, [
+      { key: "ctrl+g", cmd: "x", desc: "Jump", event: "release", preventDefault: false, fallthrough: true },
+      { key: "ctrl+", cmd: "broken" },
+      { key: "", cmd: "empty" },
+    ]),
+  )
+  expect(kept).toEqual([
+    { key: "ctrl+g", cmd: "x", desc: "Jump", event: "release", preventDefault: false, fallthrough: true },
+  ])
 })
 
 const TMUX_SESSION = "/tmp/tmux-1000/default,4242,0"

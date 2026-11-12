@@ -3,11 +3,18 @@ import {
   registerBackspacePopsPendingSequence,
   registerBaseLayoutFallback,
   registerCommaBindings,
+  registerEditBufferCommands,
   registerEscapeClearsPendingSequence,
-  registerManagedTextareaLayer,
+  registerTextareaMappingSuspension,
   registerTimedLeader,
 } from "@opentui/keymap/addons/opentui"
-import { stringifyKeyStroke, type ActiveBinding, type Binding, type KeySequencePart } from "@opentui/keymap"
+import {
+  stringifyKeyStroke,
+  type ActiveBinding,
+  type Binding,
+  type KeyLike,
+  type KeySequencePart,
+} from "@opentui/keymap"
 import {
   formatCommandBindings as formatCommandBindingsExtra,
   formatKeySequence as formatKeySequenceExtra,
@@ -181,9 +188,85 @@ const inputCommands = [
   "input.submit",
 ] as const
 
+/**
+ * Keeps the keys of `bindings` that start with a modified key (ctrl, alt, super,
+ * hyper) or the leader. Such keys never produce text, so they can stay active
+ * while a text input has focus; plain keys such as `home` and `end` belong to
+ * the input then. Comma lists are split the way the keymap expands them.
+ */
+export function modifiedBindings(
+  keymap: OpenTuiKeymap,
+  bindings: readonly Binding<Renderable, KeyEvent>[],
+): Binding<Renderable, KeyEvent>[] {
+  return bindings.flatMap((binding) => {
+    const keys = typeof binding.key === "string" ? binding.key.split(",").map((part) => part.trim()) : [binding.key]
+    return keys.filter((key) => startsModified(keymap, key)).map((key) => ({ ...binding, key }))
+  })
+}
+
+function startsModified(keymap: OpenTuiKeymap, key: KeyLike) {
+  try {
+    const first = keymap.parseKeySequence(key)[0]
+    if (!first) return false
+    const { ctrl, meta, super: command, hyper } = first.stroke
+    return first.tokenName !== undefined || ctrl || meta || command || hyper === true
+  } catch {
+    // A key the parser rejects is not a modified key. The keymap reports the
+    // same key itself when the plain-key layer registers it.
+    return false
+  }
+}
+
 export function hasManagedTextareaFocus(renderer: CliRenderer) {
   const editor = renderer.currentFocusedEditor
   return editor instanceof TextareaRenderable && !(editor instanceof InputRenderable)
+}
+
+/**
+ * Textarea bindings that no definition lists but that the library's own defaults used to provide: Cmd+arrow
+ * navigation on terminals that report `super`, and keypad Enter / linefeed as newline aliases (linefeed is what
+ * legacy terminals send for ctrl+j). They are fixed and not configurable.
+ *
+ * The library's emacs defaults ctrl+b, ctrl+f and ctrl+d are deliberately absent: the key plan hands them to the
+ * drawer, the lists and exit (#886 4.2 and 4.3). So are its alt+enter and alt+keypad-enter submit defaults, which
+ * contradict `input_newline`, and its plain Enter newline default, which `input.submit` always shadowed.
+ */
+const inputExtraBindings: readonly Binding<Renderable, KeyEvent>[] = [
+  { key: "super+left", cmd: "input.visual.line.home" },
+  { key: "super+right", cmd: "input.visual.line.end" },
+  { key: "super+up", cmd: "input.buffer.home" },
+  { key: "super+down", cmd: "input.buffer.end" },
+  { key: "shift+super+left", cmd: "input.select.visual.line.home" },
+  { key: "shift+super+right", cmd: "input.select.visual.line.end" },
+  { key: "shift+super+up", cmd: "input.select.buffer.home" },
+  { key: "shift+super+down", cmd: "input.select.buffer.end" },
+  { key: "kpenter", cmd: "input.newline" },
+  { key: "linefeed", cmd: "input.newline" },
+]
+
+/**
+ * The managed textarea layer: the edit-buffer commands, suspension of the textarea's own key handling, and a layer
+ * bound while a managed textarea has focus. Built from the definitions only so that a key removed from or rebound in
+ * `Definitions` really stops acting; `registerManagedTextareaLayer` would append the library's 64 defaults to it.
+ */
+function registerInputLayer(keymap: OpenTuiKeymap, renderer: CliRenderer, config: FormatConfig) {
+  const offCommands = registerEditBufferCommands(keymap, renderer)
+  const offSuspension = registerTextareaMappingSuspension(keymap, renderer)
+  try {
+    const offLayer = keymap.registerLayer({
+      enabled: () => hasManagedTextareaFocus(renderer),
+      bindings: [...config.keybinds.gather("input", inputCommands), ...inputExtraBindings],
+    })
+    return () => {
+      offLayer()
+      offSuspension()
+      offCommands()
+    }
+  } catch (error) {
+    offSuspension()
+    offCommands()
+    throw error
+  }
 }
 
 function leaderDisplay(config: FormatConfig) {
@@ -235,10 +318,7 @@ export function registerGraphagentKeymap(keymap: OpenTuiKeymap, renderer: CliRen
     : () => {}
   const offEscape = registerEscapeClearsPendingSequence(keymap)
   const offBackspace = registerBackspacePopsPendingSequence(keymap)
-  const offInputBindings = registerManagedTextareaLayer(keymap, renderer, {
-    enabled: () => hasManagedTextareaFocus(renderer),
-    bindings: config.keybinds.gather("input", inputCommands),
-  })
+  const offInputBindings = registerInputLayer(keymap, renderer, config)
 
   return () => {
     offInputBindings()
