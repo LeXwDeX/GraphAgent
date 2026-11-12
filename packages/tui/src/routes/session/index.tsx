@@ -286,6 +286,17 @@ export function Main() {
     }
   })
 
+  // The row table below is built as soon as this component is created, and a
+  // session that is already in the sync store (a return from home or the diff
+  // view) has rows by then. What the table reads while it is built, the tool-details
+  // setting and the content width, has to be declared before it: a `const` read
+  // earlier throws "Cannot access ... before initialization" and the transcript
+  // never renders.
+  const dimensions = useTerminalDimensions()
+  const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
+  // The drawer overlays the main area instead of shrinking it.
+  const contentWidth = createMemo(() => dimensions().width - 4)
+
   // The transcript is a flat row table. Windowing, scroll commands and height
   // estimates all read this table instead of mounted render nodes, so an
   // unmounted row can still be located and scrolled to.
@@ -475,14 +486,12 @@ export function Main() {
     measurements.report(row.key, row.revision, contentWidth(), el.height)
   }
 
-  const dimensions = useTerminalDimensions()
   const drawer = useDrawer()
   const [conceal, setConceal] = kv.signal("conceal_code", true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
   const showThinking = createMemo(() => true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
-  const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
   const [showAssistantMetadata, _setShowAssistantMetadata] = kv.signal("assistant_metadata_visibility", true)
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
@@ -490,8 +499,6 @@ export function Main() {
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
   const showTimestamps = createMemo(() => timestamps() === "show")
-  // The drawer overlays the main area instead of shrinking it.
-  const contentWidth = createMemo(() => dimensions().width - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))

@@ -7,7 +7,7 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { ScrollBoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
 import { ManualClock } from "@opentui/core/testing"
 import type { Part } from "@graphagent/sdk"
-import { createSignal, onCleanup, onMount } from "solid-js"
+import { createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
@@ -30,6 +30,7 @@ import type { PromptRef } from "../../src/component/prompt"
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
+import { Home } from "../../src/routes/home"
 import { Main } from "../../src/routes/session"
 import {
   BottomZone,
@@ -140,7 +141,16 @@ function findPrompt(root: Renderable): PromptRef | undefined {
   }
 }
 
-export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
+export type HarnessOptions = {
+  /**
+   * Switch between the home and session routes the way `app.tsx` does, so a test
+   * can leave the session and come back to it. Off, the session route is mounted
+   * once and stays.
+   */
+  routes?: boolean
+}
+
+export async function mountHarness(fixture: PerfFixture, options: HarnessOptions = {}): Promise<PerfHarness> {
   const stateDir = await tmpdir()
   await Bun.write(`${stateDir.path}/kv.json`, "{}")
   const calls = createFetch((url) => makeFetchFixture(fixture, url))
@@ -184,7 +194,16 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
         footer={{ agent: "build" }}
         bottomZone={<BottomZone state={props.bottomZone} composer={<></>} />}
       >
-        <Main />
+        <Show when={options.routes} fallback={<Main />}>
+          <Switch>
+            <Match when={route.data.type === "home"}>
+              <Home />
+            </Match>
+            <Match when={route.data.type === "session"}>
+              <Main />
+            </Match>
+          </Switch>
+        </Show>
       </AppFrame>
     )
   }
