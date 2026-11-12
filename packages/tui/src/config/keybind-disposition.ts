@@ -68,8 +68,8 @@ export const Layers = {
   },
   input: {
     summary:
-      "Composer textarea focused: the managed textarea layer in keymap.tsx plus the prompt layers targeted at the " +
-      "textarea (paste, clear, history). The managed layer also appends the library's own textarea defaults.",
+      "Composer textarea focused: the textarea layer in keymap.tsx (the definitions plus a few fixed aliases, without " +
+      "the library's own textarea defaults) and the prompt layers targeted at the textarea (paste, clear, history).",
     coactive: ["global", "session"],
   },
   interrupt: {
@@ -125,6 +125,7 @@ export const Layers = {
 type KeybindName = keyof typeof Definitions
 
 const CONFIG_TOGGLE = "Spec 4.4: the toggle moves into /config; the definition stays optional (default none)"
+const CMD_ARROW = "Also bound to its Cmd+arrow (super) form by a fixed extra in keymap.tsx"
 
 function entry(disposition: DispositionKind, layer: KeybindLayer, note?: string): DispositionEntry {
   return note === undefined ? { disposition, layer } : { disposition, layer, note }
@@ -281,9 +282,15 @@ export const Disposition = {
   input_clear: keep("input", "Clears a non-empty composer; app_exit owns the same key when it is empty"),
   input_paste: keep("input"),
   input_submit: keep("input"),
-  input_newline: keep("input"),
-  input_move_left: change("input", "ctrl+b removed from the default (tmux prefix, drawer toggle)"),
-  input_move_right: change("input", "ctrl+f removed from the default (list favorite, permission fullscreen)"),
+  input_newline: keep(
+    "input",
+    "Also bound to keypad Enter and linefeed (what legacy terminals send for ctrl+j) by fixed extras in keymap.tsx",
+  ),
+  input_move_left: change("input", "ctrl+b removed from the default and from the layer (tmux prefix, drawer toggle)"),
+  input_move_right: change(
+    "input",
+    "ctrl+f removed from the default and from the layer (list favorite, permission fullscreen)",
+  ),
   input_move_up: keep("input", "Shares `up` with history_previous, which only acts on the first line"),
   input_move_down: keep("input", "Shares `down` with history_next, which only acts on the last line"),
   input_select_left: keep("input"),
@@ -294,19 +301,22 @@ export const Disposition = {
   input_line_end: keep("input"),
   input_select_line_home: keep("input"),
   input_select_line_end: keep("input"),
-  input_visual_line_home: keep("input"),
-  input_visual_line_end: keep("input"),
-  input_select_visual_line_home: keep("input"),
-  input_select_visual_line_end: keep("input"),
-  input_buffer_home: keep("input"),
-  input_buffer_end: keep("input"),
-  input_select_buffer_home: keep("input"),
-  input_select_buffer_end: keep("input"),
+  input_visual_line_home: keep("input", CMD_ARROW),
+  input_visual_line_end: keep("input", CMD_ARROW),
+  input_select_visual_line_home: keep("input", CMD_ARROW),
+  input_select_visual_line_end: keep("input", CMD_ARROW),
+  input_buffer_home: keep("input", CMD_ARROW),
+  input_buffer_end: keep("input", CMD_ARROW),
+  input_select_buffer_home: keep("input", CMD_ARROW),
+  input_select_buffer_end: keep("input", CMD_ARROW),
   input_delete_line: keep("input"),
   input_delete_to_line_end: keep("input"),
   input_delete_to_line_start: keep("input"),
   input_backspace: keep("input"),
-  input_delete: change("input", "ctrl+d removed from the default; ctrl+d is exit-only while the composer is empty"),
+  input_delete: change(
+    "input",
+    "ctrl+d removed from the default and from the layer; ctrl+d is exit-only while the composer is empty",
+  ),
   input_undo: keep("input"),
   input_redo: keep("input"),
   input_word_forward: keep("input"),

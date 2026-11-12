@@ -5,7 +5,8 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { createTestRenderer } from "@opentui/core/testing"
-import { stringifyKeyStroke, type KeySequencePart } from "@opentui/keymap"
+import { stringifyKeyStroke, type KeyLike, type KeySequencePart } from "@opentui/keymap"
+import { createTextareaBindings } from "@opentui/keymap/addons/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { TuiKeybind } from "../src/config/keybind"
@@ -61,13 +62,21 @@ function formatSequence(parts: readonly KeySequencePart[]) {
   return parts.map((part) => (part.tokenName ? `<${part.tokenName}>` : stringifyKeyStroke(part.stroke))).join(" ")
 }
 
+type KeymapReading = {
+  /** Every claim at the defaults: the definitions' own sequences plus the fixed extras of the input layer. */
+  claims: Claim[]
+  /** The extras: sequences the input layer binds for an input command although no definition lists them. */
+  extras: Claim[]
+  /** The library's own default textarea bindings, canonicalised, keyed by the definition owning the command. */
+  library: Claim[]
+}
+
 /**
- * Every key sequence each definition claims at its defaults, canonicalised by the real keymap (comma lists, key
- * aliases, leader token). The managed textarea layer appends the library's own textarea bindings after ours. Those
- * that no definition overrides are live in the `input` layer although no default lists them, so they are claimed on
- * behalf of the definition that owns the command.
+ * Reads the key sequences from the real keymap (comma lists, key aliases and the leader token are canonicalised by its
+ * own pipeline). A definition claims what its default lists. The input layer also binds a few fixed aliases outside
+ * `Definitions`; those are read back from the keymap and claimed on behalf of the definition that owns their command.
  */
-async function readClaims(): Promise<Claim[]> {
+async function readKeymap(): Promise<KeymapReading> {
   const setup = await createTestRenderer({ width: 40, height: 10 })
   try {
     const keymap = createDefaultOpenTuiKeymap(setup.renderer)
@@ -77,9 +86,16 @@ async function readClaims(): Promise<Claim[]> {
     })
     const dispose = registerGraphagentKeymap(keymap, setup.renderer, { keybinds, leader_timeout: 2000 })
     try {
+      // A unique command name keeps other layers' bindings for the same command out of the result.
+      const canonical = (key: KeyLike, probe: string) => {
+        const disposeProbe = keymap.registerLayer({ bindings: [{ key, cmd: probe }] })
+        const found = keymap.getCommandBindings({ visibility: "registered", commands: [probe] }).get(probe) ?? []
+        disposeProbe()
+        return found.map((binding) => formatSequence(binding.sequence))
+      }
+
       const own = new Map<string, Set<string>>()
       for (const name of definitionNames) {
-        // A unique command name keeps other layers' bindings for the same command out of the result.
         const probe = `probe:${name}`
         const bindings = keybinds.get(commandMap[name] ?? name).map((binding) => ({ ...binding, cmd: probe }))
         const disposeProbe = keymap.registerLayer({ bindings })
@@ -94,13 +110,24 @@ async function readClaims(): Promise<Claim[]> {
         commands: managed.map(([, command]) => command),
       })
       const overridden = new Set(managed.flatMap(([name]) => [...own.get(name)!]))
-      const claims: Claim[] = []
-      for (const [name, sequences] of own) for (const sequence of sequences) claims.push({ name, sequence })
+      const extras: Claim[] = []
       for (const [name, command] of managed) {
         const sequences = new Set((registered.get(command) ?? []).map((binding) => formatSequence(binding.sequence)))
-        for (const sequence of sequences) if (!overridden.has(sequence)) claims.push({ name, sequence })
+        for (const sequence of sequences) if (!overridden.has(sequence)) extras.push({ name, sequence })
       }
-      return claims
+
+      const definitionOf = new Map(managed.map(([name, command]) => [command, name]))
+      const library = createTextareaBindings().flatMap((binding, index) =>
+        canonical(binding.key, `probe:library:${index}`).map((sequence) => ({
+          name: definitionOf.get(String(binding.cmd)) ?? String(binding.cmd),
+          sequence,
+        })),
+      )
+
+      const claims: Claim[] = []
+      for (const [name, sequences] of own) for (const sequence of sequences) claims.push({ name, sequence })
+      claims.push(...extras)
+      return { claims, extras, library }
     } finally {
       dispose()
     }
@@ -187,25 +214,6 @@ const KNOWN_CONFLICTS: ReadonlyArray<Conflict & { kind: "by design" | "defect"; 
     issue: "#886",
   },
   {
-    sequence: "ctrl+b",
-    names: ["input_move_left", "session_drawer_toggle"],
-    kind: "defect",
-    reason:
-      "The managed textarea layer appends the library's emacs defaults, so ctrl+b still moves the cursor left " +
-      "although input_move_left no longer lists it. Inside a session the newer drawer layer wins; on the home route " +
-      "there is no drawer layer and the cursor moves (spec 4.2 and 4.3).",
-    issue: "#886",
-  },
-  {
-    sequence: "ctrl+d",
-    names: ["app_exit", "input_delete"],
-    kind: "defect",
-    reason:
-      "The library default ctrl+d (delete forward) stays live in a non-empty composer; app_exit takes the key only " +
-      "while the composer is empty. Spec 4.3 reserves ctrl+d for exit and leaves deletion to `delete`.",
-    issue: "#886",
-  },
-  {
     sequence: "tab",
     names: ["agent_cycle", "diff_switch_focus"],
     kind: "by design",
@@ -223,15 +231,11 @@ const KNOWN_CONFLICTS: ReadonlyArray<Conflict & { kind: "by design" | "defect"; 
   },
 ]
 
-/**
- * The keys named by the spec's uniqueness criterion, with every layer that claims them at the current defaults. The
- * `input` entries for ctrl+b and ctrl+d are library textarea defaults, listed again in KNOWN_CONFLICTS.
- */
+/** The keys named by the spec's uniqueness criterion, with every layer that claims them at the current defaults. */
 const FOCUS_KEYS: Record<string, Partial<Record<KeybindLayer, string[]>>> = {
-  "ctrl+b": { input: ["input_move_left"], session: ["session_drawer_toggle"] },
+  "ctrl+b": { session: ["session_drawer_toggle"] },
   "ctrl+d": {
     global: ["app_exit"],
-    input: ["input_delete"],
     "modal:move-session": ["dialog.move_session.delete"],
     "modal:session-list": ["session_delete"],
     "modal:stash": ["stash_delete"],
@@ -244,6 +248,22 @@ const FOCUS_KEYS: Record<string, Partial<Record<KeybindLayer, string[]>>> = {
     "modal:list": ["dialog.select.prev"],
   },
 }
+
+/**
+ * Library textarea defaults the input layer deliberately does not bind. Everything else the library defaults to is
+ * either listed by a definition or kept as a fixed extra in keymap.tsx.
+ */
+const DROPPED_LIBRARY_DEFAULTS = [
+  // The key plan hands these to the drawer, the lists and exit (spec 4.2 and 4.3).
+  "ctrl+b -> input_move_left",
+  "ctrl+d -> input_delete",
+  "ctrl+f -> input_move_right",
+  // Plain Enter is submit and `input.submit` always handles it, so the newline default was never reached.
+  "enter -> input_newline",
+  // `input_newline` binds alt+enter, and alt+keypad-enter submit would contradict it.
+  "meta+enter -> input_submit",
+  "meta+kpenter -> input_submit",
+]
 
 describe("keybind disposition", () => {
   test("retires the names removed from the default keybind surface", () => {
@@ -360,11 +380,13 @@ describe("disposition table", () => {
 })
 
 describe("layer uniqueness", () => {
+  let reading: KeymapReading
   let claims: Claim[]
   let found: string[]
 
   beforeAll(async () => {
-    claims = await readClaims()
+    reading = await readKeymap()
+    claims = reading.claims
     found = findConflicts(claims).map(identity)
   })
 
@@ -382,12 +404,34 @@ describe("layer uniqueness", () => {
     expect(sequencesOf("session_interrupt").sort()).toEqual(["escape", "meta+escape"])
   })
 
-  test("claims the library textarea defaults that no definition overrides", () => {
-    expect(sequencesOf("input_move_left").sort()).toEqual(["ctrl+b", "left"])
-    expect(sequencesOf("input_delete")).toContain("ctrl+d")
-    // An explicit definition wins over the library default for the same key.
+  test("binds fixed extras beyond the definitions but none of the dropped emacs keys", () => {
+    expect(sequencesOf("input_move_left")).toEqual(["left"])
+    expect(sequencesOf("input_move_right")).toEqual(["right"])
+    expect(sequencesOf("input_delete").sort()).toEqual(["delete", "shift+delete"])
+    expect(sequencesOf("input_submit")).toEqual(["enter"])
+    expect(sequencesOf("input_newline")).toEqual(expect.arrayContaining(["kpenter", "linefeed"]))
     expect(sequencesOf("input_newline")).not.toContain("enter")
-    expect(sequencesOf("input_submit")).not.toContain("meta+enter")
+    expect(sequencesOf("input_visual_line_home").sort()).toEqual(["meta+a", "super+left"])
+    expect(reading.extras.map((extra) => `${extra.sequence} -> ${extra.name}`).sort()).toEqual([
+      "kpenter -> input_newline",
+      "linefeed -> input_newline",
+      "shift+super+down -> input_select_buffer_end",
+      "shift+super+left -> input_select_visual_line_home",
+      "shift+super+right -> input_select_visual_line_end",
+      "shift+super+up -> input_select_buffer_home",
+      "super+down -> input_buffer_end",
+      "super+left -> input_visual_line_home",
+      "super+right -> input_visual_line_end",
+      "super+up -> input_buffer_home",
+    ])
+  })
+
+  test("accounts for every library textarea default", () => {
+    const kept = new Set(claims.map((claim) => `${claim.sequence} -> ${claim.name}`))
+    const dropped = reading.library
+      .map((entry) => `${entry.sequence} -> ${entry.name}`)
+      .filter((entry) => !kept.has(entry))
+    expect(dropped.sort()).toEqual(DROPPED_LIBRARY_DEFAULTS)
   })
 
   test("no key is claimed twice in one layer context unless it is a known conflict", () => {

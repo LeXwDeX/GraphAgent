@@ -3,8 +3,9 @@ import {
   registerBackspacePopsPendingSequence,
   registerBaseLayoutFallback,
   registerCommaBindings,
+  registerEditBufferCommands,
   registerEscapeClearsPendingSequence,
-  registerManagedTextareaLayer,
+  registerTextareaMappingSuspension,
   registerTimedLeader,
 } from "@opentui/keymap/addons/opentui"
 import { stringifyKeyStroke, type ActiveBinding, type Binding, type KeySequencePart } from "@opentui/keymap"
@@ -186,6 +187,53 @@ export function hasManagedTextareaFocus(renderer: CliRenderer) {
   return editor instanceof TextareaRenderable && !(editor instanceof InputRenderable)
 }
 
+/**
+ * Textarea bindings that no definition lists but that the library's own defaults used to provide: Cmd+arrow
+ * navigation on terminals that report `super`, and keypad Enter / linefeed as newline aliases (linefeed is what
+ * legacy terminals send for ctrl+j). They are fixed and not configurable.
+ *
+ * The library's emacs defaults ctrl+b, ctrl+f and ctrl+d are deliberately absent: the key plan hands them to the
+ * drawer, the lists and exit (#886 4.2 and 4.3). So are its alt+enter and alt+keypad-enter submit defaults, which
+ * contradict `input_newline`, and its plain Enter newline default, which `input.submit` always shadowed.
+ */
+const inputExtraBindings: readonly Binding<Renderable, KeyEvent>[] = [
+  { key: "super+left", cmd: "input.visual.line.home" },
+  { key: "super+right", cmd: "input.visual.line.end" },
+  { key: "super+up", cmd: "input.buffer.home" },
+  { key: "super+down", cmd: "input.buffer.end" },
+  { key: "shift+super+left", cmd: "input.select.visual.line.home" },
+  { key: "shift+super+right", cmd: "input.select.visual.line.end" },
+  { key: "shift+super+up", cmd: "input.select.buffer.home" },
+  { key: "shift+super+down", cmd: "input.select.buffer.end" },
+  { key: "kpenter", cmd: "input.newline" },
+  { key: "linefeed", cmd: "input.newline" },
+]
+
+/**
+ * The managed textarea layer: the edit-buffer commands, suspension of the textarea's own key handling, and a layer
+ * bound while a managed textarea has focus. Built from the definitions only so that a key removed from or rebound in
+ * `Definitions` really stops acting; `registerManagedTextareaLayer` would append the library's 64 defaults to it.
+ */
+function registerInputLayer(keymap: OpenTuiKeymap, renderer: CliRenderer, config: FormatConfig) {
+  const offCommands = registerEditBufferCommands(keymap, renderer)
+  const offSuspension = registerTextareaMappingSuspension(keymap, renderer)
+  try {
+    const offLayer = keymap.registerLayer({
+      enabled: () => hasManagedTextareaFocus(renderer),
+      bindings: [...config.keybinds.gather("input", inputCommands), ...inputExtraBindings],
+    })
+    return () => {
+      offLayer()
+      offSuspension()
+      offCommands()
+    }
+  } catch (error) {
+    offSuspension()
+    offCommands()
+    throw error
+  }
+}
+
 function leaderDisplay(config: FormatConfig) {
   const key = config.keybinds.get(LEADER_TOKEN)?.[0]?.key
   if (!key) return TuiKeybind.LeaderDefault
@@ -235,10 +283,7 @@ export function registerGraphagentKeymap(keymap: OpenTuiKeymap, renderer: CliRen
     : () => {}
   const offEscape = registerEscapeClearsPendingSequence(keymap)
   const offBackspace = registerBackspacePopsPendingSequence(keymap)
-  const offInputBindings = registerManagedTextareaLayer(keymap, renderer, {
-    enabled: () => hasManagedTextareaFocus(renderer),
-    bindings: config.keybinds.gather("input", inputCommands),
-  })
+  const offInputBindings = registerInputLayer(keymap, renderer, config)
 
   return () => {
     offInputBindings()
