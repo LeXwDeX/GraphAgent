@@ -295,6 +295,10 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   if (dagModeStatus?.unavailableReason) dagModeStatus.unavailableReason = nullable(dagModeStatus.unavailableReason)
   if (dagModeStatus?.budget?.properties?.tokens)
     dagModeStatus.budget.properties.tokens = nullable(dagModeStatus.budget.properties.tokens)
+  // #1069 (B1): a bulk lifecycle read reports an unknown ref as a null state,
+  // so this field is genuinely nullable rather than optional.
+  if (schemas.LifecycleStateEntry?.properties?.state)
+    schemas.LifecycleStateEntry.properties.state = nullable(schemas.LifecycleStateEntry.properties.state)
   const providerOptions = schemas.ProviderConfig?.properties?.options
   if (providerOptions) providerOptions.additionalProperties = {}
   const model = schemas.ProviderConfig?.properties?.models?.additionalProperties

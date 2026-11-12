@@ -990,6 +990,80 @@ const scenarios: Scenario[] = [
     }))
     .json(404, object, "status"),
   http.protected
+    .get("/lifecycle/state/{domain}/{id}", "lifecycle.get")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Lifecycle goal session" })
+        yield* ctx.goal(session.id, "cover lifecycle state")
+        return { session }
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/lifecycle/state/{domain}/{id}", { domain: "goal", id: ctx.state.session.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      check(body.domain === "goal", "domain should be goal")
+      check(body.id === ctx.state.session.id, "id should be the session id")
+      check(body.value === "active", "a freshly seeded goal should read back active")
+      check(body.phase === "running", "active should map to the running phase")
+      check(body.terminal === false, "an active goal is not terminal")
+      check(body.settled === false, "an active goal is not settled")
+      check(body.source === "persisted", "goal state should come from the durable row")
+      check(typeof body.observedAt === "number", "observedAt should be a timestamp")
+    }),
+  http.protected
+    .get("/lifecycle/state/{domain}/{id}", "lifecycle.get.missing")
+    .seeded((ctx) => ctx.session({ title: "Lifeless session" }))
+    .at((ctx) => ({
+      path: route("/lifecycle/state/{domain}/{id}", { domain: "goal", id: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/lifecycle/states", "lifecycle.states")
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Lifecycle batch session" })
+        yield* ctx.goal(session.id, "cover lifecycle batch")
+        return { session }
+      }),
+    )
+    .at((ctx) => ({
+      path: "/lifecycle/states",
+      headers: ctx.headers(),
+      body: {
+        refs: [
+          { domain: "goal", id: ctx.state.session.id },
+          { domain: "goal", id: "ses_missing_lifecycle_goal" },
+          { domain: "job", id: "job_missing_lifecycle_job" },
+        ],
+      },
+    }))
+    .json(200, (body, ctx) => {
+      array(body)
+      check(body.length === 3, "one entry should be returned per requested ref")
+      const [own, missingGoal, missingJob] = body
+      check(isRecord(own), "the existing goal entry should be an object")
+      check(own.domain === "goal" && own.id === ctx.state.session.id, "the goal entry should echo its ref")
+      const ownState = own.state
+      check(isRecord(ownState), "the existing goal entry should carry a state")
+      check(ownState.value === "active", "the goal entry should carry the durable status")
+      check(isRecord(missingGoal), "the missing goal entry should be an object")
+      check(
+        missingGoal.domain === "goal" && missingGoal.id === "ses_missing_lifecycle_goal",
+        "the missing goal entry should echo its ref",
+      )
+      check(missingGoal.state === null, "an unknown goal ref should carry a null state")
+      check(isRecord(missingJob), "the missing job entry should be an object")
+      check(
+        missingJob.domain === "job" && missingJob.id === "job_missing_lifecycle_job",
+        "the missing job entry should echo its ref",
+      )
+      check(missingJob.state === null, "an unknown job ref should carry a null state")
+    }),
+  http.protected
     .post("/session/{sessionID}/hook", "session.hook.add")
     .seeded((ctx) => ctx.session({ title: "Hook session" }))
     .at((ctx) => ({

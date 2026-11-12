@@ -148,6 +148,30 @@ describe("lifecycle transition", () => {
     }),
   )
 
+  it.live("registers the goal table with overwrite-on-set semantics", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+
+      expect(
+        yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: null, to: "active", sessionID: "ses_goal" }),
+      ).toEqual({ published: true })
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "active", to: "waiting" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "waiting", to: "paused" })).toEqual({
+        published: true,
+      })
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "paused", to: "active" })).toEqual({
+        published: true,
+      })
+      // Completion deletes the live row; `done` is durable history only.
+      expect(yield* lifecycle.transition({ ref: ref("goal", "ses_goal"), expect: "active", to: "done" })).toEqual({
+        published: false,
+        reason: "invalid",
+      })
+    }),
+  )
+
   it.live("validates the DAG domains through the read-only bridge", () =>
     Effect.gen(function* () {
       const lifecycle = yield* Lifecycle.Service
@@ -195,7 +219,7 @@ describe("lifecycle transition", () => {
         published: false,
         reason: "unknown-state",
       })
-      expect(yield* lifecycle.transition({ ref: ref("goal", "goal-1"), expect: null, to: "active" })).toEqual({
+      expect(yield* lifecycle.transition({ ref: ref("mailbox", "mb-1"), expect: null, to: "queued" })).toEqual({
         published: false,
         reason: "unregistered-domain",
       })

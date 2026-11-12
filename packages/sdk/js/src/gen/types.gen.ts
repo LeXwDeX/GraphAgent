@@ -629,6 +629,34 @@ export type Workspace = {
   timeUsed: number | "Infinity" | "-Infinity" | "NaN"
 }
 
+export type LifecycleStateEntry = {
+  domain: LifecycleDomain
+  id: string
+  state: LifecycleState | null
+}
+
+export type LifecyclePhase =
+  "pending" | "running" | "waiting" | "settling" | "succeeded" | "failed" | "cancelled" | "skipped" | "paused"
+
+export type LifecycleDomain =
+  "session" | "job" | "goal" | "workflow" | "node" | "mailbox" | "inbox" | "hook" | "tool" | "turn" | "cancellation"
+
+export type LifecycleStateRef = {
+  domain: LifecycleDomain
+  id: string
+}
+
+export type LifecycleState = {
+  domain: LifecycleDomain
+  id: string
+  value: string
+  phase: LifecyclePhase
+  terminal: boolean
+  settled: boolean
+  source: "live" | "persisted" | "derived"
+  observedAt: number | "Infinity" | "-Infinity" | "NaN"
+}
+
 export type SubtaskPartInput = {
   id?: string
   type: "subtask"
@@ -6246,6 +6274,73 @@ export type DagNodeDetailResponses = {
 }
 
 export type DagNodeDetailResponse = DagNodeDetailResponses[keyof DagNodeDetailResponses]
+
+export type LifecycleGetData = {
+  body?: never
+  path: {
+    domain: LifecycleDomain
+    id: string
+  }
+  query?: never
+  url: "/lifecycle/state/{domain}/{id}"
+}
+
+export type LifecycleGetErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+  /**
+   * UnknownError
+   */
+  500: UnknownError
+}
+
+export type LifecycleGetError = LifecycleGetErrors[keyof LifecycleGetErrors]
+
+export type LifecycleGetResponses = {
+  /**
+   * Observed lifecycle state
+   */
+  200: LifecycleState
+}
+
+export type LifecycleGetResponse = LifecycleGetResponses[keyof LifecycleGetResponses]
+
+export type LifecycleStatesData = {
+  body?: {
+    refs: Array<LifecycleStateRef>
+  }
+  path?: never
+  query?: never
+  url: "/lifecycle/states"
+}
+
+export type LifecycleStatesErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * UnknownError
+   */
+  500: UnknownError
+}
+
+export type LifecycleStatesError = LifecycleStatesErrors[keyof LifecycleStatesErrors]
+
+export type LifecycleStatesResponses = {
+  /**
+   * Observed lifecycle states
+   */
+  200: Array<LifecycleStateEntry>
+}
+
+export type LifecycleStatesResponse = LifecycleStatesResponses[keyof LifecycleStatesResponses]
 
 export type ExperimentalWorkspaceAdapterListData = {
   body?: never
