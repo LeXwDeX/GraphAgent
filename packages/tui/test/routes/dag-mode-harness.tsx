@@ -6,9 +6,10 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import type { Session, SessionDagMode } from "@graphagent/sdk"
 import { onCleanup, type JSX } from "solid-js"
+import { unwrap } from "solid-js/store"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
-import { ClipboardProvider } from "../../src/context/clipboard"
+import { ClipboardProvider, type ClipboardService } from "../../src/context/clipboard"
 import { EditorContextProvider } from "../../src/context/editor"
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
@@ -31,9 +32,39 @@ import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { tmpdir } from "../fixture/fixture"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
-import { createEventSource, createFetch, directory, json } from "../fixture/tui-sdk"
+import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 
 export type Sent = { method: string; path: string; body: unknown }
+
+type TestApp = Awaited<ReturnType<typeof testRender>>
+
+/**
+ * Reads from the renderer's buffers without racing a frame that is still being presented.
+ * While one is, the native buffer lease is busy and the read throws `OutputBusy`; the lease
+ * frees on its own a moment later, so render again and retry instead of failing the test.
+ */
+async function whenFree<T>(app: Pick<TestApp, "renderOnce">, read: () => T): Promise<T> {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    try {
+      return read()
+    } catch (error) {
+      if (!(error instanceof Error && error.message.includes("OutputBusy"))) throw error
+      await Bun.sleep(5)
+      await app.renderOnce()
+    }
+  }
+  throw new Error("the renderer stayed busy while a frame was read")
+}
+
+/** The frame as text. */
+export function readFrame(app: Pick<TestApp, "renderOnce" | "captureCharFrame">) {
+  return whenFree(app, () => app.captureCharFrame())
+}
+
+/** The frame as painted spans. */
+export function readSpans(app: Pick<TestApp, "renderOnce" | "captureSpans">) {
+  return whenFree(app, () => app.captureSpans())
+}
 
 export function sessionFixture(id: string, extra: Partial<Session> = {}): Session {
   return {
@@ -85,6 +116,12 @@ export type MountOptions = {
   dagMode?: (sessionID: string) => Response | SessionDagMode | Promise<Response | SessionDagMode>
   /** Reply to `POST /session/:id/command`. */
   command?: (body: unknown) => Response
+  /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
+  handler?: FetchHandler
+  /** Replaces the system clipboard, so tests can read what a copy command wrote. */
+  clipboard?: ClipboardService
+  /** Working directory of the TUI process (export writes there); defaults to the fake server's directory. */
+  cwd?: string
   width?: number
   height?: number
 }
@@ -108,6 +145,8 @@ export async function mountRoute(options: MountOptions) {
       const text = await request.clone().text()
       sent.push({ method: request.method, path: url.pathname, body: text ? JSON.parse(text) : undefined })
     }
+    const custom = await options.handler?.(url, request)
+    if (custom) return custom
     if (url.pathname === "/config") return json({ language: options.language ?? "zh-CN" })
     if (url.pathname === "/session") return json(sessions)
     if (options.withAgentAndModel) {
@@ -154,10 +193,10 @@ export async function mountRoute(options: MountOptions) {
       keymap = createDefaultOpenTuiKeymap(renderer)
       onCleanup(registerGraphagentKeymap(keymap, renderer, config))
       return (
-        <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
+        <TestTuiContexts cwd={options.cwd ?? directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
           <ExitProvider exit={() => {}}>
             <EpilogueProvider set={() => {}}>
-              <ClipboardProvider>
+              <ClipboardProvider value={options.clipboard}>
                 <GraphagentKeymapProvider keymap={keymap}>
                   <ArgsProvider>
                     <KVProvider>
@@ -210,17 +249,6 @@ export async function mountRoute(options: MountOptions) {
     { width: options.width ?? 100, height: options.height ?? 30 },
   )
 
-  // Let the session load and the route register its bindings.
-  for (let attempt = 0; attempt < 20; attempt++) {
-    await app.renderOnce()
-    await Bun.sleep(10)
-  }
-  // The prompt restores a draft another test in this process left in its
-  // module-level stash; start every harness from an empty draft so the
-  // assertions do not depend on test file order.
-  promptRef.current?.set({ input: "", parts: [] })
-  await app.renderOnce()
-
   const harness = {
     app,
     sent,
@@ -232,14 +260,40 @@ export async function mountRoute(options: MountOptions) {
     sync: () => sync,
     /** Text in the mounted prompt's draft; `undefined` when no prompt is mounted. */
     promptDraft: () => promptRef.current?.current.input,
+    /** A plain copy of the mounted prompt's draft parts; `undefined` when no prompt is mounted. */
+    promptParts: () => {
+      const parts = promptRef.current?.current.parts
+      return parts === undefined ? undefined : structuredClone(unwrap(parts))
+    },
     /** Requests that mutate server state, minus the attention telemetry. */
     writes: () => sent.filter((item) => !item.path.endsWith("/attention")),
     commands: () => sent.filter((item) => item.path.endsWith("/command")),
+    /** The frame as text, never read while a frame is still being presented. */
+    frame: () => readFrame(app),
+    /** The frame as painted spans, never read while a frame is still being presented. */
+    spans: () => readSpans(app),
+    /**
+     * Renders until the frame satisfies `ready` and returns it. Poll through this instead of
+     * `waitFor(() => app.captureCharFrame()...)`: a bare poll reads between renders, where the
+     * native buffer can still be busy presenting the last one.
+     */
+    async waitForFrame(ready: (frame: string) => boolean, what = "the expected frame", timeout = 10_000) {
+      const start = Date.now()
+      for (;;) {
+        await app.renderOnce()
+        const frame = await readFrame(app)
+        if (ready(frame)) return frame
+        if (Date.now() - start > timeout) throw new Error(`timed out waiting for ${what}; last frame:\n${frame}`)
+        await Bun.sleep(10)
+      }
+    },
     async settle() {
       for (let attempt = 0; attempt < 10; attempt++) {
         await app.renderOnce()
         await Bun.sleep(10)
       }
+      // End on a render, not on a sleep: a frame read right after must find the buffer idle.
+      await app.renderOnce()
     },
     /** The default leader sequence for `session.dagmode.toggle`. */
     async leaderD() {
@@ -255,6 +309,23 @@ export async function mountRoute(options: MountOptions) {
       app.renderer.destroy()
       await tmp[Symbol.asyncDispose]()
     },
+  }
+
+  // Let the session load and the route register its bindings. A setup that fails must not leave
+  // the renderer running: its timers and frames would go on into the tests that follow.
+  try {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await app.renderOnce()
+      await Bun.sleep(10)
+    }
+    // The prompt restores a draft another test in this process left in its
+    // module-level stash; start every harness from an empty draft so the
+    // assertions do not depend on test file order.
+    promptRef.current?.set({ input: "", parts: [] })
+    await app.renderOnce()
+  } catch (error) {
+    await harness.dispose()
+    throw error
   }
   return harness
 }

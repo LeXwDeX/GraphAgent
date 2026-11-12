@@ -50,6 +50,8 @@ export async function renderFirstFrame(app: RenderedApp, settle = 2) {
 export function ShellContexts(
   props: ParentProps<{
     state: string
+    /** Terminal color mode handed to the theme provider; defaults to dark. */
+    mode?: "dark" | "light"
     onReady?: () => void
     children?: JSX.Element
   }>,
@@ -59,7 +61,7 @@ export function ShellContexts(
       <TuiConfigProvider config={createTuiResolvedConfig()}>
         <KVProvider>
           <KVReady onReady={props.onReady}>
-            <ThemeProvider mode="dark">{props.children}</ThemeProvider>
+            <ThemeProvider mode={props.mode ?? "dark"}>{props.children}</ThemeProvider>
           </KVReady>
         </KVProvider>
       </TuiConfigProvider>
