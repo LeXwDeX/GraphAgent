@@ -23,7 +23,9 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { provideTmpdirServer } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
+import { TestLLMServer } from "../lib/llm-server"
 
 /**
  * Issue #1026 PR1 wiring: `SessionPrompt` assembles the child runs and routes
@@ -90,6 +92,7 @@ const root = LayerNode.group([
   CrossSpawnSpawner.node,
   SessionRunState.node,
   SessionStatus.node,
+  LayerNode.make(TestLLMServer.layer, []),
 ])
 const it = testEffect(
   LayerNode.buildLayer(root, {
@@ -179,5 +182,101 @@ describe("SessionPrompt child runs", () => {
       )
       expect(ChildRegistry.activeFor(stays.id)?.phase).toBe("queued")
     }),
+  )
+})
+
+const providerCfg = (url: string) => ({
+  provider: {
+    test: {
+      name: "Test",
+      id: "test",
+      env: [],
+      npm: "@ai-sdk/openai-compatible",
+      models: {
+        "test-model": {
+          id: "test-model",
+          name: "Test Model",
+          attachment: false,
+          reasoning: false,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 0, output: 0 },
+          options: {},
+        },
+      },
+      options: {
+        apiKey: "test-key",
+        baseURL: url,
+      },
+    },
+  },
+  agent: { general: { model: "test/test-model" } },
+})
+
+describe("the task tool through the full tool path", () => {
+  it.live(
+    "registers the child session it creates and ends the run with the task",
+    provideTmpdirServer(
+      ({ llm }) =>
+        Effect.gen(function* () {
+          const prompt = yield* SessionPrompt.Service
+          const sessions = yield* Session.Service
+          const { db } = yield* Database.Service
+          const chat = yield* sessions.create({
+            title: "child runs end to end",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          // The parent calls the task tool, the child answers, the parent wraps up.
+          yield* llm.tool("task", { description: "probe", prompt: "just say ok", subagent_type: "general" })
+          yield* llm.text("ok")
+          yield* llm.text("all done")
+
+          yield* prompt.prompt({
+            sessionID: chat.id,
+            agent: "build",
+            parts: [{ type: "text", text: "run the subagent" }],
+          })
+
+          const kids = yield* sessions.children(chat.id)
+          expect(kids).toHaveLength(1)
+          const child = kids[0].id
+          const bindings = yield* db
+            .select()
+            .from(ChildBindingTable)
+            .where(eq(ChildBindingTable.child_session_id, child))
+            .all()
+            .pipe(Effect.orDie)
+          expect(bindings).toHaveLength(1)
+          expect(bindings[0]).toMatchObject({ parent_session_id: chat.id, owner_kind: "task" })
+          // The tool call id is the owner reference: it ties the binding back to the parent's tool part.
+          expect(bindings[0]?.owner_ref).toMatch(/\S+/)
+          const ended = yield* pollWithTimeout(
+            db
+              .select()
+              .from(ChildRunTable)
+              .where(eq(ChildRunTable.child_session_id, child))
+              .all()
+              .pipe(
+                Effect.orDie,
+                Effect.map((rows) => rows.find((row) => row.state === "ended")),
+              ),
+            "the task run never ended",
+          )
+          expect(ended).toMatchObject({
+            parent_session_id: chat.id,
+            owner_kind: "task",
+            attempt: 1,
+            detached: false,
+            outcome: { type: "completed" },
+            runner_id: EngineProcess.runner.id,
+          })
+          expect(ended.reported_at).not.toBeNull()
+          expect(EngineProcess.children.byRun.size).toBe(0)
+        }),
+      { git: true, config: providerCfg },
+    ),
+    30_000,
   )
 })

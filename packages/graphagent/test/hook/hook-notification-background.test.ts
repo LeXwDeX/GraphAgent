@@ -26,6 +26,7 @@ import { Permission } from "@/permission"
 import { SettingsHook, type HookPayload } from "@/hook"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { initTaskTool } from "../lib/child-runs"
 
 const seen: HookPayload[] = []
 let observed: Deferred.Deferred<void> | undefined
@@ -98,7 +99,7 @@ it.effect(
       }
       yield* sessions.updateMessage(assistant)
       const tool = yield* TaskTool
-      const definition = yield* tool.init()
+      const definition = yield* initTaskTool(tool)
       for (const viewing of [false, true]) {
         seen.length = 0
         yield* attention.update(parent.id, { clientID: "terminal", clientType: "terminal", backgroundView: viewing })

@@ -9,7 +9,7 @@ import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
-import type { ChildRuns } from "../session/child/run"
+import type { ChildRunHandle, ChildRunOutcome, ChildRuns } from "../session/child/run"
 import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import * as Option from "effect/Option"
@@ -192,6 +192,33 @@ function renderOutput(input: {
   ].join("\n")
 }
 
+const notOwned = (taskID: string) =>
+  `task_id "${taskID}" is not a task started by this conversation. Pass a task_id returned by an earlier task call of this conversation, or omit it to start a new task.`
+
+// The child run of one tool call, recorded as soon as it is registered so an
+// interruption before the watcher below owns it can still settle it.
+interface RunClaim {
+  handle?: ChildRunHandle
+  armed?: boolean
+}
+
+// The run ends with the job that carries it, so the persisted outcome and the
+// job's terminal status cannot disagree.
+function outcomeOf(info: BackgroundJob.Info | undefined): ChildRunOutcome {
+  if (info?.status === "completed") return { type: "completed" }
+  if (info?.status === "error") return { type: "error", message: info.error ?? "Task failed" }
+  if (info?.status === "cancelled") return { type: "cancelled", by: { kind: "engine", reason: "job-cancelled" } }
+  return { type: "error", message: "The background job ended without a result" }
+}
+
+function unarmedOutcome(exit: Exit.Exit<unknown, unknown>): ChildRunOutcome {
+  if (Exit.isSuccess(exit)) return { type: "error", message: "The task run was never started" }
+  if (Cause.hasInterruptsOnly(exit.cause))
+    return { type: "cancelled", by: { kind: "engine", reason: "tool-interrupted" } }
+  const failure = Cause.squash(exit.cause)
+  return { type: "error", message: failure instanceof Error ? failure.message : String(failure) }
+}
+
 export const TaskTool = Tool.define(
   id,
   Effect.gen(function* () {
@@ -214,9 +241,39 @@ export const TaskTool = Tool.define(
     // admission drains it into synthetic text parts (same pattern as share/session.ts).
     const startCtx = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
 
+    // Registers a run in the same uninterruptible step that records it in the
+    // claim: an interruption can then never leave a queued run nobody settles.
+    const register = <E>(claim: RunClaim, registration: Effect.Effect<ChildRunHandle, E>) =>
+      Effect.uninterruptible(
+        registration.pipe(
+          Effect.tap((handle) =>
+            Effect.sync(() => {
+              claim.handle = handle
+            }),
+          ),
+        ),
+      )
+
+    // The settlement watcher owns the run from here: it ends the run with the
+    // job that carries it. Armed once, by whichever comes first (the job's own
+    // start, or the tool call once the job exists), so neither a job that
+    // never starts nor an interruption right after the start can leave the run
+    // without an owner. Once armed, the claim's guard stands down.
+    const watchSettlement = (handle: ChildRunHandle, jobID: string, claim: RunClaim) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.suspend(() => {
+          if (claim.armed) return Effect.void
+          claim.armed = true
+          return restore(
+            background.wait({ id: jobID }).pipe(Effect.flatMap((waited) => handle.settle(outcomeOf(waited.info)))),
+          ).pipe(Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
+        }),
+      )
+
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
+      claim: RunClaim,
     ) {
       const parent = yield* sessions.get(ctx.sessionID)
       if (parent.parentID) {
@@ -224,6 +281,8 @@ export const TaskTool = Tool.define(
           new Error("Task delegation is available only to the main conversation, not child agents"),
         )
       }
+      const children = ctx.children
+      if (!children) return yield* Effect.fail(new Error("TaskTool requires ctx.children"))
       if (params.action === "cancel") {
         // Registered by C2 for H3 (#1026). The child-run cancellation service
         // does not exist yet, so fail closed instead of starting a task.
@@ -262,6 +321,28 @@ export const TaskTool = Tool.define(
       }
 
       const session = params.task_id !== undefined ? yield* sessions.get(SessionID.make(params.task_id)) : undefined
+      // A task_id resumes a task session this conversation started, nothing else:
+      // not another conversation's child, not a top-level session, not this
+      // session itself, not a DAG node. The verdict comes before anything is
+      // written to the target session. A task that is still running takes the
+      // new prompt as appended input instead of a new run.
+      let handle: ChildRunHandle | undefined
+      let appendOnly = false
+      if (session) {
+        const adopted = yield* register(
+          claim,
+          children.adopt({
+            childSessionID: session.id,
+            owner: { kind: "task", toolCallID: ctx.callID },
+            detached: runInBackground,
+          }),
+        ).pipe(
+          Effect.catchTag("ChildRunActive", () => Effect.succeed(undefined)),
+          Effect.catchTag("ChildRunNotOwner", () => Effect.fail(new Error(notOwned(session.id)))),
+        )
+        handle = adopted
+        appendOnly = adopted === undefined
+      }
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
         subagent: next,
@@ -295,6 +376,17 @@ export const TaskTool = Tool.define(
             ),
           ],
         }))
+
+      if (!session) {
+        handle = yield* register(
+          claim,
+          children.start({
+            childSessionID: nextSession.id,
+            owner: { kind: "task", toolCallID: ctx.callID },
+            detached: runInBackground,
+          }),
+        )
+      }
 
       const scopedAgent = next
       const scopedOrigin = scopedAgent.hookOrigin ? `agent:${scopedAgent.hookOrigin}` : `agent-config:${next.name}`
@@ -451,13 +543,19 @@ export const TaskTool = Tool.define(
       // The child-run slot covers the whole subagent run, and task runs only
       // draw the slots left after the DAG workflow reservation; DAG runs never
       // enter the per-parent task bucket (#1021).
-      const runWithSlot = Effect.fn("TaskTool.runWithSlot")(function* () {
-        if (!scheduler) return yield* runTask()
+      // The run is `queued` until it holds a slot and `running` from there on;
+      // appended input joins the running run and has no run of its own.
+      const runWithSlot = Effect.fn("TaskTool.runWithSlot")(function* (run?: ChildRunHandle) {
+        const execute = Effect.fnUntraced(function* () {
+          if (run && !(yield* run.markRunning)) return yield* Effect.interrupt
+          return yield* runTask()
+        })
+        if (!scheduler) return yield* execute()
         const limits = yield* scheduler.limits()
         return yield* Effect.scoped(
           Effect.gen(function* () {
             yield* scheduler.childSlot({ kind: "task", parentSessionID: ctx.sessionID }, limits.childGlobal)
-            return yield* runTask()
+            return yield* execute()
           }),
         )
       })
@@ -544,22 +642,29 @@ export const TaskTool = Tool.define(
         )
       })
 
-      if (yield* background.extend({ id: nextSession.id, run: runWithSlot() })) {
-        return {
-          title: description,
-          metadata: {
-            ...metadata,
-            background: true,
-            jobId: nextSession.id,
-          },
-          output: renderOutput({
-            sessionID: nextSession.id,
-            state: "running",
-            summary: "Background task updated",
-            text: BACKGROUND_UPDATED,
-          }),
+      if (appendOnly) {
+        if (yield* background.extend({ id: nextSession.id, run: runWithSlot() })) {
+          return {
+            title: description,
+            metadata: {
+              ...metadata,
+              background: true,
+              jobId: nextSession.id,
+            },
+            output: renderOutput({
+              sessionID: nextSession.id,
+              state: "running",
+              summary: "Background task updated",
+              text: BACKGROUND_UPDATED,
+            }),
+          }
         }
+        return yield* Effect.fail(
+          new Error(`Task ${nextSession.id} is finishing its previous run; try again in a moment.`),
+        )
       }
+      if (!handle) return yield* Effect.die(new Error("The task run was not registered"))
+      const registered = handle
 
       // Foreground task call: this tool fires SubagentStop for the child, so the
       // child's own prompt loop must skip the main-agent Stop (see TaskSubagents).
@@ -581,9 +686,13 @@ export const TaskTool = Tool.define(
             // From here the child is a background task and fires its own Stop.
             releaseSubagent,
           ]),
-          run: runWithSlot().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
+          run: watchSettlement(registered, nextSession.id, claim).pipe(
+            Effect.andThen(runWithSlot(registered)),
+            Effect.onInterrupt(() => ops.cancel(nextSession.id)),
+          ),
         })
         .pipe(Effect.onError(() => releaseSubagent))
+      yield* watchSettlement(registered, info.id, claim)
 
       function backgroundResult() {
         return {
@@ -788,7 +897,16 @@ export const TaskTool = Tool.define(
       parameters: Parameters,
       repairArguments: repairBackgroundArgument,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
-        run(params, ctx).pipe(Effect.orDie),
+        Effect.suspend(() => {
+          const claim: RunClaim = {}
+          return run(params, ctx, claim).pipe(
+            // A run registered but never handed to its watcher must not stay queued.
+            Effect.onExit((exit) =>
+              claim.handle && !claim.armed ? claim.handle.settle(unarmedOutcome(exit)) : Effect.void,
+            ),
+            Effect.orDie,
+          )
+        }),
     }
   }),
 )

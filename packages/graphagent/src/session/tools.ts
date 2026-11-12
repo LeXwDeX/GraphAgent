@@ -4,6 +4,7 @@ import { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
+import { TaskTool } from "@/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolPipeline, toRecord } from "@/tool/pipeline"
 import type { DirectToolContext, ToolEntry, WrapInput } from "@/tool/pipeline"
@@ -168,6 +169,11 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
       promptOps: input.promptOps,
       ...(questionHookAnswers.has(options) ? { hookAnswers: questionHookAnswers.get(options) } : {}),
     },
+    // Only the task tool delegates work, and only for its own session: the
+    // parent is fixed here, never taken from the tool's arguments.
+    ...(toolName === TaskTool.id && input.promptOps.children
+      ? { children: input.promptOps.children.forParent(input.session.id) }
+      : {}),
     agent: input.agent.name,
     messages: input.messages,
     metadata: (val) =>
