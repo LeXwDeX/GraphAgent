@@ -121,24 +121,26 @@ export const ABSOLUTE_CAPS: readonly AbsoluteCap[] = [
   { id: "P12", metric: "p95Ms", max: 33 },
 ]
 
-/** The baseline the `PENDING_REBASELINE` entries were written against. */
+/**
+ * The baseline the `PENDING_REBASELINE` entries were written against. It names
+ * the `commit` field of a baseline file; an entry applies only while
+ * `baseline.json` still carries it.
+ */
 export const PENDING_BASELINE_COMMIT = "643c4e7fbf7a47b79fb87bc3f3e07817c6646042"
 
 /**
  * Scenarios whose measurement changed after `baseline.json` was captured, so its
  * numbers describe a different experiment. Their baseline-relative timing check
  * is skipped; hard counters and absolute ceilings still apply. The skip is
- * scoped to the baseline commit above: regenerating `baseline.json` ends it
- * (and `compare.test.ts` then asks for these entries to be deleted).
+ * scoped to `PENDING_BASELINE_COMMIT`: regenerating `baseline.json` ends it, and
+ * `compare.test.ts` then fails until the entries are deleted.
+ *
+ * Empty since `baseline.json` was regenerated for P5, P5', P6, P8, P8', P9, P12
+ * and P13 (#1025). To use the mechanism again, set `PENDING_BASELINE_COMMIT` to
+ * the `commit` of the baseline the entries were written against and list each
+ * scenario with the reason its measurement changed.
  */
-export const PENDING_REBASELINE: Readonly<Record<string, string>> = {
-  P5: "the baseline holds round 0 only: ESC never closed the menu, so rounds 1-49 failed to parse",
-  "P5'": "the baseline injected no keystrokes and measured a prompt.set",
-  P6: "the baseline holds round 0 only: ESC never closed the menu, so rounds 1-49 failed to parse",
-  P8: "the baseline clamped the first 100 steps to the bottom and never walked bottom to top",
-  "P8'": "the baseline scrolled at the top of the transcript, away from the streaming tail",
-  P9: "the fixture transcript now has code blocks, tables and diffs, which moves every offset",
-}
+export const PENDING_REBASELINE: Readonly<Record<string, string>> = {}
 
 const SIZE_ORDER = ["S", "M", "L"]
 /** Not compared against the baseline: one frame, or a signed difference of two samples. */

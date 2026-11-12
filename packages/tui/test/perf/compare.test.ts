@@ -375,14 +375,6 @@ test("a baseline from any other commit gets the full relative check", () => {
   expect(result.failures).toHaveLength(1)
 })
 
-test("the real pending table applies to the baseline it was written against", () => {
-  const baseline: PerfReport = { commit: PENDING_BASELINE_COMMIT, scenarios: { L: { P6: { escapeP95Ms: 0.13 } } } }
-  const current: PerfReport = { scenarios: { L: { P6: { escapeP95Ms: 12 } } } }
-
-  expect(compareReports(baseline, current).failures).toEqual([])
-  expect(compareReports({ ...baseline, commit: "regenerated" }, current).failures).toHaveLength(1)
-})
-
 test("a pending scenario still answers to the fixed ceilings", () => {
   const baseline: PerfReport = { commit: "captured", scenarios: { L: { P6: { escapeP95Ms: 0.13 } } } }
   const current: PerfReport = { scenarios: { L: { P6: { escapeP95Ms: 20 } } } }

@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
-  "commit": "643c4e7fbf7a47b79fb87bc3f3e07817c6646042",
-  "generatedAt": "2026-11-11T07:06:58.485Z",
+  "commit": "416f7c9dec8df0bbb8d8bf3c9df287fe79c14288",
+  "generatedAt": "2026-11-12T13:23:41.925Z",
   "opentuiVersion": "0.8.3",
-  "bun": "1.4.2",
+  "bun": "1.4.4",
   "machine": {
-    "platform": "linux",
-    "arch": "x64",
-    "cpu": "13th Gen Intel(R) Core(TM) i7-13700F",
-    "cpuCount": 24
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro",
+    "cpuCount": 14
   },
   "calibration": {
-    "fixedLoopMs": 0.79,
+    "fixedLoopMs": 0.72,
     "fixedLoopValue": 240,
-    "fixedLayoutMsMedian": 23.29
+    "fixedLayoutMsMedian": 17.85
   },
   "repeats": 5,
   "scenarios": {
@@ -21,9 +21,9 @@
       "P1": {
         "id": "P1",
         "size": "S",
-        "p50Ms": 0.33,
-        "p95Ms": 0.47,
-        "p99Ms": 1.28
+        "p50Ms": 0.15,
+        "p95Ms": 0.27,
+        "p99Ms": 0.44
       },
       "P3": {
         "id": "P3",
@@ -39,15 +39,16 @@
       "P5": {
         "id": "P5",
         "size": "S",
-        "openP95Ms": 0.52,
-        "maxFrame": 250,
-        "sequenceP95Ms": 0.83
+        "openP95Ms": 1.83,
+        "sequenceP95Ms": 1.53,
+        "maxMs": 7.26,
+        "frames": 250
       },
       "P6": {
         "id": "P6",
         "size": "S",
-        "filterP95Ms": 0.84,
-        "escapeP95Ms": 0.13
+        "filterP95Ms": 0.59,
+        "escapeP95Ms": 1.73
       },
       "P7": {
         "id": "P7",
@@ -59,30 +60,33 @@
         "size": "S",
         "openP95Ms": 0,
         "sequenceP95Ms": 0,
-        "maxFrame": 0
+        "maxMs": 0,
+        "frames": 0
       },
       "P8": {
         "id": "P8",
         "size": "S",
-        "p99Ms": 1.05,
-        "maxMs": 3.1
+        "p99Ms": 3.97,
+        "maxMs": 3.97,
+        "steps": 43
       },
       "P8'": {
         "id": "P8'",
         "size": "S",
-        "p99Ms": 3.04,
-        "maxMs": 6.12
+        "p99Ms": 1.19,
+        "maxMs": 1.6,
+        "steps": 100
       },
       "P9": {
         "id": "P9",
         "size": "S",
-        "p99Ms": 7.03
+        "p99Ms": 4.98
       },
       "P11": {
         "id": "P11",
         "size": "S",
         "driftPx": 0,
-        "stepMismatches": 119
+        "stepMismatches": 96
       },
       "P10": {
         "id": "P10",
@@ -94,19 +98,23 @@
       "P12": {
         "id": "P12",
         "size": "S",
-        "p95Ms": 1.16
+        "p95Ms": 0.79
       },
       "P13": {
         "id": "P13",
         "size": "S",
+        "deltaMessageWrites": 0,
+        "deltaPartWrites": 0,
         "messageWritesPerFrame": 0,
-        "partWritesPerFrame": 1
+        "partWritesPerFrame": 0.01
       },
       "P14": {
         "id": "P14",
         "size": "S",
-        "p95Ms": 0.14,
-        "relativeIncrease": -0.18,
+        "p95Ms": 0.1,
+        "quietP95Ms": 0.08,
+        "increaseMs": 0,
+        "relativeIncrease": 0,
         "nonCurrentMessageWrites": 0,
         "nonCurrentPartWrites": 0
       },
@@ -163,9 +171,9 @@
       "P1": {
         "id": "P1",
         "size": "M",
-        "p50Ms": 0.35,
-        "p95Ms": 0.61,
-        "p99Ms": 1.66
+        "p50Ms": 0.15,
+        "p95Ms": 0.24,
+        "p99Ms": 0.56
       },
       "P3": {
         "id": "P3",
@@ -181,15 +189,16 @@
       "P5": {
         "id": "P5",
         "size": "M",
-        "openP95Ms": 0.36,
-        "maxFrame": 250,
-        "sequenceP95Ms": 0.64
+        "openP95Ms": 2.05,
+        "sequenceP95Ms": 1.48,
+        "maxMs": 8.92,
+        "frames": 250
       },
       "P6": {
         "id": "P6",
         "size": "M",
-        "filterP95Ms": 0.68,
-        "escapeP95Ms": 0.09
+        "filterP95Ms": 0.6,
+        "escapeP95Ms": 1.86
       },
       "P7": {
         "id": "P7",
@@ -199,26 +208,29 @@
       "P5'": {
         "id": "P5'",
         "size": "M",
-        "openP95Ms": 3.3,
-        "sequenceP95Ms": 3.3,
-        "maxFrame": 5
+        "openP95Ms": 4.89,
+        "sequenceP95Ms": 3.49,
+        "maxMs": 14.21,
+        "frames": 251
       },
       "P8": {
         "id": "P8",
         "size": "M",
-        "p99Ms": 5.08,
-        "maxMs": 6.87
+        "p99Ms": 4.88,
+        "maxMs": 6.54,
+        "steps": 152
       },
       "P8'": {
         "id": "P8'",
         "size": "M",
-        "p99Ms": 5.43,
-        "maxMs": 11.95
+        "p99Ms": 4.52,
+        "maxMs": 4.9,
+        "steps": 100
       },
       "P9": {
         "id": "P9",
         "size": "M",
-        "p99Ms": 13.43
+        "p99Ms": 7.96
       },
       "P11": {
         "id": "P11",
@@ -229,26 +241,30 @@
       "P10": {
         "id": "P10",
         "size": "M",
-        "mountedRows": 26,
-        "scrollChildren": 30,
+        "mountedRows": 22,
+        "scrollChildren": 26,
         "viewportRows": 19
       },
       "P12": {
         "id": "P12",
         "size": "M",
-        "p95Ms": 2.3
+        "p95Ms": 1.71
       },
       "P13": {
         "id": "P13",
         "size": "M",
+        "deltaMessageWrites": 0,
+        "deltaPartWrites": 0,
         "messageWritesPerFrame": 0,
-        "partWritesPerFrame": 1
+        "partWritesPerFrame": 0.01
       },
       "P14": {
         "id": "P14",
         "size": "M",
-        "p95Ms": 0.12,
-        "relativeIncrease": 0.09,
+        "p95Ms": 0.08,
+        "quietP95Ms": 0.12,
+        "increaseMs": -0.04,
+        "relativeIncrease": -0.31,
         "nonCurrentMessageWrites": 0,
         "nonCurrentPartWrites": 0
       },
@@ -288,26 +304,26 @@
       "P20": {
         "id": "P20",
         "size": "M",
-        "nodes2": 201,
-        "nodes3": 201,
+        "nodes2": 214,
+        "nodes3": 214,
         "growth": 0,
-        "heap2": 74931305,
-        "heap3": 80127549,
-        "heapGrowth": 0.07
+        "heap2": 80091913,
+        "heap3": 86139922,
+        "heapGrowth": 0.08
       },
       "P2": {
         "id": "P2",
         "size": "M",
-        "p95Scale": 1.3
+        "p95Scale": 0.89
       }
     },
     "L": {
       "P1": {
         "id": "P1",
         "size": "L",
-        "p50Ms": 0.32,
-        "p95Ms": 0.49,
-        "p99Ms": 0.97
+        "p50Ms": 0.15,
+        "p95Ms": 0.23,
+        "p99Ms": 0.39
       },
       "P3": {
         "id": "P3",
@@ -323,15 +339,16 @@
       "P5": {
         "id": "P5",
         "size": "L",
-        "openP95Ms": 0.5,
-        "maxFrame": 250,
-        "sequenceP95Ms": 0.8
+        "openP95Ms": 1.84,
+        "sequenceP95Ms": 1.44,
+        "maxMs": 7.5,
+        "frames": 250
       },
       "P6": {
         "id": "P6",
         "size": "L",
-        "filterP95Ms": 0.89,
-        "escapeP95Ms": 0.12
+        "filterP95Ms": 0.63,
+        "escapeP95Ms": 1.83
       },
       "P7": {
         "id": "P7",
@@ -343,24 +360,27 @@
         "size": "L",
         "openP95Ms": 0,
         "sequenceP95Ms": 0,
-        "maxFrame": 0
+        "maxMs": 0,
+        "frames": 0
       },
       "P8": {
         "id": "P8",
         "size": "L",
-        "p99Ms": 6.4,
-        "maxMs": 7.87
+        "p99Ms": 7.27,
+        "maxMs": 9.19,
+        "steps": 177
       },
       "P8'": {
         "id": "P8'",
         "size": "L",
-        "p99Ms": 0.12,
-        "maxMs": 0.25
+        "p99Ms": 4.25,
+        "maxMs": 5.84,
+        "steps": 100
       },
       "P9": {
         "id": "P9",
         "size": "L",
-        "p99Ms": 12.84
+        "p99Ms": 8.51
       },
       "P11": {
         "id": "P11",
@@ -371,26 +391,30 @@
       "P10": {
         "id": "P10",
         "size": "L",
-        "mountedRows": 21,
-        "scrollChildren": 25,
+        "mountedRows": 17,
+        "scrollChildren": 21,
         "viewportRows": 19
       },
       "P12": {
         "id": "P12",
         "size": "L",
-        "p95Ms": 0.15
+        "p95Ms": 1.95
       },
       "P13": {
         "id": "P13",
         "size": "L",
+        "deltaMessageWrites": 0,
+        "deltaPartWrites": 0,
         "messageWritesPerFrame": 0,
-        "partWritesPerFrame": 1
+        "partWritesPerFrame": 0.01
       },
       "P14": {
         "id": "P14",
         "size": "L",
-        "p95Ms": 0.14,
-        "relativeIncrease": -0.06,
+        "p95Ms": 0.08,
+        "quietP95Ms": 0.09,
+        "increaseMs": -0.01,
+        "relativeIncrease": -0.12,
         "nonCurrentMessageWrites": 0,
         "nonCurrentPartWrites": 0
       },
@@ -440,7 +464,7 @@
       "P2": {
         "id": "P2",
         "size": "L",
-        "p95Scale": 1.04
+        "p95Scale": 0.85
       }
     }
   }
