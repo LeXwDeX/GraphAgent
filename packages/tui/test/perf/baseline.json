@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "commit": "416f7c9dec8df0bbb8d8bf3c9df287fe79c14288",
-  "generatedAt": "2026-11-12T13:23:41.925Z",
+  "commit": "c07860f9bd1c228293b3e265673644b0b1064a92",
+  "generatedAt": "2026-11-12T14:26:04.249Z",
   "opentuiVersion": "0.8.3",
   "bun": "1.4.4",
   "machine": {
@@ -11,9 +11,9 @@
     "cpuCount": 14
   },
   "calibration": {
-    "fixedLoopMs": 0.72,
+    "fixedLoopMs": 0.76,
     "fixedLoopValue": 240,
-    "fixedLayoutMsMedian": 17.85
+    "fixedLayoutMsMedian": 25.32
   },
   "repeats": 5,
   "scenarios": {
@@ -21,9 +21,9 @@
       "P1": {
         "id": "P1",
         "size": "S",
-        "p50Ms": 0.15,
-        "p95Ms": 0.27,
-        "p99Ms": 0.44
+        "p50Ms": 0.14,
+        "p95Ms": 0.2,
+        "p99Ms": 0.38
       },
       "P3": {
         "id": "P3",
@@ -39,16 +39,16 @@
       "P5": {
         "id": "P5",
         "size": "S",
-        "openP95Ms": 1.83,
-        "sequenceP95Ms": 1.53,
-        "maxMs": 7.26,
+        "openP95Ms": 1.76,
+        "sequenceP95Ms": 1.26,
+        "maxMs": 5.67,
         "frames": 250
       },
       "P6": {
         "id": "P6",
         "size": "S",
-        "filterP95Ms": 0.59,
-        "escapeP95Ms": 1.73
+        "filterP95Ms": 0.5,
+        "escapeP95Ms": 1.55
       },
       "P7": {
         "id": "P7",
@@ -66,21 +66,21 @@
       "P8": {
         "id": "P8",
         "size": "S",
-        "p99Ms": 3.97,
-        "maxMs": 3.97,
-        "steps": 43
+        "p99Ms": 0.3,
+        "maxMs": 0.3,
+        "steps": 44
       },
       "P8'": {
         "id": "P8'",
         "size": "S",
-        "p99Ms": 1.19,
-        "maxMs": 1.6,
+        "p99Ms": 0.42,
+        "maxMs": 0.64,
         "steps": 100
       },
       "P9": {
         "id": "P9",
         "size": "S",
-        "p99Ms": 4.98
+        "p99Ms": 0.13
       },
       "P11": {
         "id": "P11",
@@ -91,14 +91,16 @@
       "P10": {
         "id": "P10",
         "size": "S",
-        "mountedRows": 20,
-        "scrollChildren": 23,
-        "viewportRows": 19
+        "mountedRows": 49,
+        "scrollChildren": 50,
+        "viewportRows": 19,
+        "rows": 48,
+        "windowed": 0
       },
       "P12": {
         "id": "P12",
         "size": "S",
-        "p95Ms": 0.79
+        "p95Ms": 0.46
       },
       "P13": {
         "id": "P13",
@@ -111,10 +113,10 @@
       "P14": {
         "id": "P14",
         "size": "S",
-        "p95Ms": 0.1,
-        "quietP95Ms": 0.08,
-        "increaseMs": 0,
-        "relativeIncrease": 0,
+        "p95Ms": 0.08,
+        "quietP95Ms": 0.09,
+        "increaseMs": -0.01,
+        "relativeIncrease": -0.1,
         "nonCurrentMessageWrites": 0,
         "nonCurrentPartWrites": 0
       },
@@ -171,9 +173,9 @@
       "P1": {
         "id": "P1",
         "size": "M",
-        "p50Ms": 0.15,
-        "p95Ms": 0.24,
-        "p99Ms": 0.56
+        "p50Ms": 0.16,
+        "p95Ms": 0.28,
+        "p99Ms": 0.4
       },
       "P3": {
         "id": "P3",
@@ -189,16 +191,16 @@
       "P5": {
         "id": "P5",
         "size": "M",
-        "openP95Ms": 2.05,
-        "sequenceP95Ms": 1.48,
-        "maxMs": 8.92,
+        "openP95Ms": 1.96,
+        "sequenceP95Ms": 1.43,
+        "maxMs": 6.77,
         "frames": 250
       },
       "P6": {
         "id": "P6",
         "size": "M",
-        "filterP95Ms": 0.6,
-        "escapeP95Ms": 1.86
+        "filterP95Ms": 0.64,
+        "escapeP95Ms": 1.7
       },
       "P7": {
         "id": "P7",
@@ -208,29 +210,29 @@
       "P5'": {
         "id": "P5'",
         "size": "M",
-        "openP95Ms": 4.89,
-        "sequenceP95Ms": 3.49,
-        "maxMs": 14.21,
+        "openP95Ms": 2.95,
+        "sequenceP95Ms": 2.67,
+        "maxMs": 12.36,
         "frames": 251
       },
       "P8": {
         "id": "P8",
         "size": "M",
-        "p99Ms": 4.88,
-        "maxMs": 6.54,
-        "steps": 152
+        "p99Ms": 0.31,
+        "maxMs": 0.41,
+        "steps": 158
       },
       "P8'": {
         "id": "P8'",
         "size": "M",
-        "p99Ms": 4.52,
-        "maxMs": 4.9,
+        "p99Ms": 1.13,
+        "maxMs": 3.43,
         "steps": 100
       },
       "P9": {
         "id": "P9",
         "size": "M",
-        "p99Ms": 7.96
+        "p99Ms": 0.1
       },
       "P11": {
         "id": "P11",
@@ -241,14 +243,16 @@
       "P10": {
         "id": "P10",
         "size": "M",
-        "mountedRows": 22,
-        "scrollChildren": 26,
-        "viewportRows": 19
+        "mountedRows": 192,
+        "scrollChildren": 193,
+        "viewportRows": 19,
+        "rows": 190,
+        "windowed": 0
       },
       "P12": {
         "id": "P12",
         "size": "M",
-        "p95Ms": 1.71
+        "p95Ms": 1.02
       },
       "P13": {
         "id": "P13",
@@ -261,10 +265,10 @@
       "P14": {
         "id": "P14",
         "size": "M",
-        "p95Ms": 0.08,
-        "quietP95Ms": 0.12,
-        "increaseMs": -0.04,
-        "relativeIncrease": -0.31,
+        "p95Ms": 0.17,
+        "quietP95Ms": 0.19,
+        "increaseMs": -0.01,
+        "relativeIncrease": -0.06,
         "nonCurrentMessageWrites": 0,
         "nonCurrentPartWrites": 0
       },
@@ -304,26 +308,26 @@
       "P20": {
         "id": "P20",
         "size": "M",
-        "nodes2": 214,
-        "nodes3": 214,
+        "nodes2": 676,
+        "nodes3": 676,
         "growth": 0,
-        "heap2": 80091913,
-        "heap3": 86139922,
-        "heapGrowth": 0.08
+        "heap2": 83318065,
+        "heap3": 88668411,
+        "heapGrowth": 0.06
       },
       "P2": {
         "id": "P2",
         "size": "M",
-        "p95Scale": 0.89
+        "p95Scale": 1.4
       }
     },
     "L": {
       "P1": {
         "id": "P1",
         "size": "L",
-        "p50Ms": 0.15,
-        "p95Ms": 0.23,
-        "p99Ms": 0.39
+        "p50Ms": 0.16,
+        "p95Ms": 0.26,
+        "p99Ms": 0.51
       },
       "P3": {
         "id": "P3",
@@ -339,16 +343,16 @@
       "P5": {
         "id": "P5",
         "size": "L",
-        "openP95Ms": 1.84,
-        "sequenceP95Ms": 1.44,
-        "maxMs": 7.5,
+        "openP95Ms": 1.66,
+        "sequenceP95Ms": 1.2,
+        "maxMs": 6.46,
         "frames": 250
       },
       "P6": {
         "id": "P6",
         "size": "L",
-        "filterP95Ms": 0.63,
-        "escapeP95Ms": 1.83
+        "filterP95Ms": 0.44,
+        "escapeP95Ms": 1.36
       },
       "P7": {
         "id": "P7",
@@ -366,21 +370,21 @@
       "P8": {
         "id": "P8",
         "size": "L",
-        "p99Ms": 7.27,
-        "maxMs": 9.19,
-        "steps": 177
+        "p99Ms": 0.42,
+        "maxMs": 0.47,
+        "steps": 184
       },
       "P8'": {
         "id": "P8'",
         "size": "L",
-        "p99Ms": 4.25,
-        "maxMs": 5.84,
+        "p99Ms": 1.32,
+        "maxMs": 5.45,
         "steps": 100
       },
       "P9": {
         "id": "P9",
         "size": "L",
-        "p99Ms": 8.51
+        "p99Ms": 0.18
       },
       "P11": {
         "id": "P11",
@@ -391,14 +395,16 @@
       "P10": {
         "id": "P10",
         "size": "L",
-        "mountedRows": 17,
-        "scrollChildren": 21,
-        "viewportRows": 19
+        "mountedRows": 191,
+        "scrollChildren": 192,
+        "viewportRows": 19,
+        "rows": 190,
+        "windowed": 0
       },
       "P12": {
         "id": "P12",
         "size": "L",
-        "p95Ms": 1.95
+        "p95Ms": 1.1
       },
       "P13": {
         "id": "P13",
@@ -411,10 +417,10 @@
       "P14": {
         "id": "P14",
         "size": "L",
-        "p95Ms": 0.08,
-        "quietP95Ms": 0.09,
+        "p95Ms": 0.16,
+        "quietP95Ms": 0.17,
         "increaseMs": -0.01,
-        "relativeIncrease": -0.12,
+        "relativeIncrease": -0.06,
         "nonCurrentMessageWrites": 0,
         "nonCurrentPartWrites": 0
       },
@@ -464,7 +470,99 @@
       "P2": {
         "id": "P2",
         "size": "L",
-        "p95Scale": 0.85
+        "p95Scale": 1.3
+      }
+    },
+    "XL": {
+      "P1": {
+        "id": "P1",
+        "size": "XL",
+        "p50Ms": 0.14,
+        "p95Ms": 0.21,
+        "p99Ms": 2.2
+      },
+      "P3": {
+        "id": "P3",
+        "size": "XL",
+        "registerLayer": 0
+      },
+      "P4": {
+        "id": "P4",
+        "size": "XL",
+        "selectorEvaluations": 0,
+        "selectorEvaluationsPerKey": 0
+      },
+      "P5": {
+        "id": "P5",
+        "size": "XL",
+        "openP95Ms": 1.8,
+        "sequenceP95Ms": 1.33,
+        "maxMs": 8.27,
+        "frames": 250
+      },
+      "P6": {
+        "id": "P6",
+        "size": "XL",
+        "filterP95Ms": 0.48,
+        "escapeP95Ms": 1.72
+      },
+      "P7": {
+        "id": "P7",
+        "size": "XL",
+        "registerLayer": 0
+      },
+      "P11": {
+        "id": "P11",
+        "size": "XL",
+        "driftPx": 0,
+        "stepMismatches": 0
+      },
+      "P10": {
+        "id": "P10",
+        "size": "XL",
+        "mountedRows": 17,
+        "scrollChildren": 21,
+        "viewportRows": 19,
+        "rows": 2080,
+        "windowed": 1
+      },
+      "P15": {
+        "id": "P15",
+        "size": "XL",
+        "frames": 0
+      },
+      "P16": {
+        "id": "P16",
+        "size": "XL",
+        "frames": 22
+      },
+      "P17": {
+        "id": "P17",
+        "size": "XL",
+        "framesEmpty": 22,
+        "framesEight": 22,
+        "limit": 24.22
+      },
+      "P17b": {
+        "id": "P17b",
+        "size": "XL",
+        "frames": 0
+      },
+      "P18": {
+        "id": "P18",
+        "size": "XL",
+        "frames": 0
+      },
+      "P19": {
+        "id": "P19",
+        "size": "XL",
+        "frames": 0,
+        "moves": 200
+      },
+      "P2": {
+        "id": "P2",
+        "size": "XL",
+        "p95Scale": 1.05
       }
     }
   }
