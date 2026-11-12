@@ -933,7 +933,7 @@ export const ShellTool = Tool.define(
                   id: jobID,
                   type: "bash",
                   title: params.command,
-                  metadata: { sessionId: ctx.sessionID, command: params.command },
+                  metadata: { sessionID: ctx.sessionID, command: params.command },
                   run: run(
                     {
                       shell,

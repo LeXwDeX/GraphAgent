@@ -145,7 +145,7 @@ describe("shell background mode", () => {
             const job = hooks.started[0]
             expect(job.title).toBe(cmd)
             expect(job.type).toBe("bash")
-            expect(job.metadata).toEqual({ sessionId: ctx.sessionID, command: cmd })
+            expect(job.metadata).toEqual({ sessionID: ctx.sessionID, command: cmd })
             expect(result.output).toContain(`job: ${job.id}`)
             expect(result.output).toContain(`log: ${logPath(result.output)}`)
           }),
