@@ -232,6 +232,22 @@ describe("tool.goal — await intent validation (#1067)", () => {
           id: "job_cancelled",
           detail: "was cancelled",
         },
+        {
+          jobs: [finishedJob("job_error", "error")],
+          source: "watch_pr" as const,
+          id: "job_error",
+          detail: "failed",
+        },
+        // A settling job has already produced its final result and is
+        // delivering the notice (and the goal wake) now: it is neither failed
+        // nor able to wake a wait declared this late.
+        {
+          jobs: [finishedJob("job_settling", "settling")],
+          source: "watch_pr" as const,
+          id: "job_settling",
+          detail: "is settling",
+          absent: "failed",
+        },
       ]
       for (const entry of cases) {
         const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => entry.jobs) })
@@ -243,6 +259,7 @@ describe("tool.goal — await intent validation (#1067)", () => {
         if (!(error instanceof Tool.InvalidArgumentsError))
           throw new Error(`expected InvalidArgumentsError, got ${String(error)}`)
         expect(error.message).toContain(entry.detail)
+        if ("absent" in entry) expect(error.message).not.toContain(entry.absent)
       }
       expect(intentCalls).toBe(0)
     }),

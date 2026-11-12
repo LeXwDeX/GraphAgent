@@ -19,11 +19,22 @@ import type {
  * transition writes the entry the event describes and queues the ref; one
  * batched read of `POST /lifecycle/states` per frame lets the owner confirm or
  * correct it, and a ref the owner no longer knows is dropped. The same batch
- * is what a reconnect sends for everything the mirror holds.
+ * is what a reconnect sends for everything the mirror holds. Only refs of a
+ * domain the owner can resolve (`isPullableDomain`) are queued.
  */
 
 /** Entries kept at most; finished ones are dropped first, oldest first. */
 export const LIFECYCLE_MIRROR_MAX = 256
+
+/**
+ * The domains whose owner registers a resolver with the server's lifecycle
+ * service (`BackgroundLifecycle` for `job`, `GoalLifecycle` for `goal`). A ref
+ * of any other domain, a `turn` for example, always comes back unknown, so
+ * asking about it only costs a request per transition for an answer that is
+ * always null. Add a domain here in the same change that registers its
+ * resolver.
+ */
+const PULLABLE_DOMAINS: ReadonlySet<LifecycleDomain> = new Set<LifecycleDomain>(["job", "goal"])
 
 export interface LifecycleMirrorEntry {
   domain: LifecycleDomain
@@ -42,6 +53,14 @@ export type LifecycleTransition = EventLifecycleTransitioned["properties"]
 
 export function lifecycleKey(ref: LifecycleStateRef): string {
   return `${ref.domain}:${ref.id}`
+}
+
+/**
+ * Whether the owner can answer a read for refs of this domain. The mirror
+ * keeps what the events of the other domains described and never asks.
+ */
+export function isPullableDomain(domain: LifecycleDomain): boolean {
+  return PULLABLE_DOMAINS.has(domain)
 }
 
 export function entryFromTransition(transition: LifecycleTransition): LifecycleMirrorEntry {

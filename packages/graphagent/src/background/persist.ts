@@ -4,6 +4,7 @@
 import type { BackgroundJob } from "@graphagent/core/background-job"
 import type { Database } from "@graphagent/core/database/database"
 import { RuntimeJobTable } from "@graphagent/core/lifecycle/runtime-job.sql"
+import { eq } from "drizzle-orm"
 import { randomUUID } from "node:crypto"
 import { Clock, Effect } from "effect"
 
@@ -14,6 +15,16 @@ export const runtimeJobProcessID = `proc_${randomUUID()}`
 
 const isTerminal = (status: BackgroundJob.Status) =>
   status === "completed" || status === "error" || status === "cancelled"
+
+export type PersistedJob = typeof RuntimeJobTable.$inferSelect
+
+/**
+ * The durable row of one job, if any. After a restart this is the only record
+ * of a job: the lifecycle resolver and the goal wait reconciliation both read
+ * it through here so they agree on what the row says.
+ */
+export const readPersistedJob = (db: Database.Interface["db"], id: string) =>
+  db.select().from(RuntimeJobTable).where(eq(RuntimeJobTable.id, id)).get()
 
 /**
  * Durable observation for one registry transition (#1069 P5). The registry

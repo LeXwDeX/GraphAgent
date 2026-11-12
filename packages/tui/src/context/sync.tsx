@@ -37,6 +37,7 @@ import {
   entryFromState,
   entryFromTransition,
   goalStatus,
+  isPullableDomain,
   lifecycleKey,
   overflowKeys,
   type LifecycleMirrorEntry,
@@ -577,8 +578,10 @@ export const {
         writeLifecycle(entry)
         if (entry.domain === "goal") mirrorGoal(entry.id, entry.value)
       })
-      // A ref the size limit evicted again has nothing left to confirm.
-      if (lifecycleRaw.has(key)) lifecycleQueued.set(key, { domain: entry.domain, id: entry.id })
+      // A ref the size limit evicted again has nothing left to confirm, and a
+      // domain without an owner resolver would only be answered with null.
+      if (lifecycleRaw.has(key) && isPullableDomain(entry.domain))
+        lifecycleQueued.set(key, { domain: entry.domain, id: entry.id })
     }
 
     function applyLifecycleStates(
@@ -1233,6 +1236,7 @@ export const {
       lifecycleEpoch++
       lifecycleInFlight = false
       for (const entry of lifecycleRaw.values()) {
+        if (!isPullableDomain(entry.domain)) continue
         lifecycleQueued.set(lifecycleKey(entry), { domain: entry.domain, id: entry.id })
       }
       for (const [sessionID, goal] of Object.entries(store.goal)) {

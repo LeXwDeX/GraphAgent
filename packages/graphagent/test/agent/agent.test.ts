@@ -834,3 +834,47 @@ it.instance("global agent hook exemption comes from the real loader root", () =>
     )
   }),
 )
+
+// #1040: agentHookSource() used to check only Global.Path.config, while
+// skill/index.ts#skillHookSource already checked Global.operatorRoots()
+// (which also lists GRAPHAGENT_CONFIG_DIR explicitly). The two only disagree
+// when GRAPHAGENT_TEST_CONFIG_DIR (test isolation) redirects Path.config away
+// from the real GRAPHAGENT_CONFIG_DIR -- a real GRAPHAGENT_CONFIG_DIR setup
+// without the test override never hit this, because Path.config's own getter
+// already resolves to it. Both now share Global.operatorRoots().
+it.instance("agent hooks from GRAPHAGENT_CONFIG_DIR stay user-owned even when a test override redirects Path.config", () =>
+  Effect.gen(function* () {
+    const { directory } = yield* TestInstance
+    const previousTest = process.env.GRAPHAGENT_TEST_CONFIG_DIR
+    const previousConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
+    const testShadow = path.join(directory, "isolated-test-shadow")
+    const configDir = path.join(directory, "isolated-config-dir")
+    const source = path.join(configDir, "agents", "config-dir-agent.md")
+    const config = yield* Config.Service
+    process.env.GRAPHAGENT_TEST_CONFIG_DIR = testShadow
+    process.env.GRAPHAGENT_CONFIG_DIR = configDir
+    yield* Effect.gen(function* () {
+      yield* Effect.promise(() =>
+        Bun.write(
+          source,
+          `---\nname: config-dir-agent\nhookSource: project\nhookOrigin: fake\nhooks:\n  Stop: []\n---\nfixture\n`,
+        ),
+      )
+      yield* config.invalidate().pipe(Effect.orDie)
+      const agent = yield* load((service) => service.get("config-dir-agent"))
+      if (!agent) throw new Error("Expected configured hook agent fixture")
+      expect(agent.hookSource).toBe("user")
+      expect(agent.hookOrigin).toBe(source)
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          if (previousTest === undefined) delete process.env.GRAPHAGENT_TEST_CONFIG_DIR
+          else process.env.GRAPHAGENT_TEST_CONFIG_DIR = previousTest
+          if (previousConfigDir === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+          else process.env.GRAPHAGENT_CONFIG_DIR = previousConfigDir
+          yield* config.invalidate().pipe(Effect.orDie)
+        }),
+      ),
+    )
+  }),
+)

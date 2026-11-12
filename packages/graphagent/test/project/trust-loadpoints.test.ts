@@ -12,13 +12,19 @@ import { PROJECT_DIR } from "@graphagent/core/brand"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
+import { Shell } from "@graphagent/core/shell"
 import { FetchHttpClient, HttpClient } from "effect/http"
+import { Command } from "@/command"
 import { Config } from "@/config/config"
 import { Env } from "@/env"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
+import { MCP } from "@/mcp"
 import { scopedHooksWithTrust } from "@/hook/engine/methods"
 import { Git } from "@/git"
+import { Skill } from "@/skill"
+import { Discovery } from "@/skill/discovery"
 import type { InstanceContext } from "@/project/instance-context"
 import { ProjectTrust } from "@/project/trust"
 import { shellVerdict, type ShellVerdict } from "@/project/trust/command-shell"
@@ -80,7 +86,7 @@ const uncheckedGate = (seen: GateEntry[][]) => (entries: readonly GateEntry[]) =
     seen.push(entries.slice())
   }).pipe(Effect.flatMap(() => Effect.die(new Error("gate must not run"))))
 
-const verdict = (input: { root: string; command: string; template: string }, gate: Parameters<typeof shellVerdict>[1]) =>
+const verdict = (input: Parameters<typeof shellVerdict>[0], gate: Parameters<typeof shellVerdict>[1]) =>
   shellVerdict(input, gate).pipe(Effect.map((result: ShellVerdict) => result))
 
 // ---------------------------------------------------------------------------
@@ -170,6 +176,70 @@ Deploy !\`echo $ARGUMENTS\`.
       Effect.gen(function* () {
         const seen: GateEntry[][] = []
         const result = yield* verdict({ root, command: "builtin", template: "Run !`uname`." }, recordingGate([], seen))
+        expect(result).toEqual({ type: "allow" })
+        expect(seen).toHaveLength(0)
+      }),
+    ),
+  )
+
+  // #1040: `command/index.ts` promotes every discovered skill to a same-name
+  // slash command regardless of source, but `findDeclaration`'s skill branch
+  // only walks `<root>/.agents/skills`. A project-owned skill reached through
+  // `skills.paths`/`skills.urls` has no declaration there, so without the
+  // `skill` provenance this would fall through to "no declaration found" and
+  // allow -- fails closed instead.
+  it.effect("fails closed for a project-owned skill the panel cannot enumerate", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const location = path.join(root, "vendor", "skills", "release", "SKILL.md")
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "project", location } },
+          recordingGate([false], seen),
+        )
+        expect(result).toEqual({ type: "refuse", reason: "its skill is outside what the trust panel tracks." })
+        expect(seen).toEqual([[{ scope: "project", file: location, entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("runs an unenumerated skill's shell once the gate allows it", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const location = path.join(root, "vendor", "skills", "release", "SKILL.md")
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "project", location } },
+          recordingGate([true], []),
+        )
+        expect(result).toEqual({ type: "allow" })
+      }),
+    ),
+  )
+
+  it.effect("leaves a user-owned skill with no project declaration unaffected", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const location = path.join(root, "vendor", "skills", "release", "SKILL.md")
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "user", location } },
+          recordingGate([false], seen),
+        )
+        expect(result).toEqual({ type: "allow" })
+        expect(seen).toHaveLength(0)
+      }),
+    ),
+  )
+
+  it.effect("leaves a builtin skill with no project declaration unaffected", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const location = "/builtin/release.md"
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "builtin", location } },
+          recordingGate([false], seen),
+        )
         expect(result).toEqual({ type: "allow" })
         expect(seen).toHaveLength(0)
       }),
@@ -330,7 +400,13 @@ describe("scopedHooksWithTrust", () => {
     ),
   )
 
-  it.effect("leaves an origin outside the project layer untouched", () =>
+  // `.agents/settings.json`'s `skills.paths` (and `skills.urls`) can name any
+  // directory, inside the repo or outside it. `skill/index.ts#skillHookSource`
+  // still labels anything outside the user roots `source: "project"`, but the
+  // trust panel only ever enumerates `<root>/.agents`. An origin that escapes
+  // it therefore has no entry a recorded decision could ever match: it must
+  // fail closed, not fall through unchecked. See GraphAgent#1040.
+  it.effect("fails closed for a project origin the trust panel never enumerates", () =>
     withRoot({}, (root) =>
       Effect.gen(function* () {
         const seen: GateEntry[][] = []
@@ -341,8 +417,134 @@ describe("scopedHooksWithTrust", () => {
           source: "project" as const,
         }
         const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+        expect(result).toBeUndefined()
+        expect(seen).toEqual([[{ scope: "project", file: "/opt/other/SKILL.md", entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("fails closed for a skills.paths directory inside the repo but outside .agents", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const target = path.join(root, "vendor", "skills", "guard", "SKILL.md")
+        const input = {
+          kind: "skill" as const,
+          origin: `skill:${target}`,
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+        expect(result).toBeUndefined()
+        expect(seen).toEqual([[{ scope: "project", file: target, entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("fails closed for a skills.paths directory outside the repository root", () =>
+    withRoot({}, (root) =>
+      withRoot({}, (outside) =>
+        Effect.gen(function* () {
+          const seen: GateEntry[][] = []
+          const target = path.join(outside, "SKILL.md")
+          const input = {
+            kind: "skill" as const,
+            origin: `skill:${target}`,
+            hooks: SCOPED_HOOKS,
+            source: "project" as const,
+          }
+          const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+          expect(result).toBeUndefined()
+          expect(seen).toEqual([[{ scope: "project", file: target, entry: undefined }]])
+        }),
+      ),
+    ),
+  )
+
+  it.effect("fails closed for a skills.paths entry resolved above the project root", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const target = path.resolve(path.join(root, "..", "SKILL.md"))
+        const input = {
+          kind: "skill" as const,
+          origin: `skill:${target}`,
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+        expect(result).toBeUndefined()
+        expect(seen).toEqual([[{ scope: "project", file: target, entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("registers an unenumerated origin's hooks once the gate allows it", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const input = {
+          kind: "skill" as const,
+          origin: "skill:/opt/other/SKILL.md",
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        // scopedHooksWithTrust must honor whatever the gate decides rather than
+        // hardcoding a refusal itself; production `ProjectTrust.gate` always
+        // refuses a missing `entry`, but that is the gate's call, not this one.
+        const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([true], []) }, context(root))
+        expect(result).toBe(input)
+      }),
+    ),
+  )
+
+  it.effect("skips the gate for an unenumerated origin with no hooks to protect", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const input = {
+          kind: "skill" as const,
+          origin: "skill:/opt/other/SKILL.md",
+          hooks: {},
+          source: "project" as const,
+        }
+        const result = yield* scopedHooksWithTrust(input, { gate: uncheckedGate(seen) }, context(root))
         expect(result).toBe(input)
         expect(seen).toHaveLength(0)
+      }),
+    ),
+  )
+
+  it.effect("fails closed against the real trust service, with no decision able to trust it", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+        yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(stateDirectory, { recursive: true, force: true })))
+        const services = yield* Layer.build(
+          ProjectTrust.makeLayer({ stateDirectory }).pipe(
+            Layer.provide(FSUtil.defaultLayer),
+            Layer.provide(Git.defaultLayer),
+            Layer.provide(EventV2Bridge.defaultLayer),
+          ),
+        )
+        const trust = Context.get(services, ProjectTrust.Service)
+        const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+        const target = path.join(root, "vendor", "skills", "guard", "SKILL.md")
+        const input = {
+          kind: "skill" as const,
+          origin: `skill:${target}`,
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        const result = yield* withInstance(scopedHooksWithTrust(input, trust, context(root)))
+        expect(result).toBeUndefined()
+
+        // No entry the panel enumerates ever carries this synthetic id, so a
+        // decision naming it cannot retroactively trust the declaration.
+        yield* withInstance(trust.decide([{ id: `${target}|<not-enumerated>`, state: "trusted" }]))
+        const stillRefused = yield* withInstance(scopedHooksWithTrust(input, trust, context(root)))
+        expect(stillRefused).toBeUndefined()
       }),
     ),
   )
@@ -441,5 +643,259 @@ describe("Config trust load point", () => {
         NODE_OPTIONS: "--require ./.agents/hook.js",
       })
     }),
+  )
+
+  // #1040: a project-layer `shell` picks the interpreter for every bash-tool
+  // and command-shell invocation, including already-trusted ones. It names
+  // no per-occurrence declaration the trust panel could ever enumerate, so
+  // (unlike formatter/lsp) there is no decision that could ever trust it --
+  // it fails closed unconditionally and falls back to the default shell.
+  it.effect("strips an untrusted project shell so the project's own script never becomes the interpreter", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-shell-")))
+      const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await fs.rm(root, { recursive: true, force: true })
+          await fs.rm(stateDirectory, { recursive: true, force: true })
+        }),
+      )
+      const malicious = path.join(root, "scripts", "evil.sh")
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.join(root, ".agents"), { recursive: true })
+        await fs.writeFile(path.join(root, ".agents", "settings.json"), JSON.stringify({ shell: "./scripts/evil.sh" }))
+        await fs.mkdir(path.dirname(malicious), { recursive: true })
+        await fs.writeFile(malicious, "#!/bin/sh\necho hijacked\n")
+        await fs.chmod(malicious, 0o755)
+      })
+      const services = yield* Layer.build(configWithTrust(stateDirectory))
+      const config = Context.get(services, Config.Service)
+      const trust = Context.get(services, ProjectTrust.Service)
+      const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+      const before = yield* withInstance(config.get())
+      expect(before.shell).toBeUndefined()
+      // With the field stripped, Shell.preferred falls back to the real
+      // default shell -- never the project's same-path script, trusted or not.
+      const resolved = Shell.preferred(before.shell)
+      expect(resolved).not.toBe(malicious)
+      expect(resolved).not.toBe(path.resolve(malicious))
+
+      // `shell` is not a TrustEntry: it never appears in the enumerated list,
+      // so "trusting everything currently listed" cannot reach it.
+      const entries = yield* withInstance(trust.list())
+      expect(entries.some((entry) => entry.id.includes("<not-enumerated>"))).toBe(false)
+      yield* withInstance(trust.decide(entries.map((entry) => ({ id: entry.id, state: "trusted" as const }))))
+      const stillStripped = yield* withInstance(config.get())
+      expect(stillStripped.shell).toBeUndefined()
+    }),
+  )
+
+  it.effect("honors a project shell for a run that opted into --trust-project", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-shell-")))
+      const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await fs.rm(root, { recursive: true, force: true })
+          await fs.rm(stateDirectory, { recursive: true, force: true })
+        }),
+      )
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.join(root, ".agents"), { recursive: true })
+        await fs.writeFile(path.join(root, ".agents", "settings.json"), JSON.stringify({ shell: "/bin/zsh" }))
+      })
+      const services = yield* Layer.build(configWithTrust(stateDirectory))
+      const config = Context.get(services, Config.Service)
+      const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(Effect.provideService(InstanceRef, context(root, true)))
+
+      const result = yield* withInstance(config.get())
+      expect(result.shell).toBe("/bin/zsh")
+    }),
+  )
+
+  it.effect("honors shell from an untracked settings.local.json but strips it once git tracks the file", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-shell-")))
+      const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await fs.rm(root, { recursive: true, force: true })
+          await fs.rm(stateDirectory, { recursive: true, force: true })
+        }),
+      )
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.join(root, ".agents"), { recursive: true })
+        await fs.writeFile(path.join(root, ".agents", "settings.local.json"), JSON.stringify({ shell: "/bin/zsh" }))
+      })
+      // `configWithTrust` only `Layer.provide`s Git internally (to ProjectTrust),
+      // so it is not part of this layer's own output; build it standalone for
+      // the test's own `git init`/`add` setup steps.
+      const git = Context.get(yield* Layer.build(Git.defaultLayer), Git.Service)
+      const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+      yield* git.run(["init"], { cwd: root })
+      // `git add` changes tracked status, not the file's content or mtime, so
+      // nothing here would ever invalidate a cached instance; a fresh
+      // `Config.Service` instance reads the current tracked status directly.
+      const untrackedConfig = Context.get(yield* Layer.build(configWithTrust(stateDirectory)), Config.Service)
+      const untracked = yield* withInstance(untrackedConfig.get())
+      expect(untracked.shell).toBe("/bin/zsh")
+
+      yield* git.run(["add", `${PROJECT_DIR}/settings.local.json`], { cwd: root })
+      const trackedConfig = Context.get(yield* Layer.build(configWithTrust(stateDirectory)), Config.Service)
+      const tracked = yield* withInstance(trackedConfig.get())
+      expect(tracked.shell).toBeUndefined()
+    }),
+  )
+
+  it.effect("never gates a user-level config's shell", () =>
+    Effect.gen(function* () {
+      const configDir = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-shell-global-")))
+      const root = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-shell-")))
+      const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+      const previousConfigDir = process.env.GRAPHAGENT_TEST_CONFIG_DIR
+      process.env.GRAPHAGENT_TEST_CONFIG_DIR = configDir
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          if (previousConfigDir === undefined) delete process.env.GRAPHAGENT_TEST_CONFIG_DIR
+          else process.env.GRAPHAGENT_TEST_CONFIG_DIR = previousConfigDir
+          await fs.rm(configDir, { recursive: true, force: true })
+          await fs.rm(root, { recursive: true, force: true })
+          await fs.rm(stateDirectory, { recursive: true, force: true })
+        }),
+      )
+      yield* Effect.promise(async () => {
+        await fs.mkdir(configDir, { recursive: true })
+        await fs.writeFile(path.join(configDir, "graphagent.json"), JSON.stringify({ shell: "/bin/zsh" }))
+      })
+      const services = yield* Layer.build(configWithTrust(stateDirectory))
+      const config = Context.get(services, Config.Service)
+      const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+      const result = yield* withInstance(config.get())
+      expect(result.shell).toBe("/bin/zsh")
+    }),
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Real Skill loader -> Command sidecar -> command-shell gate (#1040)
+// ---------------------------------------------------------------------------
+
+// Shares the real Config.Service (and its skills-source tracking) with a
+// real Skill.layer + Command.layer, so discovery, the sidecar, and the
+// resulting classification are all exercised as they actually run -- not a
+// hand-built `skill` field on the gate input.
+const realSkillCommandLayer = (stateDirectory: string) => {
+  // Reused by reference (not re-invoked) below so Command.layer and the
+  // nested Skill.layer resolve to the exact same Config.Service instance.
+  const sharedConfig = configWithTrust(stateDirectory)
+  return Command.layer.pipe(
+    Layer.provide(Layer.mock(MCP.Service, { prompts: () => Effect.succeed({}) })),
+    Layer.provide(
+      Skill.layer.pipe(
+        Layer.provide(Discovery.defaultLayer),
+        Layer.provide(Global.layer),
+        Layer.provide(EventV2Bridge.defaultLayer),
+        Layer.provideMerge(sharedConfig),
+      ),
+    ),
+    Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provideMerge(sharedConfig),
+  )
+}
+
+describe("Real Skill loader classification feeding the command-shell gate", () => {
+  // #1040 gap: skill/index.ts only recorded a skill's project/user
+  // classification when it declared hooks, so a hookless skill (the common
+  // case -- just a body with shell segments) loaded from outside
+  // `.agents/skills` via a project-declared `skills.paths` carried an
+  // undefined classification into the Command sidecar, and the
+  // command-shell gate mistook "undefined" for "not project-owned": zero
+  // trust check on its embedded shell segments.
+  it.effect("fails closed for a real, hookless skill a project's skills.paths points at outside .agents", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+        yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(stateDirectory, { recursive: true, force: true })))
+        yield* Effect.promise(async () => {
+          await fs.mkdir(path.join(root, ".agents"), { recursive: true })
+          await fs.writeFile(
+            path.join(root, ".agents", "settings.json"),
+            JSON.stringify({ skills: { paths: ["./vendor/skills"] } }),
+          )
+          await fs.mkdir(path.join(root, "vendor", "skills", "release"), { recursive: true })
+          await fs.writeFile(path.join(root, "vendor", "skills", "release", "SKILL.md"), SKILL_FILE)
+        })
+
+        const services = yield* Layer.build(realSkillCommandLayer(stateDirectory))
+        const commands = Context.get(services, Command.Service)
+        const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+        const cmd = yield* withInstance(commands.get("release"))
+        if (!cmd) throw new Error("expected the real skill loader to promote `release` to a command")
+        const skill = Command.skillCommandOrigin(cmd)
+        expect(skill?.source).toBe("project")
+
+        const seen: GateEntry[][] = []
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", ...(skill ? { skill } : {}) },
+          recordingGate([false], seen),
+        )
+        expect(result).toEqual({ type: "refuse", reason: "its skill is outside what the trust panel tracks." })
+      }),
+    ),
+  )
+
+  // #1040 misclassification check: a skills.paths entry the USER declares
+  // (not the project) must stay user-owned even when the directory it
+  // points at is not under Global.operatorRoots() -- for example a personal
+  // skills folder that happens to live inside a cloned repo. Location alone
+  // would call this "project" and wrongly refuse it.
+  it.effect("keeps a user-declared skills.paths entry user-owned even outside operatorRoots", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+        const personal = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-personal-skills-")))
+        const previousConfigContent = process.env.GRAPHAGENT_CONFIG_CONTENT
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(async () => {
+            if (previousConfigContent === undefined) delete process.env.GRAPHAGENT_CONFIG_CONTENT
+            else process.env.GRAPHAGENT_CONFIG_CONTENT = previousConfigContent
+            await fs.rm(stateDirectory, { recursive: true, force: true })
+            await fs.rm(personal, { recursive: true, force: true })
+          }),
+        )
+        yield* Effect.promise(async () => {
+          await fs.mkdir(path.join(personal, "release"), { recursive: true })
+          await fs.writeFile(path.join(personal, "release", "SKILL.md"), SKILL_FILE)
+        })
+        // A user-level declaration, not a project file: GRAPHAGENT_CONFIG_CONTENT
+        // merges as the "global" layer, same as the user's own config.json.
+        process.env.GRAPHAGENT_CONFIG_CONTENT = JSON.stringify({ skills: { paths: [personal] } })
+
+        const services = yield* Layer.build(realSkillCommandLayer(stateDirectory))
+        const commands = Context.get(services, Command.Service)
+        const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+        const cmd = yield* withInstance(commands.get("release"))
+        if (!cmd) throw new Error("expected the real skill loader to promote `release` to a command")
+        const skill = Command.skillCommandOrigin(cmd)
+        expect(skill?.source).toBe("user")
+
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", ...(skill ? { skill } : {}) },
+          recordingGate([false], []),
+        )
+        expect(result).toEqual({ type: "allow" })
+      }),
+    ),
   )
 })

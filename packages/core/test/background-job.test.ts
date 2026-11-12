@@ -173,6 +173,7 @@ describe("BackgroundJob", () => {
         from: string | null
         to: string
         sessionID?: string
+        parentSessionID?: string
         title?: string
         output?: string
         started?: boolean
@@ -184,6 +185,7 @@ describe("BackgroundJob", () => {
               from: transition.from,
               to: transition.to,
               sessionID: transition.sessionID,
+              parentSessionID: transition.parentSessionID,
               title: transition.title,
               output: transition.output,
               started: typeof transition.started_at === "number",
@@ -195,7 +197,8 @@ describe("BackgroundJob", () => {
         id: "observed",
         type: "test",
         title: "observed job",
-        metadata: { sessionId: "ses_observed" },
+        // Writers record the current keys (#1069 P9); the registry must read them.
+        metadata: { sessionID: "ses_observed", parentSessionID: "ses_parent" },
         run: Deferred.await(latch).pipe(Effect.as("ok")),
       })
 
@@ -205,18 +208,137 @@ describe("BackgroundJob", () => {
 
       // Every transition carries the complete snapshot: a durable observer
       // never has to merge a partial delta (#1069 P5).
+      const identity = {
+        sessionID: "ses_observed",
+        parentSessionID: "ses_parent",
+        title: "observed job",
+        started: true,
+      }
       expect(observed).toEqual([
-        { from: null, to: "running", sessionID: "ses_observed", title: "observed job", started: true },
-        { from: "running", to: "settling", sessionID: "ses_observed", title: "observed job", started: true },
-        {
-          from: "settling",
-          to: "completed",
-          sessionID: "ses_observed",
-          title: "observed job",
-          output: "ok",
-          started: true,
-        },
+        { from: null, to: "running", ...identity },
+        { from: "running", to: "settling", ...identity },
+        { from: "settling", to: "completed", ...identity, output: "ok" },
       ])
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
+  it.live("emits exactly one terminal transition when completion, cancel and settling race", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const observed: Array<{ id: string; from: BackgroundJob.Status | null; to: BackgroundJob.Status }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            observed.push({ id: transition.id, from: transition.from, to: transition.to })
+          }),
+      }).pipe(Scope.provide(scope))
+      const terminal = new Set<BackgroundJob.Status>(["completed", "error", "cancelled"])
+
+      yield* Effect.forEach(Array.from({ length: 60 }), (_, index) =>
+        Effect.gen(function* () {
+          const id = `race_${index}`
+          // The job finishes after a varying number of scheduler turns, so every
+          // iteration lands its natural completion at a different point of the race.
+          yield* jobs.start({
+            id,
+            type: "test",
+            run: Effect.forEach(Array.from({ length: Math.floor(index / 2) % 6 }), () => Effect.yieldNow).pipe(
+              Effect.as("done"),
+            ),
+          })
+          // Half of the rounds race a cancel against settling and completion; the
+          // other half race settling against completion alone, so the registry sees
+          // both `settling -> cancelled` and `settling -> completed`.
+          const race = [
+            jobs.beginSettling(id),
+            ...(index % 2 === 0 ? [jobs.cancel(id)] : []),
+            jobs.beginSettling(id),
+            jobs.wait({ id }),
+          ]
+          const turn = index % race.length
+          yield* Effect.all([...race.slice(turn), ...race.slice(0, turn)], { concurrency: "unbounded", discard: true })
+          // A waiter resumes when the job's `done` resolves, which is just before the
+          // job's own fiber hands its terminal transition to the sink. Let the sink
+          // catch up, then give a duplicate every chance to show up.
+          const seen = () => observed.some((entry) => entry.id === id && terminal.has(entry.to))
+          for (let spin = 0; spin < 100 && !seen(); spin++) yield* Effect.yieldNow
+          for (let spin = 0; spin < 20; spin++) yield* Effect.yieldNow
+
+          const mine = observed.filter((entry) => entry.id === id)
+          // The compare-and-swap inside the registry lets one terminal status win.
+          expect(mine.filter((entry) => terminal.has(entry.to))).toHaveLength(1)
+          // Settling is entered at most once and every transition continues from the previous one.
+          expect(mine.filter((entry) => entry.to === "settling").length).toBeLessThanOrEqual(1)
+          expect(mine[0]).toEqual({ id, from: null, to: "running" })
+          for (let position = 1; position < mine.length; position++) {
+            expect(mine[position]?.from).toBe(mine[position - 1]?.to)
+          }
+          const final = mine[mine.length - 1]?.to
+          expect(final !== undefined && terminal.has(final)).toBe(true)
+          expect((yield* jobs.get(id))?.status).toBe(final)
+          // Waiters resolve with that same terminal status.
+          expect((yield* jobs.wait({ id })).info?.status).toBe(final)
+        }),
+      )
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
+  it.live("still reads the pre-rename session keys of metadata written before them", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const observed: Array<{ to: string; sessionID?: string; parentSessionID?: string }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            observed.push({
+              to: transition.to,
+              sessionID: transition.sessionID,
+              parentSessionID: transition.parentSessionID,
+            })
+          }),
+      }).pipe(Scope.provide(scope))
+      const job = yield* jobs.start({
+        type: "test",
+        metadata: { sessionId: "ses_legacy", parentSessionId: "ses_legacy_parent" },
+        run: Effect.succeed("ok"),
+      })
+      yield* jobs.wait({ id: job.id })
+
+      const identity = { sessionID: "ses_legacy", parentSessionID: "ses_legacy_parent" }
+      expect(observed).toEqual([
+        { to: "running", ...identity },
+        { to: "completed", ...identity },
+      ])
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
+  it.live("prefers the current keys over the pre-rename ones", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const observed: Array<{ sessionID?: string; parentSessionID?: string }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            observed.push({ sessionID: transition.sessionID, parentSessionID: transition.parentSessionID })
+          }),
+      }).pipe(Scope.provide(scope))
+      const job = yield* jobs.start({
+        type: "test",
+        metadata: {
+          sessionID: "ses_new",
+          sessionId: "ses_old",
+          parentSessionID: "ses_new_parent",
+          parentSessionId: "ses_old_parent",
+        },
+        run: Effect.succeed("ok"),
+      })
+      yield* jobs.wait({ id: job.id })
+
+      expect(observed.length).toBeGreaterThan(0)
+      for (const entry of observed) expect(entry).toEqual({ sessionID: "ses_new", parentSessionID: "ses_new_parent" })
       yield* Scope.close(scope, Exit.void)
     }),
   )

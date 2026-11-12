@@ -763,7 +763,7 @@ description: A second skill in the .agents/skills directory.
 
       for (let attempt = 0; attempt < 50; attempt++) {
         const state: Skill.State = { skills: {}, dirs: new Set() }
-        yield* Skill.loadSkills(state, { matches, dirs: [] }, {} as never, (match) =>
+        yield* Skill.loadSkills(state, { matches, dirs: [], declaredBy: new Map() }, {} as never, (match) =>
           // Real timers, not Effect.sleep: `it.effect` provides TestClock, which
           // would suspend until the test clock is advanced.
           Effect.promise(

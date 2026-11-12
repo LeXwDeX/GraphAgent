@@ -86,7 +86,7 @@ describe("lifecycle vocabulary", () => {
 
   it("keeps the source authority per domain", () => {
     expect(authorityOf("session")).toBe("live")
-    expect(authorityOf("job")).toBe("live")
+    expect(authorityOf("job")).toBe("mixed")
     expect(authorityOf("goal")).toBe("durable")
     expect(authorityOf("workflow")).toBe("durable")
     expect(authorityOf("node")).toBe("durable")

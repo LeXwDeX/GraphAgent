@@ -53,6 +53,29 @@ already-loaded config until then.
 Configs from each scope are deep-merged. Project overrides global. Unknown
 top-level keys in `graphagent.json` are rejected with `ConfigInvalidError`.
 
+## Project trust
+
+Executable entries in the project layer (`.agents/`) take effect only after the
+user confirms them in `/trust`: MCP servers in `.agents/mcp.json`, hooks,
+formatter and LSP commands in project settings, hooks in agent and skill
+frontmatter, and embedded shell in command files and skill bodies. After writing
+or changing such entries, tell the user to review them with `/trust`. User-level
+config under `~/.config/graphagent/` and an untracked `.agents/settings.local.json`
+are the user's own and skip this step.
+
+Two limits matter when authoring:
+
+- A top-level `shell` in project settings (`.agents/settings.json`, or a tracked
+  `settings.local.json`) cannot be trusted: it is ignored and the default shell
+  is used. Put `shell` in user-level config instead.
+- A skill that `skills.paths` or `skills.urls`, declared in project settings
+  (`.agents/settings.json` or `settings.local.json`, tracked or not), brings in
+  from outside `.agents/skills/` cannot be reviewed in `/trust`: its frontmatter
+  hooks are never registered, and its embedded shell is refused (with a `/trust`
+  hint) when it runs as a slash command, hooks or not. Keep skills that need
+  hooks or embedded shell under `.agents/skills/`. The same keys in user-level
+  config stay the user's own wherever they point, so they are unaffected.
+
 ## graphagent.json
 
 Every field is optional.
@@ -165,7 +188,8 @@ description: One sentence covering what this skill does AND when to trigger it. 
 
 Register skills from non-default locations via `skills.paths` (scanned
 recursively for `**/SKILL.md`) and `skills.urls` (each URL serves a list of
-skills).
+skills). When project settings declare these keys, the skills they bring in
+follow the limits in Project trust above.
 
 ## References
 

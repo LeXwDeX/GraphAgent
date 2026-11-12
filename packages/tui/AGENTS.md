@@ -13,57 +13,65 @@
 - 适用于 `packages/tui` 下全部新增和修改的代码、测试、文案。
 - 与 Issue 正文冲突时，以 Issue 为准。PR 描述里写明冲突点，并同时提 PR 修订本文。
 - 本文和 Issue 都没有覆盖的情况，先停下，在 PR 描述里提出，等维护者答复。不自创新模式、新目录、新抽象。
-- 目录树和分层里标"目标"的部分，在 F1（#886）合并后改标"现状"（F0 排期）。F1 合并前，新代码按"目标"放置。
+- 第 2 节目录树和第 3 节分层描述 F1（#886）合并后的现状：已存在的目录和文件照实列出，尚未落地的逐项标注所属 Issue（F4 #1032、F5 #1033、F6 #1036）。新代码按这棵树放置，标为"未落地"的文件由所属 Issue 新建。
 - 技术栈固定：opentui（`@opentui/core`、`@opentui/solid`、`@opentui/keymap`）加 Solid；server 在 Worker，SDK 的 fetch 经 `postMessage`（Worker RPC）。不换渲染框架（F2 #1025 "不做"）。
-- 公开仓库：本文与代码、注释、文案、提交信息不写本机路径、内网地址、主机名、AI 署名。提交前运行 `bun run check:hosts`（S1 #1037 落地后）。
+- 公开仓库：本文与代码、注释、文案、提交信息不写本机路径、内网地址、主机名、AI 署名。提交前运行 `bun run check:hosts`。
 
-## 2. 目标目录结构
+## 2. 目录结构（现状）
 
 ```
 packages/tui/src/
-  app.tsx               # provider 树（F1 3.3）
-  shell/                # 骨架（F1）：app-frame、top-bar、footer；bottom-zone（F3）；
-                        #   status-band、drawer（F4）；pr-line（F6）
+  app.tsx               # provider 树与 AppFrame 装配（F1 3.3）
+  shell/                # 骨架（F1）：app-frame、top-bar、footer（及 footer-status、dag-indicator、hook-progress）、
+                        #   drawer（开关与浮层容器）、status-band（槽位）；bottom-zone（F3）；pr-line（F6，未落地）
   panel/                # 面板模板与具体面板（F3）：
                         #   shell.tsx（PanelShell）、list.tsx、settings.tsx、detail.tsx、host.tsx（PanelHost）
-                        #   具体面板 panel/<名>.tsx，如 panel/dag.tsx
-  ask/                  # ask-queue.ts：询问区队列（F3）
-  commands/             # registry.ts、server-args.ts：/ 命令注册表（F3）；命令 run 回调可经 useSDK() 发写请求
-  config/               # keybind.ts、keybind-disposition.ts：键位唯一来源（F1 4）
+                        #   具体面板 panel/<名>.tsx，如 panel/sessions.tsx；panel/dag.tsx（F4，未落地）
+  ask/                  # ask-queue.ts：询问区队列；local.tsx、local-ask.tsx：confirm/choice（F3）
+  commands/             # registry.ts、server-args.ts（另有 catalog.ts、context.tsx、palette.ts）：/ 命令注册表（F3）；
+                        #   命令 run 回调可经 useSDK() 发写请求
+  config/               # keybind.ts、keybind-disposition.ts：键位唯一来源（F1 4）；index.tsx：TUI 配置 provider
   keymap.tsx            # keymap 注册与 hooks（保留，不建 keymap/ 目录）
   context/              # 数据层与 provider
-                        #   sync.tsx（store、onResync）、event-gate.ts、frame-clock.ts、
-                        #   stream-buffer.ts、interest.ts（interest 聚合器）、ticker.ts、sdk.tsx、route.tsx、theme.tsx …
-  routes/               # home.tsx、session/（含 MainSessionView、SubAgentView、rows.ts）
-  session/              # 会话级辅助（F5）：siblings.ts、navigate.ts、prefill.ts
-  attention/            # index.ts、notify.ts：F1 把现有 attention.ts 迁入；F5 补子 agent 提醒
-  dag/                  # model.ts、waves.ts、bar.ts、prefill.ts：纯函数（F4）
-  pr/                   # state.ts：prLineState 纯函数（F6）
-  theme/                # index.ts、assets/graphagent.json（F1 1）
+                        #   sync.tsx（store、onResync）、event.ts、event-gate.ts、frame-clock.ts、stream-buffer.ts、
+                        #   interest.ts（interest 聚合器）、session-summary.ts、ticker.ts、sdk.tsx、route.tsx、theme.tsx …
+  routes/               # home.tsx（及 home/）、session/、diff/
+                        #   session/index.tsx 的 Main 按 parentID 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
+                        #   同目录还有 rows.ts、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
+  session/              # 会话级辅助：prefill.ts（已落地）；siblings.ts、navigate.ts（F5，未落地）
+  attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
+  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4，未落地）
+  pr/                   # state.ts：prLineState 纯函数（F6，未落地；目录尚不存在）
+  theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
-  ui/                   # 无状态基础组件：border.ts、link.tsx、width.ts（cellWidth）等
+  ui/                   # 无状态基础组件：border.ts、link.tsx、width.ts（cellWidth）、toast.tsx、adaptive-markdown.tsx
+  prompt/               # 存量：输入框的数据辅助（display、history、frecency、stash、part、queued-message、traits）；不在第 3 节依赖表内
   component/            # 冻结：不得新增文件；现有组件随各 F Issue 迁出到 ui/、panel/、shell/
   util/
-packages/tui/test/      # 镜像 src/ 路径（src/dag/bar.ts → test/dag/bar.test.ts）
+packages/tui/test/      # 镜像 src/ 路径（src/dag/model.ts → test/dag/model.test.ts）
   perf/                 # F2a 基准框架（F2a 方案 1）
   architecture.test.ts  # 依赖方向检查，调用 script/check-tui-imports.ts（F1）
+  source-guards.test.ts # 源码文本守卫（第 10 节）
+  i18n/                 # 文案表、硬编码文案、品牌词与已下线功能、英文文案棘轮的测试
+packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-text-baseline.txt
 ```
 
 目录职责（一句话）与落地 Issue：
 
-- `shell/`：整屏固定列布局的各区域组件。F1 落骨架，F3、F4、F6 往槽位里填内容。
-- `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，替代 `DialogProvider`），以及各具体面板。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`。F3。
-- `ask/`：权限、提问、`confirm`、`choice` 的队列。F3。
-- `commands/`：内置与服务端命令的统一注册表。F3。
-- `config/`：键位 `Definitions`、`CommandMap` 与处置表。F1。
-- `context/`：provider 与数据层。F1 新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；F2 负责把现有动画迁到 `ticker`。
-- `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图）、`diff`。F1、F5。
-- `dag/`、`pr/`：无 I/O 的纯函数。F4、F6。
-- `theme/`：token 表、`resolveTheme`、主题 JSON。F1。
-- `i18n/`：双语文案表与 `t()`。F1。
-- `session/`：会话级辅助函数（同级排序、导航、预填落地）。F5。
-- `attention/`：提醒与注意力上报。F1 迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒。
+- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；状态带内容（F4）与 `pr-line`（F6）未落地。
+- `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`panel/dag.tsx` 随 F4。
+- `ask/`：权限、提问、`confirm`、`choice` 的队列（F3）。权限与提问的展示组件在 `routes/session/`（`permission.tsx`、`question.tsx`），经 `ask-surface.tsx` 汇入队列；`confirm`、`choice` 的展示组件在 `ask/local.tsx`，调用入口 `askConfirm`、`askChoice` 在 `ask/local-ask.tsx`。
+- `commands/`：内置与服务端命令的统一注册表（F3）。
+- `config/`：键位 `Definitions`、`CommandMap` 与处置表（F1）。
+- `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
+- `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
+- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`，`bar.ts`、`prefill.ts` 随 F4；`pr/` 随 F6 新建。
+- `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
+- `i18n/`：双语文案表与 `t()`（F1）。
+- `session/`：会话级辅助函数。目前只有预填落地 `prefill.ts`；同级排序 `siblings.ts`、导航 `navigate.ts` 随 F5。
+- `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒。
 - `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`。
+- `prompt/`：存量目录，放输入框的数据辅助（展示文本、历史、frecency、暂存、part、排队消息、特性），不在第 3 节依赖表内。
 - `component/`：冻结。迁移前的现有组件（输入框、`PatchDiff`、`Spinner` 等）留在原处，不得新增文件；F1–F6 全部合并时应为空或只剩明确列出的遗留。
 
 不再存在的目录或文件（F1 3.4、3.5，F2 5，F3 4）：`plugin/`、`feature-plugins/`、`context/data.tsx`、`ui/dialog*.tsx`、`component/dialog-*.tsx`、`component/bg-pulse*`、`ui/spinner.ts`、`ui/spinner-register.ts`。新代码不得往这些位置添加文件。
@@ -89,7 +97,7 @@ import 规则：
 | `shell/`、`panel/`、`ask/`、`commands/`、`session/`、`attention/`、`component/` | `routes/` | 依赖方向检查 |
 
 - `ui/` 可以读主题 token（现状先例：`ui/toast.tsx` 用 `useTheme`），文字由调用方经 props 传入。
-- 依赖方向检查：脚本 `script/check-tui-imports.ts`，遍历 `packages/tui/src` 的 import，按上表判错。它在 `packages/tui` 的 `bun test` 里以 `test/architecture.test.ts` 运行（CI 必跑），由 F1 落地，F1 验收引用本表。改上表规则必须同时改脚本与本文。
+- 依赖方向检查：脚本 `script/check-tui-imports.ts`，遍历 `packages/tui/src` 的 import，按上表判错。它在 `packages/tui` 的 `bun test` 里以 `test/architecture.test.ts` 运行（CI 必跑），改上表规则必须同时改脚本与本文。存量违规登记在脚本的 `EXEMPTIONS`，每项标注所属 F Issue；对应的 import 消失时必须同时删除条目（过期条目会让测试失败），清单为空是 F 系列收尾的条件之一，新代码不得新增条目。
 - 读：组件经 `useSync()` 加 `createMemo` 选择器读取，不在组件里遍历整张表。
 - 写：只允许在 `routes/`、`panel/`、`ask/`、`commands/` 的事件处理函数里（`commands/` 即命令注册表里命令的 `run` 回调，如 `session.command`），经唯一的 `useSDK()` 调 `sdk.client.*`。`ui/`、`shell/` 的展示组件、`dag/`、`pr/` 纯函数里不得调用 SDK。检查：`grep -rn "sdk.client" packages/tui/src/ui packages/tui/src/shell packages/tui/src/dag packages/tui/src/pr` 为空。
 - 事件订阅只经 `useEvent()` → EventGate。组件不得自己订阅 Worker 事件。
@@ -237,13 +245,14 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 ### 6.3 新增一个键位
 
-- 只在 `config/keybind.ts` 的 `Definitions` 与 `CommandMap` 登记，两者一一对应；同时在 `config/keybind-disposition.ts` 的 `Disposition` 登记处置（`keep | change | new`）和 `layer`（取自 `Layers`）；删除的键位名移入其中的 `REMOVED`，不再留在 `Definitions`。
+- 只在 `config/keybind.ts` 的 `Definitions` 与 `CommandMap` 登记，两者一一对应；同时在 `config/keybind-disposition.ts` 的 `Disposition` 登记处置（`keep | change | new`）和 `layer`（取自 `Layers`）；删除的键位名不再留在 `Definitions`，登记到 `test/keybind-disposition.test.ts` 的 `REMOVED`（放在 `src` 之外，已下线功能守卫才不会命中）。
 - 命名：`Definitions` 键用 `snake_case`，命令名用点分（先例：`session_dagmode_toggle` 对应 `session.dagmode.toggle`）。
 - 同一个键在同一上下文层里只做一件事；跨上下文重用靠"上下文层"区分，不在命令内部写 `if`。
 - 页脚、`?` 帮助面板、回执里的按键文字由 keymap 生成，不硬编码键名。`TMUX` 环境变量存在时，抽屉开关显示 `<leader>b`。
 - 已删除的键位名不得回来：`sidebar_toggle`、`session_child_cycle(_reverse)`、`session_parent`、`which_key_*`、`tips_toggle`、`plugin_manager`、`plugin_install`、`plugins.toggle`、`dialog.plugins.install`、全部 `dag_*`、`session_share`、`session_unshare`、`docs_open`、`console_org_switch`。检查：`grep -rn "dag_[a-z_]*" packages/tui/src/config/keybind.ts` 为空。
 - 输入框不用 `ctrl+b`/`ctrl+f` 移动光标；`ctrl+d` 只在输入框为空时退出。输入框层只绑 `Definitions` 与 `keymap.tsx` 里 `inputExtraBindings` 列出的固定别名；不得改回 `registerManagedTextareaLayer`，它会追加库默认的 64 个键位（含 emacs 的 `ctrl+b`/`ctrl+f`/`ctrl+d`）。
 - `esc` 是优先级链，不得另写长 `if`。每层向 keymap 注册一次带 `enabled` 函数的绑定，位置按 F1 4.5 的顺序：补全 → 抽屉 → 询问区 → 模态面板 → 非模态详情面板 → 子 agent 返回父会话 → 会话忙碌（5 秒内第二次才中断）→ 无动作。层号以 F1 4.5 为准（子 agent 返回第 6 层、会话忙碌第 7 层）。新增一层需要修订 F1 与本文。
+  - 有一处实际行为与这个顺序相反：模态面板打开时，`PanelHost` 压入 `modal` 模式，`BottomZone` 让输入框失焦；`base` 模式里的抽屉绑定和绑在输入框上的补全绑定因此都不生效。抽屉或补全弹层与模态面板同时存在时，先关面板（第 4 层），再关抽屉（第 2 层）或补全（第 1 层）。这是保留的现状，`test/esc-chain.test.tsx` 的两条"modal over …"用例固定了它；要改成抽屉、补全优先，需要同时改这些绑定的模式或焦点处理并修订本文。询问区出现时面板被挂起，二者不会同时响应 esc。
 
 必须写的测试：处置表遍历 `Definitions` 无遗漏；同一上下文层内无重复键；`esc` 链每层一条用例；用户覆盖一个绑定后帮助与页脚文字同步变化。前两项由 `test/keybind-disposition.test.ts` 覆盖：同层出现新的重复键时，先改默认值或注册位置；确需保留的，登记到该测试的 `KNOWN_CONFLICTS` 并写明原因与 Issue。
 
@@ -304,7 +313,11 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 ## 7. 主题与样式
 
-- 只用 token。组件里禁止写颜色字面量。检查：`grep -rnE "#[0-9a-fA-F]{6}\b|RGBA\.from" packages/tui/src --include=*.ts --include=*.tsx | grep -v "^packages/tui/src/theme/"` 为空。主区变暗遮罩的 `RGBA(0,0,0,alpha)`（F1 3.1）是唯一例外，集中在 `shell/` 一处实现。
+- 只用 token。组件里禁止写颜色字面量。检查：`grep -rnE "#[0-9a-fA-F]{6}\b|RGBA\.from" packages/tui/src --include=*.ts --include=*.tsx | grep -v "^packages/tui/src/theme/"` 只允许命中下面三处，新增例外必须改本规范并在 PR 里说明理由：
+  - `context/local.tsx` 的 `RGBA.fromHex`：解析用户配置里 agent 的 `#rrggbb` 颜色，不是内置颜色。
+  - `component/error-component.tsx` 的两套固定配色（镜像 `graphagent.json`）：崩溃的可能正是主题 context，崩溃页不能依赖它。
+  - `routes/session/index.tsx` 的 `RGBA.fromValues`：用 `warning` token 的通道值加 `thinkingOpacity` 合成推理文字色，没有颜色字面量。
+- 主区变暗用 `AppFrame` 的 `opacity`（`DIMMED_OPACITY`），不用半透明 box 盖住文字：OpenTUI 对 alpha 小于 255 的填充会把盖住的宽字符（CJK）清成空格，中文转录会整片消失（F1 3.1 原写的"绝对定位的 `RGBA(0,0,0,alpha)` 盒子"因此不再采用，视觉意图不变）。抽屉在变暗层之后，以全强度画在它上方，先后不影响叠放。
 - 默认主题 `graphagent`（`DEFAULT_THEME` 常量），位于 `theme/assets/graphagent.json`，深浅两版同一个 JSON。不保留 `opencode` 旧主题，读不到已保存主题名时回到 `graphagent`，不迁移旧值。
 - 新增 token 的流程（F1 1.2）：`ThemeJson` 里加可选字段 → `theme/index.ts` 的 `resolveTheme` 里给回退值（照 `backgroundMenu`、`selectedListItemText`）→ `Theme` 类型加同名必填字段 → 旧主题不改。`generateSystem` 走回退值，不显式写。`packages/graphagent/src/cli/cmd/run/theme.ts` 的重复实现要复用 TUI 的 `resolveTheme` 或补同一组回退值，并有一致性测试。
 - 现有可选 token：`textDim`、`backgroundSelected`、`backgroundUser`、`borderWarning`、`logoFace`、`logoAccent`、`logoShadow`、`statusRunning`、`statusQueued`、`statusPaused`。已完成用 `success`（灰），失败用 `error`，不再新增。
@@ -339,7 +352,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 按键名放进文案时用 `{key}` 占位，由 keymap 当前绑定填入；后备文本里不含 `{key}`。
 - 80 列下两种语言都不得溢出换行。涉及状态带、页脚、顶栏路径、面板的新文案，各补一份 80 列快照。
 - 语言来源：主配置 `language: "zh-CN" | "en"`；未配置时由 `resolveLanguage(config, env)` 推断，判断不出回退 `en`。优先级：用户在对话中明确要求的语言 > 配置 > 推断 > `en`。切换语言不需要重启，`t()` 读取语言 signal；已渲染的历史回执随之重新渲染（`renderDagModeReceipt`）。
-- 品牌措辞与 B4 一致，品牌词 grep 验收由 F1 定义，审阅时核对。
+- 品牌措辞与 B4 一致；上游产品词（`opencode`、`anomalyco`）由 `script/check-tui-text.ts` 的品牌词守卫在 `bun test` 里检查（第 10 节），不再靠 grep 和审阅。
 
 ## 9. 只读原则与安全
 
@@ -360,8 +373,11 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - SDK 用 `test/fixture/tui-sdk.ts` 的假实现。写请求计数是第一类断言：只读视图断言写请求为 0；有写入口的断言恰好 N 次。
 - 时间用 `@opentui/core` 的 `ManualClock` 推进，不用真实睡眠。`grep -n "setTimeout\|sleep" packages/tui/test/perf/scenarios.ts` 为空。
 - 帧数用 `CliRenderEvents.FRAME` 或 `getStats().frameCount`；其余计数用 `test/perf/counters.ts`（`registerLayer`、选择器求值、`frames()`、store 写入）。
+- 读帧不能和渲染抢：原生缓冲还在呈现上一帧时，`captureCharFrame()`、`captureSpans()` 会抛 `OutputBusy`。先 `await renderOnce()` 再读；等待画面出现用 `test/routes/dag-mode-harness.tsx` 的 `waitForFrame`，一次性读取用 `readFrame`/`readSpans`（遇到 `OutputBusy` 会重新渲染再试），不要在 `waitFor` 里裸轮询 `captureCharFrame()`。会抛错的挂载要在失败时销毁渲染器（`mountRoute`、`mountSessionShell` 已经这样做），否则它的定时器和帧会继续跑，拖慢并连累同一进程里后面的用例。
 - 双语：每个新增可见文案至少一个断言在 `zh-CN` 与 `en` 下各取一次；涉及排版的各一份快照。
-- 测试文件 `*.test.ts` / `*.test.tsx`，`packages/tui/test/` 镜像 `src/` 路径（`src/dag/bar.ts` → `test/dag/bar.test.ts`）。性能基准在 `test/perf/`（F2a）。依赖方向检查是 `test/architecture.test.ts`。现有 `test/cli/cmd/tui/sync-*.test.tsx` 夹具保持原位。
+- 测试文件 `*.test.ts` / `*.test.tsx`，`packages/tui/test/` 镜像 `src/` 路径（`src/dag/model.ts` → `test/dag/model.test.ts`）。性能基准在 `test/perf/`（F2a）。依赖方向检查是 `test/architecture.test.ts`。现有 `test/cli/cmd/tui/sync-*.test.tsx` 夹具保持原位。
+- 源码守卫都在 `bun test` 里运行：`test/source-guards.test.ts` 把第 5、7、11 节里能用 grep 表达的断言（计时器白名单、`Bun.stringWidth`、`BLINK`/`createFadeIn`、`config/keybind.ts` 里的 `dag_` 键、颜色字面量只出现在第 7 节列的三处、旧插件槽 API）固化成按行匹配的测试，注释计入，与文中的 grep 同口径。`script/check-tui-text.ts` 提供三个守卫：品牌词（字符串字面量与 JSX 文本里不得出现上游产品词，白名单 `BRAND_ALLOWLIST` 封闭，每项写明理由）、已下线功能（第 11 节那条 grep 的原文扫描，并检查已删文件没有复活）、英文文案棘轮（绕过 `t()` 的英文字面量只减不增，基线是 `script/english-text-baseline.txt`，`--update-baseline` 只删不增）；它可以在 `packages/tui` 下 `bun script/check-tui-text.ts` 单独运行，`test/i18n/` 里的测试调用同一份实现，第 8 节的 CJK 扫描也在其中。
+- 键位处置表：`config/keybind-disposition.ts` 为每个 `Definitions` 键登记处置（`keep | change | new`）和所属上下文层（`Layers`，含 esc 链各层的注册位置与优先级）。漏登记过不了类型检查，`test/keybind-disposition.test.ts` 再双向核对该表、检查同一层内没有重复键、检查已删除的键位名没有复活。
 - 删除旧代码时同步删除或改写对应测试（`test/feature-plugins/`、`test/plugin/`），不留失效用例。
 
 每类改动的最低测试：
@@ -388,7 +404,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 不新增全局 store 或 context，F1/F2/F3 定义的除外（`FrameClockProvider`、`EventGateProvider`、ticker、`PanelHost`、语言 signal）。审阅：PR 差异里出现新的 `createContext(` 需在描述里说明并经维护者批准。
 - 不引入新的 UI 或状态库依赖。审阅：`packages/tui/package.json` 的依赖差异；新增依赖需维护者批准。
 - 不在 TUI 里实现任何 DAG 或子 agent 控制。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn "dag_[a-z_]*" packages/tui/src/config/keybind.ts` 为空。
-- 不恢复旧插件槽 API。`grep -rn "@graphagent/plugin" packages/tui` 为空；`grep -rn "pluginRuntime\|api.slots\|Slot name=" packages/tui/src` 为空；`packages/tui/src/plugin/` 与 `feature-plugins/builtins.ts` 不存在。
+- 不恢复旧插件槽 API。`grep -rn "@graphagent/plugin" packages/tui/src packages/tui/package.json` 为空（不含本文）；`grep -rn "pluginRuntime\|api.slots\|Slot name=" packages/tui/src` 为空；`packages/tui/src/plugin/` 与 `feature-plugins/builtins.ts` 不存在。
 - 不加 `plugin` 路由；路由类型只有 `home`、`session`、`diff`；`app.tsx` 不用 `<Show … keyed>` 包 Session。
 - 不写颜色字面量（第 7 节 grep）。
 - 不在组件内计时：`grep -rln "setInterval\|setTimeout" packages/tui/src` 只命中 `context/ticker.ts`、`context/frame-clock.ts`、`terminal-win32.ts`。
@@ -396,7 +412,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 不直接用 `Bun.stringWidth`、不用 `.length` 算宽度（第 7 节）。
 - 展示组件与纯函数不调用 SDK（第 3 节 grep）。
 - 不用 `reactiveMatcherFromSignal`、不在 `useBindings` accessor 里读随按键变化的信号；`grep -n "cursorVersion" packages/tui/src/component/prompt/index.tsx` 为空。
-- 不用旧对话框：`grep -rn "useDialog\|DialogSelect\|DialogConfirm\|DialogAlert\|DialogPrompt\|DialogProvider" packages/tui/src` 为空（F3 迁移完成后）。
+- 不用旧对话框：`grep -rn "useDialog\|DialogSelect\|DialogConfirm\|DialogAlert\|DialogPrompt\|DialogProvider" packages/tui/src` 为空。
 - 不复活已下线功能：`grep -rniE "gitlab|opencode-go|go_upsell|console_org|console_state|DialogConsoleOrg|isConsoleManagedProvider|opencode\.ai/zen|\bZen\b" packages/tui/src` 为空。
 - 不在渲染路径里做同步 IO。审阅：组件体、`createMemo`、渲染回调、`onLifecyclePass` 里不得出现同步文件读写、同步子进程。
 - 不吞错误。错误经 toast 或页脚统一出口显示，超长错误写日志并进 `/status` 最近消息。审阅：新增的 `catch` 不得为空，`.catch(() => {})` 需写明理由。
@@ -428,7 +444,7 @@ F1–F6 以及此后任何触及 `packages/tui` 的 PR，描述里逐条勾选�
 - [ ] cd packages/tui && bun run typecheck 通过
 - [ ] cd packages/tui && bun test 通过
 - [ ] cd packages/tui && bun run bench:tui（F2a 基准）通过，对照表附描述；渲染路径改动必附
-- [ ] bun run check:hosts 通过（S1 #1037 落地后）
+- [ ] bun run check:hosts 通过
 - [ ] 涉及 run 模式消费点时：cd packages/graphagent && bun run typecheck && bun test test/cli/cmd/run 通过
 - [ ] 描述与提交信息无私有地址、本机路径、AI 署名
 ```

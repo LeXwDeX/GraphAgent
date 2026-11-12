@@ -10,6 +10,7 @@ import { Global } from "@graphagent/core/global"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Config } from "@/config/config"
 import { Flag } from "@graphagent/core/flag/flag"
+import { skillsSource, type SkillsSourceLayer } from "@/config/skills-source"
 import { FrontmatterError } from "@graphagent/core/v1/config/error"
 import { ConfigMarkdown } from "@/config/markdown"
 import { Glob } from "@graphagent/core/util/glob"
@@ -89,12 +90,15 @@ export type State = {
 export type DiscoveryState = {
   matches: string[]
   dirs: string[]
+  /** Absolute path -> declaring config layer, for `skills.paths`/`skills.urls` matches only (#1040). */
+  declaredBy: Map<string, SkillsSourceLayer>
 }
 
 type ScanState = {
   matches: string[]
   seen: Set<string>
   dirs: Set<string>
+  declaredBy: Map<string, SkillsSourceLayer>
 }
 
 export interface Interface {
@@ -107,30 +111,40 @@ export interface Interface {
 }
 
 /**
- * Roots owned by the operator rather than by the workspace being opened. Keep
- * that provenance on scoped hooks for policy evaluation; hooks sourced from the
- * project layer are still filtered by ProjectTrust before execution.
+ * Provenance kept on every skill for policy evaluation, independent of
+ * whether it declares hooks: skills sourced from `Global.operatorRoots()`
+ * are the operator's own, not the workspace being opened; everything else is
+ * project layer. Project-layer frontmatter hooks are still filtered by
+ * ProjectTrust before execution, and a project-owned skill the trust panel
+ * cannot enumerate (outside `<root>/.agents`) can never be trusted at all —
+ * its hooks and command-shell segments fail closed (#1040).
  */
-const userSkillRoots = () => [
-  Global.Path.config,
-  path.join(Global.Path.home, ".agents"),
-  ...(Flag.GRAPHAGENT_CONFIG_DIR ? [Flag.GRAPHAGENT_CONFIG_DIR] : []),
-]
-
 const skillHookSource = (match: string) => {
   const absolute = path.resolve(match)
-  const userOwned = userSkillRoots().some((root) => {
+  const userOwned = Global.operatorRoots().some((root) => {
     const resolved = path.resolve(root)
     return absolute === resolved || absolute.startsWith(resolved + path.sep)
   })
   return userOwned ? ("user" as const) : ("project" as const)
 }
 
+/**
+ * The declaring layer of a `skills.paths`/`skills.urls` entry takes
+ * precedence over the resulting SKILL.md's own location: a user-level
+ * declaration stays user-owned even when it happens to point somewhere
+ * outside `Global.operatorRoots()` (for example a personal directory inside
+ * a cloned repo), and a project-level declaration is project-owned even when
+ * it points somewhere that would otherwise look user-owned. `.agents/skills`
+ * and the user-root scans never pass `declaredBy`, so they keep the existing
+ * purely location-based classification (#1040).
+ */
+const skillSource = (match: string, declaredBy: SkillsSourceLayer | undefined) => declaredBy ?? skillHookSource(match)
+
 const scan = Effect.fnUntraced(function* (
   state: ScanState,
   root: string,
   pattern: string,
-  opts?: { dot?: boolean; scope?: string },
+  opts?: { dot?: boolean; scope?: string; declaredBy?: SkillsSourceLayer },
 ) {
   const matches = yield* Effect.tryPromise({
     try: () =>
@@ -159,6 +173,7 @@ const scan = Effect.fnUntraced(function* (
     if (state.seen.has(key)) continue
     state.seen.add(key)
     state.matches.push(match)
+    if (opts?.declaredBy) state.declaredBy.set(key, opts.declaredBy)
   }
 })
 
@@ -170,7 +185,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   /** Project root; project-level scans never escape it. */
   root: string,
 ) {
-  const state: ScanState = { matches: [], seen: new Set(), dirs: new Set() }
+  const state: ScanState = { matches: [], seen: new Set(), dirs: new Set(), declaredBy: new Map() }
   // `$HOME` carries no project layer: `~/.agents/skills` is already scanned as
   // the user-level directory above, so the project scan is skipped entirely.
   const projectLayer = hasProjectLayer(root, Global.Path.home)
@@ -200,6 +215,10 @@ const discoverSkills = Effect.fnUntraced(function* (
   }
 
   const cfg = yield* config.get()
+  // Which config layer declared `skills.paths`/`skills.urls` (#1040): absent
+  // when no layer set that key, which `scan` treats the same as not passing
+  // `declaredBy` at all (falls back to location-based classification).
+  const source = skillsSource(cfg)
   // Configured paths: relative entries resolve against the project root.
   for (const item of cfg.skills?.paths ?? []) {
     const expanded = item.startsWith("~/") ? path.join(global.home, item.slice(2)) : item
@@ -216,19 +235,20 @@ const discoverSkills = Effect.fnUntraced(function* (
       continue
     }
 
-    yield* scan(state, dir, SKILL_PATTERN)
+    yield* scan(state, dir, SKILL_PATTERN, { declaredBy: source?.paths })
   }
 
   for (const url of cfg.skills?.urls ?? []) {
     const pulledDirs = yield* discovery.pull(url)
     for (const dir of pulledDirs) {
-      yield* scan(state, dir, SKILL_PATTERN)
+      yield* scan(state, dir, SKILL_PATTERN, { declaredBy: source?.urls })
     }
   }
 
   return {
     matches: state.matches,
     dirs: Array.from(state.dirs),
+    declaredBy: state.declaredBy,
   }
 })
 
@@ -302,15 +322,19 @@ export const loadSkills = Effect.fnUntraced(function* (
       })
     }
 
+    // #1040: hookSource is recorded for every skill, not only ones that
+    // declare hooks -- the command-shell trust gate reads it off any
+    // skill-promoted command, hooks or not (packages/command/index.ts), so a
+    // hookless project-owned skill must not be left with an undefined
+    // classification that reads as "not project".
     state.skills[item.name] = {
       name: item.name,
       description: item.description,
       location: item.match,
       content: item.content,
+      hookSource: skillSource(item.match, discovered.declaredBy.get(path.resolve(item.match))),
       ...(item.hidden === undefined ? {} : { hidden: item.hidden }),
-      ...(item.hooks === undefined
-        ? {}
-        : { hooks: item.hooks, hookOrigin: `skill:${item.match}`, hookSource: skillHookSource(item.match) }),
+      ...(item.hooks === undefined ? {} : { hooks: item.hooks, hookOrigin: `skill:${item.match}` }),
     }
   }
 

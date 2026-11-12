@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
-import type { LifecycleState } from "@graphagent/sdk"
+import type { LifecycleDomain, LifecycleState } from "@graphagent/sdk"
 import {
   entryFromState,
   entryFromTransition,
   goalStatus,
   isFinishedPhase,
+  isPullableDomain,
   LIFECYCLE_MIRROR_MAX,
   lifecycleKey,
   overflowKeys,
@@ -147,5 +148,27 @@ describe("goalStatus", () => {
 
   test("rejects every other lifecycle value", () => {
     for (const value of ["running", "settling", "completed", "ended", ""]) expect(goalStatus(value)).toBeUndefined()
+  })
+})
+
+describe("isPullableDomain", () => {
+  test("the domains whose owner registers a resolver can be asked about", () => {
+    expect(isPullableDomain("job")).toBe(true)
+    expect(isPullableDomain("goal")).toBe(true)
+  })
+
+  test("every other domain would only come back unknown, so it is never asked", () => {
+    const others: LifecycleDomain[] = [
+      "session",
+      "workflow",
+      "node",
+      "mailbox",
+      "inbox",
+      "hook",
+      "tool",
+      "turn",
+      "cancellation",
+    ]
+    for (const domain of others) expect(isPullableDomain(domain), domain).toBe(false)
   })
 })

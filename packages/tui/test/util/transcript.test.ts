@@ -418,4 +418,114 @@ describe("transcript", () => {
       expect(result).not.toContain("claude-sonnet-4-20250514")
     })
   })
+
+  // #886 5.3: streaming text lives in a buffer next to the store, so a part in the store can be
+  // behind what is on screen. Copy and export hand the transcript a reader for the current text.
+  describe("readText", () => {
+    const options = { thinking: true, toolDetails: true, assistantMetadata: false }
+    const text = (id: string, stored: string): Part => ({
+      id,
+      sessionID: "ses_123",
+      messageID: "msg_123",
+      type: "text",
+      text: stored,
+    })
+    const reasoning = (id: string, stored: string): Part => ({
+      id,
+      sessionID: "ses_123",
+      messageID: "msg_123",
+      type: "reasoning",
+      text: stored,
+      time: { start: 1000 },
+    })
+
+    test("a text part shows what readText returns, not the stored snapshot", () => {
+      const result = formatPart(text("part_1", "已落库"), {
+        ...options,
+        readText: (part) => (part.id === "part_1" ? "已落库，加上流式增量" : ""),
+      })
+      expect(result).toBe("已落库，加上流式增量\n\n")
+    })
+
+    test("a reasoning part shows what readText returns, not the stored snapshot", () => {
+      const result = formatPart(reasoning("part_1", "先想到"), {
+        ...options,
+        readText: () => "先想到，接着想到",
+      })
+      expect(result).toBe("_Thinking:_\n\n先想到，接着想到\n\n")
+    })
+
+    test("a transcript reads every text and reasoning part through readText and nothing else", () => {
+      const streamed = new Map([
+        ["p_user", "导出这段"],
+        ["p_think", "推理到一半的增量"],
+        ["p_answer", "回答的开头，加上还没落库的结尾"],
+      ])
+      const asked: string[] = []
+      const tool: Part = {
+        id: "p_tool",
+        sessionID: "ses_123",
+        messageID: "msg_2",
+        type: "tool",
+        callID: "call_1",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: { command: "ls" },
+          output: "file1.txt",
+          title: "List files",
+          metadata: {},
+          time: { start: 1000, end: 1100 },
+        },
+      }
+      const user: UserMessage = {
+        id: "msg_1",
+        sessionID: "ses_123",
+        role: "user",
+        agent: "build",
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
+        time: { created: 1000000 },
+      }
+      const assistant: AssistantMessage = {
+        id: "msg_2",
+        sessionID: "ses_123",
+        role: "assistant",
+        agent: "build",
+        modelID: "claude-sonnet-4-20250514",
+        providerID: "anthropic",
+        mode: "",
+        parentID: "msg_1",
+        path: { cwd: "/test", root: "/test" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: 1000001 },
+      }
+
+      const result = formatTranscript(
+        { id: "ses_123", title: "Streaming", time: { created: 1000000, updated: 1000001 } },
+        [
+          { info: user, parts: [text("p_user", "")] },
+          { info: assistant, parts: [reasoning("p_think", "推理"), tool, text("p_answer", "回答的开头")] },
+        ],
+        {
+          ...options,
+          readText: (part) => {
+            asked.push(part.id)
+            return streamed.get(part.id) ?? ""
+          },
+        },
+      )
+
+      expect(result).toContain("导出这段")
+      expect(result).toContain("_Thinking:_\n\n推理到一半的增量")
+      expect(result).toContain("回答的开头，加上还没落库的结尾")
+      // The stored snapshots are behind the reader and must not leak into the output.
+      expect(result).not.toContain("回答的开头\n")
+      expect(asked.sort()).toEqual(["p_answer", "p_think", "p_user"])
+    })
+
+    test("without readText the stored text is used", () => {
+      expect(formatPart(text("part_1", "已落库"), options)).toBe("已落库\n\n")
+    })
+  })
 })
