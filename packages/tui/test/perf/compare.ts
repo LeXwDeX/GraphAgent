@@ -157,6 +157,33 @@ export const PENDING_BASELINE_COMMIT = "643c4e7fbf7a47b79fb87bc3f3e07817c6646042
  */
 export const PENDING_REBASELINE: Readonly<Record<string, string>> = {}
 
+/**
+ * Scenarios whose baseline-relative check is skipped on a windowed session. Over
+ * 2000 rows a windowed scroll step costs O(rows): Solid mounts and unmounts rows
+ * and rebuilds the row table, and its frame times scatter several-fold with the
+ * machine's load (on one machine, streaming-scroll P8' p99 ranged from 18 ms at a
+ * one-minute load of 1 to 2 to 87 ms under heavy load, and hot P9 p99 from 9 to
+ * 44 ms). A 1.30x ratio against one baseline would mostly measure the scheduler
+ * there. They still answer to the absolute ceilings, which are what a user feels
+ * (P8 and P8' p99 33 ms with no frame over 100 ms, P9 p99 16 ms) and which scale
+ * by `max(1, machine factor)` like every other ceiling; the factor comes from `S`,
+ * `M`, and `L`, not from `XL`. The fully mounted sessions keep the
+ * baseline-relative check for the same scenarios.
+ */
+export const WINDOWED_RELATIVE_EXEMPT: ReadonlySet<string> = new Set(["P8", "P8'", "P9"])
+
+/**
+ * What a session marked `windowed` has to carry. Its cold scroll is the only
+ * measurement of the windowed path against the scroll budget, and `compareReports`
+ * lets a scenario be absent from a partial report, so without this a scenario
+ * removed from the windowed scope would take the budget with it and the run would
+ * still pass.
+ */
+export const WINDOWED_REQUIRED: readonly { id: string; metrics: readonly string[] }[] = [
+  { id: "P8", metrics: ["p99Ms", "maxMs"] },
+  { id: "P8'", metrics: ["p99Ms", "maxMs"] },
+]
+
 const SIZE_ORDER = ["S", "M", "L", "XL"]
 /** Not compared against the baseline: one frame, or a signed difference of two samples. */
 const NO_RATIO = new Set(["maxMs", "increaseMs"])
@@ -231,12 +258,25 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
     return undefined
   }
 
+  /** Like `read`, but a scenario that is absent altogether is missing too: the caller needs it. */
+  const needs = (size: string, id: string, name: string) => {
+    const value = scenario(current, size, id)?.[name]
+    if (typeof value === "number") return value
+    if (!missingKeys.has(`${size}/${id}/${name}`)) {
+      missingKeys.add(`${size}/${id}/${name}`)
+      missing.push({ size, id, metric: name })
+    }
+    return undefined
+  }
+
   for (const size of sizes) {
+    const windowedSession = scenario(current, size, "P10")?.windowed === 1
     for (const [id, metrics] of Object.entries(current.scenarios[size] ?? {})) {
       const before = scenario(baseline, size, id)
       if (!before) continue
       const skipped = isPending(id)
       if (skipped) pending.add(id)
+      const exempt = windowedSession && WINDOWED_RELATIVE_EXEMPT.has(id)
       for (const [name, value] of Object.entries(metrics)) {
         const old = before[name]
         if (typeof value !== "number" || typeof old !== "number") continue
@@ -250,7 +290,7 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
         })
         // `maxMs` is one worst frame; a single scheduler hiccup moves it far
         // past the ratio. It is gated by the absolute ceilings below instead.
-        if (!name.endsWith("Ms") || NO_RATIO.has(name) || skipped) continue
+        if (!name.endsWith("Ms") || NO_RATIO.has(name) || skipped || exempt) continue
         const scale = noiseScale(factor)
         const adjusted = value / scale
         const p99 = name.endsWith("p99Ms")
@@ -311,6 +351,7 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
     if (flag !== undefined) flagged++
     if (flag === 1) {
       windowed.push(size)
+      for (const required of WINDOWED_REQUIRED) for (const name of required.metrics) needs(size, required.id, name)
       const viewport = read(size, "P10", "viewportRows") ?? 0
       const rowLimit = viewport + 2 * PART_OVERSCAN + TAIL_ALWAYS
       check("P10", "mountedRows", `≤ ${rowLimit}`, (value) => value <= rowLimit)

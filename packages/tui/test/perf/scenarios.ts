@@ -395,27 +395,18 @@ export async function runSlashProfile(harness: PerfHarness, rounds = 1): Promise
 
 /**
  * `all` runs every scenario. `windowed` is for the session above WINDOW_MIN_ROWS
- * (`XL`). It keeps what the windowed transcript must keep true: the input path at
- * scale, the bound on mounted rows, the anchor, and the frame counts. It leaves out
- * the scenarios that time a long scroll or a stream: over 2000 rows they take 1300
- * scroll steps and 100 streamed frames, and their frame times sit near the
- * budgets there (a windowed step costs about 10 ms against 1 ms fully mounted),
- * so a loaded machine fails them. The sessions the threshold keeps fully mounted
- * carry those budgets.
+ * (`XL`), the only one the windowed transcript runs in. It keeps what that
+ * transcript must keep true: the input path at scale, the cold and hot scroll
+ * budgets, the bound on mounted rows, the anchor, and the frame counts. It leaves
+ * out the scenarios that time a stream or the background, which do not depend on
+ * whether the transcript is windowed: over 2000 rows each streamed frame costs
+ * about 17 ms, so a hundred of them are a second of wall time that tests the
+ * stream path again.
  */
 export type ScenarioScope = "all" | "windowed"
 
 /** The scenarios the `windowed` scope leaves out. */
-export const WINDOWED_SKIPS: ReadonlySet<ScenarioID> = new Set<ScenarioID>([
-  "P5'",
-  "P8",
-  "P8'",
-  "P9",
-  "P12",
-  "P13",
-  "P14",
-  "P20",
-])
+export const WINDOWED_SKIPS: ReadonlySet<ScenarioID> = new Set<ScenarioID>(["P5'", "P12", "P13", "P14", "P20"])
 
 /** The scenario ids a run of `scope` reports. */
 export const scenarioIds = (scope: ScenarioScope) =>
@@ -497,30 +488,28 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
 
   const scroll = harness.scroll()
   if (scroll) {
-    if (full) {
-      await fresh(harness)
-      const cold = await coldScroll(harness, scroll)
-      all.push(result("P8", size, { p99Ms: percentile(cold, 0.99), maxMs: Math.max(...cold), steps: cold.length }))
+    await fresh(harness)
+    const cold = await coldScroll(harness, scroll)
+    all.push(result("P8", size, { p99Ms: percentile(cold, 0.99), maxMs: Math.max(...cold), steps: cold.length }))
 
-      await fresh(harness)
-      const streaming = await streamingScroll(harness, scroll)
-      all.push(
-        result("P8'", size, {
-          p99Ms: percentile(streaming, 0.99),
-          maxMs: Math.max(...streaming),
-          steps: streaming.length,
-        }),
-      )
+    await fresh(harness)
+    const streaming = await streamingScroll(harness, scroll)
+    all.push(
+      result("P8'", size, {
+        p99Ms: percentile(streaming, 0.99),
+        maxMs: Math.max(...streaming),
+        steps: streaming.length,
+      }),
+    )
 
-      const hot: number[] = []
-      for (let index = 0; index < 200; index++) {
-        const start = performance.now()
-        scroll.scrollTo(index % 2 ? 200 : 0)
-        await harness.app.renderOnce()
-        hot.push(performance.now() - start)
-      }
-      all.push(result("P9", size, { p99Ms: percentile(hot, 0.99) }))
+    const hot: number[] = []
+    for (let index = 0; index < 200; index++) {
+      const start = performance.now()
+      scroll.scrollTo(index % 2 ? 200 : 0)
+      await harness.app.renderOnce()
+      hot.push(performance.now() - start)
     }
+    all.push(result("P9", size, { p99Ms: percentile(hot, 0.99) }))
 
     await fresh(harness)
     scroll.stickyScroll = false
@@ -555,11 +544,9 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
       }),
     )
   } else {
-    if (full) {
-      all.push(result("P8", size, { p99Ms: 0, maxMs: 0, steps: 0 }))
-      all.push(result("P8'", size, { p99Ms: 0, maxMs: 0, steps: 0 }))
-      all.push(result("P9", size, { p99Ms: 0 }))
-    }
+    all.push(result("P8", size, { p99Ms: 0, maxMs: 0, steps: 0 }))
+    all.push(result("P8'", size, { p99Ms: 0, maxMs: 0, steps: 0 }))
+    all.push(result("P9", size, { p99Ms: 0 }))
     all.push(result("P11", size, { driftPx: 0, stepMismatches: 0 }))
     all.push(result("P10", size, { mountedRows: 0, scrollChildren: 0, viewportRows: 0, rows: 0, windowed: 0 }))
   }

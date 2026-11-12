@@ -19,6 +19,8 @@ import {
   PENDING_REBASELINE,
   SUB_MS_ALLOWANCE_MS,
   TIMING_RATIO,
+  WINDOWED_RELATIVE_EXEMPT,
+  WINDOWED_REQUIRED,
   type PerfReport,
   type ScenarioMetrics,
 } from "./compare"
@@ -460,6 +462,110 @@ test("a P10 that does not say whether its session is windowed is drift", () => {
   const { missing } = compareReports({ scenarios: {} }, stale)
 
   expect(missing).toContainEqual({ size: "XL", id: "P10", metric: "windowed" })
+})
+
+test("a session marked windowed has to carry the cold scroll, or the budget leaves with the scenario", () => {
+  // Codex review of #1266: with the cold scroll out of the windowed scope, a frame of
+  // 150 ms in the windowed scroll passed the gate because nothing measured it.
+  expect(WINDOWED_REQUIRED.map((item) => item.id)).toEqual(["P8", "P8'"])
+  // The scope has to run what the gate requires of it.
+  for (const item of WINDOWED_REQUIRED) expect([...WINDOWED_SKIPS]).not.toContain(item.id)
+
+  for (const id of ["P8", "P8'"]) {
+    const { missing, failures } = compareReports(
+      { scenarios: {} },
+      fullReport((size, items) => {
+        if (size === "XL") delete items[id]
+      }),
+    )
+
+    expect(failures).toEqual([])
+    expect(missing).toEqual([
+      { size: "XL", id, metric: "p99Ms" },
+      { size: "XL", id, metric: "maxMs" },
+    ])
+  }
+
+  // A scenario that is there without one of its metrics is the drift the gate already reported.
+  const partial = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P8 = { steps: 1310 }
+    }),
+  )
+  expect(partial.missing.map((item) => `${item.id}.${item.metric}`)).toEqual(["P8.p99Ms", "P8.maxMs"])
+
+  // A fully mounted session is not required to carry it in a report that has none (a partial report).
+  const fullyMounted = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "L") delete items.P8
+    }),
+  )
+  expect(fullyMounted.missing).toEqual([])
+})
+
+test("the windowed cold scroll answers to the absolute ceilings, scaled only by a slower machine", () => {
+  const withScroll = (metrics: Record<string, number>, id = "P8", calibration?: { fixedLayoutMsMedian?: number }) => {
+    const report = fullReport((size, items) => {
+      if (size === "XL") items[id] = { ...items[id], ...metrics }
+    })
+    report.calibration = calibration ?? report.calibration
+    return report
+  }
+  const failed = (report: PerfReport) =>
+    compareReports({ scenarios: {} }, report).failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)
+
+  for (const id of ["P8", "P8'"]) {
+    // At the ceilings: p99 33 ms, and no frame over 100 ms.
+    expect(failed(withScroll({ p99Ms: 33, maxMs: FRAME_CEILING_MS }, id))).toEqual([])
+    expect(failed(withScroll({ p99Ms: 33.01 }, id))).toEqual([`XL.${id}.p99Ms`])
+    expect(failed(withScroll({ maxMs: FRAME_CEILING_MS + 1 }, id))).toEqual([`XL.${id}.maxMs`])
+  }
+
+  // The machine factor comes from the report's calibration (mount of S, M and L): 1.5x slower gives 150 ms.
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
+  const slow = withScroll({ maxMs: 140 }, "P8", { fixedLayoutMsMedian: 30 })
+  expect(compareReports(baseline, slow).failures).toEqual([])
+  expect(compareReports(baseline, withScroll({ maxMs: 151 }, "P8", { fixedLayoutMsMedian: 30 })).failures).toHaveLength(1)
+  // A faster machine is held to the plain 100 ms.
+  expect(compareReports(baseline, withScroll({ maxMs: 101 }, "P8", { fixedLayoutMsMedian: 10 })).failures).toHaveLength(1)
+})
+
+test("the windowed session's scroll scenarios skip the ratio against the baseline but not the ceilings", () => {
+  expect([...WINDOWED_RELATIVE_EXEMPT].sort()).toEqual(["P8", "P8'", "P9"])
+
+  const grown = (size: string) => {
+    const before = fullReport((name, items) => {
+      if (name === size) {
+        items.P8 = { p99Ms: 5, maxMs: 6, steps: 100 }
+        items["P8'"] = { p99Ms: 5, maxMs: 6, steps: 100 }
+        items.P9 = { p99Ms: 5 }
+      }
+    })
+    const after = fullReport((name, items) => {
+      if (name === size) {
+        items.P8 = { p99Ms: 25, maxMs: 30, steps: 100 }
+        items["P8'"] = { p99Ms: 25, maxMs: 30, steps: 100 }
+        items.P9 = { p99Ms: 15 }
+      }
+    })
+    return compareReports(before, after).failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)
+  }
+
+  // Five times the baseline on the windowed session is within the ceilings (33 ms, 16 ms), so it passes...
+  expect(grown("XL")).toEqual([])
+  // ...and the same growth on a fully mounted session fails the ratio (L is held to its baseline).
+  expect(grown("L").sort()).toEqual(["L.P8'.p99Ms", "L.P8.p99Ms", "L.P9.p99Ms"])
+
+  // The ceilings still bind the windowed session whatever its baseline says.
+  const over = compareReports(
+    fullReport(),
+    fullReport((name, items) => {
+      if (name === "XL") items.P9 = { p99Ms: 16.5 }
+    }),
+  )
+  expect(over.failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)).toEqual(["XL.P9.p99Ms"])
 })
 
 /** Stand-in for the real table, so these cases keep working after the real entries are deleted. */
