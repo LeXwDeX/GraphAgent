@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { RGBA } from "@opentui/core"
 import { createMemo, Show, type JSX } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
@@ -15,6 +14,12 @@ import { TopBar, type TopBarRight } from "./top-bar"
 /** Below either limit the frame renders only the "terminal too small" notice. */
 export const SHELL_MIN_WIDTH = 60
 export const SHELL_MIN_HEIGHT = 12
+
+/**
+ * Share of its colors the main and status rows keep while a bottom-zone panel or ask surface is
+ * open; the rest fades into the app background.
+ */
+export const DIMMED_OPACITY = 0.5
 
 export type AppFrameTopBar = {
   path?: string
@@ -40,7 +45,7 @@ export type AppFrameProps = {
   bottomZone?: JSX.Element
   /** Right-edge overlay between the top bar and the bottom zone (F4). */
   drawer?: JSX.Element
-  /** Dims the main area while a bottom-zone panel or ask surface is open. */
+  /** Dims the main and status rows while a bottom-zone panel or ask surface is open. */
   dimmed?: () => boolean
   children?: JSX.Element
 }
@@ -49,6 +54,13 @@ export type AppFrameProps = {
  * Fixed column shell: one top bar row and one blank row, the main area, the
  * status band, the bottom zone, and a one-row footer. The drawer overlays the
  * right edge of the main/status area without changing layout widths.
+ *
+ * Dimming is an `opacity` on the main and status rows, not a translucent box
+ * laid over them: OpenTUI's alpha fill blanks every cell that holds a wide
+ * character, so a box would erase the CJK text of the transcript while a panel
+ * is open. The drawer is a later sibling of the dimmed rows and is drawn above
+ * them at full strength; it has to hide what is under it, which a translucent
+ * layer would let through. The order does not depend on when either one appears.
  */
 export function AppFrame(props: AppFrameProps) {
   const dimensions = useTerminalDimensions()
@@ -71,22 +83,14 @@ export function AppFrame(props: AppFrameProps) {
         <TopBar path={props.topBar?.path} right={props.topBar?.right} />
         <box height={1} flexShrink={0} />
         <box flexGrow={1} minHeight={0} flexDirection="column" position="relative">
-          <box flexGrow={1} minHeight={0} flexDirection="column">
-            {props.children}
+          <box flexGrow={1} minHeight={0} flexDirection="column" opacity={props.dimmed?.() ? DIMMED_OPACITY : 1}>
+            <box flexGrow={1} minHeight={0} flexDirection="column">
+              {props.children}
+            </box>
+            <Show when={props.statusBand}>
+              <StatusBand>{props.statusBand}</StatusBand>
+            </Show>
           </box>
-          <Show when={props.statusBand}>
-            <StatusBand>{props.statusBand}</StatusBand>
-          </Show>
-          <Show when={props.dimmed?.()}>
-            <box
-              position="absolute"
-              left={0}
-              top={0}
-              right={0}
-              bottom={0}
-              backgroundColor={RGBA.fromInts(0, 0, 0, 120)}
-            />
-          </Show>
           <Show when={props.drawer}>
             <Drawer>{props.drawer}</Drawer>
           </Show>

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
-import { BoxRenderable, InputRenderable, RGBA, Renderable } from "@opentui/core"
+import { BoxRenderable, InputRenderable, Renderable } from "@opentui/core"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { setLanguage } from "../../src/i18n"
-import { AppFrame } from "../../src/shell/app-frame"
+import { AppFrame, DIMMED_OPACITY } from "../../src/shell/app-frame"
 import { BottomZone, createBottomZoneState, type BottomZoneStateApi } from "../../src/shell/bottom-zone"
 import { renderPanel } from "../panel/contexts"
 import { shellState } from "../shell/contexts"
@@ -264,7 +264,6 @@ test("the frame dims the main area only while a panel or ask surface is open", a
   await using tmp = await shellState()
   let state!: BottomZoneStateApi
   let input: InputRenderable | undefined
-  const overlay = RGBA.fromInts(0, 0, 0, 120)
 
   function Harness() {
     state = createBottomZoneState()
@@ -282,23 +281,33 @@ test("the frame dims the main area only while a panel or ask surface is open", a
   try {
     await app.renderOnce()
     expect(input).toBeDefined()
-    const overlays = () =>
+    const dimmed = () =>
       collect(app.renderer.root).filter(
-        (item): item is BoxRenderable => item instanceof BoxRenderable && item.backgroundColor.equals(overlay),
+        (item): item is BoxRenderable => item instanceof BoxRenderable && item.opacity === DIMMED_OPACITY,
       )
     expect(app.captureCharFrame()).toContain("主区内容")
-    expect(overlays()).toHaveLength(0)
+    expect(dimmed()).toHaveLength(0)
 
     state.host.push({ id: "panel", render: () => <text>面板内容</text> })
     await Bun.sleep(20)
     await app.renderOnce()
     expect(app.captureCharFrame()).toContain("面板内容")
-    expect(overlays().length).toBe(1)
+    expect(dimmed()).toHaveLength(1)
+    // Dimming keeps the wide characters of the main area on screen.
+    expect(app.captureCharFrame()).toContain("主区内容")
 
+    state.ask({ id: "ask-1", render: () => <text>询问内容</text> })
+    await Bun.sleep(20)
+    await app.renderOnce()
+    expect(dimmed()).toHaveLength(1)
+    expect(app.captureCharFrame()).toContain("主区内容")
+
+    state.resolveAsk()
     state.host.pop()
     await Bun.sleep(20)
     await app.renderOnce()
-    expect(overlays()).toHaveLength(0)
+    expect(dimmed()).toHaveLength(0)
+    expect(app.captureCharFrame()).toContain("主区内容")
   } finally {
     app.renderer.destroy()
   }

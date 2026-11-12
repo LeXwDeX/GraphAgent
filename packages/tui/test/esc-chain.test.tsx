@@ -9,17 +9,14 @@ import { testRender, useRenderer } from "@opentui/solid"
 import type { PermissionRequest, QuestionRequest, Session } from "@graphagent/sdk"
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { afterEach, expect, test } from "bun:test"
-import { createMemo, onCleanup } from "solid-js"
+import { onCleanup } from "solid-js"
 import { TuiKeybind } from "../src/config/keybind"
 import { setLanguage } from "../src/i18n"
 import { EscapePriority, GraphagentKeymapProvider, registerGraphagentKeymap } from "../src/keymap"
 import { ListPanel, type ListItem } from "../src/panel/list"
-import { Main } from "../src/routes/session"
-import { AppFrame } from "../src/shell/app-frame"
-import { BottomZone, BottomZoneProvider, createBottomZoneState } from "../src/shell/bottom-zone"
-import { useDrawer } from "../src/shell/drawer"
 import { PanelSurface, renderPanel } from "./panel/contexts"
-import { mountRoute, sessionFixture, waitFor } from "./routes/dag-mode-harness"
+import { sessionFixture } from "./routes/dag-mode-harness"
+import { mountSessionShell } from "./routes/session-shell"
 import { shellState } from "./shell/contexts"
 
 afterEach(() => {
@@ -146,9 +143,8 @@ test("the innermost enabled escape layer wins and disabled layers fall through",
  * - modal (400): `PanelHost`, inside `BottomZone`.
  * - detail (300): the aside of `BottomZone`.
  *
- * The scene below is a trimmed copy of `app.tsx`: `AppFrame`, `BottomZone` and `Main` wired as
- * in the app, without `Home`, `Diff` and the footer content, inside the provider stack of
- * `mountRoute`.
+ * The scene is `mountSessionShell`: a trimmed copy of `app.tsx` (`AppFrame`, `BottomZone` and
+ * `Main`, inside the provider stack of `mountRoute`).
  */
 
 const rootID = "ses_esc_root"
@@ -183,62 +179,30 @@ function questionRequest(sessionID: string): QuestionRequest {
 }
 
 async function mountChain(options: { sessionID?: string; sessions?: readonly Session[] } = {}) {
-  let bottomZone!: ReturnType<typeof createBottomZoneState>
-  let drawer!: ReturnType<typeof useDrawer>
-  const harness = await mountRoute({
-    route: { type: "session", sessionID: options.sessionID ?? rootID },
+  const shell = await mountSessionShell({
+    sessionID: options.sessionID ?? rootID,
     sessions: options.sessions ?? [sessionFixture(rootID)],
-    view: () => {
-      bottomZone = createBottomZoneState()
-      drawer = useDrawer()
-      // The real drawer content needs the whole sidebar data set; the escape layer only needs the overlay.
-      // ASCII on purpose: the dim overlay of an open ask or panel erases wide characters beneath it.
-      const drawerContent = createMemo(() => (drawer.visible() ? <text>DRAWER</text> : undefined))
-      return (
-        <BottomZoneProvider state={bottomZone}>
-          <AppFrame
-            dimmed={bottomZone.dimmed}
-            bottomZone={<BottomZone state={bottomZone} composer={<></>} />}
-            drawer={drawerContent()}
-          >
-            <Main />
-          </AppFrame>
-        </BottomZoneProvider>
-      )
-    },
   })
 
-  // Seeding store entries before the bootstrap settles lets its reconcile wipe them again.
-  await waitFor(() => harness.sync().status === "complete")
-
   const layers: number[] = []
-  harness.keymap().on("dispatch", (event) => {
+  shell.keymap().on("dispatch", (event) => {
     if (event.phase === "binding-execute" && event.layer) layers.push(event.layer.priority)
   })
 
   return {
-    ...harness,
-    bottomZone: () => bottomZone,
-    drawer: () => drawer,
-    frame: () => harness.app.captureCharFrame(),
+    ...shell,
     /** Presses escape once and returns the priorities of the layers that ran a binding. */
     async esc() {
       layers.length = 0
-      harness.app.mockInput.pressEscape()
-      await harness.settle()
+      shell.app.mockInput.pressEscape()
+      await shell.settle()
       return [...layers]
     },
     busy(sessionID = rootID) {
-      harness.sync().set("session_status", sessionID, { type: "busy" })
-    },
-    /** Opens the drawer with its default key, like a user would. */
-    async openDrawer() {
-      harness.app.mockInput.pressKey("b", { ctrl: true })
-      await waitFor(() => drawer.visible())
-      await harness.settle()
+      shell.sync().set("session_status", sessionID, { type: "busy" })
     },
     /** Paths of the requests that reject or answer an ask, in order. */
-    answers: () => harness.writes().filter((item) => /\/(reply|reject)$/.test(item.path)),
+    answers: () => shell.writes().filter((item) => /\/(reply|reject)$/.test(item.path)),
   }
 }
 
@@ -280,11 +244,11 @@ test("drawer (2): esc closes the drawer before it rejects the pending request", 
     chain.sync().set("permission", rootID, [permissionRequest(rootID)])
     await chain.settle()
     expect(chain.bottomZone().state().kind).toBe("ask")
-    expect(chain.frame()).toContain("DRAWER")
+    expect(chain.frame()).toContain("抽屉")
 
     expect(await chain.esc()).toEqual([EscapePriority.drawer])
     expect(chain.drawer().visible()).toBe(false)
-    expect(chain.frame()).not.toContain("DRAWER")
+    expect(chain.frame()).not.toContain("抽屉")
     expect(chain.bottomZone().state().kind).toBe("ask")
     expect(chain.writes()).toEqual([])
 

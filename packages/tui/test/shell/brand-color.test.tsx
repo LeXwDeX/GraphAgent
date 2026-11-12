@@ -62,9 +62,9 @@ const label = (run: BrandRun) => `${run.place}:${run.text}`
 
 /**
  * Every run of cells painted with `brand`. Foregrounds count only when they paint visible
- * text; a background in the brand color always counts. Dimmed regions blend toward black and
- * can no longer be matched by value (and wide characters under the overlay are not drawn at
- * all), so the scenes below keep their dimmed main area free of colored text.
+ * text; a background in the brand color always counts. Dimmed regions fade toward the app
+ * background and can no longer be matched by value, so the scenes below keep their dimmed
+ * main area free of colored text.
  */
 function brandRuns(frame: CapturedFrame, brand: RGBA) {
   const runs: BrandRun[] = []
