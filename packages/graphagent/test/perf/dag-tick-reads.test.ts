@@ -8,6 +8,7 @@ import { Effect, Layer, Scope } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagStore } from "@graphagent/core/dag/store"
+import { AgentMailboxTable, AgentMessageTable } from "@graphagent/core/dag/messages.sql"
 import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
@@ -25,9 +26,10 @@ import { testEffect } from "../lib/effect"
 // workflow ledger once, and the mailbox ledger once, and pays at most one
 // ownership read per returned wake or due paused session. Due paused
 // reminders are part of this tick (#1027 D5): the inbox 30s timer is now
-// their only periodic driver. The probe counts the production SQL client, so
-// these numbers are the queries the store actually issues, not an assumed
-// shape.
+// their only periodic driver. The mailbox read is one page of at most 64
+// recipients whose cursor rotates across ticks, so a deep backlog never adds
+// reads to a tick. The probe counts the production SQL client, so these
+// numbers are the queries the store actually issues, not an assumed shape.
 //
 // Metric scope: `sql.read` verifies the tick's read budget; `sql.write === 0`
 // is the hard no-write invariant; `commits === 1` merely reflects the
@@ -90,6 +92,71 @@ function seedSession(input: { id: string; directory: string }) {
       })
       .run()
       .pipe(Effect.orDie)
+  })
+}
+
+/** `count` parent sessions in this directory, each with an open main mailbox
+ * holding one queued message, in ledger (session-ID) order. */
+function seedQueuedMailboxes(count: number) {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    const ids = Array.from({ length: count }, (_, index) => `ses_tick_mail_${String(index).padStart(3, "0")}`)
+    yield* db
+      .insert(SessionTable)
+      .values(
+        ids.map((id) => ({
+          id: SessionID.make(id),
+          project_id: Project.ID.make(PROJECT_ID),
+          slug: id,
+          directory: AbsolutePath.make(DIRECTORY),
+          title: id,
+          version: "test",
+        })),
+      )
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(AgentMailboxTable)
+      .values(
+        ids.map((id) => ({
+          id: `mailbox_${id}`,
+          session_id: id,
+          workflow_id: null,
+          node_id: null,
+          attempt_id: null,
+          revision: 1,
+          result_nudge_revision: -1,
+          closed_reason: null,
+          time_created: 1,
+        })),
+      )
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(AgentMessageTable)
+      .values(
+        ids.map((id) => ({
+          id: `message_${id}`,
+          workflow_id: "dag_tick_mail",
+          sender_id: "child",
+          recipient_id: `mailbox_${id}`,
+          recipient_session_id: id,
+          sender: {},
+          recipient: {},
+          idempotency_key: `key_${id}`,
+          request: "request",
+          content: "queued",
+          recipient_sequence: 1,
+          accepted_revision: 1,
+          state: "queued",
+          transcript_id: `msg_${id}`,
+          part_id: `prt_${id}`,
+          time_created: 1,
+        })),
+      )
+      .run()
+      .pipe(Effect.orDie)
+    return ids
   })
 }
 
@@ -252,4 +319,33 @@ it.effect("a due paused reminder is returned by the tick and pays one ownership 
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
+)
+
+it.effect("a deep mailbox backlog still costs one page read per tick, and the cursor wraps over every recipient", () =>
+  Effect.gen(function* () {
+    yield* seedProjectAndSession
+    const delivery = yield* Effect.scoped(deliveryEffect)
+    // Two full ledger pages (the cap is 64 per read) and a short one, seeded
+    // after construction so the start-up sweep cannot react to them.
+    const ids = yield* seedQueuedMailboxes(2 * 64 + 2)
+    yield* settle()
+    const ticks: Array<{ sessions: ReadonlyArray<string>; reads: number; writes: number; commits: number }> = []
+    for (let tick = 0; tick < 4; tick++) {
+      reset()
+      const sessions = yield* delivery.scanSessions()
+      const counts = snapshot()
+      ticks.push({ sessions, reads: counts["sql.read"], writes: counts["sql.write"], commits: counts.commits })
+    }
+    // Page 1, page 2, the short last page, then the wrap back to page 1.
+    expect(ticks.map((tick) => tick.sessions)).toEqual([
+      ids.slice(0, 64),
+      ids.slice(64, 128),
+      ids.slice(128),
+      ids.slice(0, 64),
+    ])
+    // Wake UNION (1) + paused workflows (1) + one mailbox page (1), however deep the backlog is.
+    expect(ticks.map((tick) => tick.reads)).toEqual([3, 3, 3, 3])
+    expect(ticks.map((tick) => tick.writes)).toEqual([0, 0, 0, 0])
+    expect(ticks.map((tick) => tick.commits)).toEqual(ticks.map(() => READ_TRANSACTION_COMMITS))
+  }).pipe(Effect.provideService(InstanceRef, instanceRef)),
 )

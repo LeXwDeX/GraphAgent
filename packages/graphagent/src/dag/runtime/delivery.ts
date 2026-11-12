@@ -36,6 +36,10 @@ const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.
 
 export const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
 
+/** One mailbox ledger page. `DagMessages.pendingRecipients` clamps `limit` to
+ * 64 and orders by session ID, so a shorter page is the end of the ledger. */
+const MAILBOX_PAGE_SIZE = 64
+
 /** Stable local receipt for the exact durable wake batch, including execution
  * identity and event revisions. Repeated text from a new attempt is new input. */
 export function wakeBatchIdentity(sessionID: string, batch: DagStore.WakeBatch) {
@@ -118,11 +122,14 @@ export interface Interface {
   /** Fire-and-forget trigger: nudge is idempotent and safe to call for every
    * event source. The in-flight reservations coalesce concurrent attempts. */
   readonly nudge: (sessionID: string) => Effect.Effect<void>
-  /** Fallback scan: paused-workflow reminders plus the mailbox sweep. Runs at
-   * init and once per 30s for messages whose change event was lost. */
+  /** Startup scan: paused-workflow reminders plus a mailbox sweep over every
+   * ledger page, for messages queued while no instance was listening. The
+   * periodic fallback is the inbox tick (`scanSessions`). */
   readonly scan: () => Effect.Effect<void>
   /** Durable scan for the inbox tick: sessions in this directory with an
-   * unreported wake, a due paused reminder, or a queued main-mailbox message. */
+   * unreported wake, a due paused reminder, or a queued main-mailbox message.
+   * The mailbox part is one ledger page per call; successive calls rotate
+   * through the whole ledger and wrap at its end. */
   readonly scanSessions: () => Effect.Effect<ReadonlyArray<string>>
 }
 
@@ -923,16 +930,40 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
 
   // Event-driven delivery is the fast path: `messages.changed` nudges the
   // recipient session. This sweep covers messages queued before the
-  // subscription existed or whose change event was lost (a crashed sender);
-  // it runs once at init, then the inbox tick owns the periodic fallback
-  // (#1027 D5).
+  // subscription existed or whose change event was lost (a crashed sender).
+  // It runs at startup, where one pass can afford to walk the whole ledger:
+  // a page is capped and ordered by session ID, so stopping at the first one
+  // would hide every later recipient behind mailboxes that keep their queue
+  // (a failed turn waits for new host context). The inbox tick owns the
+  // periodic fallback (#1027 D5).
   const sweepMailboxes = Effect.gen(function* () {
     if (!messages) return
-    const recipients = yield* messages.pendingRecipients({ projectID, directory, limit: 64 })
-    for (const endpoint of recipients) {
-      yield* deliverAgentMessages(endpoint.sessionID).pipe(guarded("AgentMailboxAdmission"), Effect.forkIn(scope))
+    let after: string | undefined
+    for (;;) {
+      const page = yield* messages.pendingRecipients({
+        projectID,
+        directory,
+        limit: MAILBOX_PAGE_SIZE,
+        afterSessionID: after,
+      })
+      for (const endpoint of page) {
+        yield* deliverAgentMessages(endpoint.sessionID).pipe(guarded("AgentMailboxAdmission"), Effect.forkIn(scope))
+      }
+      const last = page.at(-1)?.sessionID
+      // A short page is the end of the ledger; a cursor that did not move
+      // (a store that ignores it) must not spin.
+      if (page.length < MAILBOX_PAGE_SIZE || last === undefined || last === after) return
+      after = last
     }
   }).pipe(guarded("AgentMailboxSweep"))
+
+  // The tick reads one ledger page per call so its read budget stays fixed.
+  // A page holds at most 64 recipients, so the first page alone would starve
+  // every later recipient whenever the first 64 mailboxes keep their queue.
+  // The cursor therefore moves on after each full page and wraps once a short
+  // page marks the end. Memory only: a restart begins with the startup sweep,
+  // which walks every page.
+  let mailboxCursor: string | undefined
 
   // A parked workflow can outlive the parent turn that caused its pause.
   // The paused row's durable wake marker permits one reminder per pause
@@ -964,7 +995,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
    * global; the directory guard keeps sibling worktrees out, and the drain's
    * own ownership gates remain authoritative. Due paused reminders are part
    * of the same tick, so the inbox 30s timer is their only periodic driver
-   * (one read here, no separate fiber). */
+   * (one read here, no separate fiber). The mailbox ledger is read one page
+   * per tick through `mailboxCursor`, so a deep backlog adds no reads. */
   const scanSessions = (): Effect.Effect<ReadonlyArray<string>> =>
     Effect.gen(function* () {
       const sessions = new Set<string>()
@@ -996,14 +1028,22 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         if (yield* DagLocation.ownsSession(workflow.sessionId, directory)) sessions.add(workflow.sessionId)
       }
       if (messages) {
-        const recipients = yield* messages.pendingRecipients({ projectID, directory, limit: 64 }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("DagDelivery mailbox scan failed", { cause }).pipe(
-              Effect.as([] as ReadonlyArray<DagMessages.Endpoint>),
+        const page = yield* messages
+          .pendingRecipients({ projectID, directory, limit: MAILBOX_PAGE_SIZE, afterSessionID: mailboxCursor })
+          .pipe(
+            Effect.map(Option.some),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("DagDelivery mailbox scan failed", { cause }).pipe(
+                Effect.as(Option.none<ReadonlyArray<DagMessages.Endpoint>>()),
+              ),
             ),
-          ),
-        )
-        for (const endpoint of recipients) sessions.add(endpoint.sessionID)
+          )
+        // A failed read leaves the cursor where it was: the next tick retries
+        // the same page instead of rewinding to the first one.
+        if (Option.isSome(page)) {
+          mailboxCursor = page.value.length < MAILBOX_PAGE_SIZE ? undefined : page.value.at(-1)?.sessionID
+          for (const endpoint of page.value) sessions.add(endpoint.sessionID)
+        }
       }
       return [...sessions]
     }).pipe(
