@@ -68,6 +68,24 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`runtime_job\` (
+          \`id\` text PRIMARY KEY,
+          \`type\` text NOT NULL,
+          \`process_id\` text,
+          \`title\` text,
+          \`session_id\` text,
+          \`parent_session_id\` text,
+          \`status\` text NOT NULL,
+          \`metadata\` text,
+          \`result\` text,
+          \`error\` text,
+          \`started_at\` integer NOT NULL,
+          \`delivered_at\` integer,
+          \`settled_at\` integer,
+          \`updated_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`child_binding\` (
           \`child_session_id\` text PRIMARY KEY,
           \`parent_session_id\` text NOT NULL,
@@ -376,6 +394,9 @@ export default {
       yield* tx.run(
         `CREATE INDEX \`agent_message_session_idx\` ON \`agent_message\` (\`recipient_session_id\`,\`state\`);`,
       )
+      yield* tx.run(`CREATE INDEX \`runtime_job_status_idx\` ON \`runtime_job\` (\`status\`);`)
+      yield* tx.run(`CREATE INDEX \`runtime_job_session_idx\` ON \`runtime_job\` (\`session_id\`);`)
+      yield* tx.run(`CREATE INDEX \`runtime_job_updated_at_idx\` ON \`runtime_job\` (\`updated_at\`);`)
       yield* tx.run(
         `CREATE INDEX \`child_run_session_time_idx\` ON \`child_run\` (\`child_session_id\`,\`time_created\`);`,
       )

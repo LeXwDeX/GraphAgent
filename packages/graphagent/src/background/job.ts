@@ -1,9 +1,11 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { BackgroundJob as CoreBackgroundJob } from "@graphagent/core/background-job"
+import { Database } from "@graphagent/core/database/database"
 import { InstanceState } from "@/effect/instance-state"
 import { Lifecycle } from "@/lifecycle/service"
 import { SessionCancellation } from "@/session/cancellation"
-import { Effect, Layer, Option, Scope } from "effect"
+import { Cause, Effect, Layer, Option, Scope } from "effect"
+import { persistTransition } from "./persist"
 
 export {
   Service,
@@ -12,6 +14,7 @@ export {
   type Interface,
   type StartInput,
   type Status,
+  type Transition,
   type WaitInput,
   type WaitResult,
 } from "@graphagent/core/background-job"
@@ -27,13 +30,25 @@ export const layer = Layer.effect(
     const state = yield* InstanceState.make(() =>
       Effect.gen(function* () {
         const jobs = yield* CoreBackgroundJob.makeWith({
-          // Resolve the lifecycle service from the caller's context at
+          // Resolve durable observation services from the caller's context at
           // transition time. The registry is built inside layers that do not
           // see sibling AppLayer outputs, while tools and job fibers run with
-          // the full environment. Tests without Lifecycle simply skip the
-          // observation (#1069 P4).
+          // the full environment. Tests without Database or Lifecycle simply
+          // skip the observation (#1069 P4/P5).
           onTransition: (transition) =>
             Effect.gen(function* () {
+              const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
+              if (database)
+                yield* persistTransition(database.db, transition).pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterrupts(cause)
+                      ? Effect.interrupt
+                      : Effect.logWarning("background job transition was not persisted", {
+                          jobID: transition.id,
+                          cause: Cause.pretty(cause),
+                        }),
+                  ),
+                )
               const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
               if (!lifecycle) return
               yield* lifecycle.transition({

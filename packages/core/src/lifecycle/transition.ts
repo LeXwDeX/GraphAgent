@@ -66,6 +66,27 @@ export const TURN_TRANSITION_TABLE: TransitionTable = {
 }
 
 /**
+ * Goals are durable and may be overwritten by a new `/goal set`, so every live
+ * value (including `paused`) can move back to `active` (#1069). `done` is not
+ * a live row value: completion deletes the row and keeps the terminal snapshot
+ * in `goal_outcome`, reporting removal through `goal.cleared`. The table still
+ * renders `done` as terminal if a transition is ever published for it.
+ */
+export const GOAL_TRANSITION_TABLE: TransitionTable = {
+  domain: "goal",
+  next: (from) =>
+    from === null
+      ? ["active"]
+      : from === "active"
+        ? ["waiting", "paused"]
+        : from === "waiting"
+          ? ["active", "paused"]
+          : from === "paused"
+            ? ["active"]
+            : [],
+}
+
+/**
  * Background jobs keep their owner-specific rule: a job may finish without
  * settling (short work with no delivered side effect), and `settling` only
  * admits terminal states (#1069 P4).
