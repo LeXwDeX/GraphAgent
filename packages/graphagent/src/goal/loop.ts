@@ -228,13 +228,25 @@ const serviceLayer = Layer.effect(
     // ONE bounded review turn that asks the agent to check external state and
     // declare the next intent. If that turn declares nothing, afterIdle's
     // blocked-intent branch pauses the goal visibly. The marker's reason is part
-    // of the prompt, so the agent learns why the wait ended. The prompt is
-    // forked because triggerEvaluation also calls this from the inbox drain,
-    // which must not await a whole agent turn.
+    // of the prompt, so the agent learns why the wait ended.
+    //
+    // The review is autonomous driving, so it is admitted like a continuation,
+    // never as a plain prompt: under the goal's claim of the exclusive fence,
+    // only while the session is idle, only if the session's cancellation epoch
+    // is still the one observed before the expiry was decided (`claimEpoch`),
+    // and only for the goal instance and revision that expired. A goal the user
+    // paused, cleared or replaced since then, a user turn that started, or an
+    // ESC all refuse the admission and no review turn runs (the marker then
+    // pauses the goal visibly at the next idle). The admission is forked because
+    // triggerEvaluation also calls this from the inbox drain, which must not
+    // wait on it; the fiber lives in the instance scope, so disposal interrupts
+    // it, and its staleness is the fence's job, not a fiber map's (registering
+    // here would interrupt the afterIdle fiber that may be the caller).
     const dispatchWaitReview = Effect.fnUntraced(function* (
       sessionID: SessionID,
       expired: GoalState.Info,
       title: string,
+      claimEpoch: number,
     ) {
       const reviewText = [
         title,
@@ -253,12 +265,55 @@ const serviceLayer = Layer.effect(
         yield* Effect.logWarning("goal wait review skipped: instance scope not resolved", { sessionID })
         return false
       }
+      const expected = expectedOf(expired)
+      const goalOwner = { kind: "goal" as const, id: expected.goalID }
       yield* Effect.gen(function* () {
+        yield* automation.register(sessionID, goalOwner)
+        const reviewLease = Option.getOrUndefined(yield* automation.claim(sessionID, goalOwner))
+        if (!reviewLease) return
+        // GOAL-TURN-SCOPE: mark BEFORE admission so the goal-turn provenance is
+        // visible the instant the review can start; a refused admission clears
+        // the speculative mark.
         yield* goal.markTurnDriven(sessionID)
-        yield* promptSvc.prompt({
-          sessionID,
-          parts: [{ type: "text", text: reviewText, synthetic: true }],
-        })
+        const admitted = yield* SessionPrompt.admitIdleUnderFence(
+          promptSvc,
+          automation,
+          reviewLease,
+          { sessionID, parts: [{ type: "text", text: reviewText, synthetic: true }] },
+          undefined,
+          Effect.gen(function* () {
+            const current = yield* goal.load(sessionID)
+            if (
+              !current ||
+              current.status !== "active" ||
+              (current.goal_id ?? "legacy") !== expected.goalID ||
+              (current.revision ?? 0) !== expected.revision
+            ) {
+              throw new GoalDispatchFenceLost()
+            }
+          }),
+          claimEpoch,
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Cause.squash(cause) instanceof GoalDispatchFenceLost
+              ? Effect.succeed({ tag: "skipped" } as const)
+              : Effect.failCause(cause),
+          ),
+        )
+        if (admitted.tag === "cancelled") {
+          // An ESC landed between the expiry and this admission: nothing was
+          // committed, and the cancel handler's own pause may not have seen this
+          // delayed review, so pause here rather than leave the goal active
+          // with no driver. pauseForUserCancel is idempotent.
+          yield* goal.pauseForUserCancel(sessionID, "用户中断（ESC）— /goal resume 继续").pipe(Effect.ignore)
+          yield* goal.clearTurnDriven(sessionID)
+          return
+        }
+        if (admitted.tag === "skipped") {
+          yield* goal.clearTurnDriven(sessionID)
+          return
+        }
+        yield* admitted.turn
       }).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
@@ -270,11 +325,15 @@ const serviceLayer = Layer.effect(
       return true
     })
 
-    const expireWaiting = Effect.fnUntraced(function* (sessionID: SessionID) {
+    // `claimEpoch` is the epoch the caller observed at its own claim; a caller
+    // without one (a tool wake, the periodic scan) is observed here, before the
+    // expiry is decided, so a later ESC still fences the review.
+    const expireWaiting = Effect.fnUntraced(function* (sessionID: SessionID, claimEpoch?: number) {
+      const epoch = claimEpoch ?? SessionCancellation.epoch(sessionID)
       const expired = yield* goal.expireWait(sessionID)
       if (!expired) return false
       if (expired.status === "active" && expired.intent?.kind === "blocked")
-        return yield* dispatchWaitReview(sessionID, expired, "[等待超时复核]")
+        return yield* dispatchWaitReview(sessionID, expired, "[等待超时复核]", epoch)
       // Defensive: a direct pause transition (kept for callers that still
       // pause immediately) releases the registration and tells the user why.
       if (expired.status !== "paused") return false
@@ -751,7 +810,7 @@ const serviceLayer = Layer.effect(
       const goalState = yield* goal.load(sessionID)
       if (!goalState) return
       if (goalState.status === "waiting") {
-        yield* expireWaiting(sessionID)
+        yield* expireWaiting(sessionID, claimEpoch)
         return
       }
       if (goalState.status !== "active") return
@@ -1326,7 +1385,7 @@ const serviceLayer = Layer.effect(
       // earliest point to notice an expired wait (the periodic scan is only a
       // fallback for silent sessions).
       if (goalState.status === "waiting") {
-        yield* expireWaiting(sessionID)
+        yield* expireWaiting(sessionID, evaluationEpoch)
         return
       }
       if (goalState.status !== "active") return
@@ -1495,10 +1554,12 @@ const serviceLayer = Layer.effect(
     const scanForWaitingGoals = Effect.fnUntraced(function* (snapshot: ReadonlyArray<SessionID>) {
       for (const sessionID of snapshot) {
         yield* Effect.gen(function* () {
+          // Observed before the decision, so an ESC after it fences the review.
+          const epoch = SessionCancellation.epoch(sessionID)
           const orphan = yield* goal.orphanedWait(sessionID)
           if (!orphan) return
           const expired = yield* goal.expireOrphanedWait(sessionID, orphan)
-          if (expired) yield* dispatchWaitReview(sessionID, expired, "[等待任务丢失复核]")
+          if (expired) yield* dispatchWaitReview(sessionID, expired, "[等待任务丢失复核]", epoch)
         }).pipe(
           // One bad row never stops the rest of the scan; interrupts stay silent.
           Effect.catchCause((cause) =>
@@ -1519,10 +1580,13 @@ const serviceLayer = Layer.effect(
       payload?: string,
       options?: { readonly evaluate?: boolean },
     ) {
+      // Observed before the wake is decided: the fallback below dispatches a
+      // review that an ESC after this point must fence out.
+      const epoch = SessionCancellation.epoch(sessionID)
       if (!(yield* goal.wake(sessionID, match, payload))) {
         // A matching event over an exhausted wake budget ends the wait now
         // rather than at the next expiry scan.
-        yield* expireWaiting(sessionID).pipe(Effect.catchCause(() => Effect.succeed(false)))
+        yield* expireWaiting(sessionID, epoch).pipe(Effect.catchCause(() => Effect.succeed(false)))
         return false
       }
       if (options?.evaluate === false) return true
