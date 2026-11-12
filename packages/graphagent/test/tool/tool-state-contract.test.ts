@@ -29,6 +29,7 @@ const DECLARED_STATE = new Map<string, string>([
 // `file` → job kind. Starting background work from a new tool fails the gate
 // until the author registers it through Lifecycle and lists it here.
 const BACKGROUND_STARTERS = new Map<string, string>([
+  ["src/tool/shell.ts", "bash"],
   ["src/tool/task.ts", "task"],
   ["src/tool/watch_pr.ts", "watch_pr"],
 ])
