@@ -4,9 +4,9 @@
   skill's content.
 -->
 
-# Customizing opencode
+# Customizing GraphAgent
 
-opencode validates its own config strictly and refuses to start when a field
+GraphAgent validates its own config strictly and refuses to start when a field
 is wrong. The shapes below cover the common surface area, but they are a
 **summary, not the source of truth**.
 
@@ -19,7 +19,7 @@ defaults, and descriptions — lives in the published JSON Schema:
 
 If a field is not documented in this skill, or you need to confirm an exact
 shape before writing config, **fetch that URL and read the schema directly**
-rather than guessing. opencode hard-fails on invalid config, so the cost of a
+rather than guessing. GraphAgent hard-fails on invalid config, so the cost of a
 wrong shape is a broken startup.
 
 Independently, every `graphagent.json` should declare
@@ -28,27 +28,27 @@ mistakes as they type.
 
 ## Applying changes
 
-Config is loaded once when opencode starts and is not hot-reloaded. After
+Config is loaded once when GraphAgent starts and is not hot-reloaded. After
 saving changes to `graphagent.json`, an agent file, a skill, or any
-other config-time file, **tell the user to quit and restart opencode** for
+other config-time file, **tell the user to quit and restart GraphAgent** for
 the changes to take effect. The running session will keep using the
 already-loaded config until then.
 
 ## Where files live
 
-| Scope                         | Path                                                                                                                          |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Project config                | `./graphagent.json`, `./graphagent.jsonc`, or `.agents/graphagent.json` (opencode walks up from the cwd to the worktree root) |
-| Global config                 | `~/.config/graphagent/graphagent.json` or `~/.config/graphagent/graphagent.jsonc` (NOT `~/.agents/`)                          |
-| Project MCP servers           | `.agents/mcp.json`                                                                                                            |
-| Global MCP servers            | `~/.config/graphagent/mcp.json` (`$GRAPHAGENT_CONFIG_DIR/mcp.json` when set)                                                  |
-| Project agents                | `.agents/agent/<name>.md` or `.agents/agents/<name>.md`                                                                       |
-| Global agents                 | `~/.config/graphagent/agent(s)/<name>.md`                                                                                     |
-| Project commands              | `.agents/command/<name>.md` or `.agents/commands/<name>.md`                                                                   |
-| Global commands               | `~/.config/graphagent/command(s)/<name>.md`                                                                                   |
-| Project skills                | `.agents/skill(s)/<name>/SKILL.md`                                                                                            |
-| Global skills                 | `~/.config/graphagent/skill(s)/<name>/SKILL.md`                                                                               |
-| External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                            |
+| Scope                         | Path                                                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Project config                | `./graphagent.json`, `./graphagent.jsonc`, or `.agents/graphagent.json` (GraphAgent walks up from the cwd to the worktree root) |
+| Global config                 | `~/.config/graphagent/graphagent.json` or `~/.config/graphagent/graphagent.jsonc` (NOT `~/.agents/`)                            |
+| Project MCP servers           | `.agents/mcp.json`                                                                                                              |
+| Global MCP servers            | `~/.config/graphagent/mcp.json` (`$GRAPHAGENT_CONFIG_DIR/mcp.json` when set)                                                    |
+| Project agents                | `.agents/agent/<name>.md` or `.agents/agents/<name>.md`                                                                         |
+| Global agents                 | `~/.config/graphagent/agent(s)/<name>.md`                                                                                       |
+| Project commands              | `.agents/command/<name>.md` or `.agents/commands/<name>.md`                                                                     |
+| Global commands               | `~/.config/graphagent/command(s)/<name>.md`                                                                                     |
+| Project skills                | `.agents/skill(s)/<name>/SKILL.md`                                                                                              |
+| Global skills                 | `~/.config/graphagent/skill(s)/<name>/SKILL.md`                                                                                 |
+| External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                              |
 
 Configs from each scope are deep-merged. Project overrides global. Unknown
 top-level keys in `graphagent.json` are rejected with `ConfigInvalidError`.
@@ -138,7 +138,7 @@ Shape notes worth being explicit about:
 
 ## Skills
 
-opencode's skill loader scans for `**/SKILL.md` inside skill directories. The
+GraphAgent's skill loader scans for `**/SKILL.md` inside skill directories. The
 file is named `SKILL.md` exactly, and lives in its own folder named after the
 skill:
 
@@ -254,13 +254,13 @@ file, `disable: true` in frontmatter.
 
 ### Built-in agents
 
-opencode ships with `build`, `plan`, `general`, `explore`. Hidden internal agents:
+GraphAgent ships with `build`, `plan`, `general`, `explore`. Hidden internal agents:
 `compaction`, `title`, `summary`. To override a built-in's fields, define the
 same key in `agent: { <name>: { ... } }`.
 
 ## Commands
 
-opencode's command loader scans for `**/*.md` inside command directories. The
+GraphAgent's command loader scans for `**/*.md` inside command directories. The
 file is named after the command, and lives directly inside the `command` folder:
 
 ```
@@ -276,10 +276,10 @@ agent: build
 model: anthropic/claude-sonnet-4-6
 ---
 
-(command body in markdown: the prompt opencode runs, with $ARGUMENTS for the user's input)
+(command body in markdown: the prompt GraphAgent runs, with $ARGUMENTS for the user's input)
 ```
 
-- `template` is the command body — everything below the frontmatter — and is required: it is the prompt opencode runs when the command is invoked. Do not also put a `template:` key in the frontmatter.
+- `template` is the command body — everything below the frontmatter — and is required: it is the prompt GraphAgent runs when the command is invoked. Do not also put a `template:` key in the frontmatter.
 - `$ARGUMENTS` is replaced with everything the user typed after the command; `$1`, `$2`, … pull individual positional arguments.
 - Optional: `description`, `agent`, `model`, `variant`, `subtask`.
 
@@ -342,7 +342,7 @@ Actions: `"allow"`, `"ask"`, `"deny"`.
 
 Per-tool value forms: `"allow"` shorthand (treated as `{"*": "allow"}`), or an
 object `{ pattern: action }`. Within an object, **insertion order matters**.
-opencode evaluates the LAST matching rule, so put broad rules first and narrow
+GraphAgent evaluates the LAST matching rule, so put broad rules first and narrow
 rules last.
 
 `permission: "allow"` (a string at the top level) is shorthand for "allow
@@ -362,10 +362,10 @@ the `plan` agent's permission ruleset (`edit: deny *`).
 
 ## Escape hatches
 
-When a user's config is broken and opencode won't start, these env vars help:
+When a user's config is broken and GraphAgent won't start, these env vars help:
 
 - `GRAPHAGENT_DISABLE_PROJECT_CONFIG=1`: skip the project's local `graphagent.json`
-  and start from globals only. Run from the project directory, opencode loads,
+  and start from globals only. Run from the project directory, GraphAgent loads,
   the user edits the broken file, then they restart without the flag.
 - `GRAPHAGENT_CONFIG=/path/to/file.json`: load an additional explicit config.
 - `GRAPHAGENT_CONFIG_CONTENT='{"$schema":"https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"}'`:
@@ -380,7 +380,7 @@ When a user's config is broken and opencode won't start, these env vars help:
 - For agent, command, and skill definitions, prefer creating new files
   in the correct location over inlining everything in `graphagent.json`.
 - If the user's existing config is malformed, point them at the env-var escape
-  hatches above so they can edit from inside opencode without breaking their
+  hatches above so they can edit from inside GraphAgent without breaking their
   session.
-- After saving any config change, remind the user to quit and restart opencode
+- After saving any config change, remind the user to quit and restart GraphAgent
   — running sessions keep using the already-loaded config.

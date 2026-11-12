@@ -184,4 +184,29 @@ describe("instance HttpApi", () => {
       )
     }),
   )
+
+  // Read-only requests are cancellable. Two GETs that reach the same cold
+  // directory concurrently must both complete: whichever one starts bootstrap,
+  // the shared load must serve the other instead of deadlocking or rebuilding.
+  it.live("serves concurrent GETs that cold-start the same instance", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const request = (path: string) =>
+        Effect.promise(() =>
+          HttpApiApp.webHandler().handler(
+            new Request(`http://localhost${path}`, {
+              headers: { "x-graphagent-directory": dir },
+            }),
+            handlerContext,
+          ),
+        )
+
+      const [config, sessions] = yield* Effect.all([request("/config"), request("/session")], {
+        concurrency: "unbounded",
+      })
+
+      expect(config.status).toBe(200)
+      expect(sessions.status).toBe(200)
+    }),
+  )
 })

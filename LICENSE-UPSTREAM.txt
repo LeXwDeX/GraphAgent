@@ -560,7 +560,7 @@ packages/graphagent/src/session/summary.ts
 packages/graphagent/src/session/system.ts
 packages/graphagent/src/session/todo.ts
 packages/graphagent/src/session/tools.ts
-packages/graphagent/src/skill/builtin/customize-opencode.md
+packages/graphagent/src/skill/builtin/customize-graphagent.md
 packages/graphagent/src/skill/discovery.ts
 packages/graphagent/src/skill/index.ts
 packages/graphagent/src/snapshot/index.ts

@@ -4,7 +4,7 @@ Copy this structure for every release. Keep section order and emoji headers cons
 
 ---
 
-## opencode {VERSION}
+## graphagent {VERSION}
 
 {Prerelease/Stable} release from `{branch}` branch. {One-sentence summary — what's the headline change?}
 

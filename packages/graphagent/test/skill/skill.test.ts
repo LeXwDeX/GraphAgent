@@ -100,7 +100,7 @@ describe("skill", () => {
           expect(yield* skill.get("workflow")).toBeUndefined()
           expect(
             (yield* skill.all()).filter((item) => item.location.startsWith("/builtin/")).map((item) => item.name),
-          ).toEqual(["customize-opencode", "configure-hooks", "git-workflow"])
+          ).toEqual(["customize-graphagent", "configure-hooks", "git-workflow"])
           expect(yield* skill.get("orchestration-router")).toBeUndefined()
         }),
       { git: true },

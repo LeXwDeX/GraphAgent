@@ -23,7 +23,10 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
     const authStart = Effect.fn("McpHttpApi.authStart")(function* (ctx: { params: { name: string } }) {
       return yield* Effect.gen(function* () {
         if (!(yield* mcp.supportsOAuth(ctx.params.name))) {
-          return yield* new UnsupportedOAuthError({ error: `MCP server ${ctx.params.name} does not support OAuth` })
+          return yield* new UnsupportedOAuthError({
+            name: "McpUnsupportedOAuthError",
+            data: { message: `MCP server ${ctx.params.name} does not support OAuth` },
+          })
         }
         return yield* mcp.startAuth(ctx.params.name)
       }).pipe(
@@ -57,7 +60,10 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
     const authAuthenticate = Effect.fn("McpHttpApi.authAuthenticate")(function* (ctx: { params: { name: string } }) {
       return yield* Effect.gen(function* () {
         if (!(yield* mcp.supportsOAuth(ctx.params.name))) {
-          return yield* new UnsupportedOAuthError({ error: `MCP server ${ctx.params.name} does not support OAuth` })
+          return yield* new UnsupportedOAuthError({
+            name: "McpUnsupportedOAuthError",
+            data: { message: `MCP server ${ctx.params.name} does not support OAuth` },
+          })
         }
         return yield* mcp.authenticate(ctx.params.name)
       }).pipe(
