@@ -8,6 +8,8 @@ import {
   compareReports,
   FRAME_CEILING_MS,
   MIN_COMPARE_MS,
+  P12_MAX_SCALE,
+  P12_NOISE_FLOOR_MS,
   P14_ABSOLUTE_INCREASE_MS,
   P2_MAX_SCALE,
   P2_NOISE_FLOOR_MS,
@@ -313,6 +315,57 @@ test("P2 does not tighten on a machine faster than the baseline's", () => {
   expect(compareReports(baseline, current).failures).toEqual([])
 })
 
+/** The streamed frame of `L` and of the windowed `XL`, as the gate reads them. */
+function p12(short: number, long: number, calibration?: { fixedLayoutMsMedian?: number }): PerfReport {
+  return {
+    calibration,
+    scenarios: {
+      L: { P10: { windowed: 0 }, P12: { p95Ms: short } },
+      XL: { P10: { windowed: 1 }, P12: { p95Ms: long } },
+    },
+  }
+}
+
+const scaleFailures = (report: PerfReport) =>
+  compareReports({ scenarios: {} }, report)
+    .failures.filter((failure) => failure.metric === "p95Scale")
+    .map((failure) => `${failure.size}.${failure.id}`)
+
+test("P12 fails when a streamed frame over the windowed transcript costs far more than over L", () => {
+  // Before #1260: 11 ms over 2080 rows against 1.2 ms over 190.
+  expect(scaleFailures(p12(1.2, 11))).toEqual(["XL.P12"])
+  // More than twice L, and just past the noise floor above it.
+  expect(scaleFailures(p12(1, 1 + P12_NOISE_FLOOR_MS))).toEqual([])
+  expect(scaleFailures(p12(1, 1 + P12_NOISE_FLOOR_MS + 0.1))).toEqual(["XL.P12"])
+})
+
+test("P12 passes at twice L and when the difference is below the noise floor", () => {
+  expect(scaleFailures(p12(3, 3 * P12_MAX_SCALE))).toEqual([])
+  // Sub-millisecond p95s: a 3x ratio that is 0.9 ms of noise.
+  expect(scaleFailures(p12(0.45, 1.35))).toEqual([])
+  expect(1.35 > P12_MAX_SCALE * 0.45 && 1.35 - 0.45 < P12_NOISE_FLOOR_MS).toBe(true)
+})
+
+test("P12 holds only the windowed session to the scale, and a slower machine gets the floor scaled", () => {
+  // A fully mounted session above L would pay for its own mounted nodes; only the windowed one is gated.
+  const mounted: PerfReport = {
+    scenarios: {
+      L: { P10: { windowed: 0 }, P12: { p95Ms: 1 } },
+      M: { P10: { windowed: 0 }, P12: { p95Ms: 20 } },
+    },
+  }
+  expect(scaleFailures(mounted)).toEqual([])
+  // 3 ms slower than L: over the floor on the reference machine, inside it on one twice as slow.
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
+  const slow = p12(1, 4.5, { fixedLayoutMsMedian: 40 })
+  expect(compareReports(baseline, slow).failures.filter((failure) => failure.metric === "p95Scale")).toEqual([])
+  const same = p12(1, 4.5, { fixedLayoutMsMedian: 20 })
+  expect(compareReports(baseline, same).failures.filter((failure) => failure.metric === "p95Scale")).toHaveLength(1)
+  // A report without L is a partial one, not drift.
+  const partial: PerfReport = { scenarios: { XL: { P10: { windowed: 1 }, P12: { p95Ms: 30 } } } }
+  expect(scaleFailures(partial)).toEqual([])
+})
+
 function p4(small: number, large: number): PerfReport {
   return {
     scenarios: {
@@ -467,7 +520,7 @@ test("a P10 that does not say whether its session is windowed is drift", () => {
 test("a session marked windowed has to carry the cold scroll, or the budget leaves with the scenario", () => {
   // Codex review of #1266: with the cold scroll out of the windowed scope, a frame of
   // 150 ms in the windowed scroll passed the gate because nothing measured it.
-  expect(WINDOWED_REQUIRED.map((item) => item.id)).toEqual(["P8", "P8'"])
+  expect(WINDOWED_REQUIRED.map((item) => item.id)).toEqual(["P8", "P8'", "P12", "P13"])
   // The scope has to run what the gate requires of it.
   for (const item of WINDOWED_REQUIRED) expect([...WINDOWED_SKIPS]).not.toContain(item.id)
 
@@ -484,6 +537,20 @@ test("a session marked windowed has to carry the cold scroll, or the budget leav
       { size: "XL", id, metric: "p99Ms" },
       { size: "XL", id, metric: "maxMs" },
     ])
+  }
+
+  // The stream is part of what a windowed session carries: its frame cost and its zero store writes.
+  const metricsOf = (id: string) => WINDOWED_REQUIRED.find((item) => item.id === id)?.metrics ?? []
+  for (const id of ["P12", "P13"]) {
+    const { missing, failures } = compareReports(
+      { scenarios: {} },
+      fullReport((size, items) => {
+        if (size === "XL") delete items[id]
+      }),
+    )
+
+    expect(failures).toEqual([])
+    expect(missing).toEqual(metricsOf(id).map((metric) => ({ size: "XL", id, metric })))
   }
 
   // A scenario that is there without one of its metrics is the drift the gate already reported.
