@@ -6,6 +6,7 @@ export * as HookTurnContext from "./turn-context"
 
 import { Effect } from "effect"
 import type { BackgroundJob } from "@/background/job"
+import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import type { DagStore } from "@graphagent/core/dag/store"
 
 const clipped = (value: string) =>
@@ -24,10 +25,7 @@ export const backgroundTasks = Effect.fn("HookTurnContext.backgroundTasks")(func
       .filter(
         (job) =>
           job.status === "running" &&
-          (job.metadata?.sessionId === sessionID ||
-            job.metadata?.parentSessionId === sessionID ||
-            job.metadata?.sessionID === sessionID ||
-            job.metadata?.parentSessionID === sessionID),
+          (sessionIDOf(job.metadata) === sessionID || parentSessionIDOf(job.metadata) === sessionID),
       )
       .map((job) => ({
         id: job.id,

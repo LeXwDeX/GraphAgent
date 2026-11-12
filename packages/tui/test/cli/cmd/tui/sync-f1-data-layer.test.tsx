@@ -215,7 +215,7 @@ describe("F1 data layer", () => {
         status: "running",
         title: "Background child",
         input: { description: "do work", subagent_type: "general" },
-        metadata: { sessionId: "ses_task_child", background: true },
+        metadata: { sessionID: "ses_task_child", background: true },
       },
     })
 

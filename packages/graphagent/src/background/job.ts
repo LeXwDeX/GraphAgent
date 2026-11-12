@@ -1,5 +1,6 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { BackgroundJob as CoreBackgroundJob } from "@graphagent/core/background-job"
+import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import { Database } from "@graphagent/core/database/database"
 import { InstanceState } from "@/effect/instance-state"
 import { Lifecycle } from "@/lifecycle/service"
@@ -71,7 +72,7 @@ export const layer = Layer.effect(
       get: (id) => InstanceState.useEffect(state, ({ jobs }) => jobs.get(id)),
       start: (input) =>
         Effect.suspend(() => {
-          const ids = [input.id, input.metadata?.sessionId, input.metadata?.parentSessionId].filter(
+          const ids = [input.id, sessionIDOf(input.metadata), parentSessionIDOf(input.metadata)].filter(
             (id): id is string => typeof id === "string",
           )
           const requests = [...new Set(ids)].map((id) => ({ id, request: SessionCancellation.request(id) }))
@@ -90,7 +91,7 @@ export const layer = Layer.effect(
               const captured = yield* data.jobs.capture(info)
               if (!captured) return info
               const matches = new Set(
-                [info.id, info.metadata?.sessionId, info.metadata?.parentSessionId].filter(
+                [info.id, sessionIDOf(info.metadata), parentSessionIDOf(info.metadata)].filter(
                   (id): id is string => typeof id === "string",
                 ),
               )
@@ -112,18 +113,17 @@ export const layer = Layer.effect(
                     changed = false
                     for (const [job, current] of data.active) {
                       if (selected.has(job)) continue
+                      const session = sessionIDOf(current.metadata)
+                      const parent = parentSessionIDOf(current.metadata)
                       if (
                         !pending.has(current.id) &&
-                        !(typeof current.metadata?.sessionId === "string" && pending.has(current.metadata.sessionId)) &&
-                        !(
-                          typeof current.metadata?.parentSessionId === "string" &&
-                          pending.has(current.metadata.parentSessionId)
-                        )
+                        !(session !== undefined && pending.has(session)) &&
+                        !(parent !== undefined && pending.has(parent))
                       )
                         continue
                       selected.add(job)
                       pending.add(current.id)
-                      if (typeof current.metadata?.sessionId === "string") pending.add(current.metadata.sessionId)
+                      if (session !== undefined) pending.add(session)
                       changed = true
                     }
                   }

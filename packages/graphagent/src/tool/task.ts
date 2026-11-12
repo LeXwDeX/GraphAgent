@@ -348,8 +348,8 @@ export const TaskTool = Tool.define(
         providerID: msg.info.providerID,
       }
       const metadata = {
-        parentSessionId: ctx.sessionID,
-        sessionId: nextSession.id,
+        parentSessionID: ctx.sessionID,
+        sessionID: nextSession.id,
         model,
         ...(runInBackground ? { background: true } : {}),
       }

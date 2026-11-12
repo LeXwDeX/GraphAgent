@@ -27,7 +27,7 @@ test("Stop task context includes only current-session active work and bounds des
                   status: "running",
                   started_at: 0,
                   title: long,
-                  metadata: { sessionId: "current", command: long },
+                  metadata: { sessionID: "current", command: long },
                 },
                 {
                   id: "child",
@@ -36,8 +36,8 @@ test("Stop task context includes only current-session active work and bounds des
                   started_at: 0,
                   metadata: { parentSessionID: "current", agent: "review", command: "wrong kind" },
                 },
-                { id: "other", type: "bash", status: "running", started_at: 0, metadata: { sessionId: "other" } },
-                { id: "done", type: "bash", status: "completed", started_at: 0, metadata: { sessionId: "current" } },
+                { id: "other", type: "bash", status: "running", started_at: 0, metadata: { sessionID: "other" } },
+                { id: "done", type: "bash", status: "completed", started_at: 0, metadata: { sessionID: "current" } },
               ]),
           }),
           Layer.mock(DagStore.Service, {

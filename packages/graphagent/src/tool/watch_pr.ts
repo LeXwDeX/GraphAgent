@@ -3,6 +3,7 @@
 
 /* oxlint-disable typescript-eslint/no-unsafe-type-assertion -- JSON responses and ctx.extra are untyped boundaries */
 import { BackgroundJob } from "@/background/job"
+import { sessionIDOf } from "@/background/session-metadata"
 import { Session } from "@/session/session"
 import { Cause, Clock, Deferred, Duration, Effect, Exit, Option, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
@@ -495,7 +496,7 @@ export const WatchPrTool = Tool.define(
               (job) =>
                 job.status === "running" &&
                 job.type === "watch_pr" &&
-                job.metadata?.sessionId === ctx.sessionID &&
+                sessionIDOf(job.metadata) === ctx.sessionID &&
                 job.metadata?.url === request.url,
             )
           let existing = findRunningWatch(yield* background.list())
@@ -614,7 +615,7 @@ export const WatchPrTool = Tool.define(
           // watch advances; background snapshots copy its current fields, so a
           // re-watch sees the watched head and the absolute deadline.
           const jobMetadata: Record<string, unknown> = {
-            sessionId: ctx.sessionID,
+            sessionID: ctx.sessionID,
             url: request.url,
             provider: request.provider,
             survivesSessionCancel: true,

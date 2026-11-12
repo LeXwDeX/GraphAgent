@@ -176,7 +176,7 @@ const finishedJob = (id: string, status: BackgroundJob.Status): BackgroundJob.In
   type: "watch_pr",
   status,
   started_at: 0,
-  metadata: { sessionId: "ses_goal_tool" },
+  metadata: { sessionID: "ses_goal_tool" },
 })
 
 const watchJob = (deadlineAt: number): BackgroundJob.Info => ({
@@ -184,7 +184,7 @@ const watchJob = (deadlineAt: number): BackgroundJob.Info => ({
   type: "watch_pr",
   status: "running",
   started_at: 0,
-  metadata: { sessionId: "ses_goal_tool", url: "https://github.com/acme/widgets/pull/42", deadlineAt },
+  metadata: { sessionID: "ses_goal_tool", url: "https://github.com/acme/widgets/pull/42", deadlineAt },
 })
 
 const waitingState = (intent: GoalState.Intent): GoalState.Info =>
@@ -267,7 +267,7 @@ describe("tool.goal — await intent validation (#1067)", () => {
         type: "general",
         status: "running",
         started_at: 0,
-        metadata: { sessionId: "ses_child", parentSessionId: "ses_goal_tool" },
+        metadata: { sessionID: "ses_child", parentSessionID: "ses_goal_tool" },
       }
       const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [child]) })
 
