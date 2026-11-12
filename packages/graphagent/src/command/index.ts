@@ -37,6 +37,24 @@ export const Info = Schema.Struct({
 
 export type Info = Omit<Schema.Schema.Type<typeof Info>, "template"> & { template: Promise<string> | string }
 
+/**
+ * Provenance for a skill-promoted command (`source: "skill"`): the backing
+ * skill's own trust classification and SKILL.md path. Kept out of `Info`'s
+ * schema -- the public HTTP/SDK shape -- since the command-shell trust gate
+ * (#1040) is its only reader; it is never displayed. Keyed by the exact
+ * `Info` object `get`/`list` return (the same reference `init()` stored, not
+ * a clone), so a stale key is simply never found after a reload.
+ */
+const skillCommandOrigins = new WeakMap<
+  object,
+  { readonly source: Skill.Info["hookSource"]; readonly location: string }
+>()
+
+/** Undefined for a command that is not skill-promoted. */
+export function skillCommandOrigin(cmd: Info) {
+  return skillCommandOrigins.get(cmd)
+}
+
 export function hints(template: string) {
   const result: string[] = []
   const numbered = template.match(/\$\d+/g)
@@ -198,6 +216,10 @@ export const layer = Layer.effect(
           },
           hints: [],
         }
+        // #1040: the command-shell trust gate needs the backing skill's own
+        // classification to fail closed on a project-owned skill it cannot
+        // enumerate; keep it out of the schema above (never displayed).
+        skillCommandOrigins.set(commands[item.name], { source: item.hookSource, location: item.location })
       }
 
       return {

@@ -123,6 +123,42 @@ describe("legacy command registry", () => {
     }),
   )
 
+  // #1040: the command-shell trust gate (`project/trust/command-shell.ts`)
+  // reads this provenance off the exact `Info` object `get` returns, to fail
+  // closed on a project-owned skill it cannot otherwise enumerate.
+  withSkillCommands.instance("keeps a skill-promoted command's trust provenance out of its public shape", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      const cmd = yield* commands.get("visible-skill")
+      if (!cmd) throw new Error("expected visible-skill command")
+      expect(Command.skillCommandOrigin(cmd)).toEqual({ source: undefined, location: "/skills/visible/SKILL.md" })
+      expect(cmd).not.toHaveProperty("hookSource")
+      expect(cmd).not.toHaveProperty("location")
+    }),
+  )
+
+  testEffect(
+    commandLayer({}, [
+      {
+        name: "project-skill",
+        description: "Project-owned skill.",
+        location: "/repo/vendor/skills/project-skill/SKILL.md",
+        content: "Run !`git tag -l`.",
+        hookSource: "project",
+      },
+    ]),
+  ).instance("carries a project skill's hookSource for the command-shell trust gate", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      const cmd = yield* commands.get("project-skill")
+      if (!cmd) throw new Error("expected project-skill command")
+      expect(Command.skillCommandOrigin(cmd)).toEqual({
+        source: "project",
+        location: "/repo/vendor/skills/project-skill/SKILL.md",
+      })
+    }),
+  )
+
   it.instance("retires the platform-delivery commands", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service

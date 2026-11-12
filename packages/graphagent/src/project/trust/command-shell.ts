@@ -34,6 +34,15 @@ export interface ShellGateInput {
   readonly command: string
   /** The fully expanded template that is about to run. */
   readonly template: string
+  /**
+   * Set when `command` is a skill-promoted command: the backing skill's own
+   * trust classification and SKILL.md path. `findDeclaration`'s skill branch
+   * only walks `<root>/.agents/skills`; a project-owned skill reached some
+   * other way (`skills.paths`/`skills.urls`) has no declaration it could ever
+   * find there, so this is how `shellVerdict` fails closed on it instead of
+   * running its body shell segments unchecked (#1040).
+   */
+  readonly skill?: { readonly source: "project" | "user" | "builtin" | undefined; readonly location: string }
 }
 
 interface Declaration {
@@ -146,7 +155,20 @@ export function shellVerdict(
   gate: (entries: readonly GateEntry[]) => Effect.Effect<GateResult>,
 ): Effect.Effect<ShellVerdict> {
   const declaration = findDeclaration(input.root, input.command)
-  if (!declaration) return Effect.succeed({ type: "allow" })
+  if (!declaration) {
+    if (input.skill?.source !== "project") return Effect.succeed({ type: "allow" })
+    // A project-owned skill the trust panel cannot enumerate: fail closed as
+    // one "not enumerated" entry instead of running its shell segments with
+    // no check at all. User/builtin skills, and commands with no backing
+    // skill, keep allowing above.
+    return gate([{ scope: "project", file: input.skill.location, entry: undefined }]).pipe(
+      Effect.map((result): ShellVerdict =>
+        result.allowed[0]
+          ? { type: "allow" }
+          : { type: "refuse", reason: "its skill is outside what the trust panel tracks." },
+      ),
+    )
+  }
   const actual = segments(input.template)
   const declared = declaration.entries.map((entry) => entry.display.text)
   if (actual.length !== declared.length || actual.some((command, index) => command !== declared[index])) {

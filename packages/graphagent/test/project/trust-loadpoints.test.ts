@@ -81,7 +81,7 @@ const uncheckedGate = (seen: GateEntry[][]) => (entries: readonly GateEntry[]) =
     seen.push(entries.slice())
   }).pipe(Effect.flatMap(() => Effect.die(new Error("gate must not run"))))
 
-const verdict = (input: { root: string; command: string; template: string }, gate: Parameters<typeof shellVerdict>[1]) =>
+const verdict = (input: Parameters<typeof shellVerdict>[0], gate: Parameters<typeof shellVerdict>[1]) =>
   shellVerdict(input, gate).pipe(Effect.map((result: ShellVerdict) => result))
 
 // ---------------------------------------------------------------------------
@@ -171,6 +171,70 @@ Deploy !\`echo $ARGUMENTS\`.
       Effect.gen(function* () {
         const seen: GateEntry[][] = []
         const result = yield* verdict({ root, command: "builtin", template: "Run !`uname`." }, recordingGate([], seen))
+        expect(result).toEqual({ type: "allow" })
+        expect(seen).toHaveLength(0)
+      }),
+    ),
+  )
+
+  // #1040: `command/index.ts` promotes every discovered skill to a same-name
+  // slash command regardless of source, but `findDeclaration`'s skill branch
+  // only walks `<root>/.agents/skills`. A project-owned skill reached through
+  // `skills.paths`/`skills.urls` has no declaration there, so without the
+  // `skill` provenance this would fall through to "no declaration found" and
+  // allow -- fails closed instead.
+  it.effect("fails closed for a project-owned skill the panel cannot enumerate", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const location = path.join(root, "vendor", "skills", "release", "SKILL.md")
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "project", location } },
+          recordingGate([false], seen),
+        )
+        expect(result).toEqual({ type: "refuse", reason: "its skill is outside what the trust panel tracks." })
+        expect(seen).toEqual([[{ scope: "project", file: location, entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("runs an unenumerated skill's shell once the gate allows it", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const location = path.join(root, "vendor", "skills", "release", "SKILL.md")
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "project", location } },
+          recordingGate([true], []),
+        )
+        expect(result).toEqual({ type: "allow" })
+      }),
+    ),
+  )
+
+  it.effect("leaves a user-owned skill with no project declaration unaffected", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const location = path.join(root, "vendor", "skills", "release", "SKILL.md")
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "user", location } },
+          recordingGate([false], seen),
+        )
+        expect(result).toEqual({ type: "allow" })
+        expect(seen).toHaveLength(0)
+      }),
+    ),
+  )
+
+  it.effect("leaves a builtin skill with no project declaration unaffected", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const location = "/builtin/release.md"
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", skill: { source: "builtin", location } },
+          recordingGate([false], seen),
+        )
         expect(result).toEqual({ type: "allow" })
         expect(seen).toHaveLength(0)
       }),
