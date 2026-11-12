@@ -293,7 +293,7 @@ describe("child session read-only guard", () => {
         // The router normalizes duplicate slashes, case and %-encoding before it
         // matches, and the handler acts on the decoded param. The guard follows
         // the same param, so none of these slips past a URL-parsed lookup.
-        const encoded = child.id.replace("_", "%5F")
+        const encoded = child.id.replaceAll("_", "%5F")
         const variants = [
           `/session/${child.id}/message/`,
           `//session/${child.id}/message`,

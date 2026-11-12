@@ -133,10 +133,10 @@ describe("child session guard read budget", () => {
 
       reads.length = 0
       // %-encoding: routing reads the raw (unknown) id; the guard reads the decoded one.
-      const encoded = yield* call("POST", `/session/${childID.replace("_", "%5F")}/probe`)
+      const encoded = yield* call("POST", `/session/${childID.replaceAll("_", "%5F")}/probe`)
       expect(encoded.status).toBe(409)
       expect(yield* encoded.json).toMatchObject({ data: { sessionID: childID } })
-      expect(reads).toEqual([childID.replace("_", "%5F"), childID])
+      expect(reads).toEqual([childID.replaceAll("_", "%5F"), childID])
     }),
   )
 })
