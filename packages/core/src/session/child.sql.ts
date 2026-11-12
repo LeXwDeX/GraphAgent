@@ -30,6 +30,12 @@ export const ChildBindingTable = sqliteTable("child_binding", {
  * #1010 (E0): one row per child-run state episode. A child session has at
  * most one active run; after it ends another run may start. `detached` runs
  * that have not reported back stay visible through `child_run_unreported`.
+ *
+ * #1026 (H3 PR1): `runner_id` is the `pid:nonce` identity of the process that
+ * owns an active run, the same vocabulary as `session_turn.runner_id`, so
+ * startup recovery can tell this process, a previous life of the same pid, a
+ * dead pid and a live foreign process apart. Persisted states are only
+ * queued, running and ended.
  */
 export const ChildRunTable = sqliteTable(
   "child_run",
@@ -47,6 +53,7 @@ export const ChildRunTable = sqliteTable(
     detached: integer({ mode: "boolean" }),
     deadline_at: integer(),
     outcome: text({ mode: "json" }).$type<Record<string, unknown>>(),
+    runner_id: text(),
     reported_at: integer(),
     time_created: integer()
       .notNull()

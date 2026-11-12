@@ -9,6 +9,7 @@ import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
+import type { ChildRuns } from "../session/child/run"
 import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import * as Option from "effect/Option"
@@ -24,6 +25,12 @@ export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
   prompt(input: SessionPrompt.PromptInput, options?: SessionPrompt.AdmissionOptions): Effect.Effect<SessionV1.WithParts>
+  /**
+   * Child runs (Issue #1026). Carried here only because this bag already
+   * reaches every place that resolves tools; `SessionTools` hands the task
+   * tool a view narrowed to its own session and no other tool sees it.
+   */
+  readonly children?: ChildRuns.Interface
 }
 
 const id = "task"

@@ -27,6 +27,8 @@ import { TestLLMServer } from "../lib/llm-server"
 /**
  * Issue #1019 PR8 acceptance: ESC must settle a cancelled turn quickly, both
  * while a fake provider is streaming and while a shell command is running.
+ * Issue #1026 PR1 adds the third shape: cancelling a child run, measured until
+ * the child's streaming turn has settled.
  *
  * The Issue requires 50 samples per shape with p95 < 600 ms on shared CI and
  * p95 < 200 ms on the self-hosted machine. The default bound here is the shared
@@ -237,6 +239,64 @@ live(
           if (i >= WARMUP) samples.push(elapsed)
         }
         const p95 = report("shell", samples)
+        expect(p95).toBeLessThan(LIMIT_MS)
+      }),
+    { git: true, config: providerCfg },
+  ),
+  60_000,
+)
+
+live(
+  "cancelling a child run settles its streaming turn within the shared-CI p95 budget",
+  provideTmpdirServer(
+    ({ llm }) =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const children = yield* prompt.children
+        const sessions = yield* Session.Service
+        const parent = yield* sessions.create({ title: "cancel latency child run parent" })
+        let requests = 0
+        const samples: number[] = []
+        for (let i = 0; i < WARMUP + SAMPLES; i++) {
+          // What the task tool does: a child session of the parent, one registered run, one driven turn.
+          const child = yield* sessions.create({ parentID: parent.id, title: `cancel latency child ${i}` })
+          const run = yield* children.start({
+            parentSessionID: parent.id,
+            childSessionID: child.id,
+            owner: { kind: "task", toolCallID: `call_${i}` },
+            detached: true,
+          })
+          yield* run.markRunning
+          let release!: () => void
+          const gate = new Promise<void>((resolve) => {
+            release = resolve
+          })
+          yield* llm.hold("held streaming answer", gate)
+          const running = yield* prompt
+            .prompt(
+              { sessionID: child.id, agent: "build", parts: [{ type: "text", text: `child cancel ${i}` }] },
+              { internalDelegation: true },
+            )
+            .pipe(Effect.forkChild)
+          requests += 1
+          yield* llm.wait(requests)
+          const measured = yield* Effect.gen(function* () {
+            const started = performance.now()
+            // Signal-and-return, then the child's turn settles: the measurement
+            // runs until both the run and the turn are done.
+            const settled = yield* children
+              .cancel(run.id, { kind: "main_agent_tool", toolCallID: `cancel_${i}` })
+              .pipe(
+                Effect.andThen(Effect.all([run.settled, Fiber.await(running)], { concurrency: "unbounded" })),
+                Effect.timeoutOption("10 seconds"),
+              )
+            const elapsed = performance.now() - started
+            return { elapsed, settled }
+          }).pipe(Effect.ensuring(Effect.sync(() => release())))
+          expect(Option.isSome(measured.settled)).toBe(true)
+          if (i >= WARMUP) samples.push(measured.elapsed)
+        }
+        const p95 = report("child run", samples)
         expect(p95).toBeLessThan(LIMIT_MS)
       }),
     { git: true, config: providerCfg },

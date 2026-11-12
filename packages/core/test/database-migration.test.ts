@@ -148,6 +148,14 @@ describe("DatabaseMigration", () => {
           )
         ).map((row) => row.name)
         expect(tables).toEqual(["child_binding", "child_run", "dag_node_attempt", "session_turn"])
+        // #1026: the `pid:nonce` identity of the process that owns an active child run.
+        const childRunColumns = yield* db.all<{ name: string; type: string; notnull: number }>(
+          sql`PRAGMA table_info(child_run)`,
+        )
+        expect(childRunColumns.find((column) => column.name === "runner_id")).toMatchObject({
+          type: "TEXT",
+          notnull: 0,
+        })
 
         const indexes = yield* db.all<{ name: string; sql: string | null }>(
           sql`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name IN ('child_run_active', 'child_run_unreported') ORDER BY name`,

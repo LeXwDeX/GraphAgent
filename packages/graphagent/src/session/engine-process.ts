@@ -5,9 +5,11 @@ import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionAdmission } from "@graphagent/core/session/admission"
 import { Cause, Context, Effect, Layer, Option, type Deferred, type Scope } from "effect"
+import { randomUUID } from "node:crypto"
 import { makeSessionRuntimes, type SessionRuntimes } from "./runtime"
 import { SessionID } from "./schema"
 import { AgentSchedulerState } from "./agent-scheduler-state"
+import type { ChildCancelBy, ChildRunOutcome } from "./child/types"
 
 /**
  * Process-wide engine state (Issue #1019, PR9).
@@ -175,6 +177,64 @@ export namespace ExclusiveRegistry {
   export type Interface = ExclusiveRegistryInterface
 }
 
+/**
+ * Identity of this process as recorded in `runner_id` columns (Issue #1026,
+ * PR1): `session_turn` and `child_run` share the `pid:nonce` vocabulary. The
+ * nonce is drawn once when this module loads, so a container restart that
+ * reuses the same pid still yields a different identity: a row carrying this
+ * pid with another nonce was written by an earlier life of the process and can
+ * never be live again. Leases and heartbeats stay with #1029.
+ */
+export interface RunnerIdentity {
+  readonly pid: number
+  readonly nonce: string
+  /** `pid:nonce`, the value persisted in `runner_id`. */
+  readonly id: string
+}
+
+export type ChildRunPhase = "queued" | "running" | "ended"
+
+/**
+ * Placeholder for the run credential (Issue #1026, PR1): issued with a run and
+ * revoked when it ends. PR3/PR5 carry a module-private brand of it on
+ * admission; PR1 only issues and revokes it.
+ */
+export interface ChildRunCredential {
+  readonly runID: string
+  revoked: boolean
+}
+
+/** One active child run of this process. The durable `child_run` row stays authoritative across processes. */
+export interface ActiveChildRun {
+  readonly id: string
+  readonly childSessionID: SessionID
+  readonly parentSessionID: SessionID
+  /** Instance directory that started the run; disposing the instance ends its runs. */
+  readonly directory: string | undefined
+  /** The `ChildRuns` instance that started the run; closing it ends the runs it started. */
+  readonly owner: object
+  phase: ChildRunPhase
+  outcome: ChildRunOutcome | undefined
+  readonly credential: ChildRunCredential
+  /** Completed once, when the run ends cancelled; drivers race their own work against it. */
+  readonly cancelled: Deferred.Deferred<ChildCancelBy>
+  /** Completed once, with the outcome that ended the run. */
+  readonly done: Deferred.Deferred<ChildRunOutcome>
+  /** Completed once the ended run has left the registry, after its row write finished (or failed). */
+  readonly released: Deferred.Deferred<void>
+}
+
+/**
+ * Child runs by run id and by child session (a child session has at most one).
+ * An entry stays here from registration until its ending is persisted: a run
+ * that already swapped to `ended` but whose row is still being written must not
+ * look like a free child session.
+ */
+export interface ChildRunRegistryState {
+  readonly byRun: Map<string, ActiveChildRun>
+  readonly bySession: Map<string, string>
+}
+
 export interface EngineProcess {
   readonly runtimes: SessionRuntimes
   readonly cancellation: CancellationState
@@ -184,6 +244,15 @@ export interface EngineProcess {
   readonly inbox: InboxRouting
   /** Model-stream and child-run budgets shared by every layer graph (Issue #1021, PR5). */
   readonly scheduler: AgentSchedulerState.SchedulerState
+  /** This process's `runner_id` identity (Issue #1026). */
+  readonly runner: RunnerIdentity
+  /** Active child runs registered by any layer graph of this process (Issue #1026). */
+  readonly children: ChildRunRegistryState
+}
+
+const makeRunnerIdentity = (): RunnerIdentity => {
+  const nonce = randomUUID()
+  return { pid: process.pid, nonce, id: `${process.pid}:${nonce}` }
 }
 
 export const EngineProcess: EngineProcess = {
@@ -202,6 +271,8 @@ export const EngineProcess: EngineProcess = {
     drains: new Set(),
   },
   scheduler: AgentSchedulerState.makeState(),
+  runner: makeRunnerIdentity(),
+  children: { byRun: new Map(), bySession: new Map() },
 }
 
 const entry = (state: ExclusiveState, sessionID: SessionID) => {

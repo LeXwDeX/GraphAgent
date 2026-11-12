@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "3a8d65c2-bee8-4588-a9fa-180ca3d66374",
+  "id": "a84147b5-5dcf-4ccb-9b0d-cafc860b0ccf",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -859,6 +859,16 @@
       "default": null,
       "generated": null,
       "name": "outcome",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "runner_id",
       "entityType": "columns",
       "table": "child_run"
     },

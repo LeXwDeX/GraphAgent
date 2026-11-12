@@ -109,6 +109,7 @@ export default {
           \`detached\` integer,
           \`deadline_at\` integer,
           \`outcome\` text,
+          \`runner_id\` text,
           \`reported_at\` integer,
           \`time_created\` integer NOT NULL,
           \`time_ended\` integer,

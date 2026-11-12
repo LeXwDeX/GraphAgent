@@ -11,6 +11,7 @@ import { EngineProcess } from "./engine-process"
 import { AgentScheduler } from "./agent-scheduler"
 import { makeSessionLocks } from "./locks"
 import { SessionRevert } from "./revert"
+import { makeChildRuns, type ChildRuns } from "./child/run"
 
 // #404: headless clients (`opencode run "/init"`, SDK text prompts) deliver
 // slash commands as plain text parts to POST /session/:id/message. The TUI
@@ -206,6 +207,14 @@ export interface Interface {
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
   readonly editQueuedMessage: (input: QueuedMessageEditInput) => Effect.Effect<SessionV1.WithParts, QueuedMessageError>
   readonly deleteQueuedMessage: (input: QueuedMessageDeleteInput) => Effect.Effect<boolean, QueuedMessageError>
+  /**
+   * Child runs (Issue #1026): who owns a child session, whether it is running,
+   * how it ended. Assembled here, beside the turns and admission factories, so
+   * the task tool never forms a layer cycle with it. Effect-valued so a partial
+   * `Layer.mock` of this service (which must spell out every plain-valued
+   * member) stays valid.
+   */
+  readonly children: Effect.Effect<ChildRuns.Interface>
 }
 
 export type PromptError = Image.Error | ModelSwitchBlocked | NoPendingHookInput | AdmissionPersistFailed
@@ -269,6 +278,13 @@ export const layer = Layer.effect(
           dataVersion: HistoryCache.dataVersion(database),
         })
       : undefined
+    // Cancelling a child's turn goes through admission, which is built below;
+    // the late-bound closure resolves once the layer is up.
+    const children = yield* makeChildRuns({
+      db,
+      scope,
+      cancelSession: (sessionID, options) => admit.cancel(sessionID, options),
+    })
     // The event fan-out runs without InstanceRef: only process-wide state and
     // the hint's layer-scoped Refs may be touched here.
     yield* Effect.acquireRelease(
@@ -281,6 +297,7 @@ export const layer = Layer.effect(
           return Effect.gen(function* () {
             if (agentInputHint) yield* agentInputHint.forget(SessionID.make(sessionID))
             yield* runtimes.remove(SessionID.make(sessionID))
+            yield* children.forget(SessionID.make(sessionID))
           })
         }
         if (event.type === SessionEvent.Moved.type) {
@@ -477,6 +494,7 @@ export const layer = Layer.effect(
         resolvePromptParts: (template: string) => prepareFns.resolvePromptParts(template),
         prompt: (input: PromptInput, options?: AdmissionOptions) =>
           admit.prompt(input, options).pipe(Effect.catch(Effect.die)),
+        children,
       } satisfies TaskPromptOps
     })
 
@@ -720,6 +738,7 @@ export const layer = Layer.effect(
       resolvePromptParts: prepareFns.resolvePromptParts,
       editQueuedMessage: prepareFns.editQueuedMessage,
       deleteQueuedMessage: prepareFns.deleteQueuedMessage,
+      children: Effect.succeed(children),
     })
   }),
 )
