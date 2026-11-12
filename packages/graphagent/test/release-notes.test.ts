@@ -63,13 +63,16 @@ function defaultSections(): Section[] {
       heading: headings[5],
       body: "```\nrelease-notes: 12 pass\ntotal: 12 tests, 0 failures\ntypecheck: 1/1 packages green\n```",
     },
-    { heading: headings[6], body: "Rendered with bun test from packages/graphagent and mutation-checked rule by rule." },
+    {
+      heading: headings[6],
+      body: "Rendered with bun test from packages/graphagent and mutation-checked rule by rule.",
+    },
   ]
 }
 
 function buildSource(options: { sections?: Section[]; intro?: string; title?: string; finalLine?: string }) {
   return [
-    options.title ?? "## opencode {VERSION}",
+    options.title ?? "## graphagent {VERSION}",
     "",
     options.intro ?? defaultIntro,
     "",
@@ -97,7 +100,7 @@ describe("release notes rendering", () => {
   test("renders a valid stable series file", () => {
     const rendered = validateAndRender(buildSource({}), input)
 
-    expect(rendered).toContain("## opencode 1.0.10")
+    expect(rendered).toContain("## graphagent 1.0.10")
     expect(rendered).toContain("Stable release from `main` branch.")
     expect(rendered).not.toContain("{")
     expect(rendered).not.toContain("}")
@@ -107,7 +110,7 @@ describe("release notes rendering", () => {
   test("renders the same series file for a dev prerelease of that series", () => {
     const rendered = validateAndRender(buildSource({}), devInput)
 
-    expect(rendered).toContain("## opencode 1.0.10-dev.3")
+    expect(rendered).toContain("## graphagent 1.0.10-dev.3")
     expect(rendered).toContain("Prerelease release from `dev` branch.")
     expect(rendered.endsWith(expectedFinalLine(devInput))).toBe(true)
     expect(rendered).not.toContain("{")
@@ -116,7 +119,7 @@ describe("release notes rendering", () => {
 
 describe("release notes grammar (fail closed)", () => {
   test("rejects a title that does not match the released version", () => {
-    expect(() => validateAndRender(buildSource({ title: "## opencode 9.9.9" }), input)).toThrow("[release-notes]")
+    expect(() => validateAndRender(buildSource({ title: "## graphagent 9.9.9" }), input)).toThrow("[release-notes]")
   })
 
   test("rejects a hardcoded channel or branch word in the intro", () => {

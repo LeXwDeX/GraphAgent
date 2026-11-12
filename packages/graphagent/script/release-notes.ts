@@ -71,8 +71,8 @@ export function validateAndRender(source: string, input: ReleaseNotesInput): str
   const lines = rendered.split(/\r?\n/)
   const nonBlank = lines.filter((line) => line.trim().length > 0)
 
-  if (nonBlank[0] !== `## opencode ${input.version}`)
-    throw new ReleaseNotesError(`first line must be "## opencode ${input.version}", found ${quote(nonBlank[0])}`)
+  if (nonBlank[0] !== `## graphagent ${input.version}`)
+    throw new ReleaseNotesError(`first line must be "## graphagent ${input.version}", found ${quote(nonBlank[0])}`)
 
   const channelMatch = channelLinePattern.exec(nonBlank[1] ?? "")
   if (!channelMatch || channelMatch[1] !== channelWord(input.channel) || channelMatch[2] !== input.branch)
@@ -83,18 +83,24 @@ export function validateAndRender(source: string, input: ReleaseNotesInput): str
   const headings = lines.filter((line) => line.startsWith("### "))
   for (const heading of headings) {
     if (!canonicalHeadings.includes(heading))
-      throw new ReleaseNotesError(`unknown section heading ${quote(heading)} — must equal a template heading codepoint-for-codepoint`)
+      throw new ReleaseNotesError(
+        `unknown section heading ${quote(heading)} — must equal a template heading codepoint-for-codepoint`,
+      )
   }
   let previousIndex = -1
   for (const heading of headings) {
     const index = canonicalHeadings.indexOf(heading)
     if (index <= previousIndex)
-      throw new ReleaseNotesError(`section headings must follow template order without duplicates, violated at ${quote(heading)}`)
+      throw new ReleaseNotesError(
+        `section headings must follow template order without duplicates, violated at ${quote(heading)}`,
+      )
     previousIndex = index
   }
 
-  if (!headings.includes(testSummaryHeading)) throw new ReleaseNotesError(`missing required section ${quote(testSummaryHeading)}`)
-  if (!headings.includes(verificationHeading)) throw new ReleaseNotesError(`missing required section ${quote(verificationHeading)}`)
+  if (!headings.includes(testSummaryHeading))
+    throw new ReleaseNotesError(`missing required section ${quote(testSummaryHeading)}`)
+  if (!headings.includes(verificationHeading))
+    throw new ReleaseNotesError(`missing required section ${quote(verificationHeading)}`)
 
   const blocks = splitBlocks(lines)
   const sections = blocks.slice(1, -1).map((block) => {
@@ -118,7 +124,9 @@ export function validateAndRender(source: string, input: ReleaseNotesInput): str
 
   for (const section of sections) {
     if (!section.heading?.startsWith("### "))
-      throw new ReleaseNotesError('invalid "---" separator structure: every block between separators must start with a "### " heading')
+      throw new ReleaseNotesError(
+        'invalid "---" separator structure: every block between separators must start with a "### " heading',
+      )
   }
   const blockStarts = sections.filter((section) => section.heading?.startsWith("### ")).length
   if (blockStarts !== headings.length)
@@ -127,9 +135,13 @@ export function validateAndRender(source: string, input: ReleaseNotesInput): str
     )
 
   if (input.tag !== `${tagPrefix}${input.version}`)
-    throw new ReleaseNotesError(`tag must be "${tagPrefix}${input.version}" for version ${input.version}, received "${input.tag}"`)
+    throw new ReleaseNotesError(
+      `tag must be "${tagPrefix}${input.version}" for version ${input.version}, received "${input.tag}"`,
+    )
   if (input.previousTag.length === 0)
-    throw new ReleaseNotesError("previousTag is empty — no stable graphagent-v* tag exists, so no changelog range can be rendered")
+    throw new ReleaseNotesError(
+      "previousTag is empty — no stable graphagent-v* tag exists, so no changelog range can be rendered",
+    )
   const expected = expectedFinalLine(input)
   const finalLines = (blocks[blocks.length - 1] ?? []).filter((line) => line.trim().length > 0)
   if (finalLines.length !== 1 || finalLines[0] !== expected)
@@ -186,7 +198,8 @@ function readArgs(argv: readonly string[]) {
   const args: Record<string, string> = {}
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]
-    if (key === undefined || !key.startsWith("--")) throw new ReleaseNotesError(`unexpected argument "${key}" (expected --key value pairs)`)
+    if (key === undefined || !key.startsWith("--"))
+      throw new ReleaseNotesError(`unexpected argument "${key}" (expected --key value pairs)`)
     const value = argv[i + 1]
     if (value === undefined) throw new ReleaseNotesError(`missing value for ${key}`)
     args[key.slice(2)] = value
@@ -206,7 +219,9 @@ function resolveFile(args: Record<string, string>, version: string) {
     throw new ReleaseNotesError("pass either --file or --notes-dir, not both")
   if (args.file !== undefined) {
     if (basename(args.file) !== fileName)
-      throw new ReleaseNotesError(`series mismatch: --file ${args.file} must be named ${fileName} for version ${version}`)
+      throw new ReleaseNotesError(
+        `series mismatch: --file ${args.file} must be named ${fileName} for version ${version}`,
+      )
     return args.file
   }
   if (args["notes-dir"] !== undefined) return join(args["notes-dir"], fileName)
