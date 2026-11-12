@@ -392,7 +392,11 @@ describe("ChildRuns.adopt", () => {
 
       const busy = yield* refuse(scoped, child)
       expect(String(busy)).toContain("ChildRunActive")
-      expect(yield* runRows(db, child)).toHaveLength(1)
+      // The refusal leaves the running run alone: still one row, still queued.
+      const refused = yield* runRows(db, child)
+      expect(refused).toHaveLength(1)
+      expect(refused[0]?.state).toBe("queued")
+      expect(refused[0]?.outcome).toBeNull()
 
       yield* first.settle({ type: "completed" })
       const second = yield* scoped.adopt({
