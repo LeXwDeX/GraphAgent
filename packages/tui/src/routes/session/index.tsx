@@ -106,12 +106,13 @@ import {
   PART_OVERSCAN,
   prefixPositions,
   rowRevision,
-  stableRows,
+  settledPartText,
   TAIL_ALWAYS,
   visibleRange,
   type Row,
   type SessionViewState,
 } from "./rows"
+import { createRowTable } from "./row-table"
 
 addDefaultParsers(parsers.parsers)
 
@@ -302,7 +303,6 @@ export function Main() {
   // unmounted row can still be located and scrolled to.
   const view = createSessionViewState()
   const measurements = createRowMeasurements()
-  let previousRows: ReadonlyMap<string, Row> = new Map()
 
   // Windowing reports which part rows are actually on screen, so spinners in
   // scrolled-out rows stay static. Undefined means "everything visible" (the
@@ -320,141 +320,16 @@ export function Main() {
     return ids.has(partID)
   }
 
-  const rowData = createMemo(() => {
-    const list: Row[] = []
-    const chars = new Map<string, number>()
-    const streaming = new Set<string>()
-    const textLines = (text: string) => Math.max(1, ...text.split("\n").map((line) => line.length))
-
-    for (const message of messages()) {
-      if (message.id === revertMessageID()) {
-        list.push({
-          key: `revert:${message.id}`,
-          messageID: message.id,
-          kind: "revert",
-          revision: rowRevision(revert()?.reverted.length, revertInfo()?.diff),
-        })
-      }
-      if (atOrAfterRevert(message)) continue
-      const parts = sync.data.part[message.id] ?? []
-
-      if (message.role === "user") {
-        const texts: string[] = []
-        for (const part of parts) {
-          if (part.type === "text" && !part.synthetic) texts.push(renderUserTextPart(part, { key: "" }))
-        }
-        const text = texts.join("\n\n")
-        const compaction = parts.some((part) => part.type === "compaction")
-        if (text || compaction) {
-          const key = `user:${message.id}`
-          list.push({
-            key,
-            messageID: message.id,
-            kind: "user",
-            revision: rowRevision(text, compaction),
-          })
-          chars.set(key, textLines(text))
-        }
-        continue
-      }
-
-      for (const part of parts) {
-        if (part.type === "text") {
-          const text = sync.readPartText(part).trim()
-          if (!text) continue
-          const key = `part:${part.id}`
-          const done = part.time?.end !== undefined
-          list.push({
-            key,
-            messageID: message.id,
-            partID: part.id,
-            kind: "text",
-            revision: rowRevision(text, done),
-          })
-          chars.set(key, textLines(text))
-          if (!done) streaming.add(key)
-        } else if (part.type === "reasoning") {
-          const text = sync.readPartText(part).replace("[REDACTED]", "").trim()
-          if (!text) continue
-          const key = `part:${part.id}`
-          const done = part.time.end !== undefined
-          list.push({
-            key,
-            messageID: message.id,
-            partID: part.id,
-            kind: "reasoning",
-            revision: rowRevision(text, done, view.get(part.id, "expanded")),
-          })
-          chars.set(key, textLines(text))
-          if (!done) streaming.add(key)
-        } else if (part.type === "tool") {
-          if (hideToolDetails(part.tool, part.state, showDetails())) continue
-          const key = `part:${part.id}`
-          const output = part.state.status === "completed" ? part.state.output : ""
-          list.push({
-            key,
-            messageID: message.id,
-            partID: part.id,
-            kind: "tool",
-            revision: rowRevision(
-              part.state.status,
-              output.length,
-              part.state.status === "pending" ? false : Boolean(part.state.metadata?.background),
-              view.get(part.id, "expanded"),
-              view.get(part.id, "errorExpanded"),
-            ),
-          })
-          if (part.state.status === "pending" || part.state.status === "running") streaming.add(key)
-        }
-      }
-
-      if (parts.some((part) => part.type === "tool" && part.tool === "task")) {
-        const key = `task:${message.id}`
-        list.push({
-          key,
-          messageID: message.id,
-          kind: "notice",
-          revision: rowRevision(
-            parts.some(
-              (part) =>
-                part.type === "tool" &&
-                part.tool === "task" &&
-                part.state.status === "running" &&
-                part.state.metadata?.background !== true,
-            ),
-          ),
-        })
-      }
-
-      if (message.error && message.error.name !== "MessageAbortedError") {
-        list.push({
-          key: `error:${message.id}`,
-          messageID: message.id,
-          kind: "notice",
-          revision: rowRevision(errorMessage(message.error), message.error.name),
-        })
-      }
-
-      const final = message.finish && !["tool-calls", "unknown"].includes(message.finish)
-      if (lastAssistant()?.id === message.id || final || message.error?.name === "MessageAbortedError") {
-        list.push({
-          key: `summary:${message.id}`,
-          messageID: message.id,
-          kind: "meta",
-          revision: rowRevision(
-            message.finish,
-            message.time.completed,
-            message.error?.name,
-            message.agent,
-            message.mode,
-          ),
-        })
-      }
-    }
-
-    const stable = stableRows(previousRows, list)
-    previousRows = stable.byKey
-    return { rows: stable.rows, chars, streaming }
+  const rowData = createRowTable({
+    messages,
+    parts: (messageID) => sync.data.part[messageID] ?? [],
+    readPartText: (part) => sync.readPartText(part),
+    view,
+    showDetails,
+    lastAssistantID: () => lastAssistant()?.id,
+    revertMessageID,
+    revertRevision: () => rowRevision(revert()?.reverted.length, revertInfo()?.diff),
+    reverted: atOrAfterRevert,
   })
 
   const rows = createMemo(() => rowData().rows)
@@ -1786,20 +1661,31 @@ function SessionTranscript(props: {
     index >= props.rows.length - TAIL_ALWAYS ||
     (index >= first() - PART_OVERSCAN && index <= last() + PART_OVERSCAN)
 
-  const gaps = createMemo(() => {
-    const result = new Map<number, number>()
-    let index = 0
-    while (index < props.rows.length) {
-      if (mounted(props.rows[index], index)) {
-        index++
-        continue
+  // A new map for the same gaps would wake every placeholder row, so equal maps are kept apart: the row
+  // being streamed at the tail changes `positions` on most frames and moves no gap above it.
+  const gaps = createMemo(
+    () => {
+      const result = new Map<number, number>()
+      let index = 0
+      while (index < props.rows.length) {
+        if (mounted(props.rows[index], index)) {
+          index++
+          continue
+        }
+        const start = index
+        while (index < props.rows.length && !mounted(props.rows[index], index)) index++
+        result.set(start, props.positions[index] - props.positions[start])
       }
-      const start = index
-      while (index < props.rows.length && !mounted(props.rows[index], index)) index++
-      result.set(start, props.positions[index] - props.positions[start])
-    }
-    return result
-  })
+      return result
+    },
+    undefined,
+    {
+      equals: (previous, next) =>
+        previous !== undefined &&
+        previous.size === next.size &&
+        [...next].every(([start, height]) => previous.get(start) === height),
+    },
+  )
 
   return (
     <>
@@ -2187,8 +2073,10 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   // Flips independently of the parent message completing.
   const isDone = createMemo(() => props.part.time.end !== undefined)
   const raw = createMemo(() => {
+    // A finished part reads its snapshot: following the stream version would re-run this on every frame.
+    const text = isDone() ? settledPartText(props.part) : ctx.sync.readPartText(props.part)
     // OpenRouter encrypts some reasoning blocks; drop the placeholder.
-    return ctx.sync.readPartText(props.part).replace("[REDACTED]", "")
+    return text.replace("[REDACTED]", "")
   })
   // While streaming only leading blank lines are dropped; the full body is
   // trimmed once, when it stops changing.
@@ -2295,7 +2183,8 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
   // in streaming mode, and only leading blank lines are dropped; the full body
   // is trimmed once when it stops changing.
   const isDone = createMemo(() => props.part.time?.end !== undefined)
-  const raw = createMemo(() => ctx.sync.readPartText(props.part))
+  // A finished part reads its snapshot: following the stream version would re-run this on every frame.
+  const raw = createMemo(() => (isDone() ? settledPartText(props.part) : ctx.sync.readPartText(props.part)))
   const content = createMemo(() => (isDone() ? raw().trim() : raw().trimStart()))
   return (
     <Show when={content()}>

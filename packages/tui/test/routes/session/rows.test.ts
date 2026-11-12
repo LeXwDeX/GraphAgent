@@ -3,15 +3,19 @@
 
 import { describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
+import { createStreamBuffer } from "../../../src/context/stream-buffer"
 import {
   createRowMeasurements,
   createSessionViewState,
+  createTextFacts,
   estimateRowHeight,
   firstVisible,
   isWindowed,
   lastVisible,
+  longestLine,
   prefixPositions,
   rowRevision,
+  settledPartText,
   stableRows,
   visibleRange,
   WINDOW_MIN_ROWS,
@@ -112,6 +116,115 @@ describe("rowRevision", () => {
     expect(rowRevision("abc", 1, true)).toBe(rowRevision("abc", 1, true))
     expect(rowRevision("abc", 1, true)).not.toBe(rowRevision("abc", 1, false))
     expect(rowRevision("abc", 1)).not.toBe(rowRevision("abd", 1))
+  })
+})
+
+describe("longestLine", () => {
+  // The height estimate used to take `Math.max(1, ...text.split("\n").map((line) => line.length))`.
+  const reference = (text: string) => Math.max(1, ...text.split("\n").map((line) => line.length))
+
+  test("is the width of the longest line, at least 1", () => {
+    for (const text of [
+      "",
+      "a",
+      "abc",
+      "ab\ncdef\ng",
+      "\n\n",
+      "tail\n",
+      "\nhead",
+      "crlf\r\nlonger line\r\n",
+      "一二三\nabc",
+    ]) {
+      expect(longestLine(text)).toBe(reference(text))
+    }
+    expect(longestLine("")).toBe(1)
+    expect(longestLine("ab\ncdef\ng")).toBe(4)
+  })
+
+  test("walks a text of hundreds of thousands of lines without splitting it", () => {
+    const text = "x\n".repeat(300_000) + "tail"
+    expect(longestLine(text)).toBe(4)
+    expect(longestLine(text)).toBe(reference(text))
+  })
+})
+
+describe("settledPartText", () => {
+  // The rule is `StreamBuffer.read` of a part with nothing buffered: the two readers must not drift apart.
+  const parts = [
+    { id: "t1", type: "text", text: "plain" },
+    { id: "t2", type: "text", text: "raw", displayText: "shown by a hook" },
+    { id: "t3", type: "text", text: "raw", displayText: "" },
+    { id: "t4", type: "text" },
+    { id: "r1", type: "reasoning", text: "thinking" },
+    { id: "r2", type: "reasoning" },
+  ]
+
+  test("reads what the stream buffer reads for a part with nothing buffered", () => {
+    const stream = createStreamBuffer()
+    for (const part of parts) expect(settledPartText(part)).toBe(stream.read(part))
+    expect(settledPartText(parts[1])).toBe("shown by a hook")
+    expect(settledPartText(parts[3])).toBe("")
+  })
+
+  test("leaves out what a part that is still being written has buffered", () => {
+    const stream = createStreamBuffer()
+    stream.append("t1", "text", " and more")
+    expect(stream.read(parts[0])).toBe("plain and more")
+    expect(settledPartText(parts[0])).toBe("plain")
+  })
+})
+
+describe("createTextFacts", () => {
+  const counted = () => {
+    const calls: string[] = []
+    const normalize = (raw: string) => {
+      calls.push(raw)
+      return raw.trim()
+    }
+    return { calls, normalize }
+  }
+
+  test("derives the facts of a part once per distinct text", () => {
+    const facts = createTextFacts()
+    const { calls, normalize } = counted()
+
+    const first = facts.read("p1", "  one\ntwo words  ", normalize)
+    expect(first.text).toBe("one\ntwo words")
+    expect(first.chars).toBe(9)
+
+    // The same text again, however many times, is the entry that was kept.
+    for (let call = 0; call < 50; call++) expect(facts.read("p1", "  one\ntwo words  ", normalize)).toBe(first)
+    expect(calls).toHaveLength(1)
+
+    // Another text derives again, and so does another part with the same text.
+    expect(facts.read("p1", "one\ntwo words and more", normalize).chars).toBe(18)
+    facts.read("p2", "one\ntwo words and more", normalize)
+    expect(calls).toHaveLength(3)
+  })
+
+  test("hashes the body on first use and keeps the hash", () => {
+    const facts = createTextFacts()
+    const entry = facts.read("p1", " body ", (raw) => raw.trim())
+
+    expect(entry.hash()).toBe(rowRevision("body"))
+    expect(entry.hash()).toBe(entry.hash())
+    expect(facts.read("p1", " body ", (raw) => raw.trim()).hash()).toBe(rowRevision("body"))
+  })
+
+  test("forgets the parts that are not live, and derives them again when they come back", () => {
+    const facts = createTextFacts()
+    const { calls, normalize } = counted()
+    facts.read("kept", "a", normalize)
+    facts.read("gone", "b", normalize)
+    expect(facts.size).toBe(2)
+
+    facts.retain(new Set(["kept"]))
+
+    expect(facts.size).toBe(1)
+    facts.read("kept", "a", normalize)
+    expect(calls).toHaveLength(2)
+    facts.read("gone", "b", normalize)
+    expect(calls).toHaveLength(3)
   })
 })
 
