@@ -68,6 +68,10 @@ const OC_BINARY_PATH_ALLOW: Allow[] = [
 // with their readers by B5; the remaining entries are either the G0b photon
 // patch key or negative tests proving a retired name is ignored.
 const LEGACY_ENV_ALLOW: Allow[] = [
+  {
+    file: "packages/tui/test/i18n/brand-words.test.ts",
+    reason: "fixtures that prove the TUI brand guard rejects a legacy environment name",
+  },
   { file: "oc", reason: "G1 switches OC_OPENCODE_NAME together with the installer assets" },
   {
     file: "script/oc-install-boundary.test.sh",
