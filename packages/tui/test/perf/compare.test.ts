@@ -2,27 +2,68 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { expect, test } from "bun:test"
+import path from "node:path"
 import {
+  ABSOLUTE_CAPS,
   compareReports,
+  FRAME_CEILING_MS,
   MIN_COMPARE_MS,
+  P14_ABSOLUTE_INCREASE_MS,
+  P2_MAX_SCALE,
+  P2_NOISE_FLOOR_MS,
   P99_NOISE_ALLOWANCE_MS,
   P99_TIMING_RATIO,
+  PENDING_BASELINE_COMMIT,
+  PENDING_REBASELINE,
+  SUB_MS_ALLOWANCE_MS,
   TIMING_RATIO,
   type PerfReport,
+  type ScenarioMetrics,
 } from "./compare"
+import { SCENARIO_IDS } from "./scenarios"
+import { tmpdir } from "../fixture/fixture"
 
-function report(metrics: Record<string, number>, calibration?: { fixedLayoutMsMedian?: number }): PerfReport {
-  return { calibration, scenarios: { L: { P1: metrics } } }
+/** An id the gate has no fixed rule for, so only the baseline-relative check applies. */
+const PLAIN = "PX"
+
+function report(
+  metrics: Record<string, number>,
+  calibration?: { fixedLayoutMsMedian?: number },
+  id: string = PLAIN,
+): PerfReport {
+  return { calibration, scenarios: { L: { [id]: metrics } } }
 }
 
-test("a sub-millisecond baseline does not gate the ratio check", () => {
-  const baseline = report({ p99Ms: 0.97 })
-  const current = report({ p99Ms: 2.15 })
+test("a sub-millisecond baseline is compared by absolute increase", () => {
+  const baseline = report({ p95Ms: 0.49 })
 
-  const { rows, failures } = compareReports(baseline, current)
+  // Within the allowance: sub-millisecond noise must not gate.
+  expect(compareReports(baseline, report({ p95Ms: 0.49 + SUB_MS_ALLOWANCE_MS - 0.1 })).failures).toEqual([])
+  // Beyond it, however far below the ratio-times-baseline the old floor skipped: 0.49 -> 40 ms.
+  const { failures } = compareReports(baseline, report({ p95Ms: 40 }))
+  expect(failures).toHaveLength(1)
+  expect(failures[0]?.metric).toBe("p95Ms")
+})
 
-  expect(failures).toEqual([])
-  expect(rows).toHaveLength(1)
+test("the in-memory regressions from the audit now fail", () => {
+  // The audit rewrote these baselines in memory and the gate let all of them through.
+  const cases = [
+    { id: "P1", metric: "p95Ms", before: 0.49, after: 40 },
+    { id: "P5", metric: "openP95Ms", before: 0.5, after: 50 },
+    { id: "P9", metric: "p99Ms", before: 12.84, after: 19 },
+  ]
+  for (const item of cases) {
+    const baseline = report({ [item.metric]: item.before }, undefined, item.id)
+    const current = report({ [item.metric]: item.after }, undefined, item.id)
+    expect(compareReports(baseline, current).failures.length).toBeGreaterThan(0)
+  }
+})
+
+test("the sub-millisecond allowance does not relax baselines at or above the floor", () => {
+  const baseline = report({ p95Ms: MIN_COMPARE_MS })
+
+  expect(compareReports(baseline, report({ p95Ms: MIN_COMPARE_MS * TIMING_RATIO - 0.01 })).failures).toEqual([])
+  expect(compareReports(baseline, report({ p95Ms: MIN_COMPARE_MS * TIMING_RATIO + 0.01 })).failures).toHaveLength(1)
 })
 
 test("a baseline at the floor still gates a regression beyond the p99 allowance", () => {
@@ -77,7 +118,7 @@ test("the p99 allowance does not relax other percentiles", () => {
   expect(compareReports(baseline, current).failures).toHaveLength(1)
 })
 
-test("a sub-millisecond current sample stays below the floor", () => {
+test("an improvement never fails, whatever the baseline", () => {
   const baseline = report({ p50Ms: 2 })
   const current = report({ p50Ms: 0.5 })
 
@@ -110,23 +151,354 @@ test("the machine factor normalizes the current timing", () => {
   expect(compareReports(baseline, current).failures).toEqual([])
 })
 
-function p14(p95Ms: number, relativeIncrease: number): PerfReport {
-  return { scenarios: { L: { P14: { p95Ms, relativeIncrease } } } }
+function scenarioReport(id: string, metrics: Record<string, number>, calibration?: { fixedLayoutMsMedian?: number }) {
+  return report(metrics, calibration, id)
 }
 
-test("a sub-millisecond P14 sample does not gate the relative increase", () => {
-  const baseline = p14(0.12, 0.09)
-  const current = p14(0.3, 0.11)
+test("every absolute cap fails just above its limit and passes at it, with no baseline entry", () => {
+  for (const cap of ABSOLUTE_CAPS) {
+    const at = compareReports({ scenarios: {} }, scenarioReport(cap.id, { [cap.metric]: cap.max }))
+    const above = compareReports({ scenarios: {} }, scenarioReport(cap.id, { [cap.metric]: cap.max + 0.01 }))
+    expect(at.failures).toEqual([])
+    expect(above.failures.map((failure) => `${failure.id}.${failure.metric}`)).toEqual([`${cap.id}.${cap.metric}`])
+  }
+})
 
+test("the absolute caps match the issue's budgets", () => {
+  const caps = Object.fromEntries(ABSOLUTE_CAPS.map((cap) => [`${cap.id}.${cap.metric}`, cap.max]))
+  expect(caps).toMatchObject({
+    "P1.p95Ms": 16,
+    "P1.p99Ms": 33,
+    "P5.openP95Ms": 33,
+    "P5.maxMs": FRAME_CEILING_MS,
+    "P6.filterP95Ms": 16,
+    "P6.escapeP95Ms": 16,
+    "P8.p99Ms": 33,
+    "P8.maxMs": FRAME_CEILING_MS,
+    "P8'.maxMs": FRAME_CEILING_MS,
+    "P9.p99Ms": 16,
+    "P12.p95Ms": 33,
+  })
+})
+
+test("absolute caps get headroom on a slower runner in proportion to its machine factor", () => {
+  // Hosted CI run of #1257: layout calibration 35.48 ms against the baseline's 23.29 ms, P9 p99 18.64 ms.
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 23.29 }, scenarios: {} }
+  const slower: PerfReport = { calibration: { fixedLayoutMsMedian: 35.48 }, scenarios: { L: { P9: { p99Ms: 18.64 } } } }
+  expect(compareReports(baseline, slower).failures).toEqual([])
+
+  // The headroom is the factor and no more: 16 ms × 1.523 is about 24.4 ms.
+  const tooSlow: PerfReport = { calibration: { fixedLayoutMsMedian: 35.48 }, scenarios: { L: { P9: { p99Ms: 25 } } } }
+  const { failures } = compareReports(baseline, tooSlow)
+  expect(failures.map((failure) => failure.metric)).toEqual(["p99Ms"])
+  expect(failures[0]?.limit).toContain("16 ms × machine factor 1.523")
+})
+
+test("absolute caps never tighten on a faster machine", () => {
+  // A runner twice as fast as the baseline machine is still held to the plain budget.
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
+  const atCap: PerfReport = { calibration: { fixedLayoutMsMedian: 10 }, scenarios: { L: { P9: { p99Ms: 16 } } } }
+  expect(compareReports(baseline, atCap).failures).toEqual([])
+
+  const over: PerfReport = { calibration: { fixedLayoutMsMedian: 10 }, scenarios: { L: { P9: { p99Ms: 17 } } } }
+  const { failures } = compareReports(baseline, over)
+  expect(failures.map((failure) => failure.metric)).toEqual(["p99Ms"])
+  expect(failures[0]?.limit).toBe("≤ 16 ms")
+})
+
+test("the 100 ms frame ceiling covers the slash and scroll scenarios", () => {
+  for (const id of ["P5", "P5'", "P8", "P8'"]) {
+    const { failures } = compareReports({ scenarios: {} }, scenarioReport(id, { maxMs: FRAME_CEILING_MS + 1 }))
+    expect(failures).toHaveLength(1)
+    expect(failures[0]).toMatchObject({ id, metric: "maxMs" })
+  }
+})
+
+function p2(scale: number, small: number, large: number): PerfReport {
+  return {
+    scenarios: {
+      S: { P1: { p95Ms: small }, P2: { p95Scale: 1 } },
+      L: { P1: { p95Ms: large }, P2: { p95Scale: scale } },
+    },
+  }
+}
+
+test("P2 fails when the larger transcript is both proportionally and absolutely slower", () => {
+  const { failures } = compareReports({ scenarios: {} }, p2(P2_MAX_SCALE + 0.5, 4, 4 * (P2_MAX_SCALE + 0.5)))
+
+  expect(failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)).toEqual(["L.P2.p95Scale"])
+})
+
+test("P2 passes at the limit and when the difference is below the noise floor", () => {
+  expect(compareReports({ scenarios: {} }, p2(P2_MAX_SCALE, 4, 4 * P2_MAX_SCALE)).failures).toEqual([])
+  // Observed on one machine: S 0.24 ms, M 0.97 ms. A 4x ratio, 0.73 ms of noise.
+  expect(compareReports({ scenarios: {} }, p2(4.04, 0.24, 0.97)).failures).toEqual([])
+  expect(4.04 > P2_MAX_SCALE && 0.97 - 0.24 < P2_NOISE_FLOOR_MS).toBe(true)
+})
+
+test("P2 does not tighten on a machine faster than the baseline's", () => {
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 24 }, scenarios: {} }
+  const current = p2(4, 0.5, 2)
+  current.calibration = { fixedLayoutMsMedian: 12 }
+
+  // 1.5 ms slower on a 0.5x machine: scaling by the factor would read 3 ms and fail.
   expect(compareReports(baseline, current).failures).toEqual([])
 })
 
+function p4(small: number, large: number): PerfReport {
+  return {
+    scenarios: {
+      S: { P4: { selectorEvaluations: small } },
+      L: { P4: { selectorEvaluations: large } },
+    },
+  }
+}
+
+test("P4 requires zero selector evaluations per key, equal for the small and the large session", () => {
+  expect(compareReports({ scenarios: {} }, p4(0, 0)).failures).toEqual([])
+  // The cascade that grew with the message count: one selector per message.
+  const grown = compareReports({ scenarios: {} }, p4(0, 8))
+  expect(grown.failures.map((failure) => `${failure.size}.${failure.metric}`)).toContain("L.selectorEvaluations")
+  // A constant nonzero count is not the contract either.
+  expect(compareReports({ scenarios: {} }, p4(3, 3)).failures).toHaveLength(2)
+})
+
+function p14(
+  p95Ms: number,
+  relativeIncrease: number,
+  increaseMs: number,
+  calibration?: { fixedLayoutMsMedian?: number },
+) {
+  return { calibration, scenarios: { L: { P14: { p95Ms, relativeIncrease, increaseMs } } } } satisfies PerfReport
+}
+
+test("a sub-millisecond P14 sample is gated by absolute increase, not by ratio", () => {
+  // +80% of 0.12 ms is scheduler noise; +0.4 ms is within the allowance.
+  expect(compareReports({ scenarios: {} }, p14(0.3, 0.8, P14_ABSOLUTE_INCREASE_MS - 0.1)).failures).toEqual([])
+  const { failures } = compareReports({ scenarios: {} }, p14(0.9, 1.5, P14_ABSOLUTE_INCREASE_MS + 0.1))
+  expect(failures).toHaveLength(1)
+  expect(failures[0]?.metric).toBe("increaseMs")
+})
+
+test("a slower runner gets headroom on the P14 absolute increase, a faster one gets no extra strictness", () => {
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
+  const slower = p14(0.9, 1, P14_ABSOLUTE_INCREASE_MS + 0.2, { fixedLayoutMsMedian: 40 })
+  const faster = p14(0.9, 1, P14_ABSOLUTE_INCREASE_MS - 0.05, { fixedLayoutMsMedian: 10 })
+
+  expect(compareReports(baseline, slower).failures).toEqual([])
+  expect(compareReports(baseline, faster).failures).toEqual([])
+})
+
 test("a P14 sample at the floor still gates the relative increase", () => {
-  const baseline = p14(2, 0.09)
-  const current = p14(2, 0.11)
-
-  const { failures } = compareReports(baseline, current)
-
+  expect(compareReports({ scenarios: {} }, p14(MIN_COMPARE_MS, 0.09, 0.09)).failures).toEqual([])
+  const { failures } = compareReports({ scenarios: {} }, p14(MIN_COMPARE_MS, 0.11, 0.11))
   expect(failures).toHaveLength(1)
   expect(failures[0]?.metric).toBe("relativeIncrease")
+})
+
+test("a gate metric the report does not carry is reported, not skipped", () => {
+  // The slash scenario once emitted `maxFrame` while the ceiling read `maxMs`:
+  // the ceiling never ran and nothing said so.
+  const stale: PerfReport = { scenarios: { L: { P5: { openP95Ms: 4, maxFrame: 250 } } } }
+
+  const { failures, missing } = compareReports({ scenarios: {} }, stale)
+
+  expect(failures).toEqual([])
+  expect(missing).toContainEqual({ size: "L", id: "P5", metric: "maxMs" })
+})
+
+test("a scenario the report omits entirely is a partial report, not drift", () => {
+  const { missing } = compareReports({ scenarios: {} }, { scenarios: { L: { P3: { registerLayer: 0 } } } })
+
+  expect(missing.filter((item) => item.id === "P5")).toEqual([])
+})
+
+/** Stand-in for the real table, so these cases keep working after the real entries are deleted. */
+const PENDING = { PY: "measurement changed" }
+
+test("a baseline captured at the pending commit skips the relative check for the pending scenarios only", () => {
+  const baseline: PerfReport = {
+    commit: "captured",
+    scenarios: { L: { PY: { p95Ms: 5 }, [PLAIN]: { p95Ms: 5 } } },
+  }
+  const current: PerfReport = { scenarios: { L: { PY: { p95Ms: 10 }, [PLAIN]: { p95Ms: 10 } } } }
+
+  const result = compareReports(baseline, current, { pending: PENDING, pendingCommit: "captured" })
+
+  expect(result.pending).toEqual(["PY"])
+  expect(result.failures.map((failure) => failure.id)).toEqual([PLAIN])
+})
+
+test("a baseline from any other commit gets the full relative check", () => {
+  const baseline: PerfReport = { commit: "regenerated", scenarios: { L: { PY: { p95Ms: 5 } } } }
+  const current: PerfReport = { scenarios: { L: { PY: { p95Ms: 10 } } } }
+
+  const result = compareReports(baseline, current, { pending: PENDING, pendingCommit: "captured" })
+
+  expect(result.pending).toEqual([])
+  expect(result.failures).toHaveLength(1)
+})
+
+test("the real pending table applies to the baseline it was written against", () => {
+  const baseline: PerfReport = { commit: PENDING_BASELINE_COMMIT, scenarios: { L: { P6: { escapeP95Ms: 0.13 } } } }
+  const current: PerfReport = { scenarios: { L: { P6: { escapeP95Ms: 12 } } } }
+
+  expect(compareReports(baseline, current).failures).toEqual([])
+  expect(compareReports({ ...baseline, commit: "regenerated" }, current).failures).toHaveLength(1)
+})
+
+test("a pending scenario still answers to the fixed ceilings", () => {
+  const baseline: PerfReport = { commit: "captured", scenarios: { L: { P6: { escapeP95Ms: 0.13 } } } }
+  const current: PerfReport = { scenarios: { L: { P6: { escapeP95Ms: 20 } } } }
+
+  const result = compareReports(baseline, current, {
+    pending: { P6: "measurement changed" },
+    pendingCommit: "captured",
+  })
+
+  expect(result.pending).toEqual(["P6"])
+  expect(result.failures.map((failure) => failure.metric)).toEqual(["escapeP95Ms"])
+})
+
+async function committedBaseline() {
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- committed benchmark report
+  return (await Bun.file(path.join(import.meta.dir, "baseline.json")).json()) as PerfReport
+}
+
+test("the pending entries name real scenarios", () => {
+  for (const id of Object.keys(PENDING_REBASELINE)) expect(SCENARIO_IDS.some((known) => known === id)).toBe(true)
+})
+
+test("the pending entries are deleted once baseline.json is regenerated", async () => {
+  const baseline = await committedBaseline()
+  if (baseline.commit === PENDING_BASELINE_COMMIT) return
+
+  // baseline.json now comes from a newer run, so the entries no longer apply and
+  // would only mislead; compare.ts ignores them already.
+  expect(Object.keys(PENDING_REBASELINE)).toEqual([])
+})
+
+test("the committed baseline satisfies its own gate", async () => {
+  const baseline = await committedBaseline()
+
+  expect(compareReports(baseline, baseline).failures).toEqual([])
+})
+
+/** A full set of metrics for one size, shaped like a real report with plausible millisecond values. */
+function scenarios(): Record<string, ScenarioMetrics> {
+  return {
+    P1: { p50Ms: 3, p95Ms: 6, p99Ms: 9 },
+    P2: { p95Scale: 1 },
+    P3: { registerLayer: 0 },
+    P4: { selectorEvaluations: 0, selectorEvaluationsPerKey: 0 },
+    P5: { openP95Ms: 6, sequenceP95Ms: 5, maxMs: 14, frames: 250 },
+    "P5'": { openP95Ms: 7, sequenceP95Ms: 6, maxMs: 15, frames: 250 },
+    P6: { filterP95Ms: 4, escapeP95Ms: 5 },
+    P7: { registerLayer: 0 },
+    P8: { p99Ms: 12, maxMs: 15, steps: 100 },
+    "P8'": { p99Ms: 12, maxMs: 15, steps: 100 },
+    P9: { p99Ms: 10 },
+    P10: { mountedRows: 22, scrollChildren: 26, viewportRows: 19 },
+    P11: { driftPx: 0, stepMismatches: 0 },
+    P12: { p95Ms: 8 },
+    P13: { messageWritesPerFrame: 0, partWritesPerFrame: 1 },
+    P14: {
+      p95Ms: 4,
+      quietP95Ms: 4,
+      increaseMs: 0,
+      relativeIncrease: 0,
+      nonCurrentMessageWrites: 0,
+      nonCurrentPartWrites: 0,
+    },
+    P15: { frames: 0 },
+    P16: { frames: 22 },
+    P17: { framesEmpty: 22, framesEight: 22 },
+    P17b: { frames: 0 },
+    P18: { frames: 0 },
+    P19: { frames: 0 },
+    P20: { growth: 0, heapGrowth: 0.05 },
+  }
+}
+
+function fullReport(change?: (size: string, scenarios: Record<string, ScenarioMetrics>) => void): PerfReport {
+  const result: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
+  for (const size of ["S", "M", "L"]) {
+    const items = scenarios()
+    change?.(size, items)
+    result.scenarios[size] = items
+  }
+  return result
+}
+
+test("the synthetic report is clean against itself", () => {
+  const baseline = fullReport()
+
+  const result = compareReports(baseline, fullReport())
+
+  expect(result.failures).toEqual([])
+  expect(result.missing).toEqual([])
+})
+
+// The three CI failures Issue #1025 asks to see, fed to the gate as forged reports.
+
+test("CI demo: a keystroke that re-registers layers (the P3 cascade) fails the gate", () => {
+  const current = fullReport((size, items) => {
+    if (size === "L") items.P3 = { registerLayer: 500 }
+  })
+
+  const { failures } = compareReports(fullReport(), current)
+
+  expect(failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)).toEqual(["L.P3.registerLayer"])
+})
+
+test("CI demo: a 150 ms frame in the slash sequence fails the gate", () => {
+  const current = fullReport((size, items) => {
+    if (size === "L") items.P5 = { ...items.P5, maxMs: 150 }
+  })
+
+  const { failures } = compareReports(fullReport(), current)
+
+  expect(failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)).toEqual(["L.P5.maxMs"])
+})
+
+test("CI demo: every timing 1.5x slower than the baseline fails the gate", () => {
+  const slower = fullReport((_size, items) => {
+    for (const metrics of Object.values(items)) {
+      for (const [name, value] of Object.entries(metrics)) {
+        if (name.endsWith("Ms") && typeof value === "number") metrics[name] = value * 1.5
+      }
+    }
+  })
+
+  const { failures } = compareReports(fullReport(), slower)
+
+  // Ratio failures: every percentile with a 1.30x tolerance. p99 (1.50x) sits on its edge.
+  const relative = failures.filter((failure) => failure.limit.includes("baseline"))
+  expect(relative.length).toBeGreaterThan(0)
+  expect(relative.some((failure) => failure.metric === "p95Ms")).toBe(true)
+})
+
+test("CI demo: the standalone gate exits 1 on a forged report and 0 on a clean one", async () => {
+  await using directory = await tmpdir()
+  const write = async (name: string, value: PerfReport) => {
+    const file = path.join(directory.path, name)
+    await Bun.write(file, JSON.stringify(value))
+    return file
+  }
+  const baseline = await write("baseline.json", fullReport())
+  const clean = await write("clean.json", fullReport())
+  const forged = await write(
+    "forged.json",
+    fullReport((size, items) => {
+      if (size === "L") items.P5 = { ...items.P5, maxMs: 150 }
+    }),
+  )
+  const compare = path.join(import.meta.dir, "compare.ts")
+  const run = (current: string, ...flags: string[]) =>
+    Bun.spawnSync(["bun", compare, baseline, current, ...flags], { stdout: "pipe", stderr: "pipe" })
+
+  expect(run(clean, "--enforce").exitCode).toBe(0)
+  expect(run(forged, "--enforce").exitCode).toBe(1)
+  // Without --enforce the command only reports.
+  expect(run(forged).exitCode).toBe(0)
 })

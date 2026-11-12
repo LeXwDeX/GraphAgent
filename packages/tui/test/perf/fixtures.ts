@@ -21,9 +21,84 @@ export type PerfFixture = {
 
 const PART_COUNTS: Record<FixtureSize, number> = { S: 25, M: 100, L: 400 }
 
+/**
+ * Block-level markdown the transcript renders as separate native nodes: a
+ * fenced code block (async syntax highlight), a table, and a fenced diff
+ * snippet. A fixture of plain paragraphs never crosses the code-highlight or
+ * table layout paths, so a cold scroll through it measures none of them.
+ */
+function codeBlock(index: number) {
+  return [
+    "```ts",
+    `export function item${index}(input: number) {`,
+    `  const scaled = input * ${index + 2}`,
+    "  return scaled > 100 ? scaled - 100 : scaled",
+    "}",
+    "```",
+  ].join("\n")
+}
+
+function table(index: number) {
+  return [
+    "| name | value | note |",
+    "| --- | --- | --- |",
+    `| item${index} | ${index} | stable |`,
+    `| next | ${index + 1} | pending |`,
+  ].join("\n")
+}
+
+function diffSnippet(index: number) {
+  return [
+    "```diff",
+    `--- a/src/item${index}.ts`,
+    `+++ b/src/item${index}.ts`,
+    "@@ -1,3 +1,3 @@",
+    " export const base = 1",
+    `-export const value = ${index}`,
+    `+export const value = ${index + 1}`,
+    "```",
+  ].join("\n")
+}
+
+/**
+ * The session loads its last 100 messages, so an index maps to a position in the
+ * loaded page by its remainder modulo 100.
+ */
+const PAGE = 100
+/** Parts this close to the head of the page stay plain. */
+const PLAIN_HEAD = 10
+/** Parts this close to its tail stay plain. */
+const PLAIN_TAIL: Record<FixtureSize, number> = { S: 10, M: 20, L: 20 }
+
+/**
+ * Rich block per text part by position in the decade: code, table, diff, then
+ * plain. Only the interior of the page carries them. The ends are where the
+ * typing, streaming, background, and spinner scenarios work, and where tests that
+ * pin the viewport to the bottom expect the row heights to be settled: heights are
+ * estimated until a row is measured, and a viewport pinned by an absolute offset
+ * does not follow the correction of rows it already passed. Every scroll scenario
+ * leaves the ends and crosses the interior.
+ */
+function richBlock(index: number, size: FixtureSize) {
+  const position = index % PAGE
+  if (position < PLAIN_HEAD || position >= Math.min(PAGE, PART_COUNTS[size]) - PLAIN_TAIL[size]) return ""
+  switch (index % 10) {
+    case 0:
+      return codeBlock(index)
+    case 1:
+      return table(index)
+    case 2:
+      return diffSnippet(index)
+    default:
+      return ""
+  }
+}
+
 function text(index: number, size: FixtureSize) {
   const suffix = size === "L" && index % 11 === 0 ? `\n\n${"long context ".repeat(420)}` : ""
-  return `Deterministic answer ${index}: inspect the rendered session and keep the output stable.${suffix}`
+  const block = richBlock(index, size)
+  const rich = block ? `\n\n${block}` : ""
+  return `Deterministic answer ${index}: inspect the rendered session and keep the output stable.${rich}${suffix}`
 }
 
 function toolOutput(index: number, size: FixtureSize) {

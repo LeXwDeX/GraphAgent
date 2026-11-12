@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url"
 import { compareReports, type PerfReport } from "./compare"
 import { createFixture, type FixtureSize } from "./fixtures"
 import { mountHarness } from "./harness"
-import { runCharacterProfile, runScenarios, runSlashProfile, type ScenarioResult } from "./scenarios"
+import { watchKeymapErrors } from "./keymap-errors"
+import { runCharacterProfile, runScenarios, runSlashProfile, scaleResult, type ScenarioResult } from "./scenarios"
 
 const sizes: FixtureSize[] = ["S", "M", "L"]
 
@@ -100,17 +101,29 @@ async function main() {
   const layoutSamples: number[] = []
   const loop = calibrateLoop()
 
-  for (let repeat = 0; repeat < repeats; repeat++) {
-    for (const size of sizes) {
-      const started = performance.now()
-      const harness = await mountHarness(createFixture(size, size === "M"))
-      layoutSamples.push(performance.now() - started)
-      try {
-        for (const item of await runScenarios(harness)) (samples[size][item.id] ??= []).push(item)
-      } finally {
-        await harness.dispose()
+  // The keymap reports a key it cannot resolve on stderr and carries on, so a
+  // run can finish with exit code 0 on numbers taken from swallowed keys.
+  const keymapErrors = watchKeymapErrors()
+  try {
+    for (let repeat = 0; repeat < repeats; repeat++) {
+      for (const size of sizes) {
+        const started = performance.now()
+        const harness = await mountHarness(createFixture(size, size === "M"))
+        layoutSamples.push(performance.now() - started)
+        try {
+          for (const item of await runScenarios(harness)) (samples[size][item.id] ??= []).push(item)
+        } finally {
+          await harness.dispose()
+        }
       }
     }
+  } finally {
+    keymapErrors.restore()
+  }
+  if (keymapErrors.hits.length > 0) {
+    console.error(`bench invalid: the keymap reported ${keymapErrors.hits.length} error(s) while the scenarios ran`)
+    for (const hit of keymapErrors.hits) console.error(`  ${hit}`)
+    process.exit(1)
   }
 
   const scenarios: Record<FixtureSize, Record<string, ScenarioResult>> = { S: {}, M: {}, L: {} }
@@ -119,10 +132,7 @@ async function main() {
   }
 
   const sP95 = Number(scenarios.S.P1?.p95Ms ?? 0)
-  for (const size of sizes) {
-    const p95 = Number(scenarios[size].P1?.p95Ms ?? 0)
-    scenarios[size].P2 = { id: "P2", size, p95Scale: sP95 === 0 ? 0 : Number((p95 / sP95).toFixed(2)) }
-  }
+  for (const size of sizes) scenarios[size].P2 = scaleResult(size, Number(scenarios[size].P1?.p95Ms ?? 0), sP95)
 
   const report = {
     schemaVersion: 1,
@@ -153,18 +163,30 @@ async function main() {
   if (!enforce) return
   // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- generated benchmark report
   const before = (await Bun.file(baselineFile(baselineRef)).json()) as PerfReport
-  const { rows, failures } = compareReports(before, report)
-  if (failures.length === 0) {
-    console.log(`bench gate passed: ${rows.length} metric(s) compared against ${path.basename(baselineFile(baselineRef))}`)
+  const { rows, failures, missing, pending } = compareReports(before, report)
+  const name = path.basename(baselineFile(baselineRef))
+  if (pending.length > 0) {
+    console.log(
+      `bench gate: baseline-relative timing check skipped for ${pending.join(", ")} (pending baseline regeneration)`,
+    )
+  }
+  if (failures.length === 0 && missing.length === 0) {
+    console.log(`bench gate passed: ${rows.length} metric(s) compared against ${name}`)
     return
   }
-  console.error(`bench gate failed: ${failures.length} regression(s) against ${path.basename(baselineFile(baselineRef))}`)
+  if (failures.length > 0) console.error(`bench gate failed: ${failures.length} regression(s) against ${name}`)
   for (const failure of failures) {
     const row = rows.find(
       (item) => item.size === failure.size && item.id === failure.id && item.metric === failure.metric,
     )
     const measured = row ? `baseline=${row.baseline} current=${row.current} ratio=${row.ratio}` : `value=${failure.value}`
     console.error(`  ${failure.size} ${failure.id} ${failure.metric}: ${measured} limit ${failure.limit}`)
+  }
+  if (missing.length > 0) {
+    console.error(
+      `bench gate failed: ${missing.length} gate metric(s) missing from the report (a scenario stopped emitting them)`,
+    )
+    for (const item of missing) console.error(`  ${item.size} ${item.id} ${item.metric}`)
   }
   process.exit(1)
 }
