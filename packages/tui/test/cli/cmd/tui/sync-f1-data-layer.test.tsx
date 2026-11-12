@@ -984,13 +984,10 @@ describe("F1 hydrated LRU through activate", () => {
     }
   })
 
-  // Spec (#886 5.4): the actual limit is max(HYDRATED_MAX, chain length + 1) and the chain is never
-  // evicted. `evictHydrated` admits the newest sessions until the limit is reached and then admits
-  // every protected session behind them on top of that, so outsiders that are newer than the chain
-  // push the total past the limit: with the chain of 6 and limit 7 this scenario ends with 10
-  // hydrated sessions (4 outsiders + 6 chain members). Enable once the eviction reserves the
-  // protected slots first.
-  test.todo(
+  // Spec (#886 5.4): the limit is max(HYDRATED_MAX, chain length + 1) and the chain is never
+  // evicted. Outsiders newer than the chain must not push the total past the limit: protected
+  // sessions take their slots first, wherever they sit in the LRU order.
+  test(
     "hydrated stays within max(HYDRATED_MAX, chain length + 1) while outsiders hydrate during a deep-chain route",
     async () => {
       await using tmp = await tmpdir()
