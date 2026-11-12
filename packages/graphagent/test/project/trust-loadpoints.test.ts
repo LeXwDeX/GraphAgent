@@ -330,7 +330,13 @@ describe("scopedHooksWithTrust", () => {
     ),
   )
 
-  it.effect("leaves an origin outside the project layer untouched", () =>
+  // `.agents/settings.json`'s `skills.paths` (and `skills.urls`) can name any
+  // directory, inside the repo or outside it. `skill/index.ts#skillHookSource`
+  // still labels anything outside the user roots `source: "project"`, but the
+  // trust panel only ever enumerates `<root>/.agents`. An origin that escapes
+  // it therefore has no entry a recorded decision could ever match: it must
+  // fail closed, not fall through unchecked. See GraphAgent#1040.
+  it.effect("fails closed for a project origin the trust panel never enumerates", () =>
     withRoot({}, (root) =>
       Effect.gen(function* () {
         const seen: GateEntry[][] = []
@@ -341,8 +347,134 @@ describe("scopedHooksWithTrust", () => {
           source: "project" as const,
         }
         const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+        expect(result).toBeUndefined()
+        expect(seen).toEqual([[{ scope: "project", file: "/opt/other/SKILL.md", entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("fails closed for a skills.paths directory inside the repo but outside .agents", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const target = path.join(root, "vendor", "skills", "guard", "SKILL.md")
+        const input = {
+          kind: "skill" as const,
+          origin: `skill:${target}`,
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+        expect(result).toBeUndefined()
+        expect(seen).toEqual([[{ scope: "project", file: target, entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("fails closed for a skills.paths directory outside the repository root", () =>
+    withRoot({}, (root) =>
+      withRoot({}, (outside) =>
+        Effect.gen(function* () {
+          const seen: GateEntry[][] = []
+          const target = path.join(outside, "SKILL.md")
+          const input = {
+            kind: "skill" as const,
+            origin: `skill:${target}`,
+            hooks: SCOPED_HOOKS,
+            source: "project" as const,
+          }
+          const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+          expect(result).toBeUndefined()
+          expect(seen).toEqual([[{ scope: "project", file: target, entry: undefined }]])
+        }),
+      ),
+    ),
+  )
+
+  it.effect("fails closed for a skills.paths entry resolved above the project root", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const target = path.resolve(path.join(root, "..", "SKILL.md"))
+        const input = {
+          kind: "skill" as const,
+          origin: `skill:${target}`,
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([false], seen) }, context(root))
+        expect(result).toBeUndefined()
+        expect(seen).toEqual([[{ scope: "project", file: target, entry: undefined }]])
+      }),
+    ),
+  )
+
+  it.effect("registers an unenumerated origin's hooks once the gate allows it", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const input = {
+          kind: "skill" as const,
+          origin: "skill:/opt/other/SKILL.md",
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        // scopedHooksWithTrust must honor whatever the gate decides rather than
+        // hardcoding a refusal itself; production `ProjectTrust.gate` always
+        // refuses a missing `entry`, but that is the gate's call, not this one.
+        const result = yield* scopedHooksWithTrust(input, { gate: recordingGate([true], []) }, context(root))
+        expect(result).toBe(input)
+      }),
+    ),
+  )
+
+  it.effect("skips the gate for an unenumerated origin with no hooks to protect", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const seen: GateEntry[][] = []
+        const input = {
+          kind: "skill" as const,
+          origin: "skill:/opt/other/SKILL.md",
+          hooks: {},
+          source: "project" as const,
+        }
+        const result = yield* scopedHooksWithTrust(input, { gate: uncheckedGate(seen) }, context(root))
         expect(result).toBe(input)
         expect(seen).toHaveLength(0)
+      }),
+    ),
+  )
+
+  it.effect("fails closed against the real trust service, with no decision able to trust it", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+        yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(stateDirectory, { recursive: true, force: true })))
+        const services = yield* Layer.build(
+          ProjectTrust.makeLayer({ stateDirectory }).pipe(
+            Layer.provide(FSUtil.defaultLayer),
+            Layer.provide(Git.defaultLayer),
+            Layer.provide(EventV2Bridge.defaultLayer),
+          ),
+        )
+        const trust = Context.get(services, ProjectTrust.Service)
+        const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+        const target = path.join(root, "vendor", "skills", "guard", "SKILL.md")
+        const input = {
+          kind: "skill" as const,
+          origin: `skill:${target}`,
+          hooks: SCOPED_HOOKS,
+          source: "project" as const,
+        }
+        const result = yield* withInstance(scopedHooksWithTrust(input, trust, context(root)))
+        expect(result).toBeUndefined()
+
+        // No entry the panel enumerates ever carries this synthetic id, so a
+        // decision naming it cannot retroactively trust the declaration.
+        yield* withInstance(trust.decide([{ id: `${target}|<not-enumerated>`, state: "trusted" }]))
+        const stillRefused = yield* withInstance(scopedHooksWithTrust(input, trust, context(root)))
+        expect(stillRefused).toBeUndefined()
       }),
     ),
   )
