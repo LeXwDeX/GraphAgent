@@ -7,8 +7,10 @@ import { Effect, Layer, Context, Schema, Fiber, Cause, Exit, Option } from "effe
 import { desc, eq, sql } from "drizzle-orm"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { isTerminalValue } from "@graphagent/core/lifecycle/vocabulary"
 import { Database } from "@graphagent/core/database/database"
 import { BackgroundJob } from "@/background/job"
+import { readPersistedJob, runtimeJobProcessID, type PersistedJob } from "@/background/persist"
 import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { GoalState } from "./state"
@@ -107,6 +109,20 @@ export interface Interface {
   readonly setIntent: (sessionID: SessionID, intent: GoalState.Intent) => Effect.Effect<GoalState.Info | undefined>
   readonly wake: (sessionID: SessionID, match: WakeMatch, payload?: string) => Effect.Effect<boolean>
   readonly expireWait: (sessionID: SessionID, now?: number) => Effect.Effect<GoalState.Info | undefined>
+  /**
+   * #1069 startup reconciliation: wake a waiting goal whose awaited job can no
+   * longer wake it. A process restart drops the in-process registry that would
+   * have delivered the wake, so the durable `runtime_job` row is the only
+   * record left, and the job is gone when that row is terminal, was left
+   * running by another process, or was never recorded. A row owned by this
+   * process and still running is kept: its owner may be alive. Only a wait
+   * that names its job by StateRef is checked; any other keeps its deadline.
+   *
+   * Call it from a scan over a freshly built instance only: that is what makes
+   * "no live registry entry" a fact rather than a guess. Resolves to true when
+   * the goal was woken.
+   */
+  readonly wakeOrphanedWait: (sessionID: SessionID) => Effect.Effect<boolean>
   readonly clearIntent: (sessionID: SessionID) => Effect.Effect<GoalState.Info | undefined>
   /** Session-deletion cleanup: remove goal_state AND all goal_outcome rows. */
   readonly purgeSession: (sessionID: SessionID) => Effect.Effect<void>
@@ -299,6 +315,20 @@ const awaitWaitFor = (job: BackgroundJob.Info, now: number): GoalState.Wait => {
     max_wakes: GoalState.nni(1),
     wakes: GoalState.nni(0),
   }
+}
+
+/**
+ * Why a job's durable row can no longer lead to a wake, or undefined when its
+ * owner may still deliver one (#1069). A terminal row is a job that ended
+ * without its wake arriving or that restart recovery failed; a non-terminal
+ * row of another process is one recovery has not reached yet; a row that was
+ * never written leaves nothing to wait for either.
+ */
+const orphanDetail = (row: PersistedJob | undefined): string | undefined => {
+  if (!row) return "没有持久记录"
+  if (isTerminalValue("job", row.status)) return `任务已结束（${row.status}${row.error ? `，${row.error}` : ""}）`
+  if (row.process_id !== runtimeJobProcessID) return `任务由已退出的进程留下（${row.status}）`
+  return undefined
 }
 
 const serviceLayer = Layer.effect(
@@ -990,6 +1020,25 @@ const serviceLayer = Layer.effect(
       })
     })
 
+    // #1069: the wait's own wake can no longer arrive. See the interface note
+    // for the contract; `wake` stays the single transition, so a wait that was
+    // replaced or already woken meanwhile is left alone by its identity match.
+    const wakeOrphanedWait = Effect.fn("Goal.wakeOrphanedWait")(function* (sessionID: SessionID) {
+      const state = yield* loadState(sessionID)
+      if (!state || state.status !== "waiting" || state.intent?.kind !== "await") return false
+      const wait = state.intent.wait
+      if (wait.ref?.domain !== "job") return false
+      const jobID = wait.ref.id
+      const row = yield* readPersistedJob(db, jobID).pipe(Effect.orDie)
+      const detail = orphanDetail(row)
+      if (detail === undefined) return false
+      return yield* wake(
+        sessionID,
+        { source: wait.source, ids: [jobID] },
+        `等待 ${wait.source}:${jobID} 的后台任务已随进程重启丢失（process_restart）：${detail}。请核对其实际结果后继续。`,
+      )
+    })
+
     // #1067: two-stage expiry. The first expiry is not a pause — it turns the
     // expired await into a blocked-review marker and returns the goal to
     // active. GoalLoop.expireWaiting then dispatches ONE bounded review turn.
@@ -1490,6 +1539,7 @@ const serviceLayer = Layer.effect(
       setIntent,
       wake,
       expireWait,
+      wakeOrphanedWait,
       clearIntent,
       purgeSession,
       markDone,

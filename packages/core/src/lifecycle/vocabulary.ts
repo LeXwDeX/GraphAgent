@@ -55,7 +55,9 @@ const TABLE = {
     },
     terminal: ["completed", "error", "cancelled"],
     settled: ["completed"],
-    authority: "live",
+    // The live registry owns running work; after a restart the durable
+    // runtime_job row is the only record of it (#1069).
+    authority: "mixed",
   },
   goal: {
     values: ["active", "waiting", "paused", "done"],

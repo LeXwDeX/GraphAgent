@@ -659,6 +659,18 @@ const serviceLayer = Layer.effect(
             }).pipe(Effect.as(empty))
           }),
         )
+        // #1069: the waiting goals present at boot, captured here for the same
+        // reason as the active snapshot. Only waits that already existed when
+        // this instance started can be orphaned by a restart.
+        const waitingSnapshot = yield* goal.listWaitingSessions(scanDirectoryRef.current).pipe(
+          Effect.catchCause((cause) => {
+            const empty: ReadonlyArray<SessionID> = []
+            return Effect.logWarning("goal startup wait scan query failed", {
+              directory: scanDirectoryRef.current,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(empty))
+          }),
+        )
         // The per-session triggers are forked after the inbox subscription is
         // armed and into the same scope; failures are logged, never fatal to
         // init.
@@ -670,6 +682,14 @@ const serviceLayer = Layer.effect(
             Cause.hasInterrupts(cause)
               ? Effect.void
               : Effect.logWarning("goal startup scan failed", { cause: Cause.pretty(cause) }),
+          ),
+          Effect.forkScoped,
+        )
+        yield* scanForWaitingGoals(waitingSnapshot).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.void
+              : Effect.logWarning("goal startup wait scan failed", { cause: Cause.pretty(cause) }),
           ),
           Effect.forkScoped,
         )
@@ -1451,6 +1471,34 @@ const serviceLayer = Layer.effect(
           ),
         )
       }
+    })
+
+    // #1069 (acceptance 5b): the startup counterpart for goals that were
+    // already waiting at boot. Restart recovery fails the jobs the dead process
+    // left running, but that is a transient lifecycle event nobody subscribes
+    // to, and the goal's own wake died with the in-process registry; without
+    // this a wait on such a job sleeps until its deadline (30 minutes by
+    // default). Goal.wakeOrphanedWait decides from the durable job row; a goal
+    // it wakes is an ordinary active goal again and takes the same resume path
+    // as the active snapshot (busy sessions are deferred to their own idle).
+    // Waits on live work, or on anything without a StateRef, are untouched.
+    const scanForWaitingGoals = Effect.fnUntraced(function* (snapshot: ReadonlyArray<SessionID>) {
+      const woken: SessionID[] = []
+      for (const sessionID of snapshot) {
+        const wokeOne = yield* goal.wakeOrphanedWait(sessionID).pipe(
+          Effect.catchCause((cause) =>
+            // One bad row never stops the rest of the scan; interrupts stay silent.
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("goal startup wait scan failed for session", {
+                  sessionID,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.as(false)),
+          ),
+        )
+        if (wokeOne) woken.push(sessionID)
+      }
+      yield* scanForActiveGoals(woken)
     })
 
     const wake = Effect.fn("GoalLoop.wake")(function* (

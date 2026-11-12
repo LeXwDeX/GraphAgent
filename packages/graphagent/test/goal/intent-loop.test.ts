@@ -3,18 +3,30 @@
 
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- mocked service slices use `as never` shims.
 import { describe, expect } from "bun:test"
+import { eq } from "drizzle-orm"
 import { Effect, Layer, Option } from "effect"
 import { BackgroundJob } from "@graphagent/core/background-job"
+import { Database } from "@graphagent/core/database/database"
+import { RuntimeJobTable } from "@graphagent/core/lifecycle/runtime-job.sql"
+import { Project } from "@graphagent/core/project"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { Session as SessionSchema } from "@graphagent/schema/session"
 import { GoalLoop, GoalLoopJudgeLLM } from "@/goal/loop"
+import { runtimeJobProcessID } from "@/background/persist"
+import { RuntimeJobRecovery } from "@/background/recovery"
 import { Goal } from "@/goal/goal"
 import { GoalState } from "@/goal/state"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Lifecycle } from "@/lifecycle/service"
 import { SessionStatus } from "@/session/status"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { Provider } from "@/provider/provider"
 import { SessionID } from "@/session/schema"
 import { testEffect, pollWithTimeout } from "../lib/effect"
+import { requireInstance } from "../fixture/fixture"
 import { withIdleAdmission } from "../lib/session-prompt"
 
 // Loop-level regressions for #989 waits and #1067 two-stage expiry: the first
@@ -67,9 +79,18 @@ const layer = GoalLoop.layer.pipe(
   Layer.provideMerge(Goal.defaultLayer),
   Layer.provideMerge(SessionStatus.defaultLayer),
   Layer.provideMerge(EventV2Bridge.defaultLayer),
+  // The same database Goal.defaultLayer builds on: the restart tests seed
+  // session and runtime_job rows through it.
+  Layer.provideMerge(Database.defaultLayer),
 )
 
-const it = testEffect(layer)
+// The real restart recovery, on the same database and lifecycle bridge: the
+// restart tests let it fail the dead process's jobs before the goal scan runs.
+const recovery = RuntimeJobRecovery.layer.pipe(
+  Layer.provide(Layer.mergeAll(Database.defaultLayer, Lifecycle.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)))),
+)
+
+const it = testEffect(Layer.merge(layer, recovery))
 
 const reset = () => {
   promptCalls.length = 0
@@ -235,6 +256,109 @@ describe("GoalLoop — waits", () => {
       expect(state?.status).toBe("waiting")
       expect(Number(state?.turns_used)).toBe(0)
       expect(promptCalls).toHaveLength(0)
+      expect(judgeCalls).toBe(0)
+    }),
+  )
+
+  // #1069 acceptance 5b: after a restart, recovery fails the job the dead
+  // process left running, and the startup scan wakes the goal waiting on it
+  // instead of leaving it parked until the deadline; the woken goal continues
+  // like any other.
+  it.instance("a waiting goal whose job did not survive the restart is woken and continued by the startup scan", () =>
+    Effect.gen(function* () {
+      reset()
+      const loop = yield* GoalLoop.Service
+      const goal = yield* Goal.Service
+      const { db } = yield* Database.Service
+      const instance = yield* requireInstance
+      const alive = SessionID.descending()
+      const lost = SessionID.descending()
+      const seedSession = (id: string) =>
+        Effect.gen(function* () {
+          yield* db
+            .insert(ProjectTable)
+            .values({ id: Project.ID.global, worktree: AbsolutePath.make(instance.directory), sandboxes: [] })
+            .onConflictDoNothing()
+            .run()
+          yield* db
+            .insert(SessionTable)
+            .values({
+              id: SessionSchema.ID.make(id),
+              project_id: Project.ID.global,
+              slug: id,
+              directory: AbsolutePath.make(instance.directory),
+              title: id,
+              version: "test",
+            })
+            .run()
+        })
+      yield* seedSession(alive)
+      yield* seedSession(lost)
+      const awaitRow = (jobID: string): GoalState.Intent => ({
+        kind: "await",
+        wait: {
+          source: "watch_pr",
+          wait_id: jobID,
+          ref: { domain: "job", id: jobID },
+          deadline: Date.now() + 60_000,
+          max_wakes: GoalState.nni(1),
+          wakes: GoalState.nni(0),
+        },
+      })
+      // Durable state written by the previous process: one job it left running,
+      // plus a running job owned by this very process.
+      yield* db
+        .insert(RuntimeJobTable)
+        .values([
+          {
+            id: "job_restart_lost",
+            type: "watch_pr",
+            process_id: "proc_dead",
+            session_id: lost,
+            status: "running",
+            started_at: 1,
+            updated_at: 1,
+          },
+          {
+            id: "job_restart_alive",
+            type: "watch_pr",
+            process_id: runtimeJobProcessID,
+            session_id: alive,
+            status: "running",
+            started_at: 1,
+            updated_at: 1,
+          },
+        ])
+        .run()
+      yield* goal.set(lost, "merge the PR", 10)
+      yield* goal.setIntent(lost, awaitRow("job_restart_lost"))
+      yield* goal.set(alive, "merge the other PR", 10)
+      yield* goal.setIntent(alive, awaitRow("job_restart_alive"))
+
+      // Process start order: recovery first, then the instance boots its goal loop.
+      expect(yield* (yield* RuntimeJobRecovery.Service).recoverOnce()).toBe(1)
+      const failed = yield* db.select().from(RuntimeJobTable).where(eq(RuntimeJobTable.id, "job_restart_lost")).get()
+      expect(failed).toMatchObject({ status: "error", error: "process_restart" })
+
+      yield* loop.init()
+      yield* pollWithTimeout(
+        Effect.sync(() => (promptCalls.some((call) => !call.noReply) ? true : undefined)),
+        "the orphaned wait was never woken and continued",
+        "5 seconds",
+      )
+
+      // The wake itself (and its process_restart reason) is covered by the
+      // Goal.wakeOrphanedWait tests; here the woken goal must have been picked
+      // up like any resumed goal: one turn spent, one continuation dispatched.
+      const woken = yield* goal.load(lost)
+      expect(woken?.status).toBe("active")
+      expect(woken?.intent).toBeUndefined()
+      expect(Number(woken?.turns_used)).toBe(1)
+      // A wait on a live job of this process is left alone.
+      const kept = yield* goal.load(alive)
+      expect(kept?.status).toBe("waiting")
+      expect(Number(kept?.turns_used)).toBe(0)
+      expect(promptCalls.filter((call) => !call.noReply)).toHaveLength(1)
       expect(judgeCalls).toBe(0)
     }),
   )
