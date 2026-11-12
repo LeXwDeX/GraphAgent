@@ -1148,7 +1148,7 @@ export function reviewLifecycleDiagnostics(input: {
    * resolves `required` through these defaults like Dag.create would. */
   node_defaults?: { readonly required?: boolean }
   /** Review nodes whose persisted PASS gate predates the evaluated check;
-   * they keep the legacy textual check (see validateReviewLifecycle). */
+   * they keep the pre-evaluation textual check (see validateReviewLifecycle). */
   grandfathered?: ReadonlySet<string>
 }) {
   const reviewLifecycle = validateReviewLifecycle(
@@ -1350,7 +1350,7 @@ export interface ReplanStructuralInput {
   /** Merged-graph nodes carried with their persisted condition (not authored
    * or changed by this mutation). The condition-syntax and evaluated PASS-gate
    * checks added after those definitions were accepted are not re-applied to
-   * them, so a legacy workflow stays mutable; new fragment conditions are
+   * them, so a previously accepted workflow stays mutable; new fragment conditions are
    * still held to the full grammar. */
   grandfatheredNodeIds?: ReadonlySet<string>
   /** The document that triggered this check. Only a start document owns the

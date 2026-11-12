@@ -283,9 +283,9 @@ function compileBlock(
 
   if (block.kind === "review") {
     const aggregation = aggregations.get(block.id)
-    const legacyRoute = aggregation ? undefined : implementationReviewRoute(block, blocks)
-    const implementationID = aggregation ? aggregation.aggregatorID : legacyRoute?.implementation.id
-    const verificationID = aggregation ? aggregation.verificationID : legacyRoute?.verification.id
+    const conventionalRoute = aggregation ? undefined : implementationReviewRoute(block, blocks)
+    const implementationID = aggregation ? aggregation.aggregatorID : conventionalRoute?.implementation.id
+    const verificationID = aggregation ? aggregation.verificationID : conventionalRoute?.verification.id
     const route = implementationID && verificationID ? { implementationID, verificationID } : undefined
     const reviewCondition = route ? `${route.verificationID}.output.verdict == "PASS"` : condition
     const reviewEvidence = route

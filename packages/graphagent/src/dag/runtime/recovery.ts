@@ -1089,7 +1089,7 @@ export function makeLastAssistantTextReader(
   const read = makeLastAssistantMessageReader(sessions)
   return (childSessionID) =>
     Effect.gen(function* () {
-      // Legacy test transcripts can omit finish; session-status recovery has
+      // Older test transcripts can omit finish; session-status recovery has
       // already established completion before this compatibility reader runs.
       const final = finalAssistantText(yield* read(childSessionID), true)
       return final.ok ? final.text : undefined

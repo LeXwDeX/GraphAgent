@@ -788,7 +788,7 @@ export const WorkflowTool = Tool.define<
               // pointer — content_ref + summary + path — and the parent agent
               // fetches the content itself (read tool). No paging: the pointer
               // is bounded by construction and next_cursor is never issued, so
-              // inline outputs below keep the exact legacy paged read.
+              // inline outputs below keep the paged read unchanged.
               if (isOutputFileRef(node.capturedOutput)) {
                 return {
                   title: `Workflow result: ${node.name}`,

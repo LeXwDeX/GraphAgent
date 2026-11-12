@@ -8,7 +8,7 @@ import { evaluateCondition } from "./runtime/eval"
 import { normalizeOutput, verdictField } from "./runtime/verdict"
 
 /** `grandfathered`: review nodes carried with a persisted definition (runtime
- * replan/extend/recover). Their PASS gate keeps the legacy textual check it
+ * replan/extend/recover). Their PASS gate keeps the pre-evaluation textual check it
  * was accepted under, so a gate such as `verify.output.status == PASS` on an
  * existing — possibly terminal, unfixable — review never blocks later
  * mutations. Newly authored reviews always get the evaluated check. */
@@ -170,7 +170,7 @@ export interface VerdictEvidence {
  * required action raised by a structured evidence dependency (review lanes)
  * must be listed in `refuted` as { node, index, reason }. Anything else is a
  * silent gate opening, so settlement rejects it like a fingerprint mismatch.
- * Non-ACCEPT verdicts and free-text (legacy) evidence are not constrained.
+ * Non-ACCEPT verdicts and free-text (unstructured) evidence are not constrained.
  */
 export function acceptConsistencyErrors(output: unknown, evidence: readonly VerdictEvidence[] = []): string[] {
   const result = structuredRecord(output)
@@ -198,7 +198,7 @@ export function acceptConsistencyErrors(output: unknown, evidence: readonly Verd
 }
 
 // Same normalization as verdict gates: plain or fenced JSON strings count as
-// structured output, so a fenced legacy lane cannot slip past refutation.
+// structured output, so a lane that emits fenced JSON text cannot slip past refutation.
 function structuredRecord(value: unknown): Record<string, unknown> | undefined {
   const parsed = normalizeOutput(value)
   return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
@@ -303,7 +303,7 @@ function validateDiffReview(config: WorkflowConfig, reviewID: string, grandfathe
       ? []
       : [`${reviewID}: input_mapping must map verification output from ${verificationID}`]),
     ...((grandfathered
-      ? legacyMentionsVerificationPass(review.condition, verificationID)
+      ? textualMentionsVerificationPass(review.condition, verificationID)
       : requiresVerificationPass(review.condition, verificationID))
       ? []
       : [`${reviewID}: condition must require PASS from verification node ${verificationID}`]),
@@ -361,7 +361,7 @@ function acceptsReviewVerdict(condition: string | undefined, reviewID: string) {
  * Both the structured `{ verdict }` and the raw-string output shapes the
  * runtime accepts as PASS evidence are recognized. */
 /** The pre-evaluation textual check, kept only for grandfathered reviews. */
-function legacyMentionsVerificationPass(condition: string | undefined, verificationID: string) {
+function textualMentionsVerificationPass(condition: string | undefined, verificationID: string) {
   return condition !== undefined && condition.includes(verificationID) && condition.includes("PASS")
 }
 
@@ -431,8 +431,8 @@ export function isReviewWorker(workerType: string) {
 /**
  * #944: a node judges the working tree when block compilation marks it
  * target-sensitive (review lanes, verify, synthesize) or when it follows the
- * legacy review conventions. Custom nodes without the marker keep their
- * historical behavior.
+ * review conventions (a review worker type or a `review` config). Custom nodes
+ * without the marker keep their historical behavior.
  */
 export function targetSensitiveNode(
   node: Pick<NodeConfig, "target_sensitive" | "review"> | undefined,
