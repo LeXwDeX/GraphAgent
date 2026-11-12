@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdir, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
-import type { TerminalColors } from "@opentui/core"
+import { RGBA, type TerminalColors } from "@opentui/core"
 import { Schema } from "effect"
 import {
   DEFAULT_THEMES,
@@ -223,6 +223,114 @@ test("graphagent theme keeps neutral roles gray", () => {
       expect(chroma, `${mode} ${key}`).toBeLessThanOrEqual(0.1)
     }
   }
+})
+
+/*
+ * Palette lint (#886 1.3): `primary` is the one saturated hue of the `graphagent` theme; every
+ * other place is gray or a muted tint. A token is saturated at an HSL saturation of 0.6 or more.
+ * The only tokens allowed above the limit are the ones below; each entry says why, and the
+ * tests after the lint keep the lists honest.
+ */
+const SATURATION_LIMIT = 0.6
+
+/** The brand color and the tokens that carry its value by design (#886 1.1 and 1.2). */
+const BRAND_TOKENS = ["primary", "accent", "logoAccent", "statusRunning"] as const
+
+/**
+ * Semantic status colors have to be recognizable at a glance, so they may be as saturated as they
+ * need to be. Only tokens that really cross the limit are listed. `error` stays under it (0.57 dark,
+ * 0.50 light) and has no entry of its own.
+ */
+const STATUS_TOKENS = {
+  /** `warning` and the tokens that reuse its amber: 0.75 in the light variant (0.50 in the dark one). */
+  warning: ["warning", "statusPaused", "markdownEmph", "syntaxKeyword", "syntaxNumber"],
+  /** The lighter shade of `error` for highlighted removals: 0.65 in the dark variant. */
+  error: ["diffHighlightRemoved"],
+} as const
+
+const EXEMPT = new Set<string>([...BRAND_TOKENS, ...STATUS_TOKENS.warning, ...STATUS_TOKENS.error])
+
+/** HSL saturation: 0 for grays, 1 for a pure hue. */
+function saturation(color: RGBA) {
+  const max = Math.max(color.r, color.g, color.b)
+  const min = Math.min(color.r, color.g, color.b)
+  const lightness = (max + min) / 2
+  const spread = 1 - Math.abs(2 * lightness - 1)
+  return spread === 0 ? 0 : (max - min) / spread
+}
+
+/** Hue angle in degrees. */
+function hue(color: RGBA) {
+  const max = Math.max(color.r, color.g, color.b)
+  const min = Math.min(color.r, color.g, color.b)
+  const spread = max - min
+  if (spread === 0) return 0
+  const angle =
+    max === color.r
+      ? ((color.g - color.b) / spread) % 6
+      : max === color.g
+        ? (color.b - color.r) / spread + 2
+        : (color.r - color.g) / spread + 4
+  return (angle * 60 + 360) % 360
+}
+
+function colorTokens(mode: "dark" | "light") {
+  const theme = resolveTheme(DEFAULT_THEMES.graphagent, mode)
+  return Object.entries(theme).flatMap(([token, value]) => (value instanceof RGBA ? [[token, value] as const] : []))
+}
+
+test("graphagent keeps every token below the saturation limit except the brand and status colors", () => {
+  for (const mode of ["dark", "light"] as const) {
+    const tokens = colorTokens(mode)
+    // The lint has to see the whole palette, not an empty or partial one.
+    expect(tokens.length).toBeGreaterThan(60)
+    for (const [token, color] of tokens) {
+      if (EXEMPT.has(token)) continue
+      expect(saturation(color), `${mode} ${token}`).toBeLessThan(SATURATION_LIMIT)
+    }
+  }
+})
+
+test("success is gray, well below the saturation limit", () => {
+  for (const mode of ["dark", "light"] as const) {
+    const theme = resolveTheme(DEFAULT_THEMES.graphagent, mode)
+    expect(EXEMPT.has("success")).toBe(false)
+    expect(saturation(theme.success), mode).toBeLessThan(SATURATION_LIMIT)
+  }
+})
+
+test("the brand tokens carry the brand value and are the saturated ones", () => {
+  for (const mode of ["dark", "light"] as const) {
+    const theme = resolveTheme(DEFAULT_THEMES.graphagent, mode)
+    for (const token of BRAND_TOKENS) {
+      expect(theme[token].toInts(), `${mode} ${token}`).toEqual(theme.primary.toInts())
+    }
+    expect(saturation(theme.primary), mode).toBeGreaterThanOrEqual(SATURATION_LIMIT)
+  }
+})
+
+test("every status exemption is needed and stays inside its family", () => {
+  const exceeds = new Set<string>()
+  for (const mode of ["dark", "light"] as const) {
+    const theme = resolveTheme(DEFAULT_THEMES.graphagent, mode)
+    for (const [token, color] of colorTokens(mode)) if (saturation(color) >= SATURATION_LIMIT) exceeds.add(token)
+
+    // The warning family is one amber: the tokens that reuse it carry exactly its value.
+    for (const token of STATUS_TOKENS.warning) {
+      expect(theme[token].toInts(), `${mode} ${token}`).toEqual(theme.warning.toInts())
+    }
+    // The error highlight is a shade of `error`, not another hue.
+    for (const token of STATUS_TOKENS.error) {
+      const distance = Math.abs(hue(theme[token]) - hue(theme.error))
+      expect(Math.min(distance, 360 - distance), `${mode} ${token}`).toBeLessThanOrEqual(6)
+    }
+    // `error` itself needs no exemption.
+    expect(saturation(theme.error), mode).toBeLessThan(SATURATION_LIMIT)
+  }
+
+  // Nothing is exempt "just in case": each entry crosses the limit in at least one variant.
+  for (const token of EXEMPT) expect(exceeds.has(token), token).toBe(true)
+  for (const token of exceeds) expect(EXEMPT.has(token), token).toBe(true)
 })
 
 function terminalColors(defaultBackground: string | null, palette: Array<string | null> = []): TerminalColors {
