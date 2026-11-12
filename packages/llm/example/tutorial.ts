@@ -52,12 +52,14 @@ const request = LLM.request({
 
 // `http` is intentionally not needed for normal calls. This shows the shape for
 // newly released provider fields before they deserve a typed provider option.
+// The header is a user overlay example: it deliberately stays outside the
+// reserved `x-graphagent-*` internal namespace.
 const rawOverlayExample = LLM.request({
   model,
   prompt: "Show the final HTTP overlay shape.",
   http: {
     body: { metadata: { example: "tutorial" } },
-    headers: { "x-graphagent-tutorial": "1" },
+    headers: { "x-example-tutorial": "1" },
     query: { debug: "1" },
   },
 })

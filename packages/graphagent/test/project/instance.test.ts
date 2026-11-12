@@ -137,6 +137,37 @@ describe("InstanceStore", () => {
     }),
   )
 
+  // Worker GETs are cancellable, so the first request to a cold directory can
+  // be aborted while bootstrap is in flight. The shared boot runs in the entry
+  // scope, not the caller's fiber: aborting one waiter must not fail another.
+  it.live("interrupting one concurrent cold load leaves the other load successful", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      let initialized = 0
+
+      yield* setBootstrap(
+        Effect.gen(function* () {
+          initialized++
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(release)
+        }),
+      )
+      const first = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Deferred.await(started)
+
+      const second = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Fiber.interrupt(first)
+      yield* Deferred.succeed(release, undefined)
+
+      const ctx = yield* Fiber.join(second)
+      expect(ctx.directory).toBe(dir)
+      expect(initialized).toBe(1)
+    }),
+  )
+
   it.live("removes failed loads from the cache", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })

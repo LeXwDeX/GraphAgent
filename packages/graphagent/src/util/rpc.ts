@@ -1,9 +1,28 @@
+/**
+ * Method-syntax signatures keep parameters bivariant (strictFunctionTypes
+ * exempts methods), so concrete handlers with precise inputs stay assignable
+ * while the transport can dispatch `unknown` without an assertion.
+ */
+type RpcMethod = {
+  handle(input: unknown, context: RpcContext): unknown
+}["handle"]
+
+/** Bivariant event handler shape used by the listener map. */
+type EventHandler = {
+  handle(data: unknown): void
+}["handle"]
+
+/** Bivariant promise resolver shape used by the pending-call map. */
+type Settle = {
+  settle(result: unknown): void
+}["settle"]
+
 type Definition = {
-  [method: string]: (input: any, context: RpcContext) => any
+  readonly [method: string]: RpcMethod
 }
 
 type EventDefinition = {
-  [event: string]: unknown
+  readonly [event: string]: unknown
 }
 
 export type RpcContext = {
@@ -105,12 +124,14 @@ export function listen<T extends Definition>(rpc: T, transport?: ListenTransport
     const controller = new AbortController()
     controllers.set(frame.id, controller)
     try {
-      const handler = rpc[frame.method] as ((input: unknown, context: RpcContext) => unknown) | undefined
+      const handler = rpc[frame.method]
       if (typeof handler !== "function") {
         const error = new Error(`Unknown RPC method: ${frame.method}`)
         error.name = "RpcMethodNotFound"
         throw error
       }
+      // The frame input is unknown at the transport boundary; the concrete
+      // handler owns validation and the table type carries no `any`.
       const result = await handler(frame.input, { signal: controller.signal })
       post({ t: "res", id: frame.id, ok: true, result }, responseTransfer(result))
     } catch (error) {
@@ -134,16 +155,13 @@ export function listen<T extends Definition>(rpc: T, transport?: ListenTransport
 }
 
 /**
- * Events are structured-cloned instead of JSON-stringified. Values that cannot
- * be cloned fall back to the previous JSON normalization so the TUI keeps
- * receiving the same payload shape as before.
+ * Events cross the worker boundary through structured clone. The pump encodes
+ * every schema-backed payload to its wire shape before emitting, so a value
+ * that cannot be cloned is a bridge contract violation, not something to
+ * normalize with a JSON round trip.
  */
-function cloneEventData(data: unknown) {
-  try {
-    return structuredClone(data)
-  } catch {
-    return JSON.parse(JSON.stringify(data))
-  }
+export function cloneEventData(data: unknown): unknown {
+  return structuredClone(data)
 }
 
 export function emit(event: string, data: unknown) {
@@ -158,7 +176,7 @@ export type RpcClient<T extends Definition, E extends EventDefinition> = {
   on<Event extends keyof E & string>(event: Event, handler: (data: E[Event]) => void): () => void
 }
 
-type CallArgs<F> = F extends (...args: any[]) => any
+type CallArgs<F> = F extends (...args: never[]) => unknown
   ? Parameters<F> extends []
     ? [input?: undefined, options?: RpcCallOptions]
     : [input: Parameters<F>[0], options?: RpcCallOptions]
@@ -166,13 +184,15 @@ type CallArgs<F> = F extends (...args: any[]) => any
 
 export function client<T extends Definition, E extends EventDefinition = EventDefinition>(target: {
   postMessage: (data: unknown) => void | null
-  onmessage: ((ev: MessageEvent<any>) => any) | null
+  onmessage: ((ev: MessageEvent<unknown>) => unknown) | null
 }): RpcClient<T, E> {
   const pending = new Map<
     number,
-    { resolve: (result: any) => void; reject: (error: Error) => void; cleanup: () => void }
+    { resolve: Settle; reject: (error: Error) => void; cleanup: () => void }
   >()
-  const listeners = new Map<string, Set<(data: any) => void>>()
+  // Handlers are keyed by event name and receive the contract's typed payload;
+  // the transport frame itself is unknown until dispatch.
+  const listeners = new Map<string, Set<EventHandler>>()
   let id = 0
   target.onmessage = (evt) => {
     const frame = evt.data as FromWorker
@@ -210,6 +230,7 @@ export function client<T extends Definition, E extends EventDefinition = EventDe
         }
         signal?.addEventListener("abort", abort, { once: true })
         pending.set(requestId, {
+          // The promise's generic is the caller's typed view of the untyped frame.
           resolve,
           reject,
           cleanup: () => signal?.removeEventListener("abort", abort),
@@ -223,9 +244,9 @@ export function client<T extends Definition, E extends EventDefinition = EventDe
         handlers = new Set()
         listeners.set(event, handlers)
       }
-      handlers.add(handler as (data: any) => void)
+      handlers.add(handler)
       return () => {
-        handlers!.delete(handler as (data: any) => void)
+        handlers!.delete(handler)
       }
     },
   }

@@ -602,6 +602,37 @@ it.live("rejects a second side question while one is in flight and lets cancella
   ),
 )
 
+// The worker maps an aborted request signal to fiber interruption. A provider
+// stream that never returns must not keep the side-question slot occupied: the
+// fiber's `ensuring` finalizer releases it and a following question runs.
+it.live("interrupting a never-ending fake LLM frees the side-question slot within one second", () =>
+  provideTmpdirServer(
+    ({ llm }) =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const btw = yield* SessionBtw.Service
+        const session = yield* sessions.create({ title: "btw interruption" })
+        yield* awaitSession(session.id)
+        yield* seedUser(session.id, "context")
+        yield* llm.hang
+
+        const running = yield* btw
+          .ask({ sessionID: session.id, id: "hung", question: "never answers" })
+          .pipe(Effect.forkScoped)
+        yield* llm.wait(1)
+
+        const started = performance.now()
+        yield* Fiber.interrupt(running)
+        expect(performance.now() - started).toBeLessThan(1_000)
+
+        yield* llm.text("after interruption")
+        const result = yield* btw.ask({ sessionID: session.id, id: "after", question: "second question" })
+        expect(result.answer).toBe("after interruption")
+      }),
+    { config: (url) => configFor(url) },
+  ),
+)
+
 itTimeout.live("times out a hung side question and leaves the slot reusable", () =>
   provideTmpdirServer(
     ({ llm }) =>

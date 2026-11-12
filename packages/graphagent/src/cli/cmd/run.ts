@@ -28,6 +28,7 @@ import { createClient, type Client, type TextPart, type ToolPart } from "@grapha
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { DagHold } from "./run/dag-hold"
+import { interactiveMarkable, nonInteractiveMarkable, type LocalFetchMark } from "./run/authorization"
 import { MessageID } from "@/session/schema"
 
 type ModelInput = Parameters<Client["session"]["prompt"]>[0]["model"]
@@ -59,8 +60,6 @@ type FilePart = {
   filename: string
   mime: string
 }
-
-type LocalFetchMark = { sessionID?: string } | undefined
 
 /**
  * The in-process transport for `run` and `--mini`.
@@ -940,7 +939,7 @@ export const RunCommand = effectCmd({
           const { runInteractiveLocalMode } = await import("./run/runtime")
           const fetchFn = createLocalFetch({
             skipPermissions: Boolean(args["dangerously-skip-permissions"]),
-            markable: (method, pathname) => (method === "POST" && pathname === "/session" ? {} : undefined),
+            markable: interactiveMarkable,
           })
 
           try {
@@ -967,13 +966,10 @@ export const RunCommand = effectCmd({
 
         const fetchFn = createLocalFetch({
           skipPermissions: Boolean(args["dangerously-skip-permissions"]),
-          markable: (method, pathname) => {
-            if (method !== "POST") return undefined
-            if (pathname === "/session") return {}
-            if (!(args.session || args.continue || args.fork)) return undefined
-            const selected = /^\/session\/([^/]+)\/(message|prompt|prompt_async|command|resume)$/.exec(pathname)?.[1]
-            return selected && localSessionIDs.has(selected) ? { sessionID: selected } : undefined
-          },
+          markable: nonInteractiveMarkable(
+            { session: args.session, continue: args.continue, fork: args.fork },
+            localSessionIDs,
+          ),
         })
         const sdk = createClient({
           baseUrl: "http://graphagent.internal", // check-private-hosts: allow in-process dummy base URL
