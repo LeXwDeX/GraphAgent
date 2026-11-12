@@ -235,3 +235,59 @@ test("keeps the drawer in the rightmost 40 columns above the bottom zone", async
     app.renderer.destroy()
   }
 })
+
+// #886 F1-17: the drawer overlays the main and status area only. Its lower edge is the
+// upper edge of the bottom zone, so it never covers the bottom zone or the footer.
+const DRAWER_SIZES = [
+  { width: 80, height: 24 },
+  { width: 120, height: 40 },
+] as const
+
+for (const size of DRAWER_SIZES) {
+  test(`ends the drawer exactly at the top of the bottom zone at ${size.width}x${size.height}`, async () => {
+    await using tmp = await shellState()
+    const app = await renderFrame(
+      () => ({
+        ...frameProps(),
+        bottomZone: (
+          <box id="zone" height={3} flexShrink={0}>
+            <text>底区</text>
+          </box>
+        ),
+        drawer: <text id="drawer-content">DRAWER</text>,
+      }),
+      { ...size, state: tmp.path },
+    )
+
+    try {
+      const zone = app.renderer.root.findDescendantById("zone")
+      const drawer = app.renderer.root.findDescendantById("drawer-content")?.parent
+      expect(zone).toBeDefined()
+      expect(drawer).toBeDefined()
+      if (!zone || !drawer) return
+
+      // The footer is the last row; the bottom zone sits right above it.
+      const footerTop = size.height - 1
+      expect(zone.screenY + zone.height).toBe(footerTop)
+
+      const drawerBottom = drawer.screenY + drawer.height
+      expect(drawerBottom).toBe(zone.screenY)
+      expect(drawerBottom).toBeLessThanOrEqual(footerTop)
+
+      // It starts below the top bar and its blank row, and hugs the right edge.
+      expect(drawer.screenY).toBe(2)
+      expect(drawer.width).toBe(40)
+      expect(drawer.screenX + drawer.width).toBe(size.width)
+
+      // Nothing of the bottom zone or the footer is painted over.
+      const rows = app.captureCharFrame().split("\n")
+      expect(rows[zone.screenY]).toContain("底区")
+      expect(rows[footerTop]).toContain("build")
+      expect(rows[footerTop]).toContain("命令")
+      for (let row = zone.screenY; row < size.height; row++) expect(rows[row]).not.toContain("DRAWER")
+      expect(rows[drawer.screenY]).toContain("DRAWER")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+}

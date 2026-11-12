@@ -6,6 +6,7 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import type { Session, SessionDagMode } from "@graphagent/sdk"
 import { onCleanup, type JSX } from "solid-js"
+import { unwrap } from "solid-js/store"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
@@ -31,7 +32,7 @@ import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { tmpdir } from "../fixture/fixture"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
-import { createEventSource, createFetch, directory, json } from "../fixture/tui-sdk"
+import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 
 export type Sent = { method: string; path: string; body: unknown }
 
@@ -85,6 +86,8 @@ export type MountOptions = {
   dagMode?: (sessionID: string) => Response | SessionDagMode | Promise<Response | SessionDagMode>
   /** Reply to `POST /session/:id/command`. */
   command?: (body: unknown) => Response
+  /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
+  handler?: FetchHandler
   width?: number
   height?: number
 }
@@ -108,6 +111,8 @@ export async function mountRoute(options: MountOptions) {
       const text = await request.clone().text()
       sent.push({ method: request.method, path: url.pathname, body: text ? JSON.parse(text) : undefined })
     }
+    const custom = await options.handler?.(url, request)
+    if (custom) return custom
     if (url.pathname === "/config") return json({ language: options.language ?? "zh-CN" })
     if (url.pathname === "/session") return json(sessions)
     if (options.withAgentAndModel) {
@@ -232,6 +237,11 @@ export async function mountRoute(options: MountOptions) {
     sync: () => sync,
     /** Text in the mounted prompt's draft; `undefined` when no prompt is mounted. */
     promptDraft: () => promptRef.current?.current.input,
+    /** A plain copy of the mounted prompt's draft parts; `undefined` when no prompt is mounted. */
+    promptParts: () => {
+      const parts = promptRef.current?.current.parts
+      return parts === undefined ? undefined : structuredClone(unwrap(parts))
+    },
     /** Requests that mutate server state, minus the attention telemetry. */
     writes: () => sent.filter((item) => !item.path.endsWith("/attention")),
     commands: () => sent.filter((item) => item.path.endsWith("/command")),

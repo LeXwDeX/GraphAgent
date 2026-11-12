@@ -3,7 +3,16 @@ import { mkdir, readdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
 import { Schema } from "effect"
-import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode, tint } from "../src/theme"
+import {
+  DEFAULT_THEMES,
+  addTheme,
+  allThemes,
+  hasTheme,
+  resolveTheme,
+  terminalMode,
+  tint,
+  type Theme,
+} from "../src/theme"
 import { ThemeConfig } from "../src/theme/schema"
 import { discoverThemes } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
@@ -64,19 +73,77 @@ test("ships graphagent as the default theme", () => {
   expect(DEFAULT_THEMES.opencode).toBeUndefined()
 })
 
-test("derives new token fallbacks for themes that do not define them", () => {
-  const theme = resolveTheme(DEFAULT_THEMES.aura, "dark")
+/** Tokens added after the legacy themes were written; those theme files leave them out. */
+const NEW_TOKENS = [
+  "textDim",
+  "backgroundSelected",
+  "backgroundUser",
+  "borderWarning",
+  "logoFace",
+  "logoAccent",
+  "logoShadow",
+  "statusRunning",
+  "statusQueued",
+  "statusPaused",
+] as const satisfies readonly (keyof Theme)[]
+
+const MODES = ["dark", "light"] as const
+const legacyThemes = Object.entries(DEFAULT_THEMES).filter(([name]) => name !== "graphagent")
+
+test("ships the 32 legacy themes next to graphagent", () => {
+  expect(legacyThemes).toHaveLength(32)
+  expect(Object.keys(DEFAULT_THEMES)).toHaveLength(33)
+})
+
+test("every bundled theme resolves each new token to a color in both modes", () => {
+  for (const [name, json] of Object.entries(DEFAULT_THEMES)) {
+    for (const mode of MODES) {
+      const theme = resolveTheme(json, mode)
+      for (const token of NEW_TOKENS) {
+        const color: Theme[typeof token] | undefined = theme[token]
+        expect(color, `${name} ${mode} ${token}`).toBeDefined()
+        const channels = color?.toInts() ?? []
+        expect(channels, `${name} ${mode} ${token}`).toHaveLength(4)
+        expect(channels.every(Number.isFinite), `${name} ${mode} ${token}`).toBe(true)
+      }
+    }
+  }
+})
+
+test("derives new token fallbacks for every legacy theme", () => {
   const ints = (color: { toInts(): number[] }) => color.toInts()
-  expect(ints(theme.textDim)).toEqual(ints(tint(theme.textMuted, theme.background, 0.5)))
-  expect(ints(theme.backgroundSelected)).toEqual(ints(tint(theme.backgroundPanel, theme.primary, 0.12)))
-  expect(ints(theme.backgroundUser)).toEqual(ints(theme.backgroundElement))
-  expect(ints(theme.borderWarning)).toEqual(ints(tint(theme.border, theme.warning, 0.4)))
-  expect(ints(theme.logoFace)).toEqual(ints(theme.textMuted))
-  expect(ints(theme.logoAccent)).toEqual(ints(theme.primary))
-  expect(ints(theme.logoShadow)).toEqual(ints(tint(theme.background, theme.textMuted, 0.25)))
-  expect(ints(theme.statusRunning)).toEqual(ints(theme.primary))
-  expect(ints(theme.statusQueued)).toEqual(ints(theme.textDim))
-  expect(ints(theme.statusPaused)).toEqual(ints(theme.warning))
+  let checked = 0
+  let explicit = 0
+  for (const [name, json] of legacyThemes) {
+    for (const mode of MODES) {
+      const theme = resolveTheme(json, mode)
+      const textDim = tint(theme.textMuted, theme.background, 0.5)
+      const expected: Record<(typeof NEW_TOKENS)[number], { toInts(): number[] }> = {
+        textDim,
+        backgroundSelected: tint(theme.backgroundPanel, theme.primary, 0.12),
+        backgroundUser: theme.backgroundElement,
+        borderWarning: tint(theme.border, theme.warning, 0.4),
+        logoFace: theme.textMuted,
+        logoAccent: theme.primary,
+        logoShadow: tint(theme.background, theme.textMuted, 0.25),
+        statusRunning: theme.primary,
+        statusQueued: textDim,
+        statusPaused: theme.warning,
+      }
+      for (const token of NEW_TOKENS) {
+        // A legacy theme that defines the token itself keeps its own value.
+        if (json.theme[token] !== undefined) {
+          explicit++
+          continue
+        }
+        expect(ints(theme[token]), `${name} ${mode} ${token}`).toEqual(ints(expected[token]))
+        checked++
+      }
+    }
+  }
+  // 32 themes x 2 modes x 10 tokens: a loop that silently skips everything must not pass.
+  expect(checked + explicit).toBe(legacyThemes.length * MODES.length * NEW_TOKENS.length)
+  expect(checked).toBeGreaterThan(0)
 })
 
 function channel(value: number) {
