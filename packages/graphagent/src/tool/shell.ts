@@ -48,6 +48,13 @@ function isTaskPromptOps(value: unknown): value is TaskPromptOps {
   return true
 }
 
+/** One-line failure text for a job notice; the full cause stays on the job. */
+function failureReason(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause)
+  const text = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim()
+  return text || "unknown error"
+}
+
 const MAX_METADATA_LENGTH = 30_000
 const METADATA_INTERVAL_MS = 200
 /** Non-durable preview payload bound (#1016 HS4a). */
@@ -524,18 +531,28 @@ export const ShellTool = Tool.define(
         yield* loops.wake(ctx.sessionID, { source: "background_job", ids: [jobID] }, payload, { evaluate })
       }).pipe(Effect.ignore)
 
+    // The single terminal notice of a background job: the goal wake plus the
+    // synthetic result prompt. `run` delivers it when the process has exited;
+    // the job wrapper delivers it when the job fails before that point.
     const notifyBackground = Effect.fn("ShellTool.notifyBackground")(function* (
       input: {
         jobID: string
         payload: string
-        output: string
+        /** Command output; absent when the job failed before producing a result. */
+        output?: string
         logPath: string
       },
       ctx: Tool.Context,
     ) {
+      // The result is final, so the job is settling rather than running. The
+      // prompt below waits for a whole notice turn, and a goal evaluated in that
+      // turn would otherwise find the job still running and wait on it again
+      // after its only wake was spent (see watch_pr).
+      yield* background.beginSettling(input.jobID)
       yield* wakeJob(ctx, input.jobID, input.payload, false)
       const ops = ctx.extra?.promptOps
       if (!isTaskPromptOps(ops)) return
+      const body = input.output ? `\n\n${input.output}` : ""
       yield* ops
         .prompt(
           {
@@ -545,7 +562,7 @@ export const ShellTool = Tool.define(
               {
                 type: "text",
                 synthetic: true,
-                text: `${input.payload}\njob: ${input.jobID}\nlog: ${input.logPath}\n\n${input.output}`,
+                text: `${input.payload}\njob: ${input.jobID}\nlog: ${input.logPath}${body}`,
               },
             ],
           },
@@ -950,9 +967,22 @@ export const ShellTool = Tool.define(
                     Effect.onInterrupt(() =>
                       wakeJob(ctx, jobID, `Background shell cancelled: ${params.command}`, true),
                     ),
+                    // A normal exit already delivered its notice from `run`. A
+                    // failure before that (the spawn itself, for example) would
+                    // otherwise end the job silently after the tool result said
+                    // it had started; a bare interrupt is a cancel, not a failure.
+                    // Exit handlers are uninterruptible, but the notice waits for
+                    // a whole session turn and must stay cancellable.
                     Effect.onExit((exit) => {
                       if (!Exit.isFailure(exit) || Cause.hasInterruptsOnly(exit.cause)) return Effect.void
-                      return wakeJob(ctx, jobID, `Background shell failed: ${params.command}`, true)
+                      return notifyBackground(
+                        {
+                          jobID,
+                          payload: `Background shell failed (${failureReason(exit.cause)}): ${params.command}`,
+                          logPath,
+                        },
+                        ctx,
+                      ).pipe(Effect.interruptible)
                     }),
                   ),
                 })

@@ -17,7 +17,7 @@ import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
-import { pollWithTimeout, testEffect } from "../lib/effect"
+import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
@@ -28,24 +28,43 @@ type WakeCall = {
   match: Goal.WakeMatch
   payload?: string
   options?: { readonly evaluate?: boolean }
+  /** Registry status of the woken job at the moment of the wake. */
+  status?: BackgroundJob.Info["status"]
 }
 
-type PromptCall = { parts: ReadonlyArray<{ type: string; text?: string; synthetic?: boolean }> }
+type PromptCall = {
+  parts: ReadonlyArray<{ type: string; text?: string; synthetic?: boolean }>
+  /** Registry status of the job at the moment its notice was prompted. */
+  status?: BackgroundJob.Info["status"]
+}
 
 // Tests in a file run sequentially, so one module-level recorder is enough and
-// keeps the mock layer static for testEffect.
-const hooks: { started: BackgroundJob.StartInput[]; wakes: WakeCall[]; prompts: PromptCall[] } = {
+// keeps the mock layer static for testEffect. `jobs` stands in for the registry
+// so a test can observe the status a terminal side effect sees; `events` keeps
+// the order of those side effects.
+const hooks: {
+  started: BackgroundJob.StartInput[]
+  jobs: Map<string, BackgroundJob.Info>
+  events: string[]
+  wakes: WakeCall[]
+  prompts: PromptCall[]
+} = {
   started: [],
+  jobs: new Map(),
+  events: [],
   wakes: [],
   prompts: [],
 }
+
+const statusOf = (id: string | undefined) => (id === undefined ? undefined : hooks.jobs.get(id)?.status)
 
 const promptOps = {
   cancel: () => Effect.void,
   resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
   prompt: (input: { parts: ReadonlyArray<{ type: string; text?: string; synthetic?: boolean }> }) =>
     Effect.sync(() => {
-      hooks.prompts.push({ parts: input.parts })
+      hooks.events.push("prompt")
+      hooks.prompts.push({ parts: input.parts, status: statusOf(hooks.started.at(-1)?.id) })
     }).pipe(Effect.as(undefined)),
 }
 
@@ -54,14 +73,23 @@ const backgroundLayer = Layer.mergeAll(
     start: (input: BackgroundJob.StartInput) =>
       Effect.sync(() => {
         hooks.started.push(input)
-        return {
+        const info: BackgroundJob.Info = {
           id: input.id ?? "job_unknown",
           type: input.type,
-          status: "running" as const,
+          status: "running",
           started_at: 0,
           title: input.title,
           metadata: input.metadata,
-        } satisfies BackgroundJob.Info
+        }
+        hooks.jobs.set(info.id, info)
+        return { ...info }
+      }),
+    beginSettling: (id: string) =>
+      Effect.sync(() => {
+        hooks.events.push("settling")
+        const job = hooks.jobs.get(id)
+        if (job?.status === "running") job.status = "settling"
+        return job
       }),
   }),
   Layer.mock(GoalLoop.Service, {
@@ -72,7 +100,8 @@ const backgroundLayer = Layer.mergeAll(
       options?: { readonly evaluate?: boolean },
     ) =>
       Effect.sync(() => {
-        hooks.wakes.push({ sessionID, match, payload, options })
+        hooks.events.push("wake")
+        hooks.wakes.push({ sessionID, match, payload, options, status: statusOf(match.ids[0]) })
         return true
       }),
   }),
@@ -145,6 +174,8 @@ const exited = (pid: number) =>
 
 beforeEach(() => {
   hooks.started.length = 0
+  hooks.jobs.clear()
+  hooks.events.length = 0
   hooks.wakes.length = 0
   hooks.prompts.length = 0
 })
@@ -221,6 +252,101 @@ describe("shell background mode", () => {
             expect(hooks.wakes[0].payload).toContain(`Background shell failed (exit 3): ${cmd}`)
             expect(hooks.wakes[0].options).toEqual({ evaluate: false })
             expect(hooks.prompts[0].parts[0].text).toContain("Background shell failed (exit 3)")
+          }),
+        )
+      }),
+  )
+
+  it.live(
+    "marks the job settling before it wakes the goal and prompts the notice",
+    (): Effect.Effect<void, unknown, ShellTestServices> =>
+      Effect.gen(function* () {
+        const tmp = yield* tmpdirScoped()
+        yield* provideInstance(tmp)(
+          Effect.gen(function* () {
+            const shell = yield* init()
+            const cmd = command("console.log('bg-done')")
+            yield* shell.execute({ command: cmd, background: true }, promptCtx)
+            yield* hooks.started[0].run.pipe(Effect.orDie)
+            // The notice prompt waits for a whole session turn. A job that still reads
+            // as running during it is awaited again after its only wake was spent.
+            expect(hooks.events).toEqual(["settling", "wake", "prompt"])
+            expect(hooks.wakes[0].status).toBe("settling")
+            expect(hooks.prompts[0].status).toBe("settling")
+          }),
+        )
+      }),
+  )
+
+  it.live(
+    "delivers a failure notice and wakes the goal when the process cannot be started",
+    (): Effect.Effect<void, unknown, ShellTestServices> =>
+      Effect.gen(function* () {
+        const tmp = yield* tmpdirScoped()
+        yield* provideInstance(tmp)(
+          Effect.gen(function* () {
+            const shell = yield* init()
+            const cmd = command("console.log('never-runs')")
+            // The tool call succeeds and reports the job as started; only the spawn inside the job fails.
+            const result = yield* shell.execute(
+              { command: cmd, workdir: path.join(tmp, "missing-dir"), background: true },
+              promptCtx,
+            )
+            expect(result.output).toContain("Background shell started")
+            const job = hooks.started[0]
+            const exit = yield* job.run.pipe(Effect.exit)
+            expect(Exit.isFailure(exit)).toBe(true)
+            expect(hooks.events).toEqual(["settling", "wake", "prompt"])
+            expect(hooks.wakes).toHaveLength(1)
+            expect(hooks.wakes[0].match).toEqual({ source: "background_job", ids: [job.id!] })
+            expect(hooks.wakes[0].status).toBe("settling")
+            expect(hooks.prompts).toHaveLength(1)
+            expect(hooks.prompts[0].status).toBe("settling")
+            const part = hooks.prompts[0].parts[0]
+            expect(part.synthetic).toBe(true)
+            expect(part.text).toContain(`Background shell failed (`)
+            expect(part.text).toContain("missing-dir")
+            expect(part.text).toContain(cmd)
+            expect(part.text).toContain(`job: ${job.id}`)
+            expect(part.text).toContain(`log: ${logPath(result.output)}`)
+          }),
+        )
+      }),
+  )
+
+  it.live(
+    "keeps the job cancellable while its failure notice waits for the notice turn",
+    (): Effect.Effect<void, unknown, ShellTestServices> =>
+      Effect.gen(function* () {
+        const tmp = yield* tmpdirScoped()
+        yield* provideInstance(tmp)(
+          Effect.gen(function* () {
+            const shell = yield* init()
+            // A prompt that never returns stands in for a long notice turn.
+            const waiting: Tool.Context = {
+              ...ctx,
+              extra: {
+                promptOps: {
+                  ...promptOps,
+                  prompt: (input: Parameters<typeof promptOps.prompt>[0]) =>
+                    promptOps.prompt(input).pipe(Effect.andThen(Effect.never)),
+                },
+              },
+            }
+            yield* shell.execute(
+              {
+                command: command("console.log('never-runs')"),
+                workdir: path.join(tmp, "missing-dir"),
+                background: true,
+              },
+              waiting,
+            )
+            const fiber = yield* Effect.forkChild(hooks.started[0].run)
+            yield* pollWithTimeout(
+              Effect.sync(() => (hooks.events.includes("prompt") ? (true as const) : undefined)),
+              "the failure notice never reached its prompt",
+            )
+            yield* awaitWithTimeout(Fiber.interrupt(fiber), "interrupting the job hung on its failure notice")
           }),
         )
       }),
