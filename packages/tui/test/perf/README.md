@@ -102,6 +102,10 @@ TUI_PTY_COMMAND=bun TUI_PTY_ARGS='run dev' bun test/perf/pty.ts
 
 It reports the ratio against `TUI_PTY_BASELINE` when that file is supplied. The PTY script uses the Bun PTY driver and does not change `packages/graphagent/test/lib/pty.bun.ts`.
 
+## Related tests
+
+The former standalone `interaction-render` and `reasoning-render` micro-benchmarks are gone. They measured a bare `<textarea>` and `<markdown>`, not the production `Session` and `Prompt`, and CI never ran them. The one check only they had, that a 7,500-line added-file diff mounts at most 512 source lines and still reaches both ends, is covered by `test/cli/tui/patch-diff.test.tsx`; the reasoning renderer by `test/cli/cmd/tui/reasoning-render.test.tsx`.
+
 ## CI
 
 `.azure-pipelines/ci.yml` defines the `Bench (TUI)` job on an 8-core GitHub-hosted runner. It runs `bun run bench:tui -- --repeats=5 --enforce`, so both hard counters and the baseline comparison fail inside that job. The job is part of the `Unit Tests (linux)` aggregate gate.
