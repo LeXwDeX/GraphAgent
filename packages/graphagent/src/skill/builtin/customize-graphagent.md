@@ -246,7 +246,7 @@ Two ways to define an agent. Use the file form for anything non-trivial.
 ### File
 
 ```
-.agents/agent/my-reviewer.md      OR     .agents/agents/my-reviewer.md
+.agents/agents/my-reviewer.md
 ```
 
 ```markdown
@@ -285,10 +285,10 @@ same key in `agent: { <name>: { ... } }`.
 ## Commands
 
 GraphAgent's command loader scans for `**/*.md` inside command directories. The
-file is named after the command, and lives directly inside the `command` folder:
+file is named after the command, and lives directly inside the `commands` folder:
 
 ```
-.agents/command/deploy.md
+.agents/commands/deploy.md
 ```
 
 Frontmatter:
