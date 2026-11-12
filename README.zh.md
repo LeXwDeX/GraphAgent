@@ -95,7 +95,8 @@ GraphAgent 是本项目对外的产品名；仓库以 **GraphAgent** 发布，�
 
 兼容 Claude Code hooks 协议的生命周期 hooks：33 个已识别事件（`PreToolUse`、`PostToolUse`、`SessionStart`、`PermissionRequest`、`WorktreeCreate` 等）× 5 种执行类型（`command`、`mcp`、`http`、`prompt`、`agent`）。其中 `PermissionDenied` 和 `TeammateIdle` 为兼容配置而接受，但本构建没有对应的运行时生产者。
 
-- `hooks.json` 从全局 opencode 配置目录和项目/worktree 的 `.agents` 目录读取，按追加方式合并并热加载；也可以经 HTTP 按会话注册。项目层 hooks 受信任门禁约束：有待确认条目时，TUI 会在首个会话前询问，之后随时可用 `/trust` 审阅、信任、拒绝或撤销。信任决定只记在本地状态目录的 `trust.json`，不写进项目；非交互 `graphagent run` 会跳过未信任条目（可用 `--trust-project` 仅对本次运行放行），用户级 hooks 不受影响。
+- `hooks.json` 从全局 opencode 配置目录和项目/worktree 的 `.agents` 目录读取，按追加方式合并并热加载；也可以经 HTTP 按会话注册。项目层 hooks 受信任门禁约束：从首页启动 TUI 且有待确认条目时，会在首个会话前自动打开信任面板（用 `--continue`/`--session` 直接进入会话则不自动弹出，只在页脚提醒），之后随时可用 `/trust` 审阅、信任、拒绝或撤销。信任决定只记在本地状态目录的 `trust.json`，不写进项目；非交互 `graphagent run` 会跳过未信任条目并输出汇总（可用 `--trust-project` 仅对本次运行放行），用户级 hooks 不受影响。未被 Git 跟踪的 `hooks.local.json`、`settings.local.json` 属于用户配置，不进信任流程；一旦被 Git 跟踪，就按项目文件处理、需要信任。
+- 目前无法信任的两类内容：项目层设置（`.agents/settings.json`，或被跟踪的 `settings.local.json`）里的顶层 `shell` 会被忽略，回落到默认 shell；经 `skills.paths` 指向项目 `.agents/skills/` 之外目录、或经 `skills.urls` 下载的 skill 不会出现在 `/trust` 面板，其 frontmatter hooks 也不会注册。`--trust-project` 仍可对本次运行放行；用户级 `shell` 设置、位于用户配置目录或 `~/.agents` 下的 skill 以及内置 skill 不受影响。
 - 各执行类型的 hook 都可以声明 `inputFormat: "claude-code"`，以 Claude Code 的工具名和参数键接收输入。这提供的是命名兼容，不是完整的行为等价。
 - Claude 的 `.claude/settings*.json` 不会自动加载：用 `/import-claude` 审阅并转换进 `.agents/`，用 `/create-hook` 引导编写新 hook。
 - 后台等待：`asyncRewake` 命令 hook 可以盯着 CI、审查或部署，智能体继续干别的；有结论时脚本以退出码 2 结束并用一段有界摘要唤醒会话。Active Hooks 块会把这类 hook 标成 `background`。参见[后台监听配方](./packages/graphagent/src/skill/builtin/configure-hooks.md#background-watcher-recipe)。

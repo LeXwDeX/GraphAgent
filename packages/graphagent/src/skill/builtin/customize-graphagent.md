@@ -53,6 +53,26 @@ already-loaded config until then.
 Configs from each scope are deep-merged. Project overrides global. Unknown
 top-level keys in `graphagent.json` are rejected with `ConfigInvalidError`.
 
+## Project trust
+
+Executable entries in the project layer (`.agents/`) take effect only after the
+user confirms them in `/trust`: MCP servers in `.agents/mcp.json`, hooks,
+formatter and LSP commands in project settings, hooks in agent and skill
+frontmatter, and embedded shell in command files and skill bodies. After writing
+or changing such entries, tell the user to review them with `/trust`. User-level
+config under `~/.config/graphagent/` and an untracked `.agents/settings.local.json`
+are the user's own and skip this step.
+
+Two limits matter when authoring:
+
+- A top-level `shell` in project settings (`.agents/settings.json`, or a tracked
+  `settings.local.json`) cannot be trusted: it is ignored and the default shell
+  is used. Put `shell` in user-level config instead.
+- A skill from a `skills.paths` entry outside `.agents/skills/` or from
+  `skills.urls` cannot be reviewed in `/trust`, and its frontmatter hooks are
+  never registered. Keep skills that need hooks or embedded shell under
+  `.agents/skills/`.
+
 ## graphagent.json
 
 Every field is optional.

@@ -37,9 +37,9 @@ Set a finite `timeout` (seconds) appropriate to the operation. Defaults: foregro
 
 - Global: `${Global.Path.config}/hooks.json`, following XDG configuration.
 - Project: `${PROJECT_DIR}/.agents/hooks.json`.
-- Project-local: `${PROJECT_DIR}/.agents/hooks.local.json` for private hooks that must not be committed.
+- Project-local: `${PROJECT_DIR}/.agents/hooks.local.json` for private hooks that must not be committed. While Git does not track the file it is user configuration; a tracked copy counts as a project file.
 
-Read the destination first. Append the intended matcher block to its event array, preserving every sibling event and unrelated field. Create missing directories/files only within the chosen scope. Do not overwrite the whole existing configuration or delete unrelated hooks. Project-layer hooks require the user's confirmation through `/trust` before they execute; global and user-layer hooks are unaffected. Preserve tool permissions, HTTP hook policies, and the actual source of scoped hooks; a repository cannot grant itself a bypass startup capability.
+Read the destination first. Append the intended matcher block to its event array, preserving every sibling event and unrelated field. Create missing directories/files only within the chosen scope. Do not overwrite the whole existing configuration or delete unrelated hooks. Hooks in the project `hooks.json`, or in a `hooks.local.json` that Git tracks, require the user's confirmation through `/trust` before they execute; global hooks and hooks in an untracked `hooks.local.json` are user configuration and need no confirmation. Preserve tool permissions, HTTP hook policies, and the actual source of scoped hooks; a repository cannot grant itself a bypass startup capability.
 
 ```json
 {
