@@ -1541,7 +1541,7 @@ export function spawnNode(
               result = yield* nodeExecution(promptSvc.loop({ sessionID: childSession.id }, { kind: "child_run" }))
             }
           }).pipe(Effect.ensuring(notifyStop))
-        }).pipe(Effect.ensuring(slot ? slot.release : Effect.void))
+        }).pipe(Effect.ensuring(Effect.suspend(() => (slot ? slot.release : Effect.void))))
       }).pipe(
         Effect.ensuring(
           Effect.gen(function* () {

@@ -5,7 +5,7 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import type { Counters } from "../lib/engine-probe"
 import { testEffect } from "../lib/effect"
-import { s5Scenario } from "./scenarios/s5"
+import { MAX_CONCURRENCY, s5Scenario } from "./scenarios/s5"
 
 const scenario = s5Scenario()
 const it = testEffect(scenario.layer)
@@ -86,6 +86,45 @@ describe("S5 DAG concurrency with background tasks", () => {
           expect(run.counts["git.spawns"]).toBeLessThanOrEqual(224)
           expect(run.counts["sql.write"]).toBeGreaterThan(0)
           expect(run.counts.commits).toBeGreaterThan(0)
+
+          // Issue #1021: the scheduler's occupancy, sampled for the whole pass,
+          // never passed a cap. Caps come from the same snapshots (the process
+          // scheduler's configured limits), not from constants restated here.
+          const { capacity } = run
+          // The measured peaks ride along in the CI log, not just a pass/fail.
+          process.stderr.write(
+            `[s5-capacity] samples=${capacity.samples} streams=${capacity.requests.inflight}/${capacity.requests.cap}` +
+              ` provider=${capacity.providers.test?.inflight}/${capacity.providers.test?.cap}` +
+              ` children=${capacity.children.running}/${capacity.children.cap}` +
+              ` dag=${capacity.children.dagRunning}/${capacity.children.dagCap}` +
+              ` workflows=${capacity.workflows.map((workflow) => `${workflow.peak}/${workflow.cap}`).join(",")}\n`,
+          )
+          expect(capacity.samples).toBeGreaterThan(0)
+          // Model streams: every provider request held a permit, and the exact
+          // in-flight peak (taken at each grant) stays inside the global cap
+          // and the provider's own cap.
+          expect(capacity.grants).toBe(run.requests.length)
+          expect(capacity.requests.inflight).toBeGreaterThanOrEqual(1)
+          expect(capacity.requests.inflight).toBeLessThanOrEqual(capacity.requests.cap)
+          expect(Object.keys(capacity.providers)).toEqual(["test"])
+          expect(capacity.providers.test.inflight).toBeGreaterThanOrEqual(1)
+          expect(capacity.providers.test.inflight).toBeLessThanOrEqual(capacity.providers.test.cap)
+          // Child runs: inside the child pool and the DAG-wide layer. Every node
+          // request is granted while its node holds a slot, so a zero peak would
+          // mean the accounting never ran.
+          expect(capacity.children.running).toBeGreaterThanOrEqual(1)
+          expect(capacity.children.running).toBeLessThanOrEqual(capacity.children.cap)
+          expect(capacity.children.dagRunning).toBeLessThanOrEqual(capacity.children.dagCap)
+          expect(capacity.children.dagCap).toBeLessThanOrEqual(capacity.children.cap)
+          // Each workflow's active child runs stay within the max_concurrency it
+          // asked for (and within the cap the scheduler enforced for it).
+          expect(capacity.workflows).toHaveLength(WORKFLOWS)
+          for (const workflow of capacity.workflows) {
+            expect(workflow.peak).toBeLessThanOrEqual(MAX_CONCURRENCY)
+            expect(workflow.peak).toBeLessThanOrEqual(workflow.cap)
+            expect(workflow.cap).toBeLessThanOrEqual(MAX_CONCURRENCY)
+          }
+          expect(Math.max(...capacity.workflows.map((workflow) => workflow.peak))).toBeGreaterThanOrEqual(1)
         }
 
         expect(stable(result.second.counts)).toEqual(stable(result.first.counts))

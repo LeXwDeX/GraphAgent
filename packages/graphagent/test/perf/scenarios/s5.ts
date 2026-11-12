@@ -14,6 +14,7 @@ import type { NodeConfig, WorkflowConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { makeFakeProvider } from "../../lib/fake-provider"
 import { reset, settle, snapshot, stepBook } from "../../lib/engine-probe"
 import type { BaselineRequest } from "../fingerprint"
@@ -38,6 +39,8 @@ const WORKERS = 8
 const DELIVERY = "n10"
 const WORKFLOWS = 3
 const BACKGROUND = 4
+/** What each workflow asks for; the scheduler holds its active child runs to this. */
+export const MAX_CONCURRENCY = 5
 const WORKER_IDS = Array.from({ length: WORKERS }, (_, index) => `n${String(index + 2).padStart(2, "0")}`)
 
 const model = { id: ModelV2.ID.make("test-model"), providerID: ProviderV2.ID.make("test") }
@@ -68,7 +71,7 @@ function buildConfig(name: string, workers: number): WorkflowConfig {
       prompt_template: { inline: "Deliver the final answer." },
     },
   ]
-  return { name, delivery_node: DELIVERY, max_concurrency: 5, nodes }
+  return { name, delivery_node: DELIVERY, max_concurrency: MAX_CONCURRENCY, nodes }
 }
 
 /** Services `makeDagPerfLayer` provides and this scenario consumes. */
@@ -81,6 +84,32 @@ export type S5Services =
   | BackgroundJob.Service
   | SessionStatus.Service
   | EventV2Bridge.Service
+  | AgentScheduler.Service
+
+/**
+ * Highest scheduler occupancy seen during one measured pass (Issue #1021),
+ * next to the caps the same snapshots reported. Model-stream numbers are exact:
+ * the scripted provider records a `capacity()` snapshot at every permit grant,
+ * and in-flight can only rise at a grant. Child-run numbers come from a
+ * polling fiber (a node holds its slot for the whole run, far longer than the
+ * poll interval). Reading `capacity()` touches no engine counter.
+ */
+export interface S5Capacity {
+  /** Polling samples taken; zero would make the child-run peaks vacuous. */
+  readonly samples: number
+  /** Model-stream grants observed (one per provider request). */
+  readonly grants: number
+  readonly requests: { readonly inflight: number; readonly cap: number }
+  readonly providers: Readonly<Record<string, { readonly inflight: number; readonly cap: number }>>
+  readonly children: {
+    readonly running: number
+    readonly cap: number
+    readonly dagRunning: number
+    readonly dagCap: number
+  }
+  /** Active child runs per workflow against the cap that workflow was held to. */
+  readonly workflows: ReadonlyArray<{ readonly peak: number; readonly cap: number }>
+}
 
 /** One measured pass: engine counters plus the workflow facts S5 asserts. */
 export interface S5PassResult extends Measurement {
@@ -98,6 +127,7 @@ export interface S5PassResult extends Measurement {
   readonly requests: ReadonlyArray<BaselineRequest>
   readonly parentMessages: number
   readonly parentStatus: string
+  readonly capacity: S5Capacity
 }
 
 export interface S5Result extends Measurement {
@@ -109,8 +139,71 @@ export interface S5Result extends Measurement {
   readonly second: S5PassResult
 }
 
+interface Peaks {
+  samples: number
+  requests: { inflight: number; cap: number }
+  providers: Record<string, { inflight: number; cap: number }>
+  children: { running: number; cap: number; dagRunning: number; dagCap: number }
+  workflows: Map<string, { peak: number; cap: number }>
+}
+
+const emptyPeaks = (): Peaks => ({
+  samples: 0,
+  requests: { inflight: 0, cap: 0 },
+  providers: {},
+  children: { running: 0, cap: 0, dagRunning: 0, dagCap: 0 },
+  workflows: new Map(),
+})
+
+/** Fold one scheduler snapshot into the running maxima; caps are whatever the snapshot reported. */
+function record(peaks: Peaks, snapshot: AgentScheduler.CapacitySnapshot) {
+  peaks.requests = {
+    inflight: Math.max(peaks.requests.inflight, snapshot.requests.inflight),
+    cap: snapshot.requests.cap,
+  }
+  for (const [providerID, provider] of Object.entries(snapshot.providers)) {
+    peaks.providers[providerID] = {
+      inflight: Math.max(peaks.providers[providerID]?.inflight ?? 0, provider.inflight),
+      cap: provider.cap,
+    }
+  }
+  peaks.children = {
+    running: Math.max(peaks.children.running, snapshot.children.running),
+    cap: snapshot.children.cap,
+    dagRunning: Math.max(peaks.children.dagRunning, snapshot.children.dagRunning),
+    dagCap: snapshot.children.dagCap,
+  }
+  if (snapshot.limit?.key.kind === "workflow") {
+    const previous = peaks.workflows.get(snapshot.limit.key.workflowID)
+    peaks.workflows.set(snapshot.limit.key.workflowID, {
+      peak: Math.max(previous?.peak ?? 0, snapshot.limit.used),
+      cap: Math.max(previous?.cap ?? 0, snapshot.limit.cap),
+    })
+  }
+}
+
+/**
+ * Poll the process scheduler until interrupted. It reads the scheduler's own
+ * counters only (no store, event or process access), so it adds nothing to the
+ * engine counts the gate compares. Workflow IDs are appended by the caller as
+ * the workflows are created.
+ */
+const sampleCapacity = (scheduler: AgentScheduler.Interface, workflowIDs: ReadonlyArray<string>, peaks: Peaks) =>
+  Effect.gen(function* () {
+    for (;;) {
+      if (workflowIDs.length === 0) record(peaks, yield* scheduler.capacity())
+      for (const workflowID of workflowIDs) {
+        record(peaks, yield* scheduler.capacity({ kind: "workflow", workflowID }))
+      }
+      peaks.samples += 1
+      yield* Effect.sleep("1 millis")
+    }
+  })
+
 export function s5Scenario(): Scenario<S5Result, S5Services> {
-  const fake = makeFakeProvider({ title: "S5", reply: "ok" })
+  // `scheduled`: the scripted provider holds a scheduler permit for each stream
+  // like the production LLM service, so model-stream occupancy is observable.
+  const fake = makeFakeProvider({ title: "S5", reply: "ok", scheduled: true })
   const run = Effect.gen(function* () {
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
@@ -120,6 +213,7 @@ export function s5Scenario(): Scenario<S5Result, S5Services> {
     const jobs = yield* BackgroundJob.Service
     const status = yield* SessionStatus.Service
     const events = yield* EventV2Bridge.Service
+    const scheduler = yield* AgentScheduler.Service
 
     yield* loop.init()
     yield* Effect.sleep("50 millis")
@@ -146,15 +240,22 @@ export function s5Scenario(): Scenario<S5Result, S5Services> {
         reset()
         fake.reset()
 
+        // Sample scheduler occupancy for the whole pass (Issue #1021).
+        const peaks = emptyPeaks()
+        const workflowIDs: string[] = []
+        const sampler = yield* sampleCapacity(scheduler, workflowIDs, peaks).pipe(Effect.forkScoped)
+
         yield* Effect.forEach(
           Array.from({ length: WORKFLOWS }, (_, index) => index),
           (index) =>
-            dag.create({
-              projectID: parent.projectID,
-              sessionID: parent.id,
-              title: `${label} wf ${index}`,
-              config: buildConfig(`${label}-${index}`, workers),
-            }),
+            dag
+              .create({
+                projectID: parent.projectID,
+                sessionID: parent.id,
+                title: `${label} wf ${index}`,
+                config: buildConfig(`${label}-${index}`, workers),
+              })
+              .pipe(Effect.tap((dagID) => Effect.sync(() => void workflowIDs.push(dagID)))),
           { concurrency: 1 },
         )
         const jobIDs = yield* Effect.forEach(
@@ -188,6 +289,11 @@ export function s5Scenario(): Scenario<S5Result, S5Services> {
         const waited = yield* Effect.forEach(jobIDs, (id) => jobs.wait({ id, timeout: 120_000 }), {
           concurrency: "unbounded",
         })
+        yield* Fiber.interrupt(sampler)
+        // Model-stream occupancy can only rise at a grant: fold in the exact
+        // snapshots the provider took there (the polling fiber cannot catch a
+        // stream that lives for microseconds).
+        for (const grant of fake.grants) record(peaks, grant)
         yield* settle({ quietMs: 500, timeoutMs: 60_000, activity: fake.activity })
         // Counts and the per-request book are captured before any store or
         // session read: those reads would otherwise be measured.
@@ -216,6 +322,14 @@ export function s5Scenario(): Scenario<S5Result, S5Services> {
           requests: fingerprintRequests(fake.requests),
           parentMessages: parentMessages.length,
           parentStatus: parentStatus.type,
+          capacity: {
+            samples: peaks.samples,
+            grants: fake.grants.length,
+            requests: peaks.requests,
+            providers: peaks.providers,
+            children: peaks.children,
+            workflows: [...peaks.workflows.values()],
+          },
         } satisfies S5PassResult
       })
 
