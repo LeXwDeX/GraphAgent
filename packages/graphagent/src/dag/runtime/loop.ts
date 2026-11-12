@@ -730,7 +730,7 @@ const serviceLayer = Layer.effect(
                   ? reviewImplementationFingerprint(nodeConfig, resolvedMapping)
                   : undefined,
                 // #944: nodes that judge the working tree (block-compiled review
-                // lanes, verify, synthesize, or legacy review conventions) record
+                // lanes, verify, synthesize, or conventional review nodes) record
                 // a target fingerprint so a mid-run change marks them stale.
                 targetSensitive: targetSensitiveNode(nodeConfig, node.workerType),
                 verdictEvidence: nodesSnapshot

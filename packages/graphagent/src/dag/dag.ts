@@ -257,8 +257,8 @@ function schemaAllowsString(schema: Record<string, unknown> | undefined): boolea
  * `mode: "strict"`: every required node must be completed with a passing
  * verdict or explicitly opted into the skip, so forced completion cannot
  * bypass the invariant. A completed non-review gate whose verdict says
- * FAIL/BLOCKING/BLOCKED/INCOMPLETE always counts as unfinished. Only a legacy
- * diff review is exempt: its REJECT outcome stays reopenable, while design
+ * FAIL/BLOCKING/BLOCKED/INCOMPLETE always counts as unfinished. Only a diff
+ * review is exempt: its REJECT outcome stays reopenable, while design
  * review verdicts are real gate failures.
  */
 export function requiredCompletionGaps(
@@ -287,7 +287,7 @@ export function requiredCompletionGaps(
     if (node.staleTarget === true) return [`${node.id} (stale target)`]
     if (definition?.review?.phase === "diff") {
       const outcome = verdictField(node.output)
-      // Only the legacy diff-review outcomes that gate reopen behavior are
+      // Only the ACCEPT/REJECT diff-review outcomes that gate reopen behavior are
       // exempt. A malformed FAIL/BLOCKED diff review is still a failed gate.
       if (outcome === "ACCEPT" || outcome === "REJECT") return []
     }

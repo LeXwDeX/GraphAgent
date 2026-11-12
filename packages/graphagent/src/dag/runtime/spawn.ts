@@ -557,7 +557,7 @@ export function spawnNode(
     ]
     const instance = yield* Effect.serviceOption(InstanceRef)
     const ambient = Option.isSome(instance) ? instance.value : undefined
-    // #943: the node's execution directory is explicit. Legacy callers that
+    // #943: the node's execution directory is explicit. Callers that
     // omit it keep the owner/ambient behavior unchanged, including non-git
     // directories (no worktree requirement here).
     const executionDirectory = input.executionDirectory ?? input.directory ?? ambient?.directory
