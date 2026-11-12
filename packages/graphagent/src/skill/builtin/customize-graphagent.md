@@ -36,19 +36,19 @@ already-loaded config until then.
 
 ## Where files live
 
-| Scope                         | Path                                                                                                                            |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Project config                | `./graphagent.json`, `./graphagent.jsonc`, or `.agents/graphagent.json` (GraphAgent walks up from the cwd to the worktree root) |
-| Global config                 | `~/.config/graphagent/graphagent.json` or `~/.config/graphagent/graphagent.jsonc` (NOT `~/.agents/`)                            |
-| Project MCP servers           | `.agents/mcp.json`                                                                                                              |
-| Global MCP servers            | `~/.config/graphagent/mcp.json` (`$GRAPHAGENT_CONFIG_DIR/mcp.json` when set)                                                    |
-| Project agents                | `.agents/agent/<name>.md` or `.agents/agents/<name>.md`                                                                         |
-| Global agents                 | `~/.config/graphagent/agent(s)/<name>.md`                                                                                       |
-| Project commands              | `.agents/command/<name>.md` or `.agents/commands/<name>.md`                                                                     |
-| Global commands               | `~/.config/graphagent/command(s)/<name>.md`                                                                                     |
-| Project skills                | `.agents/skill(s)/<name>/SKILL.md`                                                                                              |
-| Global skills                 | `~/.config/graphagent/skill(s)/<name>/SKILL.md`                                                                                 |
-| External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                              |
+| Scope                         | Path                                                                                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Project config                | `.agents/settings.json` (shared) and `.agents/settings.local.json` (local overrides) — GraphAgent walks up from the cwd to the nearest `.agents/` directory to find the project root |
+| Global config                 | `~/.config/graphagent/graphagent.json` or `~/.config/graphagent/graphagent.jsonc` (NOT `~/.agents/`)                                                                                 |
+| Project MCP servers           | `.agents/mcp.json`                                                                                                                                                                   |
+| Global MCP servers            | `~/.config/graphagent/mcp.json` (`$GRAPHAGENT_CONFIG_DIR/mcp.json` when set)                                                                                                         |
+| Project agents                | `.agents/agents/<name>.md`                                                                                                                                                           |
+| Global agents                 | `~/.config/graphagent/agents/<name>.md`                                                                                                                                              |
+| Project commands              | `.agents/commands/<name>.md`                                                                                                                                                         |
+| Global commands               | `~/.config/graphagent/commands/<name>.md`                                                                                                                                            |
+| Project skills                | `.agents/skills/<name>/SKILL.md`                                                                                                                                                     |
+| Global skills                 | `~/.config/graphagent/skills/<name>/SKILL.md`                                                                                                                                        |
+| External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                                                                                   |
 
 Configs from each scope are deep-merged. Project overrides global. Unknown
 top-level keys in `graphagent.json` are rejected with `ConfigInvalidError`.
@@ -246,7 +246,7 @@ Two ways to define an agent. Use the file form for anything non-trivial.
 ### File
 
 ```
-.agents/agent/my-reviewer.md      OR     .agents/agents/my-reviewer.md
+.agents/agents/my-reviewer.md
 ```
 
 ```markdown
@@ -285,10 +285,10 @@ same key in `agent: { <name>: { ... } }`.
 ## Commands
 
 GraphAgent's command loader scans for `**/*.md` inside command directories. The
-file is named after the command, and lives directly inside the `command` folder:
+file is named after the command, and lives directly inside the `commands` folder:
 
 ```
-.agents/command/deploy.md
+.agents/commands/deploy.md
 ```
 
 Frontmatter:
@@ -388,9 +388,10 @@ the `plan` agent's permission ruleset (`edit: deny *`).
 
 When a user's config is broken and GraphAgent won't start, these env vars help:
 
-- `GRAPHAGENT_DISABLE_PROJECT_CONFIG=1`: skip the project's local `graphagent.json`
-  and start from globals only. Run from the project directory, GraphAgent loads,
-  the user edits the broken file, then they restart without the flag.
+- `GRAPHAGENT_DISABLE_PROJECT_CONFIG=1`: skip the project's `.agents/settings.json`
+  and `.agents/settings.local.json` and start from globals only. Run from the project
+  directory, GraphAgent loads, the user edits the broken file, then they restart
+  without the flag.
 - `GRAPHAGENT_CONFIG=/path/to/file.json`: load an additional explicit config.
 - `GRAPHAGENT_CONFIG_CONTENT='{"$schema":"https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"}'`:
   inject inline JSON as a final local-scope merge.
