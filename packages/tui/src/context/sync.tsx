@@ -37,8 +37,10 @@ import {
   createSummary,
   HYDRATED_MAX,
   mergeSession,
+  mergeSnapshot,
   mergeStatus,
   mergeToolPart,
+  summarizeMessages,
   taskIndexEntry,
   type SessionSummary,
   type TaskIndexEntry,
@@ -87,6 +89,13 @@ function searchMessages(messages: Message[], target: Message) {
   }
   return { found: false, index: left }
 }
+
+/**
+ * Messages requested per session snapshot. A reply shorter than this holds the
+ * session's whole history; a full one may be cut, so recounts built from it
+ * are lower bounds (#886 5.4).
+ */
+const MESSAGE_WINDOW = 100
 
 export const {
   context: SyncContext,
@@ -455,6 +464,30 @@ export const {
         produce((draft) => {
           for (const [id, summary] of next) draft[id] = summary
         }),
+      )
+    }
+
+    /**
+     * #886 5.4: recount a hydrated session from its loaded messages and relink
+     * its Task parts. Hydration and reconnect are the moments the event
+     * reducer cannot be trusted alone: it never saw the history of a cold
+     * session, and it missed whatever happened while disconnected. The seen
+     * set restarts from the snapshot so later live updates of the same tool
+     * parts are not counted twice.
+     */
+    function rebuildSummary(sessionID: string, complete: boolean) {
+      const snapshot = summarizeMessages(
+        (store.message[sessionID] ?? []).map((message) => ({ parts: store.part[message.id] ?? [] })),
+      )
+      batch(() => {
+        writeSummary(sessionID, mergeSnapshot(summaryRaw.get(sessionID), sessionID, snapshot, complete))
+        for (const task of snapshot.tasks) setStore("taskIndex", task.childSessionID, reconcile(task.entry))
+      })
+      // A cut window knows only the newest tool parts; the ones the events
+      // already counted stay in the set so their updates are not counted again.
+      summarySeen.set(
+        sessionID,
+        complete ? snapshot.toolPartIDs : new Set([...seenTools(sessionID), ...snapshot.toolPartIDs]),
       )
     }
 
@@ -1229,7 +1262,7 @@ export const {
             load("goal", sdk.client.session.goal({ sessionID }), (value) => setStore("goal", sessionID, value))
             const [session, messages] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
-              sdk.client.session.messages({ sessionID, limit: 100 }),
+              sdk.client.session.messages({ sessionID, limit: MESSAGE_WINDOW }),
             ])
             if (disposed || ancillaryAttempts.get(sessionID) !== attempt) return
             setStore(
@@ -1280,6 +1313,8 @@ export const {
                 draft.message[sessionID] = visible
               }),
             )
+            // A failed reply says nothing about the history; keep the counters.
+            if (messages.data) rebuildSummary(sessionID, messages.data.length < MESSAGE_WINDOW)
             fullSyncedSessions.add(sessionID)
             touchHydrated(sessionID)
             evictHydrated()
