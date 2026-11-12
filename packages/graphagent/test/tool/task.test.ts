@@ -524,7 +524,7 @@ describe("tool.task", () => {
       const kids = yield* sessions.children(chat.id)
       expect(kids).toHaveLength(1)
       expect(kids[0]?.id).toBe(child.id)
-      expect(result.metadata.sessionId).toBe(child.id)
+      expect(result.metadata.sessionID).toBe(child.id)
       expect(result.output).toContain(`<task id="${child.id}" state="completed">`)
       expect(seen?.sessionID).toBe(child.id)
       expect(seen?.variant).toBe("xhigh")
@@ -879,7 +879,7 @@ describe("tool.task", () => {
         },
       )
 
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("error")
       expect(waited.info?.error).toContain("output token cap")
@@ -939,7 +939,7 @@ describe("tool.task", () => {
         },
       )
 
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("error")
       expect(waited.info?.error).toContain("empty final answer")
@@ -1348,7 +1348,7 @@ describe("tool.task", () => {
           },
         )
 
-        const child = yield* sessions.get(result.metadata.sessionId)
+        const child = yield* sessions.get(result.metadata.sessionID)
         expect(child.parentID).toBe(chat.id)
         expect(child.agent).toBe("reviewer")
         expect(child.permission).toEqual([
@@ -1437,17 +1437,17 @@ describe("tool.task", () => {
       const job = (yield* jobs.list())[0]
       expect(job).toBeDefined()
       if (!job) throw new Error("task job not found")
-      expect(job.metadata?.parentSessionId).toBe(chat.id)
+      expect(job.metadata?.parentSessionID).toBe(chat.id)
       yield* jobs.promote(job.id)
 
       const result = yield* Fiber.join(fiber)
       expect(result.metadata.background).toBe(true)
       expect(result.output).toContain(`state="running"`)
-      expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
+      expect((yield* jobs.get(result.metadata.sessionID))?.status).toBe("running")
       expect(runs).toBe(1)
 
       yield* Deferred.succeed(done, undefined)
-      expect((yield* jobs.wait({ id: result.metadata.sessionId })).info?.output).toBe("background done")
+      expect((yield* jobs.wait({ id: result.metadata.sessionID })).info?.output).toBe("background done")
       expect((yield* Deferred.await(injected)).parts[0]?.type).toBe("text")
       expect(runs).toBe(1)
     }),
@@ -1485,7 +1485,7 @@ describe("tool.task", () => {
         },
       )
 
-      const job = yield* jobs.get(result.metadata.sessionId)
+      const job = yield* jobs.get(result.metadata.sessionID)
       expect(result.metadata.background).toBe(true)
       expect(result.output).toContain(`state="running"`)
       expect(job?.status).toBe("running")
@@ -1572,22 +1572,22 @@ describe("tool.task", () => {
           description: "add investigation scope",
           prompt: "also inspect cancellation",
           subagent_type: "general",
-          task_id: started.metadata.sessionId,
+          task_id: started.metadata.sessionID,
         },
         context,
       )
 
-      expect(result.metadata.sessionId).toBe(started.metadata.sessionId)
+      expect(result.metadata.sessionID).toBe(started.metadata.sessionID)
       expect(result.metadata.background).toBe(true)
       expect(result.output).toContain("Background task updated")
       first.resolve()
-      expect((yield* jobs.get(started.metadata.sessionId))?.status).toBe("running")
+      expect((yield* jobs.get(started.metadata.sessionID))?.status).toBe("running")
       expect((yield* Effect.promise(() => updated.promise)).parts).toEqual([
         { type: "text", text: "also inspect cancellation" },
       ])
 
       second.resolve()
-      const waited = yield* jobs.wait({ id: started.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: started.metadata.sessionID, timeout: 1_000 })
       expect(waited.info?.status).toBe("completed")
       expect(waited.info?.output).toBe("second done")
       const notification = yield* Effect.promise(() => injected.promise)
@@ -1624,14 +1624,14 @@ describe("tool.task", () => {
         },
       )
 
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.info?.status).toBe("completed")
       for (let i = 0; i < 50 && goalWakes.length === 0; i++) yield* Effect.sleep("10 millis")
       // The result prompt follows, so the wake only flips goal state.
       expect(goalWakes).toEqual([
         {
           sessionID: chat.id,
-          match: { source: "background_job", ids: [result.metadata.sessionId] },
+          match: { source: "background_job", ids: [result.metadata.sessionID] },
           payload: "Background task completed: inspect bug",
           evaluate: false,
         },
@@ -1665,7 +1665,7 @@ describe("tool.task", () => {
         },
       )
 
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("completed")
       expect(waited.info?.output).toBe("background done")
@@ -1704,7 +1704,7 @@ describe("tool.task", () => {
         },
       )
 
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("completed")
     }),
@@ -1743,7 +1743,7 @@ describe("tool.task", () => {
       )
 
       yield* sessions.remove(chat.id)
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("cancelled")
     }),
@@ -1781,8 +1781,8 @@ describe("tool.task", () => {
         },
       )
 
-      yield* sessions.remove(result.metadata.sessionId)
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      yield* sessions.remove(result.metadata.sessionID)
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("cancelled")
     }),
@@ -1821,7 +1821,7 @@ describe("tool.task", () => {
       )
 
       yield* runState.cancel(chat.id)
-      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      const waited = yield* jobs.wait({ id: result.metadata.sessionID, timeout: 1_000 })
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("cancelled")
     }),
@@ -1838,7 +1838,7 @@ describe("tool.task", () => {
       yield* jobs.start({
         id: child.id,
         type: "task",
-        metadata: { parentSessionId: chat.id, sessionId: child.id },
+        metadata: { parentSessionID: chat.id, sessionID: child.id },
         run: Effect.never,
       })
 
@@ -1860,13 +1860,13 @@ describe("tool.task", () => {
       yield* jobs.start({
         id: child.id,
         type: "task",
-        metadata: { parentSessionId: chat.id, sessionId: child.id },
+        metadata: { parentSessionID: chat.id, sessionID: child.id },
         run: Effect.never,
       })
       yield* jobs.start({
         id: grandchild.id,
         type: "task",
-        metadata: { parentSessionId: child.id, sessionId: grandchild.id },
+        metadata: { parentSessionID: child.id, sessionID: grandchild.id },
         run: Effect.never,
       })
 
@@ -1977,15 +1977,15 @@ describe("tool.task", () => {
       expect(nativeTrue.metadata.background).toBe(true)
 
       const sessionIds = new Set([
-        stringTrue.metadata.sessionId,
-        stringFalse.metadata.sessionId,
-        nativeTrue.metadata.sessionId,
+        stringTrue.metadata.sessionID,
+        stringFalse.metadata.sessionID,
+        nativeTrue.metadata.sessionID,
       ])
       expect(sessionIds.size).toBe(3)
       expect((yield* sessions.children(chat.id)).length).toBe(3)
 
-      yield* jobs.wait({ id: stringTrue.metadata.sessionId, timeout: 5_000 })
-      expect((yield* jobs.get(stringTrue.metadata.sessionId))?.status).toBe("completed")
+      yield* jobs.wait({ id: stringTrue.metadata.sessionID, timeout: 5_000 })
+      expect((yield* jobs.get(stringTrue.metadata.sessionID))?.status).toBe("completed")
     }),
   )
 })

@@ -220,7 +220,7 @@ describe("Goal.updateAfterJudge — blocked with running work (#1067)", () => {
     title: "watch https://example.test/pr/9",
     status: "running",
     started_at: Date.now(),
-    metadata: { sessionId: sessionID, url: "https://example.test/pr/9", deadlineAt },
+    metadata: { sessionID: sessionID, url: "https://example.test/pr/9", deadlineAt },
   })
 
   it.live("downgrades to awaiting the session's running watch instead of pausing", () =>

@@ -190,8 +190,8 @@ it.effect(
         ).toHaveLength(viewing ? 1 : 0)
         yield* permission.reply({ requestID: pending.id, reply: "once" })
         yield* Deferred.succeed(finished, undefined)
-        if (typeof result.metadata.sessionId !== "string") throw new Error("Missing actual task session")
-        expect((yield* jobs.wait({ id: result.metadata.sessionId })).info?.status).toBe("completed")
+        if (typeof result.metadata.sessionID !== "string") throw new Error("Missing actual task session")
+        expect((yield* jobs.wait({ id: result.metadata.sessionID })).info?.status).toBe("completed")
         yield* Deferred.await(injected)
         expect(
           seen.filter((item) => item.event === "Notification" && item.notificationType === "agent_completed"),

@@ -157,7 +157,7 @@ describe("GoalLoop — waits", () => {
         title: "watch https://example.test/pr/1",
         status: "running",
         started_at: Date.now(),
-        metadata: { sessionId: sid, url: "https://example.test/pr/1", deadlineAt },
+        metadata: { sessionID: sid, url: "https://example.test/pr/1", deadlineAt },
       })
       yield* Effect.yieldNow
 

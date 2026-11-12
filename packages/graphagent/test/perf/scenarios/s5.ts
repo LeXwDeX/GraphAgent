@@ -165,7 +165,7 @@ export function s5Scenario(): Scenario<S5Result, S5Services> {
                 id: child.id,
                 type: "task",
                 title: `${label} bg ${index}`,
-                metadata: { sessionId: child.id, parentSessionId: parent.id },
+                metadata: { sessionID: child.id, parentSessionID: parent.id },
                 run: prompt
                   .prompt({
                     sessionID: child.id,
