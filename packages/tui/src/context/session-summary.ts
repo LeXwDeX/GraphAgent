@@ -111,7 +111,9 @@ export function mergeToolPart(
 /** Extract the child-session link from a parent's Task tool part. */
 export function taskIndexEntry(part: ToolPartLike): { childSessionID: string; entry: TaskIndexEntry } | undefined {
   if (part.tool !== "task") return undefined
-  const childSessionID = part.state.metadata?.sessionId
+  // `sessionID` is the current key; `sessionId` keeps links for messages
+  // persisted before the rename (#1069 P9).
+  const childSessionID = part.state.metadata?.sessionID ?? part.state.metadata?.sessionId
   if (typeof childSessionID !== "string" || !childSessionID) return undefined
   return {
     childSessionID,

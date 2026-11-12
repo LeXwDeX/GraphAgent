@@ -155,7 +155,7 @@ describe("HTTP session abort across workspace moves", () => {
           { directory: a },
           jobs.start({
             type: "test",
-            metadata: { sessionId: sessionID },
+            metadata: { sessionID: sessionID },
             run: Deferred.succeed(started, undefined).pipe(
               Effect.andThen(Effect.never),
               Effect.ensuring(Effect.sync(() => stopped++)),
@@ -164,11 +164,11 @@ describe("HTTP session abort across workspace moves", () => {
         )
         const unrelated = yield* instances.provide(
           { directory: a },
-          jobs.start({ type: "test", metadata: { sessionId: otherID }, run: Effect.never }),
+          jobs.start({ type: "test", metadata: { sessionID: otherID }, run: Effect.never }),
         )
         const control = yield* instances.provide(
           { directory: a },
-          jobs.start({ type: "test", metadata: { sessionId: controlID }, run: Effect.never }),
+          jobs.start({ type: "test", metadata: { sessionID: controlID }, run: Effect.never }),
         )
         yield* awaitWithTimeout(Deferred.await(started), "background job did not start", "10 seconds")
         yield* abort(controlID, a)
@@ -182,7 +182,7 @@ describe("HTTP session abort across workspace moves", () => {
 
         const later = yield* instances.provide(
           { directory: b },
-          jobs.start({ type: "test", metadata: { sessionId: sessionID }, run: Effect.never }),
+          jobs.start({ type: "test", metadata: { sessionID: sessionID }, run: Effect.never }),
         )
         yield* abort(sessionID, b)
         expect((yield* instances.provide({ directory: b }, jobs.get(later.id)))?.status).toBe("cancelled")
@@ -202,7 +202,7 @@ describe("HTTP session abort across workspace moves", () => {
           const id = "reused-background-job"
           const inOld = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
             instances.provide({ directory: location === "old" ? a : b }, effect)
-          yield* inOld(jobs.start({ id, type: "test", metadata: { sessionId: sessionID }, run: Effect.never }))
+          yield* inOld(jobs.start({ id, type: "test", metadata: { sessionID: sessionID }, run: Effect.never }))
           yield* move(sessionID, a, b)
 
           const entered = yield* Deferred.make<void>()
@@ -229,7 +229,7 @@ describe("HTTP session abort across workspace moves", () => {
           const stopping = yield* abort(sessionID, b).pipe(Effect.forkChild)
           yield* awaitWithTimeout(Deferred.await(captured), "abort did not capture its owners")
           yield* inOld(jobs.cancel(id))
-          yield* inOld(jobs.start({ id, type: "test", metadata: { sessionId: sessionID }, run: Effect.never }))
+          yield* inOld(jobs.start({ id, type: "test", metadata: { sessionID: sessionID }, run: Effect.never }))
           yield* Deferred.succeed(release, undefined)
           yield* awaitWithTimeout(Fiber.await(admission), "admission did not finish")
           yield* awaitWithTimeout(Fiber.join(stopping), "abort did not finish", "5 seconds")
@@ -252,7 +252,7 @@ describe("HTTP session abort across workspace moves", () => {
           jobs.start({
             id,
             type: "test",
-            metadata: { sessionId: sessionID },
+            metadata: { sessionID: sessionID },
             run: Effect.never.pipe(Effect.ensuring(Deferred.succeed(stopped, undefined))),
           }),
         )
@@ -265,7 +265,7 @@ describe("HTTP session abort across workspace moves", () => {
         expect(afterDispose.owners).toHaveLength(0)
         afterDispose.finish()
 
-        yield* inOld(jobs.start({ id, type: "test", metadata: { sessionId: sessionID }, run: Effect.never }))
+        yield* inOld(jobs.start({ id, type: "test", metadata: { sessionID: sessionID }, run: Effect.never }))
         yield* Effect.all(abort.owners)
         expect((yield* inOld(jobs.get(id)))?.status).toBe("running")
       }),

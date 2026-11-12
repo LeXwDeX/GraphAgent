@@ -98,7 +98,14 @@ export interface ChildSlotOptions {
 }
 
 export interface CapacitySnapshot {
-  readonly children: { readonly running: number; readonly cap: number }
+  readonly children: {
+    readonly running: number
+    readonly cap: number
+    /** #1027 D6: DAG-wide running child slots shared by every workflow. */
+    readonly dagRunning: number
+    /** The `dag.concurrency` layer, additionally bounded by the child pool. */
+    readonly dagCap: number
+  }
   readonly requests: { readonly inflight: number; readonly cap: number }
   readonly providers: Record<
     string,
@@ -643,7 +650,12 @@ const capacity = (state: SchedulerState, limit?: LimitKey): CapacitySnapshot => 
             cap: state.children.taskCaps.get(limit.parentSessionID) ?? 0,
           }
   return {
-    children: { running: state.children.inflight, cap: state.limits.childGlobal },
+    children: {
+      running: state.children.inflight,
+      cap: state.limits.childGlobal,
+      dagRunning: state.children.dagGlobal,
+      dagCap: childCaps(state.limits).dagLayer,
+    },
     requests: { inflight: state.requests.inflight, cap: state.limits.global },
     providers: providerSnapshot(state),
     laneQueued: laneQueued(state),

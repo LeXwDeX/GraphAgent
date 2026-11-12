@@ -10,7 +10,8 @@ import { Database } from "../database/database"
 import { versionedType } from "../event"
 import { EventTable } from "../event/sql"
 import { LayerNode } from "../effect/layer-node"
-import { WorkflowNodeTable, WorkflowTable } from "./sql"
+import { DagNodeAttemptTable, WorkflowNodeTable, WorkflowTable } from "./sql"
+import { SessionTable } from "../session/sql"
 import { isTerminalWorkflowStatusValue, WORKFLOW_TERMINAL_STATUS_VALUES } from "./core/types"
 
 // ============================================================================
@@ -129,6 +130,15 @@ export interface WorkflowSummary {
   queuedNodes: number
   /** Running nodes with a not-yet-adjudicated timeout escalation (escalation_pending). */
   escalatedNodes: number
+  /** #1027 D6: Σ over every attempt's child session of input + cache write +
+   * output + reasoning tokens; cache read is reported separately because it
+   * is not part of the budget. Attempts come from the durable ledger, so a
+   * retried node's earlier attempts stay counted after the node row moves on
+   * to its latest child session. */
+  tokens: number
+  tokensCacheRead: number
+  /** #1027 D6: durable checkpoint pause awaiting the main agent. */
+  checkpointPending: boolean
 }
 
 const mapWorkflow = (r: typeof WorkflowTable.$inferSelect): WorkflowRow => ({
@@ -245,6 +255,17 @@ export interface Interface {
   readonly getWorkflowSummaries: (sessionId: string) => Effect.Effect<WorkflowSummary[]>
   /** Parent-session view of `getWorkflowSummaries`; same aggregation and ordering. */
   readonly listSummariesByParent: (sessionId: string) => Effect.Effect<WorkflowSummary[]>
+  /**
+   * #1027 D6: the workflow whose attempt ledger owns this child session.
+   * Optional for lightweight store doubles. The summary publisher uses it to
+   * attribute a child's step-finish usage to its parent session after a
+   * restart, when no NodeStarted was observed by this process.
+   */
+  readonly getWorkflowByChildSession?: (
+    childSessionID: string,
+  ) => Effect.Effect<
+    { workflowId: string; sessionId: string; projectId: string; directory: string } | undefined
+  >
   /** Latest explicit parent control that can dispose of a checkpoint veto. */
   readonly getLatestCheckpointControlSeq: (workflowId: string) => Effect.Effect<number | undefined>
   /**
@@ -344,6 +365,25 @@ export const layer = Layer.effect(
         .all()
         .pipe(Effect.orDie)
       const escalatedByWorkflow = new Map(escalatedRows.map((row) => [row.workflowId, row.total]))
+      // #1027 D6: per-attempt usage comes from the durable ledger, not from
+      // workflow_node.child_session_id (which only names the latest attempt).
+      // LEFT JOIN keeps an attempt whose session row was already cleaned up;
+      // its usage then contributes nothing instead of dropping the workflow.
+      // One constant query, like the two aggregations above.
+      const usageRows = yield* db
+        .select({
+          workflowId: DagNodeAttemptTable.workflow_id,
+          tokens: sql<number>`coalesce(sum(${SessionTable.tokens_input} + ${SessionTable.tokens_cache_write} + ${SessionTable.tokens_output} + ${SessionTable.tokens_reasoning}), 0)`,
+          tokensCacheRead: sql<number>`coalesce(sum(${SessionTable.tokens_cache_read}), 0)`,
+        })
+        .from(DagNodeAttemptTable)
+        .innerJoin(WorkflowTable, eq(DagNodeAttemptTable.workflow_id, WorkflowTable.id))
+        .leftJoin(SessionTable, eq(DagNodeAttemptTable.child_session_id, SessionTable.id))
+        .where(eq(WorkflowTable.session_id, sessionId))
+        .groupBy(DagNodeAttemptTable.workflow_id)
+        .all()
+        .pipe(Effect.orDie)
+      const usageByWorkflow = new Map(usageRows.map((row) => [row.workflowId, row]))
       const counts = countRows.reduce((all, row) => {
         const current = all.get(row.workflowId) ?? { nodeCount: 0, completedNodes: 0, runningNodes: 0, failedNodes: 0, skippedNodes: 0, abortedNodes: 0, queuedNodes: 0 }
         current.nodeCount += row.total
@@ -363,6 +403,11 @@ export const layer = Layer.effect(
         graphRev: wf.graph_rev,
         ...(counts.get(wf.id) ?? { nodeCount: 0, completedNodes: 0, runningNodes: 0, failedNodes: 0, skippedNodes: 0, abortedNodes: 0, queuedNodes: 0 }),
         escalatedNodes: escalatedByWorkflow.get(wf.id) ?? 0,
+        tokens: usageByWorkflow.get(wf.id)?.tokens ?? 0,
+        tokensCacheRead: usageByWorkflow.get(wf.id)?.tokensCacheRead ?? 0,
+        // A checkpoint pause is recorded with its own durable reason, so a
+        // plain manual pause is not reported as waiting for the main agent.
+        checkpointPending: wf.status === "paused" && wf.pause_reason === "checkpoint",
       }))
     })
 
@@ -370,6 +415,26 @@ export const layer = Layer.effect(
       getWorkflow: Effect.fn("DagStore.getWorkflow")(function* (id) {
         const row = yield* db.select().from(WorkflowTable).where(eq(WorkflowTable.id, id)).get().pipe(Effect.orDie)
         return row ? mapWorkflow(row) : undefined
+      }),
+
+      getWorkflowByChildSession: Effect.fn("DagStore.getWorkflowByChildSession")(function* (childSessionID) {
+        // Index dag_node_attempt_child_session_idx backs this lookup. A child
+        // session belongs to at most one row per attempt; order defensively by
+        // the latest start in case a retry reused the same session.
+        const row = yield* db
+          .select({
+            workflowId: DagNodeAttemptTable.workflow_id,
+            sessionId: WorkflowTable.session_id,
+            projectId: WorkflowTable.project_id,
+            directory: WorkflowTable.directory,
+          })
+          .from(DagNodeAttemptTable)
+          .innerJoin(WorkflowTable, eq(DagNodeAttemptTable.workflow_id, WorkflowTable.id))
+          .where(eq(DagNodeAttemptTable.child_session_id, childSessionID))
+          .orderBy(desc(DagNodeAttemptTable.started_at))
+          .get()
+          .pipe(Effect.orDie)
+        return row
       }),
 
       getLatestCheckpointControlSeq: Effect.fn("DagStore.getLatestCheckpointControlSeq")(function* (workflowId) {

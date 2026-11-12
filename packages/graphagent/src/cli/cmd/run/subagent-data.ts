@@ -327,7 +327,7 @@ function taskTab(part: ToolPart, sessionID: string): FooterSubagentTab {
 }
 
 function taskSessionID(part: ToolPart) {
-  return text(metadata(part, "sessionId")) ?? text(metadata(part, "sessionID"))
+  return text(metadata(part, "sessionID")) ?? text(metadata(part, "sessionId"))
 }
 
 function syncTaskTab(data: SubagentData, part: ToolPart, children?: Set<string>) {

@@ -10,7 +10,7 @@ import { EventV2, type Definition, type Subscriber } from "../event"
 import { LayerNode } from "../effect/layer-node"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { ERROR_CLASS_CANCELLED } from "@graphagent/schema/dag-status"
-import { WorkflowNodeTable, WorkflowTable } from "./sql"
+import { DagNodeAttemptTable, WorkflowNodeTable, WorkflowTable } from "./sql"
 
 type WorkflowStatus = DagEvent.WorkflowStatus
 const toMillis = (dt: DateTime.Utc) => DateTime.toEpochMillis(dt)
@@ -409,7 +409,7 @@ export const layer = Layer.effectDiscard(
         // alone would orphan it from workflow status. Same-directory starts
         // are not replacements and must not duplicate history.
         const worktreeHistory = archiveWorktree(current, executionLocation.worktree_directory)
-        return yield* db
+        const started = yield* db
           .update(WorkflowNodeTable)
           .set({
             status: "running",
@@ -443,6 +443,29 @@ export const layer = Layer.effectDiscard(
             eq(WorkflowNodeTable.id, event.data.nodeID),
             inArray(WorkflowNodeTable.status, [...NodeStatusProjection.started.from]),
           ))
+          .returning({ id: WorkflowNodeTable.id })
+          .get()
+          .pipe(Effect.orDie)
+        // #1027 D6: the per-attempt usage ledger, projected from the start
+        // event. Only an attempt that actually started earns a row: a stale
+        // or racing NodeStarted (0-row guarded update) must not create a
+        // phantom attempt sharing the real attempt's identity. The attempt
+        // ordinal is the node's restart count at start time, the same
+        // `(child_session, replan_attempts)` identity the mailbox uses.
+        // Replay reuses the event transaction, and a repeated event decodes
+        // as already applied, but NOT CONFLICT keeps a partially replayed or
+        // dirty database idempotent too.
+        if (!started) return
+        yield* db
+          .insert(DagNodeAttemptTable)
+          .values({
+            workflow_id: event.data.dagID,
+            node_id: event.data.nodeID,
+            attempt: current?.replan_attempts ?? 0,
+            child_session_id: event.data.childSessionID,
+            started_at: toMillis(event.data.timestamp),
+          })
+          .onConflictDoNothing()
           .run()
           .pipe(Effect.orDie)
       }),

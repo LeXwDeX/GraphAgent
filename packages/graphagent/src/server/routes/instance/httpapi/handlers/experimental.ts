@@ -1,4 +1,5 @@
 import { BackgroundJob } from "@/background/job"
+import { parentSessionIDOf } from "@/background/session-metadata"
 import { MCP } from "@/mcp"
 import type { SessionID } from "@/session/schema"
 import { Effect } from "effect"
@@ -21,8 +22,8 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
         (job) =>
           job.type === "task" &&
           job.status === "running" &&
-          job.metadata?.parentSessionId === ctx.params.sessionID &&
-          job.metadata.background !== true,
+          parentSessionIDOf(job.metadata) === ctx.params.sessionID &&
+          job.metadata?.background !== true,
       )
       const promoted = yield* Effect.forEach(jobs, (job) => background.promote(job.id), { concurrency: "unbounded" })
       return promoted.some((job) => job !== undefined)

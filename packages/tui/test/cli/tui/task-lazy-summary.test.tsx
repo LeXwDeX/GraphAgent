@@ -87,7 +87,7 @@ const taskPart: ToolPart = {
     input: { description: "Inspect renderer", subagent_type: "explore" },
     title: "Inspect renderer",
     time: { start: 10 },
-    metadata: { sessionId: childID },
+    metadata: { sessionID: childID },
   },
 }
 
