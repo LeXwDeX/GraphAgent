@@ -31,7 +31,7 @@ function toolPart(overrides: ToolOverrides = {}): ToolPartLike {
       status: "running",
       title: "Background child",
       input: { description: "do work", subagent_type: "general" },
-      metadata: { sessionId: "ses_child", background: true },
+      metadata: { sessionID: "ses_child", background: true },
       ...overrides.state,
     },
   } as ToolPartLike
@@ -160,6 +160,6 @@ describe("taskIndexEntry", () => {
 
   test("ignores a missing or non-string child session id", () => {
     expect(taskIndexEntry(toolPart({ state: { metadata: {} } }))).toBeUndefined()
-    expect(taskIndexEntry(toolPart({ state: { metadata: { sessionId: 42 } } }))).toBeUndefined()
+    expect(taskIndexEntry(toolPart({ state: { metadata: { sessionID: 42 } } }))).toBeUndefined()
   })
 })

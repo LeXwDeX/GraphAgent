@@ -6,6 +6,7 @@ import { ref } from "@graphagent/core/lifecycle/state"
 import type { LifecycleState } from "@graphagent/core/lifecycle/state"
 import { BackgroundJob } from "@/background/job"
 import { Lifecycle } from "@/lifecycle/service"
+import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import * as Tool from "./tool"
 import DESCRIPTION from "./goal.txt"
 import { Goal } from "../goal/goal"
@@ -84,11 +85,11 @@ function findAwaitTarget(
           ? `no watch_pr job or watched URL matches \`${waitID}\` in this session; start a watch first.`
           : `no background job with id \`${waitID}\` exists in this session.`,
     }
-  // A background task's job carries the child session as `sessionId` and the
-  // caller as `parentSessionId`; accept either so a task started from this
+  // A background task's job carries the child session as `sessionID` and the
+  // caller as `parentSessionID`; accept either so a task started from this
   // session can be awaited by its task id.
   const owned = matches.filter(
-    (job) => job.metadata?.sessionId === sessionID || job.metadata?.parentSessionId === sessionID,
+    (job) => sessionIDOf(job.metadata) === sessionID || parentSessionIDOf(job.metadata) === sessionID,
   )
   if (owned.length === 0) return { ok: false, detail: `the job matching \`${waitID}\` belongs to another session.` }
   const running = owned.find((job) => job.status === "running")

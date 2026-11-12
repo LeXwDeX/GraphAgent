@@ -706,7 +706,7 @@ export function Main() {
             part.tool === "task" &&
             part.state.status !== "pending" &&
             part.state.metadata?.background === true &&
-            part.state.metadata?.sessionId === current.id,
+            (part.state.metadata?.sessionID ?? part.state.metadata?.sessionId) === current.id,
         ),
       )
     backgroundAttention.select(viewing ? parentID : undefined, !!viewing)
@@ -2762,7 +2762,9 @@ function Task(props: ToolProps) {
   const sync = useSync()
   const toast = useToast()
 
-  const sessionID = createMemo(() => stringValue(props.metadata.sessionId))
+  // `sessionID` is the current key; `sessionId` keeps tabs for messages
+  // persisted before the rename (#1069 P9).
+  const sessionID = createMemo(() => stringValue(props.metadata.sessionID) ?? stringValue(props.metadata.sessionId))
   // #886 5.5: the row never loads the child session; it reads the summary that
   // the event gate keeps up to date (and that a cold start rebuilds from the
   // session list). Entering the child view is what hydrates it.

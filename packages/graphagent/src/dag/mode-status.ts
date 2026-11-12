@@ -31,8 +31,9 @@ export const Status = Schema.Struct({
     maxTotalNodes: Schema.Finite,
     running: Schema.Finite,
   }),
-  // E2 D6 (`WorkflowSummary.quality`) is not merged yet, so C1 fixes the
-  // null arm. Extend this to `Schema.NullOr(WorkflowQuality)` when D6 lands.
+  // #1027 D6a fixed the summary shape (`WorkflowQuality`); this status keeps
+  // the null arm until D6b computes the counters. Extend it to
+  // `Schema.NullOr(WorkflowQuality)` together with that computation.
   quality: Schema.Null,
 }).annotate({ identifier: "SessionDagMode" })
 export type Status = typeof Status.Type

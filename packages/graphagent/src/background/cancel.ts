@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { BackgroundJob } from "@/background/job"
+import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import type { SessionID } from "@/session/schema"
 import { Effect } from "effect"
 
@@ -27,8 +28,10 @@ export const cancelSessionJobs = Effect.fn("BackgroundJob.cancelSessionJobs")(fu
     if (job.metadata?.survivesSessionCancel === true) return false
     if (cancelled.has(job.id)) return false
     if (pending.has(job.id)) return true
-    if (typeof job.metadata?.sessionId === "string" && pending.has(job.metadata.sessionId)) return true
-    return typeof job.metadata?.parentSessionId === "string" && pending.has(job.metadata.parentSessionId)
+    const session = sessionIDOf(job.metadata)
+    if (session !== undefined && pending.has(session)) return true
+    const parent = parentSessionIDOf(job.metadata)
+    return parent !== undefined && pending.has(parent)
   }
   let batch = jobs.filter(matches)
   while (batch.length > 0) {
@@ -45,7 +48,8 @@ export const cancelSessionJobs = Effect.fn("BackgroundJob.cancelSessionJobs")(fu
             Effect.sync(() => {
               cancelled.add(job.id)
               pending.add(job.id)
-              if (typeof job.metadata?.sessionId === "string") pending.add(job.metadata.sessionId)
+              const session = sessionIDOf(job.metadata)
+              if (session !== undefined) pending.add(session)
             }),
           ),
         ),
