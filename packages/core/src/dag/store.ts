@@ -3,7 +3,7 @@
 
 export * as DagStore from "./store"
 
-import { and, asc, count, desc, eq, gt, inArray, max, or, sql } from "drizzle-orm"
+import { and, asc, count, desc, eq, gt, inArray, lte, max, or, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { Database } from "../database/database"
@@ -104,6 +104,21 @@ export interface WakeSnapshot {
   readonly nodes: readonly NodeRow[]
   readonly workflows: readonly WorkflowRow[]
 }
+
+/** #1026: the sessions `getSessionsWithDueWakes` lists, split by the ledger
+ * that listed them. Each array is distinct and in session ID order (SQLite's
+ * binary collation); one session can appear in both. */
+export interface DueWakeSessions {
+  /** An unreported wake: a terminal workflow, or a wake-deliverable node. */
+  readonly wake: readonly string[]
+  /** A paused workflow whose once-per-episode reminder is due. */
+  readonly paused: readonly string[]
+}
+
+/** The ledger a `getSessionsWithDueWakes` arm reads, carried as a literal column. */
+type DueWakeSource = keyof DueWakeSessions
+
+const byCodeUnit = (a: string, b: string) => Number(a > b) - Number(a < b)
 
 /** #945: the durable target change carried by the latest retarget replan. */
 export type RetargetData = NonNullable<(typeof DagEvent.WorkflowReplanned.data)["Type"]["retarget"]>
@@ -224,6 +239,16 @@ const wakeDeliverableNodePredicate = or(
   gt(WorkflowNodeTable.timeout_extensions, 0),
 )
 
+// The two arms of the unreported-wake ledger, one predicate per table. The
+// startup list (`getSessionsWithUnreportedWakes`) and the inbox tick read
+// (`getSessionsWithDueWakes`) share them, so the two cannot disagree on what
+// counts as an unreported wake.
+const unreportedWakeWorkflowPredicate = and(
+  eq(WorkflowTable.wake_reported, false),
+  inArray(WorkflowTable.status, [...WORKFLOW_TERMINAL_STATUS_VALUES]),
+)
+const unreportedWakeNodePredicate = and(eq(WorkflowNodeTable.wake_reported, false), wakeDeliverableNodePredicate)
+
 const checkpointControlTypes = [DagEvent.WorkflowResumed, DagEvent.WorkflowReplanned, DagEvent.WorkflowStepped].map(
   (definition) => {
     if (!definition.durable) throw new Error(`Checkpoint control event is not durable: ${definition.type}`)
@@ -306,6 +331,17 @@ export interface Interface {
   readonly getUnreportedWakeNodes: (sessionID: string) => Effect.Effect<NodeRow[]>
   readonly getUnreportedWakeWorkflows: (sessionID: string) => Effect.Effect<WorkflowRow[]>
   readonly getSessionsWithUnreportedWakes: () => Effect.Effect<string[]>
+  /**
+   * #1026: one read for the inbox tick's two durable ledgers. `wake` is what
+   * `getSessionsWithUnreportedWakes` lists; `paused` is the sessions of paused
+   * workflows whose reminder is due: `wake_reported = 0` and
+   * `time_updated <= pausedDueCutoff`. The cutoff is inclusive, matching
+   * `isPausedReminderDue`'s `now - timeUpdated >= delay`. The caller computes
+   * it from its own `Clock` (`now - delay`) and it is bound as a parameter;
+   * the SQL clock is never consulted, so a virtual clock decides what is due.
+   * Only the session ID is read, never the workflow row or its YAML config.
+   */
+  readonly getSessionsWithDueWakes: (input: { readonly pausedDueCutoff: number }) => Effect.Effect<DueWakeSessions>
   readonly hasReportedWakeNodes: (sessionID: string) => Effect.Effect<boolean>
 }
 
@@ -759,26 +795,59 @@ export const layer = Layer.effect(
         const rows = yield* db
           .select({ sessionId: WorkflowTable.session_id })
           .from(WorkflowTable)
-          .where(and(
-            eq(WorkflowTable.wake_reported, false),
-            inArray(WorkflowTable.status, [...WORKFLOW_TERMINAL_STATUS_VALUES]),
-          ))
+          .where(unreportedWakeWorkflowPredicate)
           .union(
             db
               .select({ sessionId: WorkflowTable.session_id })
               .from(WorkflowNodeTable)
               .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
-              .where(and(
-                eq(WorkflowNodeTable.wake_reported, false),
-                // See wakeDeliverableNodePredicate — escalated nodes count as
-                // unreported wakes so the bootstrap sweep finds a session whose
-                // only outstanding item is an escalation.
-                wakeDeliverableNodePredicate,
-              )),
+              // See wakeDeliverableNodePredicate — escalated nodes count as
+              // unreported wakes so the bootstrap sweep finds a session whose
+              // only outstanding item is an escalation.
+              .where(unreportedWakeNodePredicate),
           )
           .all()
           .pipe(Effect.orDie)
         return [...new Set(rows.map((row) => row.sessionId))]
+      }),
+
+      getSessionsWithDueWakes: Effect.fn("DagStore.getSessionsWithDueWakes")(function* (input) {
+        // The wake UNION plus a paused arm in the same statement: the inbox
+        // tick budgets its reads (#1026), and every arm needs only the owning
+        // session ID. The arm tag rides along as a literal column so the two
+        // ledgers stay distinguishable after the UNION. `pausedDueCutoff` is a
+        // bound parameter; no SQL time function decides what is due.
+        const rows = yield* db
+          .select({ sessionId: WorkflowTable.session_id, source: sql<DueWakeSource>`'wake'` })
+          .from(WorkflowTable)
+          .where(unreportedWakeWorkflowPredicate)
+          .union(
+            db
+              .select({ sessionId: WorkflowTable.session_id, source: sql<DueWakeSource>`'wake'` })
+              .from(WorkflowNodeTable)
+              .innerJoin(WorkflowTable, eq(WorkflowNodeTable.workflow_id, WorkflowTable.id))
+              .where(unreportedWakeNodePredicate),
+          )
+          .union(
+            db
+              .select({ sessionId: WorkflowTable.session_id, source: sql<DueWakeSource>`'paused'` })
+              .from(WorkflowTable)
+              .where(and(
+                eq(WorkflowTable.status, "paused"),
+                eq(WorkflowTable.wake_reported, false),
+                lte(WorkflowTable.time_updated, input.pausedDueCutoff),
+              )),
+          )
+          .all()
+          .pipe(Effect.orDie)
+        // The UNION already made each (session, source) pair distinct; sort so
+        // the order does not depend on how SQLite happens to emit the rows.
+        const sessionsOf = (source: DueWakeSource) =>
+          rows
+            .filter((row) => row.source === source)
+            .map((row) => row.sessionId)
+            .sort(byCodeUnit)
+        return { wake: sessionsOf("wake"), paused: sessionsOf("paused") }
       }),
 
       hasReportedWakeNodes: Effect.fn("DagStore.hasReportedWakeNodes")(function* (sessionID) {

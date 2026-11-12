@@ -995,37 +995,30 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
    * global; the directory guard keeps sibling worktrees out, and the drain's
    * own ownership gates remain authoritative. Due paused reminders are part
    * of the same tick, so the inbox 30s timer is their only periodic driver
-   * (one read here, no separate fiber). The mailbox ledger is read one page
-   * per tick through `mailboxCursor`, so a deep backlog adds no reads. */
+   * (no separate fiber). The wake ledger and the due paused reminders come
+   * from one store read (#1026); the mailbox ledger is read one page per tick
+   * through `mailboxCursor`, so a deep backlog adds no reads. */
   const scanSessions = (): Effect.Effect<ReadonlyArray<string>> =>
     Effect.gen(function* () {
       const sessions = new Set<string>()
-      // Each ledger degrades independently: one broken query must not hide
-      // the other from this tick. The final catch below covers the ownership
-      // reads and the union itself.
-      const wakes = yield* store.getSessionsWithUnreportedWakes().pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("DagDelivery wake scan failed", { cause }).pipe(
-            Effect.as([] as ReadonlyArray<string>),
-          ),
-        ),
-      )
-      for (const sessionID of wakes) {
-        if (yield* DagLocation.ownsSession(sessionID, directory)) sessions.add(sessionID)
-      }
+      // Due means `isPausedReminderDue`: now - timeUpdated >= delay. The store
+      // takes the cutoff `now - delay` from this Clock, not from SQL time.
       const now = yield* Clock.currentTimeMillis
-      const paused = yield* store.listByStatus("paused").pipe(
+      // The wake and paused ledgers share one read, so a failure hides both
+      // from this tick (the next tick retries); the mailbox read below stays
+      // independent. The final catch covers the ownership reads and the union.
+      const due = yield* store.getSessionsWithDueWakes({ pausedDueCutoff: now - PAUSED_REMINDER_DELAY_MS }).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("DagDelivery paused scan failed", { cause }).pipe(
-            Effect.as([] as ReadonlyArray<DagStore.WorkflowRow>),
+          Effect.logWarning("DagDelivery wake/paused scan failed", { cause }).pipe(
+            Effect.as({ wake: [], paused: [] } satisfies DagStore.DueWakeSessions),
           ),
         ),
       )
-      for (const workflow of paused) {
-        if (!isPausedReminderDue(workflow, now)) continue
-        // The durable wake marker re-checks the episode; this is only a hint
-        // of where a reminder may be due.
-        if (yield* DagLocation.ownsSession(workflow.sessionId, directory)) sessions.add(workflow.sessionId)
+      // The durable wake marker re-checks the episode; both ledgers are only
+      // a hint of where a delivery may be due. A session listed by both pays
+      // one ownership read.
+      for (const sessionID of new Set([...due.wake, ...due.paused])) {
+        if (yield* DagLocation.ownsSession(sessionID, directory)) sessions.add(sessionID)
       }
       if (messages) {
         const page = yield* messages
