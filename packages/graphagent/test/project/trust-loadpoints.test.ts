@@ -12,14 +12,19 @@ import { PROJECT_DIR } from "@graphagent/core/brand"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { FSUtil } from "@graphagent/core/fs-util"
+import { Global } from "@graphagent/core/global"
 import { Shell } from "@graphagent/core/shell"
 import { FetchHttpClient, HttpClient } from "effect/http"
+import { Command } from "@/command"
 import { Config } from "@/config/config"
 import { Env } from "@/env"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
+import { MCP } from "@/mcp"
 import { scopedHooksWithTrust } from "@/hook/engine/methods"
 import { Git } from "@/git"
+import { Skill } from "@/skill"
+import { Discovery } from "@/skill/discovery"
 import type { InstanceContext } from "@/project/instance-context"
 import { ProjectTrust } from "@/project/trust"
 import { shellVerdict, type ShellVerdict } from "@/project/trust/command-shell"
@@ -775,5 +780,122 @@ describe("Config trust load point", () => {
       const result = yield* withInstance(config.get())
       expect(result.shell).toBe("/bin/zsh")
     }),
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Real Skill loader -> Command sidecar -> command-shell gate (#1040)
+// ---------------------------------------------------------------------------
+
+// Shares the real Config.Service (and its skills-source tracking) with a
+// real Skill.layer + Command.layer, so discovery, the sidecar, and the
+// resulting classification are all exercised as they actually run -- not a
+// hand-built `skill` field on the gate input.
+const realSkillCommandLayer = (stateDirectory: string) => {
+  // Reused by reference (not re-invoked) below so Command.layer and the
+  // nested Skill.layer resolve to the exact same Config.Service instance.
+  const sharedConfig = configWithTrust(stateDirectory)
+  return Command.layer.pipe(
+    Layer.provide(Layer.mock(MCP.Service, { prompts: () => Effect.succeed({}) })),
+    Layer.provide(
+      Skill.layer.pipe(
+        Layer.provide(Discovery.defaultLayer),
+        Layer.provide(Global.layer),
+        Layer.provide(EventV2Bridge.defaultLayer),
+        Layer.provideMerge(sharedConfig),
+      ),
+    ),
+    Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provideMerge(sharedConfig),
+  )
+}
+
+describe("Real Skill loader classification feeding the command-shell gate", () => {
+  // #1040 gap: skill/index.ts only recorded a skill's project/user
+  // classification when it declared hooks, so a hookless skill (the common
+  // case -- just a body with shell segments) loaded from outside
+  // `.agents/skills` via a project-declared `skills.paths` carried an
+  // undefined classification into the Command sidecar, and the
+  // command-shell gate mistook "undefined" for "not project-owned": zero
+  // trust check on its embedded shell segments.
+  it.effect("fails closed for a real, hookless skill a project's skills.paths points at outside .agents", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+        yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(stateDirectory, { recursive: true, force: true })))
+        yield* Effect.promise(async () => {
+          await fs.mkdir(path.join(root, ".agents"), { recursive: true })
+          await fs.writeFile(
+            path.join(root, ".agents", "settings.json"),
+            JSON.stringify({ skills: { paths: ["./vendor/skills"] } }),
+          )
+          await fs.mkdir(path.join(root, "vendor", "skills", "release"), { recursive: true })
+          await fs.writeFile(path.join(root, "vendor", "skills", "release", "SKILL.md"), SKILL_FILE)
+        })
+
+        const services = yield* Layer.build(realSkillCommandLayer(stateDirectory))
+        const commands = Context.get(services, Command.Service)
+        const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+        const cmd = yield* withInstance(commands.get("release"))
+        if (!cmd) throw new Error("expected the real skill loader to promote `release` to a command")
+        const skill = Command.skillCommandOrigin(cmd)
+        expect(skill?.source).toBe("project")
+
+        const seen: GateEntry[][] = []
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", ...(skill ? { skill } : {}) },
+          recordingGate([false], seen),
+        )
+        expect(result).toEqual({ type: "refuse", reason: "its skill is outside what the trust panel tracks." })
+      }),
+    ),
+  )
+
+  // #1040 misclassification check: a skills.paths entry the USER declares
+  // (not the project) must stay user-owned even when the directory it
+  // points at is not under Global.operatorRoots() -- for example a personal
+  // skills folder that happens to live inside a cloned repo. Location alone
+  // would call this "project" and wrongly refuse it.
+  it.effect("keeps a user-declared skills.paths entry user-owned even outside operatorRoots", () =>
+    withRoot({}, (root) =>
+      Effect.gen(function* () {
+        const stateDirectory = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-state-")))
+        const personal = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "trust-personal-skills-")))
+        const previousConfigContent = process.env.GRAPHAGENT_CONFIG_CONTENT
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(async () => {
+            if (previousConfigContent === undefined) delete process.env.GRAPHAGENT_CONFIG_CONTENT
+            else process.env.GRAPHAGENT_CONFIG_CONTENT = previousConfigContent
+            await fs.rm(stateDirectory, { recursive: true, force: true })
+            await fs.rm(personal, { recursive: true, force: true })
+          }),
+        )
+        yield* Effect.promise(async () => {
+          await fs.mkdir(path.join(personal, "release"), { recursive: true })
+          await fs.writeFile(path.join(personal, "release", "SKILL.md"), SKILL_FILE)
+        })
+        // A user-level declaration, not a project file: GRAPHAGENT_CONFIG_CONTENT
+        // merges as the "global" layer, same as the user's own config.json.
+        process.env.GRAPHAGENT_CONFIG_CONTENT = JSON.stringify({ skills: { paths: [personal] } })
+
+        const services = yield* Layer.build(realSkillCommandLayer(stateDirectory))
+        const commands = Context.get(services, Command.Service)
+        const withInstance = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(Effect.provideService(InstanceRef, context(root)))
+
+        const cmd = yield* withInstance(commands.get("release"))
+        if (!cmd) throw new Error("expected the real skill loader to promote `release` to a command")
+        const skill = Command.skillCommandOrigin(cmd)
+        expect(skill?.source).toBe("user")
+
+        const result = yield* verdict(
+          { root, command: "release", template: "Release !`git tag -l`.", ...(skill ? { skill } : {}) },
+          recordingGate([false], []),
+        )
+        expect(result).toEqual({ type: "allow" })
+      }),
+    ),
   )
 })

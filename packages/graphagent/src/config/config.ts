@@ -29,6 +29,7 @@ import { setAgentHookOrigins, type AgentHookProvenance } from "./agent-hooks"
 import { ConfigCommand } from "./command"
 import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
+import { setSkillsSource, type SkillsSourceLayer } from "./skills-source"
 import { HookConfigChange } from "@/hook/config-change"
 import { HookPermissions } from "./permissions"
 import type { PermissionUpdate } from "@/hook/trigger-result"
@@ -457,6 +458,17 @@ export const layer = Layer.effect(
         let result: Info = {}
         const agentHookOrigins = new Map<string, AgentHookProvenance>()
         const modeHookOrigins = new Map<string, AgentHookProvenance>()
+        // #1040: `mergeDeep` replaces `skills.paths`/`skills.urls` wholesale
+        // (not concatenated) when a later source sets the same key, so the
+        // final value is always attributable to exactly one layer -- track
+        // which one so skill discovery can classify by declaring layer
+        // instead of only by the resulting SKILL.md's location.
+        let skillsPathsLayer: SkillsSourceLayer | undefined
+        let skillsUrlsLayer: SkillsSourceLayer | undefined
+        const rememberSkillsSource = (next: Info, kind: "global" | "project") => {
+          if (next.skills?.paths !== undefined) skillsPathsLayer = kind === "project" ? "project" : "user"
+          if (next.skills?.urls !== undefined) skillsUrlsLayer = kind === "project" ? "project" : "user"
+        }
         // Shares Global.operatorRoots() with skill/index.ts#skillHookSource so a
         // workspace outside .agents is never classified `user` by one loader
         // and `project` by the other (#1040).
@@ -496,6 +508,7 @@ export const layer = Layer.effect(
             }
           }
           rememberAgentHooks(next, source)
+          rememberSkillsSource(next, kind)
           result = mergeConfigConcatArrays(result, next)
         })
 
@@ -670,6 +683,7 @@ export const layer = Layer.effect(
         if (managed) {
           const next = yield* loadConfig(managed.text, { dir: path.dirname(managed.source), source: managed.source })
           rememberAgentHooks(next, managed.source)
+          rememberSkillsSource(next, "global")
           result = mergeConfigConcatArrays(result, next)
         }
 
@@ -728,6 +742,7 @@ export const layer = Layer.effect(
         }
 
         setAgentHookOrigins(result, agentHookOrigins)
+        setSkillsSource(result, { paths: skillsPathsLayer, urls: skillsUrlsLayer })
         return {
           config: result,
           directories,

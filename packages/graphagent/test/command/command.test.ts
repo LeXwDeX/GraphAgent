@@ -49,7 +49,15 @@ const overridden = testEffect(
 )
 const withSkillCommands = testEffect(
   commandLayer({}, [
-    { name: "visible-skill", description: "Visible skill.", location: "/skills/visible/SKILL.md", content: "Visible." },
+    {
+      name: "visible-skill",
+      description: "Visible skill.",
+      location: "/skills/visible/SKILL.md",
+      content: "Visible.",
+      // #1040: the real loader now always records a classification, hooks or
+      // not; a hookless skill is never left with an undefined one.
+      hookSource: "user",
+    },
     {
       name: "reference-only",
       description: "Reference-only skill.",
@@ -131,7 +139,7 @@ describe("legacy command registry", () => {
       const commands = yield* Command.Service
       const cmd = yield* commands.get("visible-skill")
       if (!cmd) throw new Error("expected visible-skill command")
-      expect(Command.skillCommandOrigin(cmd)).toEqual({ source: undefined, location: "/skills/visible/SKILL.md" })
+      expect(Command.skillCommandOrigin(cmd)).toEqual({ source: "user", location: "/skills/visible/SKILL.md" })
       expect(cmd).not.toHaveProperty("hookSource")
       expect(cmd).not.toHaveProperty("location")
     }),
