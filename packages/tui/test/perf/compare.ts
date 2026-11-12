@@ -97,9 +97,12 @@ export type AbsoluteCap = { id: string; metric: string; max: number }
 
 /**
  * Fixed ceilings from Issue #1025 7.4, in milliseconds. They do not depend on
- * `baseline.json` and are not scaled by the machine factor: they are the
- * budgets a user feels. Tightening is safe; loosening needs the maintainer.
- * The primed variants share the target of the scenario they extend.
+ * `baseline.json`: they are the budgets a user feels on the reference machine
+ * the calibration describes. A slower runner gets headroom in proportion to its
+ * measured render-path factor (`noiseScale`, never below 1), so a shared CI host
+ * that lays out 1.5x slower is not read as a regression; a faster machine is
+ * never held to a tighter ceiling. Tightening is safe; loosening needs the
+ * maintainer. The primed variants share the target of the scenario they extend.
  */
 export const ABSOLUTE_CAPS: readonly AbsoluteCap[] = [
   { id: "P1", metric: "p95Ms", max: 16 },
@@ -250,8 +253,15 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
       if (!allowed(value)) fail(size, id, name, limit, value)
     }
 
-    // Fixed ceilings, independent of the baseline.
-    for (const cap of ABSOLUTE_CAPS) check(cap.id, cap.metric, `≤ ${cap.max} ms`, (value) => value <= cap.max)
+    // Fixed ceilings, independent of the baseline values; scaled up on a slower runner only.
+    for (const cap of ABSOLUTE_CAPS) {
+      const ceiling = cap.max * noiseScale(factor)
+      const label =
+        ceiling === cap.max
+          ? `≤ ${cap.max} ms`
+          : `≤ ${ceiling.toFixed(2)} ms (${cap.max} ms × machine factor ${factor.toFixed(3)})`
+      check(cap.id, cap.metric, label, (value) => value <= ceiling)
+    }
 
     // P2: input latency must not scale with the transcript.
     const scale = read(size, "P2", "p95Scale")

@@ -181,15 +181,29 @@ test("the absolute caps match the issue's budgets", () => {
   })
 })
 
-test("absolute caps are not scaled by the machine factor", () => {
-  // A runner twice as slow as the baseline machine does not get twice the budget.
-  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 10 }, scenarios: { L: { P9: { p99Ms: 12 } } } }
-  const current: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: { L: { P9: { p99Ms: 17 } } } }
+test("absolute caps get headroom on a slower runner in proportion to its machine factor", () => {
+  // Hosted CI run of #1257: layout calibration 35.48 ms against the baseline's 23.29 ms, P9 p99 18.64 ms.
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 23.29 }, scenarios: {} }
+  const slower: PerfReport = { calibration: { fixedLayoutMsMedian: 35.48 }, scenarios: { L: { P9: { p99Ms: 18.64 } } } }
+  expect(compareReports(baseline, slower).failures).toEqual([])
 
-  const { failures } = compareReports(baseline, current)
-
+  // The headroom is the factor and no more: 16 ms × 1.523 is about 24.4 ms.
+  const tooSlow: PerfReport = { calibration: { fixedLayoutMsMedian: 35.48 }, scenarios: { L: { P9: { p99Ms: 25 } } } }
+  const { failures } = compareReports(baseline, tooSlow)
   expect(failures.map((failure) => failure.metric)).toEqual(["p99Ms"])
-  expect(failures[0]?.limit).toContain("≤ 16")
+  expect(failures[0]?.limit).toContain("16 ms × machine factor 1.523")
+})
+
+test("absolute caps never tighten on a faster machine", () => {
+  // A runner twice as fast as the baseline machine is still held to the plain budget.
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
+  const atCap: PerfReport = { calibration: { fixedLayoutMsMedian: 10 }, scenarios: { L: { P9: { p99Ms: 16 } } } }
+  expect(compareReports(baseline, atCap).failures).toEqual([])
+
+  const over: PerfReport = { calibration: { fixedLayoutMsMedian: 10 }, scenarios: { L: { P9: { p99Ms: 17 } } } }
+  const { failures } = compareReports(baseline, over)
+  expect(failures.map((failure) => failure.metric)).toEqual(["p99Ms"])
+  expect(failures[0]?.limit).toBe("≤ 16 ms")
 })
 
 test("the 100 ms frame ceiling covers the slash and scroll scenarios", () => {

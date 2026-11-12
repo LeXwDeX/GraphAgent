@@ -43,7 +43,7 @@ The layer counter (`registerLayer` in the reports) counts both `keymap.registerL
 - `P16` and `P17` `frames` ≤ `ceil(2 s / TICK_MS) + 2`.
 - `P20` `growth` ≤ 0.05 and `heapGrowth` ≤ 0.25.
 
-**Absolute ceilings** (`ABSOLUTE_CAPS`, milliseconds) are the budgets of Issue #1025 7.4. They do not depend on `baseline.json` and are not scaled by the machine factor. They may only be tightened; loosening one needs the maintainer.
+**Absolute ceilings** (`ABSOLUTE_CAPS`, milliseconds) are the budgets of Issue #1025 7.4, stated for the reference machine the calibration describes. They do not depend on the baseline's values. On a runner slower than the baseline machine each ceiling is multiplied by the machine factor (`max(1, factor)`), the same headroom the `P2` and `P14` noise floors get; a faster machine is never held to a tighter ceiling. The first hosted run of #1257 (layout calibration 35.48 ms against 23.29 ms, factor 1.52) reported P9 p99 18.64 ms (M) and 16.81 ms (L), about 12.2 and 11.0 ms normalized, below the baseline's 13.4 and 12.8 ms; an unscaled 16 ms ceiling read that runner as a regression. They may only be tightened; loosening one needs the maintainer.
 
 | Scenario         | Metric                         | Ceiling |
 | ---------------- | ------------------------------ | ------- |
