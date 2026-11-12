@@ -5,6 +5,7 @@
 
 import { expect } from "bun:test"
 import { Effect, Layer, Scope } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import { Database } from "@graphagent/core/database/database"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -22,14 +23,15 @@ import { testEffect } from "../lib/effect"
 
 // H0 read budget for the DAG inbox tick (Issue #1021). `scanSessions` is the
 // periodic store scan behind `dag.delivery`; every other trigger is event
-// driven. The tick reads the wake ledger once (the UNION), the paused
-// workflow ledger once, and the mailbox ledger once, and pays at most one
-// ownership read per returned wake or due paused session. Due paused
-// reminders are part of this tick (#1027 D5): the inbox 30s timer is now
-// their only periodic driver. The mailbox read is one page of at most 64
-// recipients whose cursor rotates across ticks, so a deep backlog never adds
-// reads to a tick. The probe counts the production SQL client, so these
-// numbers are the queries the store actually issues, not an assumed shape.
+// driven. The tick reads the wake and due-paused ledgers once (one UNION,
+// merged from two reads in #1026 to free a read for `child.result`) and the
+// mailbox ledger once, and pays at most one ownership read per distinct
+// returned session. Due paused reminders are part of this tick (#1027 D5):
+// the inbox 30s timer is their only periodic driver. The mailbox read is one
+// page of at most 64 recipients whose cursor rotates across ticks, so a deep
+// backlog never adds reads to a tick. The probe counts the production SQL
+// client, so these numbers are the queries the store actually issues, not an
+// assumed shape.
 //
 // Metric scope: `sql.read` verifies the tick's read budget; `sql.write === 0`
 // is the hard no-write invariant; `commits === 1` merely reflects the
@@ -203,11 +205,12 @@ function seedWake(input: { sessionID: string; workflowID: string; directory: str
   })
 }
 
-/** A paused workflow whose reminder is already due. The tick owns the
- * reminder now, so it must read the paused ledger, see this row as due, pay
+/** A paused workflow in `SESSION_ID`. By default its reminder is already due:
+ * the tick owns the reminder, so the merged read must see this row as due, pay
  * one ownership read, and return the session. TestClock starts at 0, so the
- * row's `time_updated` must be further back than the reminder delay. */
-function seedPausedWorkflow() {
+ * default `time_updated` is further back than the reminder delay. Pass
+ * `timeUpdated` to place the row on either side of the due boundary. */
+function seedPausedWorkflow(timeUpdated = -(PAUSED_REMINDER_DELAY_MS + 1)) {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
     yield* db
@@ -223,7 +226,34 @@ function seedPausedWorkflow() {
         seq: 1,
         config: "{}",
         wake_reported: false,
-        time_updated: -(PAUSED_REMINDER_DELAY_MS + 1),
+        time_updated: timeUpdated,
+      })
+      .run()
+      .pipe(Effect.orDie)
+  })
+}
+
+/** A due paused workflow whose own node also holds an unreported wake, so one
+ * session is listed by both ledgers of the merged read. */
+function seedPausedWorkflowWithWake() {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* seedPausedWorkflow()
+    yield* db
+      .insert(WorkflowNodeTable)
+      .values({
+        id: "dag_tick_paused_node",
+        workflow_id: "dag_tick_paused",
+        name: "Node",
+        worker_type: "build",
+        status: "completed",
+        output: "done",
+        depends_on: [],
+        required: true,
+        seq: 1,
+        wake_eligible: true,
+        wake_reported: false,
+        completed_at: 1_000,
       })
       .run()
       .pipe(Effect.orDie)
@@ -272,12 +302,13 @@ const measure = (seed: Effect.Effect<void, never, Database.Service> = Effect.voi
     return { sessions, counts: snapshot() }
   }).pipe(Effect.provideService(InstanceRef, instanceRef))
 
-it.effect("the DAG tick reads the wake, paused, and mailbox ledgers and writes nothing", () =>
+it.effect("the DAG tick reads the wake/paused ledger and the mailbox ledger in two reads and writes nothing", () =>
   Effect.gen(function* () {
     const { sessions, counts } = yield* measure()
     expect(sessions).toEqual([])
-    // Wake UNION (1) + paused workflows (1) + mailbox recipients (1).
-    expect(counts["sql.read"]).toBe(3)
+    // Wake + due-paused UNION (1, was two reads before #1026) + mailbox
+    // recipients (1).
+    expect(counts["sql.read"]).toBe(2)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
@@ -289,9 +320,9 @@ it.effect("an unreported in-directory wake adds one ownership read and is return
       seedWake({ sessionID: WAKE_SESSION_ID, workflowID: "dag_tick_wake", directory: DIRECTORY }),
     )
     expect(sessions).toEqual([WAKE_SESSION_ID])
-    // Wake UNION (1) + DagLocation.ownsSession (1) + paused workflows (1) +
-    // mailbox recipients (1).
-    expect(counts["sql.read"]).toBe(4)
+    // Wake + due-paused UNION (1) + DagLocation.ownsSession (1) + mailbox
+    // recipients (1).
+    expect(counts["sql.read"]).toBe(3)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
@@ -303,8 +334,8 @@ it.effect("a wake owned by another directory is read but not returned", () =>
       seedWake({ sessionID: WAKE_SESSION_ID, workflowID: "dag_tick_wake", directory: OTHER_DIRECTORY }),
     )
     expect(sessions).toEqual([])
-    // Wake UNION (1) + ownsSession (1) + paused workflows (1) + mailbox (1).
-    expect(counts["sql.read"]).toBe(4)
+    // Wake + due-paused UNION (1) + ownsSession (1) + mailbox (1).
+    expect(counts["sql.read"]).toBe(3)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
@@ -314,11 +345,55 @@ it.effect("a due paused reminder is returned by the tick and pays one ownership 
   Effect.gen(function* () {
     const { sessions, counts } = yield* measure(seedPausedWorkflow())
     expect(sessions).toEqual([SESSION_ID])
-    // Wake UNION (1) + paused workflows (1) + ownsSession (1) + mailbox (1).
-    expect(counts["sql.read"]).toBe(4)
+    // Wake + due-paused UNION (1) + ownsSession (1) + mailbox (1).
+    expect(counts["sql.read"]).toBe(3)
     expect(counts["sql.write"]).toBe(0)
     expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
   }),
+)
+
+it.effect("a paused reminder that is not yet due is not returned and pays no ownership read", () =>
+  Effect.gen(function* () {
+    // One millisecond short of the delay at TestClock 0.
+    const { sessions, counts } = yield* measure(seedPausedWorkflow(-PAUSED_REMINDER_DELAY_MS + 1))
+    expect(sessions).toEqual([])
+    // The merged read already filtered the row out: UNION (1) + mailbox (1).
+    expect(counts["sql.read"]).toBe(2)
+    expect(counts["sql.write"]).toBe(0)
+    expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
+  }),
+)
+
+it.effect("a session listed by both the wake and the paused ledger is returned once and pays one ownership read", () =>
+  Effect.gen(function* () {
+    const { sessions, counts } = yield* measure(seedPausedWorkflowWithWake())
+    expect(sessions).toEqual([SESSION_ID])
+    // Wake + due-paused UNION (1) + ownsSession (1, shared by both ledgers) +
+    // mailbox (1). The two reads this replaced paid ownsSession twice.
+    expect(counts["sql.read"]).toBe(3)
+    expect(counts["sql.write"]).toBe(0)
+    expect(counts.commits).toBe(READ_TRANSACTION_COMMITS) // read-only txn control, no rows written
+  }),
+)
+
+it.effect("a paused reminder is due exactly when the Clock reaches the delay, not when SQL time does", () =>
+  Effect.gen(function* () {
+    yield* seedProjectAndSession
+    const delivery = yield* Effect.scoped(deliveryEffect)
+    const pausedAt = 1_000
+    yield* seedPausedWorkflow(pausedAt)
+    yield* settle()
+    // One millisecond short: now - timeUpdated = delay - 1, not due.
+    yield* TestClock.setTime(pausedAt + PAUSED_REMINDER_DELAY_MS - 1)
+    reset()
+    expect(yield* delivery.scanSessions()).toEqual([])
+    expect(snapshot()["sql.read"]).toBe(2)
+    // Exactly at the delay: now - timeUpdated = delay, due (inclusive).
+    yield* TestClock.setTime(pausedAt + PAUSED_REMINDER_DELAY_MS)
+    reset()
+    expect(yield* delivery.scanSessions()).toEqual([SESSION_ID])
+    expect(snapshot()["sql.read"]).toBe(3)
+  }).pipe(Effect.provideService(InstanceRef, instanceRef)),
 )
 
 it.effect("a deep mailbox backlog still costs one page read per tick, and the cursor wraps over every recipient", () =>
@@ -343,8 +418,8 @@ it.effect("a deep mailbox backlog still costs one page read per tick, and the cu
       ids.slice(128),
       ids.slice(0, 64),
     ])
-    // Wake UNION (1) + paused workflows (1) + one mailbox page (1), however deep the backlog is.
-    expect(ticks.map((tick) => tick.reads)).toEqual([3, 3, 3, 3])
+    // Wake + due-paused UNION (1) + one mailbox page (1), however deep the backlog is.
+    expect(ticks.map((tick) => tick.reads)).toEqual([2, 2, 2, 2])
     expect(ticks.map((tick) => tick.writes)).toEqual([0, 0, 0, 0])
     expect(ticks.map((tick) => tick.commits)).toEqual(ticks.map(() => READ_TRANSACTION_COMMITS))
   }).pipe(Effect.provideService(InstanceRef, instanceRef)),

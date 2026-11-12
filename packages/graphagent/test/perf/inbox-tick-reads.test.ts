@@ -32,13 +32,19 @@ import { it } from "../lib/effect"
 // `dag.delivery` source (registered by `DagDelivery.make`) on one counting
 // database, driven by the inbox's own 30s timer under TestClock. With nothing
 // to deliver a tick may issue at most four reads: goal 1 (`listWaitingSessions`)
-// + DAG 3 (wake UNION, paused workflows, one mailbox page). Reads are the
-// statements the production SQL client issues, not an assumed shape.
+// + DAG 2 (one wake + due-paused UNION, one mailbox page), which leaves one
+// read for #1026's `child.result` scan. Reads are the statements the production
+// SQL client issues, not an assumed shape.
 const DIRECTORY = "/work/inbox-tick-reads"
 const PROJECT_ID = "project-inbox-tick-reads"
 
 /** Invariant 7: the most reads one instance's tick may issue with nothing to deliver. */
 const TICK_READ_BUDGET = 4
+
+// What the two sources pay today. The budget minus their sum is the one read
+// #1026 adds for `child.result`; raising either number needs that headroom.
+const GOAL_TICK_READS = 1
+const DAG_TICK_READS = 2
 
 const context: InstanceContext = {
   directory: DIRECTORY,
@@ -145,7 +151,7 @@ const measureTick = (sources: Sources): Effect.Effect<Tick> =>
     }
   }).pipe(Effect.provide(layer), Effect.provideService(InstanceRef, context), Effect.scoped)
 
-it.effect("an empty 30s tick of the goal and DAG sources reads at most four ledgers and writes nothing", () =>
+it.effect("an empty 30s tick of the goal and DAG sources reads three of four budgeted ledgers and writes nothing", () =>
   Effect.gen(function* () {
     const goalOnly = yield* measureTick({ goal: true, dag: false })
     const dagOnly = yield* measureTick({ goal: false, dag: true })
@@ -159,10 +165,12 @@ it.effect("an empty 30s tick of the goal and DAG sources reads at most four ledg
     expect(joint.reads).toBeLessThanOrEqual(TICK_READ_BUDGET)
     // Each source really scans on its own, and the joint pass is exactly their
     // sum: the inbox adds no read of its own, and a source that silently
-    // dropped out of the shared inbox cannot pass the budget vacuously.
-    expect(goalOnly.reads).toBeGreaterThanOrEqual(1)
-    expect(dagOnly.reads).toBeGreaterThanOrEqual(1)
+    // dropped out of the shared inbox cannot pass the budget vacuously. The
+    // sum is 3 of the 4 budgeted reads; the last one is reserved for #1026.
+    expect(goalOnly.reads).toBe(GOAL_TICK_READS)
+    expect(dagOnly.reads).toBe(DAG_TICK_READS)
     expect(joint.reads).toBe(goalOnly.reads + dagOnly.reads)
+    expect(joint.reads).toBe(GOAL_TICK_READS + DAG_TICK_READS)
     // A tick with nothing to deliver neither writes a row nor publishes an event.
     for (const tick of [goalOnly, dagOnly, joint]) {
       expect(tick.writes).toBe(0)

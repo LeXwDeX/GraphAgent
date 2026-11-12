@@ -694,7 +694,7 @@ describe("DagDelivery drain", () => {
     )
   })
 
-  it("scanSessions unions the wake and mailbox ledgers, filters by directory, and degrades per query", async () => {
+  it("scanSessions unions the wake, paused and mailbox ledgers, filters by directory, and degrades per read", async () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -803,17 +803,19 @@ describe("DagDelivery drain", () => {
             const scanned = yield* delivery.scanSessions()
             expect([...scanned].sort()).toEqual([PARENT, mailSession, "ses_paused_scan"].sort())
 
-            // One broken ledger must not hide the others.
+            // The wake and paused ledgers share one store read (#1026), so a
+            // broken read hides both from this tick; the independent mailbox
+            // read must still deliver its recipient.
             const broken = yield* startDelivery({
               ...deps,
               messages,
               store: {
                 ...deps.store,
-                getSessionsWithUnreportedWakes: () => Effect.die(new Error("scan boom")),
+                getSessionsWithDueWakes: () => Effect.die(new Error("scan boom")),
               },
             })
             const degraded = yield* broken.scanSessions()
-            expect([...degraded].sort()).toEqual([mailSession, "ses_paused_scan"].sort())
+            expect([...degraded]).toEqual([mailSession])
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
         }),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),
