@@ -140,10 +140,14 @@ producer in this build.
   allow them for that run), and user-level hooks are unaffected. `hooks.local.json` and `settings.local.json` that Git
   does not track are user configuration and skip trust; once Git tracks them they are project files and need it.
 - Currently not trustable: a top-level `shell` in project settings (`.agents/settings.json`, or a tracked
-  `settings.local.json`) is ignored in favor of the default shell, and a skill from a `skills.paths` entry outside the
-  project's `.agents/skills/` or from `skills.urls` does not appear in `/trust`, so its frontmatter hooks are never
-  registered. `--trust-project` still allows these for that run; a user-level `shell`, skills in the user config
-  directory or `~/.agents`, and built-in skills are unaffected.
+  `settings.local.json`) is ignored in favor of the default shell. A user-level `shell` is unaffected, and
+  `--trust-project` still allows it for that run.
+- Also not trustable: skills that project settings (`.agents/settings.json` or `settings.local.json`, tracked or not)
+  bring in from outside `.agents/skills/` through `skills.paths` or `skills.urls`. They do not appear in `/trust`;
+  their frontmatter hooks are never registered, and their embedded shell (`` !`cmd` `` segments) is refused with a
+  `/trust` hint when they run as slash commands, whether or not they declare hooks. Ownership follows the layer that
+  declares the key: the same keys in user-level config stay user-owned wherever they point, as do skills in the user
+  config directory or `~/.agents` and built-in skills. `--trust-project` still allows all of this for that run.
 - Hooks of every execution type can declare `inputFormat: "claude-code"` to receive Claude Code tool names and input keys. This gives
   naming compatibility, not full behavioral parity.
 - Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude` reviews and converts them into

@@ -68,10 +68,13 @@ Two limits matter when authoring:
 - A top-level `shell` in project settings (`.agents/settings.json`, or a tracked
   `settings.local.json`) cannot be trusted: it is ignored and the default shell
   is used. Put `shell` in user-level config instead.
-- A skill from a `skills.paths` entry outside `.agents/skills/` or from
-  `skills.urls` cannot be reviewed in `/trust`, and its frontmatter hooks are
-  never registered. Keep skills that need hooks or embedded shell under
-  `.agents/skills/`.
+- A skill that `skills.paths` or `skills.urls`, declared in project settings
+  (`.agents/settings.json` or `settings.local.json`, tracked or not), brings in
+  from outside `.agents/skills/` cannot be reviewed in `/trust`: its frontmatter
+  hooks are never registered, and its embedded shell is refused (with a `/trust`
+  hint) when it runs as a slash command, hooks or not. Keep skills that need
+  hooks or embedded shell under `.agents/skills/`. The same keys in user-level
+  config stay the user's own wherever they point, so they are unaffected.
 
 ## graphagent.json
 
@@ -185,7 +188,8 @@ description: One sentence covering what this skill does AND when to trigger it. 
 
 Register skills from non-default locations via `skills.paths` (scanned
 recursively for `**/SKILL.md`) and `skills.urls` (each URL serves a list of
-skills).
+skills). When project settings declare these keys, the skills they bring in
+follow the limits in Project trust above.
 
 ## References
 

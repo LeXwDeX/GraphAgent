@@ -32,7 +32,7 @@ Server mode is opt-in only. When enabled, set `GRAPHAGENT_SERVER_PASSWORD` to re
 | **MCP server behavior**         | External MCP servers you configure are outside our trust boundary       |
 | **Malicious user config files** | Users control their own config; modifying it is not an attack vector    |
 
-The last row covers the user's own configuration. Executable project-layer configuration under `<root>/.agents/` (hooks, MCP servers, formatter and LSP commands, embedded shell in commands and skills, and skill and agent frontmatter hooks) is gated by project trust: it does not run until the user confirms it with `/trust`. A local file such as `hooks.local.json` or `settings.local.json` counts as the user's own only while Git does not track it.
+The last row covers the user's own configuration. Executable project-layer configuration under `<root>/.agents/` (hooks, MCP servers, formatter and LSP commands, embedded shell in commands and skills, and skill and agent frontmatter hooks) is gated by project trust: it does not run until the user confirms it with `/trust`. Skills that project settings bring in from outside `.agents/skills/` through `skills.paths` or `skills.urls` cannot be confirmed, so their hooks and embedded shell stay disabled. A local file such as `hooks.local.json` or `settings.local.json` counts as the user's own only while Git does not track it.
 
 ---
 
