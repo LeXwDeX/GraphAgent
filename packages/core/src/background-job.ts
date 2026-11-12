@@ -1,6 +1,7 @@
 export * as BackgroundJob from "./background-job"
 
 import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Scope, SynchronizedRef } from "effect"
+import { parentSessionIDOf, sessionIDOf } from "./background-session-metadata"
 import { Identifier } from "./id/id"
 
 /**
@@ -164,10 +165,6 @@ export const makeWith = (options: MakeOptions = {}) =>
     }
     const notify = (transition: Transition) =>
       options.onTransition ? options.onTransition(transition).pipe(Effect.catchCause(() => Effect.void)) : Effect.void
-    const sessionIDOf = (job: Active): string | undefined =>
-      typeof job.info.metadata?.sessionId === "string" ? job.info.metadata.sessionId : undefined
-    const parentSessionIDOf = (job: Active): string | undefined =>
-      typeof job.info.metadata?.parentSessionId === "string" ? job.info.metadata.parentSessionId : undefined
     /** The sink sees one complete job snapshot per transition, so durable
      * observers never have to merge partial deltas (#1069 P5). */
     const transitionOf = (job: Active, from: Status | null, to: Status, info: Info = job.info): Transition => ({
@@ -175,8 +172,8 @@ export const makeWith = (options: MakeOptions = {}) =>
       type: job.info.type,
       from,
       to,
-      sessionID: sessionIDOf(job),
-      parentSessionID: parentSessionIDOf(job),
+      sessionID: sessionIDOf(job.info.metadata),
+      parentSessionID: parentSessionIDOf(job.info.metadata),
       title: info.title,
       metadata: info.metadata,
       started_at: info.started_at,
@@ -326,9 +323,8 @@ export const makeWith = (options: MakeOptions = {}) =>
               type: input.type,
               from: null,
               to: "running",
-              sessionID: typeof input.metadata?.sessionId === "string" ? input.metadata.sessionId : undefined,
-              parentSessionID:
-                typeof input.metadata?.parentSessionId === "string" ? input.metadata.parentSessionId : undefined,
+              sessionID: sessionIDOf(input.metadata),
+              parentSessionID: parentSessionIDOf(input.metadata),
               title: input.title,
               metadata: input.metadata,
               started_at: result.info.started_at,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
-import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
+import { parentSessionIDOf, sessionIDOf } from "@graphagent/core/background-session-metadata"
 
 describe("background session metadata keys", () => {
   it("reads the current keys", () => {

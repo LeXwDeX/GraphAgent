@@ -209,12 +209,14 @@ describe("lifecycle mirror", () => {
       expect(reads.sent()).toBe(1)
 
       await advanceUntil(sdk, () => server.calls.length === 1)
+      // The turn is mirrored from its event but is not part of the request: the
+      // server has no resolver for it.
       expect(server.calls[0]).toEqual([
         { domain: "job", id: "job_a" },
         { domain: "job", id: "job_b" },
         { domain: "goal", id: sid },
-        { domain: "turn", id: "turn_1" },
       ])
+      expect(sync.data.lifecycle["turn:turn_1"]).toMatchObject({ value: "ended", phase: "succeeded" })
       await reads.answered(0)
       expect(sync.data.lifecycle["job:job_a"]?.value).toBe("running")
 
@@ -357,14 +359,58 @@ describe("lifecycle mirror", () => {
     const reads = watchReads(sdk)
 
     try {
-      emit(transition({ domain: "turn", id: "turn_9", from: "running", to: "ended", phase: "succeeded" }))
+      emit(transition({ domain: "job", id: "job_9", from: "running", to: "completed", phase: "succeeded" }))
       sdk.frameClock.flushNow()
-      expect(sync.data.lifecycle["turn:turn_9"]).toBeDefined()
+      expect(sync.data.lifecycle["job:job_9"]).toBeDefined()
       await advanceUntil(sdk, () => server.calls.length === 1)
 
       release.open()
       await reads.answered(0)
-      expect(sync.data.lifecycle["turn:turn_9"]).toBeUndefined()
+      expect(sync.data.lifecycle["job:job_9"]).toBeUndefined()
+    } finally {
+      reads.restore()
+      app.renderer.destroy()
+    }
+  })
+
+  test("a domain the server cannot resolve is mirrored from its events and never asked about", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const server = lifecycleServer((refs) => json(refs.map(unknown)))
+    const { app, emit, reconnect, sdk, sync } = await mount(server.handler, tmp.path)
+    const reads = watchReads(sdk)
+
+    try {
+      // Every turn ends with one transition; none of them may cost a request.
+      for (let turn = 1; turn <= 3; turn++) {
+        emit(
+          transition({
+            domain: "turn",
+            id: `turn_${turn}`,
+            sessionID: sid,
+            from: "running",
+            to: "ended",
+            phase: "succeeded",
+          }),
+        )
+        sdk.frameClock.flushNow()
+      }
+      expect(reads.sent()).toBe(0)
+      for (let turn = 1; turn <= 3; turn++) {
+        expect(sync.data.lifecycle[`turn:turn_${turn}`]).toMatchObject({ value: "ended", sessionID: sid })
+      }
+
+      // Neither does a reconnect refill ask about what the mirror holds for it.
+      reconnect()
+      expect(reads.sent()).toBe(0)
+      await nextTurn()
+      expect(server.calls).toHaveLength(0)
+      expect(sync.data.lifecycle["turn:turn_1"]).toBeDefined()
+
+      // A domain that is resolvable still goes out, alone.
+      emit(transition({ domain: "job", id: "job_t", to: "running", phase: "running" }))
+      await advanceUntil(sdk, () => server.calls.length === 1)
+      expect(server.calls[0]).toEqual([{ domain: "job", id: "job_t" }])
     } finally {
       reads.restore()
       app.renderer.destroy()

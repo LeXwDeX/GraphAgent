@@ -95,6 +95,14 @@ function findAwaitTarget(
   const running = owned.find((job) => job.status === "running")
   if (running) return { ok: true, job: running }
   const finished = owned[owned.length - 1]
+  // `settling` is not a failure: the result is final and the owner is
+  // delivering the notice (and the goal wake) right now, so a wait declared at
+  // this point would not be woken either.
+  if (finished?.status === "settling")
+    return {
+      ok: false,
+      detail: `the job matching \`${waitID}\` is settling: its result is final and its notice is already being delivered, so it can no longer wake this wait. Continue from the delivered notice, or declare progress and start a new operation if more waiting is needed.`,
+    }
   const status =
     finished?.status === "completed"
       ? "already completed"
