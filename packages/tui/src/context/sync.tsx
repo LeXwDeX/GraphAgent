@@ -556,21 +556,16 @@ export const {
     }
 
     /**
-     * The goal slice follows the lifecycle value of its session: a status the
-     * contract reports replaces the stored one, and a goal the owner no longer
-     * knows is cleared.
+     * The goal slice follows the lifecycle status of its session. The contract
+     * carries the status only: the goal itself (text, turns, limits, subgoals)
+     * comes from `goal.updated` and from the full reads of `sync` and
+     * `refreshGoals`, and so does clearing it. Nothing here moves the goal
+     * revision, so a status hint never invalidates a full read in flight.
      */
-    function mirrorGoal(sessionID: string, value: string | null) {
+    function mirrorGoal(sessionID: string, value: string) {
       const goal = store.goal[sessionID]
-      if (!goal) return
-      if (value === null) {
-        changedAncillary(sessionID, "goal")
-        setStore("goal", sessionID, undefined)
-        return
-      }
       const status = goalStatus(value)
-      if (!status || goal.status === status) return
-      changedAncillary(sessionID, "goal")
+      if (!goal || !status || goal.status === status) return
       setStore("goal", sessionID, "status", status)
     }
 
@@ -604,9 +599,10 @@ export const {
           if (isGoal && (ancillaryRevision.get(`${answer.id}:goal`) ?? 0) !== goalStamps.get(answer.id)) continue
           if (answer.state === null) {
             // Unknown to the owner (gone, other directory, no resolver): drop
-            // the entry instead of guessing.
+            // the entry instead of guessing. A goal is not cleared on this
+            // evidence: the resolver is stricter about directories than the
+            // goal read, which decides.
             dropLifecycle([key])
-            if (isGoal) mirrorGoal(answer.id, null)
             continue
           }
           writeLifecycle(
@@ -1229,12 +1225,10 @@ export const {
       })
     }
 
-    // #1069: the reconnect refill of the lifecycle mirror. goal.updated and
-    // goal.cleared are ephemeral too, so a goal.cleared missed during a
-    // disconnect would leave a stale goal in the drawer. Their refill is the
-    // same batch: every ref the mirror holds, plus the goal of every session
-    // that has one, goes out in a single read, and the answer clears or
-    // updates the goal slice (replaces the goal-only refresh of #349/F3).
+    // #1069: the reconnect refill of the lifecycle mirror. Every ref the mirror
+    // holds, plus the goal of every session that has one, goes out in a single
+    // read. The answers are states: they correct the mirror and the goal status,
+    // while the goal itself is read in full by `refreshGoals` below.
     const refreshLifecycle = (): Promise<void> => {
       lifecycleEpoch++
       lifecycleInFlight = false
@@ -1248,6 +1242,48 @@ export const {
       }
       pullLifecycle()
       return Promise.resolve()
+    }
+
+    // #349/F3: goal.updated and goal.cleared are ephemeral (not in the durable
+    // replay set), so a goal.cleared missed during a disconnect would leave a
+    // stale goal in the drawer, and so would a changed text, turn count, limit
+    // or subgoal list. The lifecycle contract reports the status only, so the
+    // goal of every stored session is read in full again (AGENTS.md: the goal
+    // slice refreshes in full on reconnect). Hydrated sessions are left out:
+    // `sync` reloads their goal. Reads run a few at a time, and a newer
+    // reconnect supersedes an older round.
+    const GOAL_REFRESH_CONCURRENCY = 4
+    let goalEpoch = 0
+    const refreshGoal = (sessionID: string, epoch: number): Promise<void> => {
+      // A goal event after the read began carries a newer snapshot than it.
+      const revision = ancillaryRevision.get(`${sessionID}:goal`) ?? 0
+      return sdk.client.session
+        .goal({ sessionID }, { throwOnError: false })
+        .then((response) => {
+          if (disposed || epoch !== goalEpoch) return
+          if ((ancillaryRevision.get(`${sessionID}:goal`) ?? 0) !== revision) return
+          // 404 is the owner saying there is no goal; any other failure keeps it.
+          if (response.data) {
+            // The session may have been deleted meanwhile; do not bring its goal back.
+            if (store.goal[sessionID]) setStore("goal", sessionID, reconcile(response.data))
+          } else if (response.response?.status === 404) {
+            setStore("goal", sessionID, undefined)
+          }
+        })
+        .catch((error) => {
+          TuiLog.write("error", "Refreshing the goal failed", { sessionID, error: String(error) })
+        })
+    }
+    const refreshGoals = async (): Promise<void> => {
+      const epoch = ++goalEpoch
+      const sessionIDs = Object.entries(store.goal)
+        .filter(([sessionID, goal]) => goal && !store.hydrated.includes(sessionID))
+        .map(([sessionID]) => sessionID)
+      for (let start = 0; start < sessionIDs.length; start += GOAL_REFRESH_CONCURRENCY) {
+        if (disposed || epoch !== goalEpoch) return
+        const round = sessionIDs.slice(start, start + GOAL_REFRESH_CONCURRENCY)
+        await Promise.all(round.map((sessionID) => refreshGoal(sessionID, epoch)))
+      }
     }
 
     // #1040: project-layer trust is global state. The change event only names
@@ -1292,6 +1328,7 @@ export const {
     }
     onResync(guardedRefreshDagSummaries)
     onResync(refreshLifecycle)
+    onResync(refreshGoals)
     onResync(refreshTrust)
 
     const unsubscribeReconnect = sdk.event.on("reconnected", () => {
