@@ -38,6 +38,7 @@ import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HistoryView } from "./history/view"
 import { LLMError, Usage, type LLMEvent } from "@graphagent/llm"
+import { beginAttempt, initialAttemptState, type AttemptState } from "./turn/attempt"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue" | "timeout" | "deferred"
@@ -111,60 +112,19 @@ type ToolCall = {
 }
 
 interface ProcessorContext extends Input {
+  /** Replaced as a whole at the start of every attempt (`beginAttempt`); never reset field by field. */
+  attempt: AttemptState
   toolcalls: Record<string, ToolCall>
   shouldBreak: boolean
   snapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
-  currentText: SessionV1.TextPart | undefined
-  currentTextID: string | undefined
-  reasoningMap: Record<string, SessionV1.ReasoningPart>
-  /** A tool call admission/result/error signal was seen in the current stream. */
-  anyToolCalled: boolean
-  /** Tool-call events admitted in the current stream (repair artifacts included). */
-  admittedToolCalls: number
-  /**
-   * Tool calls admitted by a tool-call event whose execution has not been
-   * confirmed (no real result/error yet). Conservatively treated as executed:
-   * an in-flight async execute may still be running after the stream drains.
-   */
-  pendingToolExecutions: Set<string>
-  /** Finish reason of the current attempt only (assistant.finish persists across attempts). */
-  attemptFinish: string | undefined
-  /** Sum of text-delta lengths in the current attempt; zero means no visible text. */
-  attemptTextLength: number
-  /** Sum of reasoning-delta lengths in the current attempt; zero means no visible reasoning. */
-  attemptReasoningLength: number
-  /** Includes opaque-only reasoning parts and orphan reasoning deltas. */
-  attemptReasoningActivity: boolean
-  /** Nonempty provider metadata can carry encrypted reasoning without text. */
-  attemptOpaqueReasoning: boolean
-  /** Persisted reasoning from this attempt must be removed if it fails. */
-  attemptReasoningParts: Set<PartID>
-  /**
-   * Any tool input/call/result/error signal was observed in the current
-   * attempt. Input-level signals count even without an admitted tool call so
-   * a stream that only produced tool input never takes the empty path; the
-   * separate #773 admission gate still owns its own executable-call rules.
-   */
-  attemptToolActivity: boolean
-  /**
-   * The adapter marked the current attempt's finish metadata with
-   * `graphagent.suppressedActivity`: provider activity that is not
-   * session-visible (files, sources, approvals, denials, aborts). Such an
-   * attempt is never treated as an empty response.
-   */
-  attemptSuppressedActivity: boolean
-  /** Suppressed abort/approval/denial or unknown activity forbids replay. */
-  attemptRetryBlockingSuppressedActivity: boolean
   /**
    * Any tool signal (input, call, result, error) in the current step. Until
    * the tool layer declares read-only effects (C2), only a step without tool
    * signals counts as read-only for snapshot purposes.
    */
   stepToolActivity: boolean
-  /** Why the retry gate stopped this attempt, when tool work made replay unsafe. */
-  retryBlockedBy?: "pending-tools" | "tool-executed"
   /** Newest last; the doom-loop check only needs the last three call signatures. */
   recentToolSignatures: { name: string; input: string }[]
 }
@@ -216,26 +176,12 @@ export const layer = Layer.effect(
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
         model: input.model,
+        attempt: initialAttemptState(),
         toolcalls: {},
         shouldBreak: false,
         snapshot: initialSnapshot,
         blocked: false,
         needsCompaction: false,
-        currentText: undefined,
-        currentTextID: undefined,
-        reasoningMap: {},
-        anyToolCalled: false,
-        admittedToolCalls: 0,
-        pendingToolExecutions: new Set<string>(),
-        attemptFinish: undefined,
-        attemptTextLength: 0,
-        attemptReasoningLength: 0,
-        attemptReasoningActivity: false,
-        attemptOpaqueReasoning: false,
-        attemptReasoningParts: new Set(),
-        attemptToolActivity: false,
-        attemptSuppressedActivity: false,
-        attemptRetryBlockingSuppressedActivity: false,
         stepToolActivity: false,
         recentToolSignatures: [],
       }
@@ -458,12 +404,12 @@ export const layer = Layer.effect(
       })
 
       const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
-        if (!(reasoningID in ctx.reasoningMap)) return
+        if (!(reasoningID in ctx.attempt.reasoningMap)) return
         // oxlint-disable-next-line no-self-assign -- reactivity trigger
-        ctx.reasoningMap[reasoningID].text = ctx.reasoningMap[reasoningID].text
-        ctx.reasoningMap[reasoningID].time = { ...ctx.reasoningMap[reasoningID].time, end: Date.now() }
-        const settled = yield* session.updatePart(ctx.reasoningMap[reasoningID])
-        delete ctx.reasoningMap[reasoningID]
+        ctx.attempt.reasoningMap[reasoningID].text = ctx.attempt.reasoningMap[reasoningID].text
+        ctx.attempt.reasoningMap[reasoningID].time = { ...ctx.attempt.reasoningMap[reasoningID].time, end: Date.now() }
+        const settled = yield* session.updatePart(ctx.attempt.reasoningMap[reasoningID])
+        delete ctx.attempt.reasoningMap[reasoningID]
         if (!input.onReasoningSettled || ctx.assistantMessage.summary) return
         yield* input.onReasoningSettled(settled)
       })
@@ -544,9 +490,9 @@ export const layer = Layer.effect(
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
           case "reasoning-start": {
-            ctx.attemptReasoningActivity = true
-            if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
-            if (value.id in ctx.reasoningMap) return
+            ctx.attempt.reasoningActivity = true
+            if (hasReasoningMetadata(value.providerMetadata)) ctx.attempt.opaqueReasoning = true
+            if (value.id in ctx.attempt.reasoningMap) return
             // The provider restarts its stream-local ids for every request. A continuation reuses this assistant
             // message, so persisted identity must come from the globally unique part id instead.
             const partID = PartID.ascending()
@@ -559,35 +505,35 @@ export const layer = Layer.effect(
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
-            ctx.reasoningMap[value.id] = part
-            ctx.attemptReasoningParts.add(partID)
+            ctx.attempt.reasoningMap[value.id] = part
+            ctx.attempt.reasoningParts.add(partID)
             yield* session.updatePart(part)
             return
           }
 
           case "reasoning-delta":
             metricsFirstTokenAt ??= performance.now()
-            ctx.attemptReasoningActivity = true
-            if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
-            ctx.attemptReasoningLength += value.text.length
+            ctx.attempt.reasoningActivity = true
+            if (hasReasoningMetadata(value.providerMetadata)) ctx.attempt.opaqueReasoning = true
+            ctx.attempt.reasoningLength += value.text.length
             // Match dev: silently drop orphan deltas (no preceding reasoning-start).
-            if (!(value.id in ctx.reasoningMap)) return
-            ctx.reasoningMap[value.id].text += value.text
-            if (value.providerMetadata) ctx.reasoningMap[value.id].metadata = value.providerMetadata
+            if (!(value.id in ctx.attempt.reasoningMap)) return
+            ctx.attempt.reasoningMap[value.id].text += value.text
+            if (value.providerMetadata) ctx.attempt.reasoningMap[value.id].metadata = value.providerMetadata
             yield* session.updatePartDelta({
-              sessionID: ctx.reasoningMap[value.id].sessionID,
-              messageID: ctx.reasoningMap[value.id].messageID,
-              partID: ctx.reasoningMap[value.id].id,
+              sessionID: ctx.attempt.reasoningMap[value.id].sessionID,
+              messageID: ctx.attempt.reasoningMap[value.id].messageID,
+              partID: ctx.attempt.reasoningMap[value.id].id,
               field: "text",
               delta: value.text,
             })
             return
 
           case "reasoning-end":
-            ctx.attemptReasoningActivity = true
-            if (hasReasoningMetadata(value.providerMetadata)) ctx.attemptOpaqueReasoning = true
-            if (value.providerMetadata && value.id in ctx.reasoningMap) {
-              ctx.reasoningMap[value.id].metadata = value.providerMetadata
+            ctx.attempt.reasoningActivity = true
+            if (hasReasoningMetadata(value.providerMetadata)) ctx.attempt.opaqueReasoning = true
+            if (value.providerMetadata && value.id in ctx.attempt.reasoningMap) {
+              ctx.attempt.reasoningMap[value.id].metadata = value.providerMetadata
             }
             yield* finishReasoning(value.id)
             return
@@ -597,14 +543,14 @@ export const layer = Layer.effect(
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
-            ctx.attemptToolActivity = true
+            ctx.attempt.toolActivity = true
             ctx.stepToolActivity = true
             yield* ensureToolCall(value)
             return
 
           case "tool-input-delta":
             {
-              ctx.attemptToolActivity = true
+              ctx.attempt.toolActivity = true
               ctx.stepToolActivity = true
               const toolCall = yield* ensureToolCall(value)
               toolCall.call.raw += value.text
@@ -612,7 +558,7 @@ export const layer = Layer.effect(
             return
 
           case "tool-input-end": {
-            ctx.attemptToolActivity = true
+            ctx.attempt.toolActivity = true
             ctx.stepToolActivity = true
             const toolCall = yield* ensureToolCall(value)
             toolCall.call.inputEnded = true
@@ -625,9 +571,9 @@ export const layer = Layer.effect(
             // this point on must never be auto-retried. Record the call as
             // pending; it is only revoked below when the adapter reports the
             // SDK's input rejection (a call that was never executed).
-            ctx.pendingToolExecutions.add(value.id)
-            ctx.admittedToolCalls += 1
-            ctx.attemptToolActivity = true
+            ctx.attempt.pendingToolExecutions.add(value.id)
+            ctx.attempt.admittedToolCalls += 1
+            ctx.attempt.toolActivity = true
             ctx.stepToolActivity = true
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
@@ -678,8 +624,8 @@ export const layer = Layer.effect(
           }
 
           case "tool-result": {
-            ctx.anyToolCalled = true
-            ctx.attemptToolActivity = true
+            ctx.attempt.anyToolCalled = true
+            ctx.attempt.toolActivity = true
             ctx.stepToolActivity = true
             const hasToolCall = ctx.toolcalls[value.id] !== undefined
             if (!hasToolCall && value.result.type === "error") return
@@ -711,7 +657,7 @@ export const layer = Layer.effect(
               )
               if (settled) {
                 deferred = true
-                ctx.pendingToolExecutions.delete(value.id)
+                ctx.attempt.pendingToolExecutions.delete(value.id)
                 return
               }
             }
@@ -749,13 +695,13 @@ export const layer = Layer.effect(
             // results, errors, provider-executed outputs, and anything without
             // the adapter's sentinel always count conservatively.
             if (value.error instanceof ToolInputRejectedError) {
-              ctx.pendingToolExecutions.delete(value.id)
+              ctx.attempt.pendingToolExecutions.delete(value.id)
             } else {
-              ctx.anyToolCalled = true
+              ctx.attempt.anyToolCalled = true
             }
             // Rejected or not, a tool-error signal is tool activity in this
             // attempt; the #773 admission rules decide its retry separately.
-            ctx.attemptToolActivity = true
+            ctx.attempt.toolActivity = true
             ctx.stepToolActivity = true
             yield* failToolCall(value.id, value.error ?? new Error(value.message))
             // A PostToolUseFailure `continue:false` ends the agent turn once the error is recorded.
@@ -789,20 +735,20 @@ export const layer = Layer.effect(
             const completedSnapshot = ctx.stepToolActivity
               ? yield* snapshot.track()
               : (ctx.snapshot ?? (yield* snapshot.track()))
-            yield* Effect.forEach(Object.keys(ctx.reasoningMap), (reasoningID) => finishReasoning(reasoningID))
+            yield* Effect.forEach(Object.keys(ctx.attempt.reasoningMap), (reasoningID) => finishReasoning(reasoningID))
             const usage = Session.getUsage({
               model: ctx.model,
               usage: value.usage ?? new Usage({}),
               metadata: value.providerMetadata,
             })
             ctx.assistantMessage.finish = value.reason
-            ctx.attemptFinish = value.reason
+            ctx.attempt.finish = value.reason
             const suppressed =
               isRecord(value.providerMetadata) &&
               isRecord(value.providerMetadata[METADATA_NAMESPACE]) &&
               value.providerMetadata[METADATA_NAMESPACE].suppressedActivity === true
-            if (suppressed && !ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
-            ctx.attemptSuppressedActivity ||= suppressed
+            if (suppressed && !ctx.attempt.suppressedActivity) ctx.attempt.retryBlockingSuppressedActivity = true
+            ctx.attempt.suppressedActivity ||= suppressed
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
             accumulateUsage(ctx.assistantMessage, usage)
@@ -870,7 +816,7 @@ export const layer = Layer.effect(
           }
 
           case "text-start":
-            ctx.currentText = {
+            ctx.attempt.openText = {
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
@@ -880,25 +826,25 @@ export const layer = Layer.effect(
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
-            ctx.currentTextID = value.id
-            if (input.onTextDisplay) displayParts.push(ctx.currentText)
-            yield* session.updatePart(ctx.currentText)
+            ctx.attempt.openTextID = value.id
+            if (input.onTextDisplay) displayParts.push(ctx.attempt.openText)
+            yield* session.updatePart(ctx.attempt.openText)
             return
 
           case "text-delta":
             metricsFirstTokenAt ??= performance.now()
-            ctx.attemptTextLength += value.text.length
-            if (!ctx.currentText) return
-            ctx.currentText.text += value.text
+            ctx.attempt.textLength += value.text.length
+            if (!ctx.attempt.openText) return
+            ctx.attempt.openText.text += value.text
             if (input.onTextDisplay) {
               displayPending += value.text
-              if (value.text.length > 0) displaySegments.push({ part: ctx.currentText, length: value.text.length })
+              if (value.text.length > 0) displaySegments.push({ part: ctx.attempt.openText, length: value.text.length })
             }
-            if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
+            if (value.providerMetadata) ctx.attempt.openText.metadata = value.providerMetadata
             yield* session.updatePartDelta({
-              sessionID: ctx.currentText.sessionID,
-              messageID: ctx.currentText.messageID,
-              partID: ctx.currentText.id,
+              sessionID: ctx.attempt.openText.sessionID,
+              messageID: ctx.attempt.openText.messageID,
+              partID: ctx.attempt.openText.id,
               field: "text",
               delta: value.text,
             })
@@ -906,28 +852,28 @@ export const layer = Layer.effect(
             return
 
           case "text-end":
-            if (!ctx.currentText) return
+            if (!ctx.attempt.openText) return
             // oxlint-disable-next-line no-self-assign -- reactivity trigger
-            ctx.currentText.text = ctx.currentText.text
+            ctx.attempt.openText.text = ctx.attempt.openText.text
             {
               const end = Date.now()
-              ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
+              ctx.attempt.openText.time = { start: ctx.attempt.openText.time?.start ?? end, end }
             }
-            if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
-            yield* session.updatePart(ctx.currentText)
-            ctx.currentText = undefined
-            ctx.currentTextID = undefined
+            if (value.providerMetadata) ctx.attempt.openText.metadata = value.providerMetadata
+            yield* session.updatePart(ctx.attempt.openText)
+            ctx.attempt.openText = undefined
+            ctx.attempt.openTextID = undefined
             return
 
           case "finish":
-            if (ctx.attemptFinish === undefined || ctx.attemptFinish === "unknown") ctx.attemptFinish = value.reason
+            if (ctx.attempt.finish === undefined || ctx.attempt.finish === "unknown") ctx.attempt.finish = value.reason
             if (
               isRecord(value.providerMetadata) &&
               isRecord(value.providerMetadata[METADATA_NAMESPACE]) &&
               value.providerMetadata[METADATA_NAMESPACE].suppressedActivity === true
             ) {
-              if (!ctx.attemptSuppressedActivity) ctx.attemptRetryBlockingSuppressedActivity = true
-              ctx.attemptSuppressedActivity = true
+              if (!ctx.attempt.suppressedActivity) ctx.attempt.retryBlockingSuppressedActivity = true
+              ctx.attempt.suppressedActivity = true
             }
             return
         }
@@ -978,22 +924,22 @@ export const layer = Layer.effect(
       // Failed opaque reasoning must not enter a later model request. Remove its
       // persisted parts, including ones that had already ended.
       const discardFailedReasoning = Effect.fn("SessionProcessor.discardFailedReasoning")(function* () {
-        for (const partID of ctx.attemptReasoningParts) {
+        for (const partID of ctx.attempt.reasoningParts) {
           yield* session.removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID })
         }
-        ctx.attemptReasoningParts.clear()
-        ctx.reasoningMap = {}
+        ctx.attempt.reasoningParts.clear()
+        ctx.attempt.reasoningMap = {}
       })
 
       // A retry retains the assistant message but must close partial parts and
       // discard unexecuted tool placeholders before the next attempt starts.
       const settleRetryAttempt = Effect.fn("SessionProcessor.settleRetryAttempt")(function* () {
-        if (ctx.currentText) {
+        if (ctx.attempt.openText) {
           const end = Date.now()
-          ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
-          yield* session.updatePart(ctx.currentText)
-          ctx.currentText = undefined
-          ctx.currentTextID = undefined
+          ctx.attempt.openText.time = { start: ctx.attempt.openText.time?.start ?? end, end }
+          yield* session.updatePart(ctx.attempt.openText)
+          ctx.attempt.openText = undefined
+          ctx.attempt.openTextID = undefined
         }
         yield* discardFailedReasoning()
         yield* severUnexecutedToolCalls()
@@ -1015,22 +961,22 @@ export const layer = Layer.effect(
           ctx.snapshot = undefined
         }
 
-        if (ctx.currentText) {
+        if (ctx.attempt.openText) {
           const end = Date.now()
-          ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
-          yield* session.updatePart(ctx.currentText)
-          ctx.currentText = undefined
-          ctx.currentTextID = undefined
+          ctx.attempt.openText.time = { start: ctx.attempt.openText.time?.start ?? end, end }
+          yield* session.updatePart(ctx.attempt.openText)
+          ctx.attempt.openText = undefined
+          ctx.attempt.openTextID = undefined
         }
 
-        for (const part of Object.values(ctx.reasoningMap)) {
+        for (const part of Object.values(ctx.attempt.reasoningMap)) {
           const end = Date.now()
           yield* session.updatePart({
             ...part,
             time: { start: part.time.start ?? end, end },
           })
         }
-        ctx.reasoningMap = {}
+        ctx.attempt.reasoningMap = {}
 
         yield* Effect.forEach(
           Object.values(ctx.toolcalls),
@@ -1078,17 +1024,17 @@ export const layer = Layer.effect(
               : parse(e)
         // The safety gate overrides only retryability and records why. The
         // provider status, message, headers, and body stay untouched.
-        if (ctx.retryBlockedBy && SessionV1.APIError.isInstance(error)) {
+        if (ctx.attempt.retryBlockedBy && SessionV1.APIError.isInstance(error)) {
           error = new SessionV1.APIError({
             ...error.data,
             isRetryable: false,
-            metadata: { ...error.data.metadata, retryBlockedBy: ctx.retryBlockedBy },
+            metadata: { ...error.data.metadata, retryBlockedBy: ctx.attempt.retryBlockedBy },
           }).toObject()
         }
         if (
           !aborted &&
-          !ctx.attemptToolActivity &&
-          !ctx.anyToolCalled &&
+          !ctx.attempt.toolActivity &&
+          !ctx.attempt.anyToolCalled &&
           (EmptyResponseError.isInstance(e) ||
             IncompleteReasoningResponseError.isInstance(e) ||
             SessionRetry.retryable(error, input.model.providerID) !== undefined)
@@ -1153,26 +1099,11 @@ export const layer = Layer.effect(
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
-            ctx.currentText = undefined
-            ctx.currentTextID = undefined
-            ctx.reasoningMap = {}
             // Detection state is per attempt: a retried attempt must not
             // inherit the previous attempt's admissions, and its finish reason
             // is tracked separately so the persisted assistant.finish (last
             // attempt to report one) is not involved in the decision.
-            ctx.anyToolCalled = false
-            ctx.admittedToolCalls = 0
-            ctx.pendingToolExecutions = new Set()
-            ctx.attemptFinish = undefined
-            ctx.attemptTextLength = 0
-            ctx.attemptReasoningLength = 0
-            ctx.attemptReasoningActivity = false
-            ctx.attemptOpaqueReasoning = false
-            ctx.attemptReasoningParts = new Set()
-            ctx.attemptToolActivity = false
-            ctx.attemptSuppressedActivity = false
-            ctx.attemptRetryBlockingSuppressedActivity = false
-            ctx.retryBlockedBy = undefined
+            beginAttempt(ctx)
             yield* status.set(ctx.sessionID, { type: "busy" })
             const generation = ++attemptGeneration
             const source = llm.stream({
@@ -1202,10 +1133,10 @@ export const layer = Layer.effect(
                 }),
               onAttemptActivity: (activity) => {
                 if (generation !== attemptGeneration) return
-                if (activity === "tool-executed") ctx.anyToolCalled = true
+                if (activity === "tool-executed") ctx.attempt.anyToolCalled = true
                 else {
-                  ctx.attemptSuppressedActivity = true
-                  if (activity !== "observational") ctx.attemptRetryBlockingSuppressedActivity = true
+                  ctx.attempt.suppressedActivity = true
+                  if (activity !== "observational") ctx.attempt.retryBlockingSuppressedActivity = true
                 }
                 streamInput.onAttemptActivity?.(activity)
               },
@@ -1214,7 +1145,7 @@ export const layer = Layer.effect(
               // tool that executed.
               onToolRefused: () => {
                 if (generation !== attemptGeneration) return
-                ctx.anyToolCalled = true
+                ctx.attempt.anyToolCalled = true
                 streamInput.onToolRefused?.()
               },
             })
@@ -1239,10 +1170,10 @@ export const layer = Layer.effect(
               !ctx.needsCompaction &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
-              !ctx.anyToolCalled &&
-              ctx.pendingToolExecutions.size === 0 &&
-              (ctx.attemptFinish === "unknown" || ctx.attemptFinish === undefined) &&
-              (unfinishedToolInput || ctx.admittedToolCalls > 0)
+              !ctx.attempt.anyToolCalled &&
+              ctx.attempt.pendingToolExecutions.size === 0 &&
+              (ctx.attempt.finish === "unknown" || ctx.attempt.finish === undefined) &&
+              (unfinishedToolInput || ctx.attempt.admittedToolCalls > 0)
             ) {
               yield* severUnexecutedToolCalls()
               return yield* Effect.fail(new IncompleteResponseError({ message: INCOMPLETE_RESPONSE_MESSAGE }))
@@ -1262,12 +1193,12 @@ export const layer = Layer.effect(
               !ctx.needsCompaction &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
-              !ctx.attemptToolActivity &&
-              !ctx.attemptSuppressedActivity &&
-              ctx.attemptTextLength === 0 &&
-              ctx.attemptReasoningLength === 0 &&
-              !ctx.attemptOpaqueReasoning &&
-              (ctx.attemptFinish === undefined || ctx.attemptFinish === "unknown" || ctx.attemptFinish === "stop")
+              !ctx.attempt.toolActivity &&
+              !ctx.attempt.suppressedActivity &&
+              ctx.attempt.textLength === 0 &&
+              ctx.attempt.reasoningLength === 0 &&
+              !ctx.attempt.opaqueReasoning &&
+              (ctx.attempt.finish === undefined || ctx.attempt.finish === "unknown" || ctx.attempt.finish === "stop")
             ) {
               return yield* Effect.fail(new EmptyResponseError({ message: EMPTY_RESPONSE_MESSAGE }))
             }
@@ -1281,11 +1212,11 @@ export const layer = Layer.effect(
               !ctx.needsCompaction &&
               !ctx.blocked &&
               !ctx.assistantMessage.error &&
-              !ctx.attemptToolActivity &&
-              !ctx.attemptSuppressedActivity &&
-              ctx.attemptTextLength === 0 &&
-              ctx.attemptReasoningActivity &&
-              (ctx.attemptFinish === undefined || ctx.attemptFinish === "unknown")
+              !ctx.attempt.toolActivity &&
+              !ctx.attempt.suppressedActivity &&
+              ctx.attempt.textLength === 0 &&
+              ctx.attempt.reasoningActivity &&
+              (ctx.attempt.finish === undefined || ctx.attempt.finish === "unknown")
             ) {
               return yield* Effect.fail(
                 new IncompleteReasoningResponseError({ message: INCOMPLETE_REASONING_RESPONSE_MESSAGE }),
@@ -1316,20 +1247,20 @@ export const layer = Layer.effect(
                   !aborted &&
                   !ctx.blocked &&
                   !ctx.needsCompaction &&
-                  !ctx.anyToolCalled &&
-                  ctx.pendingToolExecutions.size === 0 &&
-                  !ctx.attemptRetryBlockingSuppressedActivity,
+                  !ctx.attempt.anyToolCalled &&
+                  ctx.attempt.pendingToolExecutions.size === 0 &&
+                  !ctx.attempt.retryBlockingSuppressedActivity,
                 onGated: () => {
-                  if (ctx.pendingToolExecutions.size > 0) ctx.retryBlockedBy = "pending-tools"
-                  else if (ctx.anyToolCalled) ctx.retryBlockedBy = "tool-executed"
+                  if (ctx.attempt.pendingToolExecutions.size > 0) ctx.attempt.retryBlockedBy = "pending-tools"
+                  else if (ctx.attempt.anyToolCalled) ctx.attempt.retryBlockedBy = "tool-executed"
                 },
                 gates: () => ({
                   aborted,
                   blocked: ctx.blocked,
                   needsCompaction: ctx.needsCompaction,
-                  anyToolCalled: ctx.anyToolCalled,
-                  pendingToolExecutions: ctx.pendingToolExecutions.size,
-                  suppressedActivity: ctx.attemptRetryBlockingSuppressedActivity,
+                  anyToolCalled: ctx.attempt.anyToolCalled,
+                  pendingToolExecutions: ctx.attempt.pendingToolExecutions.size,
+                  suppressedActivity: ctx.attempt.retryBlockingSuppressedActivity,
                 }),
                 // Compaction timeouts immediately advance the model ladder, without retry backoff.
                 parse: (error) =>
