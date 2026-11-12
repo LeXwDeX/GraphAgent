@@ -288,7 +288,10 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
     // P11: the viewport anchor may not drift by more than one line (2px rows).
     check("P11", "driftPx", "≤ 2", (value) => value <= 2)
 
-    // P13: at most one store write per rendered frame.
+    // P13: a streamed token goes to the stream buffer, never to the store; the
+    // snapshots that open and close a reply stay within one write per frame.
+    check("P13", "deltaMessageWrites", "0", (value) => value === 0)
+    check("P13", "deltaPartWrites", "0", (value) => value === 0)
     check("P13", "messageWritesPerFrame", "≤ 1", (value) => value <= 1)
     check("P13", "partWritesPerFrame", "≤ 1", (value) => value <= 1)
 

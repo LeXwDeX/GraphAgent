@@ -6,6 +6,7 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { ScrollBoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
 import { ManualClock } from "@opentui/core/testing"
+import type { Part } from "@graphagent/sdk"
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
@@ -44,8 +45,31 @@ import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { createEventSource, createFetch, directory } from "../fixture/tui-sdk"
 import { probeStoreWrites } from "../fixture/store-write-probe"
 import { tmpdir } from "../fixture/fixture"
-import { backgroundEvent, makeFetchFixture, type PerfFixture, updatePartEvent } from "./fixtures"
+import {
+  backgroundEvent,
+  deltaEvent,
+  makeFetchFixture,
+  type PerfFixture,
+  streamTextPart,
+  updatePartEvent,
+} from "./fixtures"
 import { createCounters, type CounterSnapshot, type PerfCounters } from "./counters"
+
+/**
+ * A live reply: a text part at the tail of the last assistant message that is
+ * opened with one snapshot, grown by `message.part.delta` events, and closed with
+ * a terminal snapshot, the order the server sends them in.
+ */
+export type PerfStream = {
+  /** The part as last snapshotted: empty and unfinished until `finish()`. */
+  readonly part: Part
+  /** Appends `text` with one `message.part.delta`. It reaches the stream buffer, not `store.part`. */
+  delta(text: string): void
+  /** Everything appended so far. */
+  text(): string
+  /** The terminal `message.part.updated`: the full text and an end time. */
+  finish(): void
+}
 
 export type PerfHarness = {
   app: Awaited<ReturnType<typeof testRender>>
@@ -58,7 +82,8 @@ export type PerfHarness = {
   sync: ReturnType<typeof useSync>
   prompt: PromptRef
   emit(event: Parameters<ReturnType<typeof createEventSource>["emit"]>[0]): void
-  updateStream(text: string, time: number): void
+  /** Opens a live reply at the tail of the transcript (one `message.part.updated` snapshot). */
+  openStream(): PerfStream
   tickBackground(tick: number): void
   hideAutocomplete(): void
   navigate(route: Parameters<ReturnType<typeof useRoute>["navigate"]>[0]): void
@@ -133,6 +158,8 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
   let keymap!: ReturnType<typeof createDefaultOpenTuiKeymap>
   let harnessTicker: Ticker | undefined
   let activeSubscriptions = 0
+  let streams = 0
+  let deltas = 0
 
   function Probe(props: { bottomZone: BottomZoneStateApi }) {
     const sync = useSync()
@@ -320,19 +347,28 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
       return currentPrompt()
     },
     emit,
-    updateStream(text, time) {
-      const part =
-        fixture.streamPart.type === "text"
-          ? { ...fixture.streamPart, type: "text" as const, text }
-          : {
-              id: fixture.streamPart.id,
-              sessionID: fixture.streamPart.sessionID,
-              messageID: fixture.streamPart.messageID,
-              type: "text" as const,
-              text,
-              time: { start: time },
-            }
-      emit(updatePartEvent(part, time, `evt_stream_${time}`))
+    openStream() {
+      const ordinal = ++streams
+      const open = streamTextPart(fixture, ordinal, "")
+      let part = open
+      let received = ""
+      emit(updatePartEvent(open, ordinal, `evt_stream_${ordinal}_open`))
+      return {
+        get part() {
+          return part
+        },
+        delta(text) {
+          received += text
+          emit(deltaEvent(open, text, `evt_stream_${ordinal}_delta_${++deltas}`))
+        },
+        text() {
+          return received
+        },
+        finish() {
+          part = streamTextPart(fixture, ordinal, received, ordinal + 1)
+          emit(updatePartEvent(part, ordinal + 1, `evt_stream_${ordinal}_end`))
+        },
+      }
     },
     tickBackground(tick) {
       fixture.backgroundParts.forEach((part) => emit(backgroundEvent(part, tick)))

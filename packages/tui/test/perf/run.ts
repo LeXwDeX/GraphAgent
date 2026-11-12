@@ -66,10 +66,12 @@ function calibrateLoop() {
 }
 
 async function profile(kind: string) {
-  const fixture = createFixture("L")
+  const fixture = createFixture(arg("--size") === "XL" ? "XL" : "L")
+  const rounds = Number(arg("--rounds") ?? 1)
   const harness = await mountHarness(fixture)
   try {
-    const result = kind === "slash" ? await runSlashProfile(harness) : await runCharacterProfile(harness)
+    const result =
+      kind === "slash" ? await runSlashProfile(harness, rounds) : await runCharacterProfile(harness, rounds)
     console.log(JSON.stringify({ profile: kind, commit: gitCommit(), opentui: await opentuiVersion(), result }, null, 2))
   } finally {
     await harness.dispose()

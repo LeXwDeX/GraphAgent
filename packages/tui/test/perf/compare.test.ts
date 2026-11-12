@@ -313,6 +313,42 @@ test("a scenario the report omits entirely is a partial report, not drift", () =
   expect(missing.filter((item) => item.id === "P5")).toEqual([])
 })
 
+function p13(metrics: Record<string, number>): PerfReport {
+  return {
+    scenarios: {
+      L: {
+        P13: { deltaMessageWrites: 0, deltaPartWrites: 0, messageWritesPerFrame: 0, partWritesPerFrame: 0.01, ...metrics },
+      },
+    },
+  }
+}
+
+test("P13 requires every streamed delta to leave the store untouched", () => {
+  expect(compareReports({ scenarios: {} }, p13({})).failures).toEqual([])
+
+  // A delta that reached store.part (the old per-token write) fails, however few frames it spans.
+  const part = compareReports({ scenarios: {} }, p13({ deltaPartWrites: 1 }))
+  expect(part.failures.map((failure) => failure.metric)).toEqual(["deltaPartWrites"])
+  const message = compareReports({ scenarios: {} }, p13({ deltaMessageWrites: 1 }))
+  expect(message.failures.map((failure) => failure.metric)).toEqual(["deltaMessageWrites"])
+})
+
+test("P13 keeps the per-frame bound on the snapshots that open and close a reply", () => {
+  expect(compareReports({ scenarios: {} }, p13({ partWritesPerFrame: 1 })).failures).toEqual([])
+  const { failures } = compareReports({ scenarios: {} }, p13({ partWritesPerFrame: 1.5 }))
+  expect(failures.map((failure) => failure.metric)).toEqual(["partWritesPerFrame"])
+})
+
+test("a P13 report that stops separating the delta phase is drift, not a pass", () => {
+  // Before the scenario sent real deltas it emitted per-frame ratios only, and "0 writes while streaming" was never measured.
+  const stale: PerfReport = { scenarios: { L: { P13: { messageWritesPerFrame: 0, partWritesPerFrame: 1 } } } }
+
+  const { missing } = compareReports({ scenarios: {} }, stale)
+
+  expect(missing).toContainEqual({ size: "L", id: "P13", metric: "deltaPartWrites" })
+  expect(missing).toContainEqual({ size: "L", id: "P13", metric: "deltaMessageWrites" })
+})
+
 /** Stand-in for the real table, so these cases keep working after the real entries are deleted. */
 const PENDING = { PY: "measurement changed" }
 
@@ -401,7 +437,7 @@ function scenarios(): Record<string, ScenarioMetrics> {
     P10: { mountedRows: 22, scrollChildren: 26, viewportRows: 19 },
     P11: { driftPx: 0, stepMismatches: 0 },
     P12: { p95Ms: 8 },
-    P13: { messageWritesPerFrame: 0, partWritesPerFrame: 1 },
+    P13: { deltaMessageWrites: 0, deltaPartWrites: 0, messageWritesPerFrame: 0, partWritesPerFrame: 0.01 },
     P14: {
       p95Ms: 4,
       quietP95Ms: 4,
