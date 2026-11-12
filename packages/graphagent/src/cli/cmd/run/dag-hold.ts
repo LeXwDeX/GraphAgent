@@ -5,12 +5,18 @@
 //
 // Today the loop breaks on the FIRST session.status=idle of the target session,
 // so a workflow started in that turn keeps running server-side while the CLI
-// exits and the eventual wake reply is silently lost. The durable dag.* events
-// are not on the client wire and `wake_reported` is not part of the
-// dag.bySession DTO, so the consumer cannot subscribe to completion — it can
-// only poll. This module is that poll: a pure four-condition break rule plus a
-// thin wrapper the run loop calls on the busy/idle transitions it already
-// observes.
+// exits and the eventual wake reply is silently lost. `wake_reported` is not
+// part of the dag.bySession DTO, so the consumer cannot read completion from a
+// single list call — it samples the workflow snapshot and applies the pure
+// four-condition break rule below.
+//
+// Sampling is event-driven (#1027 PR5): the run loop already receives every
+// `dag.workflow.summary.updated` push and every delivered report part on the
+// session event stream, so an idle session re-checks exactly when one of those
+// arrives. The only timer left covers the initial request's pending window: an
+// idle poll must keep re-checking until that request settles, and the tick
+// stops as soon as it does. A fully idle CLI therefore issues no dag.* or
+// session.message reads at all.
 //
 // A session turn is NOT guaranteed to be one busy event: SessionStatus.set
 // dedupes repeated values, but distinct busy shapes (bare `busy`, then busy
@@ -40,9 +46,11 @@
 // The receipt is committed just before the wake admission starts the turn, so
 // an idle poll can land in that window and see `awaitingReport === false` while
 // `busyActive` still holds this turn's active work. That combination gets one
-// grace idle poll (the synthetic 1s idle tick or the wake turn's own idle),
-// which lets the in-flight admission make the session busy; a display-only
-// completion with no owed turn settles after the same single grace poll.
+// grace idle poll, which lets the in-flight admission make the session busy; a
+// display-only completion with no owed turn settles after the same single
+// grace poll. A grace poll depends on no incoming event, so the hold exposes
+// `needsRecheck` and the event-driven wrapper schedules exactly that one extra
+// check — otherwise the run would wait for an event that never arrives.
 //
 // Degradation is deliberately silent and matches pre-614 behavior for the DAG
 // list itself:
@@ -52,8 +60,9 @@
 // completed workflow's answer from the parent transcript.
 // Paused and stepping workflows are not active statuses, so they never hold the
 // loop open by themselves — the CLI exits as it does today once quiescent and
-// known. Idle polling also covers receipts committed by another process whose
-// events do not reach this subscription. Engine stalls remain watchdog-bounded.
+// known. Idle re-checks are driven by DAG summary pushes and delivered report
+// parts; receipts committed by a wake admission in this same process arrive on
+// that path, and engine stalls remain watchdog-bounded.
 
 import type { Event, Client, TextPart } from "@graphagent/sdk"
 import { reportIdentity } from "@/dag/report-identity"
@@ -147,38 +156,97 @@ export function applyDagHoldSnapshot(state: DagHoldState, snapshot: readonly Dag
 
 export type DagHoldPoll = () => Promise<readonly DagWorkflowSnapshot[] | undefined>
 
-/** Keep one event read in flight while idle polls observe cross-process delivery. */
+/** One-shot channel from the hold back into the event loop: the last idle
+ * verdict held only to consume a grace poll, which no incoming event will
+ * drive. The event loop sets `pending` after such a verdict and `pollEvents`
+ * converts it into one delayed synthetic idle. */
+export type DagHoldRecheck = { pending: boolean }
+
+function syntheticIdle(sessionID: string): Event {
+  return { id: "dag-hold-poll", type: "session.status", properties: { sessionID, status: { type: "idle" } } }
+}
+
+/** An event that can change the idle break rule's verdict. DAG summary pushes
+ * cover every workflow and node transition; a delivered report part carries
+ * `dag_delivery` metadata and means the receipt the rule waits for is now in
+ * the parent transcript; the run loop's request latch (and its `onUserMessage`
+ * observation) flips on the user message event. */
+function wakesIdleHold(event: Event, sessionID: string): boolean {
+  if (event.type === "dag.workflow.summary.updated") return event.properties.sessionID === sessionID
+  if (event.type === "message.updated")
+    return event.properties.sessionID === sessionID && event.properties.info.role === "user"
+  if (event.type !== "message.part.updated") return false
+  const part = event.properties.part
+  return (
+    part.sessionID === sessionID && part.type === "text" && isRecord(part.metadata) && isRecord(part.metadata.dag_delivery)
+  )
+}
+
+/** Keep one event read in flight; an idle session re-checks on DAG summary
+ * pushes and delivered report parts instead of a timer. A push or a `kick`
+ * from the hold arms one delayed re-check (the same one-second settle the old
+ * tick gave a wake admission), and the timer runs continuously only while
+ * `keepAlive()` reports the initial request as pending. A quiet session
+ * therefore issues no reads. */
 export async function* pollEvents(
   events: AsyncIterable<Event>,
   sessionID: string,
   stop: () => void,
+  keepAlive?: () => boolean,
   interval = 1_000,
+  kick?: DagHoldRecheck,
 ): AsyncGenerator<Event> {
   const iterator = events[Symbol.asyncIterator]()
   let pending: ReturnType<typeof iterator.next> | undefined
   let idle = false
+  let recheck = false
+  let keepAliveWasSet = false
   try {
     while (true) {
+      // A grace verdict is waiting on nothing but time: consume the kick once
+      // and treat it like an armed re-check below.
+      const kicked = kick?.pending === true
+      if (kick) kick.pending = false
+      const alive = keepAlive?.() ?? false
+      // The initial request settling while the session is idle is the one edge
+      // no incoming event covers: without this check the run loop waits on a
+      // stream that will never wake it (#1027 PR5).
+      const settled = idle && keepAliveWasSet && !alive
+      keepAliveWasSet = alive
+      if (settled) {
+        recheck = false
+        yield syntheticIdle(sessionID)
+        continue
+      }
       pending ??= iterator.next()
       let timer: ReturnType<typeof setTimeout> | undefined
-      const next: IteratorResult<Event> | undefined = idle
-        ? await Promise.race([
-            pending,
-            new Promise<undefined>((resolve) => {
-              timer = setTimeout(() => resolve(undefined), interval)
-            }),
-          ]).finally(() => clearTimeout(timer))
-        : await pending
+      const next: IteratorResult<Event> | undefined =
+        idle && (recheck || alive || kicked)
+          ? await Promise.race([
+              pending,
+              new Promise<undefined>((resolve) => {
+                timer = setTimeout(() => resolve(undefined), interval)
+              }),
+            ]).finally(() => clearTimeout(timer))
+          : await pending
       if (!next) {
-        yield { id: "dag-hold-poll", type: "session.status", properties: { sessionID, status: { type: "idle" } } }
+        recheck = false
+        // Re-sample: the request may have settled during the wait, and the
+        // settled check above must not fire a second time for the same edge.
+        keepAliveWasSet = keepAlive?.() ?? false
+        yield syntheticIdle(sessionID)
         continue
       }
       pending = undefined
       if (next.done) break
       const event: Event = next.value
-      if (event.type === "session.status" && event.properties.sessionID === sessionID)
+      if (event.type === "session.status" && event.properties.sessionID === sessionID) {
         idle = event.properties.status.type === "idle"
+        // The idle edge itself already triggers one check in the run loop.
+        recheck = false
+      }
       yield event
+      if (idle && wakesIdleHold(event, sessionID)) recheck = true
     }
   } finally {
     stop()
@@ -204,6 +272,9 @@ export type DagHold = {
   readonly hasText: (part: Parameters<DagHold["onText"]>[0]) => boolean
   /** The current command/prompt user message entered this event stream. */
   readonly onUserMessage: (messageID: string) => void
+  /** The last idle verdict held only to consume a grace poll. No incoming
+   * event will change the verdict, so the loop must schedule one more check. */
+  readonly needsRecheck: () => boolean
 }
 
 export function createDagHold(
@@ -229,6 +300,7 @@ export function createDagHold(
     onUserMessage: (messageID) => {
       if (messageID === requestedMessageID) requestObserved = true
     },
+    needsRecheck: () => state.reportGrace === "pending",
   }
 }
 

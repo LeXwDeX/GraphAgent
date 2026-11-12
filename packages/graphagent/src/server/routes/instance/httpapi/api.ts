@@ -20,6 +20,7 @@ import { QuestionApi } from "./groups/question"
 import { ReferenceApi } from "./groups/reference"
 import { SessionApi } from "./groups/session"
 import { DagApi } from "./groups/dag"
+import { LifecycleApi } from "./groups/lifecycle"
 import { WorkspaceApi } from "./groups/workspace"
 import { GlobalApi } from "./groups/global"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
@@ -57,6 +58,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(ReferenceApi)
   .addHttpApi(SessionApi)
   .addHttpApi(DagApi)
+  .addHttpApi(LifecycleApi)
   .addHttpApi(WorkspaceApi)
   .middleware(SchemaErrorMiddleware)
 

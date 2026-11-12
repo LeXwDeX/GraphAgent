@@ -58,6 +58,7 @@ import { memoMap } from "@graphagent/core/effect/memo-map"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
 import { RuntimeJobRecovery } from "@/background/recovery"
+import { GoalLifecycle } from "@/goal/lifecycle"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookStartContext } from "@/hook/start-context"
@@ -72,6 +73,7 @@ import { DagControl } from "@/dag/control"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagLoop } from "@/dag/runtime/loop"
+import { DagNodePublisher } from "@/dag/runtime/node-publisher"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventResidueSweep } from "@graphagent/core/event/residue-sweep"
@@ -166,6 +168,7 @@ const BaseAppLayer = Layer.mergeAll(
   Layer.provideMerge(GoalLoop.defaultLayer),
   Layer.provideMerge(DagLoop.defaultLayer),
   Layer.provideMerge(DagSummaryPublisher.defaultLayer),
+  Layer.provideMerge(DagNodePublisher.defaultLayer),
   // Host-level deadline-supervision sweep (production incident 2026-08-18):
   // forks its repeating fiber at construction into the LAYER scope — unlike
   // DagLoop it must NOT die with a per-directory instance teardown, or a
@@ -188,6 +191,10 @@ const BaseAppLayer = Layer.mergeAll(
   // defaultLayer self-provides BackgroundJob and Lifecycle; memoMap dedups them
   // with the instances built above.
   Layer.provideMerge(BackgroundLifecycle.defaultLayer),
+  // #1069 scope 3: the goal domain resolver reads the durable goal row on
+  // every query. Self-providing Goal + Lifecycle keeps it on the same
+  // instances as the rest of the runtime.
+  Layer.provideMerge(GoalLifecycle.defaultLayer),
 )
 
 export const AppLayer = Layer.mergeAll(HookCwd.layer, HookTodo.layer).pipe(Layer.provideMerge(BaseAppLayer))

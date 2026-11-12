@@ -4,7 +4,6 @@
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { DagSummary } from "@graphagent/schema/dag-summary"
-import { NonNegativeInt } from "@graphagent/schema/schema"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { ApiNotFoundError } from "../errors"
@@ -33,46 +32,10 @@ export const WorkflowResponse = Schema.Struct({
   time_updated: Schema.Number,
 }).annotate({ identifier: "Dag.Workflow" })
 
-export const NodeResponse = Schema.Struct({
-  id: Schema.String,
-  workflow_id: Schema.String,
-  name: Schema.String,
-  worker_type: Schema.String,
-  status: Schema.String,
-  required: Schema.Boolean,
-  depends_on: Schema.Array(Schema.String),
-  model_id: Schema.optional(Schema.String),
-  model_provider_id: Schema.optional(Schema.String),
-  child_session_id: Schema.optional(Schema.String),
-  // #949: per-attempt execution location. Optional so older servers and
-  // legacy rows keep the same shape.
-  directory: Schema.optional(Schema.String),
-  head: Schema.optional(Schema.String),
-  last_activity_at: Schema.optional(Schema.String),
-  attempt_id: Schema.optional(Schema.String),
-  accepted_input_revision: Schema.optional(NonNegativeInt),
-  snapshot_revision: Schema.optional(NonNegativeInt),
-  agent_messages: Schema.optional(
-    Schema.Struct({
-      queued: NonNegativeInt,
-      delivered: NonNegativeInt,
-      undeliverable: NonNegativeInt,
-      closed_reason: Schema.optional(Schema.String),
-    }),
-  ),
-  output: Schema.optional(Schema.Unknown),
-  error_reason: Schema.optional(Schema.String),
-  // Failed nodes only: the dag.node.failed trigger class
-  // (timeout/exec_failed/verdict_fail/push_exhausted) for failure triage.
-  error_class: Schema.optional(Schema.String),
-  // Deadline (absolute epoch millis) fixed at admission; drives the running-
-  // node countdown in the TUI inspector (P2-8).
-  deadline_ms: Schema.optional(Schema.Number),
-  // Incremented by replan restart — surfaces "restarted ×N" history in the TUI.
-  replan_attempts: Schema.Number,
-  started_at: Schema.optional(Schema.Number),
-  completed_at: Schema.optional(Schema.Number),
-}).annotate({ identifier: "Dag.Node" })
+// Reuse the event contract so HTTP `dag.nodes` rows and the incremental
+// `dag.workflow.nodes.updated` push cannot drift.
+export const NodeResponse = DagSummary.NodeView
+export type NodeResponse = DagSummary.NodeView
 
 export const DagListResponse = Schema.Array(WorkflowResponse)
 export const DagNodeListResponse = Schema.Array(NodeResponse)
