@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { Effect, Fiber, Stream } from "effect"
+import { Effect, Fiber, Stream, type Scope } from "effect"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { DagEvent } from "@graphagent/schema/dag-event"
@@ -200,7 +200,25 @@ const sampleCapacity = (scheduler: AgentScheduler.Interface, workflowIDs: Readon
     }
   })
 
-export function s5Scenario(): Scenario<S5Result, S5Services> {
+/**
+ * Wraps the load of one pass: from the first workflow creation until every
+ * workflow and background task has finished, and nothing else (no setup, no
+ * settling). `label` names the pass: "S5 warmup", "S5 first" or "S5 second".
+ *
+ * The count gate passes nothing and runs the load directly. The latency record
+ * (Issue #1021, `test/perf/s5-latency.ts`) attaches an event-loop monitor and
+ * interactive probes here, so they see exactly the window in which S5 loads.
+ */
+export type S5Around = <A, E, R>(
+  label: string,
+  load: Effect.Effect<A, E, R>,
+) => Effect.Effect<A, unknown, R | S5Services | Scope.Scope>
+
+export interface S5Options {
+  readonly around?: S5Around
+}
+
+export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> {
   // `scheduled`: the scripted provider holds a scheduler permit for each stream
   // like the production LLM service, so model-stream occupancy is observable.
   const fake = makeFakeProvider({ title: "S5", reply: "ok", scheduled: true })
@@ -245,50 +263,53 @@ export function s5Scenario(): Scenario<S5Result, S5Services> {
         const workflowIDs: string[] = []
         const sampler = yield* sampleCapacity(scheduler, workflowIDs, peaks).pipe(Effect.forkScoped)
 
-        yield* Effect.forEach(
-          Array.from({ length: WORKFLOWS }, (_, index) => index),
-          (index) =>
-            dag
-              .create({
-                projectID: parent.projectID,
-                sessionID: parent.id,
-                title: `${label} wf ${index}`,
-                config: buildConfig(`${label}-${index}`, workers),
-              })
-              .pipe(Effect.tap((dagID) => Effect.sync(() => void workflowIDs.push(dagID)))),
-          { concurrency: 1 },
-        )
-        const jobIDs = yield* Effect.forEach(
-          children,
-          (child, index) =>
-            jobs
-              .start({
-                id: child.id,
-                type: "task",
-                title: `${label} bg ${index}`,
-                metadata: { sessionID: child.id, parentSessionID: parent.id },
-                run: prompt
-                  .prompt({
-                    sessionID: child.id,
-                    agent: "build",
-                    model: promptModel,
-                    parts: [{ type: "text", text: `background ${index}` }],
-                  })
-                  .pipe(Effect.as("done")),
-              })
-              .pipe(Effect.map((info) => info.id)),
-          { concurrency: 1 },
-        )
+        const load = Effect.gen(function* () {
+          yield* Effect.forEach(
+            Array.from({ length: WORKFLOWS }, (_, index) => index),
+            (index) =>
+              dag
+                .create({
+                  projectID: parent.projectID,
+                  sessionID: parent.id,
+                  title: `${label} wf ${index}`,
+                  config: buildConfig(`${label}-${index}`, workers),
+                })
+                .pipe(Effect.tap((dagID) => Effect.sync(() => void workflowIDs.push(dagID)))),
+            { concurrency: 1 },
+          )
+          const jobIDs = yield* Effect.forEach(
+            children,
+            (child, index) =>
+              jobs
+                .start({
+                  id: child.id,
+                  type: "task",
+                  title: `${label} bg ${index}`,
+                  metadata: { sessionID: child.id, parentSessionID: parent.id },
+                  run: prompt
+                    .prompt({
+                      sessionID: child.id,
+                      agent: "build",
+                      model: promptModel,
+                      parts: [{ type: "text", text: `background ${index}` }],
+                    })
+                    .pipe(Effect.as("done")),
+                })
+                .pipe(Effect.map((info) => info.id)),
+            { concurrency: 1 },
+          )
 
-        yield* Fiber.join(completed).pipe(
-          Effect.timeoutOrElse({
-            duration: "120 seconds",
-            orElse: () => Effect.die(new Error("S5: workflows did not complete")),
-          }),
-        )
-        const waited = yield* Effect.forEach(jobIDs, (id) => jobs.wait({ id, timeout: 120_000 }), {
-          concurrency: "unbounded",
+          yield* Fiber.join(completed).pipe(
+            Effect.timeoutOrElse({
+              duration: "120 seconds",
+              orElse: () => Effect.die(new Error("S5: workflows did not complete")),
+            }),
+          )
+          return yield* Effect.forEach(jobIDs, (id) => jobs.wait({ id, timeout: 120_000 }), {
+            concurrency: "unbounded",
+          })
         })
+        const waited = yield* options?.around ? options.around(label, load) : load
         yield* Fiber.interrupt(sampler)
         // Model-stream occupancy can only rise at a grant: fold in the exact
         // snapshots the provider took there (the polling fiber cannot catch a
