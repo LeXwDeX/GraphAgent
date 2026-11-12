@@ -34,7 +34,7 @@ import { HookStatusProvider, useHookStatus } from "../../src/context/hook-status
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { TestTuiContexts } from "../fixture/tui-environment"
-import { ShellContexts } from "../shell/contexts"
+import { ShellContexts, renderFirstFrame } from "../shell/contexts"
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   const keybinds = TuiKeybind.parse(input)
@@ -94,15 +94,7 @@ export async function renderPanel(
     { width: options.width, height: options.height },
   )
   await settled
-  // KVReady resolves before the reactive switch from its blank fallback has
-  // painted; render until the first non-empty frame instead of assuming a
-  // fixed number of frames.
-  for (let attempt = 0; attempt < 50; attempt++) {
-    await app.renderOnce()
-    if (app.captureCharFrame().trim().length > 0) break
-  }
-  // Content measurement settles one render after the first paint.
-  for (let attempt = 0; attempt < 3; attempt++) await app.renderOnce()
+  await renderFirstFrame(app, 3)
   return app
 }
 
@@ -280,10 +272,6 @@ export async function renderAppPanel(
     { width: options.width, height: options.height },
   )
   await settled
-  for (let attempt = 0; attempt < 50; attempt++) {
-    await app.renderOnce()
-    if (app.captureCharFrame().trim().length > 0) break
-  }
-  for (let attempt = 0; attempt < 3; attempt++) await app.renderOnce()
+  await renderFirstFrame(app, 3)
   return app
 }

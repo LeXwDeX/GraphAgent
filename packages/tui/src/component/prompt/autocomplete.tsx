@@ -16,6 +16,7 @@ import { useLocation } from "../../context/location"
 import { useTheme, selectedForeground } from "../../context/theme"
 import { useTicker } from "../../context/ticker-context"
 import { SplitBorder } from "../../ui/border"
+import { cursorWidth } from "../../ui/width"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
 import type { PromptInfo } from "../../prompt/history"
@@ -209,7 +210,7 @@ export function Autocomplete(props: {
 
     const virtualText = "@" + text
     const extmarkStart = store.index
-    const extmarkEnd = extmarkStart + Bun.stringWidth(virtualText)
+    const extmarkEnd = extmarkStart + cursorWidth(virtualText)
 
     const styleId = part.type === "file" ? props.fileStyleId : part.type === "agent" ? props.agentStyleId : undefined
 
@@ -487,7 +488,7 @@ export function Autocomplete(props: {
     const cursor = props.input().logicalCursor
     props.input().deleteRange(0, 0, cursor.row, cursor.col)
     props.input().insertText(text)
-    props.input().cursorOffset = Bun.stringWidth(text)
+    props.input().cursorOffset = cursorWidth(text)
   }
 
   function completeCommand(entry: SlashCommandEntry) {
