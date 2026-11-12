@@ -110,7 +110,7 @@ for (const status of [200, 404, 500]) {
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     let reads = 0
     const { app, emit, reconnect, sync } = await mount((url) => {
-      if (!url.pathname.endsWith("/goal")) return
+      if (!url.pathname.endsWith("/goal")) return undefined
       reads++
       return Response.json(
         status === 200

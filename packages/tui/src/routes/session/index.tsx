@@ -2305,7 +2305,12 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
   const toolprops = {
     get metadata() {
-      return props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {})
+      if (props.part.state.status === "pending") return {}
+      const metadata = props.part.state.metadata ?? {}
+      // The running output window lives in the stream buffer, not the store
+      // (#886 5.3); it overlays the snapshot until the durable part settles.
+      const preview = ctx.sync.readPartPreview(props.part)
+      return preview ? { ...metadata, output: preview.tail, previewTotalLength: preview.totalLength } : metadata
     },
     get input() {
       return props.part.state.input ?? {}

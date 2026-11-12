@@ -25,20 +25,33 @@ import type {
   ProjectTrustEntry,
   ProjectTrustDecision,
   Event as SdkEvent,
+  LifecycleStateEntry,
+  LifecycleStateRef,
 } from "@graphagent/sdk"
 
 export type { DagWorkflowSummary }
 import { createStore, produce, reconcile } from "solid-js/store"
 import { createEventGate } from "./event-gate"
 import { createInterestAggregator } from "./interest"
+import {
+  entryFromState,
+  entryFromTransition,
+  goalStatus,
+  lifecycleKey,
+  overflowKeys,
+  type LifecycleMirrorEntry,
+  type LifecycleTransition,
+} from "./lifecycle-mirror"
 import { createStreamBuffer } from "./stream-buffer"
 import { importedEntryIds, snapshotTrust, type TrustSnapshot } from "./trust-import"
 import {
   createSummary,
   HYDRATED_MAX,
   mergeSession,
+  mergeSnapshot,
   mergeStatus,
   mergeToolPart,
+  summarizeMessages,
   taskIndexEntry,
   type SessionSummary,
   type TaskIndexEntry,
@@ -87,6 +100,13 @@ function searchMessages(messages: Message[], target: Message) {
   }
   return { found: false, index: left }
 }
+
+/**
+ * Messages requested per session snapshot. A reply shorter than this holds the
+ * session's whole history; a full one may be cut, so recounts built from it
+ * are lower bounds (#886 5.4).
+ */
+const MESSAGE_WINDOW = 100
 
 export const {
   context: SyncContext,
@@ -155,6 +175,10 @@ export const {
       taskIndex: {
         [childSessionID: string]: TaskIndexEntry
       }
+      /** Cross-domain lifecycle mirror keyed `domain:id` (#1069). */
+      lifecycle: {
+        [key: string]: LifecycleMirrorEntry
+      }
       reference: ReferenceInfo[]
       /** Project-layer executable entries and their trust state (#1040). */
       trust: ProjectTrustEntry[]
@@ -195,6 +219,7 @@ export const {
       summary: {},
       hydrated: [],
       taskIndex: {},
+      lifecycle: {},
       reference: [],
       trust: [],
       trust_loaded: false,
@@ -429,6 +454,7 @@ export const {
       fullSyncedSessions.delete(sessionID)
       syncingSessions.delete(sessionID)
       hydratingSessions.delete(sessionID)
+      dropLifecycle([...lifecycleRaw].filter(([, entry]) => entry.sessionID === sessionID).map(([key]) => key))
       setStore(
         produce((draft) => {
           for (const message of draft.message[sessionID] ?? []) delete draft.part[message.id]
@@ -466,6 +492,163 @@ export const {
         }),
       )
     }
+
+    /**
+     * #886 5.4: recount a hydrated session from its loaded messages and relink
+     * its Task parts. Hydration and reconnect are the moments the event
+     * reducer cannot be trusted alone: it never saw the history of a cold
+     * session, and it missed whatever happened while disconnected. The seen
+     * set restarts from the snapshot so later live updates of the same tool
+     * parts are not counted twice.
+     */
+    function rebuildSummary(sessionID: string, complete: boolean) {
+      const snapshot = summarizeMessages(
+        (store.message[sessionID] ?? []).map((message) => ({ parts: store.part[message.id] ?? [] })),
+      )
+      batch(() => {
+        writeSummary(sessionID, mergeSnapshot(summaryRaw.get(sessionID), sessionID, snapshot, complete))
+        for (const task of snapshot.tasks) setStore("taskIndex", task.childSessionID, reconcile(task.entry))
+      })
+      // A cut window knows only the newest tool parts; the ones the events
+      // already counted stay in the set so their updates are not counted again.
+      summarySeen.set(
+        sessionID,
+        complete ? snapshot.toolPartIDs : new Set([...seenTools(sessionID), ...snapshot.toolPartIDs]),
+      )
+    }
+
+    // #1069: mirror of the shared lifecycle contract. `lifecycle.transitioned`
+    // is transient, so the event only seeds an entry and queues its ref; the
+    // owner is then asked about every queued ref in one `POST /lifecycle/states`
+    // per frame, and a reconnect asks about everything the mirror holds.
+    const lifecycleRaw = new Map<string, LifecycleMirrorEntry>()
+    const lifecycleQueued = new Map<string, LifecycleStateRef>()
+    // Stamp of the latest transition per ref. An answer is applied only if the
+    // stamp it was asked under is still current: a newer transition beats an
+    // older read, and has queued its own.
+    const lifecycleStamp = new Map<string, number>()
+    let lifecycleClock = 0
+    let lifecycleInFlight = false
+    // Bumped by a reconnect: a read that was out before it may never return and
+    // must neither block the refill nor be applied after it.
+    let lifecycleEpoch = 0
+
+    function dropLifecycle(keys: readonly string[]) {
+      const removed: string[] = []
+      for (const key of keys) {
+        if (lifecycleRaw.delete(key)) removed.push(key)
+        lifecycleStamp.delete(key)
+        lifecycleQueued.delete(key)
+      }
+      if (removed.length === 0) return
+      setStore(
+        produce((draft) => {
+          for (const key of removed) delete draft.lifecycle[key]
+        }),
+      )
+    }
+
+    function writeLifecycle(entry: LifecycleMirrorEntry) {
+      const key = lifecycleKey(entry)
+      lifecycleRaw.set(key, entry)
+      setStore("lifecycle", key, reconcile(entry))
+      dropLifecycle(overflowKeys(lifecycleRaw))
+    }
+
+    /**
+     * The goal slice follows the lifecycle status of its session. The contract
+     * carries the status only: the goal itself (text, turns, limits, subgoals)
+     * comes from `goal.updated` and from the full reads of `sync` and
+     * `refreshGoals`, and so does clearing it. Nothing here moves the goal
+     * revision, so a status hint never invalidates a full read in flight.
+     */
+    function mirrorGoal(sessionID: string, value: string) {
+      const goal = store.goal[sessionID]
+      const status = goalStatus(value)
+      if (!goal || !status || goal.status === status) return
+      setStore("goal", sessionID, "status", status)
+    }
+
+    function mirrorTransition(transition: LifecycleTransition) {
+      const entry = entryFromTransition(transition)
+      const key = lifecycleKey(entry)
+      lifecycleStamp.set(key, ++lifecycleClock)
+      batch(() => {
+        writeLifecycle(entry)
+        if (entry.domain === "goal") mirrorGoal(entry.id, entry.value)
+      })
+      // A ref the size limit evicted again has nothing left to confirm.
+      if (lifecycleRaw.has(key)) lifecycleQueued.set(key, { domain: entry.domain, id: entry.id })
+    }
+
+    function applyLifecycleStates(
+      answers: readonly LifecycleStateEntry[],
+      stamps: ReadonlyMap<string, number>,
+      goalStamps: ReadonlyMap<string, number>,
+    ) {
+      batch(() => {
+        for (const answer of answers) {
+          const key = lifecycleKey(answer)
+          const stamp = stamps.get(key)
+          if (stamp === undefined || (lifecycleStamp.get(key) ?? 0) !== stamp) continue
+          const isGoal = answer.domain === "goal"
+          // Evicted or dropped while the read was out. A goal ref may be new:
+          // the reconnect refill asks for the goals the store holds.
+          if (!isGoal && !lifecycleRaw.has(key)) continue
+          // A goal event since the read started is newer than the answer.
+          if (isGoal && (ancillaryRevision.get(`${answer.id}:goal`) ?? 0) !== goalStamps.get(answer.id)) continue
+          if (answer.state === null) {
+            // Unknown to the owner (gone, other directory, no resolver): drop
+            // the entry instead of guessing. A goal is not cleared on this
+            // evidence: the resolver is stricter about directories than the
+            // goal read, which decides.
+            dropLifecycle([key])
+            continue
+          }
+          writeLifecycle(
+            entryFromState(answer.state, lifecycleRaw.get(key)?.sessionID ?? (isGoal ? answer.id : undefined)),
+          )
+          if (isGoal) mirrorGoal(answer.id, answer.state.value)
+        }
+      })
+    }
+
+    /**
+     * Ask the owners about every queued ref in one request. One pull is in
+     * flight at a time; refs that queue meanwhile go out at the next frame
+     * after it returns, so a frame never sends more than one.
+     */
+    function pullLifecycle() {
+      if (disposed || lifecycleInFlight || lifecycleQueued.size === 0) return
+      const refs = [...lifecycleQueued.values()]
+      lifecycleQueued.clear()
+      const stamps = new Map(refs.map((ref) => [lifecycleKey(ref), lifecycleStamp.get(lifecycleKey(ref)) ?? 0]))
+      const goalStamps = new Map(
+        refs
+          .filter((ref) => ref.domain === "goal")
+          .map((ref) => [ref.id, ancillaryRevision.get(`${ref.id}:goal`) ?? 0]),
+      )
+      lifecycleInFlight = true
+      const epoch = lifecycleEpoch
+      void sdk.client.lifecycle
+        .states({ refs }, { headers: locationHeaders({ workspace: project.workspace.current() }) })
+        .then((response) => {
+          // A failed read keeps what the events described; the next transition
+          // or reconnect asks again.
+          if (!disposed && epoch === lifecycleEpoch && response.data)
+            applyLifecycleStates(response.data, stamps, goalStamps)
+        })
+        .catch((error) => {
+          TuiLog.write("error", "Applying lifecycle states failed", { error: String(error) })
+        })
+        .finally(() => {
+          if (epoch !== lifecycleEpoch) return
+          lifecycleInFlight = false
+          if (!disposed && lifecycleQueued.size > 0) sdk.frameClock.schedule(pullLifecycle)
+        })
+    }
+    // Runs right after the frame that delivered the transitions.
+    const unsubscribeLifecycle = sdk.frameClock.onFlush(pullLifecycle)
 
     /** The session subtree rooted at `rootID`, using the current session list. */
     function sessionTree(rootID: string | undefined, sessions: Session[] = store.session): Session[] {
@@ -665,6 +848,10 @@ export const {
           setStore("goal", event.properties.sessionID, undefined)
           break
 
+        case "lifecycle.transitioned":
+          mirrorTransition(event.properties)
+          break
+
         // ── DAG workflow summary ────────────────────────────────────
         // Stateless derived-view publisher (server-side) emits the full
         // WorkflowSummary[] for a session whenever any dag.* event changes
@@ -844,27 +1031,20 @@ export const {
 
         case "message.part.preview": {
           if (!storesMessages(event.properties.sessionID)) break
-          const { messageID, partID, tail, totalLength } = event.properties
+          const { messageID, partID, tail, totalLength, seq } = event.properties
           const parts = store.part[messageID]
           if (!parts) break
           const result = search(parts, partID, (p) => p.id)
           if (!result.found) break
-          touchPart(event.properties.sessionID, partID)
-          // Non-durable running preview (#1016 HS4a): replace the tool output
-          // in place. The next durable part snapshot supersedes it.
-          setStore(
-            "part",
-            messageID,
-            produce((draft) => {
-              const part = draft.find((item) => item.id === partID)
-              if (!part || part.type !== "tool" || part.state.status !== "running") return
-              part.state.metadata = {
-                ...(part.state.metadata ?? {}),
-                output: tail,
-                previewTotalLength: totalLength,
-              }
-            }),
-          )
+          // Non-durable running preview (#1016 HS4a, #886 5.3). Only a running
+          // tool part has a window to show. The window replaces the previous
+          // one inside the stream buffer; `store.part` is not written, and the
+          // durable snapshot that ends the run settles it. The part is not
+          // `touchPart`ed: nothing in the store changed, so a hydration
+          // snapshot must stay free to replace the part.
+          const part = parts[result.index]
+          if (part.type !== "tool" || part.state.status !== "running") break
+          stream.preview(partID, tail, totalLength, seq)
           break
         }
 
@@ -1036,28 +1216,6 @@ export const {
       ).then(() => undefined)
     }
 
-    // #349/F3: goal.updated/goal.cleared are ephemeral (not in the durable
-    // replay set), so a goal.cleared missed during a disconnect would leave
-    // a stale goal in the sidebar indefinitely — the reconnect hook must
-    // refresh goals too, symmetric with refreshDagSummaries. Only sessions
-    // with a stored goal can go stale; a missing goal has nothing to clear.
-    let goalReconnectInFlight = false
-    const refreshGoals = (): Promise<void> => {
-      const sessionIDs = Object.keys(store.goal)
-      if (sessionIDs.length === 0) return Promise.resolve()
-      return Promise.all(
-        sessionIDs.map((sessionID) =>
-          sdk.client.session
-            .goal({ sessionID }, { throwOnError: false })
-            .then((response) => {
-              if (response.data) setStore("goal", sessionID, response.data)
-              else if (response.response?.status === 404) setStore("goal", sessionID, undefined)
-            })
-            .catch(() => {}),
-        ),
-      ).then(() => undefined)
-    }
-
     let dagReconnectInFlight = false
     const guardedRefreshDagSummaries = (): Promise<void> => {
       if (dagReconnectInFlight) return Promise.resolve()
@@ -1066,12 +1224,66 @@ export const {
         dagReconnectInFlight = false
       })
     }
-    const guardedRefreshGoals = (): Promise<void> => {
-      if (goalReconnectInFlight) return Promise.resolve()
-      goalReconnectInFlight = true
-      return refreshGoals().finally(() => {
-        goalReconnectInFlight = false
-      })
+
+    // #1069: the reconnect refill of the lifecycle mirror. Every ref the mirror
+    // holds, plus the goal of every session that has one, goes out in a single
+    // read. The answers are states: they correct the mirror and the goal status,
+    // while the goal itself is read in full by `refreshGoals` below.
+    const refreshLifecycle = (): Promise<void> => {
+      lifecycleEpoch++
+      lifecycleInFlight = false
+      for (const entry of lifecycleRaw.values()) {
+        lifecycleQueued.set(lifecycleKey(entry), { domain: entry.domain, id: entry.id })
+      }
+      for (const [sessionID, goal] of Object.entries(store.goal)) {
+        if (!goal) continue
+        const ref: LifecycleStateRef = { domain: "goal", id: sessionID }
+        lifecycleQueued.set(lifecycleKey(ref), ref)
+      }
+      pullLifecycle()
+      return Promise.resolve()
+    }
+
+    // #349/F3: goal.updated and goal.cleared are ephemeral (not in the durable
+    // replay set), so a goal.cleared missed during a disconnect would leave a
+    // stale goal in the drawer, and so would a changed text, turn count, limit
+    // or subgoal list. The lifecycle contract reports the status only, so the
+    // goal of every stored session is read in full again (AGENTS.md: the goal
+    // slice refreshes in full on reconnect). Hydrated sessions are left out:
+    // `sync` reloads their goal. Reads run a few at a time, and a newer
+    // reconnect supersedes an older round.
+    const GOAL_REFRESH_CONCURRENCY = 4
+    let goalEpoch = 0
+    const refreshGoal = (sessionID: string, epoch: number): Promise<void> => {
+      // A goal event after the read began carries a newer snapshot than it.
+      const revision = ancillaryRevision.get(`${sessionID}:goal`) ?? 0
+      return sdk.client.session
+        .goal({ sessionID }, { throwOnError: false })
+        .then((response) => {
+          if (disposed || epoch !== goalEpoch) return
+          if ((ancillaryRevision.get(`${sessionID}:goal`) ?? 0) !== revision) return
+          // 404 is the owner saying there is no goal; any other failure keeps it.
+          if (response.data) {
+            // The session may have been deleted meanwhile; do not bring its goal back.
+            if (store.goal[sessionID]) setStore("goal", sessionID, reconcile(response.data))
+          } else if (response.response?.status === 404) {
+            setStore("goal", sessionID, undefined)
+          }
+        })
+        .catch((error) => {
+          TuiLog.write("error", "Refreshing the goal failed", { sessionID, error: String(error) })
+        })
+    }
+    const refreshGoals = async (): Promise<void> => {
+      const epoch = ++goalEpoch
+      const sessionIDs = Object.entries(store.goal)
+        .filter(([sessionID, goal]) => goal && !store.hydrated.includes(sessionID))
+        .map(([sessionID]) => sessionID)
+      for (let start = 0; start < sessionIDs.length; start += GOAL_REFRESH_CONCURRENCY) {
+        if (disposed || epoch !== goalEpoch) return
+        const round = sessionIDs.slice(start, start + GOAL_REFRESH_CONCURRENCY)
+        await Promise.all(round.map((sessionID) => refreshGoal(sessionID, epoch)))
+      }
     }
 
     // #1040: project-layer trust is global state. The change event only names
@@ -1115,7 +1327,8 @@ export const {
       }
     }
     onResync(guardedRefreshDagSummaries)
-    onResync(guardedRefreshGoals)
+    onResync(refreshLifecycle)
+    onResync(refreshGoals)
     onResync(refreshTrust)
 
     const unsubscribeReconnect = sdk.event.on("reconnected", () => {
@@ -1144,6 +1357,7 @@ export const {
       ancillaryAttempts.clear()
       submissionAccepted.clear()
       unsubscribeStream()
+      unsubscribeLifecycle()
       unsubscribeReconnect()
     })
 
@@ -1245,7 +1459,7 @@ export const {
             load("goal", sdk.client.session.goal({ sessionID }), (value) => setStore("goal", sessionID, value))
             const [session, messages] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
-              sdk.client.session.messages({ sessionID, limit: 100 }),
+              sdk.client.session.messages({ sessionID, limit: MESSAGE_WINDOW }),
             ])
             if (disposed || ancillaryAttempts.get(sessionID) !== attempt) return
             setStore(
@@ -1296,6 +1510,8 @@ export const {
                 draft.message[sessionID] = visible
               }),
             )
+            // A failed reply says nothing about the history; keep the counters.
+            if (messages.data) rebuildSummary(sessionID, messages.data.length < MESSAGE_WINDOW)
             fullSyncedSessions.add(sessionID)
             touchHydrated(sessionID)
             evictHydrated()
@@ -1358,6 +1574,18 @@ export const {
         // Track the frame version so memos re-read when a delta batch flushes.
         stream.version()
         return stream.read(part)
+      },
+      /**
+       * Output window of a running tool part that its durable snapshot has not
+       * caught up with yet (`message.part.preview`, #886 5.3). The overlay
+       * only applies while the part is running; a settled part reads the store.
+       */
+      readPartPreview(part: Part) {
+        // Only a running tool part tracks the frame version: a settled part
+        // must not re-evaluate its metadata readers on every streamed frame.
+        if (part.type !== "tool" || part.state.status !== "running") return undefined
+        stream.version()
+        return stream.readPreview(part.id)
       },
       /** Subscribes to the per-frame stream version. */
       get streamVersion() {

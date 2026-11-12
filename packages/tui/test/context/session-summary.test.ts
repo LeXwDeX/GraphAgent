@@ -5,8 +5,10 @@ import { describe, expect, test } from "bun:test"
 import {
   createSummary,
   mergeSession,
+  mergeSnapshot,
   mergeStatus,
   mergeToolPart,
+  summarizeMessages,
   summaryStatus,
   taskIndexEntry,
   type ToolPartLike,
@@ -161,5 +163,110 @@ describe("taskIndexEntry", () => {
   test("ignores a missing or non-string child session id", () => {
     expect(taskIndexEntry(toolPart({ state: { metadata: {} } }))).toBeUndefined()
     expect(taskIndexEntry(toolPart({ state: { metadata: { sessionID: 42 } } }))).toBeUndefined()
+  })
+})
+
+describe("summarizeMessages", () => {
+  const text = (id: string) => ({ id, type: "text" })
+
+  test("counts distinct tool parts across messages and skips every other part type", () => {
+    const snapshot = summarizeMessages([
+      { parts: [text("prt_text"), toolPart({ id: "prt_a", tool: "bash" })] },
+      { parts: [toolPart({ id: "prt_b", tool: "read" }), toolPart({ id: "prt_b", tool: "read" })] },
+      { parts: [{ id: "prt_reasoning", type: "reasoning" }] },
+    ])
+    expect(snapshot.toolCalls).toBe(2)
+    expect([...snapshot.toolPartIDs].toSorted()).toEqual(["prt_a", "prt_b"])
+  })
+
+  test("current is the latest running or completed tool that has a title", () => {
+    const snapshot = summarizeMessages([
+      {
+        parts: [
+          toolPart({ id: "prt_a", tool: "bash", state: { status: "completed", title: "first" } }),
+          toolPart({ id: "prt_b", tool: "grep", state: { status: "running", title: "second" } }),
+          toolPart({ id: "prt_c", tool: "edit", state: { status: "pending", title: "third" } }),
+          toolPart({ id: "prt_d", tool: "write", state: { status: "error", title: "fourth" } }),
+          toolPart({ id: "prt_e", tool: "read", state: { status: "completed", title: undefined } }),
+        ],
+      },
+    ])
+    expect(snapshot.current).toEqual({ tool: "grep", title: "second" })
+  })
+
+  test("collects the child links of Task parts", () => {
+    const snapshot = summarizeMessages([
+      {
+        parts: [
+          toolPart({ id: "prt_task_1", state: { metadata: { sessionID: "ses_c1", background: false } } }),
+          toolPart({ id: "prt_task_2", state: { metadata: { sessionId: "ses_c2", background: true } } }),
+          toolPart({ id: "prt_task_3", state: { metadata: {} } }),
+          toolPart({ id: "prt_bash", tool: "bash" }),
+        ],
+      },
+    ])
+    expect(snapshot.tasks.map((task) => [task.childSessionID, task.entry.partID, task.entry.background])).toEqual([
+      ["ses_c1", "prt_task_1", false],
+      ["ses_c2", "prt_task_2", true],
+    ])
+  })
+
+  test("an empty session recounts to zero tools", () => {
+    expect(summarizeMessages([])).toMatchObject({ toolCalls: 0, current: undefined, tasks: [] })
+    expect(summarizeMessages([{ parts: [text("prt_text")] }]).toolCalls).toBe(0)
+  })
+})
+
+describe("mergeSnapshot", () => {
+  const snapshot = (count: number, current?: { tool: string; title?: string }) => ({
+    toolCalls: count,
+    current,
+    toolPartIDs: new Set<string>(),
+    tasks: [],
+  })
+
+  test("a complete snapshot replaces the accumulated count, even downwards", () => {
+    const previous = { ...createSummary(session), status: "busy" as const, toolCalls: 7, current: { tool: "old" } }
+    const next = mergeSnapshot(previous, "ses_a", snapshot(3, { tool: "bash", title: "ls" }), true)
+    expect(next.toolCalls).toBe(3)
+    expect(next.current).toEqual({ tool: "bash", title: "ls" })
+    // Status and times belong to the event reducer.
+    expect(next.status).toBe("busy")
+    expect(next.startedAt).toBe(10)
+    expect(next.lastActivityAt).toBe(20)
+  })
+
+  test("a complete snapshot without tools is an exact zero and clears current", () => {
+    const previous = { ...createSummary(session), toolCalls: 2, current: { tool: "bash", title: "ls" } }
+    const next = mergeSnapshot(previous, "ses_a", snapshot(0), true)
+    expect(next.toolCalls).toBe(0)
+    expect(next.current).toBeUndefined()
+  })
+
+  test("a complete snapshot turns an unknown count into an exact one", () => {
+    const next = mergeSnapshot(createSummary(session), "ses_a", snapshot(4), true)
+    expect(next.toolCalls).toBe(4)
+  })
+
+  test("a cut window only raises the count and keeps the previous current", () => {
+    const previous = { ...createSummary(session), toolCalls: 30, current: { tool: "bash", title: "ls" } }
+    expect(mergeSnapshot(previous, "ses_a", snapshot(12), false).toolCalls).toBe(30)
+    expect(mergeSnapshot(previous, "ses_a", snapshot(45), false).toolCalls).toBe(45)
+    expect(mergeSnapshot(previous, "ses_a", snapshot(12), false).current).toEqual({ tool: "bash", title: "ls" })
+  })
+
+  test("a cut window with no evidence leaves the count unknown", () => {
+    expect(mergeSnapshot(createSummary(session), "ses_a", snapshot(0), false).toolCalls).toBeUndefined()
+    expect(mergeSnapshot(createSummary(session), "ses_a", snapshot(6), false).toolCalls).toBe(6)
+  })
+
+  test("builds a skeleton for a session the summary does not know yet", () => {
+    expect(mergeSnapshot(undefined, "ses_new", snapshot(2), true)).toEqual({
+      id: "ses_new",
+      status: "unknown",
+      lastActivityAt: 0,
+      toolCalls: 2,
+      current: undefined,
+    })
   })
 })
