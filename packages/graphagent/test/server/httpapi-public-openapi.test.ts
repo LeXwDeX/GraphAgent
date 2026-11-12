@@ -39,6 +39,12 @@ function componentName(ref: string) {
   return ref.replace("#/components/schemas/", "")
 }
 
+/** Component names of a response that documents one error or a union of them. */
+function responseRefs(response: OpenApiResponse | undefined) {
+  const schema = response?.content?.["application/json"]?.schema
+  return (schema?.anyOf ?? (schema ? [schema] : [])).flatMap((item) => (item.$ref ? [componentName(item.$ref)] : []))
+}
+
 describe("PublicApi OpenAPI errors", () => {
   test("merges the former v2 routes into the instance API", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
@@ -72,9 +78,11 @@ describe("PublicApi OpenAPI errors", () => {
       ["post", "/session/{sessionID}/unrevert"],
       ["delete", "/session/{sessionID}/message/{messageID}"],
     ] as const) {
-      expect(componentName(responseRef(spec.paths[route[1]]?.[route[0]]?.responses?.["409"]) ?? "")).toBe(
+      // These writes also name the child-session guard's 409 (#1026).
+      expect(responseRefs(spec.paths[route[1]]?.[route[0]]?.responses?.["409"])).toEqual([
         "SessionBusyError",
-      )
+        "ChildSessionReadOnlyError",
+      ])
     }
   })
 

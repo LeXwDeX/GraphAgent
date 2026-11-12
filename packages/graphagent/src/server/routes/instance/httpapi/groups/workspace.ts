@@ -3,7 +3,7 @@ import { WorkspaceAdapterEntry } from "@/control-plane/types"
 import { Schema, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
 import { ApiVcsApplyError } from "./instance"
-import { ApiNotFoundError } from "../errors"
+import { ApiNotFoundError, ChildSessionReadOnlyError } from "../errors"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -110,7 +110,7 @@ export const WorkspaceApi = HttpApi.make("workspace")
         HttpApiEndpoint.post("warp", WorkspacePaths.warp, {
           payload: WarpPayload,
           success: described(HttpApiSchema.NoContent, "Session warped"),
-          error: [ApiWorkspaceWarpError, ApiVcsApplyError, ApiNotFoundError],
+          error: [ApiWorkspaceWarpError, ApiVcsApplyError, ApiNotFoundError, ChildSessionReadOnlyError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "experimental.workspace.warp",

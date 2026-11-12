@@ -1,16 +1,19 @@
 import { listAdapters } from "@/control-plane/adapters"
 import { Workspace } from "@/control-plane/workspace"
 import * as InstanceState from "@/effect/instance-state"
+import { Session } from "@/session/session"
 import { Cause, Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { notFound } from "../errors"
 import { ApiVcsApplyError } from "../groups/instance"
 import { ApiWorkspaceCreateError, CreatePayload, WarpPayload } from "../groups/workspace"
+import { assertSessionWritable } from "../middleware/child-session-guard"
 
 export const workspaceHandlers = HttpApiBuilder.group(InstanceHttpApi, "workspace", (handlers) =>
   Effect.gen(function* () {
     const workspace = yield* Workspace.Service
+    const sessions = yield* Session.Service
 
     const adapters = Effect.fn("WorkspaceHttpApi.adapters")(function* () {
       const instance = yield* InstanceState.context
@@ -61,6 +64,8 @@ export const workspaceHandlers = HttpApiBuilder.group(InstanceHttpApi, "workspac
     })
 
     const warp = Effect.fn("WorkspaceHttpApi.warp")(function* (ctx: { payload: typeof WarpPayload.Type }) {
+      // #1026: the session is in the payload, out of the session group's reach.
+      yield* assertSessionWritable(sessions, ctx.payload.sessionID)
       yield* workspace
         .sessionWarp({
           workspaceID: ctx.payload.id,

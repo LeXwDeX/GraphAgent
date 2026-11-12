@@ -1,6 +1,7 @@
 import { MoveSession } from "@graphagent/core/control-plane/move-session"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
+import { ChildSessionReadOnlyError } from "../errors"
 import { described } from "./metadata"
 
 const root = "/experimental/control-plane"
@@ -22,7 +23,7 @@ export const ControlPlaneApi = HttpApi.make("controlPlane").add(
       HttpApiEndpoint.post("moveSession", `${root}/move-session`, {
         payload: MoveSessionPayload,
         success: described(HttpApiSchema.NoContent, "Session moved"),
-        error: ApiMoveSessionError,
+        error: [ApiMoveSessionError, ChildSessionReadOnlyError],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "experimental.controlPlane.moveSession",

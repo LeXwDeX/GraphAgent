@@ -1,6 +1,7 @@
 import { OpenApi } from "effect/http-api"
 import { GraphagentHttpApi } from "./api"
 import { QueryBooleanOpenApi } from "./groups/query"
+import { isChildSessionWriteAllowed } from "./middleware/child-session-guard"
 
 type OpenApiParameter = {
   name: string
@@ -155,6 +156,7 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
       delete operation.security
       delete operation.responses?.["401"]
       normalizeLegacyErrorResponses(operation)
+      normalizeChildSessionReadOnly(operation, path, method)
       normalizeLegacyOperation(operation, path, method)
       if (path === "/event" && method === "get") {
         // HttpApi has no first-class SSE response schema, and this handler is a
@@ -498,6 +500,36 @@ function normalizeLegacyErrorResponses(operation: OpenApiOperation) {
   if (operation.responses?.["404"] && isBuiltInErrorResponse(operation.responses["404"], "NotFound")) {
     operation.responses["404"] = legacyErrorResponse("Not found", "NotFoundError")
   }
+}
+
+// #1026: the child-session guard is declared once on the whole session group,
+// so the generated spec lists its 409 on every `/session` route. Only a write
+// that addresses a session and is not on the guard's allow-list can be refused;
+// reads, the allow-listed writes and session creation lose the entry. Routes
+// outside `/session` (background, warp, move-session) declare the error one by
+// one and are left as generated.
+const ChildSessionReadOnlyRef = "#/components/schemas/ChildSessionReadOnlyError"
+
+function canRefuseChildSession(path: string, method: string) {
+  if (path !== "/session" && !path.startsWith("/session/")) return true
+  if (!path.startsWith("/session/{sessionID}")) return false
+  return !isChildSessionWriteAllowed(method.toUpperCase(), path.replace(/\{(\w+)\}/g, ":$1"))
+}
+
+function normalizeChildSessionReadOnly(operation: OpenApiOperation, path: string, method: string) {
+  const response = operation.responses?.["409"]
+  const media = response?.content?.["application/json"]
+  const schema = media?.schema
+  if (!response || !media || !schema || canRefuseChildSession(path, method)) return
+  if (schema.$ref === ChildSessionReadOnlyRef) {
+    delete operation.responses?.["409"]
+    return
+  }
+  const arms = schema.anyOf
+  if (!arms?.some((arm) => arm.$ref === ChildSessionReadOnlyRef)) return
+  const rest = arms.filter((arm) => arm.$ref !== ChildSessionReadOnlyRef)
+  media.schema = rest.length === 1 ? rest[0] : { ...schema, anyOf: rest }
+  response.description = rest.map((arm) => arm.$ref?.split("/").pop()).join(" | ")
 }
 
 function deleteUnusedLegacyErrorComponents(spec: OpenApiSpec) {

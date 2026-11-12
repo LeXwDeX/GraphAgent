@@ -3,6 +3,7 @@ import { WorkspaceV2 } from "@graphagent/core/workspace"
 import { Workspace } from "@/control-plane/workspace"
 import { WorkspaceAdapterRuntime } from "@/control-plane/workspace-adapter-runtime"
 import { Session } from "@/session/session"
+import type { SessionID } from "@/session/schema"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute } from "@/server/shared/workspace-routing"
 import { NotFoundError } from "@/storage/storage"
 import { Context, Data, Effect, Layer } from "effect"
@@ -23,6 +24,13 @@ export class WorkspaceRouteContext extends Context.Service<
   {
     readonly directory: string
     readonly workspaceID?: WorkspaceV2.ID
+    /**
+     * Session row read for routing, when the URL addresses one that exists.
+     * Carried so later middleware can decide on `parentID` without re-reading.
+     * It comes from URL parsing, so it is a hint: a decision that must hold for
+     * every spelling of the URL re-derives the target from the router's params.
+     */
+    readonly session?: { readonly id: SessionID; readonly parentID?: SessionID }
   }
 >()("@graphagent/ExperimentalHttpApiWorkspaceRouteContext") {}
 
@@ -102,11 +110,21 @@ function planRequest(
 function routeWorkspace<E>(
   effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, WorkspaceRouteContext>,
   plan: RequestPlan,
+  session?: Session.Info,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, Workspace.Service> {
   return RequestPlan.$match(plan, {
     MissingWorkspace: ({ workspaceID }) => Effect.succeed(missingWorkspaceResponse(workspaceID)),
     Local: ({ directory, workspaceID }) =>
-      effect.pipe(Effect.provideService(WorkspaceRouteContext, WorkspaceRouteContext.of({ directory, workspaceID }))),
+      effect.pipe(
+        Effect.provideService(
+          WorkspaceRouteContext,
+          WorkspaceRouteContext.of({
+            directory,
+            workspaceID,
+            ...(session ? { session: { id: session.id, parentID: session.parentID } } : {}),
+          }),
+        ),
+      ),
   })
 }
 
@@ -130,7 +148,7 @@ function routeHttpApiWorkspace<E>(
         )
       : undefined
     const plan = yield* planRequest(request, session)
-    return yield* routeWorkspace(effect, plan)
+    return yield* routeWorkspace(effect, plan, session)
   })
 }
 
