@@ -42,7 +42,6 @@
     "./util/persistence": "./src/util/persistence.ts",
     "./util/record": "./src/util/record.ts",
     "./logo": "./src/logo.ts",
-    "./ui/dialog": "./src/ui/dialog.tsx",
     "./ui/toast": "./src/ui/toast.tsx",
     "./component/spinner": "./src/component/spinner.tsx"
   },

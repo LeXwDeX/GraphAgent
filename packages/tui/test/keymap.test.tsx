@@ -5,7 +5,14 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onCleanup } from "solid-js"
 import { TuiKeybind } from "../src/config/keybind"
-import { getGraphagentModeStack, GRAPHAGENT_BASE_MODE, GraphagentKeymapProvider, registerGraphagentKeymap } from "../src/keymap"
+import {
+  displaySequence,
+  formatKeySequence,
+  getGraphagentModeStack,
+  GRAPHAGENT_BASE_MODE,
+  GraphagentKeymapProvider,
+  registerGraphagentKeymap,
+} from "../src/keymap"
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   const keybinds = TuiKeybind.parse(input)
@@ -183,4 +190,80 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
   } finally {
     app.renderer.destroy()
   }
+})
+
+const TMUX_SESSION = "/tmp/tmux-1000/default,4242,0"
+
+/**
+ * The shortcut text `useCommandShortcut` shows for `command`, with `TMUX` set to
+ * `options.tmux` (or removed) while the bindings are read.
+ */
+async function shortcutText(
+  command: string,
+  options: { tmux: string | undefined; overrides?: TuiKeybind.KeybindOverrides },
+) {
+  const previous = process.env.TMUX
+  if (options.tmux === undefined) delete process.env.TMUX
+  else process.env.TMUX = options.tmux
+  try {
+    let text = ""
+
+    function Harness() {
+      const renderer = useRenderer()
+      const keymap = createDefaultOpenTuiKeymap(renderer)
+      const config = createResolvedKeymapConfig(options.overrides)
+      const offKeymap = registerGraphagentKeymap(keymap, renderer, config)
+      const offLayer = keymap.registerLayer({
+        commands: [{ name: command, run() {} }],
+        bindings: config.keybinds.gather("test.display", [command]),
+      })
+      const bindings = keymap.getCommandBindings({ visibility: "registered", commands: [command] }).get(command)
+      text = formatKeySequence(displaySequence(command, bindings), config)
+      onCleanup(() => {
+        offLayer()
+        offKeymap()
+      })
+
+      return (
+        <GraphagentKeymapProvider keymap={keymap}>
+          <box />
+        </GraphagentKeymapProvider>
+      )
+    }
+
+    const app = await testRender(() => <Harness />)
+    try {
+      return text
+    } finally {
+      app.renderer.destroy()
+    }
+  } finally {
+    if (previous === undefined) delete process.env.TMUX
+    else process.env.TMUX = previous
+  }
+}
+
+test("shows ctrl+b for the drawer toggle outside tmux", async () => {
+  expect(await shortcutText("session.drawer.toggle", { tmux: undefined })).toBe("ctrl+b")
+  // An empty TMUX is the same as no tmux.
+  expect(await shortcutText("session.drawer.toggle", { tmux: "" })).toBe("ctrl+b")
+})
+
+test("shows the leader alternative for the drawer toggle inside tmux", async () => {
+  expect(await shortcutText("session.drawer.toggle", { tmux: TMUX_SESSION })).toBe("ctrl+x b")
+})
+
+test("keeps the only drawer toggle binding inside tmux when it has no leader alternative", async () => {
+  expect(
+    await shortcutText("session.drawer.toggle", {
+      tmux: TMUX_SESSION,
+      overrides: { session_drawer_toggle: "f9" },
+    }),
+  ).toBe("f9")
+})
+
+test("inside tmux only the drawer toggle prefers its leader alternative", async () => {
+  const overrides = { help_show: "?,<leader>h" }
+  expect(await shortcutText("help.show", { tmux: undefined, overrides })).toBe("?")
+  expect(await shortcutText("help.show", { tmux: TMUX_SESSION, overrides })).toBe("?")
 })

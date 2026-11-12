@@ -7,26 +7,22 @@ import { testRender } from "@opentui/solid"
 import { TopBar, type TopBarProps } from "../../src/shell/top-bar"
 import { setLanguage } from "../../src/i18n"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
-import { ShellContexts, shellState } from "./contexts"
+import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
 
 afterEach(() => {
   setLanguage("zh-CN")
 })
 
 async function renderTopBar(props: TopBarProps, options: { width: number; height?: number; state: string }) {
-  let ready!: () => void
-  const settled = new Promise<void>((resolve) => (ready = resolve))
   const app = await testRender(
     () => (
-      <ShellContexts state={options.state} onReady={ready}>
+      <ShellContexts state={options.state}>
         <TopBar {...props} />
       </ShellContexts>
     ),
     { width: options.width, height: options.height ?? 1 },
   )
-  await settled
-  await app.renderOnce()
-  await app.renderOnce()
+  await renderFirstFrame(app)
   return app
 }
 
