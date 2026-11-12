@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test"
 import { NODE_TRANSITION_TABLE, WORKFLOW_TRANSITION_TABLE } from "@graphagent/core/lifecycle/dag"
 import {
   checkTransition,
+  GOAL_TRANSITION_TABLE,
   JOB_TRANSITION_TABLE,
   TURN_TRANSITION_TABLE,
   type TransitionTable,
@@ -109,6 +110,47 @@ describe("DAG tables as lifecycle tables", () => {
       kind: "invalid",
       allowed: [],
     })
+  })
+})
+
+describe("goal transitions", () => {
+  it("admits creation, waiting, pause and resume", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: null, to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "waiting" })).toEqual({
+      kind: "allowed",
+      phase: "waiting",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "waiting", to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "paused" })).toEqual({
+      kind: "allowed",
+      phase: "paused",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "waiting", to: "paused" })).toEqual({
+      kind: "allowed",
+      phase: "paused",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "paused", to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+  })
+
+  it("keeps done out of the live table and terminal", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "done" })).toEqual({
+      kind: "invalid",
+      allowed: ["waiting", "paused"],
+    })
+    expect(GOAL_TRANSITION_TABLE.next("done")).toEqual([])
+  })
+
+  it("reports a repeated status as duplicate", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "active" })).toEqual({ kind: "duplicate" })
   })
 })
 

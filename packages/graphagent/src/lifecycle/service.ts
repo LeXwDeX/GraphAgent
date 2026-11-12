@@ -8,6 +8,7 @@ import { NODE_TRANSITION_TABLE, WORKFLOW_TRANSITION_TABLE } from "@graphagent/co
 import type { LifecycleState, StateRef } from "@graphagent/core/lifecycle/state"
 import {
   checkTransition,
+  GOAL_TRANSITION_TABLE,
   JOB_TRANSITION_TABLE,
   TURN_TRANSITION_TABLE,
   type TransitionRequest,
@@ -63,6 +64,7 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 const tables = new Map<Domain, TransitionTable>([
   ["turn", TURN_TRANSITION_TABLE],
   ["job", JOB_TRANSITION_TABLE],
+  ["goal", GOAL_TRANSITION_TABLE],
   ["workflow", WORKFLOW_TRANSITION_TABLE],
   ["node", NODE_TRANSITION_TABLE],
 ])

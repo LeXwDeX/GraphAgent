@@ -42,12 +42,18 @@ type State = {
   scope: Scope.Scope
 }
 
-type Transition = {
+export type Transition = {
   readonly id: string
   readonly type: string
   readonly from: Status | null
   readonly to: Status
   readonly sessionID?: string
+  readonly parentSessionID?: string
+  readonly title?: string
+  readonly metadata?: Record<string, unknown>
+  readonly started_at?: number
+  readonly output?: string
+  readonly error?: string
 }
 
 type FinishResult = {
@@ -160,6 +166,23 @@ export const makeWith = (options: MakeOptions = {}) =>
       options.onTransition ? options.onTransition(transition).pipe(Effect.catchCause(() => Effect.void)) : Effect.void
     const sessionIDOf = (job: Active): string | undefined =>
       typeof job.info.metadata?.sessionId === "string" ? job.info.metadata.sessionId : undefined
+    const parentSessionIDOf = (job: Active): string | undefined =>
+      typeof job.info.metadata?.parentSessionId === "string" ? job.info.metadata.parentSessionId : undefined
+    /** The sink sees one complete job snapshot per transition, so durable
+     * observers never have to merge partial deltas (#1069 P5). */
+    const transitionOf = (job: Active, from: Status | null, to: Status, info: Info = job.info): Transition => ({
+      id: job.info.id,
+      type: job.info.type,
+      from,
+      to,
+      sessionID: sessionIDOf(job),
+      parentSessionID: parentSessionIDOf(job),
+      title: info.title,
+      metadata: info.metadata,
+      started_at: info.started_at,
+      output: info.output,
+      error: info.error,
+    })
     const identities = new WeakMap<Info, { id: string; token: object; done: Deferred.Deferred<Info> }>()
     const snapshot = (job: Active): Info => {
       const info = { ...job.info, ...(job.info.metadata ? { metadata: { ...job.info.metadata } } : {}) }
@@ -210,13 +233,7 @@ export const makeWith = (options: MakeOptions = {}) =>
             info: snapshot(next),
             done: job.done,
             scope: job.scope,
-            transition: {
-              id,
-              type: job.info.type,
-              from: job.info.status,
-              to: status,
-              sessionID: sessionIDOf(job),
-            },
+            transition: transitionOf(job, job.info.status, status, next.info),
           },
           new Map(jobs).set(id, next),
         ]
@@ -310,6 +327,11 @@ export const makeWith = (options: MakeOptions = {}) =>
               from: null,
               to: "running",
               sessionID: typeof input.metadata?.sessionId === "string" ? input.metadata.sessionId : undefined,
+              parentSessionID:
+                typeof input.metadata?.parentSessionId === "string" ? input.metadata.parentSessionId : undefined,
+              title: input.title,
+              metadata: input.metadata,
+              started_at: result.info.started_at,
             })
             yield* fork(
               result.scope,
@@ -333,7 +355,7 @@ export const makeWith = (options: MakeOptions = {}) =>
         return [
           {
             info: snapshot(next),
-            transition: { id, type: job.info.type, from: "running", to: "settling", sessionID: sessionIDOf(job) },
+            transition: transitionOf(job, "running", "settling"),
           },
           new Map(jobs).set(id, next),
         ]
@@ -446,13 +468,7 @@ export const makeWith = (options: MakeOptions = {}) =>
             info: snapshot(next),
             done: job.done,
             scope: job.scope,
-            transition: {
-              id,
-              type: job.info.type,
-              from: job.info.status,
-              to: "cancelled",
-              sessionID: sessionIDOf(job),
-            },
+            transition: transitionOf(job, job.info.status, "cancelled", next.info),
           },
           new Map(jobs).set(id, next),
         ]
