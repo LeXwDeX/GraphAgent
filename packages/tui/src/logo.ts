@@ -30,4 +30,7 @@ export const LOGO_WIDTH = 87
 
 export const LOGO_MIN_COLUMNS = 90
 
+/** The home screen also needs this many rows for the wordmark; shorter terminals get the mini mark. */
+export const LOGO_MIN_ROWS = 22
+
 export const LOGO_MINI = "◇─◆ GraphAgent"

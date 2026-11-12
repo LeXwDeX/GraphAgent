@@ -1,6 +1,7 @@
 import { onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Option, Schema, SchemaGetter } from "effect"
+import { APP_NAME } from "@graphagent/core/brand"
 import { isRecord } from "../util/record"
 import { useTuiPaths } from "./runtime"
 import { createSimpleContext } from "./helper"
@@ -229,7 +230,7 @@ export const { use: useEditorContext, provider: EditorContextProvider } = create
         request("initialize", {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
-          clientInfo: { name: "opencode", version: "0.0.0" },
+          clientInfo: { name: APP_NAME, version: "0.0.0" },
         })
       })
 
