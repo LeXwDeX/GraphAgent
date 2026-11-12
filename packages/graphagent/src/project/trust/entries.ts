@@ -289,9 +289,12 @@ function collectSettingsValue(
     for (const [name, candidate] of Object.entries(value.formatter)) {
       if (!isRecord(candidate)) continue
       const command = stringArray(candidate.command)
-      if (command.length === 0) continue
-      const line = lineFor(["formatter", name])
       const environment = isRecord(candidate.environment) ? candidate.environment : undefined
+      const envKeys = environment ? Object.keys(environment) : []
+      // An environment-only entry still reaches the built-in formatter of the
+      // same name as process environment, so it needs trust like a command.
+      if (command.length === 0 && envKeys.length === 0) continue
+      const line = lineFor(["formatter", name])
       removals?.push(() => {
         // `extensions` and `disabled` stay: they only decide when the
         // formatter runs, not what it runs.
@@ -305,10 +308,10 @@ function collectSettingsValue(
         canonical: canonicalize("formatter", candidate),
         references: unique(command.flatMap(referenceToken)),
         display: {
-          text: command.join(" "),
-          commands: [command.join(" ")],
+          text: command.length > 0 ? command.join(" ") : `environment: ${envKeys.join(", ")}`,
+          commands: command.length > 0 ? [command.join(" ")] : [],
           urls: [],
-          envKeys: environment ? Object.keys(environment) : [],
+          envKeys,
         },
       })
     }

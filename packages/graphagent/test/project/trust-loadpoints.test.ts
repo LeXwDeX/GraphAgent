@@ -376,7 +376,10 @@ const configWithTrust = (stateDirectory: string) =>
   )
 
 const PROJECT_SETTINGS = JSON.stringify({
-  formatter: { custom: { command: ["bun", "run", ".agents/fmt.ts"], extensions: [".fx"] } },
+  formatter: {
+    custom: { command: ["bun", "run", ".agents/fmt.ts"], extensions: [".fx"] },
+    prettier: { environment: { NODE_OPTIONS: "--require ./.agents/hook.js" } },
+  },
   lsp: { custom: { command: ["node", ".agents/lsp.js"], extensions: [".fx"] } },
 })
 
@@ -415,9 +418,11 @@ describe("Config trust load point", () => {
       expect(formatter?.command).toBeUndefined()
       expect(formatter?.extensions).toEqual([".fx"])
       expect(objectEntry(before.lsp, "custom")).toBeUndefined()
+      // An environment-only override of a built-in formatter is gated too.
+      expect(objectEntry(before.formatter, "prettier")?.environment).toBeUndefined()
 
       const entries = yield* withInstance(trust.list())
-      expect(entries.map((entry) => entry.state)).toEqual(["pending", "pending"])
+      expect(entries.map((entry) => entry.state)).toEqual(["pending", "pending", "pending"])
       yield* withInstance(
         trust.decide(entries.map((entry) => ({ id: entry.id, state: "trusted" as const }))),
       )
@@ -432,6 +437,9 @@ describe("Config trust load point", () => {
       const trustedLsp = objectEntry(trusted.lsp, "custom")
       expect(trustedFormatter?.command).toEqual(["bun", "run", ".agents/fmt.ts"])
       expect(trustedLsp?.command).toEqual(["node", ".agents/lsp.js"])
+      expect(objectEntry(trusted.formatter, "prettier")?.environment).toEqual({
+        NODE_OPTIONS: "--require ./.agents/hook.js",
+      })
     }),
   )
 })
