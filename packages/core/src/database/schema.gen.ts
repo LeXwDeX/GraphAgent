@@ -398,8 +398,12 @@ export default {
       yield* tx.run(`CREATE INDEX \`runtime_job_status_idx\` ON \`runtime_job\` (\`status\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_session_idx\` ON \`runtime_job\` (\`session_id\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_updated_at_idx\` ON \`runtime_job\` (\`updated_at\`);`)
+      yield* tx.run(`CREATE INDEX \`child_binding_parent_idx\` ON \`child_binding\` (\`parent_session_id\`);`)
       yield* tx.run(
         `CREATE INDEX \`child_run_session_time_idx\` ON \`child_run\` (\`child_session_id\`,\`time_created\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`child_run_parent_time_idx\` ON \`child_run\` (\`parent_session_id\`,\`time_created\`);`,
       )
       yield* tx.run(
         `CREATE UNIQUE INDEX \`child_run_active\` ON \`child_run\` (\`child_session_id\`) WHERE "child_run"."state" in ('queued', 'starting', 'running', 'continuing');`,

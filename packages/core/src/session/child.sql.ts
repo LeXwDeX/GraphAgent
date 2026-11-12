@@ -12,19 +12,24 @@ export type ChildRunState = "queued" | "starting" | "running" | "continuing" | "
  * #1010 (E0): the durable owner of a child session. Written once when the
  * child session is created (H3); E0 only owns the baseline shape.
  */
-export const ChildBindingTable = sqliteTable("child_binding", {
-  child_session_id: text()
-    .primaryKey()
-    .references(() => SessionTable.id, { onDelete: "cascade" }),
-  parent_session_id: text()
-    .notNull()
-    .references(() => SessionTable.id, { onDelete: "cascade" }),
-  owner_kind: text().notNull().$type<ChildOwnerKind>(),
-  owner_ref: text(),
-  time_created: integer()
-    .notNull()
-    .$default(() => Date.now()),
-})
+export const ChildBindingTable = sqliteTable(
+  "child_binding",
+  {
+    child_session_id: text()
+      .primaryKey()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    parent_session_id: text()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    owner_kind: text().notNull().$type<ChildOwnerKind>(),
+    owner_ref: text(),
+    time_created: integer()
+      .notNull()
+      .$default(() => Date.now()),
+  },
+  // #1026: the parent's cascade delete and the parent's child listing look rows up by parent.
+  (table) => [index("child_binding_parent_idx").on(table.parent_session_id)],
+)
 
 /**
  * #1010 (E0): one row per child-run state episode. A child session has at
@@ -62,6 +67,8 @@ export const ChildRunTable = sqliteTable(
   },
   (table) => [
     index("child_run_session_time_idx").on(table.child_session_id, table.time_created),
+    // #1026: `listByParent` and the parent's delegation view read a parent's runs in time order.
+    index("child_run_parent_time_idx").on(table.parent_session_id, table.time_created),
     uniqueIndex("child_run_active")
       .on(table.child_session_id)
       .where(sql`${table.state} in ('queued', 'starting', 'running', 'continuing')`),
