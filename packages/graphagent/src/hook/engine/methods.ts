@@ -48,12 +48,20 @@ export const scopedHooksWithTrust = Effect.fnUntraced(function* (
   if (!trust || input.source !== "project" || !ctx || ctx.trustProject === true) return input
   const prefix = Object.keys(SCOPED_ORIGINS).find((candidate) => input.origin.startsWith(candidate))
   if (!prefix) return input
-  const relative = path
-    .relative(path.join(ctx.root, PROJECT_DIR), path.resolve(input.origin.slice(prefix.length)))
-    .split(path.sep)
-    .join("/")
-  if (!relative || relative === ".." || relative.startsWith("../")) return input
   const category = SCOPED_ORIGINS[prefix as keyof typeof SCOPED_ORIGINS]
+  const absolute = path.resolve(input.origin.slice(prefix.length))
+  const relative = path.relative(path.join(ctx.root, PROJECT_DIR), absolute).split(path.sep).join("/")
+  if (!relative || relative === ".." || relative.startsWith("../")) {
+    // A project-source origin outside `<root>/.agents` (for example a
+    // `skills.paths` directory elsewhere in the repo or outside it, or a
+    // skill pulled from `skills.urls`) is not among the entries the trust
+    // panel enumerates, so no recorded decision can ever match it. Fail
+    // closed: refuse the whole declaration as a single "not enumerated"
+    // entry instead of registering it unchecked.
+    if (frontmatterHookEntries(absolute, input.hooks, category).length === 0) return input
+    const result = yield* trust.gate([{ scope: "project", file: absolute, entry: undefined }])
+    return result.allowed[0] ? input : undefined
+  }
   const entries = frontmatterHookEntries(relative, input.hooks, category)
   if (entries.length === 0) return input
   const result = yield* trust.gate(entries.map((entry) => ({ scope: "project", file: relative, entry })))

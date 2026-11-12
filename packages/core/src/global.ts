@@ -35,6 +35,21 @@ const paths = {
 
 export const Path = paths
 
+/**
+ * Directories owned by the operator rather than by the workspace being
+ * opened: the XDG/managed config directory (`Path.config`, already
+ * redirected by `GRAPHAGENT_CONFIG_DIR` or the test override), the user's
+ * shared `~/.agents`, and `GRAPHAGENT_CONFIG_DIR` again explicitly so a
+ * caller still matches it even when `GRAPHAGENT_TEST_CONFIG_DIR` has
+ * redirected `Path.config` elsewhere (test isolation only; in normal use the
+ * two are identical). Project-layer loaders that classify discovered content
+ * as `user`/operator-owned vs `project`-owned should all check against this
+ * same list, not a partial copy of it (#1040).
+ */
+export function operatorRoots(): string[] {
+  return [Path.config, path.join(Path.home, ".agents"), ...(Flag.GRAPHAGENT_CONFIG_DIR ? [Flag.GRAPHAGENT_CONFIG_DIR] : [])]
+}
+
 Flock.setGlobal({ state })
 
 await Promise.all([

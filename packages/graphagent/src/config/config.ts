@@ -29,6 +29,7 @@ import { setAgentHookOrigins, type AgentHookProvenance } from "./agent-hooks"
 import { ConfigCommand } from "./command"
 import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
+import { setSkillsSource, type SkillsSourceLayer } from "./skills-source"
 import { HookConfigChange } from "@/hook/config-change"
 import { HookPermissions } from "./permissions"
 import type { PermissionUpdate } from "@/hook/trigger-result"
@@ -36,8 +37,15 @@ import { ConfigPaths } from "./paths"
 import { changedTopLevelKeys } from "./hot-reload"
 import { RemoteLkg } from "./remote-lkg"
 import { ConfigVariable } from "./variable"
-import { filterSettingsValue, LOCAL_PROJECT_FILES, settingsEntries } from "@/project/trust/entries"
+import {
+  filterSettingsValue,
+  hasProjectShell,
+  LOCAL_PROJECT_FILES,
+  settingsEntries,
+  stripProjectShell,
+} from "@/project/trust/entries"
 import { ProjectTrust } from "@/project/trust/service"
+import type { GateEntry } from "@/project/trust/service"
 import { watchTrustState } from "@/project/trust/subscribe"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -329,12 +337,23 @@ export const layer = Layer.effect(
       if (!trust) return parsed
       const raw = ConfigParse.jsonc(text, source)
       const entries = settingsEntries(relative, raw)
-      if (entries.length === 0) return parsed
+      // #1040: a project-layer `shell` is not enumerated as a TrustEntry (it
+      // names no per-occurrence declaration the panel could ever show), so it
+      // rides the same not-enumerated gate item as the rest of the project
+      // layer and always fails closed. See `stripProjectShell`.
+      const shellDeclared = hasProjectShell(raw)
+      if (entries.length === 0 && !shellDeclared) return parsed
       const scope = LOCAL_PROJECT_FILES.includes(relative) ? "local" : "project"
-      const result = yield* trust.gate(entries.map((entry) => ({ scope, file: relative, entry })))
-      if (result.allowed.every(Boolean)) return parsed
-      const allowed = new Set(entries.filter((_, index) => result.allowed[index]).map((entry) => entry.id))
-      return filterSettingsValue(relative, parsed, (entry) => allowed.has(entry.id))
+      const items: GateEntry[] = entries.map((entry) => ({ scope, file: relative, entry }))
+      if (shellDeclared) items.push({ scope, file: relative, entry: undefined })
+      const result = yield* trust.gate(items)
+      let value = parsed
+      if (!result.allowed.slice(0, entries.length).every(Boolean)) {
+        const allowed = new Set(entries.filter((_, index) => result.allowed[index]).map((entry) => entry.id))
+        value = filterSettingsValue(relative, value, (entry) => allowed.has(entry.id))
+      }
+      if (shellDeclared && !result.allowed[entries.length]) value = stripProjectShell(value)
+      return value
     })
 
     const loadConfig = Effect.fnUntraced(function* (
@@ -439,9 +458,28 @@ export const layer = Layer.effect(
         let result: Info = {}
         const agentHookOrigins = new Map<string, AgentHookProvenance>()
         const modeHookOrigins = new Map<string, AgentHookProvenance>()
+        // #1040: `mergeDeep` replaces `skills.paths`/`skills.urls` wholesale
+        // (not concatenated) when a later source sets the same key, so the
+        // final value is always attributable to exactly one layer -- track
+        // which one so skill discovery can classify by declaring layer
+        // instead of only by the resulting SKILL.md's location.
+        let skillsPathsLayer: SkillsSourceLayer | undefined
+        let skillsUrlsLayer: SkillsSourceLayer | undefined
+        const rememberSkillsSource = (next: Info, kind: "global" | "project") => {
+          if (next.skills?.paths !== undefined) skillsPathsLayer = kind === "project" ? "project" : "user"
+          if (next.skills?.urls !== undefined) skillsUrlsLayer = kind === "project" ? "project" : "user"
+        }
+        // Shares Global.operatorRoots() with skill/index.ts#skillHookSource so a
+        // workspace outside .agents is never classified `user` by one loader
+        // and `project` by the other (#1040).
         const agentHookSource = (source: string): AgentHookProvenance["source"] => {
-          const roots = [Global.Path.config]
-          return roots.some((root) => source === root || source.startsWith(root + path.sep)) ? "user" : "project"
+          const absolute = path.resolve(source)
+          return Global.operatorRoots().some((root) => {
+            const resolved = path.resolve(root)
+            return absolute === resolved || absolute.startsWith(resolved + path.sep)
+          })
+            ? "user"
+            : "project"
         }
         const rememberAgentHooks = (next: Info, source: string) => {
           for (const [name, mode] of Object.entries(next.mode ?? {})) {
@@ -470,6 +508,7 @@ export const layer = Layer.effect(
             }
           }
           rememberAgentHooks(next, source)
+          rememberSkillsSource(next, kind)
           result = mergeConfigConcatArrays(result, next)
         })
 
@@ -644,6 +683,7 @@ export const layer = Layer.effect(
         if (managed) {
           const next = yield* loadConfig(managed.text, { dir: path.dirname(managed.source), source: managed.source })
           rememberAgentHooks(next, managed.source)
+          rememberSkillsSource(next, "global")
           result = mergeConfigConcatArrays(result, next)
         }
 
@@ -702,6 +742,7 @@ export const layer = Layer.effect(
         }
 
         setAgentHookOrigins(result, agentHookOrigins)
+        setSkillsSource(result, { paths: skillsPathsLayer, urls: skillsUrlsLayer })
         return {
           config: result,
           directories,

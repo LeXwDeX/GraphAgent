@@ -162,6 +162,18 @@ function memoryCommandMessage(deps: Pick<CommandDeps, "sessions" | "agents" | "p
   })
 }
 
+/**
+ * `cmd` carries the skill-promotion provenance (#1040) that lets
+ * `shellVerdict` fail closed on a project-owned skill outside
+ * `.agents/skills` instead of falling through as "no declaration found".
+ */
+const shellVerdictInput = (root: string, name: string, template: string, cmd: Command.Info) => ({
+  root,
+  command: name,
+  template,
+  skill: Command.skillCommandOrigin(cmd),
+})
+
 export function makeCommand(deps: CommandDeps) {
   const {
     sessions,
@@ -209,12 +221,12 @@ export function makeCommand(deps: CommandDeps) {
   // declares them for trust review; only the exact declared segments may run,
   // and only while trusted. User and builtin commands have no project-level
   // declaration and are unaffected.
-  const commandShellVerdict = Effect.fnUntraced(function* (name: string, template: string) {
+  const commandShellVerdict = Effect.fnUntraced(function* (name: string, template: string, cmd: Command.Info) {
     const trust = Option.getOrUndefined(yield* Effect.serviceOption(ProjectTrust.Service))
     if (!trust) return { type: "allow" as const }
     const ctx = yield* InstanceRef
     if (!ctx || ctx.trustProject === true) return { type: "allow" as const }
-    return yield* shellVerdict({ root: ctx.root, command: name, template }, trust.gate)
+    return yield* shellVerdict(shellVerdictInput(ctx.root, name, template, cmd), trust.gate)
   })
 
   const commandBody = Effect.fnUntraced(function* (
@@ -467,7 +479,7 @@ export function makeCommand(deps: CommandDeps) {
 
     const shellMatches = ConfigMarkdown.shell(template)
     if (shellMatches.length > 0) {
-      const verdict = yield* commandShellVerdict(input.command, template)
+      const verdict = yield* commandShellVerdict(input.command, template, cmd)
       if (verdict.type === "refuse") {
         const error = new NamedError.Unknown({
           message: `Command "/${input.command}" did not run its embedded shell: ${verdict.reason} Run /trust to review project commands.`,

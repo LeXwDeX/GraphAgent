@@ -133,10 +133,21 @@ producer in this build.
 
 - `hooks.json` is read from the global opencode config directory and from project/worktree `.agents` directories,
   merged by appending and hot-reloaded; hooks can also be registered per session over HTTP. Project-layer hooks are
-  trust-gated: when entries are pending, the TUI asks before the first session, and `/trust` reviews, trusts, declines,
-  or revokes entries at any time. Decisions live only in `trust.json` in the local state directory, never in the
-  project; non-interactive `graphagent run` skips untrusted entries (pass `--trust-project` to allow them for that
-  run), and user-level hooks are unaffected.
+  trust-gated: when the TUI starts from the home screen with entries pending, it opens the trust panel before the
+  first session (with `--continue` or `--session` it only shows a footer reminder), and `/trust` reviews, trusts,
+  declines, or revokes entries at any time. Decisions live only in `trust.json` in the local state directory, never in
+  the project; non-interactive `graphagent run` skips untrusted entries and prints a summary (pass `--trust-project` to
+  allow them for that run), and user-level hooks are unaffected. `hooks.local.json` and `settings.local.json` that Git
+  does not track are user configuration and skip trust; once Git tracks them they are project files and need it.
+- Currently not trustable: a top-level `shell` in project settings (`.agents/settings.json`, or a tracked
+  `settings.local.json`) is ignored in favor of the default shell. A user-level `shell` is unaffected, and
+  `--trust-project` still allows it for that run.
+- Also not trustable: skills that project settings (`.agents/settings.json` or `settings.local.json`, tracked or not)
+  bring in from outside `.agents/skills/` through `skills.paths` or `skills.urls`. They do not appear in `/trust`;
+  their frontmatter hooks are never registered, and their embedded shell (`` !`cmd` `` segments) is refused with a
+  `/trust` hint when they run as slash commands, whether or not they declare hooks. Ownership follows the layer that
+  declares the key: the same keys in user-level config stay user-owned wherever they point, as do skills in the user
+  config directory or `~/.agents` and built-in skills. `--trust-project` still allows all of this for that run.
 - Hooks of every execution type can declare `inputFormat: "claude-code"` to receive Claude Code tool names and input keys. This gives
   naming compatibility, not full behavioral parity.
 - Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude` reviews and converts them into

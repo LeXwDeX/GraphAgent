@@ -99,7 +99,7 @@ Provide only merge-suggestion text for `AGENTS.md`. Append it after the user con
 - Do not write `.gitignore` or `package.json`.
 - When the resolved root is `$HOME`, refuse every project target (`<root>/.agents/...`) with a clear error; only user-level targets are allowed.
 - Original Claude files, scripts, and skills stay unchanged. Never write `~/.claude/`, and do not recommend deleting `.claude/`.
-- Project-layer entries written by this import stay pending until the user confirms them in the trust review (`/trust`); the conversion itself never marks anything as trusted, and entries the user declines stay disabled.
+- Entries this import writes into project files (for example `<root>/.agents/hooks.json`, `mcp.json`, and copied skills) stay pending until the user confirms them in the trust review (`/trust`); the conversion itself never marks anything as trusted, and entries the user declines stay disabled. Entries written to `<root>/.agents/hooks.local.json` are user configuration while Git does not track that file and skip the trust review; a tracked copy counts as a project file.
 
 ## 5. Report
 
