@@ -96,7 +96,8 @@ export function formatViolations(violations: readonly TextViolation[]) {
 // CJK outside the message tables
 // ---------------------------------------------------------------------------
 
-const CJK = /[㐀-䶿一-鿿豈-﫿]/
+// CJK Unified Ideographs Extension A, the basic block and the compatibility block.
+const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 
 /**
  * Find CJK text in string literals, template literals and JSX text outside the
