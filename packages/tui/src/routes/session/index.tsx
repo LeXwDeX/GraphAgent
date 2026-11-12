@@ -3,6 +3,7 @@ import {
   createContext,
   createEffect,
   createMemo,
+  createSelector,
   createSignal,
   For,
   Match,
@@ -349,6 +350,18 @@ export function Main() {
     const expanded = view.get(row.partID, "expanded") || view.get(row.partID, "errorExpanded")
     return estimateRowHeight(row, width, rowData().chars.get(row.key) ?? 0, expanded) + (row.kind === "tool" ? 1 : 0)
   }
+
+  // Rows the transcript keeps mounted wherever the viewport is: the ones still being written and the
+  // ones the reader opened. A set that changes with neither leaves the rows alone.
+  const pinnedKeys = createMemo(
+    () => {
+      const keys = new Set(rowData().streaming)
+      for (const [partID, flags] of view.state()) if (flags.expanded || flags.errorExpanded) keys.add(`part:${partID}`)
+      return keys
+    },
+    new Set<string>(),
+    { equals: (previous, next) => previous.size === next.size && [...next].every((key) => previous.has(key)) },
+  )
 
   const positions = createMemo(() => {
     measurements.version()
@@ -1527,11 +1540,7 @@ export function Main() {
                   <SessionTranscript
                     rows={rows()}
                     positions={positions()}
-                    pinned={(row) =>
-                      rowData().streaming.has(row.key) ||
-                      view.get(row.partID, "expanded") ||
-                      view.get(row.partID, "errorExpanded")
-                    }
+                    pinned={pinnedKeys()}
                     revert={revert()}
                     onUserMouseUp={openMessagePanel}
                   />
@@ -1633,14 +1642,15 @@ function RevertRow(props: { revert: RevertState | undefined }) {
 function SessionTranscript(props: {
   rows: Row[]
   positions: number[]
-  pinned: (row: Row) => boolean
+  /** Keys of the rows that stay mounted wherever the viewport is. */
+  pinned: ReadonlySet<string>
   revert: RevertState | undefined
   onUserMouseUp: (message: UserMessage) => void
 }) {
   const ctx = use()
   const renderer = useRenderer()
-  const [first, setFirst] = createSignal(0)
-  const [last, setLast] = createSignal(0)
+  // The rows the viewport shows, as `visibleRange` last reported them.
+  const [shown, setShown] = createSignal({ first: 0, last: 0 })
   let controller: BoxRenderable | undefined
   // Measuring functions of the rows that are mounted now, in mount order.
   const mountedRows = new Set<() => void>()
@@ -1656,25 +1666,40 @@ function SessionTranscript(props: {
     ctx.setVisibleParts(undefined)
   })
 
-  const mounted = (row: Row, index: number) =>
-    props.pinned(row) ||
-    index >= props.rows.length - TAIL_ALWAYS ||
-    (index >= first() - PART_OVERSCAN && index <= last() + PART_OVERSCAN)
+  const tailStart = createMemo(() => props.rows.length - TAIL_ALWAYS)
+  const inWindow = (index: number, range: { first: number; last: number }) =>
+    index >= range.first - PART_OVERSCAN && index <= range.last + PART_OVERSCAN
 
-  // A new map for the same gaps would wake every placeholder row, so equal maps are kept apart: the row
-  // being streamed at the tail changes `positions` on most frames and moves no gap above it.
+  // Each row asks whether it is mounted through a selector and hears only the answers that change for it:
+  // the viewport moving by a line, or a row being written at the tail, flips a handful of rows, where a
+  // signal every row read would re-run every row of a long transcript.
+  const isPinned = createSelector(
+    () => props.pinned,
+    (key: string, pinned) => pinned.has(key),
+  )
+  const isTail = createSelector(tailStart, (index: number, start) => index >= start)
+  const isShown = createSelector(shown, inWindow)
+  const mounted = (row: Row, index: number) => isPinned(row.key) || isTail(index) || isShown(index)
+
+  // The same question, asked plainly: it visits every row once, and reading the selectors here would
+  // subscribe this memo to every row on each run. Equal maps are kept apart, so a changed `positions`
+  // (the row being written at the tail grows) that moves no gap does not wake the placeholder rows.
   const gaps = createMemo(
     () => {
+      const range = shown()
+      const start = tailStart()
+      const mountedAt = (index: number) =>
+        props.pinned.has(props.rows[index].key) || index >= start || inWindow(index, range)
       const result = new Map<number, number>()
       let index = 0
       while (index < props.rows.length) {
-        if (mounted(props.rows[index], index)) {
+        if (mountedAt(index)) {
           index++
           continue
         }
-        const start = index
-        while (index < props.rows.length && !mounted(props.rows[index], index)) index++
-        result.set(start, props.positions[index] - props.positions[start])
+        const first = index
+        while (index < props.rows.length && !mountedAt(index)) index++
+        result.set(first, props.positions[index] - props.positions[first])
       }
       return result
     },
@@ -1683,9 +1708,10 @@ function SessionTranscript(props: {
       equals: (previous, next) =>
         previous !== undefined &&
         previous.size === next.size &&
-        [...next].every(([start, height]) => previous.get(start) === height),
+        [...next].every(([first, height]) => previous.get(first) === height),
     },
   )
+  const hasGap = createSelector(gaps, (index: number, map) => map.has(index))
 
   return (
     <>
@@ -1705,7 +1731,8 @@ function SessionTranscript(props: {
               for (const measure of mountedRows) measure()
             })
             const range = visibleRange(props.positions, scroll.scrollTop, scroll.viewport.height)
-            if (range.first === first() && range.last === last()) return
+            const current = shown()
+            if (range.first === current.first && range.last === current.last) return
             const ids = new Set<string>()
             const end = Math.min(range.last, props.rows.length - 1)
             for (let index = range.first; index <= end; index++) {
@@ -1713,8 +1740,7 @@ function SessionTranscript(props: {
               if (partID) ids.add(partID)
             }
             batch(() => {
-              setFirst(range.first)
-              setLast(range.last)
+              setShown(range)
               ctx.setVisibleParts(ids)
             })
           }
@@ -1727,7 +1753,7 @@ function SessionTranscript(props: {
             <Match when={mounted(row, index())}>
               <SessionRow row={row} revert={props.revert} onUserMouseUp={props.onUserMouseUp} track={track} />
             </Match>
-            <Match when={gaps().has(index())}>
+            <Match when={hasGap(index())}>
               <box height={gaps().get(index())!} />
             </Match>
           </Switch>
