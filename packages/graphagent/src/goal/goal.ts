@@ -21,6 +21,7 @@ import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionCancellation } from "@/session/cancellation"
 import { SessionLocation } from "@/session/location"
 import { DagLocation } from "@/dag/location"
+import { Lifecycle } from "@/lifecycle/service"
 import { SessionGoal } from "@graphagent/schema/session-goal"
 
 /** Public HTTP/event shape of a durable goal row. */
@@ -316,6 +317,28 @@ const serviceLayer = Layer.effect(
         goal: toPublic(state),
       })
 
+    // #1069: mirror a changed goal status onto the shared lifecycle contract.
+    // Persistence and the goal.updated event stay authoritative; this only
+    // feeds lifecycle subscribers and is skipped when the runtime graph has no
+    // Lifecycle service (headless fixtures). Same-value saves publish nothing:
+    // the contract has no self-transition.
+    const publishStatusTransition = (
+      sessionID: SessionID,
+      previous: GoalState.Info | undefined,
+      next: GoalState.Info,
+    ) =>
+      Effect.gen(function* () {
+        if (previous?.status === next.status) return
+        const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
+        if (!lifecycle) return
+        yield* lifecycle.transition({
+          ref: { domain: "goal", id: sessionID },
+          expect: previous?.status ?? null,
+          to: next.status,
+          sessionID,
+        })
+      })
+
     const fibers = new Map<SessionID, Fiber.Fiber<unknown, unknown>>()
 
     // GOAL-TURN-SCOPE: process-local provenance of the CURRENT goal-driven
@@ -503,6 +526,10 @@ const serviceLayer = Layer.effect(
           // goal.cleared — that event is the presentation contract for a real
           // removal, not for a command that found nothing to remove.
           let deletedRow = false
+          // The pre-transition row, captured by the same seam read that feeds
+          // `decide`, so the lifecycle mirror can assert the exact previous
+          // status without a second read.
+          let previousState: GoalState.Info | undefined
           const result = yield* db
             .transaction(
               (tx) =>
@@ -513,6 +540,7 @@ const serviceLayer = Layer.effect(
                     .where(eq(GoalStateTable.session_id, sessionID))
                     .get()
                   const decoded = row ? decodePayload(row.payload) : undefined
+                  previousState = decoded?.ok ? decoded.state : undefined
                   // An undecodable row reads as "no goal" so clear/purge can
                   // still remove it; any other mutation of it fails as before
                   // rather than overwriting data this build cannot read.
@@ -576,7 +604,10 @@ const serviceLayer = Layer.effect(
               { behavior: "immediate" },
             )
             .pipe(Effect.orDie)
-          if (result.tag === "save") yield* publishGoal(sessionID, result.state)
+          if (result.tag === "save") {
+            yield* publishGoal(sessionID, result.state)
+            yield* publishStatusTransition(sessionID, previousState, result.state)
+          }
           if (result.tag === "delete" && deletedRow) {
             if (result.terminal) yield* publishGoal(sessionID, result.terminal)
             yield* events.publish(GoalEvent.Cleared, { sessionID })

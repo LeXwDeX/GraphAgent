@@ -2,35 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
-import {
-  type NodeStatus,
-  type WorkflowStatus,
-  getValidNextNodeStatuses,
-  getValidNextWorkflowStatuses,
-} from "@graphagent/core/dag/core/types"
+import { NODE_TRANSITION_TABLE, WORKFLOW_TRANSITION_TABLE } from "@graphagent/core/lifecycle/dag"
 import {
   checkTransition,
+  GOAL_TRANSITION_TABLE,
   JOB_TRANSITION_TABLE,
   TURN_TRANSITION_TABLE,
   type TransitionTable,
 } from "@graphagent/core/lifecycle/transition"
-import { VOCABULARY, valuesOf } from "@graphagent/core/lifecycle/vocabulary"
+import { VOCABULARY } from "@graphagent/core/lifecycle/vocabulary"
 
-const isWorkflowStatus = (value: string): value is WorkflowStatus => valuesOf("workflow").includes(value)
-const isNodeStatus = (value: string): value is NodeStatus => valuesOf("node").includes(value)
-
-// One-line adapters over the DAG state machine prove its tables are reusable
-// as TransitionTable sources. They stay in the test: production code must not
-// import the DAG rules into the lifecycle vocabulary (#1069 P1).
-const dagWorkflowTable: TransitionTable = {
-  domain: "workflow",
-  next: (from) => (from === null ? ["pending"] : isWorkflowStatus(from) ? getValidNextWorkflowStatuses(from) : []),
-}
-
-const dagNodeTable: TransitionTable = {
-  domain: "node",
-  next: (from) => (from === null ? ["pending"] : isNodeStatus(from) ? getValidNextNodeStatuses(from) : []),
-}
+// The production bridge (#1069 P8) is the only adapter over the DAG state
+// machine; asserts below pin that it exposes exactly the DAG's own edges.
+const dagWorkflowTable: TransitionTable = WORKFLOW_TRANSITION_TABLE
+const dagNodeTable: TransitionTable = NODE_TRANSITION_TABLE
 
 describe("turn transitions", () => {
   it("allows creation into running", () => {
@@ -125,6 +110,47 @@ describe("DAG tables as lifecycle tables", () => {
       kind: "invalid",
       allowed: [],
     })
+  })
+})
+
+describe("goal transitions", () => {
+  it("admits creation, waiting, pause and resume", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: null, to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "waiting" })).toEqual({
+      kind: "allowed",
+      phase: "waiting",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "waiting", to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "paused" })).toEqual({
+      kind: "allowed",
+      phase: "paused",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "waiting", to: "paused" })).toEqual({
+      kind: "allowed",
+      phase: "paused",
+    })
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "paused", to: "active" })).toEqual({
+      kind: "allowed",
+      phase: "running",
+    })
+  })
+
+  it("keeps done out of the live table and terminal", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "done" })).toEqual({
+      kind: "invalid",
+      allowed: ["waiting", "paused"],
+    })
+    expect(GOAL_TRANSITION_TABLE.next("done")).toEqual([])
+  })
+
+  it("reports a repeated status as duplicate", () => {
+    expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "active" })).toEqual({ kind: "duplicate" })
   })
 })
 

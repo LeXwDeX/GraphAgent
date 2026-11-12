@@ -13,6 +13,7 @@ import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
+import { GoalLifecycle } from "@/goal/lifecycle"
 import { Lifecycle } from "@/lifecycle/service"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Command } from "@/command"
@@ -95,6 +96,7 @@ import { experimentalHandlers } from "./handlers/experimental"
 import { fileHandlers } from "./handlers/file"
 import { globalHandlers } from "./handlers/global"
 import { instanceHandlers } from "./handlers/instance"
+import { lifecycleHandlers } from "./handlers/lifecycle"
 import { mcpHandlers } from "./handlers/mcp"
 import { permissionHandlers } from "./handlers/permission"
 import { projectHandlers } from "./handlers/project"
@@ -133,6 +135,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     experimentalHandlers,
     fileHandlers,
     instanceHandlers,
+    lifecycleHandlers,
     mcpHandlers,
     projectHandlers,
     projectCopyHandlers,
@@ -195,6 +198,9 @@ export const app = LayerNode.group([
   // #1069 P7: job-domain resolver for the lifecycle contract; needs both the
   // registry and the lifecycle service in this graph.
   BackgroundLifecycle.node,
+  // #1069 scope 3: goal-domain resolver; reads the durable goal row and
+  // enforces session-directory ownership.
+  GoalLifecycle.node,
   Dag.node,
   DagMessages.node,
   SessionRunState.node,

@@ -6,7 +6,7 @@ import { HttpApiBuilder } from "effect/http-api"
 import { InstanceHttpApi } from "../api"
 import { notFound } from "../errors"
 import { Dag } from "@/dag/dag"
-import { DagLocation } from "@/dag/location"
+import { DagNodeView } from "@/dag/node-view"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
@@ -38,28 +38,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       ...(r.completedAt !== null ? { completed_at: r.completedAt } : {}),
     })
 
-    const node = (r: DagStore.NodeRow) => ({
-      id: r.id,
-      workflow_id: r.workflowId,
-      name: r.name,
-      worker_type: r.workerType,
-      status: r.status,
-      required: r.required,
-      depends_on: r.dependsOn,
-      ...(r.modelId !== null ? { model_id: r.modelId } : {}),
-      ...(r.modelProviderId !== null ? { model_provider_id: r.modelProviderId } : {}),
-      ...(r.childSessionId !== null ? { child_session_id: r.childSessionId } : {}),
-      // #949: per-attempt execution location. Optional so legacy rows and
-      // pre-#949 clients decode exactly as before.
-      ...DagLocation.nodeLocationView(r),
-      ...(r.output !== null || r.status === "completed" ? { output: r.output } : {}),
-      ...(r.errorReason !== null ? { error_reason: r.errorReason } : {}),
-      ...(r.errorClass !== null ? { error_class: r.errorClass } : {}),
-      ...(r.deadlineMs !== null ? { deadline_ms: r.deadlineMs } : {}),
-      replan_attempts: r.replanAttempts,
-      ...(r.startedAt !== null ? { started_at: r.startedAt } : {}),
-      ...(r.completedAt !== null ? { completed_at: r.completedAt } : {}),
-    })
+    const node = DagNodeView.base
 
     const observedNode = Effect.fn("DagHttpApi.observedNode")(function* (
       row: DagStore.NodeRow,
@@ -75,22 +54,7 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
         row.workflowId,
         row.id,
       )
-      return {
-        ...node(row),
-        ...(metadata.ok
-          ? {
-              attempt_id: metadata.value.endpoint.attemptID,
-              accepted_input_revision: metadata.value.accepted,
-              snapshot_revision: metadata.value.snapshot,
-              agent_messages: {
-                queued: metadata.value.queued,
-                delivered: metadata.value.delivered,
-                undeliverable: metadata.value.undeliverable,
-                closed_reason: metadata.value.closedReason,
-              },
-            }
-          : {}),
-      }
+      return DagNodeView.observed(node(row), metadata.ok ? metadata.value : undefined)
     })
 
     const workflowInProject = Effect.fn("DagHttpApi.workflowInProject")(function* (dagID: string) {
