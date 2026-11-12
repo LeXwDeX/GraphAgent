@@ -54,6 +54,7 @@ import {
   updatePartEvent,
 } from "./fixtures"
 import { createCounters, type CounterSnapshot, type PerfCounters } from "./counters"
+import { SETTLE_DEADLINE_MS } from "./settle"
 
 /**
  * A live reply: a text part at the tail of the last assistant message that is
@@ -294,7 +295,10 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
   const app = await testRender(() => <Harness />, { width: 100, height: 30, clock, gatherStats: true })
   app.renderer.requestRender()
   await app.renderOnce()
-  for (let attempt = 0; attempt < 50 && state.sync?.status !== "complete"; attempt++) {
+  // A fixed frame count timed out on a machine running other work; wait for the
+  // state itself, up to the deadline the scenarios use for background work.
+  const deadline = Date.now() + SETTLE_DEADLINE_MS
+  while (state.sync?.status !== "complete" && Date.now() < deadline) {
     await app.renderOnce()
     await Bun.sleep(1)
   }
@@ -304,9 +308,12 @@ export async function mountHarness(fixture: PerfFixture): Promise<PerfHarness> {
     throw new Error(`Sync bootstrap did not complete: ${state.sync?.status ?? "missing"}\n${frame}`)
   }
   await app.renderOnce()
-  for (let attempt = 0; attempt < 20 && !state.prompt; attempt++) {
+  while (!state.prompt && Date.now() < deadline) {
     state.prompt = state.promptRef?.current
-    if (!state.prompt) await app.renderOnce()
+    if (!state.prompt) {
+      await app.renderOnce()
+      await Bun.sleep(1)
+    }
   }
   if (!state.prompt && !findPrompt(app.renderer.root)) {
     const names = findNodes(app.renderer.root).map((node) => node.constructor.name)

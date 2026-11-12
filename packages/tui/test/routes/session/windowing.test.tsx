@@ -5,9 +5,17 @@
 import { expect, test } from "bun:test"
 import type { Part } from "@graphagent/sdk"
 import { SPINNER_FRAMES } from "../../../src/component/spinner"
-import { createFixture, richTail, updatePartEvent } from "../../perf/fixtures"
+import { WINDOW_MIN_ROWS } from "../../../src/routes/session/rows"
+import { createFixture, richTail, updatePartEvent, type FixtureSize } from "../../perf/fixtures"
 import { mountHarness } from "../../perf/harness"
 import { settleHighlights } from "../../perf/scenarios"
+
+// `XL` is the only fixture above WINDOW_MIN_ROWS, so it is the one the windowed
+// transcript runs in; `L` is fully mounted. The strings are what a viewport at the
+// end of each shows (a bash command two rows from the last), and what the first
+// loaded message shows at the top.
+const LAST_COMMAND: Partial<Record<FixtureSize, string>> = { L: "printf perf-395", XL: "printf perf-2195" }
+const FIRST_TEXT: Partial<Record<FixtureSize, string>> = { L: "Deterministic answer 300", XL: "Deterministic answer 0:" }
 
 async function frameContaining(harness: Awaited<ReturnType<typeof mountHarness>>, text: string) {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -93,7 +101,9 @@ async function sample(harness: Awaited<ReturnType<typeof mountHarness>>, rounds 
 }
 
 test("windowed transcript mounts a bounded row set and follows the viewport", async () => {
-  const harness = await mountHarness(createFixture("L"))
+  const fixture = createFixture("XL")
+  expect(fixture.rows).toBeGreaterThanOrEqual(WINDOW_MIN_ROWS)
+  const harness = await mountHarness(fixture)
   try {
     await harness.reset()
     // The session route scrolls to the last message 50ms after mount. Let that
@@ -103,15 +113,15 @@ test("windowed transcript mounts a bounded row set and follows the viewport", as
     expect(scroll).toBeDefined()
     scroll!.stickyScroll = true
     scroll!.scrollTo(Infinity)
-    await frameContaining(harness, "printf perf-395")
+    await frameContaining(harness, LAST_COMMAND.XL!)
     expect(harness.counters.mountedNodes(harness.app.renderer.root)).toBeLessThan(300)
 
     scroll!.stickyScroll = false
     scroll!.scrollTo(0)
-    await frameContaining(harness, "Deterministic answer 300")
+    await frameContaining(harness, FIRST_TEXT.XL!)
 
     const frame = harness.app.captureCharFrame()
-    expect(frame).not.toContain("printf perf-395")
+    expect(frame).not.toContain(LAST_COMMAND.XL!)
     expect(scroll!.scrollTop).toBe(0)
     expect(harness.counters.mountedNodes(harness.app.renderer.root)).toBeLessThan(300)
     expect(scroll!.getChildren().length).toBeLessThan(120)
@@ -120,8 +130,10 @@ test("windowed transcript mounts a bounded row set and follows the viewport", as
   }
 })
 
-test("a running tool spins only while its row sits inside the viewport", async () => {
-  const harness = await mountHarness(createFixture("L"))
+// The same rule holds with and without windowing: the windowed transcript knows its
+// viewport rows, the fully mounted one asks the spinner's own position.
+test.each(["L", "XL"] as const)("a running tool spins only while its row sits inside the viewport (%s)", async (size) => {
+  const harness = await mountHarness(createFixture(size))
   try {
     await harness.reset()
     // Same 50ms scroll-to-bottom after mount as the windowing test above.
@@ -130,7 +142,7 @@ test("a running tool spins only while its row sits inside the viewport", async (
     expect(scroll).toBeDefined()
     scroll!.stickyScroll = false
     scroll!.scrollTo(Infinity)
-    await frameContaining(harness, "printf perf-395")
+    await frameContaining(harness, LAST_COMMAND[size]!)
 
     const part: Part = {
       id: "prt_spinner_running",
@@ -165,12 +177,41 @@ test("a running tool spins only while its row sits inside the viewport", async (
   }
 })
 
+test("a transcript below the threshold mounts every row, whatever the viewport shows", async () => {
+  const fixture = createFixture("L")
+  expect(fixture.rows).toBeLessThan(WINDOW_MIN_ROWS)
+  const harness = await mountHarness(fixture)
+  try {
+    await harness.reset()
+    await Bun.sleep(60)
+    const scroll = harness.scroll()!
+    scroll.stickyScroll = false
+    scroll.scrollTo(0)
+    await frameContaining(harness, FIRST_TEXT.L!)
+
+    // The viewport holds the top of the session, and every row down to the last is still mounted.
+    expect(harness.app.captureCharFrame()).not.toContain(LAST_COMMAND.L!)
+    expect(harness.counters.mountedRows(scroll)).toBe(fixture.rows)
+    expect(scroll.getChildren().length).toBe(fixture.rows + 1)
+
+    // Scrolling mounts nothing and unmounts nothing.
+    scroll.scrollTo(Infinity)
+    await frameContaining(harness, LAST_COMMAND.L!)
+    expect(harness.counters.mountedRows(scroll)).toBe(fixture.rows)
+    scroll.scrollTo(0)
+    await frameContaining(harness, FIRST_TEXT.L!)
+    expect(harness.counters.mountedRows(scroll)).toBe(fixture.rows)
+  } finally {
+    await harness.dispose()
+  }
+})
+
 // The tail holds 20 text parts that end in a code block, a table, or a diff. Their
 // estimated heights are short of the real ones, so the first layouts of the rows at
 // the end correct the positions the window was computed from.
 
 test("a jump to the end of a transcript with rich blocks at its tail settles on the real bottom", async () => {
-  const harness = await mountHarness(richTail(createFixture("L"), 20))
+  const harness = await mountHarness(richTail(createFixture("XL"), 20))
   try {
     await harness.reset()
     await Bun.sleep(60)
@@ -182,7 +223,7 @@ test("a jump to the end of a transcript with rich blocks at its tail settles on 
     await settleScroll(harness)
     expect(atEnd(harness)).toBe(0)
     const settled = harness.app.captureCharFrame()
-    expect(settled).toContain("printf perf-397")
+    expect(settled).toContain(LAST_COMMAND.XL!)
 
     // Nothing moves once it has settled: not the offset, not the content, not the screen.
     const height = scroll.scrollHeight
@@ -198,7 +239,7 @@ test("a jump to the end of a transcript with rich blocks at its tail settles on 
 })
 
 test("the last-message command lands on the real bottom from the middle of the transcript", async () => {
-  const harness = await mountHarness(richTail(createFixture("L"), 20))
+  const harness = await mountHarness(richTail(createFixture("XL"), 20))
   try {
     await harness.reset()
     await Bun.sleep(60)
@@ -212,7 +253,7 @@ test("the last-message command lands on the real bottom from the middle of the t
     await settleScroll(harness)
 
     expect(atEnd(harness)).toBe(0)
-    expect(harness.app.captureCharFrame()).toContain("printf perf-397")
+    expect(harness.app.captureCharFrame()).toContain(LAST_COMMAND.XL!)
   } finally {
     await harness.dispose()
   }

@@ -102,13 +102,13 @@ import {
   createRowMeasurements,
   createSessionViewState,
   estimateRowHeight,
+  isWindowed,
   PART_OVERSCAN,
   prefixPositions,
   rowRevision,
   stableRows,
   TAIL_ALWAYS,
   visibleRange,
-  WINDOW_MIN_ROWS,
   type Row,
   type SessionViewState,
 } from "./rows"
@@ -654,7 +654,7 @@ export function Main() {
 
   onCleanup(commands.setHandler("hooks.list", () => openBottomPanel("hooks", () => <HooksPanel />)))
 
-  const windowed = () => rows().length >= WINDOW_MIN_ROWS
+  const windowed = () => isWindowed(rows().length)
 
   // Small sessions stay fully mounted, so keep using the rendered nodes for
   // exact positions. Windowed sessions locate the target in the row table.
@@ -1542,7 +1542,7 @@ export function Main() {
               >
                 <box height={1} />
                 <Show
-                  when={rows().length >= WINDOW_MIN_ROWS}
+                  when={isWindowed(rows().length)}
                   fallback={
                     <For each={messages()}>
                       {(message, index) => (

@@ -20,7 +20,8 @@ import {
   type PerfReport,
   type ScenarioMetrics,
 } from "./compare"
-import { SCENARIO_IDS } from "./scenarios"
+import { PART_OVERSCAN, TAIL_ALWAYS } from "../../src/routes/session/rows"
+import { SCENARIO_IDS, WINDOWED_SKIPS } from "./scenarios"
 import { tmpdir } from "../fixture/fixture"
 
 /** An id the gate has no fixed rule for, so only the baseline-relative check applies. */
@@ -349,6 +350,53 @@ test("a P13 report that stops separating the delta phase is drift, not a pass", 
   expect(missing).toContainEqual({ size: "L", id: "P13", metric: "deltaMessageWrites" })
 })
 
+test("P10 bounds the mounted rows of a windowed session and leaves a fully mounted one alone", () => {
+  const limit = 19 + 2 * PART_OVERSCAN + TAIL_ALWAYS
+
+  const within = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P10 = { ...items.P10, mountedRows: limit, scrollChildren: limit + 2 }
+    }),
+  )
+  expect(within.failures).toEqual([])
+
+  const over = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P10 = { ...items.P10, mountedRows: limit + 1, scrollChildren: limit + 3 }
+    }),
+  )
+  expect(over.failures.map((failure) => `${failure.size}.${failure.metric}`)).toEqual([
+    "XL.mountedRows",
+    "XL.scrollChildren",
+  ])
+
+  // 190 mounted rows in a session below the threshold is the design, not a leak.
+  expect(fullReport().scenarios.L?.P10?.mountedRows).toBeGreaterThan(limit)
+})
+
+test("a report without a windowed session fails P10 instead of passing it vacuously", () => {
+  const { failures } = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P10 = { ...items.P10, windowed: 0 }
+    }),
+  )
+
+  expect(failures.map((failure) => `${failure.id}.${failure.metric}`)).toEqual(["P10.windowed"])
+  // A partial report that never measured P10 is not drift.
+  expect(compareReports({ scenarios: {} }, { scenarios: { L: { P3: { registerLayer: 0 } } } }).failures).toEqual([])
+})
+
+test("a P10 that does not say whether its session is windowed is drift", () => {
+  const stale: PerfReport = { scenarios: { XL: { P10: { mountedRows: 22, scrollChildren: 26, viewportRows: 19 } } } }
+
+  const { missing } = compareReports({ scenarios: {} }, stale)
+
+  expect(missing).toContainEqual({ size: "XL", id: "P10", metric: "windowed" })
+})
+
 /** Stand-in for the real table, so these cases keep working after the real entries are deleted. */
 const PENDING = { PY: "measurement changed" }
 
@@ -412,9 +460,13 @@ test("the committed baseline satisfies its own gate", async () => {
   expect(compareReports(baseline, baseline).failures).toEqual([])
 })
 
-/** A full set of metrics for one size, shaped like a real report with plausible millisecond values. */
-function scenarios(): Record<string, ScenarioMetrics> {
-  return {
+/**
+ * A full set of metrics for one size, shaped like a real report with plausible
+ * millisecond values. `XL` is the windowed session; the others mount every row.
+ */
+function scenarios(size = "L"): Record<string, ScenarioMetrics> {
+  const windowed = size === "XL"
+  const all: Record<string, ScenarioMetrics> = {
     P1: { p50Ms: 3, p95Ms: 6, p99Ms: 9 },
     P2: { p95Scale: 1 },
     P3: { registerLayer: 0 },
@@ -426,7 +478,9 @@ function scenarios(): Record<string, ScenarioMetrics> {
     P8: { p99Ms: 12, maxMs: 15, steps: 100 },
     "P8'": { p99Ms: 12, maxMs: 15, steps: 100 },
     P9: { p99Ms: 10 },
-    P10: { mountedRows: 22, scrollChildren: 26, viewportRows: 19 },
+    P10: windowed
+      ? { mountedRows: 22, scrollChildren: 26, viewportRows: 19, rows: 2080, windowed: 1 }
+      : { mountedRows: 190, scrollChildren: 191, viewportRows: 19, rows: 190, windowed: 0 },
     P11: { driftPx: 0, stepMismatches: 0 },
     P12: { p95Ms: 8 },
     P13: { deltaMessageWrites: 0, deltaPartWrites: 0, messageWritesPerFrame: 0, partWritesPerFrame: 0.01 },
@@ -446,12 +500,15 @@ function scenarios(): Record<string, ScenarioMetrics> {
     P19: { frames: 0 },
     P20: { growth: 0, heapGrowth: 0.05 },
   }
+  // The windowed session does not time a long scroll or a stream.
+  if (windowed) for (const id of WINDOWED_SKIPS) delete all[id]
+  return all
 }
 
 function fullReport(change?: (size: string, scenarios: Record<string, ScenarioMetrics>) => void): PerfReport {
   const result: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
-  for (const size of ["S", "M", "L"]) {
-    const items = scenarios()
+  for (const size of ["S", "M", "L", "XL"]) {
+    const items = scenarios(size)
     change?.(size, items)
     result.scenarios[size] = items
   }

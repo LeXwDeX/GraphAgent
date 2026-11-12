@@ -142,7 +142,7 @@ export const PENDING_BASELINE_COMMIT = "643c4e7fbf7a47b79fb87bc3f3e07817c6646042
  */
 export const PENDING_REBASELINE: Readonly<Record<string, string>> = {}
 
-const SIZE_ORDER = ["S", "M", "L"]
+const SIZE_ORDER = ["S", "M", "L", "XL"]
 /** Not compared against the baseline: one frame, or a signed difference of two samples. */
 const NO_RATIO = new Set(["maxMs", "increaseMs"])
 
@@ -191,6 +191,8 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
   const pending = new Set<string>()
   const factor = machineFactor(baseline, current)
   const sizes = Object.keys(current.scenarios).sort((a, b) => SIZE_ORDER.indexOf(a) - SIZE_ORDER.indexOf(b))
+  const windowed: string[] = []
+  let flagged = 0
 
   const fail = (size: string, id: string, name: string, limit: string, value: number) => {
     failures.push({ size, id, metric: name, limit, value })
@@ -281,11 +283,18 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
     check("P4", "selectorEvaluations", "0", (value) => value === 0)
     check("P7", "registerLayer", "≤ 2", (value) => value <= 2)
 
-    // P10: only viewport + overscan + tail rows stay mounted.
-    const viewport = read(size, "P10", "viewportRows") ?? 0
-    const rowLimit = viewport + 2 * PART_OVERSCAN + TAIL_ALWAYS
-    check("P10", "mountedRows", `≤ ${rowLimit}`, (value) => value <= rowLimit)
-    check("P10", "scrollChildren", `≤ ${rowLimit + 2}`, (value) => value <= rowLimit + 2)
+    // P10: only viewport + overscan + tail rows stay mounted, in a transcript at
+    // or above `WINDOW_MIN_ROWS`. Below it every row is mounted by design, so the
+    // bound says nothing about those sessions.
+    const flag = read(size, "P10", "windowed")
+    if (flag !== undefined) flagged++
+    if (flag === 1) {
+      windowed.push(size)
+      const viewport = read(size, "P10", "viewportRows") ?? 0
+      const rowLimit = viewport + 2 * PART_OVERSCAN + TAIL_ALWAYS
+      check("P10", "mountedRows", `≤ ${rowLimit}`, (value) => value <= rowLimit)
+      check("P10", "scrollChildren", `≤ ${rowLimit + 2}`, (value) => value <= rowLimit + 2)
+    }
 
     // P11: the viewport anchor may not drift by more than one line (2px rows).
     check("P11", "driftPx", "≤ 2", (value) => value <= 2)
@@ -337,11 +346,19 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
     check("P20", "heapGrowth", "≤ 0.25", (value) => value <= 0.25)
   }
 
+  // P10 would pass vacuously if no session in the report were windowed. A P10
+  // that carries no flag at all is drift and is already listed as missing.
+  if (flagged > 0 && windowed.length === 0) {
+    fail("all", "P10", "windowed", "at least one session at or above WINDOW_MIN_ROWS", 0)
+  }
+
   // P4: the per-key selector count may not depend on how many messages exist.
   const smallSelectors = scenario(current, "S", "P4")?.selectorEvaluations
-  const largeSelectors = scenario(current, "L", "P4")?.selectorEvaluations
-  if (typeof smallSelectors === "number" && typeof largeSelectors === "number" && smallSelectors !== largeSelectors) {
-    fail("L", "P4", "selectorEvaluations", `= ${smallSelectors} (same as S)`, largeSelectors)
+  for (const size of sizes) {
+    const selectors = scenario(current, size, "P4")?.selectorEvaluations
+    if (size !== "S" && typeof smallSelectors === "number" && typeof selectors === "number" && smallSelectors !== selectors) {
+      fail(size, "P4", "selectorEvaluations", `= ${smallSelectors} (same as S)`, selectors)
+    }
   }
 
   return { rows, failures, missing, pending: [...pending] }
