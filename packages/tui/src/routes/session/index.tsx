@@ -89,6 +89,7 @@ import { AdaptiveMarkdown } from "../../ui/adaptive-markdown"
 import {
   EscapePriority,
   GRAPHAGENT_BASE_MODE,
+  modifiedBindings,
   useBindings,
   useCommandShortcut,
   useGraphagentKeymap,
@@ -129,8 +130,6 @@ const sessionBindingCommands = [
   "session.toggle.actions",
   "session.toggle.scrollbar",
   "session.toggle.generic_tool_output",
-  "session.first",
-  "session.last",
   "session.messages_last_user",
   "session.message.next",
   "session.message.previous",
@@ -149,6 +148,9 @@ const sessionGlobalBindingCommands = [
   "session.half.page.down",
 ] as const
 
+// Home and End are the prompt's own cursor keys (#886 4.4), so the jump keys
+// only apply while no editor has focus. Their modified keys never type text and
+// stay active in the base mode either way.
 const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] as const
 
 const context = createContext<{
@@ -1435,6 +1437,14 @@ export function Main() {
   useBindings(() => ({
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: tuiConfig.keybinds.gather("session.global.unfocused", sessionGlobalUnfocusedBindingCommands),
+  }))
+
+  useBindings(() => ({
+    mode: GRAPHAGENT_BASE_MODE,
+    bindings: modifiedBindings(
+      keymap,
+      tuiConfig.keybinds.gather("session.global.unfocused", sessionGlobalUnfocusedBindingCommands),
+    ),
   }))
 
   useBindings(() => ({
