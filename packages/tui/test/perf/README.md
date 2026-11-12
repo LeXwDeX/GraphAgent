@@ -35,7 +35,7 @@ The layer counter (`registerLayer` in the reports) counts both `keymap.registerL
 - `P2` `p95Scale` ≤ 1.5 (p95 of a keystroke in a larger session over the small one). The ratio of two sub-millisecond samples swings several-fold on noise alone, so it fails only when the larger session is also more than `P2_NOISE_FLOOR_MS = 2` ms slower in absolute terms.
 - `P3` `registerLayer` = 0 and `P7` `registerLayer` ≤ 2 (the most layers one `/` round registered: open once, close once).
 - `P4` `selectorEvaluations` = 0 per keystroke, and equal for `S` and `L`.
-- `P10` `mountedRows` ≤ viewport + 2 × `PART_OVERSCAN` + `TAIL_ALWAYS` (and `scrollChildren` ≤ that limit + 2).
+- `P10` `mountedRows` ≤ viewport + 2 × `PART_OVERSCAN` + `TAIL_ALWAYS` (and `scrollChildren` ≤ that limit + 2). `mountedRows` counts the scroll content children that host content; the header spacer, the window controller and the placeholder boxes of unmounted rows are childless.
 - `P11` `driftPx` ≤ 2.
 - `P13` `deltaMessageWrites` and `deltaPartWrites` = 0; `messageWritesPerFrame` and `partWritesPerFrame` ≤ 1.
 - `P14` `nonCurrentMessageWrites` and `nonCurrentPartWrites` = 0; `relativeIncrease` ≤ 0.10 when the p95 is at least `MIN_COMPARE_MS`, otherwise `increaseMs` (the p95 with background load minus the quiet p95) ≤ `P14_ABSOLUTE_INCREASE_MS = 0.5`.

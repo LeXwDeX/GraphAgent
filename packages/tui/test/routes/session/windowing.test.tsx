@@ -5,8 +5,9 @@
 import { expect, test } from "bun:test"
 import type { Part } from "@graphagent/sdk"
 import { SPINNER_FRAMES } from "../../../src/component/spinner"
-import { createFixture, updatePartEvent } from "../../perf/fixtures"
+import { createFixture, richTail, updatePartEvent } from "../../perf/fixtures"
 import { mountHarness } from "../../perf/harness"
+import { settleHighlights } from "../../perf/scenarios"
 
 async function frameContaining(harness: Awaited<ReturnType<typeof mountHarness>>, text: string) {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -42,6 +43,34 @@ async function settledFrame(harness: Awaited<ReturnType<typeof mountHarness>>) {
     previous = frame
   }
   throw new Error(`frame never settled:\n${previous}`)
+}
+
+type Harness = Awaited<ReturnType<typeof mountHarness>>
+
+/**
+ * Render until the scroll offset and the content height have held still for
+ * `quiet` frames in a row. A transcript whose window keeps flipping between two
+ * layouts never does: it changes both numbers on every frame.
+ */
+async function settleScroll(harness: Harness, quiet = 10, limit = 120) {
+  const scroll = harness.scroll()!
+  let previous = ""
+  let still = 0
+  for (let attempt = 0; attempt < limit; attempt++) {
+    // Code blocks highlight on a worker and re-wrap when it answers; a reading
+    // taken before every mounted block has answered is not a settled one.
+    await settleHighlights(harness)
+    const reading = `${scroll.scrollTop}/${scroll.scrollHeight}`
+    still = reading === previous ? still + 1 : 0
+    previous = reading
+    if (still >= quiet) return
+  }
+  throw new Error(`the scroll position never settled (last reading ${previous})`)
+}
+
+const atEnd = (harness: Harness) => {
+  const scroll = harness.scroll()!
+  return Math.max(0, scroll.scrollHeight - scroll.viewport.height) - scroll.scrollTop
 }
 
 function braille(frame: string) {
@@ -131,6 +160,59 @@ test("a running tool spins only while its row sits inside the viewport", async (
     expect(braille(restored)).not.toBe("")
     const movingAgain = await sample(harness)
     expect(new Set(movingAgain).size).toBeGreaterThan(1)
+  } finally {
+    await harness.dispose()
+  }
+})
+
+// The tail holds 20 text parts that end in a code block, a table, or a diff. Their
+// estimated heights are short of the real ones, so the first layouts of the rows at
+// the end correct the positions the window was computed from.
+
+test("a jump to the end of a transcript with rich blocks at its tail settles on the real bottom", async () => {
+  const harness = await mountHarness(richTail(createFixture("L"), 20))
+  try {
+    await harness.reset()
+    await Bun.sleep(60)
+    const scroll = harness.scroll()!
+    // The production configuration: the session route pins the scrollbox to the end.
+    scroll.stickyScroll = true
+    scroll.scrollTo(Infinity)
+
+    await settleScroll(harness)
+    expect(atEnd(harness)).toBe(0)
+    const settled = harness.app.captureCharFrame()
+    expect(settled).toContain("printf perf-397")
+
+    // Nothing moves once it has settled: not the offset, not the content, not the screen.
+    const height = scroll.scrollHeight
+    for (let frame = 0; frame < 20; frame++) {
+      await harness.app.renderOnce()
+      expect(scroll.scrollHeight).toBe(height)
+      expect(atEnd(harness)).toBe(0)
+    }
+    expect(harness.app.captureCharFrame()).toBe(settled)
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("the last-message command lands on the real bottom from the middle of the transcript", async () => {
+  const harness = await mountHarness(richTail(createFixture("L"), 20))
+  try {
+    await harness.reset()
+    await Bun.sleep(60)
+    const scroll = harness.scroll()!
+    scroll.scrollTo(300)
+    await settleScroll(harness)
+    expect(scroll.scrollTop).toBeLessThan(scroll.scrollHeight - scroll.viewport.height - 100)
+
+    // What `session.last` does.
+    scroll.scrollTo(scroll.scrollHeight)
+    await settleScroll(harness)
+
+    expect(atEnd(harness)).toBe(0)
+    expect(harness.app.captureCharFrame()).toContain("printf perf-397")
   } finally {
     await harness.dispose()
   }

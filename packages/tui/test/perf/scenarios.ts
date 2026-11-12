@@ -134,7 +134,7 @@ function codeBlocks(node: Renderable): CodeRenderable[] {
  * lands inside a measured window adds a frame the scenario did not cause, so
  * wait for every mounted block before measuring.
  */
-async function settleHighlights(harness: PerfHarness) {
+export async function settleHighlights(harness: PerfHarness) {
   await within(
     Promise.all(codeBlocks(harness.app.renderer.root).map((node) => node.highlightingDone)),
     "code block highlighting",

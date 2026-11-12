@@ -1760,6 +1760,14 @@ function SessionTranscript(props: {
   const [first, setFirst] = createSignal(0)
   const [last, setLast] = createSignal(0)
   let controller: BoxRenderable | undefined
+  // Measuring functions of the rows that are mounted now, in mount order.
+  const mountedRows = new Set<() => void>()
+  const track = (measure: () => void) => {
+    mountedRows.add(measure)
+    return () => {
+      mountedRows.delete(measure)
+    }
+  }
 
   onCleanup(() => {
     if (controller) renderer.unregisterLifecyclePass(controller)
@@ -1795,6 +1803,14 @@ function SessionTranscript(props: {
           el.onLifecyclePass = () => {
             const scroll = ctx.scroll()
             if (!scroll || scroll.isDestroyed) return
+            // Measure what the last layout produced before the window moves. A row
+            // that was mounted for one layout and is unmounted by this very pass
+            // would otherwise leave unmeasured, its estimate would stay in the
+            // positions, and the window computed from them would flip between two
+            // ranges on every frame once the viewport follows the end.
+            batch(() => {
+              for (const measure of mountedRows) measure()
+            })
             const range = visibleRange(props.positions, scroll.scrollTop, scroll.viewport.height)
             if (range.first === first() && range.last === last()) return
             const ids = new Set<string>()
@@ -1816,7 +1832,7 @@ function SessionTranscript(props: {
         {(row, index) => (
           <Switch>
             <Match when={mounted(row, index())}>
-              <SessionRow row={row} revert={props.revert} onUserMouseUp={props.onUserMouseUp} />
+              <SessionRow row={row} revert={props.revert} onUserMouseUp={props.onUserMouseUp} track={track} />
             </Match>
             <Match when={gaps().has(index())}>
               <box height={gaps().get(index())!} />
@@ -1832,9 +1848,10 @@ function SessionRow(props: {
   row: Row
   revert: RevertState | undefined
   onUserMouseUp: (message: UserMessage) => void
+  /** Registers the row's measuring function with the transcript; the returned function removes it. */
+  track: (measure: () => void) => () => void
 }) {
   const ctx = use()
-  const renderer = useRenderer()
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[ctx.sessionID] ?? [])
   const message = createMemo(() => messages().find((item) => item.id === props.row.messageID))
@@ -1854,19 +1871,15 @@ function SessionRow(props: {
     const current = message()
     return current?.role === "assistant" && messages().findLast((item) => item.role === "assistant")?.id === current.id
   })
-  let node: BoxRenderable | undefined
-  onCleanup(() => {
-    if (node) renderer.unregisterLifecyclePass(node)
-  })
+  let untrack: (() => void) | undefined
+  onCleanup(() => untrack?.())
 
   return (
     <box
       flexShrink={0}
       paddingTop={props.row.kind === "tool" ? 1 : 0}
       ref={(el) => {
-        node = el
-        el.onLifecyclePass = () => ctx.measureRow(props.row, el)
-        renderer.registerLifecyclePass(el)
+        untrack = props.track(() => ctx.measureRow(props.row, el))
       }}
     >
       <Switch>
