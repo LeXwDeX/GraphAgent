@@ -91,3 +91,40 @@ for (const supplied of [false, true]) {
       }),
   )
 }
+
+// `run` ends registered sessions in its exit path (the same
+// HookClientLifecycle.endLocalSession service the TUI worker uses). A failing
+// SessionEnd handler must not be retried or duplicated, and must not turn a
+// completed prompt into a failed run.
+cliIt.live(
+  "real local run ends the session once when the SessionEnd hook fails",
+  ({ home, llm, opencode }) =>
+    Effect.gen(function* () {
+      const audit = path.join(home, "failing-session-end.jsonl")
+      const script = path.join(home, "failing-session-end.ts")
+      yield* Effect.promise(async () => {
+        await fs.writeFile(
+          script,
+          `const input=JSON.parse(await Bun.stdin.text());await (await import('node:fs/promises')).appendFile(${JSON.stringify(audit)},JSON.stringify({event:input.hook_event_name,session:input.session_id,reason:input.reason})+"\\n");if(input.hook_event_name==='SessionEnd')process.exit(1)`,
+        )
+        await fs.writeFile(
+          path.join(home, ".config/graphagent/hooks.json"),
+          JSON.stringify({
+            SessionEnd: [{ hooks: [{ type: "command", command: process.execPath, args: [script], timeout: 10 }] }],
+          }),
+        )
+      })
+      yield* llm.text("failing session end answer")
+      const result = yield* opencode.run("exercise failing session end", { format: "json" })
+      opencode.expectExit(result, 0)
+      expect(result.stdout).toContain("failing session end answer")
+      const rows = (yield* Effect.promise(() => fs.readFile(audit, "utf8")))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ event: "SessionEnd", reason: "other" })
+      expect(rows[0].session).toEqual(expect.any(String))
+    }),
+  180_000,
+)

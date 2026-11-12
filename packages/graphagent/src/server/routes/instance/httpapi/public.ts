@@ -91,6 +91,11 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
   applyLegacySchemaOverrides(spec)
   normalizeComponentDescriptions(spec)
   addLegacyErrorSchemas(spec)
+  // Effect renders `HttpApiError.BadRequest` as an empty 400 body, but every
+  // public route documents legacy `{name, data}` errors. Direct refs are
+  // rewritten below; union arms (schema errors + BadRequest) are rewritten
+  // here so no response documents the internal `_tag` schema.
+  rewriteRefs(spec, "EffectHttpApiErrorBadRequest", "BadRequestError")
   delete spec.components?.securitySchemes
 
   for (const [path, item] of Object.entries(spec.paths ?? {})) {

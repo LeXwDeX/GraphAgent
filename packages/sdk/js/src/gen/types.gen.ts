@@ -1605,7 +1605,10 @@ export type McpServerNotFoundError = {
 }
 
 export type McpUnsupportedOAuthError = {
-  error: string
+  name: "McpUnsupportedOAuthError"
+  data: {
+    message: string
+  }
 }
 
 export type MoveSessionError = {
@@ -1784,10 +1787,6 @@ export type WorkspaceWarpError = {
   data: {
     message: string
   }
-}
-
-export type EffectHttpApiErrorBadRequest = {
-  _tag: "BadRequest"
 }
 
 export type EventServerInstanceDisposed = {
@@ -2666,7 +2665,7 @@ export type AuthRemoveErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type AuthRemoveError = AuthRemoveErrors[keyof AuthRemoveErrors]
@@ -2693,7 +2692,7 @@ export type AuthSetErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type AuthSetError = AuthSetErrors[keyof AuthSetErrors]
@@ -2734,7 +2733,7 @@ export type AppLogErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type AppLogError = AppLogErrors[keyof AppLogErrors]
@@ -2843,7 +2842,7 @@ export type GlobalConfigUpdateErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type GlobalConfigUpdateError = GlobalConfigUpdateErrors[keyof GlobalConfigUpdateErrors]
@@ -2895,7 +2894,7 @@ export type GlobalUpgradeErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type GlobalUpgradeError = GlobalUpgradeErrors[keyof GlobalUpgradeErrors]
@@ -2969,7 +2968,7 @@ export type ConfigUpdateErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type ConfigUpdateError = ConfigUpdateErrors[keyof ConfigUpdateErrors]
@@ -3053,7 +3052,7 @@ export type ExperimentalSessionBackgroundErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type ExperimentalSessionBackgroundError =
@@ -3633,7 +3632,7 @@ export type McpAddErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type McpAddError = McpAddErrors[keyof McpAddErrors]
@@ -3731,7 +3730,7 @@ export type McpAuthCallbackErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * McpServerNotFoundError
    */
@@ -3943,7 +3942,7 @@ export type ProjectUpdateErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * ProjectNotFoundError
    */
@@ -3997,7 +3996,7 @@ export type ProjectTrustDecideErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type ProjectTrustDecideError = ProjectTrustDecideErrors[keyof ProjectTrustDecideErrors]
@@ -4208,7 +4207,7 @@ export type QuestionReplyErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * QuestionNotFoundError
    */
@@ -4239,7 +4238,7 @@ export type QuestionRejectErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * QuestionNotFoundError
    */
@@ -4270,7 +4269,7 @@ export type QuestionInteractErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * QuestionNotFoundError
    */
@@ -4329,7 +4328,7 @@ export type PermissionReplyErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * PermissionNotFoundError
    */
@@ -4556,7 +4555,7 @@ export type SessionCreateErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type SessionCreateError = SessionCreateErrors[keyof SessionCreateErrors]
@@ -4581,7 +4580,7 @@ export type SessionStatusErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type SessionStatusError = SessionStatusErrors[keyof SessionStatusErrors]
@@ -4610,7 +4609,7 @@ export type SessionDeleteErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4641,7 +4640,7 @@ export type SessionGetErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4681,7 +4680,7 @@ export type SessionUpdateErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4712,7 +4711,7 @@ export type SessionDagModeErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4743,7 +4742,7 @@ export type SessionChildrenErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4774,7 +4773,7 @@ export type SessionTodoErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4805,7 +4804,7 @@ export type SessionGoalErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4836,7 +4835,7 @@ export type SessionHookListErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -4996,7 +4995,7 @@ export type SessionHookAddErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5030,7 +5029,7 @@ export type SessionHookRemoveErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5062,7 +5061,7 @@ export type SessionHookCancelErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5127,7 +5126,7 @@ export type SessionMessagesErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5177,7 +5176,7 @@ export type SessionPromptErrors = {
   /**
    * InvalidRequestError | BadRequest
    */
-  400: InvalidRequestError | EffectHttpApiErrorBadRequest
+  400: InvalidRequestError | BadRequestError
   /**
    * NotFoundError
    */
@@ -5212,7 +5211,7 @@ export type SessionDeleteMessageErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5248,7 +5247,7 @@ export type SessionMessageErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5289,7 +5288,7 @@ export type SessionBtwErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5351,7 +5350,7 @@ export type SessionBtwCancelErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5384,7 +5383,7 @@ export type SessionForkErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5415,7 +5414,7 @@ export type SessionAbortErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type SessionAbortError = SessionAbortErrors[keyof SessionAbortErrors]
@@ -5446,7 +5445,7 @@ export type SessionInitErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5481,7 +5480,7 @@ export type SessionSummarizeErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5520,7 +5519,7 @@ export type SessionSetModelErrors = {
   /**
    * InvalidRequestError | BadRequest
    */
-  400: InvalidRequestError | EffectHttpApiErrorBadRequest
+  400: InvalidRequestError | BadRequestError
   /**
    * NotFoundError
    */
@@ -5638,7 +5637,7 @@ export type SessionResumeErrors = {
   /**
    * InvalidRequestError | BadRequest
    */
-  400: InvalidRequestError | EffectHttpApiErrorBadRequest
+  400: InvalidRequestError | BadRequestError
   /**
    * NotFoundError
    */
@@ -5688,7 +5687,7 @@ export type SessionPromptAsyncErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5735,7 +5734,7 @@ export type SessionCommandErrors = {
   /**
    * InvalidRequestError | BadRequest
    */
-  400: InvalidRequestError | EffectHttpApiErrorBadRequest
+  400: InvalidRequestError | BadRequestError
   /**
    * NotFoundError
    */
@@ -5778,7 +5777,7 @@ export type SessionShellErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5819,7 +5818,7 @@ export type SessionRevertErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5854,7 +5853,7 @@ export type SessionUnrevertErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5892,7 +5891,7 @@ export type PermissionRespondErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError | PermissionNotFoundError
    */
@@ -5928,7 +5927,7 @@ export type SessionDeleteQueuedMessageErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -5970,7 +5969,7 @@ export type SessionEditQueuedMessageErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -6011,7 +6010,7 @@ export type PartDeleteErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -6044,7 +6043,7 @@ export type PartUpdateErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
   /**
    * NotFoundError
    */
@@ -6320,7 +6319,7 @@ export type ExperimentalWorkspaceCreateErrors = {
   /**
    * WorkspaceCreateError | BadRequest | InvalidRequestError
    */
-  400: WorkspaceCreateError | EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: WorkspaceCreateError | BadRequestError | InvalidRequestError
 }
 
 export type ExperimentalWorkspaceCreateError =
@@ -6406,7 +6405,7 @@ export type ExperimentalWorkspaceRemoveErrors = {
   /**
    * BadRequest | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: BadRequestError | InvalidRequestError
 }
 
 export type ExperimentalWorkspaceRemoveError =

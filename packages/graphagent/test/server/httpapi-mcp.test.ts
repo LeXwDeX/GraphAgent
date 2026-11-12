@@ -182,7 +182,10 @@ describe("mcp HttpApi", () => {
 
             expect(response).toEqual({
               status: 400,
-              body: JSON.stringify({ error: "MCP server demo does not support OAuth" }),
+              body: JSON.stringify({
+                name: "McpUnsupportedOAuthError",
+                data: { message: "MCP server demo does not support OAuth" },
+              }),
             })
           }),
         )
