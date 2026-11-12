@@ -3323,6 +3323,95 @@ it.instance("saved hook followup rejects corrupt metadata and never repeats an u
   }),
 )
 
+// Issue #1259: how `resume` treats a supplied followup. "Nothing pending" is decided first and ignores the
+// followup; only a followup that arrives while another one is already saved is turned away with its own message.
+const NOTHING_PENDING = "No initial hook message or deferred tool call is pending"
+const FOLLOWUP_ALREADY_SAVED = "A supplied followup is already saved for this session"
+const resumeFailure = (exit: Exit.Exit<unknown, unknown>) => {
+  expect(Exit.isFailure(exit)).toBe(true)
+  return Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined
+}
+
+it.instance("resume without a followup reports nothing pending, or null for an initial-only probe", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Resume without followup" })
+    const nothing = yield* prompt.resume({ sessionID: chat.id }).pipe(Effect.exit)
+    expect(resumeFailure(nothing)).toMatchObject({ _tag: "NoPendingHookInput", message: NOTHING_PENDING })
+    expect(yield* prompt.resume({ sessionID: chat.id, initialOnly: true })).toBeNull()
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+    expect(yield* llm.calls).toBe(0)
+  }),
+)
+
+it.instance("resume with a followup but nothing pending reports nothing pending and saves nothing", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Resume followup without pending work" })
+    const followup = { kind: "prompt" as const, parts: [{ type: "text" as const, text: "UNSAVED_FOLLOWUP" }] }
+    const nothing = yield* prompt.resume({ sessionID: chat.id, followup }).pipe(Effect.exit)
+    expect(resumeFailure(nothing)).toMatchObject({ _tag: "NoPendingHookInput", message: NOTHING_PENDING })
+    expect(yield* prompt.resume({ sessionID: chat.id, initialOnly: true, followup })).toBeNull()
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+    expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("UNSAVED_FOLLOWUP")
+    expect(yield* llm.calls).toBe(0)
+  }),
+)
+
+it.instance("resume with a followup and a queued initial message runs the initial turn, then the followup", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const lifecycle = yield* HookLifecycle.Service
+    const chat = yield* sessions.create({ title: "Resume accepted followup" })
+    yield* lifecycle.queueInitial(chat.id, "QUEUED_INITIAL")
+    yield* llm.text("INITIAL_ANSWER")
+    yield* llm.text("FOLLOWUP_ANSWER")
+    const result = yield* prompt.resume({
+      sessionID: chat.id,
+      hookMode: "noninteractive",
+      followup: { kind: "prompt", parts: [{ type: "text", text: "ACCEPTED_FOLLOWUP" }] },
+    })
+    expect(result?.parts.some((part) => part.type === "text" && part.text === "FOLLOWUP_ANSWER")).toBe(true)
+    const requests = yield* llm.inputs
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0].messages)).toContain("QUEUED_INITIAL")
+    expect(JSON.stringify(requests[0].messages)).not.toContain("ACCEPTED_FOLLOWUP")
+    expect(JSON.stringify(requests[1].messages)).toContain("ACCEPTED_FOLLOWUP")
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toBeUndefined()
+  }),
+)
+
+it.instance("resume with a followup while one is already saved reports the saved followup", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Resume saved followup" })
+    const saved = {
+      version: 1,
+      messageID: MessageID.ascending(),
+      phase: "pending",
+      input: { kind: "prompt", parts: [{ type: "text", text: "SAVED_FOLLOWUP" }] },
+    }
+    yield* sessions.setMetadata({ sessionID: chat.id, metadata: { hookPendingInput: saved } })
+    const followup = { kind: "prompt" as const, parts: [{ type: "text" as const, text: "SECOND_FOLLOWUP" }] }
+    // An explicit resume and the initial-only probe that a plain prompt makes both reach the saved-followup check.
+    for (const initialOnly of [false, true]) {
+      const rejected = yield* prompt.resume({ sessionID: chat.id, initialOnly, followup }).pipe(Effect.exit)
+      expect(resumeFailure(rejected)).toMatchObject({ _tag: "NoPendingHookInput", message: FOLLOWUP_ALREADY_SAVED })
+    }
+    expect((yield* sessions.get(chat.id)).metadata?.hookPendingInput).toEqual(saved)
+    expect(JSON.stringify(yield* sessions.messages({ sessionID: chat.id }))).not.toContain("SECOND_FOLLOWUP")
+    expect(yield* llm.calls).toBe(0)
+  }),
+)
+
 it.instance("model switch ask uses the interactive command question before committing", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => {
