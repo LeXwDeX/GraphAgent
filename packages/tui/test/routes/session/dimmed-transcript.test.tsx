@@ -7,7 +7,7 @@ import type { AssistantMessage, PermissionRequest, TextPart, UserMessage } from 
 import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import { setLanguage } from "../../../src/i18n"
 import { directory, json } from "../../fixture/tui-sdk"
-import { sessionFixture, waitFor } from "../dag-mode-harness"
+import { sessionFixture } from "../dag-mode-harness"
 import { mountSessionShell } from "../session-shell"
 
 /**
@@ -88,22 +88,27 @@ async function mountTranscript() {
       ])
     },
   })
-  await waitFor(() => LINES.every((line) => shell.frame().includes(line)))
-  return shell
+  try {
+    await shell.waitForFrame((frame) => LINES.every((line) => frame.includes(line)), "the transcript")
+    return shell
+  } catch (error) {
+    await shell.dispose()
+    throw error
+  }
 }
 
 type Shell = Awaited<ReturnType<typeof mountTranscript>>
 
 /** Foreground of the first span holding `text`. */
-function fgOf(shell: Shell, text: string) {
-  for (const line of shell.app.captureSpans().lines) {
+async function fgOf(shell: Shell, text: string) {
+  for (const line of (await shell.spans()).lines) {
     for (const span of line.spans) if (span.text.includes(text)) return span.fg.toInts().slice(0, 3)
   }
-  throw new Error(`no span holds ${text}:\n${shell.frame()}`)
+  throw new Error(`no span holds ${text}:\n${await shell.frame()}`)
 }
 
-function expectAllShown(shell: Shell) {
-  const frame = shell.frame()
+async function expectAllShown(shell: Shell) {
+  const frame = await shell.frame()
   for (const line of LINES) expect(frame).toContain(line)
 }
 
@@ -114,21 +119,21 @@ function expectDimmer(after: number[], before: number[]) {
 test("the Chinese transcript stays on screen, dimmed, while a panel is open", async () => {
   const shell = await mountTranscript()
   try {
-    expectAllShown(shell)
-    const before = fgOf(shell, "你好，世界")
+    await expectAllShown(shell)
+    const before = await fgOf(shell, "你好，世界")
 
     shell.bottomZone().host.push({ id: "panel", render: () => <text>面板内容</text> })
     await shell.settle()
     expect(shell.bottomZone().dimmed()).toBe(true)
-    expect(shell.frame()).toContain("面板内容")
-    expectAllShown(shell)
-    expectDimmer(fgOf(shell, "你好，世界"), before)
+    expect(await shell.frame()).toContain("面板内容")
+    await expectAllShown(shell)
+    expectDimmer(await fgOf(shell, "你好，世界"), before)
 
     shell.bottomZone().host.pop()
     await shell.settle()
     expect(shell.bottomZone().dimmed()).toBe(false)
-    expectAllShown(shell)
-    expect(fgOf(shell, "你好，世界")).toEqual(before)
+    await expectAllShown(shell)
+    expect(await fgOf(shell, "你好，世界")).toEqual(before)
   } finally {
     await shell.dispose()
   }
@@ -137,13 +142,13 @@ test("the Chinese transcript stays on screen, dimmed, while a panel is open", as
 test("the Chinese transcript stays on screen, dimmed, while an ask is open", async () => {
   const shell = await mountTranscript()
   try {
-    const before = fgOf(shell, "请解释一下")
+    const before = await fgOf(shell, "请解释一下")
 
     shell.sync().set("permission", sessionID, [permission])
     await shell.settle()
     expect(shell.bottomZone().state().kind).toBe("ask")
-    expectAllShown(shell)
-    expectDimmer(fgOf(shell, "请解释一下"), before)
+    await expectAllShown(shell)
+    expectDimmer(await fgOf(shell, "请解释一下"), before)
   } finally {
     await shell.dispose()
   }

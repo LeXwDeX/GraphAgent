@@ -120,7 +120,12 @@ async function renderSkeleton(
     },
     { width: options.width, height: options.height },
   )
-  await renderFirstFrame(app)
+  try {
+    await renderFirstFrame(app)
+  } catch (error) {
+    app.renderer.destroy()
+    throw error
+  }
   return app
 }
 

@@ -215,11 +215,11 @@ test("autocomplete (1): esc closes the popup before the drawer, and the drawer b
     await chain.openDrawer()
     await chain.app.mockInput.typeText("/")
     await chain.settle()
-    expect(chain.frame()).toContain("/config")
+    expect(await chain.frame()).toContain("/config")
     expect(chain.drawer().visible()).toBe(true)
 
     expect(await chain.esc()).toEqual([EscapePriority.autocomplete])
-    expect(chain.frame()).not.toContain("/config")
+    expect(await chain.frame()).not.toContain("/config")
     expect(chain.drawer().visible()).toBe(true)
     expect(chain.writes()).toEqual([])
 
@@ -244,11 +244,11 @@ test("drawer (2): esc closes the drawer before it rejects the pending request", 
     chain.sync().set("permission", rootID, [permissionRequest(rootID)])
     await chain.settle()
     expect(chain.bottomZone().state().kind).toBe("ask")
-    expect(chain.frame()).toContain("抽屉")
+    expect(await chain.frame()).toContain("抽屉")
 
     expect(await chain.esc()).toEqual([EscapePriority.drawer])
     expect(chain.drawer().visible()).toBe(false)
-    expect(chain.frame()).not.toContain("抽屉")
+    expect(await chain.frame()).not.toContain("抽屉")
     expect(chain.bottomZone().state().kind).toBe("ask")
     expect(chain.writes()).toEqual([])
 
@@ -332,13 +332,13 @@ test("modal (4): esc closes only the top panel and then the one below it", async
     host.push({ id: "root", render: () => <text>根面板</text>, onClose: () => closed.push("root") })
     host.push({ id: "child", render: () => <text>子面板</text>, onClose: () => closed.push("child") })
     await chain.settle()
-    expect(chain.frame()).toContain("子面板")
+    expect(await chain.frame()).toContain("子面板")
     expect(chain.bottomZone().dimmed()).toBe(true)
 
     expect(await chain.esc()).toEqual([EscapePriority.modal])
     expect(closed).toEqual(["child"])
     expect(host.depth()).toBe(1)
-    expect(chain.frame()).toContain("根面板")
+    expect(await chain.frame()).toContain("根面板")
 
     expect(await chain.esc()).toEqual([EscapePriority.modal])
     expect(closed).toEqual(["child", "root"])
@@ -363,8 +363,8 @@ test("modal over drawer: esc closes the panel first because the modal mode disab
     const host = chain.bottomZone().host
     host.push({ id: "panel", render: () => <text>面板内容</text> })
     await chain.settle()
-    expect(chain.frame()).toContain("面板内容")
-    expect(chain.frame()).toContain("抽屉")
+    expect(await chain.frame()).toContain("面板内容")
+    expect(await chain.frame()).toContain("抽屉")
 
     expect(await chain.esc()).toEqual([EscapePriority.modal])
     expect(host.depth()).toBe(0)
@@ -383,20 +383,20 @@ test("modal over autocomplete: esc closes the panel first because opening it blu
   try {
     await chain.app.mockInput.typeText("/")
     await chain.settle()
-    expect(chain.frame()).toContain("/config")
+    expect(await chain.frame()).toContain("/config")
 
     const host = chain.bottomZone().host
     host.push({ id: "panel", render: () => <text>面板内容</text> })
     await chain.settle()
-    expect(chain.frame()).toContain("面板内容")
+    expect(await chain.frame()).toContain("面板内容")
 
     expect(await chain.esc()).toEqual([EscapePriority.modal])
     expect(host.depth()).toBe(0)
     // The popup survived the panel, and the prompt has its focus back.
-    expect(chain.frame()).toContain("/config")
+    expect(await chain.frame()).toContain("/config")
 
     expect(await chain.esc()).toEqual([EscapePriority.autocomplete])
-    expect(chain.frame()).not.toContain("/config")
+    expect(await chain.frame()).not.toContain("/config")
     expect(chain.writes()).toEqual([])
   } finally {
     await chain.dispose()
@@ -412,12 +412,12 @@ test("detail (5): esc closes the aside while the composer keeps focus, then fall
       .bottomZone()
       .openAside({ id: "aside", render: () => <text>旁注答案</text>, onClose: () => closed.push("aside") })
     await chain.settle()
-    expect(chain.frame()).toContain("旁注答案")
+    expect(await chain.frame()).toContain("旁注答案")
     expect(chain.bottomZone().dimmed()).toBe(false)
 
     expect(await chain.esc()).toEqual([EscapePriority.detail])
     expect(closed).toEqual(["aside"])
-    expect(chain.frame()).not.toContain("旁注答案")
+    expect(await chain.frame()).not.toContain("旁注答案")
     expect(chain.writes()).toEqual([])
 
     // With the aside gone the busy session is next in line.
@@ -472,14 +472,14 @@ test("none (8): esc does nothing when no layer is active", async () => {
     await chain.app.mockInput.typeText("keep me")
     await chain.settle()
     expect(chain.promptDraft()).toBe("keep me")
-    const before = chain.frame()
+    const before = await chain.frame()
 
     expect(await chain.esc()).toEqual([])
     expect(await chain.esc()).toEqual([])
     expect(chain.promptDraft()).toBe("keep me")
     expect(chain.route().data).toEqual({ type: "session", sessionID: rootID })
     expect(chain.writes()).toEqual([])
-    expect(chain.frame()).toBe(before)
+    expect(await chain.frame()).toBe(before)
   } finally {
     await chain.dispose()
   }

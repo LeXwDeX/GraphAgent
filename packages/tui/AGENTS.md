@@ -373,6 +373,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - SDK 用 `test/fixture/tui-sdk.ts` 的假实现。写请求计数是第一类断言：只读视图断言写请求为 0；有写入口的断言恰好 N 次。
 - 时间用 `@opentui/core` 的 `ManualClock` 推进，不用真实睡眠。`grep -n "setTimeout\|sleep" packages/tui/test/perf/scenarios.ts` 为空。
 - 帧数用 `CliRenderEvents.FRAME` 或 `getStats().frameCount`；其余计数用 `test/perf/counters.ts`（`registerLayer`、选择器求值、`frames()`、store 写入）。
+- 读帧不能和渲染抢：原生缓冲还在呈现上一帧时，`captureCharFrame()`、`captureSpans()` 会抛 `OutputBusy`。先 `await renderOnce()` 再读；等待画面出现用 `test/routes/dag-mode-harness.tsx` 的 `waitForFrame`，一次性读取用 `readFrame`/`readSpans`（遇到 `OutputBusy` 会重新渲染再试），不要在 `waitFor` 里裸轮询 `captureCharFrame()`。会抛错的挂载要在失败时销毁渲染器（`mountRoute`、`mountSessionShell` 已经这样做），否则它的定时器和帧会继续跑，拖慢并连累同一进程里后面的用例。
 - 双语：每个新增可见文案至少一个断言在 `zh-CN` 与 `en` 下各取一次；涉及排版的各一份快照。
 - 测试文件 `*.test.ts` / `*.test.tsx`，`packages/tui/test/` 镜像 `src/` 路径（`src/dag/model.ts` → `test/dag/model.test.ts`）。性能基准在 `test/perf/`（F2a）。依赖方向检查是 `test/architecture.test.ts`。现有 `test/cli/cmd/tui/sync-*.test.tsx` 夹具保持原位。
 - 源码守卫都在 `bun test` 里运行：`test/source-guards.test.ts` 把第 5、7、11 节里能用 grep 表达的断言（计时器白名单、`Bun.stringWidth`、`BLINK`/`createFadeIn`、`config/keybind.ts` 里的 `dag_` 键、颜色字面量只出现在第 7 节列的三处、旧插件槽 API）固化成按行匹配的测试，注释计入，与文中的 grep 同口径。`script/check-tui-text.ts` 提供三个守卫：品牌词（字符串字面量与 JSX 文本里不得出现上游产品词，白名单 `BRAND_ALLOWLIST` 封闭，每项写明理由）、已下线功能（第 11 节那条 grep 的原文扫描，并检查已删文件没有复活）、英文文案棘轮（绕过 `t()` 的英文字面量只减不增，基线是 `script/english-text-baseline.txt`，`--update-baseline` 只删不增）；它可以在 `packages/tui` 下 `bun script/check-tui-text.ts` 单独运行，`test/i18n/` 里的测试调用同一份实现，第 8 节的 CJK 扫描也在其中。

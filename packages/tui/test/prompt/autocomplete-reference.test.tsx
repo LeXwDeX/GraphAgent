@@ -37,8 +37,13 @@ async function mountHome(list: readonly ReferenceInfo[] = references) {
       return undefined
     },
   })
-  await waitFor(() => harness.sync().data.reference.length === list.length)
-  return harness
+  try {
+    await waitFor(() => harness.sync().data.reference.length === list.length, 10_000)
+    return harness
+  } catch (error) {
+    await harness.dispose()
+    throw error
+  }
 }
 
 async function openPopup(harness: Awaited<ReturnType<typeof mountHome>>) {
@@ -50,7 +55,7 @@ test("typing @ lists the visible entries of sync.data.reference with their sourc
   const harness = await mountHome()
   try {
     await openPopup(harness)
-    const frame = harness.app.captureCharFrame()
+    const frame = await harness.frame()
     expect(frame).toContain("@docs ../docs")
     expect(frame).toContain("@design https://example.test/org/design.git")
     // Hidden references stay out of the popup.
@@ -66,12 +71,12 @@ test("the popup follows the sync store while it is open", async () => {
   const harness = await mountHome()
   try {
     await openPopup(harness)
-    expect(harness.app.captureCharFrame()).toContain("@docs")
+    expect(await harness.frame()).toContain("@docs")
 
     harness.sync().set("reference", [{ name: "api", path: "/repo/api", source: { type: "local", path: "../api" } }])
     await harness.settle()
 
-    const frame = harness.app.captureCharFrame()
+    const frame = await harness.frame()
     expect(frame).toContain("@api ../api")
     expect(frame).not.toContain("@docs")
     expect(frame).not.toContain("@design")
@@ -87,7 +92,7 @@ test("typing the alias narrows the list and choosing it inserts the reference di
     await openPopup(harness)
     await harness.app.mockInput.typeText("do")
     await harness.settle()
-    const frame = harness.app.captureCharFrame()
+    const frame = await harness.frame()
     expect(frame).toContain("@docs ../docs")
     expect(frame).not.toContain("@design")
 
@@ -97,7 +102,7 @@ test("typing the alias narrows the list and choosing it inserts the reference di
     expect(harness.promptParts()).toMatchObject([
       { type: "file", mime: "application/x-directory", filename: "docs", url: "file:///repo/docs" },
     ])
-    expect(harness.app.captureCharFrame()).not.toContain("@docs ../docs")
+    expect(await harness.frame()).not.toContain("@docs ../docs")
   } finally {
     await harness.dispose()
   }
@@ -107,7 +112,7 @@ test("a project without references lists no alias", async () => {
   const harness = await mountHome([])
   try {
     await openPopup(harness)
-    const frame = harness.app.captureCharFrame()
+    const frame = await harness.frame()
     expect(frame).not.toContain("@docs")
     expect(frame).not.toContain("@design")
     expect(harness.promptDraft()).toBe("@")

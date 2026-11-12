@@ -58,17 +58,21 @@ export async function mountSessionShell(options: SessionShellOptions = {}) {
     },
   })
 
-  await waitFor(() => harness.sync().status === "complete")
+  try {
+    await waitFor(() => harness.sync().status === "complete", 10_000)
+  } catch (error) {
+    await harness.dispose()
+    throw error
+  }
 
   return {
     ...harness,
     bottomZone: () => bottomZone,
     drawer: () => drawer,
-    frame: () => harness.app.captureCharFrame(),
     /** Opens the drawer with its default key, like a user would. */
     async openDrawer() {
       harness.app.mockInput.pressKey("b", { ctrl: true })
-      await waitFor(() => drawer.visible())
+      await waitFor(() => drawer.visible(), 10_000)
       await harness.settle()
     },
   }

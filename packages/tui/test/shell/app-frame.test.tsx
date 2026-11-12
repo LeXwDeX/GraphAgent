@@ -56,7 +56,12 @@ async function renderFrame(
     },
     { width: options.width, height: options.height },
   )
-  await renderFirstFrame(app)
+  try {
+    await renderFirstFrame(app)
+  } catch (error) {
+    app.renderer.destroy()
+    throw error
+  }
   return app
 }
 
@@ -345,6 +350,11 @@ async function renderDimScene(options: {
         await app.renderOnce()
         await Bun.sleep(0)
       }
+      // Read frames right after a render, not after a sleep.
+      await app.renderOnce()
+    },
+    async [Symbol.asyncDispose]() {
+      app.renderer.destroy()
     },
   }
 }
@@ -378,48 +388,38 @@ function expectDimmed(after: RGBA, before: readonly number[]) {
 
 test("dims the main area and the status band without erasing wide characters", async () => {
   await using tmp = await shellState()
-  const plain = await renderDimScene({ dim: false, drawer: false, state: tmp.path })
-  const dimmed = await renderDimScene({ dim: true, drawer: false, state: tmp.path })
+  await using plain = await renderDimScene({ dim: false, drawer: false, state: tmp.path })
+  await using dimmed = await renderDimScene({ dim: true, drawer: false, state: tmp.path })
 
-  try {
-    for (const scene of [plain, dimmed]) {
-      const frame = scene.app.captureCharFrame()
-      expect(frame).toContain("主区内容 MAINTEXT")
-      expect(frame).toContain("状态带")
-    }
+  for (const scene of [plain, dimmed]) {
+    const frame = scene.app.captureCharFrame()
+    expect(frame).toContain("主区内容 MAINTEXT")
+    expect(frame).toContain("状态带")
+  }
 
-    expectDimmed(paintOf(dimmed, "主区内容").fg, paintOf(plain, "主区内容").fg.toInts())
-    expectDimmed(paintOf(dimmed, "状态带").fg, paintOf(plain, "状态带").fg.toInts())
+  expectDimmed(paintOf(dimmed, "主区内容").fg, paintOf(plain, "主区内容").fg.toInts())
+  expectDimmed(paintOf(dimmed, "状态带").fg, paintOf(plain, "状态带").fg.toInts())
 
-    // The bars and the bottom zone are not part of the dimmed area.
-    for (const text of ["GraphAgent", "底区", "build"]) {
-      expect(paintOf(dimmed, text).fg.toInts()).toEqual(paintOf(plain, text).fg.toInts())
-    }
-  } finally {
-    plain.app.renderer.destroy()
-    dimmed.app.renderer.destroy()
+  // The bars and the bottom zone are not part of the dimmed area.
+  for (const text of ["GraphAgent", "底区", "build"]) {
+    expect(paintOf(dimmed, text).fg.toInts()).toEqual(paintOf(plain, text).fg.toInts())
   }
 })
 
 test("dims when a panel opens and restores the colors when it closes", async () => {
   await using tmp = await shellState()
-  const scene = await renderDimScene({ dim: false, drawer: false, state: tmp.path })
+  await using scene = await renderDimScene({ dim: false, drawer: false, state: tmp.path })
+  const before = paintOf(scene, "主区内容").fg.toInts()
 
-  try {
-    const before = paintOf(scene, "主区内容").fg.toInts()
+  scene.setDim(true)
+  await scene.settle()
+  expect(scene.app.captureCharFrame()).toContain("主区内容 MAINTEXT")
+  expectDimmed(paintOf(scene, "主区内容").fg, before)
 
-    scene.setDim(true)
-    await scene.settle()
-    expect(scene.app.captureCharFrame()).toContain("主区内容 MAINTEXT")
-    expectDimmed(paintOf(scene, "主区内容").fg, before)
-
-    scene.setDim(false)
-    await scene.settle()
-    expect(scene.app.captureCharFrame()).toContain("主区内容 MAINTEXT")
-    expect(paintOf(scene, "主区内容").fg.toInts()).toEqual(before)
-  } finally {
-    scene.app.renderer.destroy()
-  }
+  scene.setDim(false)
+  await scene.settle()
+  expect(scene.app.captureCharFrame()).toContain("主区内容 MAINTEXT")
+  expect(paintOf(scene, "主区内容").fg.toInts()).toEqual(before)
 })
 
 // The drawer hides what is under it, so it is drawn above the dimmed area at full strength. That
@@ -436,33 +436,26 @@ for (const order of DRAWER_ORDERS) {
     await using tmp = await shellState()
     // Wide enough to run under the drawer, which covers the right 40 of 80 columns.
     const main = "MAIN".repeat(20)
-    const reference = await renderDimScene({ dim: false, drawer: true, main, state: tmp.path })
-    const scene = await renderDimScene({ dim: order.dim, drawer: order.drawer, main, state: tmp.path })
+    await using reference = await renderDimScene({ dim: false, drawer: true, main, state: tmp.path })
+    await using scene = await renderDimScene({ dim: order.dim, drawer: order.drawer, main, state: tmp.path })
 
-    try {
-      if (order.later === "dim") scene.setDim(true)
-      if (order.later === "drawer") scene.setDrawer(true)
-      await scene.settle()
+    if (order.later === "dim") scene.setDim(true)
+    if (order.later === "drawer") scene.setDrawer(true)
+    await scene.settle()
 
-      const row = scene.app
-        .captureCharFrame()
-        .split("\n")
-        .findIndex((line) => line.includes("DRAWER"))
-      expect(row).toBeGreaterThanOrEqual(0)
-      const line = scene.app.captureCharFrame().split("\n")[row] ?? ""
-      // Nothing of the main text shows through the drawer, and the main text left of it is intact.
-      expect(line.slice(40).trimEnd()).toBe("DRAWER")
-      expect(line.slice(0, 40)).toBe("MAIN".repeat(10))
+    const lines = scene.app.captureCharFrame().split("\n")
+    const row = lines.findIndex((line) => line.includes("DRAWER"))
+    expect(row).toBeGreaterThanOrEqual(0)
+    const line = lines[row] ?? ""
+    // Nothing of the main text shows through the drawer, and the main text left of it is intact.
+    expect(line.slice(40).trimEnd()).toBe("DRAWER")
+    expect(line.slice(0, 40)).toBe("MAIN".repeat(10))
 
-      expect(paintOf(scene, "DRAWER").fg.toInts()).toEqual(paintOf(reference, "DRAWER").fg.toInts())
-      const referenceMain = reference.app.captureSpans().lines[row]?.spans[0]
-      const sceneMain = scene.app.captureSpans().lines[row]?.spans[0]
-      expect(referenceMain?.text.startsWith("MAIN")).toBe(true)
-      expect(sceneMain).toBeDefined()
-      if (referenceMain && sceneMain) expectDimmed(sceneMain.fg, referenceMain.fg.toInts())
-    } finally {
-      reference.app.renderer.destroy()
-      scene.app.renderer.destroy()
-    }
+    expect(paintOf(scene, "DRAWER").fg.toInts()).toEqual(paintOf(reference, "DRAWER").fg.toInts())
+    const referenceMain = reference.app.captureSpans().lines[row]?.spans[0]
+    const sceneMain = scene.app.captureSpans().lines[row]?.spans[0]
+    expect(referenceMain?.text.startsWith("MAIN")).toBe(true)
+    expect(sceneMain).toBeDefined()
+    if (referenceMain && sceneMain) expectDimmed(sceneMain.fg, referenceMain.fg.toInts())
   })
 }

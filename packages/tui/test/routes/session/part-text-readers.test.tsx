@@ -89,21 +89,27 @@ async function mountStreaming(extra: Pick<SessionShellOptions, "clipboard" | "cw
     },
     ...extra,
   })
-  await waitFor(() => shell.frame().includes(STORED))
+  // A setup that fails must not leave its renderer running into the tests that follow.
+  try {
+    await shell.waitForFrame((frame) => frame.includes(STORED), "the stored head of the answer")
 
-  shell.events.emit({
-    directory,
-    payload: {
-      id: "evt_stream_delta",
-      type: "message.part.delta",
-      properties: { sessionID, messageID: assistant.id, partID: answer.id, field: "text", delta: TAIL },
-    },
-  })
-  await waitFor(() => shell.frame().includes(STORED + TAIL))
+    shell.events.emit({
+      directory,
+      payload: {
+        id: "evt_stream_delta",
+        type: "message.part.delta",
+        properties: { sessionID, messageID: assistant.id, partID: answer.id, field: "text", delta: TAIL },
+      },
+    })
+    await shell.waitForFrame((frame) => frame.includes(STORED + TAIL), "the streamed tail of the answer")
 
-  // The store never saw the tail: only the buffer did.
-  expect(shell.sync().data.part[assistant.id]?.[0]).toMatchObject({ text: STORED })
-  return shell
+    // The store never saw the tail: only the buffer did.
+    expect(shell.sync().data.part[assistant.id]?.[0]).toMatchObject({ text: STORED })
+    return shell
+  } catch (error) {
+    await shell.dispose()
+    throw error
+  }
 }
 
 function recordingClipboard() {
@@ -126,7 +132,7 @@ test("copying the last assistant message includes the streamed tail", async () =
     shell.app.mockInput.pressKey("x", { ctrl: true })
     await shell.app.renderOnce()
     shell.app.mockInput.pressKey("y")
-    await waitFor(() => clipboard.written.length > 0)
+    await waitFor(() => clipboard.written.length > 0, 10_000)
 
     expect(clipboard.written).toEqual([STORED + TAIL])
   } finally {
@@ -142,7 +148,7 @@ test("copying the session transcript includes the streamed tail", async () => {
   })
   try {
     shell.app.mockInput.pressKey("F9")
-    await waitFor(() => clipboard.written.length > 0)
+    await waitFor(() => clipboard.written.length > 0, 10_000)
 
     const [transcript] = clipboard.written
     expect(transcript).toContain("# 流式会话")
@@ -160,8 +166,9 @@ test("exporting the session writes the streamed tail", async () => {
   const editor = { VISUAL: process.env.VISUAL, EDITOR: process.env.EDITOR }
   delete process.env.VISUAL
   delete process.env.EDITOR
-  const shell = await mountStreaming({ cwd: out.path })
+  let shell: Awaited<ReturnType<typeof mountStreaming>> | undefined
   try {
+    shell = await mountStreaming({ cwd: out.path })
     // <leader>x opens the export panel; the action row is the sixth.
     shell.app.mockInput.pressKey("x", { ctrl: true })
     await shell.app.renderOnce()
@@ -173,13 +180,13 @@ test("exporting the session writes the streamed tail", async () => {
     shell.app.mockInput.pressEnter()
 
     const file = path.join(out.path, exportFile)
-    await waitFor(() => Bun.file(file).size > 0)
+    await waitFor(() => Bun.file(file).size > 0, 10_000)
     const exported = await readFile(file, "utf8")
     expect(exported).toContain("# 流式会话")
     expect(exported).toContain("## User\n\n把结果导出")
     expect(exported).toContain(`${STORED}${TAIL}\n`)
   } finally {
-    await shell.dispose()
+    await shell?.dispose()
     for (const [key, value] of Object.entries(editor)) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
