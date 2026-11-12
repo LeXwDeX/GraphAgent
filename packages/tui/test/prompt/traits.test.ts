@@ -22,4 +22,10 @@ describe("computePromptTraits", () => {
     expect(traits.suspend).toBeUndefined()
     expect(traits.status).toBe("SHELL")
   })
+
+  test("tags the prompt with the product identity", () => {
+    const traits = computePromptTraits({ mode: "normal", autocompleteVisible: false })
+    expect(traits.owner).toBe("graphagent")
+    expect(traits.role).toBe("prompt")
+  })
 })

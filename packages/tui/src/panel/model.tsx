@@ -30,7 +30,6 @@ type Candidate = {
   title: string
   description?: string
   group?: string
-  footer?: string
   releaseDate: string | number
 }
 
@@ -66,7 +65,6 @@ export function ModelPanel(props: ModelPanelProps) {
               description: provider.name,
               group: t("panel.model.group.favorites"),
               releaseDate: model.release_date,
-              footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
             },
           ]
         })
@@ -87,7 +85,6 @@ export function ModelPanel(props: ModelPanelProps) {
                 description: provider.name,
                 group: t("panel.model.group.recent"),
                 releaseDate: model.release_date,
-                footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
               },
             ]
           })
@@ -95,10 +92,7 @@ export function ModelPanel(props: ModelPanelProps) {
 
     const modelOptions = sync.data.provider
       .filter((provider) => !props.providerID || provider.id === props.providerID)
-      .toSorted((left, right) => {
-        const opencode = Number(left.id !== "opencode") - Number(right.id !== "opencode")
-        return opencode || left.name.localeCompare(right.name)
-      })
+      .toSorted((left, right) => left.name.localeCompare(right.name))
       .flatMap((provider) =>
         sortModelOptions(
           Object.entries(provider.models)
@@ -112,7 +106,6 @@ export function ModelPanel(props: ModelPanelProps) {
                 description: isFavorite(ref) ? t("panel.model.favorite.mark") : connected() ? undefined : provider.name,
                 group: connected() ? provider.name : undefined,
                 releaseDate: info.release_date,
-                footer: info.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
               } satisfies Candidate
             })
             .filter(
@@ -132,8 +125,6 @@ export function ModelPanel(props: ModelPanelProps) {
       title: candidate.title,
       description: candidate.description,
       group: candidate.group,
-      trail: candidate.footer === "Free" ? t("panel.model.free") : undefined,
-      disabled: candidate.value.providerID === "opencode" && candidate.value.modelID.includes("-nano"),
     })),
   )
 

@@ -405,6 +405,10 @@ describe("DagLoop atomic wake integration", () => {
         const status = SessionStatus.layer.pipe(Layer.provide(bridge))
         const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
         const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+        // PR4 serves the period reminder from the inbox tick; the dedicated
+        // DagLoop sweep is gone (#1027 D5), so the inbox must be part of the
+        // build environment and explicitly initialized below.
+        const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
         const base = Layer.mergeAll(
           database,
           events,
@@ -414,6 +418,7 @@ describe("DagLoop atomic wake integration", () => {
           dag,
           status,
           AgentScheduler.defaultLayer,
+          inbox,
         )
 
         yield* Effect.gen(function* () {
@@ -452,6 +457,7 @@ describe("DagLoop atomic wake integration", () => {
               const dagService = yield* Dag.Service
               const loopService = yield* DagLoop.Service
               yield* loopService.init()
+              yield* (yield* SessionInbox.Service).init()
               workflowID = yield* dagService.create({
                 projectID: "project-1",
                 sessionID: "ses_parent",
@@ -496,6 +502,7 @@ describe("DagLoop atomic wake integration", () => {
               Layer.provide(session),
               Layer.provide(promptLayer(firstQueues)),
               Layer.provide(agent),
+              Layer.provide(inbox),
                 ),
               ),
             ),
@@ -523,6 +530,7 @@ describe("DagLoop atomic wake integration", () => {
               Layer.provide(session),
               Layer.provide(promptLayer(restartedQueues)),
               Layer.provide(agent),
+              Layer.provide(inbox),
                 ),
               ),
             ),

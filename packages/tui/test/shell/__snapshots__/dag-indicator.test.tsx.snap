@@ -1,0 +1,46 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`footer shows the on indicator after the agent name at 120 columns 1`] = `
+" build ◆ DAG tab 切换 agent                                         / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer keeps the on marker alone at 79 columns 1`] = `
+" build ◆ tab 切换 agent    / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer shows the off indicator after the agent name at 120 columns 1`] = `
+" build ◇ DAG tab 切换 agent                                         / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer keeps the off marker alone at 79 columns 1`] = `
+" build ◇ tab 切换 agent    / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer shows the unavailable indicator after the agent name at 120 columns 1`] = `
+" build ◆ DAG ! tab 切换 agent                                       / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer keeps the unavailable marker alone at 79 columns 1`] = `
+" build ◆ tab 切换 agent    / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer shows the on indicator in full at 80 columns 1`] = `
+" build ◆ DAG tab 切换 agent / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer shows the off indicator in full at 80 columns 1`] = `
+" build ◇ DAG tab 切换 agent / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 · ? 快捷键 
+"
+`;
+
+exports[`footer shows the unavailable indicator in full at 80 columns 1`] = `
+" build ◆ DAG ! tab 切换 agent          / 命令 · ctrl+b 侧边栏 · ctrl+o 展开输出 
+"
+`;

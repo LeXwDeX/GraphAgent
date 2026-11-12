@@ -9,6 +9,9 @@ import { useLocal } from "../context/local"
 import { useEditorContext } from "../context/editor"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTuiConfig } from "../config"
+import { t } from "../i18n"
+import { GRAPHAGENT_BASE_MODE, useBindings } from "../keymap"
+import { useToast } from "../ui/toast"
 
 let once = false
 const placeholder = {
@@ -26,6 +29,7 @@ export function Home() {
   const editor = useEditorContext()
   const dimensions = useTerminalDimensions()
   const tuiConfig = useTuiConfig()
+  const toast = useToast()
   const promptMaxWidth = createMemo(() => {
     const configured = tuiConfig.prompt?.max_width
     if (configured === "auto") return Math.max(75, Math.floor(dimensions().width * 0.7))
@@ -36,6 +40,24 @@ export function Home() {
   onMount(() => {
     editor.clearSelection()
   })
+
+  // DAG mode is a per-session setting (#886 3.9). Without a session the key only
+  // says where to set it and sends no request.
+  useBindings(() => ({
+    mode: GRAPHAGENT_BASE_MODE,
+    commands: [
+      {
+        name: "session.dagmode.toggle",
+        title: t("help.dagmode.toggle"),
+        category: "Session",
+        hidden: true,
+        run: () => {
+          toast.show({ text: t("dagmode.toggle.needSession"), level: "info", dedupeKey: "dagmode.toggle.needSession" })
+        },
+      },
+    ],
+    bindings: tuiConfig.keybinds.gather("home.dagmode", ["session.dagmode.toggle"]),
+  }))
 
   const bind = (r: PromptRef | undefined) => {
     setRef(r)

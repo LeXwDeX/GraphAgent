@@ -1,0 +1,255 @@
+# English literals that bypass t() (ratchet baseline); the rules are documented in script/check-tui-text.ts.
+# Entries may only be removed: move the text to the message tables, then run `bun script/check-tui-text.ts --update-baseline`.
+# Columns, tab separated: file, kind, text, and the occurrence count when it is more than one.
+app.tsx	prop	Agent cycle
+app.tsx	prop	Agent cycle reverse
+app.tsx	prop	Connect provider
+app.tsx	prop	Copy worktree path
+app.tsx	prop	Disable animations
+app.tsx	prop	Disable diff wrapping
+app.tsx	prop	Disable file context
+app.tsx	prop	Disable paste summary
+app.tsx	prop	Disable session directory filtering
+app.tsx	prop	Disable terminal title
+app.tsx	prop	Enable animations
+app.tsx	prop	Enable diff wrapping
+app.tsx	prop	Enable file context
+app.tsx	prop	Enable paste summary
+app.tsx	prop	Enable session directory filtering
+app.tsx	prop	Enable terminal title
+app.tsx	prop	Exit the app
+app.tsx	prop	Favorite cycle
+app.tsx	prop	Favorite cycle reverse
+app.tsx	prop	Help
+app.tsx	prop	Lock theme mode
+app.tsx	prop	Manage workspaces
+app.tsx	prop	Model cycle
+app.tsx	prop	Model cycle reverse
+app.tsx	prop	New session
+app.tsx	prop	Show command palette
+app.tsx	prop	Suspend terminal
+app.tsx	prop	Switch agent
+app.tsx	prop	Switch model
+app.tsx	prop	Switch model variant
+app.tsx	prop	Switch session
+app.tsx	prop	Switch theme
+app.tsx	prop	Switch to dark mode
+app.tsx	prop	Switch to light mode
+app.tsx	prop	Switch to session in quick slot ${}
+app.tsx	prop	Toggle MCPs
+app.tsx	prop	Toggle console
+app.tsx	prop	Toggle debug panel
+app.tsx	prop	Unlock theme mode
+app.tsx	prop	Variant cycle
+app.tsx	prop	View status
+app.tsx	prop	Write heap snapshot
+app.tsx	toast	Copied to clipboard
+app.tsx	toast	Copied worktree path
+app.tsx	toast	Failed to fork session	2
+app.tsx	toast	Heap snapshot written to ${}
+app.tsx	toast	Invalid model format: ${}
+app.tsx	toast	No variants available: The current model does not support any variants.
+app.tsx	toast	The current session was deleted
+ask/local.tsx	prop	Cancel	4
+ask/local.tsx	prop	Choose option
+ask/local.tsx	prop	Confirm selection
+ask/local.tsx	prop	Next option	2
+ask/local.tsx	prop	Previous option	2
+component/prompt/autocomplete.tsx	jsx-text	No matching items
+component/prompt/autocomplete.tsx	prop	Complete autocomplete item
+component/prompt/autocomplete.tsx	prop	Hide autocomplete
+component/prompt/autocomplete.tsx	prop	Next autocomplete item
+component/prompt/autocomplete.tsx	prop	Previous autocomplete item
+component/prompt/autocomplete.tsx	prop	Select autocomplete item
+component/prompt/index.tsx	jsx-text	(new
+component/prompt/index.tsx	jsx-text	(new working copy)
+component/prompt/index.tsx	jsx-text	Prompt not sent · restore failed prompt from commands to retry
+component/prompt/index.tsx	jsx-text	Sending prompt…
+component/prompt/index.tsx	jsx-text	Shell
+component/prompt/index.tsx	jsx-text	Some session details could not load (
+component/prompt/index.tsx	jsx-text	Stopping…
+component/prompt/index.tsx	jsx-text	Workspace	2
+component/prompt/index.tsx	jsx-text	again to interrupt
+component/prompt/index.tsx	jsx-text	agents
+component/prompt/index.tsx	jsx-text	commands
+component/prompt/index.tsx	jsx-text	esc	2
+component/prompt/index.tsx	jsx-text	exit shell mode
+component/prompt/index.tsx	jsx-text	interrupt
+component/prompt/index.tsx	prop	Cancel edit
+component/prompt/index.tsx	prop	Clear prompt
+component/prompt/index.tsx	prop	Interrupt session
+component/prompt/index.tsx	prop	Move session
+component/prompt/index.tsx	prop	Next prompt history
+component/prompt/index.tsx	prop	Open editor
+component/prompt/index.tsx	prop	Paste
+component/prompt/index.tsx	prop	Previous prompt history
+component/prompt/index.tsx	prop	Remove editor context
+component/prompt/index.tsx	prop	Restore failed prompt
+component/prompt/index.tsx	prop	Skills
+component/prompt/index.tsx	prop	Stash list
+component/prompt/index.tsx	prop	Stash pop
+component/prompt/index.tsx	prop	Stash prompt
+component/prompt/index.tsx	prop	Submit prompt
+component/prompt/index.tsx	prop	Warp
+context/local.tsx	toast	Add a favorite model to use this shortcut
+context/local.tsx	toast	Agent ${}'s configured model ${}/${} is not valid
+context/local.tsx	toast	Agent not found: ${}
+context/local.tsx	toast	Model ${}/${} is not valid	2
+panel/detail.tsx	prop	Activate row
+panel/detail.tsx	prop	First row
+panel/detail.tsx	prop	Last row
+panel/detail.tsx	prop	Next row
+panel/detail.tsx	prop	Next tab
+panel/detail.tsx	prop	Page down
+panel/detail.tsx	prop	Page up
+panel/detail.tsx	prop	Previous row
+panel/detail.tsx	prop	Previous tab
+panel/detail.tsx	prop	Submit input
+panel/detail.tsx	prop	Toggle row
+panel/host.tsx	prop	Close all panels
+panel/host.tsx	prop	Close panel
+panel/list.tsx	prop	First item
+panel/list.tsx	prop	Last item
+panel/list.tsx	prop	Next item
+panel/list.tsx	prop	Next tab
+panel/list.tsx	prop	Page down
+panel/list.tsx	prop	Page up
+panel/list.tsx	prop	Previous item
+panel/list.tsx	prop	Previous tab
+panel/list.tsx	prop	Select item
+panel/settings.tsx	prop	Activate row
+panel/settings.tsx	prop	Cancel edit
+panel/settings.tsx	prop	Commit edit
+panel/settings.tsx	prop	First row
+panel/settings.tsx	prop	Last row
+panel/settings.tsx	prop	Next row
+panel/settings.tsx	prop	Next tab
+panel/settings.tsx	prop	Page down
+panel/settings.tsx	prop	Page up
+panel/settings.tsx	prop	Previous row
+panel/settings.tsx	prop	Previous tab
+routes/session/drawer.tsx	jsx-attr	LSP
+routes/session/drawer.tsx	jsx-attr	MCP
+routes/session/index.tsx	jsx-attr	# ${}: blocked
+routes/session/index.tsx	jsx-attr	# Questions
+routes/session/index.tsx	jsx-attr	# Todos
+routes/session/index.tsx	jsx-attr	Compaction
+routes/session/index.tsx	jsx-text	Asked
+routes/session/index.tsx	jsx-text	Click to collapse	2
+routes/session/index.tsx	jsx-text	Click to expand	2
+routes/session/index.tsx	jsx-text	Directory
+routes/session/index.tsx	jsx-text	Edit
+routes/session/index.tsx	jsx-text	Error [
+routes/session/index.tsx	jsx-text	File
+routes/session/index.tsx	jsx-text	Glob "
+routes/session/index.tsx	jsx-text	Grep "
+routes/session/index.tsx	jsx-text	Patch
+routes/session/index.tsx	jsx-text	QUEUED
+routes/session/index.tsx	jsx-text	Read
+routes/session/index.tsx	jsx-text	Skill "
+routes/session/index.tsx	jsx-text	Thinking
+routes/session/index.tsx	jsx-text	Thought
+routes/session/index.tsx	jsx-text	Tools started in this turn, so it was not replayed automatically. Retry manually.
+routes/session/index.tsx	jsx-text	Updating todos...
+routes/session/index.tsx	jsx-text	WebFetch
+routes/session/index.tsx	jsx-text	Write
+routes/session/index.tsx	jsx-text	background
+routes/session/index.tsx	jsx-text	line
+routes/session/index.tsx	jsx-text	match	2
+routes/session/index.tsx	jsx-text	matches	2
+routes/session/index.tsx	jsx-text	message reverted	2
+routes/session/index.tsx	jsx-text	or /redo to restore	2
+routes/session/index.tsx	jsx-text	question
+routes/session/index.tsx	jsx-text	results)
+routes/session/index.tsx	jsx-text	view subagents
+routes/session/index.tsx	jsx-text	· interrupted
+routes/session/index.tsx	jsx-text	↳ Loaded
+routes/session/index.tsx	prop	Are you sure you want to restore the reverted messages?	2
+routes/session/index.tsx	prop	Background subagents
+routes/session/index.tsx	prop	Compact session
+routes/session/index.tsx	prop	Confirm Redo	2
+routes/session/index.tsx	prop	Copy last assistant message
+routes/session/index.tsx	prop	Copy session transcript
+routes/session/index.tsx	prop	Disable code concealment
+routes/session/index.tsx	prop	Enable code concealment
+routes/session/index.tsx	prop	Export session transcript
+routes/session/index.tsx	prop	First message
+routes/session/index.tsx	prop	Fork session
+routes/session/index.tsx	prop	Go to child session
+routes/session/index.tsx	prop	Go to parent session
+routes/session/index.tsx	prop	Half page down
+routes/session/index.tsx	prop	Half page up
+routes/session/index.tsx	prop	Hide generic tool output
+routes/session/index.tsx	prop	Hide timestamps
+routes/session/index.tsx	prop	Hide tool details
+routes/session/index.tsx	prop	Jump to last user message
+routes/session/index.tsx	prop	Jump to message
+routes/session/index.tsx	prop	Last message
+routes/session/index.tsx	prop	Line down
+routes/session/index.tsx	prop	Line up
+routes/session/index.tsx	prop	Next child session
+routes/session/index.tsx	prop	Next message
+routes/session/index.tsx	prop	Page down
+routes/session/index.tsx	prop	Page up
+routes/session/index.tsx	prop	Previous child session
+routes/session/index.tsx	prop	Previous message
+routes/session/index.tsx	prop	Redo
+routes/session/index.tsx	prop	Rename session
+routes/session/index.tsx	prop	Show generic tool output
+routes/session/index.tsx	prop	Show timestamps
+routes/session/index.tsx	prop	Show tool details
+routes/session/index.tsx	prop	Toggle session scrollbar
+routes/session/index.tsx	prop	Undo previous message
+routes/session/index.tsx	toast	Connect a provider to summarize this session
+routes/session/index.tsx	toast	Failed to copy session transcript
+routes/session/index.tsx	toast	Failed to copy to clipboard
+routes/session/index.tsx	toast	Failed to export session
+routes/session/index.tsx	toast	Message copied to clipboard!
+routes/session/index.tsx	toast	No assistant messages found
+routes/session/index.tsx	toast	No text content found in last assistant message
+routes/session/index.tsx	toast	No text parts found in last assistant message
+routes/session/index.tsx	toast	Session exported to ${}
+routes/session/index.tsx	toast	Session not found: ${}
+routes/session/index.tsx	toast	Session transcript copied to clipboard!
+routes/session/permission.tsx	jsx-text	No diff provided
+routes/session/permission.tsx	jsx-text	Patterns
+routes/session/permission.tsx	jsx-text	This keeps the session running despite repeated failures.
+routes/session/permission.tsx	prop	${} Task
+routes/session/permission.tsx	prop	Access external directory ${}
+routes/session/permission.tsx	prop	Allow for this session
+routes/session/permission.tsx	prop	Allow once
+routes/session/permission.tsx	prop	Call tool ${}	2
+routes/session/permission.tsx	prop	Call tool ${} · ${}
+routes/session/permission.tsx	prop	Continue after repeated failures
+routes/session/permission.tsx	prop	Edit ${}
+routes/session/permission.tsx	prop	Glob "${}"
+routes/session/permission.tsx	prop	Grep "${}"
+routes/session/permission.tsx	prop	List ${}
+routes/session/permission.tsx	prop	Next option
+routes/session/permission.tsx	prop	Previous option
+routes/session/permission.tsx	prop	Read ${}
+routes/session/permission.tsx	prop	Reject and relay through the main agent
+routes/session/permission.tsx	prop	Reject permission	3
+routes/session/permission.tsx	prop	Reject without a reason
+routes/session/permission.tsx	prop	Select option
+routes/session/permission.tsx	prop	Send rejection reason
+routes/session/permission.tsx	prop	Shell command
+routes/session/permission.tsx	prop	Toggle permission fullscreen
+routes/session/permission.tsx	prop	WebFetch ${}
+routes/session/question.tsx	prop	Clear answer edit
+routes/session/question.tsx	prop	Next answer
+routes/session/question.tsx	prop	Next question
+routes/session/question.tsx	prop	Previous answer
+routes/session/question.tsx	prop	Previous question
+routes/session/question.tsx	prop	Reject question	2
+routes/session/question.tsx	prop	Select answer
+routes/session/question.tsx	prop	Submit answers
+routes/session/question.tsx	prop	Toggle answer
+routes/session/subagent-footer.tsx	jsx-text	Next
+routes/session/subagent-footer.tsx	jsx-text	Parent
+routes/session/subagent-footer.tsx	jsx-text	Prev
+routes/session/subagent-footer.tsx	jsx-text	esc
+routes/session/subagent-footer.tsx	prop	Subagent
+shell/bottom-zone.tsx	prop	Close aside panel
+ui/toast.tsx	toast	An unknown error has occurred
+util/selection.ts	toast	Copied to clipboard

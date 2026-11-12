@@ -16,7 +16,7 @@ import { MessageID, SessionID } from "@/session/schema"
 import type { TurnStart } from "@/session/turns"
 import { SessionStatus } from "@/session/status"
 import type { InstanceContext } from "@/project/instance-context"
-import { pollWithTimeout, testEffect } from "../lib/effect"
+import { it as bare, pollWithTimeout, testEffect } from "../lib/effect"
 
 // Counts the inbox's own SessionStatus subscriptions: the invariant under
 // test is one subscription per loaded instance, regardless of how many
@@ -51,6 +51,19 @@ const it = testEffect(layer)
 const drainFibers = Effect.gen(function* () {
   for (let i = 0; i < 15; i++) yield* Effect.yieldNow
 })
+
+// Wait for an observable result instead of a fixed number of scheduler turns.
+// The tick forks each session's drain, so the pass ending says nothing about
+// the claims having run. Bounded in scheduler turns, never in wall time, so it
+// also holds under TestClock.
+const until = (done: Effect.Effect<boolean>, message: string) =>
+  Effect.gen(function* () {
+    let turns = 0
+    while (!(yield* done)) {
+      if (++turns > 500) yield* Effect.fail(new Error(message))
+      yield* Effect.yieldNow
+    }
+  })
 
 const context = (directory: string): InstanceContext => ({
   directory,
@@ -191,9 +204,108 @@ describe("SessionInbox", () => {
       expect(yield* Ref.get(claims)).toEqual([])
 
       yield* TestClock.adjust("30 seconds")
-      yield* drainFibers
+      yield* until(
+        Ref.get(claims).pipe(Effect.map((seen) => seen.length === 1)),
+        "the tick did not claim the scanned session",
+      )
       expect(yield* Ref.get(scans)).toBe(1)
       expect(yield* Ref.get(claims)).toEqual([sessionID])
+    }),
+  )
+
+  it.effect("the tick forks every scanned session's drain: a held claim blocks neither its pass nor the next tick", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const ctx = context(nextDirectory("tick-fork"))
+      const held = SessionID.descending()
+      const free = SessionID.descending()
+      const late = SessionID.descending()
+      const gate = yield* Deferred.make<void>()
+      const started = yield* Ref.make<ReadonlyArray<SessionID>>([])
+      const scanned = yield* Ref.make<ReadonlyArray<SessionID>>([held, free])
+      const startsOf = (sessionID: SessionID) =>
+        Ref.get(started).pipe(Effect.map((seen) => seen.filter((sid) => sid === sessionID).length))
+      yield* inbox
+        .register(
+          // A long model turn: the claim for `held` does not return until the
+          // gate opens. Every other session's claim returns at once.
+          source(
+            "goal.continue",
+            10,
+            (sid) =>
+              Ref.update(started, (seen) => [...seen, sid]).pipe(
+                Effect.andThen(sid === held ? Deferred.await(gate) : Effect.void),
+                Effect.as(true),
+              ),
+            { hint: () => false, scan: () => Ref.get(scanned) },
+          ),
+        )
+        .pipe(Effect.provideService(InstanceRef, ctx))
+      yield* inbox.init().pipe(Effect.provideService(InstanceRef, ctx))
+
+      // Tick 1 scans `held` first, and its claim never returns. `free`, later
+      // in the same pass, is still claimed.
+      yield* TestClock.adjust("30 seconds")
+      yield* until(
+        startsOf(free).pipe(Effect.map((count) => count === 1)),
+        "the held claim kept the rest of its pass from running",
+      )
+      expect(yield* startsOf(held)).toBe(1)
+
+      // Tick 2 still runs while `held` is in flight and claims a new session.
+      yield* Ref.set(scanned, [held, free, late])
+      yield* TestClock.adjust("30 seconds")
+      yield* until(
+        startsOf(late).pipe(Effect.map((count) => count === 1)),
+        "the held claim kept the next tick from running",
+      )
+      // `held` was scanned again, but its drain is in flight: the request is
+      // folded into one extra pass instead of a concurrent claim. `free`'s
+      // earlier drain had ended, so it ran a fresh one.
+      expect(yield* startsOf(held)).toBe(1)
+      expect(yield* startsOf(free)).toBe(2)
+
+      // The long turn ends: the folded request runs as exactly one more pass.
+      yield* Deferred.succeed(gate, void 0)
+      yield* until(
+        startsOf(held).pipe(Effect.map((count) => count === 2)),
+        "the folded tick request did not run after the held claim ended",
+      )
+      yield* drainFibers
+      expect(yield* startsOf(held)).toBe(2)
+    }),
+  )
+
+  bare.effect("closing the instance interrupts a tick drain that is still waiting on its claim", () =>
+    Effect.gen(function* () {
+      const ctx = context(nextDirectory("tick-dispose"))
+      const sessionID = SessionID.descending()
+      const started = yield* Ref.make(false)
+      const interrupted = yield* Ref.make<ReadonlyArray<SessionID>>([])
+      // The inbox lives only inside this block: its layer scope closes when
+      // the block ends, which is how an instance is disposed.
+      yield* Effect.gen(function* () {
+        const inbox = yield* SessionInbox.Service
+        yield* inbox
+          .register(
+            source(
+              "goal.continue",
+              10,
+              (sid) =>
+                Ref.set(started, true).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.onInterrupt(() => Ref.update(interrupted, (seen) => [...seen, sid])),
+                ),
+              { scan: () => Effect.succeed([sessionID]) },
+            ),
+          )
+          .pipe(Effect.provideService(InstanceRef, ctx))
+        yield* inbox.init().pipe(Effect.provideService(InstanceRef, ctx))
+        yield* TestClock.adjust("30 seconds")
+        yield* until(Ref.get(started), "the tick never started the claim")
+        expect(yield* Ref.get(interrupted)).toEqual([])
+      }).pipe(Effect.provide(layer))
+      expect(yield* Ref.get(interrupted)).toEqual([sessionID])
     }),
   )
 
@@ -307,7 +419,10 @@ describe("SessionInbox", () => {
       // …and the next forced tick passes the gate again because the session
       // is now idle. The busy tick above proves the gate blocks a forced pass.
       yield* TestClock.adjust("30 seconds")
-      yield* drainFibers
+      yield* until(
+        Ref.get(claims).pipe(Effect.map((seen) => seen.length === 2)),
+        "the forced tick did not claim once the session was idle",
+      )
       expect(yield* Ref.get(claims)).toEqual([sessionID, sessionID])
     }),
   )

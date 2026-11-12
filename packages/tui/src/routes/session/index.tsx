@@ -62,6 +62,7 @@ import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
+import { remoteLine } from "../../util/remote-text"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
 import { createTicker } from "../../context/ticker"
@@ -89,6 +90,7 @@ import { AdaptiveMarkdown } from "../../ui/adaptive-markdown"
 import {
   EscapePriority,
   GRAPHAGENT_BASE_MODE,
+  modifiedBindings,
   useBindings,
   useCommandShortcut,
   useGraphagentKeymap,
@@ -122,14 +124,13 @@ const sessionBindingCommands = [
   "session.undo",
   "session.redo",
   "session.drawer.toggle",
+  "session.dagmode.toggle",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
   "session.toggle.actions",
   "session.toggle.scrollbar",
   "session.toggle.generic_tool_output",
-  "session.first",
-  "session.last",
   "session.messages_last_user",
   "session.message.next",
   "session.message.previous",
@@ -148,6 +149,9 @@ const sessionGlobalBindingCommands = [
   "session.half.page.down",
 ] as const
 
+// Home and End are the prompt's own cursor keys (#886 4.4), so the jump keys
+// only apply while no editor has focus. Their modified keys never type text and
+// stay active in the base mode either way.
 const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] as const
 
 const context = createContext<{
@@ -935,6 +939,17 @@ export function Main() {
       },
     },
     {
+      title: t("help.dagmode.toggle"),
+      value: "session.dagmode.toggle",
+      category: "Session",
+      // Sub-agent views have no mode switch: the key is inert and unlisted there.
+      hidden: !!session()?.parentID,
+      enabled: !session()?.parentID,
+      run: () => {
+        toggleDagMode()
+      },
+    },
+    {
       title: conceal() ? "Disable code concealment" : "Enable code concealment",
       value: "session.toggle.conceal",
       category: "Session",
@@ -1359,6 +1374,36 @@ export function Main() {
     })
   }
 
+  // The DAG mode lives on the server (#886 3.9). The key asks for the opposite
+  // of what `Session.dagMode` says right now and sends nothing else; the
+  // result returns through `session.updated`, so no mode is kept or flipped
+  // optimistically here.
+  function toggleDagMode() {
+    const info = session()
+    if (!info || info.parentID) return
+    const agent = local.agent.current()
+    const model = local.model.current()
+    void sdk.client.session
+      .command(
+        {
+          sessionID: info.id,
+          hookMode: "interactive",
+          command: "dag-mode",
+          arguments: info.dagMode === "on" ? "off" : "on",
+          agent: agent?.name,
+          model: model ? `${model.providerID}/${model.modelID}` : undefined,
+        },
+        { throwOnError: true },
+      )
+      .catch((error) => {
+        // A failing command also raises `session.error`, whose toast is keyed by
+        // its text: reuse the text as the key so the two merge into one. The
+        // text comes from the server, so strip escapes and control characters.
+        const text = remoteLine(errorMessage(error))
+        toast.show({ text, level: "error", dedupeKey: text })
+      })
+  }
+
   const registryCommandIds = new Set([
     "session.rename",
     "session.timeline",
@@ -1394,6 +1439,14 @@ export function Main() {
   useBindings(() => ({
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: tuiConfig.keybinds.gather("session.global.unfocused", sessionGlobalUnfocusedBindingCommands),
+  }))
+
+  useBindings(() => ({
+    mode: GRAPHAGENT_BASE_MODE,
+    bindings: modifiedBindings(
+      keymap,
+      tuiConfig.keybinds.gather("session.global.unfocused", sessionGlobalUnfocusedBindingCommands),
+    ),
   }))
 
   useBindings(() => ({

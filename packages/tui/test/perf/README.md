@@ -20,7 +20,7 @@ Input and scroll latency starts immediately before the mock key or scroll operat
 
 `P5` and `P6` sample 50 open/filter/close rounds of the slash menu, up from ten. At ten samples p95 equals the maximum, so a single scheduler hiccup moves the metric; at 50 samples p95 is the 48th value.
 
-`registerLayer` and keymap selector counters wrap the keymap instance in the harness. Store write counters count `message.*` and `message.part.*` events injected through the SDK event path. This keeps the benchmark independent of the session engine while preserving the production event route.
+`registerLayer` and keymap selector counters wrap the keymap instance in the harness. Store write counters observe the sync store through `test/fixture/store-write-probe.ts`: a write is counted once per changed `message[sessionID]` or `part[messageID]` key and per flush, so a streamed delta that reached `store.part` is counted and a delivered event that changes nothing is not. Events still enter through the production SDK event path, and `test/perf/harness.test.ts` checks the counters against known writes.
 
 ## Gate semantics
 

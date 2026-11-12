@@ -405,11 +405,20 @@ export const {
       // need their messages outside the cache.
       const protectedSessions = new Set<string>(routeChain)
       for (const sessionID of pendingAskSessions()) protectedSessions.add(sessionID)
+      // Protected sessions occupy their slots first, wherever they sit in the
+      // LRU order; only the remaining budget goes to the most recent others.
+      // Pending asks may still push the total past the limit: their messages
+      // are needed regardless.
+      const protectedCount = store.hydrated.filter((sessionID) => protectedSessions.has(sessionID)).length
+      let budget = limit - protectedCount
       const keep: string[] = []
       const drop: string[] = []
       for (const sessionID of store.hydrated) {
-        if (keep.length < limit || protectedSessions.has(sessionID)) keep.push(sessionID)
-        else drop.push(sessionID)
+        if (protectedSessions.has(sessionID)) keep.push(sessionID)
+        else if (budget > 0) {
+          keep.push(sessionID)
+          budget--
+        } else drop.push(sessionID)
       }
       if (drop.length === 0) return
       const removedParts: string[] = []

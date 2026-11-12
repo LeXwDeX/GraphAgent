@@ -236,6 +236,18 @@ export function cellWidth(text: string, ambiguousWidth: AmbiguousWidth = 1): num
   return width + extra
 }
 
+/**
+ * Width of `text` as the prompt textarea counts cursor and extmark offsets.
+ *
+ * The textarea measures with its own model, which `ambiguous_width` does not touch, so
+ * this deliberately differs from {@link cellWidth}: newlines count as zero here and
+ * `promptOffsetWidth` adds them back. Use it only to turn text into textarea offsets;
+ * every layout calculation belongs to `cellWidth`.
+ */
+export function cursorWidth(text: string): number {
+  return Bun.stringWidth(text)
+}
+
 const ELLIPSIS = "…"
 
 /**

@@ -16,6 +16,7 @@ import { Flag } from "@graphagent/core/flag/flag"
 import { Identifier } from "@graphagent/core/id/id"
 import { useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
+import { cursorWidth } from "../../ui/width"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { Spinner } from "../spinner"
@@ -470,7 +471,7 @@ export function Prompt(props: PromptProps) {
       parts: updatedNonTextParts,
     })
     restoreExtmarksFromParts(updatedNonTextParts)
-    input.cursorOffset = Bun.stringWidth(normalized)
+    input.cursorOffset = cursorWidth(normalized)
   }
 
   function openSkillsDialog() {

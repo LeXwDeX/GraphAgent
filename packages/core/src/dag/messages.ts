@@ -1192,8 +1192,11 @@ export const layer = Layer.effect(
             return success(latest?.at ?? undefined)
           }),
         ),
-      // Polled every 250ms per directory: a read-only scan must not take the
-      // write reservation that stream persistence and acceptance compete for.
+      // A page is capped at 64 recipients in session-ID order; `afterSessionID`
+      // is the cursor. Callers: DagDelivery's startup sweep, which walks every
+      // page once, and the inbox tick, which reads one page per tick and
+      // rotates the cursor. A read-only scan must not take the write
+      // reservation that stream persistence and acceptance compete for.
       pendingRecipients: (scope) =>
         read((tx) =>
           Effect.gen(function* () {

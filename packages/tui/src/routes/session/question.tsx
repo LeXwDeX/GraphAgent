@@ -9,6 +9,7 @@ import { useSync } from "../../context/sync"
 import { useTuiConfig } from "../../config"
 import { EscapePriority, GRAPHAGENT_BASE_MODE, useBindings } from "../../keymap"
 import { useToast } from "../../ui/toast"
+import { truncateCells } from "../../ui/width"
 import { useTicker } from "../../context/ticker-context"
 import { PanelShell, type PanelHint, type PanelTab } from "../../panel/shell"
 import { t } from "../../i18n"
@@ -16,19 +17,6 @@ import { askSourceLabel } from "../../ask/ask-queue"
 
 const INTERACTION_HEARTBEAT_MILLIS = 250
 const CONFIRM_TAB = "confirm"
-
-function truncateWidth(str: string, max: number) {
-  if (Bun.stringWidth(str) <= max) return str
-  let out = ""
-  let width = 0
-  for (const ch of str) {
-    const next = width + Bun.stringWidth(ch)
-    if (next > max - 1) break
-    out += ch
-    width = next
-  }
-  return out + "…"
-}
 
 export interface QuestionPromptProps {
   request: QuestionRequest
@@ -104,7 +92,7 @@ export function QuestionPrompt(props: QuestionPromptProps) {
     if (single()) return []
     const items: PanelTab[] = questions().map((item, index) => ({
       id: String(index),
-      label: truncateWidth(item.header, headerBudget()),
+      label: truncateCells(item.header, headerBudget()),
       badge: (store.answers[index]?.length ?? 0) > 0 ? "✓" : undefined,
     }))
     items.push({ id: CONFIRM_TAB, label: t("ask.question.confirm") })

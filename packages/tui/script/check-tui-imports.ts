@@ -11,6 +11,8 @@ export interface ImportViolation {
   line: number
   specifier: string
   reason: string
+  /** Resolved import target relative to the source root without extension, for local imports. */
+  target?: string
 }
 
 export interface Exemption {
@@ -29,10 +31,10 @@ export interface CheckOptions {
 
 /**
  * Existing violations. Every entry names the F Issue that removes it; the list must
- * be empty when the F series is complete.
+ * be empty when the F series is complete. `findStaleExemptions` fails an entry whose
+ * import is gone, so an entry is deleted together with the import it covered.
  */
 export const EXEMPTIONS: readonly Exemption[] = [
-  { file: "ui/dialog.tsx", target: "context/clipboard", issue: "F3 (#1020): legacy dialog removal" },
   { file: "context/local.tsx", target: "ui/toast", issue: "F3 (#1020): toast moves to the footer" },
   {
     file: "component/prompt/move.tsx",
@@ -198,11 +200,25 @@ export async function checkTuiImports(options: CheckOptions = {}) {
         line,
         specifier,
         reason: `${group}/ may not import ${targetGroup}/ (${targetRelative})`,
+        target: targetRelative,
       })
     }
   }
 
   return violations
+}
+
+/**
+ * Exemptions that no longer cover a real violation: the file is gone, it stopped
+ * importing the target, or the rules now allow the import. The entry belongs to the
+ * import it covered, so it has to be deleted together with it.
+ */
+export async function findStaleExemptions(options: CheckOptions = {}) {
+  const exemptions = options.exemptions ?? EXEMPTIONS
+  const violations = await checkTuiImports({ ...options, exemptions: [] })
+  return exemptions.filter(
+    (entry) => !violations.some((violation) => violation.file === entry.file && violation.target === entry.target),
+  )
 }
 
 export function formatViolations(violations: readonly ImportViolation[]) {
@@ -211,10 +227,15 @@ export function formatViolations(violations: readonly ImportViolation[]) {
   )
 }
 
+export function formatStaleExemptions(stale: readonly Exemption[]) {
+  return stale.map((entry) => `${entry.file} stale exemption for ${entry.target} [${entry.issue}]`)
+}
+
 if (import.meta.main) {
   const violations = await checkTuiImports()
-  if (violations.length > 0) {
-    console.error(formatViolations(violations).join("\n"))
+  const stale = await findStaleExemptions()
+  if (violations.length > 0 || stale.length > 0) {
+    console.error([...formatViolations(violations), ...formatStaleExemptions(stale)].join("\n"))
     process.exit(1)
   }
   console.log("TUI import direction check passed")

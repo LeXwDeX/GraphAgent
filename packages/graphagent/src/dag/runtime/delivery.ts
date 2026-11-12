@@ -36,6 +36,10 @@ const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.
 
 export const PAUSED_REMINDER_DELAY_MS = 5 * 60_000
 
+/** One mailbox ledger page. `DagMessages.pendingRecipients` clamps `limit` to
+ * 64 and orders by session ID, so a shorter page is the end of the ledger. */
+const MAILBOX_PAGE_SIZE = 64
+
 /** Stable local receipt for the exact durable wake batch, including execution
  * identity and event revisions. Repeated text from a new attempt is new input. */
 export function wakeBatchIdentity(sessionID: string, batch: DagStore.WakeBatch) {
@@ -98,7 +102,7 @@ export interface Environment {
   readonly events: Context.Service.Shape<typeof EventV2Bridge.Service>
   readonly messages: DagMessages.Interface | undefined
   /** The per-instance inbox this delivery registers with. Absent in isolated
-   * unit graphs; the idle trigger then falls back to the transitional scans. */
+   * unit graphs; those graphs keep the init scan and the 30s sweep. */
   readonly inbox: SessionInbox.Interface | undefined
   readonly entries: (dagID: string) => Entry | undefined
   readonly lastAssistantMessage: (childSessionID: string) => Effect.Effect<SessionV1.WithParts | undefined, Error>
@@ -118,11 +122,14 @@ export interface Interface {
   /** Fire-and-forget trigger: nudge is idempotent and safe to call for every
    * event source. The in-flight reservations coalesce concurrent attempts. */
   readonly nudge: (sessionID: string) => Effect.Effect<void>
-  /** Fallback scan: paused-workflow reminders plus the transitional mailbox
-   * poll. H2's per-instance inbox tick calls this until E2 removes the poll. */
+  /** Startup scan: paused-workflow reminders plus a mailbox sweep over every
+   * ledger page, for messages queued while no instance was listening. The
+   * periodic fallback is the inbox tick (`scanSessions`). */
   readonly scan: () => Effect.Effect<void>
   /** Durable scan for the inbox tick: sessions in this directory with an
-   * unreported wake, a due paused reminder, or a queued main-mailbox message. */
+   * unreported wake, a due paused reminder, or a queued main-mailbox message.
+   * The mailbox part is one ledger page per call; successive calls rotate
+   * through the whole ledger and wrap at its end. */
   readonly scanSessions: () => Effect.Effect<ReadonlyArray<string>>
 }
 
@@ -146,8 +153,11 @@ export const unavailable: Interface = {
  *
  * PR3 makes this module a `dag.delivery` inbox source (priority 5, idle_only)
  * and registers the hint-only `dag.mailbox.step` step source. The inbox owns
- * the one idle subscription; the 250ms mailbox poll, the 30s paused-reminder
- * sweep and the startup scan stay as transitional fallbacks until E2.
+ * the one idle subscription; delivery is event-driven: `messages.changed`
+ * nudges on a queued message and idle transitions retry a deferred admission
+ * through the inbox claim. The inbox's 30-second tick (whose scan lists due
+ * paused reminders and queued mailboxes) is the only periodic fallback
+ * (#1027 D5).
  */
 export const make = Effect.fn("DagDelivery.make")(function* (environment: Environment): Effect.fn.Return<Interface> {
   const {
@@ -918,20 +928,42 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     Effect.map(Option.getOrElse(() => false)),
   )
 
-  let mailboxCursor: string | undefined
-  const pollAgentMailboxes = Effect.gen(function* () {
+  // Event-driven delivery is the fast path: `messages.changed` nudges the
+  // recipient session. This sweep covers messages queued before the
+  // subscription existed or whose change event was lost (a crashed sender).
+  // It runs at startup, where one pass can afford to walk the whole ledger:
+  // a page is capped and ordered by session ID, so stopping at the first one
+  // would hide every later recipient behind mailboxes that keep their queue
+  // (a failed turn waits for new host context). The inbox tick owns the
+  // periodic fallback (#1027 D5).
+  const sweepMailboxes = Effect.gen(function* () {
     if (!messages) return
-    const recipients = yield* messages.pendingRecipients({
-      projectID,
-      directory,
-      limit: 20,
-      afterSessionID: mailboxCursor,
-    })
-    mailboxCursor = recipients.at(-1)?.sessionID
-    for (const endpoint of recipients) {
-      yield* deliverAgentMessages(endpoint.sessionID).pipe(guarded("AgentMailboxAdmission"), Effect.forkIn(scope))
+    let after: string | undefined
+    for (;;) {
+      const page = yield* messages.pendingRecipients({
+        projectID,
+        directory,
+        limit: MAILBOX_PAGE_SIZE,
+        afterSessionID: after,
+      })
+      for (const endpoint of page) {
+        yield* deliverAgentMessages(endpoint.sessionID).pipe(guarded("AgentMailboxAdmission"), Effect.forkIn(scope))
+      }
+      const last = page.at(-1)?.sessionID
+      // A short page is the end of the ledger; a cursor that did not move
+      // (a store that ignores it) must not spin.
+      if (page.length < MAILBOX_PAGE_SIZE || last === undefined || last === after) return
+      after = last
     }
   }).pipe(guarded("AgentMailboxSweep"))
+
+  // The tick reads one ledger page per call so its read budget stays fixed.
+  // A page holds at most 64 recipients, so the first page alone would starve
+  // every later recipient whenever the first 64 mailboxes keep their queue.
+  // The cursor therefore moves on after each full page and wraps once a short
+  // page marks the end. Memory only: a restart begins with the startup sweep,
+  // which walks every page.
+  let mailboxCursor: string | undefined
 
   // A parked workflow can outlive the parent turn that caused its pause.
   // The paused row's durable wake marker permits one reminder per pause
@@ -952,18 +984,19 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     }
   }).pipe(guarded("PausedReminderSweep"))
 
-  /** Fallback scan: paused reminders + the transitional 250ms mailbox poll. */
+  /** Startup scan: mailbox sweep + paused reminders. */
   const scan = (): Effect.Effect<void> =>
     Effect.gen(function* () {
-      yield* pollAgentMailboxes
+      yield* sweepMailboxes
       yield* remindPausedWorkflows
     }).pipe(guarded("DagDeliveryScan"))
 
   /** Sessions this instance should try on the inbox tick. Store lists are
    * global; the directory guard keeps sibling worktrees out, and the drain's
-   * own ownership gates remain authoritative. Paused reminders are deliberately
-   * not scanned here: the dedicated 30s sweep owns them (see init), keeping
-   * this tick at three reads while the whole 30-second cycle stays at four. */
+   * own ownership gates remain authoritative. Due paused reminders are part
+   * of the same tick, so the inbox 30s timer is their only periodic driver
+   * (one read here, no separate fiber). The mailbox ledger is read one page
+   * per tick through `mailboxCursor`, so a deep backlog adds no reads. */
   const scanSessions = (): Effect.Effect<ReadonlyArray<string>> =>
     Effect.gen(function* () {
       const sessions = new Set<string>()
@@ -980,15 +1013,37 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       for (const sessionID of wakes) {
         if (yield* DagLocation.ownsSession(sessionID, directory)) sessions.add(sessionID)
       }
-      if (messages) {
-        const recipients = yield* messages.pendingRecipients({ projectID, directory, limit: 64 }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("DagDelivery mailbox scan failed", { cause }).pipe(
-              Effect.as([] as ReadonlyArray<DagMessages.Endpoint>),
-            ),
+      const now = yield* Clock.currentTimeMillis
+      const paused = yield* store.listByStatus("paused").pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("DagDelivery paused scan failed", { cause }).pipe(
+            Effect.as([] as ReadonlyArray<DagStore.WorkflowRow>),
           ),
-        )
-        for (const endpoint of recipients) sessions.add(endpoint.sessionID)
+        ),
+      )
+      for (const workflow of paused) {
+        if (!isPausedReminderDue(workflow, now)) continue
+        // The durable wake marker re-checks the episode; this is only a hint
+        // of where a reminder may be due.
+        if (yield* DagLocation.ownsSession(workflow.sessionId, directory)) sessions.add(workflow.sessionId)
+      }
+      if (messages) {
+        const page = yield* messages
+          .pendingRecipients({ projectID, directory, limit: MAILBOX_PAGE_SIZE, afterSessionID: mailboxCursor })
+          .pipe(
+            Effect.map(Option.some),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("DagDelivery mailbox scan failed", { cause }).pipe(
+                Effect.as(Option.none<ReadonlyArray<DagMessages.Endpoint>>()),
+              ),
+            ),
+          )
+        // A failed read leaves the cursor where it was: the next tick retries
+        // the same page instead of rewinding to the first one.
+        if (Option.isSome(page)) {
+          mailboxCursor = page.value.length < MAILBOX_PAGE_SIZE ? undefined : page.value.at(-1)?.sessionID
+          for (const endpoint of page.value) sessions.add(endpoint.sessionID)
+        }
       }
       return [...sessions]
     }).pipe(
@@ -1023,10 +1078,23 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   const nudge = (sessionID: string): Effect.Effect<void> =>
     drain(sessionID).pipe(guarded("DeliveryNudge"), Effect.forkIn(scope), Effect.asVoid)
 
-  // H2 consumes `DagMessages.changed` for event-driven mailbox delivery.
-  // Until then this module is the consumer: a queued message in this
-  // instance's directory nudges the owning session's drain. The subscription
-  // may be an unimplemented test mock; it must never kill the instance.
+  /** Nudge for one queued mailbox message. With an inbox the nudge is routed to
+   * the instance that owns the directory (another process can share the
+   * database). `inbox.nudge` resolves only after that drain ends, and the drain
+   * awaits the admitted model turn (or its 7-minute lease), so it is forked
+   * here exactly like the local `nudge`: the change stream must stay free to
+   * take the next recipient's event. The inbox already coalesces repeats per
+   * session (a nudge during a drain only marks one more pass), and the fiber
+   * belongs to the instance scope, so disposing the instance interrupts it. */
+  const nudgeRecipient = (sessionID: string): Effect.Effect<void> =>
+    inbox
+      ? inbox.nudge(SessionID.make(sessionID)).pipe(guarded("MailboxChangeNudge"), Effect.forkIn(scope), Effect.asVoid)
+      : nudge(sessionID)
+
+  // H2 owns the nudge port: a queued message in this instance's directory
+  // nudges its recipient (`nudgeRecipient`). The subscription may be an
+  // unimplemented test mock; it must never kill the instance. Without an inbox
+  // (isolated unit graphs) the local drain is the only target.
   if (messages) {
     yield* Effect.suspend(() => {
       const mailbox = messages
@@ -1034,7 +1102,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         Stream.filter((change) => change.kind === "queued"),
         Stream.runForEach((change) =>
           change.directory !== "" && DagLocation.canonicalDirectory(change.directory) === DagLocation.canonicalDirectory(directory)
-            ? nudge(change.recipientSessionID)
+            ? nudgeRecipient(change.recipientSessionID)
             : Effect.void,
         ),
       )
@@ -1048,16 +1116,11 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     )
   }
 
-  // Transitional fallbacks until H2's per-instance inbox tick and E2 remove
-  // them: an immediate scan at init, then the 250ms mailbox poll and the 30s
-  // paused-reminder sweep. Paused reminders stay outside the inbox tick, as
-  // the read budget counts them separately: goal + wakes + mailbox (3) plus
-  // this sweep (1) is the 30-second cycle's four reads.
+  // Startup scan: cover messages queued before this instance subscribed (or by
+  // a crashed peer) and paused reminders that came due while it was down. Runs
+  // once here; the durable fallback afterwards is the inbox 30s tick, whose
+  // `dag.delivery` scan also lists due paused reminders (#1027 D5).
   yield* scan()
-  if (messages) {
-    yield* Effect.forever(Effect.sleep(250).pipe(Effect.andThen(pollAgentMailboxes))).pipe(Effect.forkIn(scope))
-  }
-  yield* Effect.forever(Effect.sleep(30_000).pipe(Effect.andThen(remindPausedWorkflows))).pipe(Effect.forkIn(scope))
 
   if (inbox) {
     // Priority 5 runs before goal.continue (10): a DAG wake/mailbox item is
