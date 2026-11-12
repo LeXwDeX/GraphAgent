@@ -173,6 +173,7 @@ describe("BackgroundJob", () => {
         from: string | null
         to: string
         sessionID?: string
+        parentSessionID?: string
         title?: string
         output?: string
         started?: boolean
@@ -184,6 +185,7 @@ describe("BackgroundJob", () => {
               from: transition.from,
               to: transition.to,
               sessionID: transition.sessionID,
+              parentSessionID: transition.parentSessionID,
               title: transition.title,
               output: transition.output,
               started: typeof transition.started_at === "number",
@@ -195,7 +197,8 @@ describe("BackgroundJob", () => {
         id: "observed",
         type: "test",
         title: "observed job",
-        metadata: { sessionId: "ses_observed" },
+        // Writers record the current keys (#1069 P9); the registry must read them.
+        metadata: { sessionID: "ses_observed", parentSessionID: "ses_parent" },
         run: Deferred.await(latch).pipe(Effect.as("ok")),
       })
 
@@ -205,18 +208,75 @@ describe("BackgroundJob", () => {
 
       // Every transition carries the complete snapshot: a durable observer
       // never has to merge a partial delta (#1069 P5).
+      const identity = {
+        sessionID: "ses_observed",
+        parentSessionID: "ses_parent",
+        title: "observed job",
+        started: true,
+      }
       expect(observed).toEqual([
-        { from: null, to: "running", sessionID: "ses_observed", title: "observed job", started: true },
-        { from: "running", to: "settling", sessionID: "ses_observed", title: "observed job", started: true },
-        {
-          from: "settling",
-          to: "completed",
-          sessionID: "ses_observed",
-          title: "observed job",
-          output: "ok",
-          started: true,
-        },
+        { from: null, to: "running", ...identity },
+        { from: "running", to: "settling", ...identity },
+        { from: "settling", to: "completed", ...identity, output: "ok" },
       ])
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
+  it.live("still reads the pre-rename session keys of metadata written before them", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const observed: Array<{ to: string; sessionID?: string; parentSessionID?: string }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            observed.push({
+              to: transition.to,
+              sessionID: transition.sessionID,
+              parentSessionID: transition.parentSessionID,
+            })
+          }),
+      }).pipe(Scope.provide(scope))
+      const job = yield* jobs.start({
+        type: "test",
+        metadata: { sessionId: "ses_legacy", parentSessionId: "ses_legacy_parent" },
+        run: Effect.succeed("ok"),
+      })
+      yield* jobs.wait({ id: job.id })
+
+      const identity = { sessionID: "ses_legacy", parentSessionID: "ses_legacy_parent" }
+      expect(observed).toEqual([
+        { to: "running", ...identity },
+        { to: "completed", ...identity },
+      ])
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
+  it.live("prefers the current keys over the pre-rename ones", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const observed: Array<{ sessionID?: string; parentSessionID?: string }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            observed.push({ sessionID: transition.sessionID, parentSessionID: transition.parentSessionID })
+          }),
+      }).pipe(Scope.provide(scope))
+      const job = yield* jobs.start({
+        type: "test",
+        metadata: {
+          sessionID: "ses_new",
+          sessionId: "ses_old",
+          parentSessionID: "ses_new_parent",
+          parentSessionId: "ses_old_parent",
+        },
+        run: Effect.succeed("ok"),
+      })
+      yield* jobs.wait({ id: job.id })
+
+      expect(observed.length).toBeGreaterThan(0)
+      for (const entry of observed) expect(entry).toEqual({ sessionID: "ses_new", parentSessionID: "ses_new_parent" })
       yield* Scope.close(scope, Exit.void)
     }),
   )

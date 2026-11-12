@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
+import { BackgroundJob } from "@/background/job"
 import { RuntimeJobRecovery } from "@/background/recovery"
 import { persistTransition, runtimeJobProcessID } from "@/background/persist"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Lifecycle } from "@/lifecycle/service"
+import { SessionID } from "@/session/schema"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import { RuntimeJobTable } from "@graphagent/core/lifecycle/runtime-job.sql"
@@ -25,7 +27,7 @@ const events = EventV2.layer.pipe(Layer.provide(database))
 const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
 const lifecycle = Lifecycle.layer.pipe(Layer.provide(bridge))
 const recovery = RuntimeJobRecovery.layer.pipe(Layer.provide(Layer.mergeAll(database, lifecycle)))
-const it = testEffect(Layer.mergeAll(database, events, bridge, lifecycle, recovery))
+const it = testEffect(Layer.mergeAll(database, events, bridge, lifecycle, recovery, BackgroundJob.layer))
 
 const watchLifecycle = Effect.fnUntraced(function* () {
   const service = yield* EventV2.Service
@@ -125,6 +127,39 @@ describe("runtime_job persistence", () => {
         .get()
       expect(cancelled).toMatchObject({ status: "cancelled" })
       expect(cancelled?.settled_at).not.toBeNull()
+    }),
+  )
+})
+
+describe("runtime_job through the real registry", () => {
+  // The writers (task, watch_pr, shell) record `sessionID` / `parentSessionID`;
+  // the registry's own transitions must read those keys, or every durable row
+  // and lifecycle event loses the session identity.
+  it.instance("persists and publishes the session identities a started job records", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const seen = yield* watchLifecycle()
+      const jobs = yield* BackgroundJob.Service
+      const job = yield* jobs.start({
+        id: "job_keys",
+        type: "watch_pr",
+        metadata: { sessionID: "ses_owner", parentSessionID: "ses_parent" },
+        run: Effect.succeed("done"),
+      })
+      yield* jobs.wait({ id: job.id })
+
+      const row = yield* db.select().from(RuntimeJobTable).where(eq(RuntimeJobTable.id, "job_keys")).get()
+      expect(row).toMatchObject({
+        status: "completed",
+        session_id: "ses_owner",
+        parent_session_id: "ses_parent",
+        result: "done",
+      })
+
+      yield* Effect.sleep("20 millis")
+      const observed = (yield* Ref.get(seen)).map((event) => event.data).filter((data) => data.stateID === "job_keys")
+      expect(observed.map((data) => data.to)).toEqual(["running", "completed"])
+      expect(observed.map((data) => data.sessionID)).toEqual([SessionID.make("ses_owner"), SessionID.make("ses_owner")])
     }),
   )
 })
