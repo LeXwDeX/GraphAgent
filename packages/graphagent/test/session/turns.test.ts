@@ -607,9 +607,13 @@ describe("admission", () => {
       harness.setRun(() => Effect.succeed(completed(assistant, user)))
 
       const runner = harness.runnerFor(sessionID)
-      const shellFiber = yield* runner
-        .startShell(Deferred.await(shell).pipe(Effect.as(assistantMessage(sessionID, user.info.id))))
-        .pipe(Effect.forkChild)
+      // Reserve the runner before forking: `startShellHandle` publishes the
+      // `Shell` state atomically, so the admission below deterministically
+      // queues instead of racing an idle runner.
+      const shellResult = yield* runner.startShellHandle(
+        Deferred.await(shell).pipe(Effect.as(assistantMessage(sessionID, user.info.id))),
+      )
+      const shellFiber = yield* shellResult.pipe(Effect.forkChild)
 
       // Joining a shell queue must report the admission as `started`: the
       // queued work will run `track` and insert this request's own row.
@@ -648,9 +652,12 @@ describe("admission", () => {
       })
 
       const runner = harness.runnerFor(sessionID)
-      const shellFiber = yield* runner
-        .startShell(Deferred.await(shell).pipe(Effect.as(assistantMessage(sessionID, user.info.id))))
-        .pipe(Effect.forkChild)
+      // See the sibling test: reserve the runner atomically so the admission
+      // cannot observe an idle runner and start the work itself.
+      const shellResult = yield* runner.startShellHandle(
+        Deferred.await(shell).pipe(Effect.as(assistantMessage(sessionID, user.info.id))),
+      )
+      const shellFiber = yield* shellResult.pipe(Effect.forkChild)
 
       const started = yield* harness.turns.start(startInput(sessionID), {
         origin: { kind: "user", via: "prompt" },
