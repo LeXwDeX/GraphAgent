@@ -725,7 +725,7 @@ describe("F1 event gate in the sync store", () => {
   test("asks hydrate a known session once and never fetch a session the store does not know", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const rows = [row("ses_root", 100), row("ses_asker", 90, "ses_root")]
+    const rows = [row("ses_root", 100), row("ses_asker", 90, "ses_root"), row("ses_sentinel", 80, "ses_root")]
     const base = dataRoutes(rows, snapshots(rows))
     const fetched: string[] = []
     const { app, emit, sdk, sync } = await mount((url) => {
@@ -769,10 +769,21 @@ describe("F1 event gate in the sync store", () => {
         }),
       )
       sdk.frameClock.flushNow()
-      await Bun.sleep(50)
       expect(sync.data.permission.ses_unknown).toHaveLength(1)
       expect(sync.interest.full().has("ses_unknown")).toBe(true)
-      expect(fetched).toEqual(["ses_asker"])
+
+      // Sentinel: an ask for a known session takes the same path. Once its snapshot lands,
+      // any fetch the unknown session's ask could have started would already be recorded.
+      emit(
+        global({
+          id: nextID(),
+          type: "permission.asked",
+          properties: { id: "per_10", sessionID: "ses_sentinel", permission: "bash", patterns: [], metadata: {} },
+        }),
+      )
+      sdk.frameClock.flushNow()
+      await wait(() => sync.data.hydrated.includes("ses_sentinel"))
+      expect(fetched).toEqual(["ses_asker", "ses_sentinel"])
     } finally {
       app.renderer.destroy()
     }
