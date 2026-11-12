@@ -62,6 +62,7 @@ import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
+import { remoteLine } from "../../util/remote-text"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
 import { createTicker } from "../../context/ticker"
@@ -1396,8 +1397,9 @@ export function Main() {
       )
       .catch((error) => {
         // A failing command also raises `session.error`, whose toast is keyed by
-        // its text: reuse the text as the key so the two merge into one.
-        const text = errorMessage(error)
+        // its text: reuse the text as the key so the two merge into one. The
+        // text comes from the server, so strip escapes and control characters.
+        const text = remoteLine(errorMessage(error))
         toast.show({ text, level: "error", dedupeKey: text })
       })
   }

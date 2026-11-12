@@ -191,6 +191,22 @@ test("a rebound key replaces <leader>d", async () => {
   }
 })
 
+test("a rejected command's error text is shown without escapes or control characters", async () => {
+  const malicious = "\u001b[31mCommand\u001b[0m not found:\r\n\u0007dag-mode\u001b]0;pwned\u0007"
+  const harness = await mountMain([sessionFixture(mainID, { dagMode: "off" })], mainID, {
+    command: () => json({ name: "NotFoundError", data: { message: malicious } }, { status: 404 }),
+  })
+  try {
+    await harness.leaderD()
+    await waitFor(() => harness.toast().currentToast !== null)
+    const text = harness.toast().currentToast?.text ?? ""
+    expect(text).toBe("Command not found: dag-mode")
+    expect(text).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
+  } finally {
+    await harness.dispose()
+  }
+})
+
 test("a rejected command shows an error toast and no second request", async () => {
   const harness = await mountMain([sessionFixture(mainID, { dagMode: "off" })], mainID, {
     command: () => json({ name: "NotFoundError", data: { message: "Command not found: dag-mode" } }, { status: 404 }),
