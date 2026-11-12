@@ -15,7 +15,9 @@ export * as SessionInbox from "./inbox"
  * - per-session serial drains, where a nudge that arrives mid-drain coalesces
  *   into exactly one re-run after the current one;
  * - a per-instance 30s tick that re-reads durable ledgers so a missed nudge
- *   (or a false-negative `hint`) cannot strand an item forever;
+ *   (or a false-negative `hint`) cannot strand an item forever. Each scanned
+ *   session drains in its own fiber, so one long claim never holds the rest of
+ *   the pass or the next tick;
  * - a process-level nudge route: callers only know a session, the inbox finds
  *   the loaded instance that owns the session's directory.
  *
@@ -388,6 +390,14 @@ export const layer = Layer.effect(
         for (const sessionID of sessionIDs) {
           // Forced: the durable scan is the authority, so a stale in-memory
           // hint must not hide the item from this backstop pass.
+          //
+          // Forked into the instance scope: a drain resolves only after its
+          // claim, and a delivery claim awaits the admitted model turn (or its
+          // 7-minute lease). Awaiting it here would hold every later session
+          // of the page, and every later tick, behind one long turn. `drainFor`
+          // keeps the forks safe: it admits one drain per session and folds a
+          // repeat request (the next tick's, while this turn still runs) into
+          // a single extra pass. The fibers are interrupted with the instance.
           yield* drainFor(data, sessionID, { force: true }).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause)
@@ -398,6 +408,8 @@ export const layer = Layer.effect(
                     cause: Cause.pretty(cause),
                   }),
             ),
+            Effect.forkIn(data.scope),
+            Effect.asVoid,
           )
         }
       })

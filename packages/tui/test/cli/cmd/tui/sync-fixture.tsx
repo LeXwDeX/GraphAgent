@@ -6,7 +6,7 @@ import { ArgsProvider } from "../../../../src/context/args"
 import { ExitProvider } from "../../../../src/context/exit"
 import { KVProvider, useKV } from "../../../../src/context/kv"
 import { ProjectProvider, useProject } from "../../../../src/context/project"
-import { SDKProvider } from "../../../../src/context/sdk"
+import { SDKProvider, useSDK } from "../../../../src/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/context/sync"
 import { createEventSource, createFetch, type FetchHandler, directory } from "../../../fixture/tui-sdk"
 import { TestTuiContexts } from "../../../fixture/tui-environment"
@@ -20,12 +20,18 @@ export async function wait(fn: () => boolean, timeout = 2000) {
   }
 }
 
-type Ctx = { kv: ReturnType<typeof useKV>; project: ReturnType<typeof useProject>; sync: ReturnType<typeof useSync> }
+type Ctx = {
+  kv: ReturnType<typeof useKV>
+  project: ReturnType<typeof useProject>
+  sdk: ReturnType<typeof useSDK>
+  sync: ReturnType<typeof useSync>
+}
 
 export async function mount(override?: FetchHandler, state?: string, extra?: () => JSX.Element) {
   const calls = createFetch(override)
   const events = createEventSource()
   let sync!: ReturnType<typeof useSync>
+  let sdk!: ReturnType<typeof useSDK>
   let project!: ReturnType<typeof useProject>
   let kv!: ReturnType<typeof useKV>
   let done!: () => void
@@ -34,9 +40,10 @@ export async function mount(override?: FetchHandler, state?: string, extra?: () 
   })
 
   function Probe() {
-    const ctx: Ctx = { kv: useKV(), project: useProject(), sync: useSync() }
+    const ctx: Ctx = { kv: useKV(), project: useProject(), sdk: useSDK(), sync: useSync() }
     onMount(() => {
       sync = ctx.sync
+      sdk = ctx.sdk
       project = ctx.project
       kv = ctx.kv
       done()
@@ -72,6 +79,7 @@ export async function mount(override?: FetchHandler, state?: string, extra?: () 
     interest: events.interest,
     kv,
     project,
+    sdk,
     sync,
     session: calls.session,
   }

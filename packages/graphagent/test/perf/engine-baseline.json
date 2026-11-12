@@ -37,7 +37,7 @@
         {
           "purpose": "conversation",
           "messageCount": 51,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "5db817525851c03b",
           "toolChoice": "auto"
@@ -95,7 +95,7 @@
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "cc6722cdbaf9145f",
           "toolChoice": "auto"
@@ -137,7 +137,7 @@
         {
           "purpose": "conversation",
           "messageCount": 105,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "f24a98a5c0aaaa02",
           "toolChoice": "auto"
@@ -179,7 +179,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "8c6be447ca715401",
+          "toolsHash": "281d3d38aae5405e",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "514cefa3d96b0544",
           "toolChoice": "auto"
@@ -187,7 +187,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "8c6be447ca715401",
+          "toolsHash": "281d3d38aae5405e",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "49c7e51e094f68d3",
           "toolChoice": "auto"
@@ -195,7 +195,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "8c6be447ca715401",
+          "toolsHash": "281d3d38aae5405e",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "c76ec345d52402db",
           "toolChoice": "auto"
@@ -203,7 +203,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "8c6be447ca715401",
+          "toolsHash": "281d3d38aae5405e",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "0a33a995ed8bc792",
           "toolChoice": "auto"
@@ -211,7 +211,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "1ba11c4aac835cbf",
           "toolChoice": "auto"
@@ -219,7 +219,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "1ba11c4aac835cbf",
           "toolChoice": "auto"
@@ -227,7 +227,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "1ba11c4aac835cbf",
           "toolChoice": "auto"
@@ -235,7 +235,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "87e26a4c2eee75f9",
           "toolChoice": "auto"
@@ -243,7 +243,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "e6b7a6b9cc176d61",
           "toolChoice": "auto"
@@ -251,7 +251,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "dbae8bb319a567f0",
           "toolChoice": "auto"
@@ -259,7 +259,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "71a3dfd1d4281f6f",
           "toolChoice": "auto"
@@ -267,7 +267,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "2876672a9be0648c",
           "toolChoice": "auto"
@@ -275,7 +275,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "87e26a4c2eee75f9",
           "toolChoice": "auto"
@@ -283,7 +283,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "e6b7a6b9cc176d61",
           "toolChoice": "auto"
@@ -291,7 +291,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "dbae8bb319a567f0",
           "toolChoice": "auto"
@@ -299,7 +299,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "71a3dfd1d4281f6f",
           "toolChoice": "auto"
@@ -307,7 +307,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "2876672a9be0648c",
           "toolChoice": "auto"
@@ -315,7 +315,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "87e26a4c2eee75f9",
           "toolChoice": "auto"
@@ -323,7 +323,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "e6b7a6b9cc176d61",
           "toolChoice": "auto"
@@ -331,7 +331,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "b6dbc3930c4fba1c",
           "toolChoice": "auto"
@@ -339,7 +339,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "333a7172a714429a",
           "toolChoice": "auto"
@@ -347,7 +347,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "e0fc6b5196572ef5",
           "toolChoice": "auto"
@@ -355,7 +355,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "dbae8bb319a567f0",
           "toolChoice": "auto"
@@ -363,7 +363,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "71a3dfd1d4281f6f",
           "toolChoice": "auto"
@@ -371,7 +371,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "b6dbc3930c4fba1c",
           "toolChoice": "auto"
@@ -379,7 +379,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "333a7172a714429a",
           "toolChoice": "auto"
@@ -387,7 +387,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "e0fc6b5196572ef5",
           "toolChoice": "auto"
@@ -395,7 +395,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "2876672a9be0648c",
           "toolChoice": "auto"
@@ -403,7 +403,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "b6dbc3930c4fba1c",
           "toolChoice": "auto"
@@ -411,7 +411,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "333a7172a714429a",
           "toolChoice": "auto"
@@ -419,7 +419,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "e0fc6b5196572ef5",
           "toolChoice": "auto"
@@ -427,7 +427,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "b44e4cf24bcfa6c6",
           "toolChoice": "auto"
@@ -435,7 +435,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "b44e4cf24bcfa6c6",
           "toolChoice": "auto"
@@ -443,7 +443,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "2a799b69875a502f",
+          "toolsHash": "b662662f89edd32a",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "b44e4cf24bcfa6c6",
           "toolChoice": "auto"
@@ -493,7 +493,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "5a5706f5d8291d22",
           "toolChoice": "auto"
@@ -501,7 +501,7 @@
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "3f43099c45e4f802",
           "toolChoice": "auto"
@@ -559,7 +559,7 @@
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "569c28f0a4d25164",
           "prefixHash": "4cd542e22bd4fa51",
           "toolChoice": "auto"
@@ -567,7 +567,7 @@
         {
           "purpose": "conversation",
           "messageCount": 7,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "569c28f0a4d25164",
           "prefixHash": "250b4aa9b653e182",
           "toolChoice": "auto"
@@ -609,7 +609,7 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "4895c9bfa5445432",
           "toolChoice": "auto"
@@ -617,7 +617,7 @@
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "a84bd22f863dbdb0",
           "toolChoice": "auto"
@@ -625,7 +625,7 @@
         {
           "purpose": "conversation",
           "messageCount": 7,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "1977ec6a5c587415",
           "toolChoice": "auto"
@@ -633,7 +633,7 @@
         {
           "purpose": "conversation",
           "messageCount": 9,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -641,7 +641,7 @@
         {
           "purpose": "conversation",
           "messageCount": 11,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -649,7 +649,7 @@
         {
           "purpose": "conversation",
           "messageCount": 13,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -657,7 +657,7 @@
         {
           "purpose": "conversation",
           "messageCount": 15,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -665,7 +665,7 @@
         {
           "purpose": "conversation",
           "messageCount": 17,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -673,7 +673,7 @@
         {
           "purpose": "conversation",
           "messageCount": 19,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -681,7 +681,7 @@
         {
           "purpose": "conversation",
           "messageCount": 21,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -689,7 +689,7 @@
         {
           "purpose": "conversation",
           "messageCount": 23,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -697,7 +697,7 @@
         {
           "purpose": "conversation",
           "messageCount": 25,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -705,7 +705,7 @@
         {
           "purpose": "conversation",
           "messageCount": 27,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -713,7 +713,7 @@
         {
           "purpose": "conversation",
           "messageCount": 29,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -721,7 +721,7 @@
         {
           "purpose": "conversation",
           "messageCount": 31,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -729,7 +729,7 @@
         {
           "purpose": "conversation",
           "messageCount": 33,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -737,7 +737,7 @@
         {
           "purpose": "conversation",
           "messageCount": 35,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -745,7 +745,7 @@
         {
           "purpose": "conversation",
           "messageCount": 37,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -753,7 +753,7 @@
         {
           "purpose": "conversation",
           "messageCount": 39,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -761,7 +761,7 @@
         {
           "purpose": "conversation",
           "messageCount": 41,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "7551299c2d05aef3",
           "toolChoice": "auto"
@@ -769,7 +769,7 @@
         {
           "purpose": "conversation",
           "messageCount": 44,
-          "toolsHash": "4bf86f26c6b32959",
+          "toolsHash": "3b53412c4aa4d6c3",
           "systemHash": "e9e1a26205962279",
           "prefixHash": "43337ac494aaf367",
           "toolChoice": "auto"

@@ -18,6 +18,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
+import { SessionInbox } from "@/session/inbox"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
@@ -85,17 +86,30 @@ function mailboxLayer(probe: MailboxProbe) {
         })
       }),
   })
+  // PR3: the shared inbox owns the one idle subscription and drives DAG
+  // delivery through its `dag.delivery` source. It must be the same instance
+  // DagLoop builds against, so merge it into the exposed services.
+  const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
     Layer.provide(messages),
     Layer.provide(session),
     Layer.provide(prompt),
     Layer.provide(Layer.mock(Agent.Service, {})),
+    Layer.provide(inbox),
   )
-  return Layer.merge(base, loop)
+  return Layer.mergeAll(base, loop, inbox)
 }
 
-function run<A>(probe: MailboxProbe, work: Effect.Effect<A, Error, DagLoop.Service | SessionStatus.Service>) {
+const initAll = Effect.gen(function* () {
+  yield* (yield* DagLoop.Service).init()
+  yield* (yield* SessionInbox.Service).init()
+})
+
+function run<A>(
+  probe: MailboxProbe,
+  work: Effect.Effect<A, Error, DagLoop.Service | SessionInbox.Service | SessionStatus.Service>,
+) {
   return Effect.runPromise(
     work.pipe(
       Effect.provide(mailboxLayer(probe)),
@@ -161,13 +175,17 @@ describe("DAG parent agent mailbox wake", () => {
     await run(
       probe,
       Effect.gen(function* () {
-        yield* (yield* DagLoop.Service).init()
+        yield* initAll
         yield* Effect.sleep(600)
         expect(probe.admissions).toHaveLength(0)
         expect(message.state).toBe("queued")
         // The ordinary prompt is ordered after the failed assistant even at the
         // same timestamp, and was admitted before its completion. This grants no
         // authorization from its text or from the node's queued message.
+        const status = yield* SessionStatus.Service
+        // A host prompt cycle is a busy -> idle transition; only the idle edge
+        // is a delivery trigger, so open the cycle before appending context.
+        yield* status.set(parent, { type: "busy" })
         probe.history?.push({
           info: {
             id: MessageID.make("msg_followup"),
@@ -187,7 +205,7 @@ describe("DAG parent agent mailbox wake", () => {
             },
           ],
         })
-        yield* (yield* SessionStatus.Service).set(parent, { type: "idle" })
+        yield* status.set(parent, { type: "idle" })
         yield* pollWithTimeout(
           Effect.sync(() => (probe.admissions.length === 1 ? true : undefined)),
           "new host context did not release mailbox retry",
@@ -202,7 +220,7 @@ describe("DAG parent agent mailbox wake", () => {
     await run(
       probe,
       Effect.gen(function* () {
-        yield* (yield* DagLoop.Service).init()
+        yield* initAll
         yield* pollWithTimeout(
           Effect.sync(() => (probe.admissions.length === 1 ? true : undefined)),
           "mailbox was not admitted",
@@ -229,7 +247,7 @@ describe("DAG parent agent mailbox wake", () => {
       Effect.gen(function* () {
         const status = yield* SessionStatus.Service
         yield* status.set(parent, { type: "busy" })
-        yield* (yield* DagLoop.Service).init()
+        yield* initAll
         yield* Effect.sleep(600)
         expect(probe.admissions).toHaveLength(0)
         expect(probe.callers).toHaveLength(0)

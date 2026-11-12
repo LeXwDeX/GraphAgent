@@ -9,7 +9,7 @@
 // wake, and the fixed wake-before-mailbox order.
 import { describe, expect, it } from "bun:test"
 import { and, eq } from "drizzle-orm"
-import { Deferred, Effect, Fiber, Layer, Option, Scope, Stream, type Context } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Stream, type Context } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -34,6 +34,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
+import { awaitWithTimeout, pollWithTimeout } from "../lib/effect"
 
 const DIRECTORY = process.cwd()
 const PROJECT_ID = "project-1"
@@ -233,6 +234,50 @@ const expectReported = Effect.gen(function* () {
   expect(yield* store.getUnreportedWakeWorkflows(PARENT)).toEqual([])
   expect(yield* store.getUnreportedWakeNodes(PARENT)).toEqual([])
 })
+
+/** Service graph for probes that never reach a model turn: inert session and prompt slices. */
+function inertGraph() {
+  const session = Layer.mock(Session.Service, {
+    get: () => Effect.succeed(sessionInfo),
+    messages: () => Effect.succeed([]),
+    getPart: () => Effect.succeed(undefined),
+  })
+  return Layer.mergeAll(baseLayers().all, session, Layer.mock(SessionPrompt.Service, {}))
+}
+
+/** A mailbox ledger that honors the real `pendingRecipients` contract: session-ID
+ * order, a capped page, and the `afterSessionID` cursor. */
+function pagedMailboxes(ids: ReadonlyArray<string>) {
+  /** `afterSessionID` of every page read, in order. */
+  const reads: Array<string | undefined> = []
+  /** Sessions the mailbox drain tried to deliver to. */
+  const attempted = new Set<string>()
+  const control = { failNext: false }
+  const messages = {
+    receive: (caller: DagMessages.Caller) => {
+      attempted.add(caller.sessionID)
+      return Effect.succeed({ ok: false as const })
+    },
+    pendingRecipients: (scope: { afterSessionID?: string; limit?: number }) => {
+      reads.push(scope.afterSessionID)
+      if (control.failNext) {
+        control.failNext = false
+        return Effect.die(new Error("page read boom"))
+      }
+      return Effect.succeed(
+        ids
+          .filter((id) => id > (scope.afterSessionID ?? ""))
+          .slice(0, Math.min(64, scope.limit ?? 20))
+          .map((sessionID) => ({ id: `endpoint_${sessionID}`, kind: "main" as const, sessionID })),
+      )
+    },
+    changed: Stream.empty,
+  } as unknown as DagMessages.Interface
+  return { messages, reads, attempted, control }
+}
+
+// 150 recipients = two full ledger pages (64 each) and a short one (22).
+const pagedIDs = Array.from({ length: 150 }, (_, index) => `ses_page_${String(index).padStart(3, "0")}`)
 
 describe("DagDelivery drain", () => {
   it("admits one durable wake even when drain is triggered one hundred times", async () => {
@@ -669,10 +714,9 @@ describe("DagDelivery drain", () => {
           yield* Effect.gen(function* () {
             yield* seedWake
             const { db } = yield* Database.Service
-            // A due paused reminder in this directory: the dedicated 30s
-            // sweep owns paused reminders (they stay outside the inbox tick
-            // so the tick's read budget remains three queries). The row must
-            // therefore not appear in scanSessions.
+            // A due paused reminder in this directory: the inbox 30s tick is
+            // its only periodic driver since the dedicated sweep was removed
+            // (#1027 D5), so it must appear in scanSessions.
             yield* db
               .insert(SessionTable)
               .values({
@@ -757,7 +801,7 @@ describe("DagDelivery drain", () => {
             const deps = yield* services()
             const delivery = yield* startDelivery({ ...deps, messages })
             const scanned = yield* delivery.scanSessions()
-            expect([...scanned].sort()).toEqual([PARENT, mailSession].sort())
+            expect([...scanned].sort()).toEqual([PARENT, mailSession, "ses_paused_scan"].sort())
 
             // One broken ledger must not hide the others.
             const broken = yield* startDelivery({
@@ -769,7 +813,7 @@ describe("DagDelivery drain", () => {
               },
             })
             const degraded = yield* broken.scanSessions()
-            expect([...degraded].sort()).toEqual([mailSession])
+            expect([...degraded].sort()).toEqual([mailSession, "ses_paused_scan"].sort())
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
         }),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),
@@ -870,6 +914,119 @@ describe("DagDelivery drain", () => {
             yield* expectReported
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
         }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("forks every mailbox change nudge so a pending inbox drain neither blocks the stream nor outlives the instance (#1027 D5)", async () => {
+    const started: string[] = []
+    const interrupted: string[] = []
+    const bothStarted = Deferred.makeUnsafe<void>()
+    // The real `inbox.nudge` resolves only after the whole drain, and the drain
+    // awaits the admitted model turn: model it as a drain that never ends.
+    const inbox = {
+      init: () => Effect.void,
+      register: () => Effect.void,
+      registerStep: () => Effect.void,
+      drain: () => Effect.void,
+      nudge: (sessionID: SessionID) =>
+        Effect.sync(() => {
+          started.push(sessionID)
+          if (started.length === 2) Deferred.doneUnsafe(bothStarted, Effect.void)
+        }).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() => Effect.sync(() => void interrupted.push(sessionID))),
+        ),
+      pullForStep: () => Effect.succeed(true),
+      submit: () => Effect.fail(new SessionInbox.InboxNotWired({ source: "goal.continue" })),
+    } satisfies SessionInbox.Interface
+    const recipients = ["ses_long_turn_a", "ses_long_turn_b"]
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const changes = yield* Queue.unbounded<DagMessages.Change>()
+          const messages = {
+            receive: () => Effect.succeed({ ok: false as const }),
+            pendingRecipients: () => Effect.succeed([]),
+            changed: Stream.fromQueue(changes),
+          } as unknown as DagMessages.Interface
+          const instance = yield* Scope.make()
+          const deps = yield* services()
+          yield* startDelivery({ ...deps, scope: instance, messages, inbox })
+          for (const recipientSessionID of recipients) {
+            Queue.offerUnsafe(changes, { recipientSessionID, directory: DIRECTORY, kind: "queued", mailboxVersion: 1 })
+          }
+          // The first recipient's drain never ends, yet the second event is
+          // consumed and nudged: the stream does not wait on the inbox.
+          yield* awaitWithTimeout(Deferred.await(bothStarted), "the second recipient's nudge was never issued")
+          expect(started).toEqual(recipients)
+          expect(interrupted).toEqual([])
+          // The pending nudges belong to the instance scope.
+          yield* Scope.close(instance, Exit.void)
+          expect(interrupted.toSorted()).toEqual(recipients)
+        }).pipe(Effect.provide(inertGraph())),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("the startup sweep walks every mailbox ledger page and offers each recipient to the drain (#1027 D5)", async () => {
+    const ledger = pagedMailboxes(pagedIDs)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const deps = yield* services()
+          yield* startDelivery({ ...deps, messages: ledger.messages })
+          // Construction runs the sweep: the first page, then each page after
+          // the previous page's last recipient, until a short page.
+          expect(ledger.reads).toEqual([undefined, pagedIDs[63], pagedIDs[127]])
+          yield* pollWithTimeout(
+            Effect.sync(() => (ledger.attempted.size === pagedIDs.length ? true : undefined)),
+            () => `only ${ledger.attempted.size}/${pagedIDs.length} recipients got a delivery attempt`,
+          )
+        }).pipe(Effect.provide(inertGraph())),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("scanSessions takes one mailbox page per call, advances the cursor, and wraps at the end (#1027 D5)", async () => {
+    const ledger = pagedMailboxes(pagedIDs)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const deps = yield* services()
+          const delivery = yield* startDelivery({ ...deps, messages: ledger.messages })
+          // Only the ticks are measured, not the startup sweep.
+          ledger.reads.length = 0
+          expect(yield* delivery.scanSessions()).toEqual(pagedIDs.slice(0, 64))
+          expect(yield* delivery.scanSessions()).toEqual(pagedIDs.slice(64, 128))
+          // A short page is the end of the ledger...
+          expect(yield* delivery.scanSessions()).toEqual(pagedIDs.slice(128))
+          // ...so the next tick restarts at the first page rather than reading
+          // an empty one past the end.
+          expect(yield* delivery.scanSessions()).toEqual(pagedIDs.slice(0, 64))
+          expect(ledger.reads).toEqual([undefined, pagedIDs[63], pagedIDs[127], undefined])
+        }).pipe(Effect.provide(inertGraph())),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("scanSessions keeps its mailbox cursor when a page read fails (#1027 D5)", async () => {
+    const ledger = pagedMailboxes(pagedIDs)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const deps = yield* services()
+          const delivery = yield* startDelivery({ ...deps, messages: ledger.messages })
+          ledger.reads.length = 0
+          expect(yield* delivery.scanSessions()).toEqual(pagedIDs.slice(0, 64))
+          ledger.control.failNext = true
+          // The failed read degrades to "nothing from the mailbox ledger" for
+          // this tick, but the cursor must not rewind to the first page...
+          expect(yield* delivery.scanSessions()).toEqual([])
+          // ...so the next tick retries the page that failed.
+          expect(yield* delivery.scanSessions()).toEqual(pagedIDs.slice(64, 128))
+          expect(ledger.reads).toEqual([undefined, pagedIDs[63], pagedIDs[63]])
+        }).pipe(Effect.provide(inertGraph())),
       ).pipe(Effect.provideService(InstanceRef, instanceRef)),
     )
   })
