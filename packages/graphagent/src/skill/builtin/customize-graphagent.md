@@ -42,12 +42,12 @@ already-loaded config until then.
 | Global config                 | `~/.config/graphagent/graphagent.json` or `~/.config/graphagent/graphagent.jsonc` (NOT `~/.agents/`)                                                                                 |
 | Project MCP servers           | `.agents/mcp.json`                                                                                                                                                                   |
 | Global MCP servers            | `~/.config/graphagent/mcp.json` (`$GRAPHAGENT_CONFIG_DIR/mcp.json` when set)                                                                                                         |
-| Project agents                | `.agents/agent/<name>.md` or `.agents/agents/<name>.md`                                                                                                                              |
-| Global agents                 | `~/.config/graphagent/agent(s)/<name>.md`                                                                                                                                            |
-| Project commands              | `.agents/command/<name>.md` or `.agents/commands/<name>.md`                                                                                                                          |
-| Global commands               | `~/.config/graphagent/command(s)/<name>.md`                                                                                                                                          |
-| Project skills                | `.agents/skill(s)/<name>/SKILL.md`                                                                                                                                                   |
-| Global skills                 | `~/.config/graphagent/skill(s)/<name>/SKILL.md`                                                                                                                                      |
+| Project agents                | `.agents/agents/<name>.md`                                                                                                                                                           |
+| Global agents                 | `~/.config/graphagent/agents/<name>.md`                                                                                                                                              |
+| Project commands              | `.agents/commands/<name>.md`                                                                                                                                                         |
+| Global commands               | `~/.config/graphagent/commands/<name>.md`                                                                                                                                            |
+| Project skills                | `.agents/skills/<name>/SKILL.md`                                                                                                                                                     |
+| Global skills                 | `~/.config/graphagent/skills/<name>/SKILL.md`                                                                                                                                        |
 | External skills (auto-loaded) | `~/.agents/skills/<name>/SKILL.md`                                                                                                                                                   |
 
 Configs from each scope are deep-merged. Project overrides global. Unknown
