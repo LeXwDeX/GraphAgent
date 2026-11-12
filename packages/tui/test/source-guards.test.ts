@@ -79,6 +79,13 @@ test("config/keybind.ts defines no dag_ keys", () => {
   expect(hits(/dag_[a-z_]*/, { only: ["config/keybind.ts"] })).toEqual([])
 })
 
+// Components draw with theme tokens. Three places build a color without one, each for a reason
+// given in AGENTS.md section 7; a fourth is a new exception and has to be argued there first.
+test("color literals only appear in the three documented exceptions", () => {
+  const found = filesOf(hits(/#[0-9a-fA-F]{6}\b|RGBA\.from/)).filter((file) => !file.startsWith("theme/"))
+  expect(found).toEqual(["component/error-component.tsx", "context/local.tsx", "routes/session/index.tsx"])
+})
+
 test("the retired plugin slot API does not come back", () => {
   expect(hits(/@graphagent\/plugin|@opencode-ai\/plugin|pluginRuntime|api\??\.slots|Slot name=/)).toEqual([])
 })

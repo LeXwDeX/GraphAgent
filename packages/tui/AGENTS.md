@@ -252,6 +252,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 已删除的键位名不得回来：`sidebar_toggle`、`session_child_cycle(_reverse)`、`session_parent`、`which_key_*`、`tips_toggle`、`plugin_manager`、`plugin_install`、`plugins.toggle`、`dialog.plugins.install`、全部 `dag_*`、`session_share`、`session_unshare`、`docs_open`、`console_org_switch`。检查：`grep -rn "dag_[a-z_]*" packages/tui/src/config/keybind.ts` 为空。
 - 输入框不用 `ctrl+b`/`ctrl+f` 移动光标；`ctrl+d` 只在输入框为空时退出。输入框层只绑 `Definitions` 与 `keymap.tsx` 里 `inputExtraBindings` 列出的固定别名；不得改回 `registerManagedTextareaLayer`，它会追加库默认的 64 个键位（含 emacs 的 `ctrl+b`/`ctrl+f`/`ctrl+d`）。
 - `esc` 是优先级链，不得另写长 `if`。每层向 keymap 注册一次带 `enabled` 函数的绑定，位置按 F1 4.5 的顺序：补全 → 抽屉 → 询问区 → 模态面板 → 非模态详情面板 → 子 agent 返回父会话 → 会话忙碌（5 秒内第二次才中断）→ 无动作。层号以 F1 4.5 为准（子 agent 返回第 6 层、会话忙碌第 7 层）。新增一层需要修订 F1 与本文。
+  - 有一处实际行为与这个顺序相反：模态面板打开时，`PanelHost` 压入 `modal` 模式，`BottomZone` 让输入框失焦；`base` 模式里的抽屉绑定和绑在输入框上的补全绑定因此都不生效。抽屉或补全弹层与模态面板同时存在时，先关面板（第 4 层），再关抽屉（第 2 层）或补全（第 1 层）。这是保留的现状，`test/esc-chain.test.tsx` 的两条"modal over …"用例固定了它；要改成抽屉、补全优先，需要同时改这些绑定的模式或焦点处理并修订本文。询问区出现时面板被挂起，二者不会同时响应 esc。
 
 必须写的测试：处置表遍历 `Definitions` 无遗漏；同一上下文层内无重复键；`esc` 链每层一条用例；用户覆盖一个绑定后帮助与页脚文字同步变化。前两项由 `test/keybind-disposition.test.ts` 覆盖：同层出现新的重复键时，先改默认值或注册位置；确需保留的，登记到该测试的 `KNOWN_CONFLICTS` 并写明原因与 Issue。
 
@@ -312,7 +313,11 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 ## 7. 主题与样式
 
-- 只用 token。组件里禁止写颜色字面量。检查：`grep -rnE "#[0-9a-fA-F]{6}\b|RGBA\.from" packages/tui/src --include=*.ts --include=*.tsx | grep -v "^packages/tui/src/theme/"` 为空。主区变暗遮罩的 `RGBA(0,0,0,alpha)`（F1 3.1）是唯一例外，集中在 `shell/` 一处实现。
+- 只用 token。组件里禁止写颜色字面量。检查：`grep -rnE "#[0-9a-fA-F]{6}\b|RGBA\.from" packages/tui/src --include=*.ts --include=*.tsx | grep -v "^packages/tui/src/theme/"` 只允许命中下面三处，新增例外必须改本规范并在 PR 里说明理由：
+  - `context/local.tsx` 的 `RGBA.fromHex`：解析用户配置里 agent 的 `#rrggbb` 颜色，不是内置颜色。
+  - `component/error-component.tsx` 的两套固定配色（镜像 `graphagent.json`）：崩溃的可能正是主题 context，崩溃页不能依赖它。
+  - `routes/session/index.tsx` 的 `RGBA.fromValues`：用 `warning` token 的通道值加 `thinkingOpacity` 合成推理文字色，没有颜色字面量。
+- 主区变暗用 `AppFrame` 的 `opacity`（`DIMMED_OPACITY`），不用半透明 box 盖住文字：OpenTUI 对 alpha 小于 255 的填充会把盖住的宽字符（CJK）清成空格，中文转录会整片消失（F1 3.1 原写的"绝对定位的 `RGBA(0,0,0,alpha)` 盒子"因此不再采用，视觉意图不变）。抽屉在变暗层之后，以全强度画在它上方，先后不影响叠放。
 - 默认主题 `graphagent`（`DEFAULT_THEME` 常量），位于 `theme/assets/graphagent.json`，深浅两版同一个 JSON。不保留 `opencode` 旧主题，读不到已保存主题名时回到 `graphagent`，不迁移旧值。
 - 新增 token 的流程（F1 1.2）：`ThemeJson` 里加可选字段 → `theme/index.ts` 的 `resolveTheme` 里给回退值（照 `backgroundMenu`、`selectedListItemText`）→ `Theme` 类型加同名必填字段 → 旧主题不改。`generateSystem` 走回退值，不显式写。`packages/graphagent/src/cli/cmd/run/theme.ts` 的重复实现要复用 TUI 的 `resolveTheme` 或补同一组回退值，并有一致性测试。
 - 现有可选 token：`textDim`、`backgroundSelected`、`backgroundUser`、`borderWarning`、`logoFace`、`logoAccent`、`logoShadow`、`statusRunning`、`statusQueued`、`statusPaused`。已完成用 `success`（灰），失败用 `error`，不再新增。
@@ -370,7 +375,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 帧数用 `CliRenderEvents.FRAME` 或 `getStats().frameCount`；其余计数用 `test/perf/counters.ts`（`registerLayer`、选择器求值、`frames()`、store 写入）。
 - 双语：每个新增可见文案至少一个断言在 `zh-CN` 与 `en` 下各取一次；涉及排版的各一份快照。
 - 测试文件 `*.test.ts` / `*.test.tsx`，`packages/tui/test/` 镜像 `src/` 路径（`src/dag/model.ts` → `test/dag/model.test.ts`）。性能基准在 `test/perf/`（F2a）。依赖方向检查是 `test/architecture.test.ts`。现有 `test/cli/cmd/tui/sync-*.test.tsx` 夹具保持原位。
-- 源码守卫都在 `bun test` 里运行：`test/source-guards.test.ts` 把第 5、7、11 节里能用 grep 表达的断言（计时器白名单、`Bun.stringWidth`、`BLINK`/`createFadeIn`、`config/keybind.ts` 里的 `dag_` 键、旧插件槽 API）固化成按行匹配的测试，注释计入，与文中的 grep 同口径。`script/check-tui-text.ts` 提供三个守卫：品牌词（字符串字面量与 JSX 文本里不得出现上游产品词，白名单 `BRAND_ALLOWLIST` 封闭，每项写明理由）、已下线功能（第 11 节那条 grep 的原文扫描，并检查已删文件没有复活）、英文文案棘轮（绕过 `t()` 的英文字面量只减不增，基线是 `script/english-text-baseline.txt`，`--update-baseline` 只删不增）；它可以在 `packages/tui` 下 `bun script/check-tui-text.ts` 单独运行，`test/i18n/` 里的测试调用同一份实现，第 8 节的 CJK 扫描也在其中。
+- 源码守卫都在 `bun test` 里运行：`test/source-guards.test.ts` 把第 5、7、11 节里能用 grep 表达的断言（计时器白名单、`Bun.stringWidth`、`BLINK`/`createFadeIn`、`config/keybind.ts` 里的 `dag_` 键、颜色字面量只出现在第 7 节列的三处、旧插件槽 API）固化成按行匹配的测试，注释计入，与文中的 grep 同口径。`script/check-tui-text.ts` 提供三个守卫：品牌词（字符串字面量与 JSX 文本里不得出现上游产品词，白名单 `BRAND_ALLOWLIST` 封闭，每项写明理由）、已下线功能（第 11 节那条 grep 的原文扫描，并检查已删文件没有复活）、英文文案棘轮（绕过 `t()` 的英文字面量只减不增，基线是 `script/english-text-baseline.txt`，`--update-baseline` 只删不增）；它可以在 `packages/tui` 下 `bun script/check-tui-text.ts` 单独运行，`test/i18n/` 里的测试调用同一份实现，第 8 节的 CJK 扫描也在其中。
 - 键位处置表：`config/keybind-disposition.ts` 为每个 `Definitions` 键登记处置（`keep | change | new`）和所属上下文层（`Layers`，含 esc 链各层的注册位置与优先级）。漏登记过不了类型检查，`test/keybind-disposition.test.ts` 再双向核对该表、检查同一层内没有重复键、检查已删除的键位名没有复活。
 - 删除旧代码时同步删除或改写对应测试（`test/feature-plugins/`、`test/plugin/`），不留失效用例。
 
@@ -398,7 +403,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 不新增全局 store 或 context，F1/F2/F3 定义的除外（`FrameClockProvider`、`EventGateProvider`、ticker、`PanelHost`、语言 signal）。审阅：PR 差异里出现新的 `createContext(` 需在描述里说明并经维护者批准。
 - 不引入新的 UI 或状态库依赖。审阅：`packages/tui/package.json` 的依赖差异；新增依赖需维护者批准。
 - 不在 TUI 里实现任何 DAG 或子 agent 控制。`grep -rnE "dag\.control|dagControl|dag-cancel" packages/tui/src` 为空；`grep -rn "dag_[a-z_]*" packages/tui/src/config/keybind.ts` 为空。
-- 不恢复旧插件槽 API。`grep -rn "@graphagent/plugin" packages/tui` 为空；`grep -rn "pluginRuntime\|api.slots\|Slot name=" packages/tui/src` 为空；`packages/tui/src/plugin/` 与 `feature-plugins/builtins.ts` 不存在。
+- 不恢复旧插件槽 API。`grep -rn "@graphagent/plugin" packages/tui/src packages/tui/package.json` 为空（不含本文）；`grep -rn "pluginRuntime\|api.slots\|Slot name=" packages/tui/src` 为空；`packages/tui/src/plugin/` 与 `feature-plugins/builtins.ts` 不存在。
 - 不加 `plugin` 路由；路由类型只有 `home`、`session`、`diff`；`app.tsx` 不用 `<Show … keyed>` 包 Session。
 - 不写颜色字面量（第 7 节 grep）。
 - 不在组件内计时：`grep -rln "setInterval\|setTimeout" packages/tui/src` 只命中 `context/ticker.ts`、`context/frame-clock.ts`、`terminal-win32.ts`。

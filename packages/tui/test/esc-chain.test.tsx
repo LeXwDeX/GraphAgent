@@ -351,6 +351,58 @@ test("modal (4): esc closes only the top panel and then the one below it", async
   }
 })
 
+// #886 4.5 lists the autocomplete popup (1) and the drawer (2) above the modal panel (4). The
+// implementation orders them the other way when both are open: opening a panel pushes the `modal`
+// keymap mode and takes the focus from the prompt. The drawer's escape binding lives in the base
+// mode and the popup's binding is bound to the prompt, so neither is consulted while a panel is
+// open. The panel closes first, then the other one. Documented in AGENTS.md section 6.3.
+test("modal over drawer: esc closes the panel first because the modal mode disables the drawer layer", async () => {
+  const chain = await mountChain()
+  try {
+    await chain.openDrawer()
+    const host = chain.bottomZone().host
+    host.push({ id: "panel", render: () => <text>面板内容</text> })
+    await chain.settle()
+    expect(chain.frame()).toContain("面板内容")
+    expect(chain.frame()).toContain("抽屉")
+
+    expect(await chain.esc()).toEqual([EscapePriority.modal])
+    expect(host.depth()).toBe(0)
+    expect(chain.drawer().visible()).toBe(true)
+
+    expect(await chain.esc()).toEqual([EscapePriority.drawer])
+    expect(chain.drawer().visible()).toBe(false)
+    expect(chain.writes()).toEqual([])
+  } finally {
+    await chain.dispose()
+  }
+})
+
+test("modal over autocomplete: esc closes the panel first because opening it blurs the prompt", async () => {
+  const chain = await mountChain()
+  try {
+    await chain.app.mockInput.typeText("/")
+    await chain.settle()
+    expect(chain.frame()).toContain("/config")
+
+    const host = chain.bottomZone().host
+    host.push({ id: "panel", render: () => <text>面板内容</text> })
+    await chain.settle()
+    expect(chain.frame()).toContain("面板内容")
+
+    expect(await chain.esc()).toEqual([EscapePriority.modal])
+    expect(host.depth()).toBe(0)
+    // The popup survived the panel, and the prompt has its focus back.
+    expect(chain.frame()).toContain("/config")
+
+    expect(await chain.esc()).toEqual([EscapePriority.autocomplete])
+    expect(chain.frame()).not.toContain("/config")
+    expect(chain.writes()).toEqual([])
+  } finally {
+    await chain.dispose()
+  }
+})
+
 test("detail (5): esc closes the aside while the composer keeps focus, then falls through to the interrupt", async () => {
   const chain = await mountChain()
   try {
