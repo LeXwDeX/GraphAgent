@@ -320,6 +320,8 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 
 export const use = serviceUse(Service)
 
+type ProcessInput = Parameters<Interface["process"]>[0]
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -457,6 +459,135 @@ export const layer = Layer.effect(
       return { prefix, model: resolved.value }
     })
 
+    // A PreCompact veto settles the pending marker; each branch below says who is told.
+    const settleVetoedCompaction = Effect.fnUntraced(function* (
+      input: ProcessInput & { parent: SessionV1.WithParts; blocked: NonNullable<TriggerResult["blocked"]> },
+    ) {
+      // Settle the pending marker through the persisted message path. A leftover compaction part is
+      // unfinished work for every later prompt, which would then be vetoed again and never answered.
+      if (input.parent.parts.every((part) => part.type === "compaction"))
+        yield* session.removeMessage({ sessionID: input.sessionID, messageID: input.parentID })
+      else
+        for (const part of input.parent.parts)
+          if (part.type === "compaction")
+            yield* session.removePart({ sessionID: input.sessionID, messageID: input.parentID, partID: part.id })
+      const reason = input.blocked.reason.trim() || "PreCompact hook blocked compaction"
+      if (!input.auto) {
+        // Manual /compact shows the hook's reason to the user.
+        yield* events.publish(Session.Event.Error, {
+          sessionID: input.sessionID,
+          error: new NamedError.Unknown({ message: `Compaction blocked by hook: ${reason}` }).toObject(),
+        })
+      } else if (input.overflow) {
+        // Recovery from an API context-limit error: the failure stands. The provider error was already
+        // published; persist the terminal state on the request that overflowed.
+        const failed = input.messages.findLast(
+          (item) => item.info.role === "assistant" && !item.info.finish && !item.info.summary,
+        )
+        if (failed && failed.info.role === "assistant")
+          yield* session.updateMessage({
+            ...failed.info,
+            error: new SessionV1.ContextOverflowError({
+              message: `Context limit exceeded and compaction was blocked by hook: ${reason}`,
+            }).toObject(),
+            finish: "error",
+          })
+      }
+      if (input.auto && !input.overflow) return "declined" as const
+      yield* status.set(input.sessionID, { type: "idle" })
+      return "stop" as const
+    })
+
+    // PostCompact sees the committed compacted conversation, not the pre-compaction snapshot.
+    const runPostCompactHooks = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      auto: boolean
+      summary: string | undefined
+      conversationModel: Provider.Model
+      followUpID: MessageID | undefined
+    }) {
+      if (!settingsHook) return
+      const postMessages = yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+      const pcResult = yield* settingsHook
+        .trigger(
+          {
+            event: "PostCompact",
+            trigger: input.auto ? "auto" : "manual",
+            compactSummary: input.summary ?? "",
+          } as any,
+          { sessionID: input.sessionID },
+        )
+        .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
+      yield* SettingsHook.landSystemMessages(pcResult, { sessionID: input.sessionID })
+
+      // SessionStart(compact): Claude Code re-fires SessionStart after compaction so
+      // hooks can re-inject context the summary dropped. Top-level sessions only
+      // (subagents never fire SessionStart). A hook failure must not fail compaction.
+      // A session that cannot be read (e.g. deleted meanwhile) skips the hook instead of failing.
+      const current = yield* session.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (current && !current.parentID) {
+        const ssResult = yield* settingsHook
+          .trigger(
+            {
+              event: "SessionStart",
+              source: "compact",
+              // Top-level only (checked above): report the DAG mode read-only.
+              ...(current.dagMode !== undefined ? { dagMode: current.dagMode } : {}),
+              ...(yield* HookModelMetrics.forSession({
+                source: "compact",
+                sessionID: current.id,
+                title: current.title,
+                titleSource: current.metadata?.hookTitleSource,
+                model: current.model ?? {
+                  providerID: input.conversationModel.providerID,
+                  id: input.conversationModel.id,
+                },
+                agent: current.agent,
+                history: postMessages,
+              })),
+            },
+            { sessionID: input.sessionID },
+          )
+          .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
+        yield* SettingsHook.landSystemMessages(ssResult, { sessionID: input.sessionID })
+        const skills = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
+        yield* HookSessionContext.applyStart({
+          session: current,
+          sessions: session,
+          settings: settingsHook,
+          result: ssResult,
+          reloadSkills: skills?.reload(),
+        })
+        const seen = new Set<string>()
+        for (const message of MessageV2.filterCompacted([...postMessages].reverse()))
+          for (const part of message.parts)
+            if (part.type === "text" && part.synthetic) seen.add(Hash.sha256(part.text.trim()))
+        const compacted = input.summary?.trim()
+        for (const ctx of ssResult.additionalContexts ?? []) {
+          const text = ctx.trim()
+          if (!text) continue
+          const key = Hash.sha256(text)
+          if (seen.has(key)) continue
+          // A long context copied verbatim into the summary is already model-visible.
+          if (compacted && text.length >= 80 && compacted.includes(text)) continue
+          seen.add(key)
+          if (input.followUpID) {
+            yield* session.updatePart({
+              id: PartID.ascending(),
+              messageID: input.followUpID,
+              sessionID: input.sessionID,
+              type: "text",
+              synthetic: true,
+              text,
+              time: { start: Date.now(), end: Date.now() },
+            })
+          } else if (startContext) {
+            yield* startContext.append(input.sessionID, text)
+          }
+        }
+      }
+    })
+
     const processCompaction = Effect.fn("SessionCompaction.process")(function* (input: {
       parentID: MessageID
       messages: SessionV1.WithParts[]
@@ -490,41 +621,7 @@ export const layer = Layer.effect(
           )
           .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
         yield* SettingsHook.landSystemMessages(preResult, { sessionID: input.sessionID })
-        if (preResult.blocked) {
-          // Settle the pending marker through the persisted message path. A leftover compaction part is
-          // unfinished work for every later prompt, which would then be vetoed again and never answered.
-          if (parent.parts.every((part) => part.type === "compaction"))
-            yield* session.removeMessage({ sessionID: input.sessionID, messageID: input.parentID })
-          else
-            for (const part of parent.parts)
-              if (part.type === "compaction")
-                yield* session.removePart({ sessionID: input.sessionID, messageID: input.parentID, partID: part.id })
-          const reason = preResult.blocked.reason.trim() || "PreCompact hook blocked compaction"
-          if (!input.auto) {
-            // Manual /compact shows the hook's reason to the user.
-            yield* events.publish(Session.Event.Error, {
-              sessionID: input.sessionID,
-              error: new NamedError.Unknown({ message: `Compaction blocked by hook: ${reason}` }).toObject(),
-            })
-          } else if (input.overflow) {
-            // Recovery from an API context-limit error: the failure stands. The provider error was already
-            // published; persist the terminal state on the request that overflowed.
-            const failed = input.messages.findLast(
-              (item) => item.info.role === "assistant" && !item.info.finish && !item.info.summary,
-            )
-            if (failed && failed.info.role === "assistant")
-              yield* session.updateMessage({
-                ...failed.info,
-                error: new SessionV1.ContextOverflowError({
-                  message: `Context limit exceeded and compaction was blocked by hook: ${reason}`,
-                }).toObject(),
-                finish: "error",
-              })
-          }
-          if (input.auto && !input.overflow) return "declined"
-          yield* status.set(input.sessionID, { type: "idle" })
-          return "stop"
-        }
+        if (preResult.blocked) return yield* settleVetoedCompaction({ ...input, parent, blocked: preResult.blocked })
       }
 
       let messages = input.messages
@@ -848,85 +945,13 @@ export const layer = Layer.effect(
         yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
         // The committed summary drops earlier context; the next system prompt reloads instruction files.
         if (instruction) yield* instruction.markCompacted(input.sessionID)
-        // PostCompact sees the committed compacted conversation, not the pre-compaction snapshot.
-        if (settingsHook) {
-          const postMessages = yield* session.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-          const pcResult = yield* settingsHook
-            .trigger(
-              {
-                event: "PostCompact",
-                trigger: input.auto ? "auto" : "manual",
-                compactSummary: summary ?? "",
-              } as any,
-              { sessionID: input.sessionID },
-            )
-            .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] })))
-          yield* SettingsHook.landSystemMessages(pcResult, { sessionID: input.sessionID })
-
-          // SessionStart(compact): Claude Code re-fires SessionStart after compaction so
-          // hooks can re-inject context the summary dropped. Top-level sessions only
-          // (subagents never fire SessionStart). A hook failure must not fail compaction.
-          // A session that cannot be read (e.g. deleted meanwhile) skips the hook instead of failing.
-          const current = yield* session.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
-          if (current && !current.parentID) {
-            const ssResult = yield* settingsHook
-              .trigger(
-                {
-                  event: "SessionStart",
-                  source: "compact",
-                  // Top-level only (checked above): report the DAG mode read-only.
-                  ...(current.dagMode !== undefined ? { dagMode: current.dagMode } : {}),
-                  ...(yield* HookModelMetrics.forSession({
-                    source: "compact",
-                    sessionID: current.id,
-                    title: current.title,
-                    titleSource: current.metadata?.hookTitleSource,
-                    model: current.model ?? { providerID: conversationModel.providerID, id: conversationModel.id },
-                    agent: current.agent,
-                    history: postMessages,
-                  })),
-                },
-                { sessionID: input.sessionID },
-              )
-              .pipe(Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })))
-            yield* SettingsHook.landSystemMessages(ssResult, { sessionID: input.sessionID })
-            const skills = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
-            yield* HookSessionContext.applyStart({
-              session: current,
-              sessions: session,
-              settings: settingsHook,
-              result: ssResult,
-              reloadSkills: skills?.reload(),
-            })
-            const seen = new Set<string>()
-            for (const message of MessageV2.filterCompacted([...postMessages].reverse()))
-              for (const part of message.parts)
-                if (part.type === "text" && part.synthetic) seen.add(Hash.sha256(part.text.trim()))
-            const compacted = summary?.trim()
-            for (const ctx of ssResult.additionalContexts ?? []) {
-              const text = ctx.trim()
-              if (!text) continue
-              const key = Hash.sha256(text)
-              if (seen.has(key)) continue
-              // A long context copied verbatim into the summary is already model-visible.
-              if (compacted && text.length >= 80 && compacted.includes(text)) continue
-              seen.add(key)
-              if (followUpID) {
-                yield* session.updatePart({
-                  id: PartID.ascending(),
-                  messageID: followUpID,
-                  sessionID: input.sessionID,
-                  type: "text",
-                  synthetic: true,
-                  text,
-                  time: { start: Date.now(), end: Date.now() },
-                })
-              } else if (startContext) {
-                yield* startContext.append(input.sessionID, text)
-              }
-            }
-          }
-        }
+        yield* runPostCompactHooks({
+          sessionID: input.sessionID,
+          auto: input.auto,
+          summary,
+          conversationModel,
+          followUpID,
+        })
       }
       return result === "continue" ? "continue" : "stop"
     })
