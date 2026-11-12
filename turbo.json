@@ -20,7 +20,14 @@
     },
     "@graphagent/core#test": {
       "dependsOn": ["^build"],
-      "outputs": []
+      "outputs": [],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/dist/**"
+      ]
     }
   }
 }
