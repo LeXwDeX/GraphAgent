@@ -223,6 +223,68 @@ describe("BackgroundJob", () => {
     }),
   )
 
+  it.live("emits exactly one terminal transition when completion, cancel and settling race", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const observed: Array<{ id: string; from: BackgroundJob.Status | null; to: BackgroundJob.Status }> = []
+      const jobs = yield* BackgroundJob.makeWith({
+        onTransition: (transition) =>
+          Effect.sync(() => {
+            observed.push({ id: transition.id, from: transition.from, to: transition.to })
+          }),
+      }).pipe(Scope.provide(scope))
+      const terminal = new Set<BackgroundJob.Status>(["completed", "error", "cancelled"])
+
+      yield* Effect.forEach(Array.from({ length: 60 }), (_, index) =>
+        Effect.gen(function* () {
+          const id = `race_${index}`
+          // The job finishes after a varying number of scheduler turns, so every
+          // iteration lands its natural completion at a different point of the race.
+          yield* jobs.start({
+            id,
+            type: "test",
+            run: Effect.forEach(Array.from({ length: Math.floor(index / 2) % 6 }), () => Effect.yieldNow).pipe(
+              Effect.as("done"),
+            ),
+          })
+          // Half of the rounds race a cancel against settling and completion; the
+          // other half race settling against completion alone, so the registry sees
+          // both `settling -> cancelled` and `settling -> completed`.
+          const race = [
+            jobs.beginSettling(id),
+            ...(index % 2 === 0 ? [jobs.cancel(id)] : []),
+            jobs.beginSettling(id),
+            jobs.wait({ id }),
+          ]
+          const turn = index % race.length
+          yield* Effect.all([...race.slice(turn), ...race.slice(0, turn)], { concurrency: "unbounded", discard: true })
+          // A waiter resumes when the job's `done` resolves, which is just before the
+          // job's own fiber hands its terminal transition to the sink. Let the sink
+          // catch up, then give a duplicate every chance to show up.
+          const seen = () => observed.some((entry) => entry.id === id && terminal.has(entry.to))
+          for (let spin = 0; spin < 100 && !seen(); spin++) yield* Effect.yieldNow
+          for (let spin = 0; spin < 20; spin++) yield* Effect.yieldNow
+
+          const mine = observed.filter((entry) => entry.id === id)
+          // The compare-and-swap inside the registry lets one terminal status win.
+          expect(mine.filter((entry) => terminal.has(entry.to))).toHaveLength(1)
+          // Settling is entered at most once and every transition continues from the previous one.
+          expect(mine.filter((entry) => entry.to === "settling").length).toBeLessThanOrEqual(1)
+          expect(mine[0]).toEqual({ id, from: null, to: "running" })
+          for (let position = 1; position < mine.length; position++) {
+            expect(mine[position]?.from).toBe(mine[position - 1]?.to)
+          }
+          const final = mine[mine.length - 1]?.to
+          expect(final !== undefined && terminal.has(final)).toBe(true)
+          expect((yield* jobs.get(id))?.status).toBe(final)
+          // Waiters resolve with that same terminal status.
+          expect((yield* jobs.wait({ id })).info?.status).toBe(final)
+        }),
+      )
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
   it.live("still reads the pre-rename session keys of metadata written before them", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make()
