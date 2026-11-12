@@ -22,7 +22,7 @@ import { awaitWithTimeout, it } from "../lib/effect"
  *
  * (a) a cancel request is registered before the prompt lock is awaited;
  * (b) a publication section never waits for the cancel decision inside the lock;
- * (c) prompt.ts opens the run request before the prompt lock;
+ * (c) prompt.ts (loop) and resume.ts (resume) open the run request before the prompt lock;
  * (d) publication is the innermost lock and reverse acquisition is untyped;
  * (e) two ManagedRuntime layer graphs fence each other through process state.
  */
@@ -137,10 +137,15 @@ describe("session lock witnesses", () => {
     }),
   )
 
-  it.live("(c) prompt.ts opens the run request before the prompt lock", () =>
+  it.live("(c) loop and resume open the run request before the prompt lock", () =>
     Effect.promise(async () => {
-      const source = await Bun.file(new URL("../../src/session/prompt.ts", import.meta.url)).text()
-      for (const marker of ["const loop: (input: LoopInput", 'const resume: Interface["resume"]']) {
+      const read = (file: string) => Bun.file(new URL(`../../src/session/${file}`, import.meta.url)).text()
+      // `loop` stays in prompt.ts; `resume` moved to resume.ts (Issue #1019, PR-b).
+      const entries = [
+        { source: await read("prompt.ts"), marker: "const loop: (input: LoopInput" },
+        { source: await read("resume.ts"), marker: 'const resume: Interface["resume"]' },
+      ]
+      for (const { source, marker } of entries) {
         const start = source.indexOf(marker)
         expect(start).toBeGreaterThan(-1)
         const runRequest = source.indexOf("withRunRequest(", start)
