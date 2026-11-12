@@ -79,7 +79,10 @@ export function isActive(status: string): boolean {
  * reader's decode.
  */
 export const PAUSE_REASON_BUDGET_EXHAUSTED = "budget_exhausted"
-export type PauseReason = typeof PAUSE_REASON_BUDGET_EXHAUSTED
+/** #1027 D6: the workflow parked on a replan checkpoint until the main agent
+ * acknowledges it; the summary reports this episode as checkpointPending. */
+export const PAUSE_REASON_CHECKPOINT = "checkpoint"
+export type PauseReason = typeof PAUSE_REASON_BUDGET_EXHAUSTED | typeof PAUSE_REASON_CHECKPOINT
 
 /** Structured `error_class` values the runtime interprets. The durable
  * `NodeFailed.errorClass` field stays an optional plain string. */
