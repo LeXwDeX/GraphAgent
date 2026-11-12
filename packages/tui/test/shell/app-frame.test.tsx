@@ -449,6 +449,17 @@ for (const order of DRAWER_ORDERS) {
     // Wide enough to run under the drawer, which covers the right 40 of 80 columns.
     const main = "MAIN".repeat(20)
     await using reference = await renderDimScene({ dim: false, drawer: true, main, state: tmp.path })
+    // Sample the reference before the second scene mounts: on a slow runner the reference
+    // renderer can repaint an empty main area while the scene is being built.
+    const referenceDrawer = paintOf(reference, "DRAWER").fg.toInts()
+    const referenceRow = reference.app
+      .captureCharFrame()
+      .split("\n")
+      .findIndex((line) => line.includes("DRAWER"))
+    expect(referenceRow).toBeGreaterThanOrEqual(0)
+    const referenceMain = reference.app.captureSpans().lines[referenceRow]?.spans[0]
+    expect(referenceMain?.text.startsWith("MAIN")).toBe(true)
+    const referenceMainColor = referenceMain?.fg.toInts() ?? []
     await using scene = await renderDimScene({ dim: order.dim, drawer: order.drawer, main, state: tmp.path })
 
     if (order.later === "dim") scene.setDim(true)
@@ -459,17 +470,15 @@ for (const order of DRAWER_ORDERS) {
 
     const lines = scene.app.captureCharFrame().split("\n")
     const row = lines.findIndex((line) => line.includes("DRAWER"))
-    expect(row).toBeGreaterThanOrEqual(0)
+    expect(row).toBe(referenceRow)
     const line = lines[row] ?? ""
     // Nothing of the main text shows through the drawer, and the main text left of it is intact.
     expect(line.slice(40).trimEnd()).toBe("DRAWER")
     expect(line.slice(0, 40)).toBe("MAIN".repeat(10))
 
-    expect(paintOf(scene, "DRAWER").fg.toInts()).toEqual(paintOf(reference, "DRAWER").fg.toInts())
-    const referenceMain = reference.app.captureSpans().lines[row]?.spans[0]
+    expect(paintOf(scene, "DRAWER").fg.toInts()).toEqual(referenceDrawer)
     const sceneMain = scene.app.captureSpans().lines[row]?.spans[0]
-    expect(referenceMain?.text.startsWith("MAIN")).toBe(true)
     expect(sceneMain).toBeDefined()
-    if (referenceMain && sceneMain) expectDimmed(sceneMain.fg, referenceMain.fg.toInts())
+    if (sceneMain) expectDimmed(sceneMain.fg, referenceMainColor)
   })
 }
