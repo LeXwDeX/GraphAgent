@@ -1,6 +1,5 @@
 import { ThinkingReplay } from "./thinking-replay"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
-import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { METADATA_NAMESPACE } from "@graphagent/core/brand"
@@ -32,12 +31,12 @@ import { CompactionTimeoutError, watchCompactionStream } from "./compaction-time
 import { SessionStatus } from "./status"
 import { AgentScheduler } from "./agent-scheduler"
 import type { Provider } from "@/provider/provider"
-import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HistoryView } from "./history/view"
 import { LLMError, Usage, type LLMEvent } from "@graphagent/llm"
+import { makeToolCalls, type ToolCall } from "./processor-tool-calls"
 import { beginAttempt, initialAttemptState, type AttemptState } from "./turn/attempt"
 
 const DOOM_LOOP_THRESHOLD = 3
@@ -96,21 +95,6 @@ export interface Interface {
   readonly create: (input: Input) => Effect.Effect<Handle>
 }
 
-type ToolCall = {
-  partID: SessionV1.ToolPart["id"]
-  messageID: SessionV1.ToolPart["messageID"]
-  sessionID: SessionV1.ToolPart["sessionID"]
-  done: Deferred.Deferred<void>
-  inputEnded: boolean
-  raw: string
-  /** Last persisted part observed or written by this processor (HS8). */
-  part: SessionV1.ToolPart
-  /** Process write version `part` was derived at; a newer version forces a reload. */
-  version: number
-  /** Serializes every read-modify-write transition of this call. */
-  lock: Semaphore.Semaphore
-}
-
 interface ProcessorContext extends Input {
   /** Replaced as a whole at the start of every attempt (`beginAttempt`); never reset field by field. */
   attempt: AttemptState
@@ -150,6 +134,28 @@ function hasReasoningMetadata(value: unknown): boolean {
   return false
 }
 
+const isFilePart = (value: unknown): value is SessionV1.FilePart => Schema.is(SessionV1.FilePart)(value)
+
+type ToolOutput = { title: string; metadata: Record<string, any>; output: string; attachments?: SessionV1.FilePart[] }
+
+const toolResultOutput = (value: Extract<StreamEvent, { type: "tool-result" }>): ToolOutput => {
+  if (isRecord(value.result.value) && typeof value.result.value.output === "string") {
+    return {
+      title: typeof value.result.value.title === "string" ? value.result.value.title : value.name,
+      metadata: isRecord(value.result.value.metadata) ? value.result.value.metadata : {},
+      output: value.result.value.output,
+      attachments: Array.isArray(value.result.value.attachments)
+        ? value.result.value.attachments.filter(isFilePart)
+        : undefined,
+    }
+  }
+  return {
+    title: value.name,
+    metadata: value.result.type === "json" && isRecord(value.result.value) ? value.result.value : {},
+    output: typeof value.result.value === "string" ? value.result.value : (JSON.stringify(value.result.value) ?? ""),
+  }
+}
+
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionProcessor") {}
 
 export const layer = Layer.effect(
@@ -166,6 +172,64 @@ export const layer = Layer.effect(
     const status = yield* SessionStatus.Service
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
+
+    // Doom-loop guard: ask for permission when the last three tool calls are identical.
+    const checkDoomLoop = Effect.fnUntraced(function* (
+      ctx: ProcessorContext,
+      value: { name: string },
+      input: Record<string, unknown>,
+    ) {
+      // Only the last three call signatures matter. The in-memory list
+      // mirrors the persisted tool parts without reading them back.
+      const signature = { name: value.name, input: JSON.stringify(input) }
+      ctx.recentToolSignatures.push(signature)
+      if (ctx.recentToolSignatures.length > DOOM_LOOP_THRESHOLD) {
+        ctx.recentToolSignatures.splice(0, ctx.recentToolSignatures.length - DOOM_LOOP_THRESHOLD)
+      }
+      if (
+        ctx.recentToolSignatures.length !== DOOM_LOOP_THRESHOLD ||
+        !ctx.recentToolSignatures.every((item) => item.name === signature.name && item.input === signature.input)
+      ) {
+        return
+      }
+
+      const agent = yield* agents.get(ctx.assistantMessage.agent)
+      if (!agent) return yield* Effect.die(new Error(`Agent ${ctx.assistantMessage.agent} is unavailable`))
+      yield* permission.ask({
+        permission: "doom_loop",
+        patterns: [value.name],
+        sessionID: ctx.assistantMessage.sessionID,
+        metadata: { tool: value.name, input },
+        always: [value.name],
+        ruleset: agent.permission,
+      })
+    })
+
+    // Resize image attachments; the ones that cannot be resized are left out and counted in the output text.
+    const normalizeToolOutput = Effect.fnUntraced(function* (rawOutput: ToolOutput) {
+      const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
+        attachment.mime.startsWith("image/")
+          ? image.normalize(attachment).pipe(
+              Effect.catchIf(
+                (error) => error instanceof Image.ResizerUnavailableError,
+                () => Effect.succeed(attachment),
+              ),
+              Effect.exit,
+            )
+          : Effect.succeed(Exit.succeed(attachment)),
+      )
+      const omitted = normalized.filter(Exit.isFailure).length
+      const attachments = normalized.filter(Exit.isSuccess).map((item) => item.value)
+      const output = {
+        ...rawOutput,
+        output:
+          omitted === 0
+            ? rawOutput.output
+            : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
+        attachments: attachments.length ? attachments : undefined,
+      }
+      return output
+    })
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
@@ -185,9 +249,6 @@ export const layer = Layer.effect(
         stepToolActivity: false,
         recentToolSignatures: [],
       }
-      // Per-call preview sequence; the TUI applies previews latest-wins within
-      // a frame, and the sequence lets it discard an older frame.
-      const previewSeqs = new Map<string, number>()
       let aborted = false
       let deferred = false
       let displayPending = ""
@@ -243,165 +304,18 @@ export const layer = Layer.effect(
           aborted,
         })
 
-      const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
-        const done = ctx.toolcalls[toolCallID]?.done
-        delete ctx.toolcalls[toolCallID]
-        previewSeqs.delete(toolCallID)
-        if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
-      })
-
-      /**
-       * The processor's in-memory copy of one call's part is authoritative
-       * between transitions (HS8). A writer outside these transitions raises
-       * the session's process write version; reload the part until the read is
-       * stable so a stale copy is never trusted.
-       */
-      const refreshToolCall = Effect.fnUntraced(function* (call: ToolCall) {
-        let version = HistoryView.version(call.sessionID)
-        if (version === call.version) return call.part
-        for (let attempt = 0; ; attempt++) {
-          const before = version
-          const fresh = yield* session.getPart({
-            partID: call.partID,
-            messageID: call.messageID,
-            sessionID: call.sessionID,
-          })
-          version = HistoryView.version(call.sessionID)
-          if (!fresh || fresh.type !== "tool") return undefined
-          if (version === before) {
-            call.part = fresh
-            call.version = version
-            return fresh
-          }
-          // An unregistered write landed during the read: the copy may mix
-          // revisions, so retry and stop caching if writes keep coming.
-          if (attempt >= 2) return fresh
-        }
-      })
-
-      const currentToolCall = Effect.fnUntraced(function* (toolCallID: string) {
-        const call = ctx.toolcalls[toolCallID]
-        if (!call) return undefined
-        const part = yield* refreshToolCall(call)
-        if (!part) {
-          if (ctx.toolcalls[toolCallID] === call) delete ctx.toolcalls[toolCallID]
-          return undefined
-        }
-        return { call, part }
-      })
-
-      /**
-       * Cache a part this processor just persisted. `expected` is the version
-       * the transition read at; if another commit interleaved, the cached copy
-       * is no longer known to be current, so keep the version mark behind and
-       * reload on the next transition.
-       */
-      const cacheWrittenPart = (call: ToolCall, part: SessionV1.ToolPart, expected: number) => {
-        call.part = part
-        const version = HistoryView.version(part.sessionID)
-        if (version === expected) call.version = version
-      }
-
-      const updateToolCall = Effect.fn("SessionProcessor.updateToolCall")(function* (
-        toolCallID: string,
-        update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
-      ) {
-        const call = ctx.toolcalls[toolCallID]
-        if (!call) return undefined
-        return yield* call.lock.withPermits(1)(
-          Effect.gen(function* () {
-            // A call claimed by abort/cleanup or replaced by a resume must not
-            // be settled through this handle.
-            if (ctx.toolcalls[toolCallID] !== call) return undefined
-            const match = yield* currentToolCall(toolCallID)
-            if (!match) return undefined
-            const part = yield* session.updatePart(update(match.part))
-            cacheWrittenPart(call, part, match.call.version + 1)
-            return part
-          }),
-        )
-      })
-
-      const previewToolCall = Effect.fnUntraced(function* (
-        toolCallID: string,
-        preview: { tail: string; totalLength: number },
-      ) {
-        const call = ctx.toolcalls[toolCallID]
-        if (!call) return
-        const seq = (previewSeqs.get(toolCallID) ?? 0) + 1
-        previewSeqs.set(toolCallID, seq)
-        yield* events.publish(MessageV2.Event.PartPreview, {
-          sessionID: call.sessionID,
-          messageID: call.messageID,
-          partID: call.partID,
-          tail: preview.tail,
-          totalLength: preview.totalLength,
-          seq,
-        })
-      })
-
-      const completeToolCall = Effect.fn("SessionProcessor.completeToolCall")(function* (
-        toolCallID: string,
-        output: {
-          title: string
-          metadata: Record<string, any>
-          output: string
-          attachments?: SessionV1.FilePart[]
-        },
-      ) {
-        const call = ctx.toolcalls[toolCallID]
-        if (!call) return
-        yield* call.lock.withPermits(1)(
-          Effect.gen(function* () {
-            if (ctx.toolcalls[toolCallID] !== call) return
-            const match = yield* currentToolCall(toolCallID)
-            if (!match || match.part.state.status !== "running") return
-            const part = yield* session.updatePart({
-              ...match.part,
-              state: {
-                status: "completed",
-                input: match.part.state.input,
-                output: output.output,
-                metadata: output.metadata,
-                title: output.title,
-                time: { start: match.part.state.time.start, end: Date.now() },
-                attachments: output.attachments,
-              },
-            })
-            cacheWrittenPart(call, part, match.call.version + 1)
-            yield* settleToolCall(toolCallID)
-          }),
-        )
-      })
-
-      const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
-        const call = ctx.toolcalls[toolCallID]
-        if (!call) return false
-        return (
-          (yield* call.lock.withPermits(1)(
-            Effect.gen(function* () {
-              if (ctx.toolcalls[toolCallID] !== call) return false
-              const match = yield* currentToolCall(toolCallID)
-              if (!match || match.part.state.status !== "running") return false
-              const part = yield* session.updatePart({
-                ...match.part,
-                state: {
-                  status: "error",
-                  input: match.part.state.input,
-                  error: errorMessage(error),
-                  time: { start: match.part.state.time.start, end: Date.now() },
-                },
-              })
-              cacheWrittenPart(call, part, match.call.version + 1)
-              if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
-                ctx.blocked = ctx.shouldBreak
-              }
-              yield* settleToolCall(toolCallID)
-              return true
-            }),
-          )) ?? false
-        )
-      })
+      const {
+        settleToolCall,
+        currentToolCall,
+        cacheWrittenPart,
+        updateToolCall,
+        previewToolCall,
+        completeToolCall,
+        failToolCall,
+        ensureToolCall,
+        forceAbortToolCall,
+        severUnexecutedToolCalls,
+      } = makeToolCalls({ session, events, ctx })
 
       const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
         if (!(reasoningID in ctx.attempt.reasoningMap)) return
@@ -414,78 +328,33 @@ export const layer = Layer.effect(
         yield* input.onReasoningSettled(settled)
       })
 
-      const ensureToolCall = Effect.fn("SessionProcessor.ensureToolCall")(function* (input: {
-        id: string
-        name: string
-        providerExecuted?: boolean
-      }) {
-        const existing = ctx.toolcalls[input.id]
-        if (existing) {
-          const result = yield* existing.lock.withPermits(1)(
-            Effect.gen(function* () {
-              if (ctx.toolcalls[input.id] !== existing) return undefined
-              const match = yield* currentToolCall(input.id)
-              if (!match) return undefined
-              if (!input.providerExecuted || match.part.metadata?.providerExecuted) return match
-              const part = yield* session.updatePart({
-                ...match.part,
-                metadata: { ...match.part.metadata, providerExecuted: true },
-              })
-              cacheWrittenPart(match.call, part, match.call.version + 1)
-              return { call: match.call, part }
-            }),
-          )
-          if (result) return result
-          const latest = ctx.toolcalls[input.id]
-          if (latest && latest !== existing) return { call: latest, part: latest.part }
+      // HS14 (#1028 PR1): one record per completed provider response.
+      // The counter span runs from the previous step-finish (or process
+      // entry) so settle writes and tool work between steps stay
+      // attributed to the step that caused them.
+      const recordStepMetrics = Effect.fnUntraced(function* (usage: ReturnType<typeof Session.getUsage>) {
+        const fingerprint = metricsFingerprint
+        if (fingerprint) {
+          const current = counters()
+          const now = performance.now()
+          metricsStep += 1
+          yield* recordStep({
+            sessionID: ctx.sessionID,
+            step: metricsStep,
+            prepareMs: metricsStepStartedAt - metricsProcessStartedAt,
+            requestMs: now - metricsStepStartedAt,
+            ttftMs: metricsFirstTokenAt === undefined ? 0 : metricsFirstTokenAt - metricsStepStartedAt,
+            cacheRead: usage.tokens.cache.read,
+            cacheWrite: usage.tokens.cache.write,
+            input: usage.tokens.input,
+            sqlCount: current.sqlCount - metricsCounterBase.sqlCount,
+            commits: current.commits - metricsCounterBase.commits,
+            gitSpawns: current.gitSpawns - metricsCounterBase.gitSpawns,
+            fingerprint,
+          })
+          metricsCounterBase = current
         }
-        const part = yield* session.updatePart({
-          id: PartID.ascending(),
-          messageID: ctx.assistantMessage.id,
-          sessionID: ctx.assistantMessage.sessionID,
-          type: "tool",
-          tool: input.name,
-          callID: input.id,
-          state: { status: "pending", input: {}, raw: "" },
-          metadata: input.providerExecuted ? { providerExecuted: true } : undefined,
-        } satisfies SessionV1.ToolPart)
-        const call: ToolCall = {
-          done: yield* Deferred.make<void>(),
-          partID: part.id,
-          messageID: part.messageID,
-          sessionID: part.sessionID,
-          inputEnded: false,
-          raw: "",
-          part,
-          version: HistoryView.version(part.sessionID),
-          lock: Semaphore.makeUnsafe(1),
-        }
-        ctx.toolcalls[input.id] = call
-        return { call, part }
       })
-
-      const isFilePart = (value: unknown): value is SessionV1.FilePart => Schema.is(SessionV1.FilePart)(value)
-
-      const toolResultOutput = (
-        value: Extract<StreamEvent, { type: "tool-result" }>,
-      ): { title: string; metadata: Record<string, any>; output: string; attachments?: SessionV1.FilePart[] } => {
-        if (isRecord(value.result.value) && typeof value.result.value.output === "string") {
-          return {
-            title: typeof value.result.value.title === "string" ? value.result.value.title : value.name,
-            metadata: isRecord(value.result.value.metadata) ? value.result.value.metadata : {},
-            output: value.result.value.output,
-            attachments: Array.isArray(value.result.value.attachments)
-              ? value.result.value.attachments.filter(isFilePart)
-              : undefined,
-          }
-        }
-        return {
-          title: value.name,
-          metadata: value.result.type === "json" && isRecord(value.result.value) ? value.result.value : {},
-          output:
-            typeof value.result.value === "string" ? value.result.value : (JSON.stringify(value.result.value) ?? ""),
-        }
-      }
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
@@ -596,30 +465,7 @@ export const layer = Layer.effect(
                 : value.providerMetadata,
             }))
 
-            // Only the last three call signatures matter. The in-memory list
-            // mirrors the persisted tool parts without reading them back.
-            const signature = { name: value.name, input: JSON.stringify(input) }
-            ctx.recentToolSignatures.push(signature)
-            if (ctx.recentToolSignatures.length > DOOM_LOOP_THRESHOLD) {
-              ctx.recentToolSignatures.splice(0, ctx.recentToolSignatures.length - DOOM_LOOP_THRESHOLD)
-            }
-            if (
-              ctx.recentToolSignatures.length !== DOOM_LOOP_THRESHOLD ||
-              !ctx.recentToolSignatures.every((item) => item.name === signature.name && item.input === signature.input)
-            ) {
-              return
-            }
-
-            const agent = yield* agents.get(ctx.assistantMessage.agent)
-            if (!agent) return yield* Effect.die(new Error(`Agent ${ctx.assistantMessage.agent} is unavailable`))
-            yield* permission.ask({
-              permission: "doom_loop",
-              patterns: [value.name],
-              sessionID: ctx.assistantMessage.sessionID,
-              metadata: { tool: value.name, input },
-              always: [value.name],
-              ruleset: agent.permission,
-            })
+            yield* checkDoomLoop(ctx, value, input)
             return
           }
 
@@ -661,27 +507,7 @@ export const layer = Layer.effect(
                 return
               }
             }
-            const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
-              attachment.mime.startsWith("image/")
-                ? image.normalize(attachment).pipe(
-                    Effect.catchIf(
-                      (error) => error instanceof Image.ResizerUnavailableError,
-                      () => Effect.succeed(attachment),
-                    ),
-                    Effect.exit,
-                  )
-                : Effect.succeed(Exit.succeed(attachment)),
-            )
-            const omitted = normalized.filter(Exit.isFailure).length
-            const attachments = normalized.filter(Exit.isSuccess).map((item) => item.value)
-            const output = {
-              ...rawOutput,
-              output:
-                omitted === 0
-                  ? rawOutput.output
-                  : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
-              attachments: attachments.length ? attachments : undefined,
-            }
+            const output = yield* normalizeToolOutput(rawOutput)
             yield* completeToolCall(value.id, output)
             // A hook `continue:false` (PreToolUse/PostToolUse) ends the agent turn after this result.
             if (output.metadata.hookStopped === true) ctx.blocked = true
@@ -752,31 +578,7 @@ export const layer = Layer.effect(
             // A synchronous continuation reuses this message for a second provider request. Accumulate both
             // requests so the persisted message reports the full cost and usage of the visible turn.
             accumulateUsage(ctx.assistantMessage, usage)
-            // HS14 (#1028 PR1): one record per completed provider response.
-            // The counter span runs from the previous step-finish (or process
-            // entry) so settle writes and tool work between steps stay
-            // attributed to the step that caused them.
-            const fingerprint = metricsFingerprint
-            if (fingerprint) {
-              const current = counters()
-              const now = performance.now()
-              metricsStep += 1
-              yield* recordStep({
-                sessionID: ctx.sessionID,
-                step: metricsStep,
-                prepareMs: metricsStepStartedAt - metricsProcessStartedAt,
-                requestMs: now - metricsStepStartedAt,
-                ttftMs: metricsFirstTokenAt === undefined ? 0 : metricsFirstTokenAt - metricsStepStartedAt,
-                cacheRead: usage.tokens.cache.read,
-                cacheWrite: usage.tokens.cache.write,
-                input: usage.tokens.input,
-                sqlCount: current.sqlCount - metricsCounterBase.sqlCount,
-                commits: current.commits - metricsCounterBase.commits,
-                gitSpawns: current.gitSpawns - metricsCounterBase.gitSpawns,
-                fingerprint,
-              })
-              metricsCounterBase = current
-            }
+            yield* recordStepMetrics(usage)
             // One settle batch: the step-finish part, the assistant message and
             // the optional patch part commit as a single durable transaction.
             const settled: SessionV1.Part[] = [
@@ -877,48 +679,6 @@ export const layer = Layer.effect(
             }
             return
         }
-      })
-
-      // Force-abort one leftover tool call. The claim-before-abort pattern
-      // (delete under the call lock, then re-read the part) prevents a
-      // concurrent completeToolCall or failToolCall from settling it while the
-      // forced error is persisted.
-      const forceAbortToolCall = Effect.fn("SessionProcessor.forceAbortToolCall")(function* (toolCallID: string) {
-        const call = ctx.toolcalls[toolCallID]
-        if (!call) return
-        yield* call.lock.withPermits(1)(
-          Effect.gen(function* () {
-            if (ctx.toolcalls[toolCallID] !== call) return
-            delete ctx.toolcalls[toolCallID]
-            const part = yield* refreshToolCall(call)
-            // The tool may have settled between the grace period and this
-            // read; never overwrite a completed/errored part with a forced
-            // abort.
-            if (!part || (part.state.status !== "running" && part.state.status !== "pending")) return
-            const end = Date.now()
-            const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
-            yield* session.updatePart({
-              ...part,
-              state: {
-                ...part.state,
-                status: "error",
-                error: "Tool execution aborted",
-                metadata: { ...metadata, interrupted: true },
-                time: { start: "time" in part.state ? part.state.time.start : end, end },
-              },
-            })
-          }),
-        )
-      })
-
-      // Sever the leftovers of a failed attempt whose tools never executed:
-      // abort the pending placeholders and clear them so a newer attempt (or
-      // late stale events) cannot settle them.
-      const severUnexecutedToolCalls = Effect.fn("SessionProcessor.severUnexecutedToolCalls")(function* () {
-        for (const toolCallID of Object.keys(ctx.toolcalls)) {
-          yield* forceAbortToolCall(toolCallID)
-        }
-        ctx.toolcalls = {}
       })
 
       // Failed opaque reasoning must not enter a later model request. Remove its
