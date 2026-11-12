@@ -206,6 +206,66 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 
 export const use = serviceUse(Service)
 
+/**
+ * The tool set a request may execute. Registry, MCP, structured-output and native
+ * execution all reserve from the same budget before any tool side effect, and a
+ * refusing request rejects execution of every call.
+ */
+function gateTools(input: {
+  readonly tools: Record<string, Tool>
+  readonly toolChoice: StreamRequest["toolChoice"]
+  readonly refuseTools: boolean
+  readonly request: StreamRequest
+  readonly toolBudget: ToolBudget.Budget
+  readonly admitToolCall: (id: string) => { allowed: boolean; executed: boolean }
+}): Record<string, Tool> {
+  const { request, toolBudget, admitToolCall, refuseTools } = input
+  if (input.toolChoice === "none") {
+    // Copilot requires a placeholder definition when history contains tool
+    // calls. Preserve that wire compatibility while refusing all execution.
+    const noop = input.tools._noop
+    return noop
+      ? {
+          _noop: {
+            ...noop,
+            execute: () => {
+              throw new Error("Tools are disabled for this request")
+            },
+          },
+        }
+      : {}
+  }
+  // Gate the final tool set so registry, MCP, structured-output and native
+  // execution all reserve from the same budget before any tool side effect.
+  return Object.fromEntries(
+    Object.entries(input.tools).map(([name, item]) => {
+      const execute = item.execute
+      if (!execute) return [name, item]
+      return [
+        name,
+        {
+          ...item,
+          execute: (...args) => {
+            // A failed stream closes its request scope. Refuse any SDK
+            // callback that arrives after that scope has been aborted.
+            if (request.abort.aborted) throw new DOMException("Aborted", "AbortError")
+            if (refuseTools) {
+              request.onToolRefused?.()
+              throw new ToolRefusedError()
+            }
+            const admission = admitToolCall(args[1].toolCallId)
+            if (!admission.allowed) throw new Error(ToolBudget.exhaustedMessage(toolBudget.max))
+            if (admission.executed) throw new Error(`Duplicate tool call: ${args[1].toolCallId}`)
+            admission.executed = true
+            request.onAttemptActivity?.("tool-executed")
+            return execute(...args)
+          },
+        } satisfies Tool,
+      ]
+    }),
+  )
+}
+
 const live: Layer.Layer<
   Service,
   never,
@@ -278,51 +338,14 @@ const live: Layer.Layer<
           // calls still consume budget, without charging execution a second time.
           if (toolChoice !== "none") admitToolCall(event.id)
         })
-      if (toolChoice === "none") {
-        // Copilot requires a placeholder definition when history contains tool
-        // calls. Preserve that wire compatibility while refusing all execution.
-        const noop = prepared.tools._noop
-        prepared.tools = noop
-          ? {
-              _noop: {
-                ...noop,
-                execute: () => {
-                  throw new Error("Tools are disabled for this request")
-                },
-              },
-            }
-          : {}
-      } else {
-        // Gate the final tool set so registry, MCP, structured-output and native
-        // execution all reserve from the same budget before any tool side effect.
-        prepared.tools = Object.fromEntries(
-          Object.entries(prepared.tools).map(([name, item]) => {
-            const execute = item.execute
-            if (!execute) return [name, item]
-            return [
-              name,
-              {
-                ...item,
-                execute: (...args) => {
-                  // A failed stream closes its request scope. Refuse any SDK
-                  // callback that arrives after that scope has been aborted.
-                  if (input.abort.aborted) throw new DOMException("Aborted", "AbortError")
-                  if (refuseTools) {
-                    input.onToolRefused?.()
-                    throw new ToolRefusedError()
-                  }
-                  const admission = admitToolCall(args[1].toolCallId)
-                  if (!admission.allowed) throw new Error(ToolBudget.exhaustedMessage(toolBudget.max))
-                  if (admission.executed) throw new Error(`Duplicate tool call: ${args[1].toolCallId}`)
-                  admission.executed = true
-                  input.onAttemptActivity?.("tool-executed")
-                  return execute(...args)
-                },
-              } satisfies Tool,
-            ]
-          }),
-        )
-      }
+      prepared.tools = gateTools({
+        tools: prepared.tools,
+        toolChoice,
+        refuseTools,
+        request: input,
+        toolBudget,
+        admitToolCall,
+      })
       const dynamicFolding = ConfigCompaction.resolveDynamic({
         disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
         dynamic: cfg.compaction?.dynamic,

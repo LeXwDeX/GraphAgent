@@ -591,6 +591,47 @@ function makeModelStep(deps: LoopDeps) {
   })
 }
 
+/**
+ * Request shape of this model step. The closing step is chosen by the Stop
+ * gate; every other final step is the budget/max-step terminal, and only a
+ * `json_schema` turn keeps the legacy structured-output shape (C2 owns
+ * forced-tool-choice support).
+ */
+function finalPolicyFor(state: TurnState, lastUser: SessionV1.User, terminal: boolean): FinalPolicy {
+  if (state.final === "closing") return "closing"
+  if (!terminal) return "normal"
+  return lastUser.format?.type === "json_schema" ? "structuredTerminal" : "terminal"
+}
+
+/** The empty assistant message a model step starts from; the processor fills it in. */
+function assistantMessageFor(
+  input: {
+    readonly sessionID: SessionID
+    readonly modelMessageID: MessageID
+    readonly lastUser: SessionV1.User
+    readonly model: Provider.Model
+    readonly cwd: string
+    readonly root: string
+  },
+  agentName: string,
+): SessionV1.Assistant {
+  return {
+    id: input.modelMessageID,
+    parentID: input.lastUser.id,
+    role: "assistant",
+    mode: agentName,
+    agent: agentName,
+    variant: input.lastUser.model.variant,
+    path: { cwd: input.cwd, root: input.root },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: input.model.id,
+    providerID: input.model.providerID,
+    time: { created: Date.now() },
+    sessionID: input.sessionID,
+  }
+}
+
 type AttemptRunResult =
   | { readonly kind: "continue"; readonly state: TurnState }
   | { readonly kind: "return"; readonly message: SessionV1.WithParts; readonly state: TurnState }
@@ -638,33 +679,9 @@ function makeAttemptRunner(deps: LoopDeps) {
     const maxSteps = agent.steps ?? Infinity
     const isLastStep = input.step >= maxSteps
     const toolLimitReached = input.budget.exhausted
-    // The closing step is chosen by the Stop gate; every other final step is
-    // the budget/max-step terminal, and only a `json_schema` turn keeps the
-    // legacy structured-output shape (C2 owns forced-tool-choice support).
-    const finalPolicy: FinalPolicy =
-      input.state.final === "closing"
-        ? "closing"
-        : toolLimitReached || isLastStep
-          ? input.lastUser.format?.type === "json_schema"
-            ? "structuredTerminal"
-            : "terminal"
-          : "normal"
+    const finalPolicy = finalPolicyFor(input.state, input.lastUser, toolLimitReached || isLastStep)
 
-    const msg: SessionV1.Assistant = {
-      id: input.modelMessageID,
-      parentID: input.lastUser.id,
-      role: "assistant",
-      mode: agent.name,
-      agent: agent.name,
-      variant: input.lastUser.model.variant,
-      path: { cwd: input.cwd, root: input.root },
-      cost: 0,
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-      modelID: input.model.id,
-      providerID: input.model.providerID,
-      time: { created: Date.now() },
-      sessionID: input.sessionID,
-    }
+    const msg = assistantMessageFor(input, agent.name)
     yield* sessions.updateMessage(msg)
     const finalizeFailedAssistant = (cause: Cause.Cause<never>) =>
       settleFns.finalizeFailed({
@@ -1187,14 +1204,14 @@ function makeErrorRecorder(deps: LoopDeps) {
 }
 
 export function makeLoop(deps: LoopDeps) {
-  const runLoopImpl = makeTurnLoop(deps)
+  const turnLoop = makeTurnLoop(deps)
   const cleanupScopedAgent = makeScopedAgentCleanup(deps)
   const recordPreparationError = makeErrorRecorder(deps)
   // Rich entry point: Turns records steps and the terminal outcome alongside
   // the final message. Cleanup and preparation-error recording stay identical
   // to the historical message-only wrapper.
   const runTurn = (sessionID: SessionID): Effect.Effect<TurnExecution> =>
-    runLoopImpl(sessionID).pipe(
+    turnLoop(sessionID).pipe(
       Effect.ensuring(cleanupScopedAgent(sessionID)),
       Effect.onError(recordPreparationError(sessionID)),
     )

@@ -6,11 +6,11 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 /**
  * Pure turn state for the session loop (Issue #1019, PR7).
  *
- * Every mutable flag the old `runLoopImpl` kept in closure variables lives here
- * instead, and every update goes through a pure reducer below. The decision
- * layer (`decide.ts`) reads this state but never mutates it; the loop applies
- * reducer results in statement order so the observable behavior matches the
- * pre-refactor code exactly.
+ * Every mutable flag the pre-refactor inline loop in `prompt.ts` kept in closure
+ * variables lives here instead, and every update goes through a pure reducer
+ * below. The decision layer (`decide.ts`) reads this state but never mutates
+ * it; the loop applies reducer results in statement order so the observable
+ * behavior matches the pre-refactor code exactly.
  */
 
 /**

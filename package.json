@@ -17,6 +17,7 @@
     "toolchain:check": "node script/toolchain.mjs check --go",
     "check:hosts": "bun script/check-private-hosts.ts",
     "check:hosts:test": "cd script && bun test check-private-hosts.test.ts",
+    "check:fn-length": "bun packages/graphagent/script/check-fn-length.ts",
     "check:license": "bun script/check-license.ts"
   },
   "workspaces": {

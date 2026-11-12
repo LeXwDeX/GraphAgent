@@ -107,6 +107,61 @@ export function expandCommandTemplate(template: string, input: string) {
   return `${expanded}\n\n${input}`
 }
 
+/**
+ * `/memory`: toggle or report the memory feature, then record the exchange as
+ * a command message with a visible response.
+ */
+function memoryCommandMessage(deps: Pick<CommandDeps, "sessions" | "agents" | "prepareFns">, input: CommandInput) {
+  const { sessions, agents, prepareFns } = deps
+  return Effect.gen(function* () {
+    const memory = Option.getOrUndefined(yield* Effect.serviceOption(Memory.Service))
+    const argument = input.arguments.trim()
+    // #396: anything that is not an exact on/off is a status query —
+    // report the true state instead of a hardcoded "remains off".
+    const result = memory
+      ? argument === "on"
+        ? yield* memory.setEnabled(true)
+        : argument === "off"
+          ? yield* memory.setEnabled(false)
+          : yield* memory.status()
+      : "Memory remains off"
+    const model = yield* prepareFns.currentModel(input.sessionID)
+    const agentName = input.agent ?? (yield* agents.defaultAgent())
+    const userMsg: SessionV1.User = {
+      id: input.messageID ?? MessageID.ascending(),
+      role: "user",
+      sessionID: input.sessionID,
+      time: { created: Date.now() },
+      agent: agentName,
+      model: { providerID: model.providerID, modelID: model.modelID },
+    }
+    yield* sessions.updateMessage(userMsg)
+    const commandPart: SessionV1.TextPart = {
+      id: PartID.ascending(),
+      messageID: userMsg.id,
+      sessionID: input.sessionID,
+      type: "text",
+      text: `/memory ${input.arguments}`.trim(),
+      metadata: { command: "memory" },
+    }
+    yield* sessions.updatePart(commandPart)
+    const now = Date.now()
+    // time.end set so run-mode consumers print the response (run CLI
+    // only renders text parts once ended).
+    const responsePart: SessionV1.TextPart = {
+      id: PartID.ascending(),
+      messageID: userMsg.id,
+      sessionID: input.sessionID,
+      type: "text",
+      text: result,
+      time: { start: now, end: now },
+    }
+    yield* sessions.updatePart(responsePart)
+    yield* sessions.touch(input.sessionID)
+    return { info: userMsg, parts: [commandPart, responsePart] }
+  })
+}
+
 export function makeCommand(deps: CommandDeps) {
   const {
     sessions,
@@ -191,58 +246,7 @@ export function makeCommand(deps: CommandDeps) {
       command: input.command,
       agent: input.agent,
     })
-    if (input.command === "memory") {
-      return yield* commandTurn(
-        input.sessionID,
-        Effect.gen(function* () {
-          const memory = Option.getOrUndefined(yield* Effect.serviceOption(Memory.Service))
-          const argument = input.arguments.trim()
-          // #396: anything that is not an exact on/off is a status query —
-          // report the true state instead of a hardcoded "remains off".
-          const result = memory
-            ? argument === "on"
-              ? yield* memory.setEnabled(true)
-              : argument === "off"
-                ? yield* memory.setEnabled(false)
-                : yield* memory.status()
-            : "Memory remains off"
-          const model = yield* prepareFns.currentModel(input.sessionID)
-          const agentName = input.agent ?? (yield* agents.defaultAgent())
-          const userMsg: SessionV1.User = {
-            id: input.messageID ?? MessageID.ascending(),
-            role: "user",
-            sessionID: input.sessionID,
-            time: { created: Date.now() },
-            agent: agentName,
-            model: { providerID: model.providerID, modelID: model.modelID },
-          }
-          yield* sessions.updateMessage(userMsg)
-          const commandPart: SessionV1.TextPart = {
-            id: PartID.ascending(),
-            messageID: userMsg.id,
-            sessionID: input.sessionID,
-            type: "text",
-            text: `/memory ${input.arguments}`.trim(),
-            metadata: { command: "memory" },
-          }
-          yield* sessions.updatePart(commandPart)
-          const now = Date.now()
-          // time.end set so run-mode consumers print the response (run CLI
-          // only renders text parts once ended).
-          const responsePart: SessionV1.TextPart = {
-            id: PartID.ascending(),
-            messageID: userMsg.id,
-            sessionID: input.sessionID,
-            type: "text",
-            text: result,
-            time: { start: now, end: now },
-          }
-          yield* sessions.updatePart(responsePart)
-          yield* sessions.touch(input.sessionID)
-          return { info: userMsg, parts: [commandPart, responsePart] }
-        }),
-      )
-    }
+    if (input.command === "memory") return yield* commandTurn(input.sessionID, memoryCommandMessage(deps, input))
     // Goal/Subgoal command dispatch — early return BEFORE command registry lookup
     if (goal && (input.command === "goal" || input.command === "subgoal")) {
       const dispatch = input.command === "goal" ? goal.dispatch : goal.dispatchSubgoal

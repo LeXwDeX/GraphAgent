@@ -1,10 +1,12 @@
 # ============================================================================
 # CI (Azure Pipelines)
 # ----------------------------------------------------------------------------
-# Purpose : Private-host scan, lint, typecheck, DAG core gate, unit/HttpAPI/
-#           generated-code tests on Linux (Windows DAG tests run in GitHub Actions)
+# Purpose : Private-host scan, session function-length ratchet, lint, typecheck,
+#           DAG core gate, unit/HttpAPI/generated-code tests on Linux
+#           (Windows DAG tests run in GitHub Actions)
 # Trigger : Push to `main`, PRs targeting `main`, manual run
-# Jobs    : Typecheck               — private-host scan, its unit test, lint,
+# Jobs    : Typecheck               — private-host scan, its unit test,
+#                                     session function-length ratchet, lint,
 #                                     typecheck, database baseline, DAG core
 #                                     gate, oc tests
 #           Unit Tests (workspace)  — workspace tests except graphagent, Go,
@@ -69,6 +71,10 @@ jobs:
           PRIVATE_HOST_PATTERNS: $(PRIVATE_HOST_PATTERNS)
       - bash: bun run check:hosts:test
         displayName: Test private host scanner
+      # #1019: src/session functions may not grow or appear past the turn/ (150)
+      # and session/ (300) line limits; recorded debt only ever shrinks.
+      - bash: bun run check:fn-length
+        displayName: Check session function length
       - bash: bun run lint
         displayName: Run lint
       - bash: bun typecheck

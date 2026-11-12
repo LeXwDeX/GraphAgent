@@ -1,19 +1,18 @@
 {
   "version": 1,
   "functions": {
-    "src/session/command.ts#commandBody": 396,
-    "src/session/command.ts#makeCommand": 464,
-    "src/session/compaction.ts#processCompaction": 397,
-    "src/session/llm.ts#run": 388,
-    "src/session/message-v2.ts#toModelMessagesEffect": 355,
-    "src/session/processor.ts#create": 1050,
-    "src/session/processor.ts#handleEvent": 353,
-    "src/session/turn/admit.ts#admitPrompt": 176,
-    "src/session/turn/admit.ts#makeAdmit": 628,
-    "src/session/turn/prepare.ts#buildTurnRequest": 229,
-    "src/session/turn/prepare.ts#createUserMessage": 448,
-    "src/session/turn/prepare.ts#handleSubtask": 187,
-    "src/session/turn/prepare.ts#makePrepare": 1406,
-    "src/session/turn/prepare.ts#resolvePart": 293
+    "src/session/command.ts#commandBody": 357,
+    "src/session/command.ts#makeCommand": 438,
+    "src/session/compaction.ts#processCompaction": 367,
+    "src/session/llm.ts#run": 368,
+    "src/session/processor.ts#create": 898,
+    "src/session/processor.ts#handleEvent": 324,
+    "src/session/turn/admit.ts#admitPrompt": 166,
+    "src/session/turn/admit.ts#makeAdmit": 567,
+    "src/session/turn/prepare.ts#buildTurnRequest": 213,
+    "src/session/turn/prepare.ts#createUserMessage": 381,
+    "src/session/turn/prepare.ts#handleSubtask": 172,
+    "src/session/turn/prepare.ts#makePrepare": 1277,
+    "src/session/turn/prepare.ts#resolvePart": 221
   }
 }

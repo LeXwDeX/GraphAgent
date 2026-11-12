@@ -70,6 +70,18 @@ export interface AdmitDeps {
   readonly turns: () => TurnsInterface
 }
 
+/** A model-visible synthetic text part appended to an admitted user message. */
+function syntheticTextPart(input: { sessionID: SessionID; messageID: MessageID; text: string }): SessionV1.TextPart {
+  return {
+    id: PartID.ascending(),
+    messageID: input.messageID,
+    sessionID: input.sessionID,
+    type: "text",
+    text: input.text,
+    synthetic: true,
+  }
+}
+
 export function makeAdmit(deps: AdmitDeps) {
   const {
     sessions,
@@ -504,14 +516,7 @@ export function makeAdmit(deps: AdmitDeps) {
       yield* SettingsHook.landSystemMessages(hookResult, {
         sessionID: input.sessionID,
         inject: (text) =>
-          sessions.updatePart({
-            id: PartID.ascending(),
-            messageID: message.info.id,
-            sessionID: input.sessionID,
-            type: "text",
-            text,
-            synthetic: true,
-          } satisfies SessionV1.TextPart),
+          sessions.updatePart(syntheticTextPart({ sessionID: input.sessionID, messageID: message.info.id, text })),
       })
     }
 
@@ -522,14 +527,9 @@ export function makeAdmit(deps: AdmitDeps) {
     }
 
     for (const ctx of [...resumeTexts, ...startContextTexts, ...hookAdditionalContexts]) {
-      yield* sessions.updatePart({
-        id: PartID.ascending(),
-        messageID: message.info.id,
-        sessionID: input.sessionID,
-        type: "text",
-        text: ctx,
-        synthetic: true,
-      } satisfies SessionV1.TextPart)
+      yield* sessions.updatePart(
+        syntheticTextPart({ sessionID: input.sessionID, messageID: message.info.id, text: ctx }),
+      )
     }
 
     const permissions: PermissionV1.Rule[] = []

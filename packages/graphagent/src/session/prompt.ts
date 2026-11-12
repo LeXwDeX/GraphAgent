@@ -1,26 +1,15 @@
-import { SessionAdmission } from "@graphagent/core/session/admission"
 import { Question } from "@/question"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { SessionAttention } from "@/notification/attention"
-import { Flag } from "@graphagent/core/flag/flag"
-import {
-  assessCanonicalReasoning,
-  ReasoningDistillationPolicy,
-  rewriteLogFields,
-  runReasoningRewrite,
-} from "@graphagent/core/session/reasoning-distillation"
-import { ConfigReasoningDistillation } from "@graphagent/core/config/reasoning-distillation"
-import { adoptReasoning } from "./reasoning-adoption"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { SessionEvent } from "@graphagent/schema/session-event"
-import { SessionID, MessageID, PartID } from "./schema"
+import { SessionID, MessageID } from "./schema"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
 import { EngineProcess } from "./engine-process"
 import { AgentScheduler } from "./agent-scheduler"
 import { makeSessionLocks } from "./locks"
-import { Token } from "@/util/token"
 import { SessionRevert } from "./revert"
 
 // #404: headless clients (`opencode run "/init"`, SDK text prompts) deliver
@@ -66,7 +55,7 @@ import { LLM } from "./llm"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
-import { Effect, Fiber, Layer, Option, Scope, Context, DateTime, Schema, Struct } from "effect"
+import { Effect, Layer, Option, Scope, Context, DateTime } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
@@ -77,12 +66,10 @@ import { turnOutcomePhase } from "@graphagent/core/lifecycle/vocabulary"
 import { ref as stateRef } from "@graphagent/core/lifecycle/state"
 import { LifecycleEvent } from "@graphagent/schema/lifecycle-event"
 import { Lifecycle } from "@/lifecycle/service"
-import { ModelV2 } from "@graphagent/core/model"
-import { ProviderV2 } from "@graphagent/core/provider"
 import { Todo } from "./todo"
 import { TodoReminders } from "./todo-reminders"
 import { ToolSourceLedger } from "./tool-source-ledger"
-import { SettingsHook, type TriggerResult, type HookPayload } from "@/hook"
+import { SettingsHook } from "@/hook"
 import { BackgroundJob } from "@/background/job"
 import { DagStore } from "@graphagent/core/dag/store"
 import { HookStartContext } from "@/hook/start-context"
@@ -93,6 +80,19 @@ import { Memory } from "@/memory/memory"
 import { DagMessages } from "@graphagent/core/dag/messages"
 
 import { makeCommand } from "./command"
+import { makeModelSwitch } from "./model-switch"
+import type {
+  CommandInput,
+  LoopInput,
+  ModelRef,
+  PromptInput,
+  ResumeInput,
+  SetModelInput,
+  ShellInput,
+  SummarizeInput,
+} from "./prompt-input"
+import { makeReasoningRewrite } from "./reasoning-rewrite"
+import { makeResume, NoPendingHookInput } from "./resume"
 import { makeShell } from "./shell"
 import { Admit } from "./turn/admit"
 import { AdmissionPersistFailed, ModelSwitchBlocked, Prepare } from "./turn/prepare"
@@ -116,6 +116,18 @@ import {
 } from "./turns"
 
 export type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
+export {
+  CommandInput,
+  HookFollowupInput,
+  HookPendingInput,
+  LoopInput,
+  PromptInput,
+  ResumeInput,
+  SetModelInput,
+  ShellInput,
+  SummarizeInput,
+} from "./prompt-input"
+export { NoPendingHookInput }
 export {
   createStructuredOutputTool,
   ModelSwitchBlocked,
@@ -198,10 +210,6 @@ export interface Interface {
 
 export type PromptError = Image.Error | ModelSwitchBlocked | NoPendingHookInput | AdmissionPersistFailed
 
-export class NoPendingHookInput extends Schema.TaggedError<NoPendingHookInput>()("NoPendingHookInput", {
-  message: Schema.String,
-}) {}
-
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionPrompt") {}
 
 export const layer = Layer.effect(
@@ -241,96 +249,16 @@ export const layer = Layer.effect(
     // Every session cache below is process-wide: one ManagedRuntime cannot
     // see another's InstanceState, but cancellations and followups cross them.
     const runtimes = EngineProcess.runtimes
-    const reasoningDistillationEnabled = (model: Provider.Model) =>
-      config.get().pipe(
-        Effect.map(
-          (cfg) =>
-            ConfigReasoningDistillation.resolveEnabled({
-              disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_REASONING_DISTILLATION,
-              enabled: cfg.reasoningDistillation?.enabled,
-              modelEnabled: cfg.provider?.[model.providerID]?.models?.[model.id]?.reasoningDistillation?.enabled,
-            }).enabled,
-        ),
-      )
     const database = yield* Database.Service
-    const queueReasoning = (input: { sessionID: SessionID; part: SessionV1.ReasoningPart; model: Provider.Model }) =>
-      Effect.gen(function* () {
-        const directory = yield* InstanceState.directory
-        const rewrite = runtimes.directory(directory)
-        runtimes.own(input.sessionID, directory)
-        return yield* rewrite.queue.enqueue(
-          input.sessionID,
-          input.part.id,
-          Effect.gen(function* () {
-            if (!(yield* reasoningDistillationEnabled(input.model))) return undefined
-            const part = yield* sessions.getPart({
-              sessionID: input.sessionID,
-              messageID: input.part.messageID,
-              partID: input.part.id,
-            })
-            if (part?.type !== "reasoning") return undefined
-            const editability = assessCanonicalReasoning({
-              text: part.text,
-              metadata: part.metadata,
-              settled: part.time.end !== undefined,
-              distilled: part.distillation !== undefined,
-            })
-            if (
-              !editability.editable ||
-              Token.estimate(part.text) < ReasoningDistillationPolicy.tokens.minimumInputTokens
-            )
-              return undefined
-            if (rewrite.budget.admit(input.sessionID) !== "ok") return undefined
-            const cfg = yield* config.get()
-            const organizer = yield* llm.organizer({ model: input.model })
-            if (!organizer) return undefined
-            return yield* Effect.scoped(
-              Effect.gen(function* () {
-                // Reasoning rewriting is background work: when no stream
-                // permit is free it is dropped, exactly like the queue's own
-                // per-session bound, instead of delaying the turn.
-                const permit = yield* scheduler.tryRequest({
-                  lane: "background",
-                  providerID: organizer.providerID,
-                  modelID: organizer.modelID,
-                  sessionID: input.sessionID,
-                })
-                if (Option.isNone(permit)) return undefined
-                const outcome = yield* runReasoningRewrite({
-                  budget: rewrite.budget,
-                  sessionID: input.sessionID,
-                  slot: { messageID: part.messageID, partID: part.id, text: part.text },
-                  language: ConfigReasoningDistillation.resolveLanguage(cfg.reasoningDistillation),
-                  call: organizer.call,
-                  // Organization only queues a candidate; the next step commits it before reading history.
-                  adopt: (replacement) => Effect.succeed(replacement),
-                })
-                yield* Effect.logInfo(
-                  "reasoning distillation",
-                  rewriteLogFields(outcome, {
-                    runtime: "opencode",
-                    mode: "async",
-                    "session.id": input.sessionID,
-                    model: organizer.model,
-                    transport: organizer.transport,
-                  }),
-                )
-                if (!outcome.adopted) return undefined
-                return adoptReasoning({
-                  sessionID: input.sessionID,
-                  part,
-                  replacement: outcome.adopted,
-                  canAdopt: reasoningDistillationEnabled(input.model),
-                }).pipe(
-                  Effect.provideService(Database.Service, database),
-                  Effect.provideService(Session.Service, sessions),
-                  Effect.provideService(EventV2Bridge.Service, events),
-                )
-              }),
-            )
-          }),
-        )
-      })
+    const { reasoningDistillationEnabled, queueReasoning } = makeReasoningRewrite({
+      config,
+      sessions,
+      llm,
+      scheduler,
+      events,
+      database,
+      runtimes,
+    })
     const backgroundJobs = yield* BackgroundJob.Service
     const workflowStore = yield* DagStore.Service
     const agentMessages = Option.getOrUndefined(yield* Effect.serviceOption(DagMessages.Service))
@@ -377,79 +305,7 @@ export const layer = Layer.effect(
     const hookQuestions = Option.getOrUndefined(yield* Effect.serviceOption(Question.Service))
     const startContext = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
     const goal = Option.getOrUndefined(yield* Effect.serviceOption(Goal.Service))
-    const modelSwitches = runtimes.modelSwitches
-    const queueModelSwitch = Effect.fn("SessionPrompt.queueModelSwitch")(function* (
-      sessionID: SessionID,
-      payload: Extract<HookPayload, { event: "PreModelSwitch" | "PostModelSwitch" }>,
-    ) {
-      if (!settingsHook) return
-      const request = SessionCancellation.request(sessionID)
-      yield* Effect.gen(function* () {
-        const pending = modelSwitches
-        const context = yield* Effect.context()
-        const generation = yield* InstanceState.currentGeneration
-        const directory = yield* InstanceState.directory
-        runtimes.own(sessionID, directory)
-        const previous = pending.get(sessionID)
-        if (previous) {
-          pending.delete(sessionID)
-          previous.unregister()
-          yield* Fiber.interrupt(previous.fiber)
-        }
-        if (!request.current()) return
-        const fiber = yield* Effect.suspend(() =>
-          request.current()
-            ? settingsHook.trigger({ ...payload, event: "PostModelSwitch" }, { sessionID })
-            : Effect.interrupt,
-        ).pipe(
-          Effect.catch(() => Effect.succeed<TriggerResult>({ additionalContexts: [], systemMessages: [] })),
-          Effect.forkIn(scope),
-        )
-        const entry = { target: payload.toModel, epoch: request.epoch, fiber, unregister: () => {} }
-        const unregister = request.register(
-          () =>
-            InstanceState.withGeneration(
-              generation,
-              Effect.suspend(() => {
-                if (pending.get(sessionID) === entry) pending.delete(sessionID)
-                entry.unregister()
-                return Fiber.interrupt(fiber).pipe(Effect.asVoid)
-              }),
-            ).pipe(Effect.provide(context)),
-          directory,
-        )
-        if (!unregister) {
-          yield* Fiber.interrupt(fiber)
-          return
-        }
-        entry.unregister = unregister
-        const prior = pending.get(sessionID)
-        pending.set(sessionID, entry)
-        if (prior) {
-          prior.unregister()
-          yield* Fiber.interrupt(prior.fiber)
-        }
-      }).pipe(Effect.ensuring(Effect.sync(() => request.release())))
-    })
-    const modelSwitchContext = Effect.fn("SessionPrompt.modelSwitchContext")(function* (
-      sessionID: SessionID,
-      apiModelID: string,
-    ) {
-      const pending = modelSwitches
-      const entry = pending.get(sessionID)
-      if (!entry || entry.target !== apiModelID) return [] as string[]
-      const result = yield* Fiber.join(entry.fiber).pipe(Effect.timeoutOption("5 seconds"))
-      if (Option.isNone(result) || pending.get(sessionID) !== entry) return [] as string[]
-      const current = SessionCancellation.epoch(sessionID) === entry.epoch
-      pending.delete(sessionID)
-      entry.unregister()
-      if (!current) return [] as string[]
-      yield* SettingsHook.landSystemMessages(result.value, {
-        sessionID,
-        shouldLand: () => SessionCancellation.epoch(sessionID) === entry.epoch,
-      })
-      return SessionCancellation.epoch(sessionID) === entry.epoch ? result.value.additionalContexts : []
-    })
+    const { queueModelSwitch, modelSwitchContext } = makeModelSwitch({ settingsHook, runtimes, scope })
     const scopedAgents = runtimes.scopedAgents
     // The loop checks the context limit before it prepares a request, so the system text and tool schemas
     // of the request it is about to send do not exist yet. Keep the measured overhead of the previous
@@ -515,8 +371,6 @@ export const layer = Layer.effect(
       const state = modelWrites.get(sessionID)
       if (state) state.epoch++
     }
-    // A cancel also fences followups started by a different layer graph.
-    const cancelEpoch = SessionCancellation.epoch
     const toolBudgets = runtimes.toolBudgets
     const budgetState = Effect.fnUntraced(function* (sessionID: SessionID) {
       const directory = yield* InstanceState.directory
@@ -745,244 +599,19 @@ export const layer = Layer.effect(
       return yield* result
     })
 
-    const pendingMessageID = (metadata: Session.Info["metadata"]) => {
-      const saved = (metadata ?? {}).hookPendingInput
-      if (typeof saved !== "object" || saved === null || !("messageID" in saved)) return undefined
-      return typeof saved.messageID === "string" ? saved.messageID : undefined
-    }
-    const writePendingInput = Effect.fnUntraced(function* (
-      sessionID: SessionID,
-      pending: typeof HookPendingInput.Type | undefined,
-      guard?: (current: Session.Info) => boolean,
-    ) {
-      const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
-      const metadata = { ...current.metadata }
-      if (pending) metadata.hookPendingInput = pending
-      else delete metadata.hookPendingInput
-      // The guard runs inside setMetadata, after any delayed commit barrier, so
-      // a cancel that lands while this write is queued still wins.
-      yield* sessions.setMetadata({ sessionID, metadata }, guard)
-    })
-    const pendingInput = (metadata: Session.Info["metadata"]) =>
-      metadata?.hookPendingInput === undefined
-        ? Effect.succeed(undefined)
-        : Schema.decodeUnknownEffect(HookPendingInput)(metadata.hookPendingInput).pipe(
-            Effect.mapError(
-              () =>
-                new NoPendingHookInput({
-                  message:
-                    "The saved hook followup has an unsupported or corrupt format. Inspect it before resubmitting.",
-                }),
-            ),
-          )
-    const finishPendingInput = Effect.fnUntraced(function* (
-      sessionID: SessionID,
-      completed: SessionV1.WithParts | null,
-      epoch: number,
-    ) {
-      if (
-        !completed ||
-        completed.info.role !== "assistant" ||
-        completed.info.error ||
-        completed.info.finish === "tool_deferred" ||
-        completed.info.finish === "tool_deferred_unavailable"
-      )
-        return completed
-      return yield* followupAdmissions
-        .run(sessionID, (commit) =>
-          Effect.gen(function* () {
-            const pending = yield* promptLocks.withLock(sessionID)(
-              commit(
-                Effect.gen(function* () {
-                  if (cancelEpoch(sessionID) !== epoch) return undefined
-                  const item = yield* pendingInput((yield* sessions.get(sessionID).pipe(Effect.orDie)).metadata)
-                  if (!item) return undefined
-                  const recorded = yield* MessageV2.exists({
-                    sessionID,
-                    messageID: item.messageID,
-                  }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
-                  if (recorded) {
-                    yield* writePendingInput(sessionID, undefined, (current) => {
-                      const saved = pendingMessageID(current.metadata)
-                      return saved === undefined || saved === item.messageID
-                    })
-                    return undefined
-                  }
-                  // A crash after claiming a command may have happened before its message was
-                  // recorded. Preserve that uncertain outcome instead of repeating side effects.
-                  if (item.phase === "started")
-                    return yield* new NoPendingHookInput({
-                      message:
-                        "The saved followup was already started but has no recorded message. Inspect the session before resubmitting it.",
-                    })
-                  yield* writePendingInput(sessionID, { ...item, phase: "started" }, (current) => {
-                    return cancelEpoch(sessionID) === epoch && pendingMessageID(current.metadata) === item.messageID
-                  })
-                  // The guard can only skip the write; confirm the claim survived
-                  // before running the pending followup.
-                  const claimed = yield* pendingInput((yield* sessions.get(sessionID).pipe(Effect.orDie)).metadata)
-                  if (!claimed || claimed.phase !== "started" || claimed.messageID !== item.messageID) return undefined
-                  return item
-                }),
-              ),
-            )
-            if (!pending) return completed
-            const shared = { sessionID, messageID: pending.messageID, hookMode: "noninteractive" as const }
-            return yield* (
-              pending.input.kind === "command"
-                ? commandFns.command({ ...pending.input, ...shared }, { skipHookStart: true })
-                : admit.prompt(
-                    { ...pending.input, ...shared },
-                    {
-                      skipHookStart: true,
-                      ...(pending.internalDelegation ? { internalDelegation: true as const } : {}),
-                    },
-                  )
-            ).pipe(
-              Effect.ensuring(
-                promptLocks.withLock(sessionID)(
-                  Effect.gen(function* () {
-                    const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
-                    const saved = yield* pendingInput(current.metadata).pipe(Effect.option)
-                    if (Option.isNone(saved) || saved.value?.messageID !== pending.messageID) return
-                    const recorded = yield* MessageV2.exists({
-                      sessionID,
-                      messageID: pending.messageID,
-                    }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
-                    if (recorded)
-                      yield* writePendingInput(sessionID, undefined, (current) => {
-                        return pendingMessageID(current.metadata) === pending.messageID
-                      })
-                  }),
-                ),
-              ),
-            )
-          }),
-        )
-        .pipe(Effect.catchTag("SessionConversationHookBlocked", () => Effect.succeed(completed)))
-    })
-
-    const resume: Interface["resume"] = Effect.fn("SessionPrompt.resume")(function* (input, options) {
-      const epoch = cancelEpoch(input.sessionID)
-      // Register the owner before waiting on the prompt lock. Cancel then fences
-      // a followup that has not reached the lock yet, and a resume started after
-      // cancel returns registers a fresh owner as a new request.
-      const result = followupAdmissions
-        .run(
-          input.sessionID,
-          (commit): Effect.Effect<Effect.Effect<SessionV1.WithParts | null>, PromptError | SessionAdmission.Blocked> =>
-            withRunRequest(input.sessionID, (request, witness) =>
-              locks.withPromptLock(witness, input.sessionID, () =>
-                Effect.gen(function* () {
-                  if (!request.valid()) return yield* Effect.interrupt
-                  const target = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-                  const contexts = yield* admit.resumeContexts(target)
-                  if (startContext) for (const context of contexts) yield* startContext.append(input.sessionID, context)
-                  const initial =
-                    input.hookMode !== "interactive" && hookLifecycle
-                      ? yield* hookLifecycle.consumeInitial(input.sessionID)
-                      : undefined
-                  const users = yield* MessageV2.recentUsers({ sessionID: input.sessionID, limit: 1 }).pipe(
-                    Effect.provideService(Database.Service, database),
-                    Effect.orDie,
-                  )
-                  const initialTurn = !!initial && users.length === 0
-                  const latest = Option.getOrUndefined(
-                    yield* sessions
-                      .findMessage(input.sessionID, (message) => message.info.role === "assistant")
-                      .pipe(Effect.orDie),
-                  )
-                  const deferred = latest?.parts.some(
-                    (part) => part.type === "tool" && part.state.status === "pending" && part.state.deferred,
-                  )
-                  const saved = yield* pendingInput(target.metadata)
-                  if (!initialTurn && !deferred && !saved) {
-                    if (input.initialOnly) return Effect.succeed<SessionV1.WithParts | null>(null)
-                    return yield* new NoPendingHookInput({
-                      message: "No initial hook message or deferred tool call is pending",
-                    })
-                  }
-                  if (input.followup) {
-                    if (saved)
-                      return yield* new NoPendingHookInput({
-                        message: "No initial hook message or deferred tool call is pending",
-                      })
-                  }
-                  if (input.followup) {
-                    if (saved)
-                      return yield* new NoPendingHookInput({
-                        message: "A supplied followup is already saved for this session",
-                      })
-                    yield* commit(
-                      writePendingInput(
-                        input.sessionID,
-                        {
-                          version: 1,
-                          messageID: input.followup.messageID ?? MessageID.ascending(),
-                          phase: "pending",
-                          input: input.followup,
-                          ...(options?.internalDelegation ? { internalDelegation: true } : {}),
-                        },
-                        (current) =>
-                          cancelEpoch(input.sessionID) === epoch && pendingMessageID(current.metadata) === undefined,
-                      ),
-                    )
-                  }
-                  if (initialTurn) {
-                    const admitted = yield* admit
-                      .admitPrompt(
-                        {
-                          ...input,
-                          parts: [{ type: "text", text: initial }],
-                          hookMode: input.hookMode ?? "noninteractive",
-                        },
-                        undefined,
-                        options?.internalDelegation ? { internalDelegation: true } : undefined,
-                      )
-                      .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
-                    if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
-                  } else if (input.hookMode) {
-                    const user = users[0]?.info
-                    if (user?.role === "user" && user.hookMode !== input.hookMode)
-                      yield* sessions.updateMessage({ ...user, hookMode: input.hookMode })
-                  }
-                  if (!initialTurn && !deferred) return lastAssistant(input.sessionID)
-                  // Fork the runner under the same commit lock as the owner check:
-                  // a cancel cannot land between the check and the fork. Wait outside
-                  // the prompt lock; the loop machine claims it for its snapshot.
-                  const origin: TurnOrigin = options?.internalDelegation
-                    ? { kind: "child_run" }
-                    : input.followup?.kind === "command"
-                      ? { kind: "user", via: "command" }
-                      : { kind: "user", via: "prompt" }
-                  const handle = turns().begin(input.sessionID, origin)
-                  return yield* commit(
-                    Effect.gen(function* () {
-                      const result = yield* state.ensureRunningHandle(
-                        input.sessionID,
-                        lastAssistant(input.sessionID),
-                        turns()
-                          .track(handle, runTurn(input.sessionID))
-                          .pipe(Effect.map((turn) => turn.message)),
-                        request,
-                      )
-                      // Same settlement as `loop`: a join drops this request's
-                      // tracked work before it can write or settle a row.
-                      yield* turns().watch(handle, result)
-                      return result
-                    }),
-                  )
-                }),
-              ),
-            ),
-        )
-        .pipe(
-          Effect.flatten,
-          Effect.catchTag("SessionConversationHookBlocked", (error) =>
-            Effect.fail(new NoPendingHookInput({ message: error.reason })),
-          ),
-        )
-      return yield* finishPendingInput(input.sessionID, yield* result, epoch)
+    const { resume } = makeResume({
+      sessions,
+      state,
+      database,
+      hookLifecycle,
+      startContext,
+      locks,
+      followupAdmissions,
+      admit,
+      command: (input, options) => commandFns.command(input, options),
+      turns,
+      runTurn,
+      lastAssistant,
     })
 
     const shellFns = makeShell({
@@ -1140,121 +769,6 @@ export const defaultLayer = Layer.suspend(() =>
     ),
   ),
 )
-const ModelRef = Schema.Struct({
-  providerID: ProviderV2.ID,
-  modelID: ModelV2.ID,
-})
-
-export const PromptInput = Schema.Struct({
-  sessionID: SessionID,
-  messageID: Schema.optional(MessageID),
-  model: Schema.optional(ModelRef),
-  agent: Schema.optional(Schema.String),
-  noReply: Schema.optional(Schema.Boolean),
-  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
-  tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)).annotate({
-    description:
-      "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",
-  }),
-  format: Schema.optional(SessionV1.Format),
-  system: Schema.optional(Schema.String),
-  variant: Schema.optional(Schema.String),
-  parts: Schema.Array(
-    Schema.Union([
-      SessionV1.TextPartInput,
-      SessionV1.FilePartInput,
-      SessionV1.AgentPartInput,
-      SessionV1.SubtaskPartInput,
-    ]).annotate({ discriminator: "type" }),
-  ),
-})
-export type PromptInput = Schema.Schema.Type<typeof PromptInput>
-
-export const SummarizeInput = Schema.Struct({
-  sessionID: SessionID,
-  providerID: ProviderV2.ID,
-  modelID: ModelV2.ID,
-  auto: Schema.optional(Schema.Boolean),
-})
-export type SummarizeInput = typeof SummarizeInput.Type
-
-export const SetModelInput = Schema.Struct({
-  sessionID: SessionID,
-  model: Schema.optional(ModelRef),
-  variant: Schema.optional(Schema.String),
-  source: Schema.optional(Schema.Literals(["command", "picker", "sdk"])),
-  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
-})
-export type SetModelInput = typeof SetModelInput.Type
-
-export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
-  sessionID: SessionID,
-}) {}
-
-export const ShellInput = Schema.Struct({
-  sessionID: SessionID,
-  messageID: Schema.optional(MessageID),
-  agent: Schema.String,
-  model: Schema.optional(ModelRef),
-  command: Schema.String,
-  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
-})
-export type ShellInput = Schema.Schema.Type<typeof ShellInput>
-
-export const CommandInput = Schema.Struct({
-  messageID: Schema.optional(MessageID),
-  sessionID: SessionID,
-  agent: Schema.optional(Schema.String),
-  model: Schema.optional(Schema.String),
-  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
-  arguments: Schema.String,
-  command: Schema.String,
-  variant: Schema.optional(Schema.String),
-  // Inlined (no identifier annotation) to keep the original SDK output — the
-  // PromptInput call site below references FilePartInput by ref via the
-  // Schema export in message-v2.ts.
-  parts: Schema.optional(
-    Schema.Array(
-      Schema.Union([
-        Schema.Struct({
-          id: Schema.optional(PartID),
-          type: Schema.Literal("file"),
-          mime: Schema.String,
-          filename: Schema.optional(Schema.String),
-          url: Schema.String,
-          source: Schema.optional(SessionV1.FilePartSource),
-        }),
-      ]).annotate({ discriminator: "type" }),
-    ),
-  ),
-})
-export type CommandInput = Schema.Schema.Type<typeof CommandInput>
-
-export const HookFollowupInput = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("prompt"), ...Struct.omit(PromptInput.fields, ["sessionID"]) }),
-  Schema.Struct({ kind: Schema.Literal("command"), ...Struct.omit(CommandInput.fields, ["sessionID"]) }),
-])
-export const HookPendingInput = Schema.Struct({
-  version: Schema.Literal(1),
-  messageID: MessageID,
-  phase: Schema.Literals(["pending", "started"]),
-  input: HookFollowupInput,
-  /** Runtime-delegated child input skips UserPromptSubmit when replayed. Records without it replay as user input. */
-  internalDelegation: Schema.optional(Schema.Boolean),
-})
-
-export const ResumeInput = Schema.Struct({
-  sessionID: SessionID,
-  messageID: Schema.optional(MessageID),
-  model: Schema.optional(ModelRef),
-  agent: Schema.optional(Schema.String),
-  variant: Schema.optional(Schema.String),
-  hookMode: Schema.optional(Schema.Literals(["interactive", "noninteractive"])),
-  initialOnly: Schema.optional(Schema.Boolean),
-  followup: Schema.optional(HookFollowupInput),
-})
-export type ResumeInput = typeof ResumeInput.Type
-
 export const node = LayerNode.make(layer, [
   SessionStatus.node,
   Session.node,
