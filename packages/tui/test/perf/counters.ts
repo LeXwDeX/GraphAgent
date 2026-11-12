@@ -20,7 +20,11 @@ export type PerfCounters = CounterSnapshot & {
   countStoreWrite(kind: "message" | "part"): void
   frames(): number
   mountedNodes(root: Renderable): number
-  /** Mounted transcript rows: content children that registered a lifecycle pass, minus the controller. */
+  /**
+   * Mounted transcript rows: the content children that hold content. The header
+   * spacer, the window controller, and the placeholder boxes that stand in for
+   * unmounted rows are all childless; a mounted row hosts its renderer.
+   */
   mountedRows(scroll: ScrollBoxRenderable): number
   scrollChildren(scroll: ScrollBoxRenderable): number
   dispose(): void
@@ -97,9 +101,6 @@ export function createCounters(renderer: CliRenderer, keymap: OpenTuiKeymap): Pe
   const mountedNodes = (root: Renderable): number =>
     1 + root.getChildren().reduce((total, child) => total + mountedNodes(child), 0)
 
-  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- lifecycle pass hook is runtime-only
-  const hasLifecyclePass = (node: Renderable) => typeof (node as { onLifecyclePass?: unknown }).onLifecyclePass === "function"
-
   return {
     get frameEvents() {
       return counts.frameEvents
@@ -129,8 +130,7 @@ export function createCounters(renderer: CliRenderer, keymap: OpenTuiKeymap): Pe
     },
     mountedNodes,
     mountedRows(scroll) {
-      const rows = scroll.getChildren().filter(hasLifecyclePass).length
-      return Math.max(0, rows - 1)
+      return scroll.getChildren().filter((node) => node.getChildren().length > 0).length
     },
     scrollChildren(scroll) {
       return scroll.getChildren().length

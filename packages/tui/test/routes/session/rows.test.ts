@@ -8,11 +8,13 @@ import {
   createSessionViewState,
   estimateRowHeight,
   firstVisible,
+  isWindowed,
   lastVisible,
   prefixPositions,
   rowRevision,
   stableRows,
   visibleRange,
+  WINDOW_MIN_ROWS,
   type Row,
 } from "../../../src/routes/session/rows"
 
@@ -22,6 +24,21 @@ const row = (key: string, kind: Row["kind"] = "text", revision = 1): Row => ({
   partID: `part-${key}`,
   kind,
   revision,
+})
+
+describe("isWindowed", () => {
+  test("windows a transcript from WINDOW_MIN_ROWS rows and mounts every row below it", () => {
+    expect(isWindowed(WINDOW_MIN_ROWS - 1)).toBe(false)
+    expect(isWindowed(WINDOW_MIN_ROWS)).toBe(true)
+    expect(isWindowed(0)).toBe(false)
+  })
+
+  test("leaves the sessions a reader meets in practice fully mounted", () => {
+    // On 0.8.3 the native scroll box culls what is off screen: a fully mounted
+    // transcript of a few hundred rows types and scrolls faster than a windowed one.
+    expect(WINDOW_MIN_ROWS).toBe(2000)
+    expect(isWindowed(190)).toBe(false)
+  })
 })
 
 describe("prefixPositions", () => {

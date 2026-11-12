@@ -102,13 +102,13 @@ import {
   createRowMeasurements,
   createSessionViewState,
   estimateRowHeight,
+  isWindowed,
   PART_OVERSCAN,
   prefixPositions,
   rowRevision,
   stableRows,
   TAIL_ALWAYS,
   visibleRange,
-  WINDOW_MIN_ROWS,
   type Row,
   type SessionViewState,
 } from "./rows"
@@ -285,6 +285,17 @@ export function Main() {
       diffFiles: revertDiffFiles(),
     }
   })
+
+  // The row table below is built as soon as this component is created, and a
+  // session that is already in the sync store (a return from home or the diff
+  // view) has rows by then. What the table reads while it is built, the tool-details
+  // setting and the content width, has to be declared before it: a `const` read
+  // earlier throws "Cannot access ... before initialization" and the transcript
+  // never renders.
+  const dimensions = useTerminalDimensions()
+  const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
+  // The drawer overlays the main area instead of shrinking it.
+  const contentWidth = createMemo(() => dimensions().width - 4)
 
   // The transcript is a flat row table. Windowing, scroll commands and height
   // estimates all read this table instead of mounted render nodes, so an
@@ -475,14 +486,12 @@ export function Main() {
     measurements.report(row.key, row.revision, contentWidth(), el.height)
   }
 
-  const dimensions = useTerminalDimensions()
   const drawer = useDrawer()
   const [conceal, setConceal] = kv.signal("conceal_code", true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
   const showThinking = createMemo(() => true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
-  const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
   const [showAssistantMetadata, _setShowAssistantMetadata] = kv.signal("assistant_metadata_visibility", true)
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
@@ -490,8 +499,6 @@ export function Main() {
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
   const showTimestamps = createMemo(() => timestamps() === "show")
-  // The drawer overlays the main area instead of shrinking it.
-  const contentWidth = createMemo(() => dimensions().width - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
@@ -654,7 +661,7 @@ export function Main() {
 
   onCleanup(commands.setHandler("hooks.list", () => openBottomPanel("hooks", () => <HooksPanel />)))
 
-  const windowed = () => rows().length >= WINDOW_MIN_ROWS
+  const windowed = () => isWindowed(rows().length)
 
   // Small sessions stay fully mounted, so keep using the rendered nodes for
   // exact positions. Windowed sessions locate the target in the row table.
@@ -1542,7 +1549,7 @@ export function Main() {
               >
                 <box height={1} />
                 <Show
-                  when={rows().length >= WINDOW_MIN_ROWS}
+                  when={isWindowed(rows().length)}
                   fallback={
                     <For each={messages()}>
                       {(message, index) => (
@@ -1760,6 +1767,14 @@ function SessionTranscript(props: {
   const [first, setFirst] = createSignal(0)
   const [last, setLast] = createSignal(0)
   let controller: BoxRenderable | undefined
+  // Measuring functions of the rows that are mounted now, in mount order.
+  const mountedRows = new Set<() => void>()
+  const track = (measure: () => void) => {
+    mountedRows.add(measure)
+    return () => {
+      mountedRows.delete(measure)
+    }
+  }
 
   onCleanup(() => {
     if (controller) renderer.unregisterLifecyclePass(controller)
@@ -1795,6 +1810,14 @@ function SessionTranscript(props: {
           el.onLifecyclePass = () => {
             const scroll = ctx.scroll()
             if (!scroll || scroll.isDestroyed) return
+            // Measure what the last layout produced before the window moves. A row
+            // that was mounted for one layout and is unmounted by this very pass
+            // would otherwise leave unmeasured, its estimate would stay in the
+            // positions, and the window computed from them would flip between two
+            // ranges on every frame once the viewport follows the end.
+            batch(() => {
+              for (const measure of mountedRows) measure()
+            })
             const range = visibleRange(props.positions, scroll.scrollTop, scroll.viewport.height)
             if (range.first === first() && range.last === last()) return
             const ids = new Set<string>()
@@ -1816,7 +1839,7 @@ function SessionTranscript(props: {
         {(row, index) => (
           <Switch>
             <Match when={mounted(row, index())}>
-              <SessionRow row={row} revert={props.revert} onUserMouseUp={props.onUserMouseUp} />
+              <SessionRow row={row} revert={props.revert} onUserMouseUp={props.onUserMouseUp} track={track} />
             </Match>
             <Match when={gaps().has(index())}>
               <box height={gaps().get(index())!} />
@@ -1832,9 +1855,10 @@ function SessionRow(props: {
   row: Row
   revert: RevertState | undefined
   onUserMouseUp: (message: UserMessage) => void
+  /** Registers the row's measuring function with the transcript; the returned function removes it. */
+  track: (measure: () => void) => () => void
 }) {
   const ctx = use()
-  const renderer = useRenderer()
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[ctx.sessionID] ?? [])
   const message = createMemo(() => messages().find((item) => item.id === props.row.messageID))
@@ -1854,19 +1878,15 @@ function SessionRow(props: {
     const current = message()
     return current?.role === "assistant" && messages().findLast((item) => item.role === "assistant")?.id === current.id
   })
-  let node: BoxRenderable | undefined
-  onCleanup(() => {
-    if (node) renderer.unregisterLifecyclePass(node)
-  })
+  let untrack: (() => void) | undefined
+  onCleanup(() => untrack?.())
 
   return (
     <box
       flexShrink={0}
       paddingTop={props.row.kind === "tool" ? 1 : 0}
       ref={(el) => {
-        node = el
-        el.onLifecyclePass = () => ctx.measureRow(props.row, el)
-        renderer.registerLifecyclePass(el)
+        untrack = props.track(() => ctx.measureRow(props.row, el))
       }}
     >
       <Switch>

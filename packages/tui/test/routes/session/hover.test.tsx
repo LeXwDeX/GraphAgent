@@ -34,8 +34,10 @@ async function locateEventually(harness: PerfHarness, text: string) {
   throw new Error(`row never contained ${text}:\n${harness.app.captureCharFrame()}`)
 }
 
-test("hover repaints only the clickable row and never writes the store", async () => {
-  const harness = await mountHarness(createFixture("M"))
+// `M` mounts every row; `XL` is above WINDOW_MIN_ROWS, where hover state belongs to
+// the rows that are mounted. The rule is the same in both.
+test.each(["M", "XL"] as const)("hover repaints only the clickable row and never writes the store (%s)", async (size) => {
+  const harness = await mountHarness(createFixture(size))
   try {
     await harness.reset()
     // The session route scrolls to the last message 50ms after mount.
@@ -43,7 +45,8 @@ test("hover repaints only the clickable row and never writes the store", async (
 
     const output = `${EXPECTED_TEXT}\n`.repeat(20)
     const part: Part = {
-      id: "prt_hover_bash",
+      // Parts sort by id within a message; this one has to land after the fixture's own.
+      id: "prt_tail_hover_bash",
       sessionID: harness.fixture.session.id,
       messageID: harness.fixture.messages.at(-1)!.info.id,
       type: "tool",
@@ -58,7 +61,7 @@ test("hover repaints only the clickable row and never writes the store", async (
         time: { start: 1, end: 2 },
       },
     }
-    harness.emit(updatePartEvent(part, 1000, "evt_hover_bash"))
+    harness.emit(updatePartEvent(part, 1000, "evt_tail_hover_bash"))
 
     const scroll = harness.scroll()
     expect(scroll).toBeDefined()
