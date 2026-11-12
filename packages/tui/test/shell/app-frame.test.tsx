@@ -343,7 +343,14 @@ async function renderDimScene(options: {
   // The first non-empty frame can hold only the bars; wait for the main area itself, so a slow
   // runner does not sample colors before the content under the dimming exists.
   const main = options.main ?? "主区内容 MAINTEXT"
-  await renderUntil(app, () => app.captureCharFrame().includes(main.slice(0, 8)), "the main area")
+  await renderUntil(
+    app,
+    () => {
+      const frame = app.captureCharFrame()
+      return frame.includes(main.slice(0, 8)) && (!options.drawer || frame.includes("DRAWER"))
+    },
+    options.drawer ? "the main area and the drawer" : "the main area",
+  )
   await app.renderOnce()
   return {
     app,
@@ -447,6 +454,8 @@ for (const order of DRAWER_ORDERS) {
     if (order.later === "dim") scene.setDim(true)
     if (order.later === "drawer") scene.setDrawer(true)
     await scene.settle()
+    // A slow runner can need more passes than settle() renders before the drawer is painted.
+    await renderUntil(scene.app, () => scene.app.captureCharFrame().includes("DRAWER"), "the drawer")
 
     const lines = scene.app.captureCharFrame().split("\n")
     const row = lines.findIndex((line) => line.includes("DRAWER"))

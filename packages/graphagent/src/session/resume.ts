@@ -227,12 +227,6 @@ export function makeResume(deps: ResumeDeps) {
                 if (input.followup) {
                   if (saved)
                     return yield* new NoPendingHookInput({
-                      message: "No initial hook message or deferred tool call is pending",
-                    })
-                }
-                if (input.followup) {
-                  if (saved)
-                    return yield* new NoPendingHookInput({
                       message: "A supplied followup is already saved for this session",
                     })
                   yield* commit(

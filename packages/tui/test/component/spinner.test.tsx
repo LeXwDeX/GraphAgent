@@ -3,7 +3,7 @@
 
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import { RGBA } from "@opentui/core"
+import { RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import { createSignal, type Accessor } from "solid-js"
 import { SPINNER_FRAMES, Spinner } from "../../src/component/spinner"
@@ -128,5 +128,86 @@ test("disabled animations render the ellipsis fallback without subscribing", asy
     expect(app.clock.stats()).toEqual({ subscribes: 0, active: 0 })
   } finally {
     await app.dispose()
+  }
+})
+
+/** A 4-line scroll box with 10 lines of spacer above the spinner, so the spinner starts below the fold. */
+async function mountInScrollBox() {
+  const state = await tmpdir()
+  await Bun.write(`${state.path}/kv.json`, JSON.stringify({ animations_enabled: true }))
+  const clock = fakeTicker()
+  const config = createTuiResolvedConfig()
+  let scroll: ScrollBoxRenderable | undefined
+  function Harness() {
+    return (
+      <TestTuiContexts paths={{ home: state.path, state: state.path, worktree: state.path }}>
+        <TuiConfigProvider config={config}>
+          <KVProvider>
+            <TickerProvider ticker={clock.ticker}>
+              <ThemeProvider mode="dark">
+                <scrollbox ref={(node: ScrollBoxRenderable) => (scroll = node)} height={4} stickyScroll={false}>
+                  <box height={10} />
+                  <Spinner>working</Spinner>
+                </scrollbox>
+              </ThemeProvider>
+            </TickerProvider>
+          </KVProvider>
+        </TuiConfigProvider>
+      </TestTuiContexts>
+    )
+  }
+  const app = await testRender(() => <Harness />, { width: 20, height: 6 })
+  // The providers mount the tree over the first frames.
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await app.renderOnce()
+    if (scroll) break
+    await Bun.sleep(1)
+  }
+  return {
+    app,
+    clock,
+    scroll: () => scroll!,
+    /** Frames it takes for the number of live subscriptions to reach `active`; fails after `limit`. */
+    async framesUntil(active: number, limit = 4) {
+      for (let frame = 1; frame <= limit; frame++) {
+        await app.renderOnce()
+        if (clock.stats().active === active) return frame
+      }
+      throw new Error(`still ${clock.stats().active} subscriptions after ${limit} frames, expected ${active}`)
+    },
+    async dispose() {
+      app.renderer.destroy()
+      await state[Symbol.asyncDispose]()
+    },
+  }
+}
+
+test("a spinner below the fold of its scroll box does not tick, and ticks again once scrolled into view", async () => {
+  const view = await mountInScrollBox()
+  try {
+    // It starts out assumed visible, and lets go as soon as a laid-out position says it is not.
+    await view.framesUntil(0)
+    expect(view.clock.stats().subscribes).toBeGreaterThanOrEqual(1)
+
+    // Scrolling moves it relative to the viewport; the layout that shows it follows one frame later.
+    view.scroll().scrollTo(10)
+    expect(await view.framesUntil(1)).toBeLessThanOrEqual(2)
+
+    view.scroll().scrollTo(0)
+    expect(await view.framesUntil(0)).toBeLessThanOrEqual(2)
+  } finally {
+    await view.dispose()
+  }
+})
+
+test("a spinner only partly inside the viewport still ticks", async () => {
+  const view = await mountInScrollBox()
+  try {
+    await view.framesUntil(0)
+    // Scrolled so that the spinner's line is the last one in the 4-line viewport.
+    view.scroll().scrollTo(7)
+    await view.framesUntil(1)
+  } finally {
+    await view.dispose()
   }
 })

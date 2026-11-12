@@ -11,16 +11,21 @@ import {
   P14_ABSOLUTE_INCREASE_MS,
   P2_MAX_SCALE,
   P2_NOISE_FLOOR_MS,
+  P95_ALLOWANCE_BELOW_MS,
+  P95_NOISE_ALLOWANCE_MS,
   P99_NOISE_ALLOWANCE_MS,
   P99_TIMING_RATIO,
   PENDING_BASELINE_COMMIT,
   PENDING_REBASELINE,
   SUB_MS_ALLOWANCE_MS,
   TIMING_RATIO,
+  WINDOWED_RELATIVE_EXEMPT,
+  WINDOWED_REQUIRED,
   type PerfReport,
   type ScenarioMetrics,
 } from "./compare"
-import { SCENARIO_IDS } from "./scenarios"
+import { PART_OVERSCAN, TAIL_ALWAYS } from "../../src/routes/session/rows"
+import { SCENARIO_IDS, WINDOWED_SKIPS } from "./scenarios"
 import { tmpdir } from "../fixture/fixture"
 
 /** An id the gate has no fixed rule for, so only the baseline-relative check applies. */
@@ -60,10 +65,11 @@ test("the in-memory regressions from the audit now fail", () => {
 })
 
 test("the sub-millisecond allowance does not relax baselines at or above the floor", () => {
-  const baseline = report({ p95Ms: MIN_COMPARE_MS })
+  // p50, not p95: a p95 under 3 ms has its own allowance, tested below.
+  const baseline = report({ p50Ms: MIN_COMPARE_MS })
 
-  expect(compareReports(baseline, report({ p95Ms: MIN_COMPARE_MS * TIMING_RATIO - 0.01 })).failures).toEqual([])
-  expect(compareReports(baseline, report({ p95Ms: MIN_COMPARE_MS * TIMING_RATIO + 0.01 })).failures).toHaveLength(1)
+  expect(compareReports(baseline, report({ p50Ms: MIN_COMPARE_MS * TIMING_RATIO - 0.01 })).failures).toEqual([])
+  expect(compareReports(baseline, report({ p50Ms: MIN_COMPARE_MS * TIMING_RATIO + 0.01 })).failures).toHaveLength(1)
 })
 
 test("a baseline at the floor still gates a regression beyond the p99 allowance", () => {
@@ -126,10 +132,11 @@ test("an improvement never fails, whatever the baseline", () => {
 })
 
 test("p99 uses the wider ratio while other percentiles use the relative one", () => {
-  const baseline = report({ p95Ms: 2, p99Ms: 2 })
+  // At 10 ms neither percentile gets an absolute allowance, so the ratios decide.
+  const baseline = report({ p95Ms: 10, p99Ms: 10 })
   const current = report({
-    p95Ms: 2 * TIMING_RATIO + 0.01,
-    p99Ms: 2 * P99_TIMING_RATIO - 0.01,
+    p95Ms: 10 * TIMING_RATIO + 0.01,
+    p99Ms: 10 * P99_TIMING_RATIO - 0.01,
   })
 
   const { failures } = compareReports(baseline, current)
@@ -149,6 +156,67 @@ test("the machine factor normalizes the current timing", () => {
   const current = report({ p99Ms: 3.9 }, { fixedLayoutMsMedian: 20 })
 
   expect(compareReports(baseline, current).failures).toEqual([])
+})
+
+test("a p95 under 3 ms gets an absolute allowance on top of the ratio", () => {
+  // Measured: S P5 open p95 moved from a 1.83 ms baseline to 3.62 ms with nothing changed.
+  const baseline = report({ openP95Ms: 1.83 }, undefined, "P5")
+  const compare = (value: number) => compareReports(baseline, report({ openP95Ms: value }, undefined, "P5")).failures
+
+  expect(compare(3.62)).toEqual([])
+  // The limit is the baseline plus the allowance; the ratio (2.38) is the smaller of the two.
+  expect(compare(1.83 + P95_NOISE_ALLOWANCE_MS)).toEqual([])
+  expect(compare(1.83 + P95_NOISE_ALLOWANCE_MS + 0.01)).toHaveLength(1)
+  // A real regression still fails.
+  const regressed = compare(8)
+  expect(regressed).toHaveLength(1)
+  expect(regressed[0]?.limit).toContain(`+${P95_NOISE_ALLOWANCE_MS} ms p95 allowance`)
+})
+
+test("the p95 allowance covers every p95 metric and only those", () => {
+  const baseline = report({ p95Ms: 1.83, openP95Ms: 1.83, escapeP95Ms: 1.83, p50Ms: 1.83, p99Ms: 1.83 })
+
+  // 3.62 ms: inside baseline + 2 ms for the three p95 names; p50 has only the ratio (2.38) and p99 its own 5 ms.
+  const { failures } = compareReports(
+    baseline,
+    report({ p95Ms: 3.62, openP95Ms: 3.62, escapeP95Ms: 3.62, p50Ms: 3.62, p99Ms: 3.62 }),
+  )
+
+  expect(failures.map((failure) => failure.metric)).toEqual(["p50Ms"])
+})
+
+test("the p95 allowance ends at the baseline it was written for", () => {
+  const compare = (before: number, now: number) =>
+    compareReports(report({ p95Ms: before }), report({ p95Ms: now })).failures
+
+  // Just under 3 ms: baseline + 2 ms is 4.99.
+  expect(compare(P95_ALLOWANCE_BELOW_MS - 0.01, 4.9)).toEqual([])
+  expect(compare(P95_ALLOWANCE_BELOW_MS - 0.01, 5.0)).toHaveLength(1)
+  // At 3 ms the ratio decides alone: 3.9.
+  expect(compare(P95_ALLOWANCE_BELOW_MS, 3.9)).toEqual([])
+  expect(compare(P95_ALLOWANCE_BELOW_MS, 4.0)).toHaveLength(1)
+})
+
+test("a machine faster than the baseline's does not tighten the ratio", () => {
+  // P5' open p95 on M: baseline 4.89 ms. 6.1 ms is 1.25x, inside the 1.30x ratio.
+  const baseline = report({ openP95Ms: 4.89 }, { fixedLayoutMsMedian: 20 }, "P5'")
+  const faster = report({ openP95Ms: 6.1 }, { fixedLayoutMsMedian: 18 }, "P5'")
+  const same = report({ openP95Ms: 6.1 }, { fixedLayoutMsMedian: 20 }, "P5'")
+
+  // A calibration 10% faster would have scaled 6.1 ms up to 6.78 and failed it.
+  expect(compareReports(baseline, faster).failures).toEqual([])
+  expect(compareReports(baseline, same).failures).toEqual([])
+  // The ratio is still enforced on that machine.
+  const over = report({ openP95Ms: 6.4 }, { fixedLayoutMsMedian: 18 }, "P5'")
+  expect(compareReports(baseline, over).failures).toHaveLength(1)
+})
+
+test("a slower machine is still normalized by its factor", () => {
+  const baseline = report({ openP95Ms: 4.89 }, { fixedLayoutMsMedian: 20 }, "P5'")
+
+  // 1.5x slower: 9.0 ms normalizes to 6.0 ms, inside 6.36.
+  expect(compareReports(baseline, report({ openP95Ms: 9 }, { fixedLayoutMsMedian: 30 }, "P5'")).failures).toEqual([])
+  expect(compareReports(baseline, report({ openP95Ms: 10 }, { fixedLayoutMsMedian: 30 }, "P5'")).failures).toHaveLength(1)
 })
 
 function scenarioReport(id: string, metrics: Record<string, number>, calibration?: { fixedLayoutMsMedian?: number }) {
@@ -313,6 +381,193 @@ test("a scenario the report omits entirely is a partial report, not drift", () =
   expect(missing.filter((item) => item.id === "P5")).toEqual([])
 })
 
+function p13(metrics: Record<string, number>): PerfReport {
+  return {
+    scenarios: {
+      L: {
+        P13: { deltaMessageWrites: 0, deltaPartWrites: 0, messageWritesPerFrame: 0, partWritesPerFrame: 0.01, ...metrics },
+      },
+    },
+  }
+}
+
+test("P13 requires every streamed delta to leave the store untouched", () => {
+  expect(compareReports({ scenarios: {} }, p13({})).failures).toEqual([])
+
+  // A delta that reached store.part (the old per-token write) fails, however few frames it spans.
+  const part = compareReports({ scenarios: {} }, p13({ deltaPartWrites: 1 }))
+  expect(part.failures.map((failure) => failure.metric)).toEqual(["deltaPartWrites"])
+  const message = compareReports({ scenarios: {} }, p13({ deltaMessageWrites: 1 }))
+  expect(message.failures.map((failure) => failure.metric)).toEqual(["deltaMessageWrites"])
+})
+
+test("P13 keeps the per-frame bound on the snapshots that open and close a reply", () => {
+  expect(compareReports({ scenarios: {} }, p13({ partWritesPerFrame: 1 })).failures).toEqual([])
+  const { failures } = compareReports({ scenarios: {} }, p13({ partWritesPerFrame: 1.5 }))
+  expect(failures.map((failure) => failure.metric)).toEqual(["partWritesPerFrame"])
+})
+
+test("a P13 report that stops separating the delta phase is drift, not a pass", () => {
+  // Before the scenario sent real deltas it emitted per-frame ratios only, and "0 writes while streaming" was never measured.
+  const stale: PerfReport = { scenarios: { L: { P13: { messageWritesPerFrame: 0, partWritesPerFrame: 1 } } } }
+
+  const { missing } = compareReports({ scenarios: {} }, stale)
+
+  expect(missing).toContainEqual({ size: "L", id: "P13", metric: "deltaPartWrites" })
+  expect(missing).toContainEqual({ size: "L", id: "P13", metric: "deltaMessageWrites" })
+})
+
+test("P10 bounds the mounted rows of a windowed session and leaves a fully mounted one alone", () => {
+  const limit = 19 + 2 * PART_OVERSCAN + TAIL_ALWAYS
+
+  const within = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P10 = { ...items.P10, mountedRows: limit, scrollChildren: limit + 2 }
+    }),
+  )
+  expect(within.failures).toEqual([])
+
+  const over = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P10 = { ...items.P10, mountedRows: limit + 1, scrollChildren: limit + 3 }
+    }),
+  )
+  expect(over.failures.map((failure) => `${failure.size}.${failure.metric}`)).toEqual([
+    "XL.mountedRows",
+    "XL.scrollChildren",
+  ])
+
+  // 190 mounted rows in a session below the threshold is the design, not a leak.
+  expect(fullReport().scenarios.L?.P10?.mountedRows).toBeGreaterThan(limit)
+})
+
+test("a report without a windowed session fails P10 instead of passing it vacuously", () => {
+  const { failures } = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P10 = { ...items.P10, windowed: 0 }
+    }),
+  )
+
+  expect(failures.map((failure) => `${failure.id}.${failure.metric}`)).toEqual(["P10.windowed"])
+  // A partial report that never measured P10 is not drift.
+  expect(compareReports({ scenarios: {} }, { scenarios: { L: { P3: { registerLayer: 0 } } } }).failures).toEqual([])
+})
+
+test("a P10 that does not say whether its session is windowed is drift", () => {
+  const stale: PerfReport = { scenarios: { XL: { P10: { mountedRows: 22, scrollChildren: 26, viewportRows: 19 } } } }
+
+  const { missing } = compareReports({ scenarios: {} }, stale)
+
+  expect(missing).toContainEqual({ size: "XL", id: "P10", metric: "windowed" })
+})
+
+test("a session marked windowed has to carry the cold scroll, or the budget leaves with the scenario", () => {
+  // Codex review of #1266: with the cold scroll out of the windowed scope, a frame of
+  // 150 ms in the windowed scroll passed the gate because nothing measured it.
+  expect(WINDOWED_REQUIRED.map((item) => item.id)).toEqual(["P8", "P8'"])
+  // The scope has to run what the gate requires of it.
+  for (const item of WINDOWED_REQUIRED) expect([...WINDOWED_SKIPS]).not.toContain(item.id)
+
+  for (const id of ["P8", "P8'"]) {
+    const { missing, failures } = compareReports(
+      { scenarios: {} },
+      fullReport((size, items) => {
+        if (size === "XL") delete items[id]
+      }),
+    )
+
+    expect(failures).toEqual([])
+    expect(missing).toEqual([
+      { size: "XL", id, metric: "p99Ms" },
+      { size: "XL", id, metric: "maxMs" },
+    ])
+  }
+
+  // A scenario that is there without one of its metrics is the drift the gate already reported.
+  const partial = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") items.P8 = { steps: 1310 }
+    }),
+  )
+  expect(partial.missing.map((item) => `${item.id}.${item.metric}`)).toEqual(["P8.p99Ms", "P8.maxMs"])
+
+  // A fully mounted session is not required to carry it in a report that has none (a partial report).
+  const fullyMounted = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "L") delete items.P8
+    }),
+  )
+  expect(fullyMounted.missing).toEqual([])
+})
+
+test("the windowed cold scroll answers to the absolute ceilings, scaled only by a slower machine", () => {
+  const withScroll = (metrics: Record<string, number>, id = "P8", calibration?: { fixedLayoutMsMedian?: number }) => {
+    const report = fullReport((size, items) => {
+      if (size === "XL") items[id] = { ...items[id], ...metrics }
+    })
+    report.calibration = calibration ?? report.calibration
+    return report
+  }
+  const failed = (report: PerfReport) =>
+    compareReports({ scenarios: {} }, report).failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)
+
+  for (const id of ["P8", "P8'"]) {
+    // At the ceilings: p99 33 ms, and no frame over 100 ms.
+    expect(failed(withScroll({ p99Ms: 33, maxMs: FRAME_CEILING_MS }, id))).toEqual([])
+    expect(failed(withScroll({ p99Ms: 33.01 }, id))).toEqual([`XL.${id}.p99Ms`])
+    expect(failed(withScroll({ maxMs: FRAME_CEILING_MS + 1 }, id))).toEqual([`XL.${id}.maxMs`])
+  }
+
+  // The machine factor comes from the report's calibration (mount of S, M and L): 1.5x slower gives 150 ms.
+  const baseline: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
+  const slow = withScroll({ maxMs: 140 }, "P8", { fixedLayoutMsMedian: 30 })
+  expect(compareReports(baseline, slow).failures).toEqual([])
+  expect(compareReports(baseline, withScroll({ maxMs: 151 }, "P8", { fixedLayoutMsMedian: 30 })).failures).toHaveLength(1)
+  // A faster machine is held to the plain 100 ms.
+  expect(compareReports(baseline, withScroll({ maxMs: 101 }, "P8", { fixedLayoutMsMedian: 10 })).failures).toHaveLength(1)
+})
+
+test("the windowed session's scroll scenarios skip the ratio against the baseline but not the ceilings", () => {
+  expect([...WINDOWED_RELATIVE_EXEMPT].sort()).toEqual(["P8", "P8'", "P9"])
+
+  const grown = (size: string) => {
+    const before = fullReport((name, items) => {
+      if (name === size) {
+        items.P8 = { p99Ms: 5, maxMs: 6, steps: 100 }
+        items["P8'"] = { p99Ms: 5, maxMs: 6, steps: 100 }
+        items.P9 = { p99Ms: 5 }
+      }
+    })
+    const after = fullReport((name, items) => {
+      if (name === size) {
+        items.P8 = { p99Ms: 25, maxMs: 30, steps: 100 }
+        items["P8'"] = { p99Ms: 25, maxMs: 30, steps: 100 }
+        items.P9 = { p99Ms: 15 }
+      }
+    })
+    return compareReports(before, after).failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)
+  }
+
+  // Five times the baseline on the windowed session is within the ceilings (33 ms, 16 ms), so it passes...
+  expect(grown("XL")).toEqual([])
+  // ...and the same growth on a fully mounted session fails the ratio (L is held to its baseline).
+  expect(grown("L").sort()).toEqual(["L.P8'.p99Ms", "L.P8.p99Ms", "L.P9.p99Ms"])
+
+  // The ceilings still bind the windowed session whatever its baseline says.
+  const over = compareReports(
+    fullReport(),
+    fullReport((name, items) => {
+      if (name === "XL") items.P9 = { p99Ms: 16.5 }
+    }),
+  )
+  expect(over.failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)).toEqual(["XL.P9.p99Ms"])
+})
+
 /** Stand-in for the real table, so these cases keep working after the real entries are deleted. */
 const PENDING = { PY: "measurement changed" }
 
@@ -337,14 +592,6 @@ test("a baseline from any other commit gets the full relative check", () => {
 
   expect(result.pending).toEqual([])
   expect(result.failures).toHaveLength(1)
-})
-
-test("the real pending table applies to the baseline it was written against", () => {
-  const baseline: PerfReport = { commit: PENDING_BASELINE_COMMIT, scenarios: { L: { P6: { escapeP95Ms: 0.13 } } } }
-  const current: PerfReport = { scenarios: { L: { P6: { escapeP95Ms: 12 } } } }
-
-  expect(compareReports(baseline, current).failures).toEqual([])
-  expect(compareReports({ ...baseline, commit: "regenerated" }, current).failures).toHaveLength(1)
 })
 
 test("a pending scenario still answers to the fixed ceilings", () => {
@@ -384,9 +631,13 @@ test("the committed baseline satisfies its own gate", async () => {
   expect(compareReports(baseline, baseline).failures).toEqual([])
 })
 
-/** A full set of metrics for one size, shaped like a real report with plausible millisecond values. */
-function scenarios(): Record<string, ScenarioMetrics> {
-  return {
+/**
+ * A full set of metrics for one size, shaped like a real report with plausible
+ * millisecond values. `XL` is the windowed session; the others mount every row.
+ */
+function scenarios(size = "L"): Record<string, ScenarioMetrics> {
+  const windowed = size === "XL"
+  const all: Record<string, ScenarioMetrics> = {
     P1: { p50Ms: 3, p95Ms: 6, p99Ms: 9 },
     P2: { p95Scale: 1 },
     P3: { registerLayer: 0 },
@@ -398,10 +649,12 @@ function scenarios(): Record<string, ScenarioMetrics> {
     P8: { p99Ms: 12, maxMs: 15, steps: 100 },
     "P8'": { p99Ms: 12, maxMs: 15, steps: 100 },
     P9: { p99Ms: 10 },
-    P10: { mountedRows: 22, scrollChildren: 26, viewportRows: 19 },
+    P10: windowed
+      ? { mountedRows: 22, scrollChildren: 26, viewportRows: 19, rows: 2080, windowed: 1 }
+      : { mountedRows: 190, scrollChildren: 191, viewportRows: 19, rows: 190, windowed: 0 },
     P11: { driftPx: 0, stepMismatches: 0 },
     P12: { p95Ms: 8 },
-    P13: { messageWritesPerFrame: 0, partWritesPerFrame: 1 },
+    P13: { deltaMessageWrites: 0, deltaPartWrites: 0, messageWritesPerFrame: 0, partWritesPerFrame: 0.01 },
     P14: {
       p95Ms: 4,
       quietP95Ms: 4,
@@ -418,12 +671,15 @@ function scenarios(): Record<string, ScenarioMetrics> {
     P19: { frames: 0 },
     P20: { growth: 0, heapGrowth: 0.05 },
   }
+  // The windowed session does not time a long scroll or a stream.
+  if (windowed) for (const id of WINDOWED_SKIPS) delete all[id]
+  return all
 }
 
 function fullReport(change?: (size: string, scenarios: Record<string, ScenarioMetrics>) => void): PerfReport {
   const result: PerfReport = { calibration: { fixedLayoutMsMedian: 20 }, scenarios: {} }
-  for (const size of ["S", "M", "L"]) {
-    const items = scenarios()
+  for (const size of ["S", "M", "L", "XL"]) {
+    const items = scenarios(size)
     change?.(size, items)
     result.scenarios[size] = items
   }

@@ -5,8 +5,9 @@ import { performance } from "node:perf_hooks"
 import { CodeRenderable, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
 import type { Part } from "@graphagent/sdk"
 import { TICK_MS } from "../../src/context/ticker"
+import { isWindowed } from "../../src/routes/session/rows"
 import { type FixtureSize, updatePartEvent } from "./fixtures"
-import type { PerfHarness } from "./harness"
+import type { PerfHarness, PerfStream } from "./harness"
 import { within } from "./settle"
 
 export const SCENARIO_IDS = [
@@ -111,6 +112,20 @@ function assertMenu(harness: PerfHarness, open: boolean, scenario: string) {
   )
 }
 
+/**
+ * A delta for a part the store does not hold is dropped without a trace, and a
+ * dropped delta writes nothing, which is also what the zero-write gate of P13
+ * wants to see. The part must carry every delta the scenario sent.
+ */
+function assertStreamed(harness: PerfHarness, stream: PerfStream, scenario: string) {
+  const part = (harness.sync.data.part[stream.part.messageID] ?? []).find((item) => item.id === stream.part.id)
+  if (!part) invalid(scenario, `the streaming part ${stream.part.id} never reached the store`)
+  const actual = harness.sync.readPartText(part)
+  if (actual !== stream.text()) {
+    invalid(scenario, `the stream holds ${actual.length} of the ${stream.text().length} characters sent`)
+  }
+}
+
 function codeBlocks(node: Renderable): CodeRenderable[] {
   return [...(node instanceof CodeRenderable ? [node] : []), ...node.getChildren().flatMap(codeBlocks)]
 }
@@ -120,7 +135,7 @@ function codeBlocks(node: Renderable): CodeRenderable[] {
  * lands inside a measured window adds a frame the scenario did not cause, so
  * wait for every mounted block before measuring.
  */
-async function settleHighlights(harness: PerfHarness) {
+export async function settleHighlights(harness: PerfHarness) {
   await within(
     Promise.all(codeBlocks(harness.app.renderer.root).map((node) => node.highlightingDone)),
     "code block highlighting",
@@ -131,6 +146,16 @@ async function settleHighlights(harness: PerfHarness) {
 /** Resets the composer and scroll position, then waits for the rows it remounted. */
 async function fresh(harness: PerfHarness) {
   await harness.reset()
+  await settleHighlights(harness)
+}
+
+/** Scrolls to the live end of the transcript, where a reply is being written. */
+async function followTail(harness: PerfHarness) {
+  const scroll = harness.scroll()
+  if (!scroll) return
+  scroll.stickyScroll = true
+  scroll.scrollTo(Infinity)
+  await harness.app.renderOnce()
   await settleHighlights(harness)
 }
 
@@ -283,35 +308,24 @@ async function coldScroll(harness: PerfHarness, scroll: ScrollBoxRenderable) {
 }
 
 /**
- * Streaming scroll: output keeps arriving at the pinned tail while the viewport
- * scrolls up away from it. The stream targets the last text part; the first one
- * sits at the top, outside the region being scrolled.
+ * Streaming scroll: a reply keeps growing at the pinned tail while the viewport
+ * scrolls up away from it. Each step delivers one `message.part.delta`, the way
+ * the server writes a reply; the stream part is the last row of the transcript.
  */
 async function streamingScroll(harness: PerfHarness, scroll: ScrollBoxRenderable) {
-  const tail = harness.fixture.parts.findLast((part) => part.type === "text")
-  if (!tail) invalid("P8'", "the fixture has no text part to stream into")
+  const stream = harness.openStream()
   scroll.stickyScroll = true
   scroll.scrollTo(maxScrollTop(scroll))
   await harness.app.renderOnce()
   const start = scroll.scrollTop
   const times: number[] = []
   for (let index = 0; index < STREAM_SCROLL_STEPS; index++) {
-    harness.emit(
-      updatePartEvent(
-        {
-          id: tail.id,
-          sessionID: tail.sessionID,
-          messageID: tail.messageID,
-          type: "text",
-          text: `streaming tail ${index}`,
-          time: { start: 1_000 + index },
-        },
-        1_000 + index,
-        `evt_stream_scroll_${index}`,
-      ),
-    )
+    stream.delta(`t${index} `)
     times.push(await scrollStep(harness, () => scroll.scrollBy(-STREAM_SCROLL_ROWS)))
   }
+  assertStreamed(harness, stream, "P8'")
+  stream.finish()
+  await harness.app.renderOnce()
   const reachable = Math.min(start, STREAM_SCROLL_STEPS * STREAM_SCROLL_ROWS)
   if (start - scroll.scrollTop < reachable / 2) invalid("P8'", "the viewport stayed pinned to the streaming tail")
   return times
@@ -325,24 +339,82 @@ export function scaleResult(size: FixtureSize, p95Ms: number, smallP95Ms: number
   return result("P2", size, { p95Scale: smallP95Ms === 0 ? 0 : p95Ms / smallP95Ms })
 }
 
-export async function runCharacterProfile(harness: PerfHarness): Promise<ScenarioResult> {
+/**
+ * One ordinary character, or `rounds` of 50 for a profile: a sampler at 1 ms sees
+ * nothing of a keystroke that costs a tenth of that, so a CPU profile repeats the
+ * operation until the steady state outweighs the process start. The composer is
+ * cleared between rounds: the cost of a keystroke grows with the text already in
+ * it (a grapheme pass over the whole input), and 15 000 characters in one input
+ * would profile that instead of typing. The first round warms the JIT and stays
+ * out of the numbers.
+ */
+export async function runCharacterProfile(harness: PerfHarness, rounds = 1): Promise<ScenarioResult> {
   await fresh(harness)
-  const values = await typeText(harness, "a")
-  return result("P1", harness.fixture.size, { p50Ms: percentile(values, 0.5), p95Ms: percentile(values, 0.95) })
-}
-
-export async function runSlashProfile(harness: PerfHarness): Promise<ScenarioResult> {
-  await fresh(harness)
-  const round = await slashRound(harness, 0)
-  return result("P5", harness.fixture.size, {
-    openP95Ms: round.open,
-    sequenceP95Ms: Math.max(round.open, ...round.filter),
-    maxMs: Math.max(round.open, ...round.filter, round.escape),
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX"
+  if (rounds <= 1) {
+    const values = await typeText(harness, "a")
+    return result("P1", harness.fixture.size, { p50Ms: percentile(values, 0.5), p95Ms: percentile(values, 0.95) })
+  }
+  const round = async () => {
+    const times = await typeText(harness, alphabet)
+    harness.prompt.reset()
+    await harness.app.renderOnce()
+    return times
+  }
+  await round()
+  const values: number[] = []
+  for (let index = 0; index < rounds; index++) values.push(...(await round()))
+  return result("P1", harness.fixture.size, {
+    p50Ms: percentile(values, 0.5),
+    p95Ms: percentile(values, 0.95),
+    p99Ms: percentile(values, 0.99),
   })
 }
 
-export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult[]> {
+/** One `/mod` + ESC round, or `rounds` of them after one warm-up round. */
+export async function runSlashProfile(harness: PerfHarness, rounds = 1): Promise<ScenarioResult> {
+  await fresh(harness)
+  if (rounds <= 1) {
+    const round = await slashRound(harness, 0)
+    return result("P5", harness.fixture.size, {
+      openP95Ms: round.open,
+      sequenceP95Ms: Math.max(round.open, ...round.filter),
+      maxMs: Math.max(round.open, ...round.filter, round.escape),
+    })
+  }
+  await slashRound(harness, 0)
+  const measured: SlashRound[] = []
+  for (let round = 1; round <= rounds; round++) measured.push(await slashRound(harness, round))
+  const slash = slashMetrics(measured)
+  return result("P5", harness.fixture.size, {
+    openP95Ms: slash.openP95Ms,
+    sequenceP95Ms: slash.sequenceP95Ms,
+    maxMs: slash.maxMs,
+  })
+}
+
+/**
+ * `all` runs every scenario. `windowed` is for the session above WINDOW_MIN_ROWS
+ * (`XL`), the only one the windowed transcript runs in. It keeps what that
+ * transcript must keep true: the input path at scale, the cold and hot scroll
+ * budgets, the bound on mounted rows, the anchor, and the frame counts. It leaves
+ * out the scenarios that time a stream or the background, which do not depend on
+ * whether the transcript is windowed: over 2000 rows each streamed frame costs
+ * about 17 ms, so a hundred of them are a second of wall time that tests the
+ * stream path again.
+ */
+export type ScenarioScope = "all" | "windowed"
+
+/** The scenarios the `windowed` scope leaves out. */
+export const WINDOWED_SKIPS: ReadonlySet<ScenarioID> = new Set<ScenarioID>(["P5'", "P12", "P13", "P14", "P20"])
+
+/** The scenario ids a run of `scope` reports. */
+export const scenarioIds = (scope: ScenarioScope) =>
+  SCENARIO_IDS.filter((id) => scope === "all" || !WINDOWED_SKIPS.has(id))
+
+export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = "all"): Promise<ScenarioResult[]> {
   const size = harness.fixture.size
+  const full = scope === "all"
   const all: ScenarioResult[] = []
 
   await fresh(harness)
@@ -378,15 +450,20 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
   all.push(result("P6", size, { filterP95Ms: slash.filterP95Ms, escapeP95Ms: slash.escapeP95Ms }))
   all.push(result("P7", size, { registerLayer: slash.registerLayer }))
 
-  if (size === "M") {
+  if (full && size === "M") {
     await fresh(harness)
-    // Interference: every key arrives together with a streaming update for the
-    // main session and a burst from the eight background sessions. Both are
+    await followTail(harness)
+    // Interference: every key arrives together with one token of a reply being
+    // written at the tail and a burst from the eight background sessions. Both are
     // queued through the SDK event path and applied by the frame the key renders.
+    const noisyStream = harness.openStream()
+    // The snapshot that opens the reply lands before the first key, so no round
+    // pays for the one-time store write.
+    await harness.app.renderOnce()
     let tick = 0
     const noisyPress = async (key: string) => {
       tick++
-      harness.updateStream(`streaming main answer ${tick}`, tick)
+      noisyStream.delta(`w${tick} `)
       harness.tickBackground(tick)
       return action(harness, key)
     }
@@ -394,6 +471,9 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
     const noisyBefore = harness.snapshot()
     for (let round = 0; round < SLASH_ROUNDS; round++) noisyRounds.push(await slashRound(harness, round, noisyPress))
     const noisy = slashMetrics(noisyRounds)
+    assertStreamed(harness, noisyStream, "P5'")
+    noisyStream.finish()
+    await harness.app.renderOnce()
     all.push(
       result("P5'", size, {
         openP95Ms: noisy.openP95Ms,
@@ -402,7 +482,7 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
         frames: harness.counters.delta(noisyBefore).frameEvents,
       }),
     )
-  } else {
+  } else if (full) {
     all.push(result("P5'", size, { openP95Ms: 0, sequenceP95Ms: 0, maxMs: 0, frames: 0 }))
   }
 
@@ -457,6 +537,10 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
         mountedRows: harness.counters.mountedRows(scroll),
         scrollChildren: harness.counters.scrollChildren(scroll),
         viewportRows: scroll.viewport.height,
+        // Only a transcript at or above the threshold is windowed; the bound on
+        // mounted rows means nothing for the others, which mount every row.
+        rows: harness.fixture.rows,
+        windowed: isWindowed(harness.fixture.rows) ? 1 : 0,
       }),
     )
   } else {
@@ -464,63 +548,81 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
     all.push(result("P8'", size, { p99Ms: 0, maxMs: 0, steps: 0 }))
     all.push(result("P9", size, { p99Ms: 0 }))
     all.push(result("P11", size, { driftPx: 0, stepMismatches: 0 }))
-    all.push(result("P10", size, { mountedRows: 0, scrollChildren: 0, viewportRows: 0 }))
+    all.push(result("P10", size, { mountedRows: 0, scrollChildren: 0, viewportRows: 0, rows: 0, windowed: 0 }))
   }
 
-  await fresh(harness)
-  const streamTimes: number[] = []
-  const streamBefore = harness.snapshot()
-  for (let index = 0; index < 100; index++) {
-    harness.updateStream(`main stream ${index}`, index)
-    const start = performance.now()
-    harness.prompt.set({ input: String(index % 10), parts: [] })
+  if (full) {
+    await fresh(harness)
+    await followTail(harness)
+    // A reply being written at the tail while the user types. The snapshot that
+    // opens it is applied outside the measured window; the window is the deltas
+    // and the one terminal snapshot that closes the reply.
+    const typingStream = harness.openStream()
     await harness.app.renderOnce()
-    streamTimes.push(performance.now() - start)
+    const streamTimes: number[] = []
+    const streamBefore = harness.snapshot()
+    for (let index = 0; index < 100; index++) {
+      typingStream.delta(`w${index} `)
+      const start = performance.now()
+      harness.prompt.set({ input: String(index % 10), parts: [] })
+      await harness.app.renderOnce()
+      streamTimes.push(performance.now() - start)
+    }
+    assertStreamed(harness, typingStream, "P13")
+    const deltaPhase = harness.counters.delta(streamBefore)
+    typingStream.finish()
+    await harness.app.renderOnce()
+    const streamDelta = harness.counters.delta(streamBefore)
+    all.push(result("P12", size, { p95Ms: percentile(streamTimes, 0.95) }))
+    all.push(
+      result("P13", size, {
+        // The delta phase alone: a token goes to the stream buffer, never to the store.
+        deltaMessageWrites: deltaPhase.storeMessageWrites,
+        deltaPartWrites: deltaPhase.storePartWrites,
+        // The whole window, terminal snapshot included.
+        messageWritesPerFrame: streamDelta.storeMessageWrites / Math.max(1, streamDelta.frameEvents),
+        partWritesPerFrame: streamDelta.storePartWrites / Math.max(1, streamDelta.frameEvents),
+      }),
+    )
   }
-  const streamDelta = harness.counters.delta(streamBefore)
-  all.push(result("P12", size, { p95Ms: percentile(streamTimes, 0.95) }))
-  all.push(
-    result("P13", size, {
-      messageWritesPerFrame: streamDelta.storeMessageWrites / Math.max(1, streamDelta.frameEvents),
-      partWritesPerFrame: streamDelta.storePartWrites / Math.max(1, streamDelta.frameEvents),
-    }),
-  )
 
-  await fresh(harness)
-  const measureInput = async () => {
-    const times: number[] = []
+  if (full) {
+    await fresh(harness)
+    const measureInput = async () => {
+      const times: number[] = []
+      for (let index = 0; index < 50; index++) {
+        const start = performance.now()
+        harness.prompt.set({ input: "x", parts: [] })
+        await harness.app.renderOnce()
+        times.push(performance.now() - start)
+      }
+      return percentile(times, 0.95)
+    }
+    const noNoise = await measureInput()
+    const noiseBefore = harness.snapshot()
+    const noisyTimes: number[] = []
     for (let index = 0; index < 50; index++) {
+      harness.tickBackground(index)
       const start = performance.now()
       harness.prompt.set({ input: "x", parts: [] })
       await harness.app.renderOnce()
-      times.push(performance.now() - start)
+      noisyTimes.push(performance.now() - start)
     }
-    return percentile(times, 0.95)
+    const withNoise = percentile(noisyTimes, 0.95)
+    const noiseDelta = harness.counters.delta(noiseBefore)
+    all.push(
+      result("P14", size, {
+        p95Ms: withNoise,
+        quietP95Ms: noNoise,
+        // Sub-millisecond samples make the ratio a measure of the scheduler, so
+        // the gate also reads the absolute increase.
+        increaseMs: withNoise - noNoise,
+        relativeIncrease: noNoise === 0 ? 0 : (withNoise - noNoise) / noNoise,
+        nonCurrentMessageWrites: noiseDelta.storeMessageWrites,
+        nonCurrentPartWrites: noiseDelta.storePartWrites,
+      }),
+    )
   }
-  const noNoise = await measureInput()
-  const noiseBefore = harness.snapshot()
-  const noisyTimes: number[] = []
-  for (let index = 0; index < 50; index++) {
-    harness.tickBackground(index)
-    const start = performance.now()
-    harness.prompt.set({ input: "x", parts: [] })
-    await harness.app.renderOnce()
-    noisyTimes.push(performance.now() - start)
-  }
-  const withNoise = percentile(noisyTimes, 0.95)
-  const noiseDelta = harness.counters.delta(noiseBefore)
-  all.push(
-    result("P14", size, {
-      p95Ms: withNoise,
-      quietP95Ms: noNoise,
-      // Sub-millisecond samples make the ratio a measure of the scheduler, so
-      // the gate also reads the absolute increase.
-      increaseMs: withNoise - noNoise,
-      relativeIncrease: noNoise === 0 ? 0 : (withNoise - noNoise) / noNoise,
-      nonCurrentMessageWrites: noiseDelta.storeMessageWrites,
-      nonCurrentPartWrites: noiseDelta.storePartWrites,
-    }),
-  )
 
   await fresh(harness)
   const idleFramesValue = await tickerFrames(harness, 2_000)
@@ -581,7 +683,7 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
   all.push(result("P19", size, { frames: harness.counters.delta(mouseBefore).renderRequests, moves: 200 }))
 
   const childID = harness.fixture.sessions[1]?.id
-  if (size === "M" && childID) {
+  if (full && size === "M" && childID) {
     // Session switching is judged by mounted view nodes: JSC retains swept
     // heap blocks and dead cells well after `Bun.gc(true)` (a 50-round window
     // can report ~5 MB of heap growth with a byte-identical reachable graph),
@@ -589,9 +691,10 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
     // The heap numbers stay in the report as a coarse backstop.
     const nodes: number[] = []
     const heaps: number[] = []
+    const switchStream = harness.openStream()
     for (let windowIndex = 0; windowIndex < 3; windowIndex++) {
       for (let index = 0; index < 50; index++) {
-        harness.updateStream(`memory stream ${windowIndex}-${index}`, 100 + index)
+        switchStream.delta(`m${windowIndex}-${index} `)
         harness.navigate({ type: "session", sessionID: childID })
         await harness.app.renderOnce()
         harness.navigate({ type: "session", sessionID: harness.fixture.session.id })
@@ -601,6 +704,9 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
       nodes.push(harness.counters.mountedNodes(harness.app.renderer.root))
       heaps.push(process.memoryUsage().heapUsed)
     }
+    assertStreamed(harness, switchStream, "P20")
+    switchStream.finish()
+    await harness.app.renderOnce()
     const second = nodes[1] ?? 0
     const third = nodes[2] ?? 0
     const heapSecond = heaps[1] ?? 0
@@ -615,7 +721,7 @@ export async function runScenarios(harness: PerfHarness): Promise<ScenarioResult
         heapGrowth: heapSecond === 0 ? 0 : (heapThird - heapSecond) / heapSecond,
       }),
     )
-  } else {
+  } else if (full) {
     all.push(result("P20", size, { nodes2: 0, nodes3: 0, growth: 0, heap2: 0, heap3: 0, heapGrowth: 0 }))
   }
 

@@ -19,9 +19,21 @@ export interface Row {
   revision: number
 }
 
-export const WINDOW_MIN_ROWS = 30
+/**
+ * Transcripts shorter than this stay fully mounted. On OpenTUI 0.8.3 the native
+ * scroll box already culls what is off screen, so windowing buys little until the
+ * mounted tree itself is large: a fully mounted 1900-row transcript types at a
+ * 2.1 ms p95 (0.3 windowed), mounts in 300 ms (100) and holds 146 MB (44), while
+ * the windowed scroll costs 5 to 47 times more per step (P9 p99 10.4 ms against
+ * 0.87) and moves the content by several lines when row heights are corrected.
+ * The two costs meet near 2000 rows (#1025).
+ */
+export const WINDOW_MIN_ROWS = 2000
 export const PART_OVERSCAN = 6
 export const TAIL_ALWAYS = 4
+
+/** Whether a transcript of `rowCount` rows is windowed; shorter ones mount every row. */
+export const isWindowed = (rowCount: number) => rowCount >= WINDOW_MIN_ROWS
 
 /** Rows that are always mounted regardless of the viewport. */
 export interface PinnedRows {

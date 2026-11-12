@@ -11,7 +11,9 @@ import { mountHarness } from "./harness"
 import { watchKeymapErrors } from "./keymap-errors"
 import { runCharacterProfile, runScenarios, runSlashProfile, scaleResult, type ScenarioResult } from "./scenarios"
 
-const sizes: FixtureSize[] = ["S", "M", "L"]
+const sizes: FixtureSize[] = ["S", "M", "L", "XL"]
+/** The machine calibration is the mount of the three sessions that scale with nothing: `XL` would make it a measure of transcript size. */
+const CALIBRATION_SIZES = new Set<FixtureSize>(["S", "M", "L"])
 
 function arg(name: string) {
   return process.argv.find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1)
@@ -66,10 +68,13 @@ function calibrateLoop() {
 }
 
 async function profile(kind: string) {
-  const fixture = createFixture("L")
+  const size = arg("--size")
+  const fixture = createFixture(size === "S" || size === "M" || size === "XL" ? size : "L")
+  const rounds = Number(arg("--rounds") ?? 1)
   const harness = await mountHarness(fixture)
   try {
-    const result = kind === "slash" ? await runSlashProfile(harness) : await runCharacterProfile(harness)
+    const result =
+      kind === "slash" ? await runSlashProfile(harness, rounds) : await runCharacterProfile(harness, rounds)
     console.log(JSON.stringify({ profile: kind, commit: gitCommit(), opentui: await opentuiVersion(), result }, null, 2))
   } finally {
     await harness.dispose()
@@ -97,6 +102,7 @@ async function main() {
     S: {},
     M: {},
     L: {},
+    XL: {},
   }
   const layoutSamples: number[] = []
   const loop = calibrateLoop()
@@ -109,9 +115,10 @@ async function main() {
       for (const size of sizes) {
         const started = performance.now()
         const harness = await mountHarness(createFixture(size, size === "M"))
-        layoutSamples.push(performance.now() - started)
+        if (CALIBRATION_SIZES.has(size)) layoutSamples.push(performance.now() - started)
         try {
-          for (const item of await runScenarios(harness)) (samples[size][item.id] ??= []).push(item)
+          const scope = size === "XL" ? "windowed" : "all"
+          for (const item of await runScenarios(harness, scope)) (samples[size][item.id] ??= []).push(item)
         } finally {
           await harness.dispose()
         }
@@ -126,7 +133,7 @@ async function main() {
     process.exit(1)
   }
 
-  const scenarios: Record<FixtureSize, Record<string, ScenarioResult>> = { S: {}, M: {}, L: {} }
+  const scenarios: Record<FixtureSize, Record<string, ScenarioResult>> = { S: {}, M: {}, L: {}, XL: {} }
   for (const size of sizes) {
     for (const [id, values] of Object.entries(samples[size])) scenarios[size][id] = medianResult(values)
   }
