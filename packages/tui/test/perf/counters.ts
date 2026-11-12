@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { CliRenderEvents, type CliRenderer, type Renderable, type ScrollBoxRenderable } from "@opentui/core"
+import { KEYMAP_EXTENSION_CONTEXT } from "@opentui/keymap"
 import type { OpenTuiKeymap } from "../../src/keymap"
 
 export type CounterSnapshot = {
@@ -37,6 +38,15 @@ export function createCounters(renderer: CliRenderer, keymap: OpenTuiKeymap): Pe
 
   // oxlint-disable-next-line typescript-eslint/unbound-method -- wrapped below with explicit receiver
   const originalRegisterLayer = keymap.registerLayer
+  // Solid's `useBindings` never goes through `keymap.registerLayer`: it owns a
+  // layer slot and swaps its content with `layers.replaceLayer`, which the
+  // keymap does not expose on its public surface. A counter that wraps only the
+  // public method stays at zero while every effect re-run still compiles and
+  // swaps a layer (#1025 P3). Count both entry points; they never call each
+  // other, so a layer is counted once.
+  const { layers } = keymap[KEYMAP_EXTENSION_CONTEXT]()
+  // oxlint-disable-next-line typescript-eslint/unbound-method -- wrapped below with explicit receiver
+  const originalReplaceLayer = layers.replaceLayer
   // oxlint-disable-next-line typescript-eslint/unbound-method -- wrapped below with explicit receiver
   const originalGetCommandBindings = keymap.getCommandBindings
   // oxlint-disable-next-line typescript-eslint/unbound-method -- wrapped below with explicit receiver
@@ -46,6 +56,12 @@ export function createCounters(renderer: CliRenderer, keymap: OpenTuiKeymap): Pe
     counts.registerLayer++
     return originalRegisterLayer.call(keymap, layer)
   }) as typeof keymap.registerLayer
+  layers.replaceLayer = ((slot, layer) => {
+    // `replaceLayer(slot, undefined)` only tears the slot down (a component
+    // unmounting); that is not a registration.
+    if (layer !== undefined) counts.registerLayer++
+    return originalReplaceLayer.call(layers, slot, layer)
+  }) as typeof layers.replaceLayer
   keymap.getCommandBindings = ((query) => {
     counts.selectorEvaluations++
     return originalGetCommandBindings.call(keymap, query)
@@ -123,6 +139,7 @@ export function createCounters(renderer: CliRenderer, keymap: OpenTuiKeymap): Pe
       renderer.off(CliRenderEvents.FRAME, onFrame)
       renderer.requestRender = originalRequestRender
       keymap.registerLayer = originalRegisterLayer
+      layers.replaceLayer = originalReplaceLayer
       keymap.getCommandBindings = originalGetCommandBindings
       keymap.getCommandEntries = originalGetCommandEntries
     },

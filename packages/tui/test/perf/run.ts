@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url"
 import { compareReports, type PerfReport } from "./compare"
 import { createFixture, type FixtureSize } from "./fixtures"
 import { mountHarness } from "./harness"
-import { runCharacterProfile, runScenarios, runSlashProfile, type ScenarioResult } from "./scenarios"
+import { watchKeymapErrors } from "./keymap-errors"
+import { runCharacterProfile, runScenarios, runSlashProfile, scaleResult, type ScenarioResult } from "./scenarios"
 
 const sizes: FixtureSize[] = ["S", "M", "L"]
 
@@ -100,17 +101,29 @@ async function main() {
   const layoutSamples: number[] = []
   const loop = calibrateLoop()
 
-  for (let repeat = 0; repeat < repeats; repeat++) {
-    for (const size of sizes) {
-      const started = performance.now()
-      const harness = await mountHarness(createFixture(size, size === "M"))
-      layoutSamples.push(performance.now() - started)
-      try {
-        for (const item of await runScenarios(harness)) (samples[size][item.id] ??= []).push(item)
-      } finally {
-        await harness.dispose()
+  // The keymap reports a key it cannot resolve on stderr and carries on, so a
+  // run can finish with exit code 0 on numbers taken from swallowed keys.
+  const keymapErrors = watchKeymapErrors()
+  try {
+    for (let repeat = 0; repeat < repeats; repeat++) {
+      for (const size of sizes) {
+        const started = performance.now()
+        const harness = await mountHarness(createFixture(size, size === "M"))
+        layoutSamples.push(performance.now() - started)
+        try {
+          for (const item of await runScenarios(harness)) (samples[size][item.id] ??= []).push(item)
+        } finally {
+          await harness.dispose()
+        }
       }
     }
+  } finally {
+    keymapErrors.restore()
+  }
+  if (keymapErrors.hits.length > 0) {
+    console.error(`bench invalid: the keymap reported ${keymapErrors.hits.length} error(s) while the scenarios ran`)
+    for (const hit of keymapErrors.hits) console.error(`  ${hit}`)
+    process.exit(1)
   }
 
   const scenarios: Record<FixtureSize, Record<string, ScenarioResult>> = { S: {}, M: {}, L: {} }
@@ -119,10 +132,7 @@ async function main() {
   }
 
   const sP95 = Number(scenarios.S.P1?.p95Ms ?? 0)
-  for (const size of sizes) {
-    const p95 = Number(scenarios[size].P1?.p95Ms ?? 0)
-    scenarios[size].P2 = { id: "P2", size, p95Scale: sP95 === 0 ? 0 : Number((p95 / sP95).toFixed(2)) }
-  }
+  for (const size of sizes) scenarios[size].P2 = scaleResult(size, Number(scenarios[size].P1?.p95Ms ?? 0), sP95)
 
   const report = {
     schemaVersion: 1,
