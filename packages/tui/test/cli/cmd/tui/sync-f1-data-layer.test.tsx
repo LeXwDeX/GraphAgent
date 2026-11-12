@@ -386,7 +386,7 @@ describe("F1 data layer", () => {
     }
   })
 
-  test("running preview tails replace tool output until the durable part settles", async () => {
+  test("running preview tails live in the stream buffer until the durable part settles", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")
     const rows = [row("ses_preview", 100)]
@@ -429,10 +429,13 @@ describe("F1 data layer", () => {
           },
         }),
       )
-      await wait(() => output() === "line 1\n")
+      // Previews go to the stream buffer: store.part keeps the durable output untouched.
+      await wait(() => sync.readPartPreview(tool()!)?.tail === "line 1\n")
+      expect(sync.readPartPreview(tool()!)).toMatchObject({ tail: "line 1\n", totalLength: 7, seq: 1 })
       const running = tool()
       if (running?.state.status !== "running") throw new Error("expected a running tool part")
-      expect(running.state.metadata?.previewTotalLength).toBe(7)
+      expect(output()).toBe("")
+      expect(running.state.metadata?.previewTotalLength).toBeUndefined()
 
       emit(
         global({
@@ -460,6 +463,7 @@ describe("F1 data layer", () => {
       if (settled?.state.status !== "completed") throw new Error("expected a completed tool part")
       expect(output()).toBe("line 1\nline 2\n")
       expect(settled.state.metadata?.previewTotalLength).toBeUndefined()
+      expect(sync.readPartPreview(settled)).toBeUndefined()
     } finally {
       app.renderer.destroy()
     }
