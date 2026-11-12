@@ -107,19 +107,14 @@ export interface Interface {
 }
 
 /**
- * Roots owned by the operator rather than by the workspace being opened. Keep
- * that provenance on scoped hooks for policy evaluation; hooks sourced from the
- * project layer are still filtered by ProjectTrust before execution.
+ * Provenance kept on scoped hooks for policy evaluation: hooks sourced from
+ * `Global.operatorRoots()` are the operator's own, not the workspace being
+ * opened; everything else is project layer and still filtered by
+ * ProjectTrust before execution.
  */
-const userSkillRoots = () => [
-  Global.Path.config,
-  path.join(Global.Path.home, ".agents"),
-  ...(Flag.GRAPHAGENT_CONFIG_DIR ? [Flag.GRAPHAGENT_CONFIG_DIR] : []),
-]
-
 const skillHookSource = (match: string) => {
   const absolute = path.resolve(match)
-  const userOwned = userSkillRoots().some((root) => {
+  const userOwned = Global.operatorRoots().some((root) => {
     const resolved = path.resolve(root)
     return absolute === resolved || absolute.startsWith(resolved + path.sep)
   })

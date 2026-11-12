@@ -439,9 +439,17 @@ export const layer = Layer.effect(
         let result: Info = {}
         const agentHookOrigins = new Map<string, AgentHookProvenance>()
         const modeHookOrigins = new Map<string, AgentHookProvenance>()
+        // Shares Global.operatorRoots() with skill/index.ts#skillHookSource so a
+        // workspace outside .agents is never classified `user` by one loader
+        // and `project` by the other (#1040).
         const agentHookSource = (source: string): AgentHookProvenance["source"] => {
-          const roots = [Global.Path.config]
-          return roots.some((root) => source === root || source.startsWith(root + path.sep)) ? "user" : "project"
+          const absolute = path.resolve(source)
+          return Global.operatorRoots().some((root) => {
+            const resolved = path.resolve(root)
+            return absolute === resolved || absolute.startsWith(resolved + path.sep)
+          })
+            ? "user"
+            : "project"
         }
         const rememberAgentHooks = (next: Info, source: string) => {
           for (const [name, mode] of Object.entries(next.mode ?? {})) {
