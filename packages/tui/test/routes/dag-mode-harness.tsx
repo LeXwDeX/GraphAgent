@@ -215,6 +215,11 @@ export async function mountRoute(options: MountOptions) {
     await app.renderOnce()
     await Bun.sleep(10)
   }
+  // The prompt restores a draft another test in this process left in its
+  // module-level stash; start every harness from an empty draft so the
+  // assertions do not depend on test file order.
+  promptRef.current?.set({ input: "", parts: [] })
+  await app.renderOnce()
 
   const harness = {
     app,
