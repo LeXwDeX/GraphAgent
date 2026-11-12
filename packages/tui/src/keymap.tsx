@@ -7,7 +7,13 @@ import {
   registerManagedTextareaLayer,
   registerTimedLeader,
 } from "@opentui/keymap/addons/opentui"
-import { stringifyKeyStroke, type ActiveBinding, type Binding, type KeySequencePart } from "@opentui/keymap"
+import {
+  stringifyKeyStroke,
+  type ActiveBinding,
+  type Binding,
+  type KeyLike,
+  type KeySequencePart,
+} from "@opentui/keymap"
 import {
   formatCommandBindings as formatCommandBindingsExtra,
   formatKeySequence as formatKeySequenceExtra,
@@ -180,6 +186,35 @@ const inputCommands = [
   "input.select.all",
   "input.submit",
 ] as const
+
+/**
+ * Keeps the keys of `bindings` that start with a modified key (ctrl, alt, super,
+ * hyper) or the leader. Such keys never produce text, so they can stay active
+ * while a text input has focus; plain keys such as `home` and `end` belong to
+ * the input then. Comma lists are split the way the keymap expands them.
+ */
+export function modifiedBindings(
+  keymap: OpenTuiKeymap,
+  bindings: readonly Binding<Renderable, KeyEvent>[],
+): Binding<Renderable, KeyEvent>[] {
+  return bindings.flatMap((binding) => {
+    const keys = typeof binding.key === "string" ? binding.key.split(",").map((part) => part.trim()) : [binding.key]
+    return keys.filter((key) => startsModified(keymap, key)).map((key) => ({ ...binding, key }))
+  })
+}
+
+function startsModified(keymap: OpenTuiKeymap, key: KeyLike) {
+  try {
+    const first = keymap.parseKeySequence(key)[0]
+    if (!first) return false
+    const { ctrl, meta, super: command, hyper } = first.stroke
+    return first.tokenName !== undefined || ctrl || meta || command || hyper === true
+  } catch {
+    // A key the parser rejects is not a modified key. The keymap reports the
+    // same key itself when the plain-key layer registers it.
+    return false
+  }
+}
 
 export function hasManagedTextareaFocus(renderer: CliRenderer) {
   const editor = renderer.currentFocusedEditor
