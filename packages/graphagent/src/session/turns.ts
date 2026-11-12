@@ -460,6 +460,92 @@ export function dropReverted(deps: LookupDeps, session: Session.Info): Effect.Ef
   })
 }
 
+/** Handle bookkeeping that `makeTurns` shares with idle admission. */
+interface TurnFlow {
+  readonly begin: Interface["begin"]
+  readonly track: Interface["track"]
+  readonly watch: Interface["watch"]
+}
+
+/**
+ * Idle admission in two phases, preserving the pre-PR8 protocol: reserve an
+ * idle runner, commit the message under a cancellation-guarded transaction,
+ * then let the owner activate the work. A busy session, an invalidated
+ * request, or an admission failure leaves no `session_turn` row.
+ */
+function makePrepareIdle(deps: TurnDeps, flow: TurnFlow) {
+  const { begin, track, watch } = flow
+  return Effect.fn("Turns.prepare")(function* (
+    input: PromptInput,
+    options: AdmissionOptions | undefined,
+    persistAdmission: Effect.Effect<void, unknown> | undefined,
+    request: ReturnType<typeof SessionCancellation.request> | undefined,
+  ) {
+    return yield* deps.withRunRequest(
+      input.sessionID,
+      (req, witness) =>
+        deps.withPromptLock(witness, input.sessionID, () =>
+          Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              if (!req.valid()) return Option.none<IdleAdmission>()
+              const activation = yield* Deferred.make<void>()
+              const gate = yield* Deferred.make<Exit.Exit<Admission, PromptError>>()
+              const handle = begin(input.sessionID, originFor(options))
+              const work = Effect.gen(function* () {
+                yield* Deferred.await(activation)
+                if (!req.current()) return yield* Effect.interrupt
+                const admitted = yield* Deferred.await(gate)
+                if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
+                if (!admitted.value.run) return admitted.value.message
+                return yield* track(
+                  handle,
+                  Effect.gen(function* () {
+                    if (!(yield* deps.fenceRewake(input.sessionID, options, admitted.value.message)))
+                      return blockedExecution(admitted.value.message)
+                    return yield* deps.runLoop(input.sessionID)
+                  }),
+                ).pipe(Effect.map((turn) => turn.message))
+              }).pipe(Effect.orDie)
+              const wait = yield* deps.state.startIfIdle(
+                input.sessionID,
+                deps.lastAssistant(input.sessionID),
+                work,
+                request,
+              )
+              if (Option.isNone(wait)) return Option.none<IdleAdmission>()
+              // A cancel can interrupt the forked work before it activates;
+              // the watcher keeps the reserved handle from staying `running`.
+              yield* watch(handle, wait.value)
+
+              const admitted = yield* restore(
+                deps
+                  .admitPrompt(input, persistAdmission, options, (body) =>
+                    Effect.suspend(() => (req.valid() ? body : Effect.interrupt)),
+                  )
+                  .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
+              ).pipe(Effect.exit)
+              yield* Deferred.succeed(gate, admitted)
+              if (Exit.isFailure(admitted)) {
+                yield* Deferred.succeed(activation, undefined)
+                if (!req.valid() && Cause.hasInterruptsOnly(admitted.cause)) return Option.none<IdleAdmission>()
+                return yield* Effect.failCause(admitted.cause)
+              }
+              return Option.some({
+                turn: admitted.value.run ? handle : undefined,
+                run: admitted.value.run,
+                message: admitted.value.message,
+                activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
+                result: wait.value,
+                abort: deps.state.cancel(input.sessionID),
+              } satisfies IdleAdmission)
+            }),
+          ),
+        ),
+      request,
+    )
+  })
+}
+
 export function makeTurns(deps: TurnDeps): Interface {
   const currents = new Map<SessionID, InternalHandle>()
   // The public handle type hides bookkeeping fields; `track` recovers them
@@ -586,81 +672,7 @@ export function makeTurns(deps: TurnDeps): Interface {
   const run = (sessionID: SessionID, origin: TurnOrigin, work: Effect.Effect<TurnExecution>) =>
     Effect.suspend(() => track(begin(sessionID, origin), work))
 
-  /**
-   * Idle admission in two phases, preserving the pre-PR8 protocol: reserve an
-   * idle runner, commit the message under a cancellation-guarded transaction,
-   * then let the owner activate the work. A busy session, an invalidated
-   * request, or an admission failure leaves no `session_turn` row.
-   */
-  const prepare = Effect.fn("Turns.prepare")(function* (
-    input: PromptInput,
-    options: AdmissionOptions | undefined,
-    persistAdmission: Effect.Effect<void, unknown> | undefined,
-    request: ReturnType<typeof SessionCancellation.request> | undefined,
-  ) {
-    return yield* deps.withRunRequest(
-      input.sessionID,
-      (req, witness) =>
-        deps.withPromptLock(witness, input.sessionID, () =>
-          Effect.uninterruptibleMask((restore) =>
-            Effect.gen(function* () {
-              if (!req.valid()) return Option.none<IdleAdmission>()
-              const activation = yield* Deferred.make<void>()
-              const gate = yield* Deferred.make<Exit.Exit<Admission, PromptError>>()
-              const handle = begin(input.sessionID, originFor(options))
-              const work = Effect.gen(function* () {
-                yield* Deferred.await(activation)
-                if (!req.current()) return yield* Effect.interrupt
-                const admitted = yield* Deferred.await(gate)
-                if (Exit.isFailure(admitted)) return yield* Effect.failCause(admitted.cause)
-                if (!admitted.value.run) return admitted.value.message
-                return yield* track(
-                  handle,
-                  Effect.gen(function* () {
-                    if (!(yield* deps.fenceRewake(input.sessionID, options, admitted.value.message)))
-                      return blockedExecution(admitted.value.message)
-                    return yield* deps.runLoop(input.sessionID)
-                  }),
-                ).pipe(Effect.map((turn) => turn.message))
-              }).pipe(Effect.orDie)
-              const wait = yield* deps.state.startIfIdle(
-                input.sessionID,
-                deps.lastAssistant(input.sessionID),
-                work,
-                request,
-              )
-              if (Option.isNone(wait)) return Option.none<IdleAdmission>()
-              // A cancel can interrupt the forked work before it activates;
-              // the watcher keeps the reserved handle from staying `running`.
-              yield* watch(handle, wait.value)
-
-              const admitted = yield* restore(
-                deps
-                  .admitPrompt(input, persistAdmission, options, (body) =>
-                    Effect.suspend(() => (req.valid() ? body : Effect.interrupt)),
-                  )
-                  .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
-              ).pipe(Effect.exit)
-              yield* Deferred.succeed(gate, admitted)
-              if (Exit.isFailure(admitted)) {
-                yield* Deferred.succeed(activation, undefined)
-                if (!req.valid() && Cause.hasInterruptsOnly(admitted.cause)) return Option.none<IdleAdmission>()
-                return yield* Effect.failCause(admitted.cause)
-              }
-              return Option.some({
-                turn: admitted.value.run ? handle : undefined,
-                run: admitted.value.run,
-                message: admitted.value.message,
-                activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
-                result: wait.value,
-                abort: deps.state.cancel(input.sessionID),
-              } satisfies IdleAdmission)
-            }),
-          ),
-        ),
-      request,
-    )
-  })
+  const prepare = makePrepareIdle(deps, { begin, track, watch })
 
   const start = Effect.fn("Turns.start")(function* (input: PromptInput, options: TurnStartOptions) {
     if (options.when === "idle") {

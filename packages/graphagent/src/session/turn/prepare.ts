@@ -287,6 +287,261 @@ export interface TurnRequestInput {
   readonly runtimeContexts: Map<SessionID, readonly RuntimeContext.Entry[]>
 }
 
+/** A part before `assign` gives it an id. */
+type Draft<T> = T extends SessionV1.Part ? Omit<T, "id"> & { id?: string } : never
+
+/** Expand one MCP resource attachment into the text and file parts the model receives. */
+function resolveMcpResource(input: {
+  readonly mcp: MCP.Interface
+  readonly messageID: MessageID
+  readonly sessionID: SessionID
+  readonly clientName: string
+  readonly uri: string
+  readonly part: { readonly mime: string; readonly filename?: string | undefined }
+}) {
+  const { mcp, messageID, sessionID, clientName, uri, part } = input
+  return Effect.gen(function* () {
+    yield* Effect.logInfo("mcp resource", { clientName, uri, mime: part.mime })
+    const pieces: Draft<SessionV1.Part>[] = [
+      {
+        messageID,
+        sessionID,
+        type: "text",
+        synthetic: true,
+        text: `Reading MCP resource: ${part.filename} (${uri})`,
+      },
+    ]
+    const exit = yield* mcp.readResource(clientName, uri).pipe(Effect.exit)
+    if (Exit.isSuccess(exit)) {
+      const content = exit.value
+      if (!content) throw new Error(`Resource not found: ${clientName}/${uri}`)
+      const items = Array.isArray(content.contents) ? content.contents : [content.contents]
+      for (const c of items) {
+        if (!c || typeof c !== "object") continue
+        if ("text" in c && typeof c.text === "string" && c.text) {
+          pieces.push({
+            messageID,
+            sessionID,
+            type: "text",
+            synthetic: true,
+            text: c.text,
+          })
+        } else if ("blob" in c && typeof c.blob === "string" && c.blob) {
+          const mime = "mimeType" in c && typeof c.mimeType === "string" ? c.mimeType : part.mime
+          const filename = "uri" in c && typeof c.uri === "string" ? c.uri : part.filename
+          const size = mcpResourceBase64Size(c.blob)
+          if (!SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)) {
+            pieces.push({
+              messageID,
+              sessionID,
+              type: "text",
+              synthetic: true,
+              text: `[Binary MCP resource omitted: ${filename ?? uri} (${mime}, ${formatMcpResourceBytes(size)}) is not a supported attachment type]`,
+            })
+            continue
+          }
+          if (size > MAX_MCP_RESOURCE_BLOB_BYTES) {
+            pieces.push({
+              messageID,
+              sessionID,
+              type: "text",
+              synthetic: true,
+              text: `[Binary MCP resource omitted: ${filename ?? uri} (${mime}, ${formatMcpResourceBytes(size)}) exceeds ${formatMcpResourceBytes(MAX_MCP_RESOURCE_BLOB_BYTES)}]`,
+            })
+            continue
+          }
+          pieces.push({
+            messageID,
+            sessionID,
+            type: "text",
+            synthetic: true,
+            text: `[Binary MCP resource attached: ${filename ?? uri} (${mime})]`,
+          })
+          pieces.push({
+            messageID,
+            sessionID,
+            type: "file",
+            mime,
+            filename,
+            url: `data:${mime};base64,${c.blob}`,
+          })
+        }
+      }
+    } else {
+      const error = Cause.squash(exit.cause)
+      yield* Effect.logError("failed to read MCP resource", { error, clientName, uri })
+      const message = error instanceof Error ? error.message : String(error)
+      pieces.push({
+        messageID,
+        sessionID,
+        type: "text",
+        synthetic: true,
+        text: `Failed to read MCP resource ${part.filename}: ${message}`,
+      })
+    }
+    return pieces
+  })
+}
+
+/** After a command-driven subtask, ask the parent to summarize the tool output and continue. */
+function appendTaskSummaryPrompt(input: {
+  readonly sessions: Session.Interface
+  readonly sessionID: SessionID
+  readonly lastUser: SessionV1.User
+}) {
+  const { sessions, sessionID, lastUser } = input
+  return Effect.gen(function* () {
+    const summaryUserMsg: SessionV1.User = {
+      id: MessageID.ascending(),
+      sessionID,
+      role: "user",
+      time: { created: Date.now() },
+      agent: lastUser.agent,
+      model: lastUser.model,
+    }
+    yield* sessions.updateMessage(summaryUserMsg)
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: summaryUserMsg.id,
+      sessionID,
+      type: "text",
+      text: "Summarize the task tool output above and continue with your task.",
+      synthetic: true,
+    } satisfies SessionV1.TextPart)
+  })
+}
+
+/** Tail of the request for the last step of a turn; see `FinalPolicy`. */
+function finalStepMessages(
+  input: Pick<TurnRequestInput, "finalPolicy" | "toolLimitReached" | "budget">,
+): LLM.StreamInput["messages"] {
+  if (input.finalPolicy === "structuredTerminal") {
+    return [
+      {
+        role: "assistant",
+        content: input.toolLimitReached ? ToolBudget.renderExhaustedPrompt(input.budget.max) : MAX_STEPS_PROMPT,
+      },
+    ]
+  }
+  if (input.finalPolicy === "terminal" || input.finalPolicy === "closing") {
+    return [
+      {
+        role: "assistant",
+        // The instruction belongs to this request only; keep it out
+        // of the cached prefix so the breakpoint stays on the last
+        // persisted message.
+        providerOptions: { graphagent: { cache: "none" } },
+        content: FINAL_STEP_INSTRUCTION,
+      },
+    ]
+  }
+  return []
+}
+
+/**
+ * Agent input frozen for this request must still be in the model input, and
+ * the mailbox must accept tying it to this request.
+ */
+function associateAgentSnapshot(input: {
+  readonly agentMessages: DagMessages.Interface
+  readonly identity: DagMessages.Caller
+  readonly agentSnapshot: DagMessages.Snapshot
+  readonly msgs: readonly SessionV1.WithParts[]
+}) {
+  const { agentMessages, identity, agentSnapshot, msgs } = input
+  return Effect.gen(function* () {
+    for (const message of agentSnapshot.messages) {
+      if (
+        !msgs.some(
+          (item) =>
+            item.info.id === message.transcriptID &&
+            item.parts.some(
+              (part) =>
+                part.id === message.partID &&
+                part.type === "text" &&
+                !part.ignored &&
+                part.text === DagMessages.renderMessage(message),
+            ),
+        )
+      )
+        throw new Error("Agent message was removed from the model input")
+    }
+    const associated = yield* agentMessages.associate(identity, agentSnapshot.id)
+    if (!associated.ok) throw new Error(`Agent input association rejected: ${associated.reason}`)
+  })
+}
+
+/**
+ * Compaction may reuse exactly this system text and tool set so provider
+ * prefix caching serves most of its request (Issue #1028, PR5). Structured
+ * turns and the closing policy reshape the request, so they record nothing.
+ */
+function rememberRequestPrefix(
+  input: Pick<TurnRequestInput, "sessionID" | "session" | "agent" | "model" | "user" | "finalPolicy">,
+  prepared: {
+    readonly directory: string
+    readonly processInput: LLM.StreamInput
+    readonly toolsJson: string | undefined
+  },
+) {
+  const { sessionID, session, agent, model, user: lastUser, finalPolicy } = input
+  const { directory, processInput, toolsJson } = prepared
+  if ((finalPolicy === "normal" || finalPolicy === "terminal") && lastUser.format?.type !== "json_schema") {
+    const prefixSystem = [...processInput.system]
+    EngineProcess.runtimes.rememberRequestPrefix(sessionID, {
+      directory,
+      agent,
+      model: { providerID: model.providerID, id: model.id },
+      system: prefixSystem,
+      userSystem: lastUser.system,
+      tools: processInput.tools,
+      toolsJson,
+      toolChoice: processInput.toolChoice,
+      permission: session.permission,
+      nativePermission: processInput.nativePermission,
+      prefixTokens: estimateOverhead({
+        system: [...prefixSystem, ...(lastUser.system ? [lastUser.system] : [])],
+        tools: processInput.tools,
+        toolsJson,
+      }),
+      recordedAt: Date.now(),
+    })
+  }
+}
+
+/**
+ * The tool set this step advertises. Native and configured permission rules and
+ * the per-message tool switches are applied during resolution.
+ */
+function resolveTurnTools(
+  deps: PrepareDeps,
+  input: TurnRequestInput,
+  extra: { readonly bypassAgentCheck: boolean; readonly promptOps: TaskPromptOps },
+) {
+  const { session, toolBatch } = input
+  return SessionTools.resolve({
+    agent: input.agent,
+    session,
+    model: input.model,
+    user: input.user,
+    processor: input.handle,
+    bypassAgentCheck: extra.bypassAgentCheck,
+    messages: input.messages,
+    promptOps: extra.promptOps,
+    hooks: deps.settingsHook,
+    canDefer:
+      !session.parentID && input.user.hookMode !== "interactive"
+        ? (id, signal) => toolBatch.isSingle(id, signal)
+        : undefined,
+    sourceLedger: deps.toolSources,
+  }).pipe(
+    Effect.provideService(Permission.Service, deps.permission),
+    Effect.provideService(ToolRegistry.Service, deps.registry),
+    Effect.provideService(MCP.Service, deps.mcp),
+    Effect.provideService(Truncate.Service, deps.truncate),
+  )
+}
+
 export function makePrepare(deps: PrepareDeps) {
   const {
     sessions,
@@ -716,23 +971,7 @@ export function makePrepare(deps: PrepareDeps) {
 
     if (!task.command) return
 
-    const summaryUserMsg: SessionV1.User = {
-      id: MessageID.ascending(),
-      sessionID,
-      role: "user",
-      time: { created: Date.now() },
-      agent: lastUser.agent,
-      model: lastUser.model,
-    }
-    yield* sessions.updateMessage(summaryUserMsg)
-    yield* sessions.updatePart({
-      id: PartID.ascending(),
-      messageID: summaryUserMsg.id,
-      sessionID,
-      type: "text",
-      text: "Summarize the task tool output above and continue with your task.",
-      synthetic: true,
-    } satisfies SessionV1.TextPart)
+    yield* appendTaskSummaryPrompt({ sessions, sessionID, lastUser })
   })
 
   const getModel = Effect.fn("SessionPrompt.getModel")(function* (
@@ -1035,7 +1274,6 @@ export function makePrepare(deps: PrepareDeps) {
 
     yield* Effect.addFinalizer(() => instruction.clear(info.id))
 
-    type Draft<T> = T extends SessionV1.Part ? Omit<T, "id"> & { id?: string } : never
     const assign = (part: Draft<SessionV1.Part>): SessionV1.Part => ({
       ...part,
       id: part.id ? PartID.make(part.id) : PartID.ascending(),
@@ -1046,86 +1284,14 @@ export function makePrepare(deps: PrepareDeps) {
     )(function* (part) {
       if (part.type === "file") {
         if (part.source?.type === "resource") {
-          const { clientName, uri } = part.source
-          yield* Effect.logInfo("mcp resource", { clientName, uri, mime: part.mime })
-          const pieces: Draft<SessionV1.Part>[] = [
-            {
-              messageID: info.id,
-              sessionID: input.sessionID,
-              type: "text",
-              synthetic: true,
-              text: `Reading MCP resource: ${part.filename} (${uri})`,
-            },
-          ]
-          const exit = yield* mcp.readResource(clientName, uri).pipe(Effect.exit)
-          if (Exit.isSuccess(exit)) {
-            const content = exit.value
-            if (!content) throw new Error(`Resource not found: ${clientName}/${uri}`)
-            const items = Array.isArray(content.contents) ? content.contents : [content.contents]
-            for (const c of items) {
-              if (!c || typeof c !== "object") continue
-              if ("text" in c && typeof c.text === "string" && c.text) {
-                pieces.push({
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "text",
-                  synthetic: true,
-                  text: c.text,
-                })
-              } else if ("blob" in c && typeof c.blob === "string" && c.blob) {
-                const mime = "mimeType" in c && typeof c.mimeType === "string" ? c.mimeType : part.mime
-                const filename = "uri" in c && typeof c.uri === "string" ? c.uri : part.filename
-                const size = mcpResourceBase64Size(c.blob)
-                if (!SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)) {
-                  pieces.push({
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `[Binary MCP resource omitted: ${filename ?? uri} (${mime}, ${formatMcpResourceBytes(size)}) is not a supported attachment type]`,
-                  })
-                  continue
-                }
-                if (size > MAX_MCP_RESOURCE_BLOB_BYTES) {
-                  pieces.push({
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `[Binary MCP resource omitted: ${filename ?? uri} (${mime}, ${formatMcpResourceBytes(size)}) exceeds ${formatMcpResourceBytes(MAX_MCP_RESOURCE_BLOB_BYTES)}]`,
-                  })
-                  continue
-                }
-                pieces.push({
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "text",
-                  synthetic: true,
-                  text: `[Binary MCP resource attached: ${filename ?? uri} (${mime})]`,
-                })
-                pieces.push({
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "file",
-                  mime,
-                  filename,
-                  url: `data:${mime};base64,${c.blob}`,
-                })
-              }
-            }
-          } else {
-            const error = Cause.squash(exit.cause)
-            yield* Effect.logError("failed to read MCP resource", { error, clientName, uri })
-            const message = error instanceof Error ? error.message : String(error)
-            pieces.push({
-              messageID: info.id,
-              sessionID: input.sessionID,
-              type: "text",
-              synthetic: true,
-              text: `Failed to read MCP resource ${part.filename}: ${message}`,
-            })
-          }
-          return pieces
+          return yield* resolveMcpResource({
+            mcp,
+            messageID: info.id,
+            sessionID: input.sessionID,
+            clientName: part.source.clientName,
+            uri: part.source.uri,
+            part,
+          })
         }
         const url = new URL(part.url)
         switch (url.protocol) {
@@ -1432,8 +1598,6 @@ export function makePrepare(deps: PrepareDeps) {
       onToolRefused,
       user: lastUser,
       agent,
-      handle,
-      toolLimitReached,
       identity,
       agentSnapshot,
       prepareStage,
@@ -1460,30 +1624,7 @@ export function makePrepare(deps: PrepareDeps) {
 
     const tools = legacyToolsDisabled
       ? {}
-      : yield* prepareStage(
-          "tools",
-          SessionTools.resolve({
-            agent,
-            session,
-            model,
-            user: lastUser,
-            processor: handle,
-            bypassAgentCheck,
-            messages: msgs,
-            promptOps,
-            hooks: settingsHook,
-            canDefer:
-              !session.parentID && lastUser.hookMode !== "interactive"
-                ? (id, signal) => toolBatch.isSingle(id, signal)
-                : undefined,
-            sourceLedger: toolSources,
-          }).pipe(
-            Effect.provideService(Permission.Service, permission),
-            Effect.provideService(ToolRegistry.Service, registry),
-            Effect.provideService(MCP.Service, mcp),
-            Effect.provideService(Truncate.Service, truncate),
-          ),
-        )
+      : yield* prepareStage("tools", resolveTurnTools(deps, input, { bypassAgentCheck, promptOps }))
 
     // Permission.ask evaluates native rules before configured rules. Use
     // that same split for the system prompts and the stream input.
@@ -1604,28 +1745,7 @@ export function makePrepare(deps: PrepareDeps) {
       sessionID,
       parentSessionID: session.parentID,
       system,
-      messages: [
-        ...modelMsgs,
-        ...(finalPolicy === "structuredTerminal"
-          ? [
-              {
-                role: "assistant" as const,
-                content: toolLimitReached ? ToolBudget.renderExhaustedPrompt(budget.max) : MAX_STEPS_PROMPT,
-              },
-            ]
-          : refuseTools
-            ? [
-                {
-                  role: "assistant" as const,
-                  // The instruction belongs to this request only; keep it out
-                  // of the cached prefix so the breakpoint stays on the last
-                  // persisted message.
-                  providerOptions: { graphagent: { cache: "none" } },
-                  content: FINAL_STEP_INSTRUCTION,
-                },
-              ]
-            : []),
-      ],
+      messages: [...modelMsgs, ...finalStepMessages(input)],
       tools,
       toolBudget: budget,
       toolBatch,
@@ -1640,26 +1760,7 @@ export function makePrepare(deps: PrepareDeps) {
       purpose: "conversation",
       contextFolding: contextFoldingHistory,
     }
-    if (agentMessages && agentSnapshot) {
-      for (const message of agentSnapshot.messages) {
-        if (
-          !msgs.some(
-            (item) =>
-              item.info.id === message.transcriptID &&
-              item.parts.some(
-                (part) =>
-                  part.id === message.partID &&
-                  part.type === "text" &&
-                  !part.ignored &&
-                  part.text === DagMessages.renderMessage(message),
-              ),
-          )
-        )
-          throw new Error("Agent message was removed from the model input")
-      }
-      const associated = yield* agentMessages.associate(identity, agentSnapshot.id)
-      if (!associated.ok) throw new Error(`Agent input association rejected: ${associated.reason}`)
-    }
+    if (agentMessages && agentSnapshot) yield* associateAgentSnapshot({ agentMessages, identity, agentSnapshot, msgs })
     runtimeEvents.push(...(yield* modelSwitchContext(sessionID, model.api.id)))
     // Async hooks contribute at the next model boundary without manufacturing a user turn.
     if (settingsHook?.drainAsync) {
@@ -1696,30 +1797,7 @@ export function makePrepare(deps: PrepareDeps) {
         toolsJson,
       }),
     )
-    // Compaction may reuse exactly this system text and tool set so provider
-    // prefix caching serves most of its request (Issue #1028, PR5). Structured
-    // turns and the closing policy reshape the request, so they record nothing.
-    if ((finalPolicy === "normal" || finalPolicy === "terminal") && lastUser.format?.type !== "json_schema") {
-      const prefixSystem = [...processInput.system]
-      EngineProcess.runtimes.rememberRequestPrefix(sessionID, {
-        directory: ctx.directory,
-        agent,
-        model: { providerID: model.providerID, id: model.id },
-        system: prefixSystem,
-        userSystem: lastUser.system,
-        tools: processInput.tools,
-        toolsJson,
-        toolChoice: processInput.toolChoice,
-        permission: session.permission,
-        nativePermission,
-        prefixTokens: estimateOverhead({
-          system: [...prefixSystem, ...(lastUser.system ? [lastUser.system] : [])],
-          tools: processInput.tools,
-          toolsJson,
-        }),
-        recordedAt: Date.now(),
-      })
-    }
+    rememberRequestPrefix(input, { directory: ctx.directory, processInput, toolsJson })
     return { processInput }
   })
 
