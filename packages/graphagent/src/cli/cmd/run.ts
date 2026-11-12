@@ -615,13 +615,17 @@ export const RunCommand = effectCmd({
         ) {
           const toggles = new Map<string, boolean>()
           let error: string | undefined
-          // Issue 614: consumer-only DAG hold. Poll dag.bySession on the
-          // busy/idle transitions of the target session and keep consuming
-          // events while a session workflow may still owe a wake turn.
+          // Issue 614: consumer-only DAG hold. Sample dag.bySession on the
+          // busy/idle transitions of the target session and on the DAG summary
+          // pushes that replace the old 1s poll (#1027 PR5); keep consuming
+          // events while a session workflow may still owe a wake turn. The
+          // recheck channel carries a grace verdict back to the event loop so
+          // it can schedule the one check no event will drive.
+          const recheck: DagHold.DagHoldRecheck = { pending: false }
 
           try {
             for await (const event of dagHold || keepAlive
-              ? DagHold.pollEvents(events.stream, sessionID, stop)
+              ? DagHold.pollEvents(events.stream, sessionID, stop, keepAlive, undefined, recheck)
               : events.stream) {
               if (
                 event.type === "message.updated" &&
@@ -712,8 +716,11 @@ export const RunCommand = effectCmd({
                 if (event.properties.status.type === "busy") {
                   await dagHold?.onBusy()
                 }
-                if (event.properties.status.type === "idle" && (await dagHold?.onIdle()) !== "hold" && !keepAlive?.())
-                  break
+                if (event.properties.status.type === "idle") {
+                  const decision = await dagHold?.onIdle()
+                  if (dagHold?.needsRecheck()) recheck.pending = true
+                  if (decision !== "hold" && !keepAlive?.()) break
+                }
               }
 
               if (event.type === "permission.asked") {

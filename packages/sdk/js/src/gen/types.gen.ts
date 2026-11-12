@@ -39,6 +39,7 @@ export type Event =
   | EventQuestionV2TimedOut
   | EventTodoUpdated
   | EventDagWorkflowSummaryUpdated
+  | EventDagWorkflowNodesUpdated
   | EventLspUpdated
   | EventPermissionAsked
   | EventPermissionReplied
@@ -2190,6 +2191,52 @@ export type EventLspUpdated = {
   properties: unknown
 }
 
+export type EventDagWorkflowNodesUpdated = {
+  id: string
+  type: "dag.workflow.nodes.updated"
+  properties: {
+    sessionID: string
+    workflowID: string
+    graphRev: number | "Infinity" | "-Infinity" | "NaN"
+    seq: number
+    nodes: Array<DagNode>
+    removed: Array<string>
+    resync?: boolean
+  }
+}
+
+export type DagNode = {
+  id: string
+  workflow_id: string
+  name: string
+  worker_type: string
+  status: string
+  required: boolean
+  depends_on: Array<string>
+  model_id?: string
+  model_provider_id?: string
+  child_session_id?: string
+  directory?: string
+  head?: string
+  last_activity_at?: string
+  attempt_id?: string
+  accepted_input_revision?: number
+  snapshot_revision?: number
+  agent_messages?: {
+    queued: number
+    delivered: number
+    undeliverable: number
+    closed_reason?: string
+  }
+  output?: unknown
+  error_reason?: string
+  error_class?: string
+  deadline_ms?: number | "Infinity" | "-Infinity" | "NaN"
+  replan_attempts: number | "Infinity" | "-Infinity" | "NaN"
+  started_at?: number | "Infinity" | "-Infinity" | "NaN"
+  completed_at?: number | "Infinity" | "-Infinity" | "NaN"
+}
+
 export type EventDagWorkflowSummaryUpdated = {
   id: string
   type: "dag.workflow.summary.updated"
@@ -2564,38 +2611,6 @@ export type EventModelsDevRefreshed = {
   id: string
   type: "models-dev.refreshed"
   properties: unknown
-}
-
-export type DagNode = {
-  id: string
-  workflow_id: string
-  name: string
-  worker_type: string
-  status: string
-  required: boolean
-  depends_on: Array<string>
-  model_id?: string
-  model_provider_id?: string
-  child_session_id?: string
-  directory?: string
-  head?: string
-  last_activity_at?: string
-  attempt_id?: string
-  accepted_input_revision?: number
-  snapshot_revision?: number
-  agent_messages?: {
-    queued: number
-    delivered: number
-    undeliverable: number
-    closed_reason?: string
-  }
-  output?: unknown
-  error_reason?: string
-  error_class?: string
-  deadline_ms?: number | "Infinity" | "-Infinity" | "NaN"
-  replan_attempts: number | "Infinity" | "-Infinity" | "NaN"
-  started_at?: number | "Infinity" | "-Infinity" | "NaN"
-  completed_at?: number | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type DagWorkflow = {

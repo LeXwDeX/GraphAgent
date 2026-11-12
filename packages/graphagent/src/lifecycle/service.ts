@@ -4,6 +4,7 @@
 export * as Lifecycle from "./service"
 
 import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { NODE_TRANSITION_TABLE, WORKFLOW_TRANSITION_TABLE } from "@graphagent/core/lifecycle/dag"
 import type { LifecycleState, StateRef } from "@graphagent/core/lifecycle/state"
 import {
   checkTransition,
@@ -55,10 +56,17 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/Lifecycle") {}
 
+/**
+ * Domain registration point (#1069). The DAG domains reuse the read-only
+ * bridge over the DAG state machine; registering a table makes the shared
+ * vocabulary consumable without moving DAG ownership here.
+ */
 const tables = new Map<Domain, TransitionTable>([
   ["turn", TURN_TRANSITION_TABLE],
   ["job", JOB_TRANSITION_TABLE],
   ["goal", GOAL_TRANSITION_TABLE],
+  ["workflow", WORKFLOW_TRANSITION_TABLE],
+  ["node", NODE_TRANSITION_TABLE],
 ])
 
 export const layer = Layer.effect(
