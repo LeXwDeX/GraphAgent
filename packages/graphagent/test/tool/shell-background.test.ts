@@ -5,6 +5,7 @@ import { beforeEach, describe, expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import { readFileSync } from "node:fs"
+import path from "node:path"
 import { BackgroundJob } from "@/background/job"
 import { Goal } from "@/goal/goal"
 import { GoalLoop } from "@/goal/loop"
@@ -16,7 +17,7 @@ import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
@@ -122,6 +123,26 @@ const logPath = (output: string) => {
   return match[1]
 }
 
+// Readiness and release probes for a child that publishes its pid to a file.
+const readPid = (file: string) =>
+  Effect.sync(() => {
+    try {
+      return Number(readFileSync(file, "utf8")) || undefined
+    } catch {
+      return undefined
+    }
+  })
+
+const exited = (pid: number) =>
+  Effect.sync(() => {
+    try {
+      process.kill(pid, 0)
+      return undefined
+    } catch {
+      return true as const
+    }
+  })
+
 beforeEach(() => {
   hooks.started.length = 0
   hooks.wakes.length = 0
@@ -206,21 +227,30 @@ describe("shell background mode", () => {
   )
 
   it.live(
-    "wakes the goal with evaluate=true when the job is interrupted",
+    "wakes the goal with evaluate=true and releases the process when the job is interrupted",
     (): Effect.Effect<void, unknown, ShellTestServices> =>
       Effect.gen(function* () {
         const tmp = yield* tmpdirScoped()
         yield* provideInstance(tmp)(
           Effect.gen(function* () {
             const shell = yield* init()
-            const cmd = command("console.log('bg-cancel'); setTimeout(() => {}, 5000)")
+            // The child publishes its pid once it is running, so the interrupt cannot race its startup.
+            const ready = path.join(tmp, "bg-ready.pid")
+            const cmd = command(
+              `require('fs').writeFileSync('${ready.replaceAll("\\", "/")}', String(process.pid)); setTimeout(() => {}, 30000)`,
+            )
             yield* shell.execute({ command: cmd, background: true }, promptCtx)
             const fiber = yield* Effect.forkChild(hooks.started[0].run)
-            yield* Effect.sleep("300 millis")
+            const pid = yield* pollWithTimeout(readPid(ready), "background shell never started")
+            // The release probe below is only meaningful if the process is alive now.
+            expect(() => process.kill(pid, 0)).not.toThrow()
             yield* Fiber.interrupt(fiber)
             expect(hooks.wakes).toHaveLength(1)
             expect(hooks.wakes[0].payload).toContain(`Background shell cancelled: ${cmd}`)
             expect(hooks.wakes[0].options).toEqual({ evaluate: true })
+            // A cancel is not a result, so no notice prompt follows it.
+            expect(hooks.prompts).toHaveLength(0)
+            yield* pollWithTimeout(exited(pid), "background shell process survived the interrupt")
           }),
         )
       }),
