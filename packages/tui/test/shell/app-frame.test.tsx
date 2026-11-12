@@ -12,7 +12,7 @@ import { AppFrame, DIMMED_OPACITY, type AppFrameProps } from "../../src/shell/ap
 import type { FooterHint } from "../../src/shell/footer"
 import { DEFAULT_THEMES, resolveTheme } from "../../src/theme"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
-import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
+import { ShellContexts, renderFirstFrame, renderUntil, shellState } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -340,6 +340,11 @@ async function renderDimScene(options: {
     },
     { width: options.width ?? 80, height: options.height ?? 24, state: options.state },
   )
+  // The first non-empty frame can hold only the bars; wait for the main area itself, so a slow
+  // runner does not sample colors before the content under the dimming exists.
+  const main = options.main ?? "主区内容 MAINTEXT"
+  await renderUntil(app, () => app.captureCharFrame().includes(main.slice(0, 8)), "the main area")
+  await app.renderOnce()
   return {
     app,
     setDim,
