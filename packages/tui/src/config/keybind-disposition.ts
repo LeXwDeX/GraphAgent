@@ -5,7 +5,8 @@ import type { Definitions } from "./keybind"
 
 /**
  * Disposition relative to the pre-v2 baseline: `keep` is unchanged, `change` has a new default or a narrower scope,
- * `new` was added by v2. Names that were dropped are not in `Definitions` any more and live in `REMOVED`.
+ * `new` was added by v2. Names that were dropped are not in `Definitions` any more; their list lives in the keybind
+ * disposition test, outside `src`, so the retired-feature guard stays clean.
  */
 export type DispositionKind = "keep" | "change" | "new"
 
@@ -366,52 +367,3 @@ export const Disposition = {
   terminal_suspend: keep("global"),
   terminal_title_toggle: keep("global"),
 } as const satisfies Record<KeybindName, DispositionEntry>
-
-/**
- * Definition names that were dropped from the keybind surface. None of them may reappear in `Definitions`,
- * `CommandMap` or the generated schema, and user overrides of these names are rejected as unknown.
- */
-export const REMOVED = [
-  // Dropped by the #886 audit: the docs and tips entries, the sidebar toggle, and the sub-agent navigation keys that
-  // became fixed escape/left/right bindings in the sub-agent view.
-  "docs_open",
-  "sidebar_toggle",
-  "session_parent",
-  "session_child_cycle",
-  "session_child_cycle_reverse",
-  "tips_toggle",
-  // which-key is replaced by the footer leader hint.
-  "which_key_toggle",
-  "which_key_layout_toggle",
-  "which_key_pending_toggle",
-  "which_key_group_previous",
-  "which_key_group_next",
-  "which_key_scroll_up",
-  "which_key_scroll_down",
-  "which_key_page_up",
-  "which_key_page_down",
-  "which_key_home",
-  "which_key_end",
-  // The DAG views are read-only, so there is no key-driven DAG control. dag_pause..dag_cancel_active went with the
-  // DAG write endpoints; the other seven went in the #886 audit.
-  "dag_open",
-  "dag_close",
-  "dag_enter",
-  "dag_down",
-  "dag_up",
-  "dag_next_workflow",
-  "dag_previous_workflow",
-  "dag_pause",
-  "dag_resume",
-  "dag_step",
-  "dag_cancel",
-  "dag_cancel_active",
-  // Removed with their features before the audit: session sharing, console org switching, the plugin manager.
-  "session_share",
-  "session_unshare",
-  "console_org_switch",
-  "plugin_manager",
-  "plugin_install",
-  "plugins.toggle",
-  "dialog.plugins.install",
-] as const

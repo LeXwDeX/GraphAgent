@@ -10,14 +10,57 @@ import { createTextareaBindings } from "@opentui/keymap/addons/opentui"
 import { createBindingLookup } from "@opentui/keymap/extras"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { TuiKeybind } from "../src/config/keybind"
-import {
-  Disposition,
-  Layers,
-  REMOVED,
-  type DispositionEntry,
-  type KeybindLayer,
-} from "../src/config/keybind-disposition"
+import { Disposition, Layers, type DispositionEntry, type KeybindLayer } from "../src/config/keybind-disposition"
 import { registerGraphagentKeymap } from "../src/keymap"
+
+/**
+ * Definition names that were dropped from the keybind surface. None of them may reappear in `Definitions`,
+ * `CommandMap` or the generated schema, and user overrides of these names are rejected as unknown.
+ */
+const REMOVED = [
+  // Dropped by the #886 audit: the docs and tips entries, the sidebar toggle, and the sub-agent navigation keys that
+  // became fixed escape/left/right bindings in the sub-agent view.
+  "docs_open",
+  "sidebar_toggle",
+  "session_parent",
+  "session_child_cycle",
+  "session_child_cycle_reverse",
+  "tips_toggle",
+  // which-key is replaced by the footer leader hint.
+  "which_key_toggle",
+  "which_key_layout_toggle",
+  "which_key_pending_toggle",
+  "which_key_group_previous",
+  "which_key_group_next",
+  "which_key_scroll_up",
+  "which_key_scroll_down",
+  "which_key_page_up",
+  "which_key_page_down",
+  "which_key_home",
+  "which_key_end",
+  // The DAG views are read-only, so there is no key-driven DAG control. dag_pause..dag_cancel_active went with the
+  // DAG write endpoints; the other seven went in the #886 audit.
+  "dag_open",
+  "dag_close",
+  "dag_enter",
+  "dag_down",
+  "dag_up",
+  "dag_next_workflow",
+  "dag_previous_workflow",
+  "dag_pause",
+  "dag_resume",
+  "dag_step",
+  "dag_cancel",
+  "dag_cancel_active",
+  // Removed with their features before the audit: session sharing, console org switching, the plugin manager.
+  "session_share",
+  "session_unshare",
+  "console_org_switch",
+  "plugin_manager",
+  "plugin_install",
+  "plugins.toggle",
+  "dialog.plugins.install",
+] as const
 
 const definitions: Readonly<Record<string, { default: unknown }>> = TuiKeybind.Definitions
 const definitionNames = Object.keys(definitions)
