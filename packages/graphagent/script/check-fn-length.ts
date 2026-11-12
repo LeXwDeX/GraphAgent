@@ -15,7 +15,15 @@
  * Historical violations at the time this gate was introduced are recorded in
  * script/fn-length-baseline.json. A baseline entry only pardons the recorded
  * length: growing past it, or any function missing from the baseline, fails.
- * Run with --write-baseline to capture the current violations (ratchet).
+ *
+ * Policy: ratchet, no NEW or GROW. The remaining baseline entries are registered
+ * debt that only ever shrinks: lower an entry when its function gets shorter,
+ * delete it when the function drops under its limit. A baseline diff may only
+ * lower or remove numbers; never raise one or add an entry to get a change in.
+ * CI runs this gate as `bun run check:fn-length` (root package.json).
+ *
+ * --write-baseline rewrites the baseline from the current lengths, growth
+ * included. Use it only to lower entries after a shrink, and read the diff first.
  *
  * Usage:
  *   bun run script/check-fn-length.ts

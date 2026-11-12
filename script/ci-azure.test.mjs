@@ -46,6 +46,7 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
   for (const command of [
     "bun run check:hosts",
     "bun run check:hosts:test",
+    "bun run check:fn-length",
     "bun run lint",
     "bun typecheck",
     "bun run --cwd packages/core migration --check",
@@ -61,6 +62,7 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
     assert(ci.includes(command), command)
   assert.match(ci, /bun run test:httpapi:ci\n\s+displayName: [^\n]+\n\s+workingDirectory: [^\n]+\n\s+timeoutInMinutes: \d+/)
   assert.match(ci, /bun run check:generated\n\s+displayName: Check generated SDK\n\s+workingDirectory: packages\/sdk\/js/)
+  assert.match(ci, /bun run check:fn-length\n\s+displayName: Check session function length\n/)
   assert.match(
     ci,
     /bun run check:hosts\n\s+displayName: Check private hosts\n\s+env:\n\s+PRIVATE_HOST_PATTERNS: \$\(PRIVATE_HOST_PATTERNS\)/,
