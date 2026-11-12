@@ -17,7 +17,7 @@ import { Footer, type FooterHint } from "../../src/shell/footer"
 import { useFooterStatus } from "../../src/shell/footer-status"
 import { HookProgress } from "../../src/shell/hook-progress"
 import { FooterToastProvider, useToast } from "../../src/ui/toast"
-import { ShellContexts, shellState } from "./contexts"
+import { ShellContexts, renderUntil, shellState } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -101,11 +101,9 @@ async function renderHookFooter() {
   const fake = fakeTicker()
   let hooks!: ReturnType<typeof useHookStatus>
   let toast!: ReturnType<typeof useToast>
-  let ready!: () => void
-  const settled = new Promise<void>((resolve) => (ready = resolve))
   const app = await testRender(
     () => (
-      <ShellContexts state={state.path} onReady={ready}>
+      <ShellContexts state={state.path}>
         <KeymapHarness>
           <FooterToastProvider>
             <TickerProvider ticker={fake.ticker}>
@@ -125,26 +123,19 @@ async function renderHookFooter() {
     ),
     { width: 80, height: 1 },
   )
-  await settled
-  // `settled` resolves from the root provider; under a loaded suite the child
-  // component's `onReady` can land a render later. Wait for it before a test
-  // drives the hook store.
-  for (let attempt = 0; attempt < 100 && (!hooks || !toast); attempt++) {
-    await app.renderOnce()
-    await Bun.sleep(5)
-  }
+  // The footer mounts once the providers are ready; wait for its `onReady` before a
+  // test drives the hook store.
+  await renderUntil(app, () => Boolean(hooks && toast), "the hook footer to mount")
   await app.renderOnce()
   return { app, fake, hooks: () => hooks, toast: () => toast }
 }
 
 async function waitForFrame(app: Awaited<ReturnType<typeof testRender>>, text: string, present: boolean) {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    await app.renderOnce()
-    if (app.captureCharFrame().includes(text) === present) return
-    await Bun.sleep(5)
-  }
-  const frame = app.captureCharFrame()
-  throw new Error(`frame did not ${present ? "show" : "hide"} ${text}:\n${frame}`)
+  await renderUntil(
+    app,
+    () => app.captureCharFrame().includes(text) === present,
+    `the frame to ${present ? "show" : "hide"} ${JSON.stringify(text)}`,
+  )
 }
 
 test("shows a started hook in the footer shared slot", async () => {

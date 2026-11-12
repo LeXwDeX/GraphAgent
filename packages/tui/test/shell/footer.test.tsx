@@ -15,14 +15,22 @@ import { useFooterStatus } from "../../src/shell/footer-status"
 import { FooterToastProvider, toastDuration, useToast, type ToastOptions } from "../../src/ui/toast"
 import { TickerProvider } from "../../src/context/ticker-context"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
-import { ShellContexts, shellState } from "./contexts"
+import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
+
+let tmux: string | undefined
 
 beforeEach(() => {
   setLanguage("zh-CN")
+  // Inside tmux the drawer toggle shows its leader alternative, so the footer text
+  // would depend on where the suite runs; tests that want tmux set it themselves.
+  tmux = process.env.TMUX
+  delete process.env.TMUX
 })
 
 afterEach(() => {
   setLanguage("zh-CN")
+  if (tmux === undefined) delete process.env.TMUX
+  else process.env.TMUX = tmux
 })
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
@@ -71,19 +79,15 @@ async function render(
   component: () => JSX.Element,
   options: { width: number; height?: number; state: string; overrides?: TuiKeybind.KeybindOverrides },
 ) {
-  let ready!: () => void
-  const settled = new Promise<void>((resolve) => (ready = resolve))
   const app = await testRender(
     () => (
-      <ShellContexts state={options.state} onReady={ready}>
+      <ShellContexts state={options.state}>
         <KeymapHarness overrides={options.overrides}>{component()}</KeymapHarness>
       </ShellContexts>
     ),
     { width: options.width, height: options.height ?? 1 },
   )
-  await settled
-  await app.renderOnce()
-  await app.renderOnce()
+  await renderFirstFrame(app)
   return app
 }
 
@@ -178,6 +182,21 @@ test("builds hints from registered keymap bindings", async () => {
     expect(frame).not.toContain("ctrl+b 侧边栏")
     expect(frame).toContain("? 快捷键")
     expect(frame).not.toContain("展开输出")
+    expectWithin(frame, 120, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("shows the drawer toggle as its leader alternative inside tmux", async () => {
+  await using tmp = await shellState()
+  process.env.TMUX = "/tmp/tmux-1000/default,4242,0"
+  const app = await render(() => <FooterFromKeymap />, { width: 120, state: tmp.path })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("ctrl+x b 侧边栏")
+    expect(frame).not.toContain("ctrl+b 侧边栏")
     expectWithin(frame, 120, 1)
   } finally {
     app.renderer.destroy()

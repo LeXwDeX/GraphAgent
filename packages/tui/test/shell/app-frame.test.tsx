@@ -8,7 +8,7 @@ import { setLanguage } from "../../src/i18n"
 import { AppFrame, type AppFrameProps } from "../../src/shell/app-frame"
 import type { FooterHint } from "../../src/shell/footer"
 import { cellWidth, type AmbiguousWidth } from "../../src/ui/width"
-import { ShellContexts, shellState } from "./contexts"
+import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
 
 beforeEach(() => {
   setLanguage("zh-CN")
@@ -41,27 +41,18 @@ async function renderFrame(
   createProps: () => AppFrameProps,
   options: { width: number; height: number; state: string },
 ) {
-  let ready!: () => void
-  const settled = new Promise<void>((resolve) => (ready = resolve))
   const app = await testRender(
     () => {
       const props = createProps()
       return (
-        <ShellContexts state={options.state} onReady={ready}>
+        <ShellContexts state={options.state}>
           <AppFrame {...props}>{props.children ?? <text>主区内容</text>}</AppFrame>
         </ShellContexts>
       )
     },
     { width: options.width, height: options.height },
   )
-  await settled
-  // KVReady resolves before the reactive switch from its blank fallback to the
-  // frame children has painted; render until the first non-empty frame instead
-  // of assuming a fixed number of frames.
-  for (let attempt = 0; attempt < 50; attempt++) {
-    await app.renderOnce()
-    if (app.captureCharFrame().trim().length > 0) break
-  }
+  await renderFirstFrame(app)
   return app
 }
 

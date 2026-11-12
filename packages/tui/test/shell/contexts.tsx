@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** @jsxImportSource @opentui/solid */
+import type { testRender } from "@opentui/solid"
 import { createEffect, Show, type JSX, type ParentProps } from "solid-js"
 import path from "node:path"
 import { TuiConfigProvider } from "../../src/config"
@@ -15,6 +16,35 @@ export async function shellState(values: Record<string, unknown> = {}) {
   const tmp = await tmpdir()
   await Bun.write(path.join(tmp.path, "kv.json"), JSON.stringify(values))
   return tmp
+}
+
+type RenderedApp = Pick<Awaited<ReturnType<typeof testRender>>, "renderOnce" | "captureCharFrame">
+
+/**
+ * Renders until `ready()` holds. The providers gate their children on asynchronous
+ * readiness (the kv.json read, theme discovery), so any fixed number of `renderOnce()`
+ * calls can end before anything is mounted. Yield to the event loop between renders and
+ * fail with the last frame instead of handing back a half-mounted app.
+ */
+export async function renderUntil(app: RenderedApp, ready: () => boolean, what = "condition", timeoutMs = 5_000) {
+  const deadline = performance.now() + timeoutMs
+  for (;;) {
+    await app.renderOnce()
+    if (ready()) return
+    if (performance.now() >= deadline) {
+      throw new Error(`${what} was not reached within ${timeoutMs}ms; last frame:\n${app.captureCharFrame()}`)
+    }
+    await Bun.sleep(1)
+  }
+}
+
+/**
+ * Renders until the first non-empty frame, then `settle` more times: content that is
+ * measured on the first paint only reaches its final layout one render later.
+ */
+export async function renderFirstFrame(app: RenderedApp, settle = 2) {
+  await renderUntil(app, () => app.captureCharFrame().trim().length > 0, "the first non-empty frame")
+  for (let index = 0; index < settle; index++) await app.renderOnce()
 }
 
 export function ShellContexts(
