@@ -835,27 +835,20 @@ export const {
 
         case "message.part.preview": {
           if (!storesMessages(event.properties.sessionID)) break
-          const { messageID, partID, tail, totalLength } = event.properties
+          const { messageID, partID, tail, totalLength, seq } = event.properties
           const parts = store.part[messageID]
           if (!parts) break
           const result = search(parts, partID, (p) => p.id)
           if (!result.found) break
-          touchPart(event.properties.sessionID, partID)
-          // Non-durable running preview (#1016 HS4a): replace the tool output
-          // in place. The next durable part snapshot supersedes it.
-          setStore(
-            "part",
-            messageID,
-            produce((draft) => {
-              const part = draft.find((item) => item.id === partID)
-              if (!part || part.type !== "tool" || part.state.status !== "running") return
-              part.state.metadata = {
-                ...(part.state.metadata ?? {}),
-                output: tail,
-                previewTotalLength: totalLength,
-              }
-            }),
-          )
+          // Non-durable running preview (#1016 HS4a, #886 5.3). Only a running
+          // tool part has a window to show. The window replaces the previous
+          // one inside the stream buffer; `store.part` is not written, and the
+          // durable snapshot that ends the run settles it. The part is not
+          // `touchPart`ed: nothing in the store changed, so a hydration
+          // snapshot must stay free to replace the part.
+          const part = parts[result.index]
+          if (part.type !== "tool" || part.state.status !== "running") break
+          stream.preview(partID, tail, totalLength, seq)
           break
         }
 
@@ -1349,6 +1342,18 @@ export const {
         // Track the frame version so memos re-read when a delta batch flushes.
         stream.version()
         return stream.read(part)
+      },
+      /**
+       * Output window of a running tool part that its durable snapshot has not
+       * caught up with yet (`message.part.preview`, #886 5.3). The overlay
+       * only applies while the part is running; a settled part reads the store.
+       */
+      readPartPreview(part: Part) {
+        // Only a running tool part tracks the frame version: a settled part
+        // must not re-evaluate its metadata readers on every streamed frame.
+        if (part.type !== "tool" || part.state.status !== "running") return undefined
+        stream.version()
+        return stream.readPreview(part.id)
       },
       /** Subscribes to the per-frame stream version. */
       get streamVersion() {
