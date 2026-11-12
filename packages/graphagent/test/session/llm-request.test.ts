@@ -19,7 +19,7 @@ import { jsonSchema, streamText, tool, wrapLanguageModel, type ModelMessage } fr
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { Permission } from "@/permission"
 
-const PROMPT_IDENTITY = "You are graphagent, a coding agent working in the user's workspace."
+const PROMPT_IDENTITY = "You are GraphAgent, a coding agent working in the user's workspace."
 const REMOVED_CATALOG = "## GraphAgent / OpenCode capabilities"
 
 const it = testEffect(Layer.mergeAll(RuntimeFlags.layer()))
