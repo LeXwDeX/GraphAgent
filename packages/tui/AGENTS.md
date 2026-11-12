@@ -237,7 +237,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 ### 6.3 新增一个键位
 
-- 只在 `config/keybind.ts` 的 `Definitions` 与 `CommandMap` 登记，两者一一对应；同时在 `config/keybind-disposition.ts` 标 `new`（取值 `keep | change | remove | new`）。
+- 只在 `config/keybind.ts` 的 `Definitions` 与 `CommandMap` 登记，两者一一对应；同时在 `config/keybind-disposition.ts` 的 `Disposition` 登记处置（`keep | change | new`）和 `layer`（取自 `Layers`）；删除的键位名移入其中的 `REMOVED`，不再留在 `Definitions`。
 - 命名：`Definitions` 键用 `snake_case`，命令名用点分（先例：`session_dagmode_toggle` 对应 `session.dagmode.toggle`）。
 - 同一个键在同一上下文层里只做一件事；跨上下文重用靠"上下文层"区分，不在命令内部写 `if`。
 - 页脚、`?` 帮助面板、回执里的按键文字由 keymap 生成，不硬编码键名。`TMUX` 环境变量存在时，抽屉开关显示 `<leader>b`。
@@ -245,7 +245,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 输入框不用 `ctrl+b`/`ctrl+f` 移动光标；`ctrl+d` 只在输入框为空时退出。
 - `esc` 是优先级链，不得另写长 `if`。每层向 keymap 注册一次带 `enabled` 函数的绑定，位置按 F1 4.5 的顺序：补全 → 抽屉 → 询问区 → 模态面板 → 非模态详情面板 → 子 agent 返回父会话 → 会话忙碌（5 秒内第二次才中断）→ 无动作。层号以 F1 4.5 为准（子 agent 返回第 6 层、会话忙碌第 7 层）。新增一层需要修订 F1 与本文。
 
-必须写的测试：处置表遍历 `Definitions` 无遗漏；同一上下文层内无重复键；`esc` 链每层一条用例；用户覆盖一个绑定后帮助与页脚文字同步变化。
+必须写的测试：处置表遍历 `Definitions` 无遗漏；同一上下文层内无重复键；`esc` 链每层一条用例；用户覆盖一个绑定后帮助与页脚文字同步变化。前两项由 `test/keybind-disposition.test.ts` 覆盖：同层出现新的重复键时，先改默认值或注册位置；确需保留的，登记到该测试的 `KNOWN_CONFLICTS` 并写明原因与 Issue。
 
 ### 6.4 新增状态带行或抽屉区块
 
