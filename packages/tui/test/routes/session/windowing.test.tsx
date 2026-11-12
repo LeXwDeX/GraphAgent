@@ -28,6 +28,22 @@ async function frameWithout(harness: Awaited<ReturnType<typeof mountHarness>>, t
   throw new Error(`frame always contained ${text}:\n${harness.app.captureCharFrame()}`)
 }
 
+/**
+ * Render until two consecutive frames match. After a scroll the windowed list
+ * mounts the rows that came into view over the next few passes; sampling before
+ * that settles would count layout changes as spinner motion.
+ */
+async function settledFrame(harness: Awaited<ReturnType<typeof mountHarness>>) {
+  let previous = ""
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await harness.app.renderOnce()
+    const frame = harness.app.captureCharFrame()
+    if (frame === previous) return frame
+    previous = frame
+  }
+  throw new Error(`frame never settled:\n${previous}`)
+}
+
 function braille(frame: string) {
   return SPINNER_FRAMES.filter((char) => frame.includes(char)).join("")
 }
@@ -104,7 +120,8 @@ test("a running tool spins only while its row sits inside the viewport", async (
     expect(new Set(moving).size).toBeGreaterThan(1)
 
     scroll!.scrollTo(0)
-    const hidden = await frameWithout(harness, "spinner-fixture")
+    await frameWithout(harness, "spinner-fixture")
+    const hidden = await settledFrame(harness)
     expect(braille(hidden)).toBe("")
     const still = await sample(harness)
     expect(new Set(still).size).toBe(1)
