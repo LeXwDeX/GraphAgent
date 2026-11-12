@@ -9,7 +9,7 @@ import { onCleanup, type JSX } from "solid-js"
 import { unwrap } from "solid-js/store"
 import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
-import { ClipboardProvider } from "../../src/context/clipboard"
+import { ClipboardProvider, type ClipboardService } from "../../src/context/clipboard"
 import { EditorContextProvider } from "../../src/context/editor"
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
@@ -88,6 +88,10 @@ export type MountOptions = {
   command?: (body: unknown) => Response
   /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
   handler?: FetchHandler
+  /** Replaces the system clipboard, so tests can read what a copy command wrote. */
+  clipboard?: ClipboardService
+  /** Working directory of the TUI process (export writes there); defaults to the fake server's directory. */
+  cwd?: string
   width?: number
   height?: number
 }
@@ -159,10 +163,10 @@ export async function mountRoute(options: MountOptions) {
       keymap = createDefaultOpenTuiKeymap(renderer)
       onCleanup(registerGraphagentKeymap(keymap, renderer, config))
       return (
-        <TestTuiContexts cwd={directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
+        <TestTuiContexts cwd={options.cwd ?? directory} paths={{ home: tmp.path, state: tmp.path, worktree: tmp.path }}>
           <ExitProvider exit={() => {}}>
             <EpilogueProvider set={() => {}}>
-              <ClipboardProvider>
+              <ClipboardProvider value={options.clipboard}>
                 <GraphagentKeymapProvider keymap={keymap}>
                   <ArgsProvider>
                     <KVProvider>
