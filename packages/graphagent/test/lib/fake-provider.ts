@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto"
 import { Global } from "@graphagent/core/global"
 import { LLM, type StreamInput } from "@/session/llm"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { LLMEvent } from "@graphagent/llm"
 import { Effect, Layer, Stream } from "effect"
 import { markStep, touch } from "./engine-probe"
@@ -40,6 +41,18 @@ export interface FakeProviderOptions {
   readonly title?: string
   /** Reply used for conversation requests. */
   readonly reply?: string
+  /** Reasoning organizer the service hands out; defaults to none (distillation off). */
+  readonly organizer?: LLM.Interface["organizer"]
+  /**
+   * Hold a process-scheduler model-stream permit for the life of every stream,
+   * like the production `LLM.stream` does. The fake replaces that service, so
+   * without this it would bypass the scheduler and leave its request counters at
+   * zero. Each grant also records a `capacity()` snapshot (see `grants`): a
+   * stream's lifetime is too short for a polling sampler to catch, and the
+   * in-flight count can only rise at a grant, so the peak of these snapshots is
+   * the exact peak.
+   */
+  readonly scheduled?: boolean
 }
 
 export function textScript(text: string, reason: "stop" | "unknown" = "stop"): LLMEvent[] {
@@ -153,6 +166,8 @@ function fingerprint(input: StreamInput, step: number): RequestFingerprint {
 export interface FakeProvider {
   readonly layer: Layer.Layer<LLM.Service>
   readonly requests: RequestFingerprint[]
+  /** Scheduler snapshots taken right after each model-stream grant (`scheduled` only). */
+  readonly grants: AgentScheduler.CapacitySnapshot[]
   /** Request count; feeds `settle()` activity so in-flight replies are awaited. */
   readonly activity: () => number
   reset(): void
@@ -160,29 +175,62 @@ export interface FakeProvider {
 
 export function makeFakeProvider(options?: FakeProviderOptions): FakeProvider {
   const requests: RequestFingerprint[] = []
-  const layer = Layer.succeed(
+  const grants: AgentScheduler.CapacitySnapshot[] = []
+  const serve = (input: StreamInput): Stream.Stream<LLMEvent, unknown> => {
+    markStep()
+    const request = fingerprint(input, requests.length)
+    requests.push(request)
+    touch()
+    const auxiliary = request.purpose === "auxiliary" || request.small
+    const events: ScriptedEvents = auxiliary
+      ? textScript(options?.title ?? "E2E Title")
+      : (options?.script?.(input, request) ?? textScript(options?.reply ?? "ok"))
+    return Array.isArray(events) ? Stream.fromIterable(events) : events
+  }
+  const organizer = options?.organizer ?? (() => Effect.succeed(undefined))
+  const unscheduled = Layer.succeed(LLM.Service, LLM.Service.of({ organizer, stream: serve }))
+  // The permit is acquired in the stream's own scope, so it is released when the
+  // stream ends, fails or is interrupted (the production shape). Lane selection
+  // mirrors `LLM.stream`: auxiliary purposes, child sessions, then interactive.
+  const scheduled = Layer.effect(
     LLM.Service,
-    LLM.Service.of({
-      organizer: () => Effect.succeed(undefined),
-      stream: (input) => {
-        markStep()
-        const request = fingerprint(input, requests.length)
-        requests.push(request)
-        touch()
-        const auxiliary = request.purpose === "auxiliary" || request.small
-        const events: ScriptedEvents = auxiliary
-          ? textScript(options?.title ?? "E2E Title")
-          : (options?.script?.(input, request) ?? textScript(options?.reply ?? "ok"))
-        return Array.isArray(events) ? Stream.fromIterable(events) : events
-      },
+    Effect.gen(function* () {
+      const scheduler = yield* AgentScheduler.Service
+      return LLM.Service.of({
+        organizer,
+        stream: (input) => {
+          const stream = serve(input)
+          return Stream.scoped(
+            Stream.unwrap(
+              Effect.gen(function* () {
+                yield* scheduler.request({
+                  lane:
+                    input.lane ??
+                    (input.purpose === "auxiliary" ? "auxiliary" : input.parentSessionID ? "child" : "interactive"),
+                  providerID: input.model.providerID,
+                  modelID: input.model.id,
+                  sessionID: input.sessionID,
+                })
+                grants.push(yield* scheduler.capacity())
+                // A real stream spans many scheduler turns; yielding between events
+                // lets other fibers' streams overlap with this one while it holds
+                // its permit, without adding wall-clock time.
+                return stream.pipe(Stream.tap(() => Effect.yieldNow))
+              }),
+            ),
+          )
+        },
+      })
     }),
-  )
+  ).pipe(Layer.provide(AgentScheduler.defaultLayer))
   return {
-    layer,
+    layer: options?.scheduled ? scheduled : unscheduled,
     requests,
+    grants,
     activity: () => requests.length,
     reset: () => {
       requests.length = 0
+      grants.length = 0
     },
   }
 }
