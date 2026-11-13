@@ -429,7 +429,10 @@ export function makeDeadlineWatcher(
  * deadline, back off by overdueMs before the next read.
  */
 function sleepUntilDeadlineMs(deadlineMs: number | null, now: number, overdueMs: number) {
-  if (deadlineMs === null) return 100
+  // A null deadline means the node is pre-running (queued/paused): poll at a
+  // relaxed interval to avoid O(queued_nodes × 10/s) store reads while permits
+  // are held. The watcher only needs to notice the transition to running.
+  if (deadlineMs === null) return 1_000
   if (deadlineMs > now) return Math.max(deadlineMs - now, 10)
   return overdueMs
 }
