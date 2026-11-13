@@ -308,7 +308,11 @@ export const TaskTool = Tool.define(
         )
       }
       const childSession = yield* sessions.get(sessionID)
-      const subagentType = childSession.agent
+      // Authorize against the agent of the run being cancelled. A resume may have
+      // picked another agent than the session last recorded (it records it only
+      // once the run's first message is written, after the scheduler slot).
+      const runAgent = job?.metadata?.childRunID === view.id ? job.metadata.childRunAgent : undefined
+      const subagentType = typeof runAgent === "string" ? runAgent : childSession.agent
       if (subagentType === undefined) {
         return yield* Effect.fail(
           new Error(`Task ${taskID} has no recorded agent, so its cancellation cannot be authorized.`),
@@ -747,7 +751,9 @@ export const TaskTool = Tool.define(
           title: description,
           // Names the run this job answers: `start` hands back the job already
           // carrying the session, without starting ours, while that one is alive.
-          metadata: { ...metadata, childRunID: registered.id },
+          // The agent is recorded with the run: a resume may pick another agent,
+          // and the session records it only once the first message is written.
+          metadata: { ...metadata, childRunID: registered.id, childRunAgent: subagentType },
           onPromote: Effect.all([
             ctx.metadata({
               title: description,

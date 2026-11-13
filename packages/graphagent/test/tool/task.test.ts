@@ -27,6 +27,7 @@ import { disposeAllInstances } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { initTaskTool } from "../lib/child-runs"
 import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
+import { SessionTable } from "@graphagent/core/session/sql"
 import { ChildRegistry } from "@/session/child/registry"
 import { ChildStore } from "@/session/child/store"
 import { EngineProcess } from "@/session/engine-process"
@@ -2585,6 +2586,41 @@ describe("tool.task child runs", () => {
       expect(cancels).toEqual([`${child}:task-cancelled:main-agent`])
       yield* Deferred.succeed(release, undefined)
     }),
+  )
+
+  // Codex review on #1275: a resume may pick another agent than the session last
+  // recorded (the session records it only with the run's first message, after the
+  // scheduler slot). Cancelling asks the permission of the run's own agent.
+  background.instance(
+    "action cancel authorizes against the agent of the run, not the session's last recorded one",
+    () =>
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const fixture = yield* cancelFixture
+        const { chat, assistant, def, release, promptOps } = fixture
+        const child = yield* runningTask(fixture)
+        yield* db
+          .update(SessionTable)
+          .set({ agent: "explore" })
+          .where(eq(SessionTable.id, child))
+          .run()
+          .pipe(Effect.orDie)
+        const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+
+        yield* def.execute(
+          { action: "cancel", task_id: child },
+          taskCtx(chat, assistant, promptOps, {
+            callID: "call_cancel",
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          }),
+        )
+
+        expect(asks.map((input) => [input.patterns, input.metadata?.subagent_type])).toEqual([[["general"], "general"]])
+        yield* Deferred.succeed(release, undefined)
+      }),
   )
 
   background.instance("action cancel denied by the task permission touches nothing", () =>
