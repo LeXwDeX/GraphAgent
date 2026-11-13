@@ -37,7 +37,7 @@ export interface ResumeDeps {
   /** Late-bound: the command service is built after resume, and calls it back. */
   readonly command: (
     input: CommandInput,
-    options: { readonly skipHookStart: true },
+    options: { readonly skipHookStart: true; readonly credential?: ChildRunCredential },
   ) => Effect.Effect<SessionV1.WithParts, PromptError>
   /** Late-bound so resume can start a turn through the turns service built after it. */
   readonly turns: () => TurnsInterface
@@ -156,7 +156,10 @@ export function makeResume(deps: ResumeDeps) {
           const shared = { sessionID, messageID: pending.messageID, hookMode: "noninteractive" as const }
           return yield* (
             pending.input.kind === "command"
-              ? command({ ...pending.input, ...shared }, { skipHookStart: true })
+              ? command(
+                  { ...pending.input, ...shared },
+                  { skipHookStart: true, ...(credential ? { credential } : {}) },
+                )
               : admit.prompt(
                   { ...pending.input, ...shared },
                   {

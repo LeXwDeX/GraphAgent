@@ -530,8 +530,8 @@ describe("ChildAdmission.observe", () => {
         ])
 
         // The child admit refuses none/user/child_run/other inbox sources and
-        // lets only hook and the DAG mailbox origin through.
-        expect(outcomes.slice(0, 6).map(Exit.isSuccess)).toEqual([false, false, true, true, false, false])
+        // lets hook, the DAG mailbox origin and child results through.
+        expect(outcomes.slice(0, 6).map(Exit.isSuccess)).toEqual([false, false, true, true, false, true])
         // The loop refuses a declared delegation or a known child without a
         // credential; a top-level user loop start is not a delegation claim.
         expect(outcomes.slice(6).map(Exit.isSuccess)).toEqual([false, false, false, true])

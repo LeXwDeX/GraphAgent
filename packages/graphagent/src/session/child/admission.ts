@@ -58,11 +58,15 @@ export class Refused extends Schema.TaggedError<Refused>()("ChildAdmissionRefuse
 /**
  * Origins that may drive a child session without a run credential. The shape
  * is the Issue's `ChildOriginAllowed`: DAG mailbox steps are delivered by the
- * engine to the child (the sender is guaranteed to be the main session), and
- * configured hook re-entries belong to the session's own hook chain.
+ * engine to the child (the sender is guaranteed to be the main session),
+ * configured hook re-entries belong to the session's own hook chain, and a
+ * child result is the transcript-only report of a task the session started —
+ * the receiving run may already have ended, and the result still belongs in
+ * its transcript.
  */
 const allowedWithoutCredential = (origin: Origin | undefined): boolean =>
-  origin?.kind === "hook" || (origin?.kind === "inbox" && origin.source === "dag.mailbox.step")
+  origin?.kind === "hook" ||
+  (origin?.kind === "inbox" && (origin.source === "dag.mailbox.step" || origin.source === "child.result"))
 
 /**
  * Enforces the engine guard. `admit` knows the session (and therefore

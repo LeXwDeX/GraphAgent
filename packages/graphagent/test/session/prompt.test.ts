@@ -3326,6 +3326,40 @@ it.instance(
     }),
 )
 
+// A saved slash-command followup does not go back through `resume`: it replays through `command`, whose own
+// admission must carry the run's credential too, or the guard refuses the child session.
+it.instance("a child's saved command followup carries its run's credential", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      command: { probe: { template: "Expanded command: $ARGUMENTS" } },
+    }))
+    const { prompt, sessions, chat } = yield* boot()
+    const lifecycle = yield* HookLifecycle.Service
+    const child = yield* sessions.create({ parentID: chat.id, title: "command probe (@general subagent)", agent: "general" })
+    const children = (yield* prompt.children).forParent(chat.id)
+    const run = yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "task", toolCallID: "call_command_hook" },
+      detached: false,
+    })
+    yield* run.markRunning
+    yield* lifecycle.queueInitial(child.id, "HOOK_INITIAL_MESSAGE")
+    yield* llm.text("initial answer")
+    yield* llm.text("command answer")
+
+    const answered = yield* prompt.command({ sessionID: child.id, command: "probe", arguments: "GO" })
+
+    expect(answered.parts.some((part) => part.type === "text" && part.text === "command answer")).toBe(true)
+    const requests = yield* llm.inputs
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]?.messages)).toContain("HOOK_INITIAL_MESSAGE")
+    expect(JSON.stringify(requests[1]?.messages)).toContain("Expanded command: GO")
+    expect((yield* sessions.get(child.id)).metadata?.hookPendingInput).toBeUndefined()
+    yield* run.settle({ type: "completed" })
+  }),
+)
+
 backgroundUnix(
   "task tool repairs exact string background booleans through the full AI SDK tool path (#647)",
   () =>
