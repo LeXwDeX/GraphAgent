@@ -32,6 +32,7 @@ import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Home } from "../../src/routes/home"
 import { Main } from "../../src/routes/session"
+import { useDagIndicator } from "../../src/routes/session/dag-mode"
 import {
   BottomZone,
   BottomZoneProvider,
@@ -51,11 +52,12 @@ import {
   deltaEvent,
   makeFetchFixture,
   type PerfFixture,
+  sessionUpdatedEvent,
   streamTextPart,
   updatePartEvent,
 } from "./fixtures"
 import { createCounters, type CounterSnapshot, type PerfCounters } from "./counters"
-import { SETTLE_DEADLINE_MS } from "./settle"
+import { SETTLE_DEADLINE_MS, within } from "./settle"
 
 /**
  * A live reply: a text part at the tail of the last assistant message that is
@@ -87,6 +89,12 @@ export type PerfHarness = {
   /** Opens a live reply at the tail of the transcript (one `message.part.updated` snapshot). */
   openStream(): PerfStream
   tickBackground(tick: number): void
+  /**
+   * Switches the session's DAG mode through a `session.updated`, as the server
+   * does, and resolves once the footer's availability read for it has landed and
+   * painted.
+   */
+  setDagMode(mode: "on" | "off"): Promise<void>
   hideAutocomplete(): void
   /** Runs a registered command by name, the way its key binding would. */
   command(name: string): void
@@ -155,7 +163,22 @@ export type HarnessOptions = {
 export async function mountHarness(fixture: PerfFixture, options: HarnessOptions = {}): Promise<PerfHarness> {
   const stateDir = await tmpdir()
   await Bun.write(`${stateDir.path}/kv.json`, "{}")
-  const calls = createFetch((url) => makeFetchFixture(fixture, url))
+  let settleDagAvailability: (() => void) | undefined
+  // The SDK reads a JSON answer as a string and parses it itself, so the wait
+  // is tied to the body having been read, without a wall-clock sleep (#1300
+  // review).
+  const calls = createFetch((url) => {
+    const response = makeFetchFixture(fixture, url)
+    if (response && url.pathname.endsWith("/dag-mode")) {
+      const body = response.text.bind(response)
+      response.text = () =>
+        body().finally(() => {
+          settleDagAvailability?.()
+          settleDagAvailability = undefined
+        })
+    }
+    return response
+  })
   const events = createEventSource()
   const clock = new ManualClock()
   clock.setTime(Date.now())
@@ -173,11 +196,15 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
   let activeSubscriptions = 0
   let streams = 0
   let deltas = 0
+  let dagModeUpdates = 0
 
   function Probe(props: { bottomZone: BottomZoneStateApi }) {
     const sync = useSync()
     const promptRef = usePromptRef()
     const route = useRoute()
+    // The production footer indicator: its state comes from `Session.dagMode`
+    // and its availability from `GET /session/:id/dag-mode` (#1280).
+    const dagIndicator = useDagIndicator()
     state.sync = sync
     state.promptRef = promptRef
     state.route = route
@@ -193,7 +220,7 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
     return (
       <AppFrame
         topBar={{ path: directory }}
-        footer={{ agent: "build" }}
+        footer={{ agent: "build", dag: dagIndicator() }}
         bottomZone={<BottomZone state={props.bottomZone} composer={<></>} />}
       >
         <Show when={options.routes} fallback={<Main />}>
@@ -358,6 +385,12 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
     events.emit(event)
   }
 
+  /** Resolves once the next `GET /session/:id/dag-mode` answer has been parsed. */
+  const dagAvailability = () =>
+    new Promise<void>((resolve) => {
+      settleDagAvailability = resolve
+    })
+
   return {
     app,
     fixture,
@@ -400,6 +433,21 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
     },
     tickBackground(tick) {
       fixture.backgroundParts.forEach((part) => emit(backgroundEvent(part, tick)))
+    },
+    async setDagMode(mode) {
+      const availability = mode === "on" ? dagAvailability() : undefined
+      fixture.session.dagMode = mode
+      emit(sessionUpdatedEvent(fixture.session, `evt_dag_mode_${mode}_${++dagModeUpdates}`))
+      // The event lands on the next frame, where the footer asks for
+      // availability. The caller measures an idle window right after, so both
+      // the answer and the frame it paints have to be in before this returns.
+      await app.renderOnce()
+      if (!availability) return
+      await within(availability, "the DAG mode availability read")
+      // The answer arrives between frames: one render applies it to the
+      // resource, the second paints the footer from it.
+      await app.renderOnce()
+      await app.renderOnce()
     },
     hideAutocomplete() {
       keymap.dispatchCommand("prompt.autocomplete.hide")

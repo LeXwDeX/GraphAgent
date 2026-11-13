@@ -10,7 +10,21 @@ import { watchKeymapErrors } from "./keymap-errors"
 import { runScenarios, scaleResult, scenarioIds, type ScenarioScope } from "./scenarios"
 
 /** Counters that must hold on any machine. Timing rules are exercised on forged reports; here they would only measure the test host. */
-const COUNT_SCENARIOS = new Set(["P3", "P4", "P7", "P10", "P11", "P13", "P15", "P16", "P17", "P17b", "P18", "P19"])
+const COUNT_SCENARIOS = new Set([
+  "P3",
+  "P4",
+  "P7",
+  "P10",
+  "P11",
+  "P13",
+  "P15",
+  "P15b",
+  "P16",
+  "P17",
+  "P17b",
+  "P18",
+  "P19",
+])
 
 /** The windowed session runs the windowed scope; the rest run everything. */
 const scopeOf = (size: FixtureSize): ScenarioScope => (size === "XL" ? "windowed" : "all")

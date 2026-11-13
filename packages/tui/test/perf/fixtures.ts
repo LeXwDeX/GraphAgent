@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import type { GlobalEvent, Message, Part, Session } from "@graphagent/sdk"
+import type { GlobalEvent, Message, Part, Session, SessionDagMode } from "@graphagent/sdk"
 import { directory } from "../fixture/tui-sdk"
 
 export const SESSION_ID = "ses_perf_main"
@@ -389,6 +389,15 @@ export function updatePartEvent(part: Part, time: number, id: string): GlobalEve
   }
 }
 
+/** A session the server updated, such as one whose DAG mode was switched (#1280). */
+export function sessionUpdatedEvent(session: Session, id: string): GlobalEvent {
+  return {
+    directory,
+    project: "proj_test",
+    payload: { id, type: "session.updated", properties: { sessionID: session.id, info: session } },
+  }
+}
+
 /** One streamed token. The sync layer appends it to the stream buffer; it never writes `store.part`. */
 export function deltaEvent(part: Part, delta: string, id: string): GlobalEvent {
   return {
@@ -420,10 +429,27 @@ export function backgroundEvent(part: Part, tick: number): GlobalEvent {
   )
 }
 
+/**
+ * The session's DAG mode status for the footer indicator (#1280): on and
+ * available, with no workflow running. The indicator reads it when the mode
+ * turns on; leaving the request unanswered only logs a warning and the indicator
+ * stays on its plain state, but the run should not carry that noise.
+ */
+const DAG_MODE_STATUS: SessionDagMode = {
+  mode: "on",
+  defaultMode: "off",
+  availability: "available",
+  unavailableReason: null,
+  budget: { tokens: null, used: 0, usedCacheRead: 0, warnRatio: 0.8 },
+  limits: { concurrency: 4, maxTotalNodes: 100, running: 0 },
+  quality: null,
+}
+
 export function makeFetchFixture(fixture: PerfFixture, url: URL): Response | undefined {
   if (url.pathname === "/session") return Response.json(fixture.sessions)
   const session = fixture.sessions.find((item) => url.pathname === `/session/${item.id}`)
   if (session) return Response.json(session)
+  if (url.pathname.endsWith("/dag-mode")) return Response.json(DAG_MODE_STATUS)
   const messages = fixture.sessions.find((item) => url.pathname === `/session/${item.id}/message`)
   if (messages) return Response.json(messages.id === SESSION_ID ? fixture.messages : [])
   if (url.pathname === "/project/directories") return Response.json([])

@@ -6,6 +6,8 @@ import { CodeRenderable, type Renderable, type ScrollBoxRenderable } from "@open
 import type { Part } from "@graphagent/sdk"
 import { TICK_MS } from "../../src/context/ticker"
 import { isWindowed } from "../../src/routes/session/rows"
+import { dagIndicatorCompact, dagIndicatorText } from "../../src/shell/dag-indicator"
+import { readFrame } from "../routes/dag-mode-harness"
 import { type FixtureSize, updatePartEvent } from "./fixtures"
 import type { PerfHarness, PerfStream } from "./harness"
 import { within } from "./settle"
@@ -28,6 +30,7 @@ export const SCENARIO_IDS = [
   "P13",
   "P14",
   "P15",
+  "P15b",
   "P16",
   "P17",
   "P17b",
@@ -256,6 +259,41 @@ async function tickerFrames(harness: PerfHarness, ms: number) {
   harness.clock.advance(ms)
   await harness.app.renderOnce()
   return harness.ticker.frame() - before
+}
+
+/**
+ * P15b: idle with the session in DAG mode, the footer indicator and the prompt
+ * usage segment on screen (#1280). The mode arrives as one `session.updated`
+ * and the footer answers it with an availability read; both land before the
+ * window opens, because a frame they cause is not an idle frame. A run with DAG
+ * mode still off would count zero frames for any session, so the scenario fails
+ * unless the mode and its indicator are really there.
+ *
+ * It counts every ticker signal an idle screen could repaint from: `frames` is
+ * the animation ticker, `seconds` the one-second signal (a footer that shows
+ * elapsed time or re-reads its usage once a second subscribes to that one and
+ * never touches `frames`), and `renderRequests` what the components ask the
+ * renderer for directly.
+ */
+async function dagIdleFrames(harness: PerfHarness) {
+  await harness.setDagMode("on")
+  const frame = await readFrame(harness.app)
+  if (harness.sync.session.get(harness.fixture.session.id)?.dagMode !== "on") {
+    invalid("P15b", "the session did not enter DAG mode", frame)
+  }
+  const label = dagIndicatorText("on", dagIndicatorCompact(harness.app.renderer.width))
+  if (!frame.includes(label)) invalid("P15b", `the footer does not show ${label}`, frame)
+  await harness.app.renderOnce()
+  const before = harness.snapshot()
+  const frameBefore = harness.ticker.frame()
+  const secondBefore = harness.ticker.second()
+  harness.clock.advance(2_000)
+  await harness.app.renderOnce()
+  return {
+    frames: harness.ticker.frame() - frameBefore,
+    seconds: harness.ticker.second() - secondBefore,
+    renderRequests: harness.counters.delta(before).renderRequests,
+  }
 }
 
 function runningToolPart(index: number, sessionID: string, messageID: string): Part {
@@ -725,6 +763,12 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
   await fresh(harness)
   const idleFramesValue = await tickerFrames(harness, 2_000)
   all.push(result("P15", size, { frames: idleFramesValue }))
+
+  await fresh(harness)
+  const dagFrames = await dagIdleFrames(harness)
+  await harness.setDagMode("off")
+  await harness.app.renderOnce()
+  all.push(result("P15b", size, dagFrames))
 
   await fresh(harness)
   harness.sync.set("session_status", harness.fixture.session.id, { type: "busy" })
