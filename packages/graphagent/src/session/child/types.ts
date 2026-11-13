@@ -34,11 +34,26 @@ export type ChildRunOutcome =
   | { readonly type: "cancelled"; readonly by: ChildCancelBy }
   | { readonly type: "interrupted"; readonly reason?: string }
 
+/**
+ * What a detached run tells its parent when it ends, kept with the run's row
+ * until the result ledger has delivered it (`child.result`). `title` names the
+ * work and `text` is the result, or the failure, as the owner wants the parent
+ * to read it. A foreground run has none: its result is the tool result.
+ */
+export interface ChildRunReport {
+  readonly title: string
+  readonly text: string
+}
+
 export interface ChildRunSpec {
   readonly parentSessionID: SessionID
   readonly childSessionID: SessionID
   readonly owner: ChildOwner
-  /** A background run reports back through its parent after it ends; a foreground run returns to its tool call. */
+  /**
+   * A background run reports back to its parent through the result ledger
+   * after it ends; a foreground run returns to its tool call. A foreground run
+   * the user promotes to the background becomes detached with `detach`.
+   */
   readonly detached: boolean
 }
 
@@ -74,8 +89,20 @@ export interface ChildRunHandle {
    * Call it when the run's driver stops (the job is terminal, the tool call
    * exits): winner or not, it tells the registry the driver is gone, which
    * frees the child session of a run a cancellation ended earlier.
+   *
+   * `report` is what a detached run tells its parent; it is written with the
+   * ending and delivered by the result ledger. A foreground run's ending
+   * counts as reported at once and ignores it.
    */
-  readonly settle: (outcome: ChildRunOutcome) => Effect.Effect<boolean>
+  readonly settle: (outcome: ChildRunOutcome, report?: ChildRunReport) => Effect.Effect<boolean>
+  /**
+   * Makes the run detached: its result is delivered to the parent by the
+   * result ledger instead of returning to a tool call. One-way and idempotent;
+   * `ChildRuns.detach`. Call it before anything that can settle the run for
+   * the background (the settlement watcher), so the ending cannot be marked
+   * reported by the foreground rule.
+   */
+  readonly detach: Effect.Effect<boolean>
   /** Resolves with the outcome that won, whoever settled or cancelled the run. */
   readonly settled: Effect.Effect<ChildRunOutcome>
   /** Resolves when the run is cancelled; never resolves for any other ending. */
@@ -143,6 +170,14 @@ export interface ChildRunsInterface {
    * old job still carries the session.
    */
   readonly cancel: (runID: string, by: ChildCancelBy) => Effect.Effect<ChildRunCancelResult>
+  /**
+   * Makes a run detached (`child_run.detached = 1`): from here its result goes
+   * to the parent through the result ledger. One-way and idempotent: true only
+   * for the call that changed the run, false for a run that is already
+   * detached or unknown. A run that already ended keeps the report state its
+   * ending wrote.
+   */
+  readonly detach: (runID: string) => Effect.Effect<boolean>
   /** Ends rows a dead or earlier-life process left active (`interrupted`). */
   readonly recover: () => Effect.Effect<void>
   /** Ends this process's runs of a deleted session, as child or as parent. In memory plus row writes only. */

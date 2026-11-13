@@ -31,6 +31,26 @@ import { initTaskTool } from "../lib/child-runs"
 const seen: HookPayload[] = []
 let observed: Deferred.Deferred<void> | undefined
 let observedType = ""
+// Fired once the task tool has asked whether the user watches the parent after the job finished: the last decision
+// of its completion step (Issue #1026: the result itself is delivered by the result ledger, not by this step).
+let watched: { sessionID: string; done: Deferred.Deferred<void> } | undefined
+const attention = Layer.effect(
+  SessionAttention.Service,
+  Effect.gen(function* () {
+    const inner = yield* SessionAttention.Service
+    return SessionAttention.Service.of({
+      ...inner,
+      viewing: (sessionID) =>
+        inner
+          .viewing(sessionID)
+          .pipe(
+            Effect.tap(() =>
+              watched && watched.sessionID === sessionID ? Deferred.succeed(watched.done, undefined) : Effect.void,
+            ),
+          ),
+    })
+  }),
+).pipe(Layer.provide(SessionAttention.defaultLayer))
 const settings = Layer.succeed(
   SettingsHook.Service,
   SettingsHook.Service.of({
@@ -56,7 +76,7 @@ const layer = Layer.mergeAll(
   Permission.layer,
   Notification.layer,
 ).pipe(
-  Layer.provideMerge(Layer.mergeAll(settings, EventV2Bridge.defaultLayer, SessionAttention.defaultLayer)),
+  Layer.provideMerge(Layer.mergeAll(settings, EventV2Bridge.defaultLayer, attention)),
   Layer.provideMerge(CrossSpawnSpawner.defaultLayer),
   Layer.provideMerge(Ripgrep.defaultLayer),
 )
@@ -71,7 +91,7 @@ it.effect(
   provideTmpdirInstance(() =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
-      const attention = yield* SessionAttention.Service
+      const attentionService = yield* SessionAttention.Service
       const permission = yield* Permission.Service
       const jobs = yield* BackgroundJob.Service
       const events = yield* EventV2Bridge.Service
@@ -102,10 +122,13 @@ it.effect(
       const definition = yield* initTaskTool(tool)
       for (const viewing of [false, true]) {
         seen.length = 0
-        yield* attention.update(parent.id, { clientID: "terminal", clientType: "terminal", backgroundView: viewing })
+        yield* attentionService.update(parent.id, {
+          clientID: "terminal",
+          clientType: "terminal",
+          backgroundView: viewing,
+        })
         const finished = yield* Deferred.make<void>()
         const requested = yield* Deferred.make<void>()
-        const injected = yield* Deferred.make<void>()
         observed = yield* Deferred.make<void>()
         observedType = viewing ? "agent_needs_input" : "permission_prompt"
         const off = yield* events.listen((event) =>
@@ -119,28 +142,25 @@ it.effect(
           resolvePromptParts: (text) => Effect.succeed([{ type: "text", text }]),
           prompt: (input) =>
             Effect.gen(function* () {
-              if (input.sessionID === parent.id) yield* Deferred.succeed(injected, undefined)
-              else {
-                yield* sessions.updateMessage({
-                  id: MessageID.ascending(),
-                  role: "user",
+              yield* sessions.updateMessage({
+                id: MessageID.ascending(),
+                role: "user",
+                sessionID: input.sessionID,
+                agent: "general",
+                model,
+                time: { created: Date.now() },
+              })
+              yield* permission
+                .ask({
                   sessionID: input.sessionID,
-                  agent: "general",
-                  model,
-                  time: { created: Date.now() },
+                  permission: "read",
+                  patterns: ["synthetic"],
+                  always: [],
+                  metadata: {},
+                  ruleset: [],
                 })
-                yield* permission
-                  .ask({
-                    sessionID: input.sessionID,
-                    permission: "read",
-                    patterns: ["synthetic"],
-                    always: [],
-                    metadata: {},
-                    ruleset: [],
-                  })
-                  .pipe(Effect.orDie)
-                yield* Deferred.await(finished)
-              }
+                .pipe(Effect.orDie)
+              yield* Deferred.await(finished)
               const info = {
                 ...assistant,
                 id: MessageID.ascending(),
@@ -190,13 +210,20 @@ it.effect(
           seen.filter((item) => item.event === "Notification" && item.notificationType === "agent_needs_input"),
         ).toHaveLength(viewing ? 1 : 0)
         yield* permission.reply({ requestID: pending.id, reply: "once" })
+        watched = { sessionID: parent.id, done: yield* Deferred.make<void>() }
+        observedType = "agent_completed"
+        observed = yield* Deferred.make<void>()
         yield* Deferred.succeed(finished, undefined)
         if (typeof result.metadata.sessionID !== "string") throw new Error("Missing actual task session")
         expect((yield* jobs.wait({ id: result.metadata.sessionID })).info?.status).toBe("completed")
-        yield* Deferred.await(injected)
+        // The completion step decided whether to notify; a watching user is notified, anyone else is not.
+        yield* Deferred.await(watched.done)
+        if (viewing) yield* Deferred.await(observed)
+        yield* drain
         expect(
           seen.filter((item) => item.event === "Notification" && item.notificationType === "agent_completed"),
         ).toHaveLength(viewing ? 1 : 0)
+        watched = undefined
       }
     }),
   ),

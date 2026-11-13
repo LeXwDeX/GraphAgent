@@ -4,13 +4,16 @@
 import type { Database } from "@graphagent/core/database/database"
 import { Cause, Clock, Deferred, Effect, Option, Scope } from "effect"
 import { randomUUID } from "node:crypto"
+import { DagLocation } from "@/dag/location"
 import { InstanceRef } from "@/effect/instance-ref"
 import { registerDisposer } from "@/effect/instance-registry"
 import type { SessionAbortReason } from "../abort-reason"
+import { SessionCancellation } from "../cancellation"
 import { EngineProcess, type ActiveChildRun } from "../engine-process"
 import type { SessionID } from "../schema"
 import { runnerAlive } from "../turns"
 import { abortReasonOf, boundedCancel, CANCEL_BOUND_MS } from "./cancel"
+import { ChildNotify as Notify } from "./notify"
 import { ChildRegistry as Registry } from "./registry"
 import { ChildStore as Store } from "./store"
 import {
@@ -20,6 +23,7 @@ import {
   type ChildRunCancelResult,
   type ChildRunHandle,
   type ChildRunOutcome,
+  type ChildRunReport,
   type ChildRunSpec,
   type ChildRunsInterface,
   type ChildRunsScoped,
@@ -35,6 +39,7 @@ export {
   type ChildRunError,
   type ChildRunHandle,
   type ChildRunOutcome,
+  type ChildRunReport,
   type ChildRunSpec,
   type ChildRunState,
   type ChildRunView,
@@ -108,31 +113,86 @@ const releaseAfterBound = (ctx: Ctx, entry: ActiveChildRun) =>
   ).pipe(Effect.interruptible, Effect.forkIn(ctx.scope, { startImmediately: true }), Effect.asVoid)
 
 /**
+ * Records that this process saw a run end on its own (finished or failed), at
+ * the moment of the swap and before the ending row can be seen by anyone, so a
+ * tick that finds the row also finds the report. The report carries the
+ * parent's cancellation epoch: the delivery tells a fresh result from one an
+ * ESC overtook by comparing it. Whether the result is really owed is the row's
+ * to say (`settleReport`). Interrupted and cancelled endings have no news: a
+ * run its process lost is delivered from its row by whichever process loads
+ * next, a cancelled run is delivered to nobody.
+ */
+const reportEnding = (ctx: Ctx, entry: ActiveChildRun, outcome: ChildRunOutcome, epoch: number): void => {
+  if (outcome.type !== "completed" && outcome.type !== "error") return
+  const directory = entry.directory === undefined ? undefined : DagLocation.canonicalDirectory(entry.directory)
+  Registry.record({ runID: entry.id, parentSessionID: entry.parentSessionID, directory, epoch, owner: ctx.owner })
+}
+
+/**
+ * After the ending write: a result that is owed to the ledger (a detached run
+ * whose ending left `reported_at` empty) wakes the inbox of the instance that
+ * owns the parent, so it does not wait for the tick. Any other ending has
+ * nothing to deliver and its report is dropped.
+ */
+const settleReport = (ctx: Ctx, entry: ActiveChildRun, ended: Store.EndedRun | undefined): Effect.Effect<void> =>
+  Effect.suspend(() => {
+    const report = Registry.reportOf(entry.id)
+    if (!report) return Effect.void
+    // Only a task's result is this ledger's (`Store.unreportedOf`); a DAG node's is delivered by the DAG.
+    if (!ended || !ended.detached || ended.reported || ended.ownerKind !== "task") {
+      Registry.dropReport(entry.id)
+      return Effect.void
+    }
+    if (report.directory === undefined) return Effect.void
+    // Forked from an uninterruptible region: the nudge itself must stay interruptible with its scope.
+    return Notify.nudge(report.directory, entry.parentSessionID).pipe(
+      Effect.interruptible,
+      Effect.forkIn(ctx.scope),
+      Effect.asVoid,
+    )
+  })
+
+/**
  * Ends a run: the in-memory compare-and-swap decides the winner, then the row
  * is written. `between` runs after the swap and before the write (the
  * cancellation fork); `persist: false` is for runs whose rows are already gone
  * with their session; `hold` keeps the entry, and the child session reserved,
  * until the run's driver has stopped as well as the row is written (a
- * cancellation, whose job may still be running). A failed write is logged and
- * never undoes the ending: the registry is authoritative inside this process.
+ * cancellation, whose job may still be running). `report` is what a detached
+ * run leaves for its parent. A failed write is logged and never undoes the
+ * ending: the registry is authoritative inside this process.
  */
 const finish = (
   ctx: Ctx,
   entry: ActiveChildRun,
   outcome: ChildRunOutcome,
-  options: { readonly between?: Effect.Effect<void>; readonly persist?: boolean; readonly hold?: boolean } = {},
+  options: {
+    readonly between?: Effect.Effect<void>
+    readonly persist?: boolean
+    readonly hold?: boolean
+    readonly report?: ChildRunReport
+  } = {},
 ): Effect.Effect<boolean> =>
   Effect.uninterruptible(
     Effect.suspend(() => {
       if (!Registry.end(entry, outcome, { hold: options.hold })) return Effect.succeed(false)
+      // Taken at the swap, before anything else can run: an ESC that lands after it makes the delivery write only.
+      if (options.persist !== false) reportEnding(ctx, entry, outcome, SessionCancellation.epoch(entry.parentSessionID))
       const persist =
         options.persist === false
           ? Effect.void
           : Clock.currentTimeMillis.pipe(
-              Effect.flatMap((now) => Store.endRun(ctx.db, entry.id, outcome, now)),
-              Effect.asVoid,
+              Effect.flatMap((now) => Store.endRun(ctx.db, entry.id, outcome, now, options.report)),
+              Effect.flatMap((ended) => settleReport(ctx, entry, ended)),
               Effect.catchCause((cause) =>
-                Effect.logWarning("child run end was not persisted", { runID: entry.id, cause: Cause.pretty(cause) }),
+                Effect.sync(() => Registry.dropReport(entry.id)).pipe(
+                  Effect.andThen(
+                    Effect.logWarning("child run end was not persisted", {
+                      runID: entry.id,
+                      cause: Cause.pretty(cause),
+                    }),
+                  ),
+                ),
               ),
             )
       return (options.between ?? Effect.void).pipe(
@@ -177,16 +237,29 @@ const handleOf = (ctx: Ctx, entry: ActiveChildRun, attempt: number): ChildRunHan
   // Every settlement comes from the driver at the moment it stops (the watcher
   // once the job is terminal, the tool call at its exit), so it also tells the
   // registry that the driver is gone, even when it loses the race to a cancellation.
-  settle: (outcome) =>
+  settle: (outcome, report) =>
     Effect.uninterruptible(
       Effect.suspend(() => {
         Registry.driverStopped(entry)
-        return finish(ctx, entry, outcome)
+        return finish(ctx, entry, outcome, { report })
       }),
     ),
+  detach: detach(ctx)(entry.id),
   settled: Deferred.await(entry.done),
   cancelled: Deferred.await(entry.cancelled),
 })
+
+// A failed write is logged, not raised: a promotion must not fail because the row could not follow it.
+const detach = (ctx: Ctx) => (runID: string) =>
+  Effect.suspend(() => Store.detachRun(ctx.db, runID)).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.interrupt
+        : Effect.logWarning("child run detach was not persisted", { runID, cause: Cause.pretty(cause) }).pipe(
+            Effect.as(false),
+          ),
+    ),
+  )
 
 /** A fresh queued entry, not yet registered. The directory is the starting instance's, when there is one. */
 const newEntry = (ctx: Ctx, spec: ChildRunSpec) =>
@@ -364,14 +437,19 @@ const assemble = (ctx: Ctx): ChildRunsInterface => {
     latest: latestView(ctx),
     listByParent: listByParent(ctx),
     cancel: cancel(ctx),
+    detach: detach(ctx),
     recover: () => recover({ db: ctx.db }),
     // Rows of a deleted session are gone with it (cascade); only the registry entries remain.
     forget: (sessionID) =>
-      endWhere(
-        ctx,
-        (entry) => entry.childSessionID === sessionID || entry.parentSessionID === sessionID,
-        { type: "cancelled", by: { kind: "engine", reason: "session-deleted" } },
-        false,
+      Effect.sync(() => Registry.dropReportsWhere((report) => report.parentSessionID === sessionID)).pipe(
+        Effect.andThen(
+          endWhere(
+            ctx,
+            (entry) => entry.childSessionID === sessionID || entry.parentSessionID === sessionID,
+            { type: "cancelled", by: { kind: "engine", reason: "session-deleted" } },
+            false,
+          ),
+        ),
       ),
   }
   return { ...api, forParent: (parentSessionID) => scoped(api, parentSessionID) }
@@ -399,6 +477,8 @@ export const makeChildRuns = (deps: Deps): Effect.Effect<Interface> =>
       deps.scope,
       Effect.sync(off).pipe(
         Effect.andThen(endWhere(ctx, (entry) => entry.owner === ctx.owner, interrupted("runtime-closed"))),
+        // The reports this instance left go with it; their rows stay owed to the next process.
+        Effect.andThen(Effect.sync(() => Registry.dropReportsWhere((report) => report.owner === ctx.owner))),
       ),
     )
     return assemble(ctx)

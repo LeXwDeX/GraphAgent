@@ -107,6 +107,7 @@ import {
   dropReverted,
   makeTurns,
   type AdmissionCommit,
+  type AdmissionExtras,
   type AdmissionOptions,
   type IdleAdmission,
   type Interface as TurnsInterface,
@@ -116,7 +117,7 @@ import {
   type TurnStart,
 } from "./turns"
 
-export type { AdmissionCommit, AdmissionOptions, IdleAdmission } from "./turns"
+export type { AdmissionCommit, AdmissionExtras, AdmissionOptions, IdleAdmission } from "./turns"
 export {
   CommandInput,
   HookFollowupInput,
@@ -174,12 +175,15 @@ export interface Interface {
    * classification without awaiting the turn. Automatic sources reach this
    * through `SessionInbox.submit`; plain commands keep using `submit`/`prompt`.
    * `persistAdmission` commits inside the message transaction, so it rolls
-   * back with the message.
+   * back with the message. `extras` carries the origin a source stamps on the
+   * turn and the cancellation request of an epoch-fenced caller
+   * (`admitNowUnderFence`).
    */
   readonly admit: (
     input: PromptInput,
     options?: AdmissionOptions,
     persistAdmission?: Effect.Effect<void, unknown>,
+    extras?: AdmissionExtras,
   ) => Effect.Effect<TurnStart, PromptError>
   readonly setModel: (input: SetModelInput) => Effect.Effect<typeof ModelRef.Type, ModelSwitchBlocked>
   /** Drain guidance only for the actual target model at a provider request boundary. */
@@ -830,6 +834,6 @@ export const node = LayerNode.make(layer, [
   ToolSourceLedger.node,
 ])
 
-export { admitIdleUnderFence } from "./turn/admit"
+export { admitIdleUnderFence, admitNowUnderFence } from "./turn/admit"
 
 export * as SessionPrompt from "./prompt"

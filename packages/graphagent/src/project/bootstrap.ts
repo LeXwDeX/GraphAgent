@@ -18,6 +18,7 @@ import { Memory } from "@/memory/memory"
 import { SessionInbox } from "@/session/inbox"
 import { Turns } from "@/session/turns"
 import { ChildRuns } from "@/session/child/run"
+import { ChildResults } from "@/session/child/result-source"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -104,6 +105,12 @@ export const layer = Layer.effect(
       // arms the 30s durable tick; GoalLoop.init registered its source.
       const inbox = yield* Effect.serviceOption(SessionInbox.Service)
       if (inbox._tag === "Some") {
+        // The result ledger of detached child runs (#1026). After the recovery above, so the startup
+        // delivery also tells parents about the runs recovery just ended; skipped where the app layer is absent.
+        if (database._tag === "Some")
+          yield* ChildResults.init({ inbox: inbox.value, database: database.value, scope }).pipe(
+            Effect.catchCause((cause) => Effect.logWarning("child result source init failed", { cause })),
+          )
         yield* inbox.value
           .init()
           .pipe(Effect.catchCause((cause) => Effect.logWarning("session inbox init failed", { cause })))

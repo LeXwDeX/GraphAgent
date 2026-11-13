@@ -9,7 +9,7 @@ import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/http"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@graphagent/core/util/error"
@@ -41,6 +41,8 @@ import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { EngineProcess } from "../../src/session/engine-process"
 import { SessionPrompt } from "../../src/session/prompt"
+import { SessionInbox } from "../../src/session/inbox"
+import { ChildResults } from "../../src/session/child/result-source"
 import { FINAL_STEP_INSTRUCTION } from "../../src/session/turn/final-policy"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
@@ -536,7 +538,9 @@ const stableGlobRipgrepLayer = Layer.effect(
 
 const it = testEffect(makeHttp())
 const nativeIt = testEffect(makeHttp({ native: true }))
-const backgroundIt = testEffect(makeHttp())
+// A finished background task is told to its parent by the result ledger (`child.result`, Issue #1026), which needs
+// the session inbox of the instance; `it.instance` fixtures run a no-op bootstrap, so the test registers the source itself.
+const backgroundIt = testEffect(Layer.mergeAll(makeHttp(), SessionInbox.defaultLayer))
 const stableFoldingIt = testEffect(makeHttp({ ripgrepLayer: stableGlobRipgrepLayer }))
 const stableNativeFoldingIt = testEffect(makeHttp({ native: true, ripgrepLayer: stableGlobRipgrepLayer }))
 const mcpOverrideMarker = `mcp-context-folding-override-${"m".repeat(24_000)}`
@@ -3072,6 +3076,12 @@ backgroundUnix(
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const jobs = yield* BackgroundJob.Service
+      // The ledger source of the instance bootstrap would register.
+      yield* ChildResults.init({
+        inbox: yield* SessionInbox.Service,
+        database: yield* Database.Service,
+        scope: yield* Scope.Scope,
+      })
       const chat = yield* sessions.create({
         title: "task-background-e2e",
         permission: [{ permission: "*", pattern: "*", action: "allow" }],

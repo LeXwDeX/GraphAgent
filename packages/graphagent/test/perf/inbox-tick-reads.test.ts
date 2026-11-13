@@ -18,6 +18,7 @@ import { Goal } from "@/goal/goal"
 import { GoalLoop } from "@/goal/loop"
 import type { InstanceContext } from "@/project/instance-context"
 import { Provider } from "@/provider/provider"
+import { ChildResults } from "@/session/child/result-source"
 import { SessionInbox } from "@/session/inbox"
 import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
@@ -28,23 +29,26 @@ import { it } from "../lib/effect"
 // H0 read budget for the whole inbox tick (Issue #1021, invariant 7).
 // `dag-tick-reads.test.ts` pins the DAG ledgers on their own; this probe pins
 // what one instance really pays: the REAL `SessionInbox` with the production
-// `goal.continue` source (registered by `GoalLoop.init`) and the production
-// `dag.delivery` source (registered by `DagDelivery.make`) on one counting
-// database, driven by the inbox's own 30s timer under TestClock. With nothing
-// to deliver a tick may issue at most four reads: goal 1 (`listWaitingSessions`)
-// + DAG 2 (one wake + due-paused UNION, one mailbox page), which leaves one
-// read for #1026's `child.result` scan. Reads are the statements the production
-// SQL client issues, not an assumed shape.
+// `goal.continue` source (registered by `GoalLoop.init`), the production
+// `dag.delivery` source (registered by `DagDelivery.make`) and the production
+// `child.result` source (registered by `ChildResults.make`, Issue #1026 PR3a)
+// on one counting database, driven by the inbox's own 30s timer under
+// TestClock. With nothing to deliver a tick may issue at most four reads: goal
+// 1 (`listWaitingSessions`) + DAG 2 (one wake + due-paused UNION, one mailbox
+// page) + child 1 (one directory-filtered query over `child_run_unreported`),
+// which spends the whole budget. Reads are the statements the production SQL
+// client issues, not an assumed shape.
 const DIRECTORY = "/work/inbox-tick-reads"
 const PROJECT_ID = "project-inbox-tick-reads"
 
 /** Invariant 7: the most reads one instance's tick may issue with nothing to deliver. */
 const TICK_READ_BUDGET = 4
 
-// What the two sources pay today. The budget minus their sum is the one read
-// #1026 adds for `child.result`; raising either number needs that headroom.
+// What the three sources pay today. Their sum is the whole budget: no source
+// can add a read without another giving one up.
 const GOAL_TICK_READS = 1
 const DAG_TICK_READS = 2
+const CHILD_TICK_READS = 1
 
 const context: InstanceContext = {
   directory: DIRECTORY,
@@ -80,6 +84,7 @@ const layer = Layer.mergeAll(databaseLayer, storeLayer, messagesLayer, loopLayer
 interface Sources {
   readonly goal: boolean
   readonly dag: boolean
+  readonly child: boolean
 }
 
 interface Tick {
@@ -131,6 +136,15 @@ const measureTick = (sources: Sources): Effect.Effect<Tick> =>
       })
     }
     if (sources.goal) yield* (yield* GoalLoop.Service).init()
+    // The admission port is only reached when a result is owed, which an empty tick never finds.
+    if (sources.child)
+      yield* ChildResults.make({
+        db: (yield* Database.Service).db,
+        inbox,
+        prompts: undefined as never,
+        directory: DIRECTORY,
+        scope,
+      })
     // Arms the instance's 30s timer exactly like bootstrap does.
     yield* inbox.init()
 
@@ -151,30 +165,35 @@ const measureTick = (sources: Sources): Effect.Effect<Tick> =>
     }
   }).pipe(Effect.provide(layer), Effect.provideService(InstanceRef, context), Effect.scoped)
 
-it.effect("an empty 30s tick of the goal and DAG sources reads three of four budgeted ledgers and writes nothing", () =>
-  Effect.gen(function* () {
-    const goalOnly = yield* measureTick({ goal: true, dag: false })
-    const dagOnly = yield* measureTick({ goal: false, dag: true })
-    const joint = yield* measureTick({ goal: true, dag: true })
-    // The measured values ride along in the CI log, not just a pass/fail.
-    process.stderr.write(
-      `[inbox-tick-reads] goal=${goalOnly.reads} dag=${dagOnly.reads} joint=${joint.reads} budget=${TICK_READ_BUDGET}\n`,
-    )
+it.effect(
+  "an empty 30s tick of the goal, DAG and child.result sources reads all four budgeted ledgers and writes nothing",
+  () =>
+    Effect.gen(function* () {
+      const goalOnly = yield* measureTick({ goal: true, dag: false, child: false })
+      const dagOnly = yield* measureTick({ goal: false, dag: true, child: false })
+      const childOnly = yield* measureTick({ goal: false, dag: false, child: true })
+      const joint = yield* measureTick({ goal: true, dag: true, child: true })
+      // The measured values ride along in the CI log, not just a pass/fail.
+      process.stderr.write(
+        `[inbox-tick-reads] goal=${goalOnly.reads} dag=${dagOnly.reads} child=${childOnly.reads} joint=${joint.reads} budget=${TICK_READ_BUDGET}\n`,
+      )
 
-    // The gate (invariant 7).
-    expect(joint.reads).toBeLessThanOrEqual(TICK_READ_BUDGET)
-    // Each source really scans on its own, and the joint pass is exactly their
-    // sum: the inbox adds no read of its own, and a source that silently
-    // dropped out of the shared inbox cannot pass the budget vacuously. The
-    // sum is 3 of the 4 budgeted reads; the last one is reserved for #1026.
-    expect(goalOnly.reads).toBe(GOAL_TICK_READS)
-    expect(dagOnly.reads).toBe(DAG_TICK_READS)
-    expect(joint.reads).toBe(goalOnly.reads + dagOnly.reads)
-    expect(joint.reads).toBe(GOAL_TICK_READS + DAG_TICK_READS)
-    // A tick with nothing to deliver neither writes a row nor publishes an event.
-    for (const tick of [goalOnly, dagOnly, joint]) {
-      expect(tick.writes).toBe(0)
-      expect(tick.events).toBe(0)
-    }
-  }),
+      // The gate (invariant 7).
+      expect(joint.reads).toBeLessThanOrEqual(TICK_READ_BUDGET)
+      // Each source really scans on its own, and the joint pass is exactly their
+      // sum: the inbox adds no read of its own, and a source that silently
+      // dropped out of the shared inbox cannot pass the budget vacuously. The
+      // sum is the whole budget: goal 1 + DAG 2 + child 1.
+      expect(goalOnly.reads).toBe(GOAL_TICK_READS)
+      expect(dagOnly.reads).toBe(DAG_TICK_READS)
+      expect(childOnly.reads).toBe(CHILD_TICK_READS)
+      expect(joint.reads).toBe(goalOnly.reads + dagOnly.reads + childOnly.reads)
+      expect(joint.reads).toBe(GOAL_TICK_READS + DAG_TICK_READS + CHILD_TICK_READS)
+      expect(joint.reads).toBe(TICK_READ_BUDGET)
+      // A tick with nothing to deliver neither writes a row nor publishes an event.
+      for (const tick of [goalOnly, dagOnly, childOnly, joint]) {
+        expect(tick.writes).toBe(0)
+        expect(tick.events).toBe(0)
+      }
+    }),
 )

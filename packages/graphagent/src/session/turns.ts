@@ -150,7 +150,22 @@ export interface TurnStartOptions {
   readonly commitAdmission?: AdmissionCommit
   readonly modelBaseline?: ModelBaseline
   readonly persistAdmission?: Effect.Effect<void, unknown>
+  /**
+   * A cancellation request the caller already registered, usually fenced by the
+   * epoch it observed at its claim (`SessionCancellation.requestIfEpoch`, as
+   * `admitNowUnderFence` does). `start` then runs under it instead of opening a
+   * request of its own, so an ESC that lands after the caller's claim ends the
+   * admission before anything is committed. The caller releases it.
+   */
+  readonly request?: ReturnType<typeof SessionCancellation.request>
 }
+
+/**
+ * What an immediate admission carries beyond its options: the origin an inbox
+ * source stamps on the turn it starts (otherwise `originFor` derives one from
+ * the options), and a cancellation request the caller already holds.
+ */
+export type AdmissionExtras = Partial<Pick<TurnStartOptions, "origin" | "request">>
 
 /** What the loop machine reports at its exit; `Turns` persists it. */
 export interface TurnExecution {
@@ -667,7 +682,7 @@ export function makeTurns(deps: TurnDeps): Interface {
 
   const start = Effect.fn("Turns.start")(function* (input: PromptInput, options: TurnStartOptions) {
     if (options.when === "idle") {
-      const prepared = yield* prepare(input, options.admissionOptions, options.persistAdmission, undefined)
+      const prepared = yield* prepare(input, options.admissionOptions, options.persistAdmission, options.request)
       if (Option.isNone(prepared)) {
         return {
           admission: { kind: "skipped_busy" },
@@ -690,7 +705,10 @@ export function makeTurns(deps: TurnDeps): Interface {
       } satisfies TurnStart
     }
 
-    return yield* deps.withRunRequest(input.sessionID, (request, witness) =>
+    // Under the caller's request when it brought one (see `TurnStartOptions.request`), else under a fresh one.
+    const withRunRequest: TurnDeps["withRunRequest"] = (sessionID, use) =>
+      deps.withRunRequest(sessionID, use, options.request)
+    return yield* withRunRequest(input.sessionID, (request, witness) =>
       deps.withPromptLock(witness, input.sessionID, () =>
         Effect.gen(function* () {
           if (!request.valid()) return yield* Effect.interrupt

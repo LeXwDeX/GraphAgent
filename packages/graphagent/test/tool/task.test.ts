@@ -26,6 +26,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { disposeAllInstances } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { initTaskTool } from "../lib/child-runs"
+import { resultDelivery, type Admitted } from "../lib/child-results"
 import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { ChildRegistry } from "@/session/child/registry"
@@ -238,6 +239,13 @@ const endedRun = (childSessionID: SessionID, attempt = 1) =>
     ),
     `run ${attempt} of ${childSessionID} never ended`,
   )
+
+// The text a background run's ending told the parent session. The delivery is the result ledger's (`child.result`);
+// here the source runs over a recording admission port and is claimed the way the inbox claims it.
+const noticeOf = (admitted: Admitted | undefined) => {
+  const part = admitted?.input.parts[0]
+  return part?.type === "text" ? part.text : undefined
+}
 
 const taskCtx = (
   chat: Session.Info,
@@ -913,14 +921,12 @@ describe("tool.task", () => {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
       const def = yield* initTaskTool(tool)
-      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const delivery = yield* resultDelivery()
       let childPrompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) => {
-          if (input.sessionID === chat.id)
-            return Deferred.succeed(injected, input).pipe(Effect.as(reply(input, "noted")))
           childPrompts += 1
           return Effect.succeed(assistantReply(input, TRUNCATED))
         },
@@ -951,17 +957,13 @@ describe("tool.task", () => {
       expect(waited.info?.error).toContain("output token cap")
       expect(waited.info?.error).toContain("reasoning 32000")
       expect(childPrompts).toBe(2)
-      const notification = yield* awaitWithTimeout(
-        Deferred.await(injected),
-        "background truncation result was not injected into the parent",
-      )
-      const part = notification.parts[0]
-      expect(part?.type).toBe("text")
-      if (part?.type === "text") {
-        expect(part.text).toContain('state="error"')
-        expect(part.text).toContain("output token cap")
-        expect(part.text).not.toContain('state="completed"')
-      }
+      // The ending is the whole trigger: the run is owed to the ledger, and the claim tells the parent.
+      yield* endedRun(SessionID.make(result.metadata.sessionID))
+      expect(yield* delivery.claim(chat.id)).toBe(true)
+      const text = noticeOf(delivery.admitted[0])
+      expect(text).toContain('state="error"')
+      expect(text).toContain("output token cap")
+      expect(text).not.toContain('state="completed"')
     }),
   )
 
@@ -971,14 +973,12 @@ describe("tool.task", () => {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
       const def = yield* initTaskTool(tool)
-      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const delivery = yield* resultDelivery()
       let childPrompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) => {
-          if (input.sessionID === chat.id)
-            return Deferred.succeed(injected, input).pipe(Effect.as(reply(input, "noted")))
           childPrompts += 1
           return Effect.succeed(
             childPrompts === 1 ? assistantReply(input, PARTIAL) : assistantReply(input, { text: "" }),
@@ -1011,17 +1011,12 @@ describe("tool.task", () => {
       expect(waited.info?.error).toContain("empty final answer")
       expect(waited.info?.error).toContain("PARTIAL")
       expect(childPrompts).toBe(2)
-      const notification = yield* awaitWithTimeout(
-        Deferred.await(injected),
-        "background failure result was not injected into the parent",
-      )
-      const part = notification.parts[0]
-      expect(part?.type).toBe("text")
-      if (part?.type === "text") {
-        expect(part.text).toContain('state="error"')
-        expect(part.text).toContain("PARTIAL")
-        expect(part.text).not.toContain('state="completed"')
-      }
+      yield* endedRun(SessionID.make(result.metadata.sessionID))
+      expect(yield* delivery.claim(chat.id)).toBe(true)
+      const text = noticeOf(delivery.admitted[0])
+      expect(text).toContain('state="error"')
+      expect(text).toContain("PARTIAL")
+      expect(text).not.toContain('state="completed"')
     }),
   )
 
@@ -1538,22 +1533,23 @@ describe("tool.task", () => {
       const def = yield* initTaskTool(tool)
       const ready = yield* Deferred.make<void>()
       const done = yield* Deferred.make<void>()
-      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const delivery = yield* resultDelivery()
+      const parentPrompts: SessionPrompt.PromptInput[] = []
       let runs = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
-        prompt: (input) => {
-          if (input.sessionID === chat.id) {
-            return Deferred.succeed(injected, input).pipe(Effect.as(reply(input, "injected")))
-          }
-          return Effect.gen(function* () {
+        prompt: (input) =>
+          Effect.gen(function* () {
+            if (input.sessionID === chat.id) {
+              parentPrompts.push(input)
+              return reply(input, "noted")
+            }
             runs += 1
             yield* Deferred.succeed(ready, undefined)
             yield* Deferred.await(done)
             return reply(input, "background done")
-          })
-        },
+          }),
       }
 
       const fiber = yield* def
@@ -1588,11 +1584,66 @@ describe("tool.task", () => {
       expect(result.output).toContain(`state="running"`)
       expect((yield* jobs.get(result.metadata.sessionID))?.status).toBe("running")
       expect(runs).toBe(1)
+      // The promotion detached the run: its result is the ledger's from here, not the tool call's.
+      const child = SessionID.make(result.metadata.sessionID)
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "running", detached: true })
 
       yield* Deferred.succeed(done, undefined)
       expect((yield* jobs.wait({ id: result.metadata.sessionID })).info?.output).toBe("background done")
-      expect((yield* Deferred.await(injected)).parts[0]?.type).toBe("text")
+      const ended = yield* endedRun(child)
+      expect(ended.reported_at).toBeNull()
+      expect(ended.outcome).toEqual({ type: "completed", report: { title: "inspect bug", text: "background done" } })
+      // The parent is told once, by the ledger.
+      expect(yield* delivery.claim(chat.id)).toBe(true)
+      expect(noticeOf(delivery.admitted[0])).toContain("background done")
+      expect(yield* delivery.claim(chat.id)).toBe(false)
+      expect(delivery.admitted).toHaveLength(1)
       expect(runs).toBe(1)
+      // Nothing but the ledger told the parent: the tool's own watcher no longer prompts it.
+      expect(parentPrompts).toEqual([])
+    }),
+  )
+
+  // The promotion is observed twice, by the job's `onPromote` and by the foreground call that waits for the job; each
+  // detaches the run before anything of its own can settle it. This one has only the call to see it.
+  it.instance("a promotion only the waiting tool call sees still detaches the run for the ledger", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool.pipe(
+        Effect.provideService(BackgroundJob.Service, {
+          ...jobs,
+          start: (input) => jobs.start({ ...input, onPromote: undefined }),
+        }),
+      )
+      const def = yield* initTaskTool(tool)
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const delivery = yield* resultDelivery()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Deferred.succeed(ready, undefined).pipe(
+            Effect.andThen(Deferred.await(done)),
+            Effect.as(reply(input, "finished after the promotion")),
+          ),
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      if (!job) throw new Error("task job not found")
+      yield* jobs.promote(job.id)
+      const result = yield* Fiber.join(fiber)
+      const child = SessionID.make(result.metadata.sessionID)
+      expect(result.metadata.background).toBe(true)
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "running", detached: true })
+
+      yield* Deferred.succeed(done, undefined)
+      const ended = yield* endedRun(child)
+      expect(ended.reported_at).toBeNull()
+      expect(yield* delivery.claim(chat.id)).toBe(true)
+      expect(noticeOf(delivery.admitted[0])).toContain("finished after the promotion")
     }),
   )
 
@@ -1675,15 +1726,11 @@ describe("tool.task", () => {
       const first = defer<void>()
       const second = defer<void>()
       const updated = defer<SessionPrompt.PromptInput>()
-      const injected = defer<SessionPrompt.PromptInput>()
+      const delivery = yield* resultDelivery()
       let prompts = 0
       const promptOps: TaskPromptOps = {
         ...stubOps(),
         prompt: (input) => {
-          if (input.sessionID === chat.id) {
-            injected.resolve(input)
-            return Effect.succeed(reply(input, "done"))
-          }
           prompts++
           if (prompts === 1) return Effect.promise(() => first.promise).pipe(Effect.as(reply(input, "first done")))
           updated.resolve(input)
@@ -1733,10 +1780,11 @@ describe("tool.task", () => {
       const waited = yield* jobs.wait({ id: started.metadata.sessionID, timeout: 1_000 })
       expect(waited.info?.status).toBe("completed")
       expect(waited.info?.output).toBe("second done")
-      const notification = yield* Effect.promise(() => injected.promise)
-      expect(notification.variant).toBe("xhigh")
-      expect(notification.parts[0]?.type).toBe("text")
-      if (notification.parts[0]?.type === "text") expect(notification.parts[0].text).toContain("second done")
+      // One run, one result: the appended input did not add a run, and the parent is told when the last input is done.
+      yield* endedRun(SessionID.make(started.metadata.sessionID))
+      expect(yield* delivery.claim(chat.id)).toBe(true)
+      expect(delivery.admitted).toHaveLength(1)
+      expect(noticeOf(delivery.admitted[0])).toContain("second done")
     }),
   )
 
@@ -2303,7 +2351,11 @@ describe("tool.task child runs", () => {
       first.resolve()
       second.resolve()
       expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
-      expect((yield* endedRun(child)).outcome).toEqual({ type: "completed" })
+      // The one run ends once, with the result of the last input: that is what the ledger owes the parent.
+      expect((yield* endedRun(child)).outcome).toEqual({
+        type: "completed",
+        report: { title: "inspect bug", text: "second done" },
+      })
       expect(yield* runsOf(child)).toHaveLength(1)
     }),
   )
@@ -2420,7 +2472,10 @@ describe("tool.task child runs", () => {
         }),
       )
       const release = yield* Deferred.make<void>()
-      const injected: SessionPrompt.PromptInput[] = []
+      // What the parent is told is the result ledger's business: claiming it here is what an inbox drain does.
+      const delivery = yield* resultDelivery()
+      // The tool itself never prompts the parent any more; a prompt to it would be the old direct delivery.
+      const parentPrompts: SessionPrompt.PromptInput[] = []
       const promptOps: TaskPromptOps = {
         cancel: (sessionID) =>
           Effect.sync(() => {
@@ -2429,13 +2484,13 @@ describe("tool.task child runs", () => {
         resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
         prompt: (input) => {
           if (input.sessionID === chat.id) {
-            injected.push(input)
+            parentPrompts.push(input)
             return Effect.succeed(reply(input, "noted"))
           }
           return Deferred.await(release).pipe(Effect.as(reply(input, "late answer")))
         },
       }
-      return { chat, assistant, def, cancels, jobCancels, release, injected, promptOps }
+      return { chat, assistant, def, cancels, jobCancels, release, delivery, parentPrompts, promptOps }
     })
   const cancelFixture = cancelFixtureFor()
 
@@ -2457,7 +2512,7 @@ describe("tool.task child runs", () => {
   background.instance("action cancel stops a background task: run cancelled, job cancelled, no result delivered", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
-      const { chat, assistant, def, cancels, jobCancels, release, injected, promptOps } = yield* cancelFixture
+      const { chat, assistant, def, cancels, jobCancels, release, delivery, promptOps } = yield* cancelFixture
       const started = yield* def.execute(
         { ...general, background: true },
         taskCtx(chat, assistant, promptOps, { callID: "call_start" }),
@@ -2484,10 +2539,13 @@ describe("tool.task child runs", () => {
       )
       expect(cancels).toEqual([`${child}:task-cancelled:main-agent`])
       expect(jobCancels).toContain(child)
-      // A late answer from the cancelled child must not reach the parent.
+      // A late answer from the cancelled child must not reach the parent: the run ended cancelled, which counts as
+      // reported, so the ledger owes the parent nothing.
       yield* Deferred.succeed(release, undefined)
       yield* Effect.sleep("100 millis")
-      expect(injected).toEqual([])
+      expect((yield* endedRun(child)).reported_at).not.toBeNull()
+      expect(yield* delivery.claim(chat.id)).toBe(false)
+      expect(delivery.admitted).toEqual([])
       expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
@@ -2635,7 +2693,7 @@ describe("tool.task child runs", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const fixture = yield* cancelFixture
-      const { chat, assistant, def, cancels, jobCancels, release, injected, promptOps } = fixture
+      const { chat, assistant, def, cancels, jobCancels, release, delivery, parentPrompts, promptOps } = fixture
       const child = yield* runningTask(fixture)
       const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
 
@@ -2665,11 +2723,14 @@ describe("tool.task child runs", () => {
       // The task carries on and still delivers its result.
       yield* Deferred.succeed(release, undefined)
       expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
-      expect((yield* endedRun(child)).outcome).toEqual({ type: "completed" })
-      yield* pollWithTimeout(
-        Effect.sync(() => (injected.length > 0 ? true : undefined)),
-        "the finished task was never delivered",
-      )
+      expect((yield* endedRun(child)).outcome).toEqual({
+        type: "completed",
+        report: { title: "inspect bug", text: "late answer" },
+      })
+      expect(yield* delivery.claim(chat.id)).toBe(true)
+      expect(noticeOf(delivery.admitted[0])).toContain("late answer")
+      // The tool did not prompt the parent itself: the ledger told it.
+      expect(parentPrompts).toEqual([])
     }),
   )
 
@@ -2706,7 +2767,7 @@ describe("tool.task child runs", () => {
       const reached = yield* Deferred.make<void>()
       const open = yield* Deferred.make<void>()
       const fixture = yield* cancelFixtureFor({ reached, open })
-      const { chat, assistant, def, release, injected, promptOps } = fixture
+      const { chat, assistant, def, release, delivery, promptOps } = fixture
       const child = yield* runningTask(fixture)
 
       // The cancel call swaps the run to cancelled, then stops right in front
@@ -2735,7 +2796,9 @@ describe("tool.task child runs", () => {
       )
       expect(wake.evaluate).toBe(true)
       expect(wake.payload).toContain("ended without a result (cancelled)")
-      expect(injected).toEqual([])
+      expect((yield* endedRun(child)).reported_at).not.toBeNull()
+      expect(yield* delivery.claim(chat.id)).toBe(false)
+      expect(delivery.admitted).toEqual([])
       expect((yield* endedRun(child)).outcome).toEqual({
         type: "cancelled",
         by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
@@ -2872,7 +2935,10 @@ describe("tool.task child runs", () => {
 
       yield* Deferred.succeed(second, undefined)
       expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info).toMatchObject({ status: "completed" })
-      expect((yield* endedRun(child, 2)).outcome).toEqual({ type: "completed" })
+      expect((yield* endedRun(child, 2)).outcome).toEqual({
+        type: "completed",
+        report: { title: "inspect bug", text: "second answer" },
+      })
     }),
   )
 
@@ -2951,16 +3017,15 @@ describe("tool.task child runs", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const fixture = yield* cancelFixture
-      const { chat, assistant, def, release, injected, promptOps } = fixture
+      const { chat, assistant, def, release, delivery, parentPrompts, promptOps } = fixture
       const child = yield* runningTask(fixture)
 
       yield* Deferred.succeed(release, undefined)
       expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
       yield* endedRun(child)
-      yield* pollWithTimeout(
-        Effect.sync(() => (injected.length > 0 ? true : undefined)),
-        "the finished task was never delivered",
-      )
+      expect(yield* delivery.claim(chat.id)).toBe(true)
+      expect(noticeOf(delivery.admitted[0])).toContain("late answer")
+      expect(parentPrompts).toEqual([])
 
       const exit = yield* def
         .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
@@ -2968,7 +3033,13 @@ describe("tool.task child runs", () => {
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("already finished")
-      expect((yield* runsOf(child))[0]?.outcome).toEqual({ type: "completed" })
+      expect((yield* runsOf(child))[0]?.outcome).toEqual({
+        type: "completed",
+        report: { title: "inspect bug", text: "late answer" },
+      })
+      // Told once: the late cancel changed neither the run nor what the parent heard.
+      expect(yield* delivery.claim(chat.id)).toBe(false)
+      expect(delivery.admitted).toHaveLength(1)
     }),
   )
 
