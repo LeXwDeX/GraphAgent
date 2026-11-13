@@ -22,6 +22,12 @@ import { HookStartContext } from "@/hook/start-context"
 import { TaskSubagents } from "@/hook/task-subagents"
 import { HookTurnContext } from "@/hook/turn-context"
 
+/**
+ * What the shell tool's background mode and `watch_pr` prompt their own
+ * session with (#1071 moves them off it). The task tool does not read it: it
+ * drives its child session through `ctx.children`, under the credential of the
+ * child's run.
+ */
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
@@ -527,9 +533,6 @@ export const TaskTool = Tool.define(
         metadata,
       })
 
-      const ops = ctx.extra?.promptOps as TaskPromptOps
-      if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
-
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         if (scopedAgent.hooks !== undefined && settingsHook?.registerScoped)
           yield* settingsHook.registerScoped(nextSession.id, {
@@ -551,28 +554,26 @@ export const TaskTool = Tool.define(
           yield* SettingsHook.landSystemMessages(result, { sessionID: nextSession.id })
           startContexts = result.additionalContexts
         }
-        const parts = yield* ops.resolvePromptParts(prompt)
-        // Queue immediately before ops.prompt (after parts resolved) so a failed resolve leaves no
+        const parts = yield* children.resolvePromptParts(prompt)
+        // Queue immediately before the first prompt (after parts resolved) so a failed resolve leaves no
         // stale queued context; admission of the child's first message drains it.
         if (startCtx) {
           for (const text of startContexts) {
             if (text) yield* startCtx.append(nextSession.id, text)
           }
         }
-        let result = yield* ops.prompt(
-          {
-            messageID: MessageID.ascending(),
-            sessionID: nextSession.id,
-            model: {
-              modelID: model.modelID,
-              providerID: model.providerID,
-            },
-            variant: next.model ? undefined : variant,
-            agent: next.name,
-            parts,
+        // Every prompt to the child goes through its run: it is admitted as a delegation, under the run's credential.
+        let result = yield* children.prompt({
+          messageID: MessageID.ascending(),
+          sessionID: nextSession.id,
+          model: {
+            modelID: model.modelID,
+            providerID: model.providerID,
           },
-          { internalDelegation: true },
-        )
+          variant: next.model ? undefined : variant,
+          agent: next.name,
+          parts,
+        })
         // A child that ended on a provider or output error must not read as a
         // completed task carrying an empty or partial answer. Cancellation keeps
         // its existing interrupt path.
@@ -583,7 +584,7 @@ export const TaskTool = Tool.define(
         // child's turn, and it has no human to ask for the rest.
         if (result.info.role === "assistant" && result.info.finish === "length") {
           prior = finalText(result)
-          const continued = yield* ops
+          const continued = yield* children
             .prompt(
               {
                 messageID: MessageID.ascending(),
@@ -596,7 +597,7 @@ export const TaskTool = Tool.define(
                 agent: next.name,
                 parts: [{ type: "text", synthetic: true, text: TRUNCATION_CONTINUATION }],
               },
-              { continueToolBudget: true, internalDelegation: true },
+              { continueToolBudget: true },
             )
             .pipe(Effect.exit)
           if (Exit.isFailure(continued)) return yield* continuationFailure(continued.cause, prior)
@@ -741,7 +742,7 @@ export const TaskTool = Tool.define(
           // run is settled by this call once it has seen the whole task through.
           run: (runInBackground ? watchSettlement(registered, nextSession.id, claim, description) : Effect.void).pipe(
             Effect.andThen(runWithSlot(registered)),
-            Effect.onInterrupt(() => ops.cancel(nextSession.id)),
+            Effect.onInterrupt(() => children.interrupt(nextSession.id)),
           ),
         })
         .pipe(
@@ -779,7 +780,7 @@ export const TaskTool = Tool.define(
       }
 
       const runCancel = yield* EffectBridge.make().pipe(Effect.onError(() => releaseSubagent))
-      const cancel = ops.cancel(nextSession.id)
+      const cancel = children.interrupt(nextSession.id)
 
       function onAbort() {
         runCancel.fork(cancel)
@@ -888,7 +889,7 @@ export const TaskTool = Tool.define(
             // A failure here breaks the loop immediately (don't swallow the error
             // and re-loop forever — the prior Effect.catch did that).
             const toolCursor = stopToolCursor
-            const cont = yield* ops
+            const cont = yield* children
               .prompt(
                 {
                   messageID: MessageID.ascending(),
@@ -907,7 +908,7 @@ export const TaskTool = Tool.define(
                     },
                   ],
                 },
-                { continueToolBudget: true, internalDelegation: true },
+                { continueToolBudget: true },
               )
               .pipe(Effect.exit)
             // A failed continuation is not a clean stop: propagate its

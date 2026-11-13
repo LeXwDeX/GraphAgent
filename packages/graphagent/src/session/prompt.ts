@@ -153,7 +153,16 @@ export interface Interface {
     sessionID: SessionID,
     options?: { readonly reason?: SessionAbortReason.Info },
   ) => Effect.Effect<void>
-  readonly prompt: (input: PromptInput, options?: AdmissionOptions) => Effect.Effect<SessionV1.WithParts, PromptError>
+  /**
+   * `extras` is what `admit` takes too; a child run's driver sets the
+   * credential of the run it prompts under (Issue #1026, PR3b), which
+   * admission records.
+   */
+  readonly prompt: (
+    input: PromptInput,
+    options?: AdmissionOptions,
+    extras?: AdmissionExtras,
+  ) => Effect.Effect<SessionV1.WithParts, PromptError>
   /** Run a short commit while idle, serialized with prompt admission. Never start or await a turn here. */
   readonly withIdle: <A, E, R>(
     sessionID: SessionID,
@@ -288,6 +297,11 @@ export const layer = Layer.effect(
       db,
       scope,
       cancelSession: (sessionID, options) => admit.cancel(sessionID, options),
+      // Late-bound the same way: `prepareFns` and `admit` exist once the layer is up.
+      driver: {
+        prompt: (input, options, extras) => admit.prompt(input, options, extras).pipe(Effect.catch(Effect.die)),
+        resolvePromptParts: (template) => prepareFns.resolvePromptParts(template),
+      },
     })
     // The event fan-out runs without InstanceRef: only process-wide state and
     // the hint's layer-scoped Refs may be touched here.

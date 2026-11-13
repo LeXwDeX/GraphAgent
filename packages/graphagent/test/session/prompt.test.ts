@@ -9,7 +9,21 @@ import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/http"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } from "effect"
+import {
+  Cause,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  Option,
+  References,
+  Schema,
+  Scope,
+  Stream,
+} from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@graphagent/core/util/error"
@@ -32,6 +46,7 @@ import { TodoReminders } from "../../src/session/todo-reminders"
 import { Session } from "@/session/session"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
+import { ChildRunTable } from "@graphagent/core/session/child.sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -3063,6 +3078,100 @@ unix(
       for (let i = 1; i < max; i++) expect(subStops[i].stopHookActive).toBe(true)
     }),
   30_000,
+)
+
+// Issue #1026 PR3b: a task drives its child through the child's run. The prompt is admitted under the run's
+// credential, and the turn it starts names that run: the turn row is the durable record of who drove it.
+unix(
+  "a task drives its child under its run's credential, and the child's turn records the run",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { general: { model: "test/test-model" } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      const chat = yield* sessions.create({
+        title: "task-credential",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("task", { description: "credential probe", prompt: "say ok", subagent_type: "general" })
+      yield* llm.text("sub answer")
+      yield* llm.text("parent done")
+
+      yield* prompt.prompt({ sessionID: chat.id, agent: "build", parts: [{ type: "text", text: "delegate" }] })
+
+      const child = (yield* sessions.children(chat.id))[0]
+      if (!child) throw new Error("the task created no child session")
+      const runs = yield* db
+        .select()
+        .from(ChildRunTable)
+        .where(eq(ChildRunTable.child_session_id, child.id))
+        .all()
+        .pipe(Effect.orDie)
+      const turns = yield* db
+        .select()
+        .from(SessionTurnTable)
+        .where(eq(SessionTurnTable.session_id, child.id))
+        .all()
+        .pipe(Effect.orDie)
+      expect(runs).toHaveLength(1)
+      expect(turns).toHaveLength(1)
+      expect(turns[0]).toMatchObject({
+        state: "ended",
+        origin: JSON.stringify({ kind: "child_run", childRunID: runs[0]?.id }),
+        origin_ref: runs[0]?.id,
+      })
+    }),
+  30_000,
+)
+
+// The credential reaches admission at two junctions, the admitted prompt and the start of its turn, and both only
+// record it (PR5 refuses on it): the child's prompt still runs, with or without one.
+it.instance("admission records the credential a child is prompted under at both junctions, and refuses nothing", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    const child = yield* sessions.create({ parentID: chat.id, title: "probe (@general subagent)", agent: "general" })
+    const children = (yield* prompt.children).forParent(chat.id)
+    const run = yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "task", toolCallID: "call_junctions" },
+      detached: false,
+    })
+    yield* run.markRunning
+    const lines: string[] = []
+    const record = Logger.make((entry) => {
+      lines.push(JSON.stringify(entry.message))
+    })
+    const drive = (text: string) =>
+      children
+        .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
+        .pipe(
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
+          Effect.provide(Logger.layer([record])),
+        )
+
+    yield* llm.text("child done")
+    const answered = yield* drive("under the credential")
+    expect(answered.info.role).toBe("assistant")
+    const presented = lines.filter((line) => line.includes("child run credential presented"))
+    expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual(["admit", "loop"])
+    for (const line of presented) expect(line).toContain(`"runID":"${run.id}"`)
+
+    // A prompt that carries none is recorded as the gap it is, and still runs.
+    lines.length = 0
+    yield* run.settle({ type: "completed" })
+    yield* llm.text("child done again")
+    const bare = yield* prompt
+      .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "no credential" }] })
+      .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
+    expect(bare.info.role).toBe("assistant")
+    expect(lines.filter((line) => line.includes("without a run credential"))).toHaveLength(1)
+    expect(lines.filter((line) => line.includes("child run credential presented"))).toEqual([])
+  }),
 )
 
 backgroundUnix(

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Deferred, Effect } from "effect"
-import { EngineProcess, type ActiveChildRun, type ChildReport } from "../engine-process"
-import type { ChildCancelBy, ChildRunOutcome } from "./types"
+import { EngineProcess, type ActiveChildRun, type ChildReport, type IssuedCredential } from "../engine-process"
+import type { ChildCancelBy, ChildRunCredential, ChildRunOutcome } from "./types"
 
 /**
  * Zero-dependency access to the active child runs of this process (Issue
@@ -20,6 +20,12 @@ import type { ChildCancelBy, ChildRunOutcome } from "./types"
 
 const registry = EngineProcess.children
 
+/** The one place a credential is issued: with the run it belongs to, by nothing else. */
+function issue(runID: string, childSessionID: ActiveChildRun["childSessionID"]): IssuedCredential {
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the brand has no runtime value: issuing is the cast
+  return { runID, childSessionID, revoked: false } as IssuedCredential
+}
+
 export function create(input: {
   readonly id: string
   readonly childSessionID: ActiveChildRun["childSessionID"]
@@ -31,7 +37,7 @@ export function create(input: {
     ...input,
     phase: "queued",
     outcome: undefined,
-    credential: { runID: input.id, revoked: false },
+    credential: issue(input.id, input.childSessionID),
     held: false,
     stopped: false,
     written: false,
@@ -82,9 +88,14 @@ export function activeWhere(predicate: (entry: ActiveChildRun) => boolean): Acti
  * The credential of a child session's active run. Admission and the loop of
  * later PRs call this instead of reading the process state themselves.
  */
-export function credentialOf(childSessionID: string): ActiveChildRun["credential"] | undefined {
+export function credentialOf(childSessionID: string): ChildRunCredential | undefined {
   const entry = activeFor(childSessionID)
   return entry && !entry.credential.revoked ? entry.credential : undefined
+}
+
+/** Whether `credential` is the live credential of its child session's active run: the check PR5 refuses on. */
+export function live(credential: ChildRunCredential): boolean {
+  return credentialOf(credential.childSessionID) === credential
 }
 
 /** queued -> running. False when the run already ended. */

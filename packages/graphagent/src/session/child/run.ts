@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Database } from "@graphagent/core/database/database"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Cause, Clock, Deferred, Effect, Option, Scope } from "effect"
 import { randomUUID } from "node:crypto"
 import { DagLocation } from "@/dag/location"
@@ -10,8 +11,9 @@ import { registerDisposer } from "@/effect/instance-registry"
 import type { SessionAbortReason } from "../abort-reason"
 import { SessionCancellation } from "../cancellation"
 import { EngineProcess, type ActiveChildRun } from "../engine-process"
+import type { PromptInput } from "../prompt-input"
 import type { SessionID } from "../schema"
-import { runnerAlive } from "../turns"
+import { runnerAlive, type AdmissionExtras, type AdmissionOptions } from "../turns"
 import { abortReasonOf, boundedCancel, CANCEL_BOUND_MS } from "./cancel"
 import { ChildNotify as Notify } from "./notify"
 import { ChildRegistry as Registry } from "./registry"
@@ -20,6 +22,7 @@ import {
   ActiveRunExists,
   NotOwner,
   type ChildCancelBy,
+  type ChildPromptOptions,
   type ChildRunCancelResult,
   type ChildRunHandle,
   type ChildRunOutcome,
@@ -35,7 +38,9 @@ export {
   type ChildCancelBy,
   type ChildOwner,
   type ChildOwnerKind,
+  type ChildPromptOptions,
   type ChildRunCancelResult,
+  type ChildRunCredential,
   type ChildRunError,
   type ChildRunHandle,
   type ChildRunOutcome,
@@ -62,7 +67,26 @@ export {
  * Assembled inside `SessionPrompt.layer` next to the turns and admission
  * factories, so it never depends on the tool registry and cannot form a cycle
  * with the task tool.
+ *
+ * A driver prompts its child session through the run (`prompt`): the prompt
+ * is admitted as a delegation and carries the credential of the session's
+ * active run (PR3b), which admission records and PR5 will require.
  */
+
+/** What drives a child session: `SessionPrompt`, late-bound like `cancelSession`. */
+export interface Driver {
+  /**
+   * `SessionPrompt.prompt`: one admitted prompt, awaited to the end of its turn.
+   * A failure of the admission itself is a defect, as it always was for the task tool.
+   */
+  readonly prompt: (
+    input: PromptInput,
+    options: AdmissionOptions,
+    extras?: Pick<AdmissionExtras, "credential">,
+  ) => Effect.Effect<SessionV1.WithParts>
+  /** `SessionPrompt.resolvePromptParts`. */
+  readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
+}
 
 export interface Deps {
   readonly db: Database.Interface["db"]
@@ -73,6 +97,11 @@ export interface Deps {
     sessionID: SessionID,
     options?: { readonly reason?: SessionAbortReason.Info },
   ) => Effect.Effect<void>
+  /**
+   * Late-bound `SessionPrompt`, for the runs that are driven through `prompt`. A factory built only to register,
+   * settle and cancel runs (the write probes) has none: driving through it is a defect.
+   */
+  readonly driver?: Driver
 }
 
 export type Interface = ChildRunsInterface
@@ -415,9 +444,47 @@ const listByParent = (ctx: Ctx) => (parentSessionID: SessionID, options?: { read
     Effect.map((rows) => rows.map((listed) => Store.viewOf(listed.run, listed))),
   )
 
+const driverOf = (ctx: Ctx): Effect.Effect<Driver> =>
+  ctx.driver ? Effect.succeed(ctx.driver) : Effect.die(new Error("child runs were built without a driver"))
+
+/**
+ * A prompt to a child session goes out as the delegation it is, under the
+ * credential of the run the session has when the prompt is sent: the one a
+ * driver registered, or the one it appended input to, which an earlier call
+ * registered. A session that has no active run of this parent is prompted with
+ * none: admission records that, PR5 refuses it.
+ */
+const prompt = (ctx: Ctx) => (parentSessionID: SessionID, input: PromptInput, options?: ChildPromptOptions) =>
+  driverOf(ctx).pipe(
+    Effect.flatMap((driver) =>
+      Effect.suspend(() => {
+        const entry = Registry.activeFor(input.sessionID)
+        const credential =
+          entry && entry.parentSessionID === parentSessionID && !entry.credential.revoked
+            ? entry.credential
+            : undefined
+        return driver.prompt(input, { ...options, internalDelegation: true }, credential ? { credential } : undefined)
+      }),
+    ),
+  )
+
+// Another parent's child is not this parent's to stop. A child session with no run left in the registry is stopped
+// anyway: the driver that asks has nothing else to stop it with.
+const interrupt = (ctx: Ctx) => (parentSessionID: SessionID, childSessionID: SessionID) =>
+  Effect.suspend(() => {
+    const entry = Registry.activeFor(childSessionID)
+    return entry && entry.parentSessionID !== parentSessionID ? Effect.void : ctx.cancelSession(childSessionID)
+  })
+
+const resolvePromptParts = (ctx: Ctx) => (template: string) =>
+  driverOf(ctx).pipe(Effect.flatMap((driver) => driver.resolvePromptParts(template)))
+
 /** The registry knows a parent's runs by session id; a run of another parent is never reachable through the scoped view. */
 const scoped = (api: Omit<ChildRunsInterface, "forParent">, parentSessionID: SessionID): ChildRunsScoped => ({
   parentSessionID,
+  prompt: (input, options) => api.prompt(parentSessionID, input, options),
+  interrupt: (childSessionID) => api.interrupt(parentSessionID, childSessionID),
+  resolvePromptParts: api.resolvePromptParts,
   start: (spec) => api.start({ ...spec, parentSessionID }),
   adopt: (spec) => api.adopt({ ...spec, parentSessionID }),
   latest: (childSessionID) =>
@@ -438,6 +505,9 @@ const assemble = (ctx: Ctx): ChildRunsInterface => {
     inspect: inspect(ctx),
     latest: latestView(ctx),
     listByParent: listByParent(ctx),
+    prompt: prompt(ctx),
+    interrupt: interrupt(ctx),
+    resolvePromptParts: resolvePromptParts(ctx),
     cancel: cancel(ctx),
     detach: detach(ctx),
     recover: () => recover({ db: ctx.db }),

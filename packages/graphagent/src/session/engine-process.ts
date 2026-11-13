@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto"
 import { makeSessionRuntimes, type SessionRuntimes } from "./runtime"
 import { SessionID } from "./schema"
 import { AgentSchedulerState } from "./agent-scheduler-state"
-import type { ChildCancelBy, ChildRunOutcome } from "./child/types"
+import type { ChildCancelBy, ChildRunCredential, ChildRunOutcome } from "./child/types"
 
 /**
  * Process-wide engine state (Issue #1019, PR9).
@@ -196,14 +196,11 @@ export interface RunnerIdentity {
 export type ChildRunPhase = "queued" | "running" | "ended"
 
 /**
- * Placeholder for the run credential (Issue #1026, PR1): issued with a run and
- * revoked when it ends. PR3/PR5 carry a module-private brand of it on
- * admission; PR1 only issues and revokes it.
+ * The registry's own view of a run's credential (Issue #1026): it alone flips
+ * `revoked`, when the run ends. Everyone else sees the readonly
+ * `ChildRunCredential` it hands out.
  */
-export interface ChildRunCredential {
-  readonly runID: string
-  revoked: boolean
-}
+export type IssuedCredential = ChildRunCredential & { revoked: boolean }
 
 /** One active child run of this process. The durable `child_run` row stays authoritative across processes. */
 export interface ActiveChildRun {
@@ -216,7 +213,7 @@ export interface ActiveChildRun {
   readonly owner: object
   phase: ChildRunPhase
   outcome: ChildRunOutcome | undefined
-  readonly credential: ChildRunCredential
+  readonly credential: IssuedCredential
   /**
    * An ended run's child session stays reserved while its driver may still be
    * running: set by a cancellation, cleared once the driver reports it stopped.

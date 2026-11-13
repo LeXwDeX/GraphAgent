@@ -23,6 +23,8 @@ import type { Config } from "@/config/config"
 import { Filesystem } from "@/util/filesystem"
 import { SessionAbortReason } from "../abort-reason"
 import { SessionCancellation } from "../cancellation"
+import { ChildAdmission } from "../child/admission"
+import type { ChildRunCredential } from "../child/types"
 import { MessageID, PartID, type SessionID } from "../schema"
 import type { ExclusiveRegistry } from "../engine-process"
 import type { Session } from "../session"
@@ -83,6 +85,13 @@ function syntheticTextPart(input: { sessionID: SessionID; messageID: MessageID; 
   }
 }
 
+/** The tool switches of a prompt, as the permission rules they are. */
+function toolPermissions(tools: PromptInput["tools"]): PermissionV1.Rule[] {
+  return Object.entries(tools ?? {}).map(
+    ([permission, enabled]): PermissionV1.Rule => ({ permission, action: enabled ? "allow" : "deny", pattern: "*" }),
+  )
+}
+
 /**
  * Immediate admission for automatic sources (`SessionInbox.submit`): commit
  * the user message (and any ledger key inside the same transaction) and
@@ -103,11 +112,12 @@ function makeAdmitNow(deps: Pick<AdmitDeps, "attention" | "turns">): Interface["
     if (attention) yield* attention.input(input.sessionID)
     return yield* turns()
       .start(input, {
-        origin: extras?.origin ?? originFor(options),
+        origin: extras?.origin ?? originFor(options, extras?.credential),
         when: "now",
         admissionOptions: options,
         persistAdmission,
         ...(extras?.request ? { request: extras.request } : {}),
+        ...(extras?.credential ? { credential: extras.credential } : {}),
       })
       .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
   })
@@ -419,8 +429,10 @@ export function makeAdmit(deps: AdmitDeps) {
     options?: AdmissionOptions,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
+    credential?: ChildRunCredential,
   ) {
     const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+    yield* ChildAdmission.observe("admit", session, credential)
     // Reverted turns disappear with the messages the cleanup removes.
     yield* dropReverted({ db, sessions }, session)
     yield* revert.cleanup(session)
@@ -563,10 +575,7 @@ export function makeAdmit(deps: AdmitDeps) {
       )
     }
 
-    const permissions: PermissionV1.Rule[] = []
-    for (const [t, enabled] of Object.entries(input.tools ?? {})) {
-      permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
-    }
+    const permissions = toolPermissions(input.tools)
     if (permissions.length > 0) {
       session.permission = permissions
       yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
@@ -585,7 +594,7 @@ export function makeAdmit(deps: AdmitDeps) {
     options?: AdmissionOptions,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
-    origin: TurnOrigin = originFor(options),
+    extras?: AdmissionExtras,
   ) {
     if (attention) yield* attention.input(input.sessionID)
     if (
@@ -610,7 +619,8 @@ export function makeAdmit(deps: AdmitDeps) {
       if (initial) return initial
     }
     const started = yield* turns().start(input, {
-      origin,
+      ...extras,
+      origin: extras?.origin ?? originFor(options, extras?.credential),
       when: "now",
       admissionOptions: options,
       commitAdmission,
@@ -618,10 +628,10 @@ export function makeAdmit(deps: AdmitDeps) {
     })
     return yield* started.wait
   })
-  const prompt: Interface["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (input, options) {
+  const prompt: Interface["prompt"] = Effect.fn("SessionPrompt.prompt")(function* (input, options, extras) {
     // Plain prompts never carry an admission commit; the internal command
     // path calls promptImpl directly so its cancellation fence stays typed.
-    return yield* promptImpl(input, options).pipe(
+    return yield* promptImpl(input, options, undefined, undefined, extras).pipe(
       Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)),
     )
   })
