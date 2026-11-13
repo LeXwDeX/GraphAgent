@@ -40,12 +40,6 @@ export interface TaskPromptOps {
 }
 
 const id = "task"
-const BACKGROUND_DESCRIPTION = [
-  "Background mode: background=true launches the subagent asynchronously and returns immediately.",
-  "Foreground is the default; use it when you need the result before continuing.",
-  "Use background only for independent work that can run while you continue elsewhere.",
-  "You will be notified automatically when it finishes.",
-].join(" ")
 const CANCEL_DESCRIPTION = [
   'Cancellation: call with action="cancel" and the background task_id to stop one of this session\'s background tasks.',
   "Only background tasks can be cancelled this way; a foreground task is cancelled from the parent session, and a task from another session is refused.",
@@ -54,6 +48,7 @@ const BACKGROUND_STARTED = [
   "The task is working in the background. You will be notified automatically when it finishes.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
   "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
+  "If you have nothing else to do until its result, end your turn now; the result arrives as a new message.",
 ].join("\n")
 const BACKGROUND_UPDATED = [
   "Additional context sent to the running background task.",
@@ -169,7 +164,7 @@ export const Parameters = Schema.Struct({
   ...TaskParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      'Run without waiting. Use only for independent, long-running work whose result you do not need for your next step (see "Choosing foreground or background"). You will be notified when it finishes.',
   }),
 }).check(requireTaskShape)
 
@@ -961,7 +956,7 @@ export const TaskTool = Tool.define(
     })
 
     return {
-      description: [DESCRIPTION, BACKGROUND_DESCRIPTION, CANCEL_DESCRIPTION].join("\n\n"),
+      description: [DESCRIPTION, CANCEL_DESCRIPTION].join("\n\n"),
       effects: "unknown",
       parameters: Parameters,
       repairArguments: repairBackgroundArgument,

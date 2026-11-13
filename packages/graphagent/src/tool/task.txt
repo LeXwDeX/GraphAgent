@@ -2,6 +2,16 @@ Delegate a self-contained task to a subagent. Use this for broad, open-ended exp
 
 - Specify subagent_type from the available agent types. Respect inherited permissions and the shared `maxToolCalls` budget.
 - Give each agent all needed context: a new agent starts fresh and does not see this conversation. State whether it should write code or research, and include verification steps.
-- Launch independent agents concurrently in one message. Do not repeat a delegated task; wait or continue other work. Background execution, when enabled, notifies you on completion.
+- Launch independent agents concurrently in one message. Do not repeat a delegated task; wait or continue other work.
 - The agent returns one message that the user cannot see; summarize it. Check key claims, such as changed files or test results, before relying on or reporting them.
 - Pass task_id to resume a previous session with its history.
+
+Choosing foreground or background:
+- Foreground (default) when any holds: you need the result for your next step; the work needs the
+  user's input or confirmation; it changes shared session state; or it is quick (seconds).
+- Background only when all hold: you can keep working without the result; the agent only reads, or
+  writes files you will not touch; it takes minutes; its result fits in one message.
+- Reviews and audits of finished work are good background tasks. Research that decides your next
+  edit is not.
+- Never run two writers on the same files. Never background a task and then wait for it with
+  sleep or polling; if nothing else is left, end your turn and the result will arrive as a message.
