@@ -51,6 +51,26 @@ describe("perf harness store write counters", () => {
     }
   })
 
+  test("a harness disposed with a draft in the composer leaves no draft for the next prompt of the process", async () => {
+    const first = await mountHarness(createFixture("S"))
+    try {
+      first.prompt.set({ input: "left behind", parts: [] })
+      await first.app.renderOnce()
+      expect(first.prompt.current.input).toBe("left behind")
+    } finally {
+      await first.dispose()
+    }
+
+    // The prompt stashes its text when it unmounts and the next prompt mounted in the process restores it.
+    const second = await mountHarness(createFixture("S"))
+    try {
+      await second.app.renderOnce()
+      expect(second.prompt.current.input).toBe("")
+    } finally {
+      await second.dispose()
+    }
+  })
+
   test("a delta for a part the store does not hold is dropped, so a zero-write reading alone proves nothing", async () => {
     const fixture = createFixture("S")
     const harness = await mountHarness(fixture)

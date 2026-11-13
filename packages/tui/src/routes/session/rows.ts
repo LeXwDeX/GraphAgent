@@ -107,6 +107,76 @@ export function rowRevision(...values: (string | number | boolean | undefined)[]
   return hash >>> 0
 }
 
+/** Length of the longest line of `text`, at least 1: the width a row of this text has to wrap. */
+export function longestLine(text: string): number {
+  let longest = 1
+  let start = 0
+  while (true) {
+    const end = text.indexOf("\n", start)
+    const stop = end === -1 ? text.length : end
+    if (stop - start > longest) longest = stop - start
+    if (end === -1) return longest
+    start = end + 1
+  }
+}
+
+/**
+ * The text of a part whose final snapshot has arrived. That snapshot settled the part's stream buffer, so
+ * what the part shows is what the store holds: this is `StreamBuffer.read` of a part with nothing buffered,
+ * read without the stream version. A reader that follows the version re-runs once per frame, and a settled
+ * part has no reason to.
+ */
+export function settledPartText(part: { type: string; text?: string; displayText?: string }): string {
+  return part.type === "text" && typeof part.displayText === "string" ? part.displayText : (part.text ?? "")
+}
+
+/** What a text row needs from the body of its part. */
+export interface TextFacts {
+  /** The body after `normalize`: what the row shows. Empty means the part has no row. */
+  readonly text: string
+  /** Longest line of `text`: the height estimate wraps it. */
+  readonly chars: number
+  /** Content hash of `text`, computed on first use: only a finished row folds its body into its revision. */
+  hash(): number
+}
+
+export interface TextFactsCache {
+  /**
+   * The facts of part `id` for the text `raw`. Derived once per distinct text: a call with the text it saw
+   * last time returns the facts it kept, whatever the length of the text.
+   */
+  read(id: string, raw: string, normalize: (raw: string) => string): TextFacts
+  /** Forgets every part that is not in `live`. */
+  retain(live: ReadonlySet<string>): void
+  readonly size: number
+}
+
+export function createTextFacts(): TextFactsCache {
+  const entries = new Map<string, TextFacts & { raw: string }>()
+
+  function read(id: string, raw: string, normalize: (raw: string) => string) {
+    const entry = entries.get(id)
+    if (entry && entry.raw === raw) return entry
+    const text = normalize(raw)
+    let hash: number | undefined
+    const next = { raw, text, chars: longestLine(text), hash: () => (hash ??= rowRevision(text)) }
+    entries.set(id, next)
+    return next
+  }
+
+  function retain(live: ReadonlySet<string>) {
+    for (const id of entries.keys()) if (!live.has(id)) entries.delete(id)
+  }
+
+  return {
+    read,
+    retain,
+    get size() {
+      return entries.size
+    },
+  }
+}
+
 /** Prefix sums of row heights. `positions[i]` is the top of row `i`. */
 export function prefixPositions(rows: readonly Row[], height: (row: Row, index: number) => number): number[] {
   const positions = new Array<number>(rows.length + 1)

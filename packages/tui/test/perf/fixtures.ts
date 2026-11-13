@@ -30,7 +30,24 @@ export type PerfFixture = {
 const PART_COUNTS: Record<FixtureSize, number> = { S: 25, M: 100, L: 400, XL: 2200 }
 /** Parts that share one assistant message. Only `XL` packs several, the way a long agent turn does. */
 const PARTS_PER_MESSAGE: Record<FixtureSize, number> = { S: 1, M: 1, L: 1, XL: 22 }
-const messageCount = (size: FixtureSize) => PART_COUNTS[size] / PARTS_PER_MESSAGE[size]
+
+export type FixtureOptions = {
+  /**
+   * Parts in each assistant message, in place of the size's own. The message count stays, so this scales the
+   * transcript: 20 parts per message of `XL` is about 1900 rows (just below `WINDOW_MIN_ROWS`, fully
+   * mounted), 40 about 3700. It exists for scale experiments (`run.ts --profile=stream`); the gated
+   * sessions use the sizes as they are.
+   */
+  partsPerMessage?: number
+}
+
+/** How a fixture's parts are spread over its messages. */
+type Layout = { size: FixtureSize; perMessage: number; messages: number }
+
+function layoutOf(size: FixtureSize, options: FixtureOptions = {}): Layout {
+  const messages = PART_COUNTS[size] / PARTS_PER_MESSAGE[size]
+  return { size, perMessage: options.partsPerMessage ?? PARTS_PER_MESSAGE[size], messages }
+}
 /** The long fixtures carry the heavy payloads (a 5 KB paragraph, 10 KB tool output) that the short ones omit. */
 const isLarge = (size: FixtureSize) => size === "L" || size === "XL"
 
@@ -92,9 +109,9 @@ const PLAIN_TAIL: Record<FixtureSize, number> = { S: 10, M: 20, L: 20, XL: 20 }
  * does not follow the correction of rows it already passed. Every scroll scenario
  * leaves the ends and crosses the interior.
  */
-function richBlock(index: number, size: FixtureSize) {
-  const position = Math.floor(index / PARTS_PER_MESSAGE[size]) % PAGE
-  if (position < PLAIN_HEAD || position >= Math.min(PAGE, messageCount(size)) - PLAIN_TAIL[size]) return ""
+function richBlock(index: number, layout: Layout) {
+  const position = Math.floor(index / layout.perMessage) % PAGE
+  if (position < PLAIN_HEAD || position >= Math.min(PAGE, layout.messages) - PLAIN_TAIL[layout.size]) return ""
   switch (index % 10) {
     case 0:
       return codeBlock(index)
@@ -107,9 +124,9 @@ function richBlock(index: number, size: FixtureSize) {
   }
 }
 
-function text(index: number, size: FixtureSize) {
-  const suffix = isLarge(size) && index % 11 === 0 ? `\n\n${"long context ".repeat(420)}` : ""
-  const block = richBlock(index, size)
+function text(index: number, layout: Layout) {
+  const suffix = isLarge(layout.size) && index % 11 === 0 ? `\n\n${"long context ".repeat(420)}` : ""
+  const block = richBlock(index, layout)
   const rich = block ? `\n\n${block}` : ""
   return `Deterministic answer ${index}: inspect the rendered session and keep the output stable.${rich}${suffix}`
 }
@@ -153,11 +170,12 @@ function message(
   }
 }
 
-function partFor(index: number, sessionID: string, messageID: string, size: FixtureSize): Part {
+function partFor(index: number, sessionID: string, messageID: string, layout: Layout): Part {
+  const { size } = layout
   const base = { id: `prt_${sessionID}_${index}`, sessionID, messageID }
   const kind = index % 10
   if (kind < 4) {
-    return { ...base, type: "text", text: text(index, size), time: { start: index, end: index + 1 } }
+    return { ...base, type: "text", text: text(index, layout), time: { start: index, end: index + 1 } }
   }
   if (kind < 8) {
     return {
@@ -204,18 +222,19 @@ function makeSession(id: string, title: string, parentID?: string): Session {
   }
 }
 
-export function createFixture(size: FixtureSize, withBackground = false): PerfFixture {
+export function createFixture(size: FixtureSize, withBackground = false, options: FixtureOptions = {}): PerfFixture {
   const session = makeSession(SESSION_ID, `Performance ${size}`)
   const user = message(`${SESSION_ID}_user`, SESSION_ID, "user", 1)
   const messages: Array<{ info: Message; parts: Part[] }> = [{ info: user, parts: [] }]
   const parts: Part[] = []
   let previous = user.id
-  const perMessage = PARTS_PER_MESSAGE[size]
-  for (let slot = 0; slot < messageCount(size); slot++) {
+  const layout = layoutOf(size, options)
+  const { perMessage } = layout
+  for (let slot = 0; slot < layout.messages; slot++) {
     // With one part per message the message id carries the part index, as it always has.
     const info = message(`msg_${SESSION_ID}_${slot}`, SESSION_ID, "assistant", slot + 2, previous)
     const own = Array.from({ length: perMessage }, (_, offset) =>
-      partFor(slot * perMessage + offset, SESSION_ID, info.id, size),
+      partFor(slot * perMessage + offset, SESSION_ID, info.id, layout),
     )
     messages.push({ info, parts: own })
     parts.push(...own)

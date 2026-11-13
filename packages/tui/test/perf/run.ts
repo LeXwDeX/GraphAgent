@@ -9,7 +9,14 @@ import { compareReports, type PerfReport } from "./compare"
 import { createFixture, type FixtureSize } from "./fixtures"
 import { mountHarness } from "./harness"
 import { watchKeymapErrors } from "./keymap-errors"
-import { runCharacterProfile, runScenarios, runSlashProfile, scaleResult, type ScenarioResult } from "./scenarios"
+import {
+  runCharacterProfile,
+  runScenarios,
+  runSlashProfile,
+  runStream,
+  scaleResult,
+  type ScenarioResult,
+} from "./scenarios"
 
 const sizes: FixtureSize[] = ["S", "M", "L", "XL"]
 /** The machine calibration is the mount of the three sessions that scale with nothing: `XL` would make it a measure of transcript size. */
@@ -67,7 +74,42 @@ function calibrateLoop() {
   return { value, ms: Number((performance.now() - start).toFixed(2)) }
 }
 
+/**
+ * `--profile=stream` runs P12 and P13 alone, `--repeats` times, and reports their medians. `--size` picks the
+ * session and `--parts-per-message=N` rescales its transcript: on `XL`, 20 is about 1900 rows (fully mounted)
+ * and 40 about 3700 (windowed). `--rounds=N` is the number of streamed frames.
+ */
+async function streamProfile() {
+  const size = arg("--size")
+  const perMessage = arg("--parts-per-message")
+  const frames = arg("--rounds") === undefined ? undefined : Number(arg("--rounds"))
+  const repeats = Number(arg("--repeats") ?? 5)
+  const fixtureSize = size === "S" || size === "M" || size === "XL" ? size : "L"
+  const options = perMessage === undefined ? {} : { partsPerMessage: Number(perMessage) }
+  const samples: Record<string, ScenarioResult[]> = {}
+  let rows = 0
+  for (let repeat = 0; repeat < repeats; repeat++) {
+    const fixture = createFixture(fixtureSize, false, options)
+    rows = fixture.rows
+    const harness = await mountHarness(fixture)
+    try {
+      for (const item of await runStream(harness, frames)) (samples[item.id] ??= []).push(item)
+    } finally {
+      await harness.dispose()
+    }
+  }
+  const result = Object.values(samples).map(medianResult)
+  console.log(
+    JSON.stringify(
+      { profile: "stream", commit: gitCommit(), opentui: await opentuiVersion(), rows, repeats, result },
+      null,
+      2,
+    ),
+  )
+}
+
 async function profile(kind: string) {
+  if (kind === "stream") return streamProfile()
   const size = arg("--size")
   const fixture = createFixture(size === "S" || size === "M" || size === "XL" ? size : "L")
   const rounds = Number(arg("--rounds") ?? 1)

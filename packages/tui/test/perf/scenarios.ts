@@ -393,20 +393,61 @@ export async function runSlashProfile(harness: PerfHarness, rounds = 1): Promise
   })
 }
 
+/** Deltas of the reply P12 and P13 write; each is one frame. */
+const STREAM_FRAMES = 100
+
+/**
+ * P12 and P13: a reply written at the tail while the user types. The snapshot that opens it is applied
+ * outside the measured window; the window is the deltas and the one terminal snapshot that closes the
+ * reply. `frames` is the number of deltas, a frame each.
+ */
+export async function runStream(harness: PerfHarness, frames = STREAM_FRAMES): Promise<ScenarioResult[]> {
+  const size = harness.fixture.size
+  await fresh(harness)
+  await followTail(harness)
+  const typingStream = harness.openStream()
+  await harness.app.renderOnce()
+  const streamTimes: number[] = []
+  const streamBefore = harness.snapshot()
+  for (let index = 0; index < frames; index++) {
+    typingStream.delta(`w${index} `)
+    const start = performance.now()
+    harness.prompt.set({ input: String(index % 10), parts: [] })
+    await harness.app.renderOnce()
+    streamTimes.push(performance.now() - start)
+  }
+  assertStreamed(harness, typingStream, "P13")
+  const deltaPhase = harness.counters.delta(streamBefore)
+  typingStream.finish()
+  await harness.app.renderOnce()
+  const streamDelta = harness.counters.delta(streamBefore)
+  return [
+    result("P12", size, { p95Ms: percentile(streamTimes, 0.95) }),
+    result("P13", size, {
+      // The delta phase alone: a token goes to the stream buffer, never to the store.
+      deltaMessageWrites: deltaPhase.storeMessageWrites,
+      deltaPartWrites: deltaPhase.storePartWrites,
+      // The whole window, terminal snapshot included.
+      messageWritesPerFrame: streamDelta.storeMessageWrites / Math.max(1, streamDelta.frameEvents),
+      partWritesPerFrame: streamDelta.storePartWrites / Math.max(1, streamDelta.frameEvents),
+    }),
+  ]
+}
+
 /**
  * `all` runs every scenario. `windowed` is for the session above WINDOW_MIN_ROWS
  * (`XL`), the only one the windowed transcript runs in. It keeps what that
  * transcript must keep true: the input path at scale, the cold and hot scroll
- * budgets, the bound on mounted rows, the anchor, and the frame counts. It leaves
- * out the scenarios that time a stream or the background, which do not depend on
- * whether the transcript is windowed: over 2000 rows each streamed frame costs
- * about 17 ms, so a hundred of them are a second of wall time that tests the
- * stream path again.
+ * budgets, the bound on mounted rows, the anchor, the frame counts, and the
+ * stream: a reply written at the tail must cost the same whatever the length of
+ * the transcript above it (P12, P13). It leaves out the scenarios that time the
+ * background or switch sessions, which do not depend on whether the transcript is
+ * windowed.
  */
 export type ScenarioScope = "all" | "windowed"
 
 /** The scenarios the `windowed` scope leaves out. */
-export const WINDOWED_SKIPS: ReadonlySet<ScenarioID> = new Set<ScenarioID>(["P5'", "P12", "P13", "P14", "P20"])
+export const WINDOWED_SKIPS: ReadonlySet<ScenarioID> = new Set<ScenarioID>(["P5'", "P14", "P20"])
 
 /** The scenario ids a run of `scope` reports. */
 export const scenarioIds = (scope: ScenarioScope) =>
@@ -551,40 +592,9 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
     all.push(result("P10", size, { mountedRows: 0, scrollChildren: 0, viewportRows: 0, rows: 0, windowed: 0 }))
   }
 
-  if (full) {
-    await fresh(harness)
-    await followTail(harness)
-    // A reply being written at the tail while the user types. The snapshot that
-    // opens it is applied outside the measured window; the window is the deltas
-    // and the one terminal snapshot that closes the reply.
-    const typingStream = harness.openStream()
-    await harness.app.renderOnce()
-    const streamTimes: number[] = []
-    const streamBefore = harness.snapshot()
-    for (let index = 0; index < 100; index++) {
-      typingStream.delta(`w${index} `)
-      const start = performance.now()
-      harness.prompt.set({ input: String(index % 10), parts: [] })
-      await harness.app.renderOnce()
-      streamTimes.push(performance.now() - start)
-    }
-    assertStreamed(harness, typingStream, "P13")
-    const deltaPhase = harness.counters.delta(streamBefore)
-    typingStream.finish()
-    await harness.app.renderOnce()
-    const streamDelta = harness.counters.delta(streamBefore)
-    all.push(result("P12", size, { p95Ms: percentile(streamTimes, 0.95) }))
-    all.push(
-      result("P13", size, {
-        // The delta phase alone: a token goes to the stream buffer, never to the store.
-        deltaMessageWrites: deltaPhase.storeMessageWrites,
-        deltaPartWrites: deltaPhase.storePartWrites,
-        // The whole window, terminal snapshot included.
-        messageWritesPerFrame: streamDelta.storeMessageWrites / Math.max(1, streamDelta.frameEvents),
-        partWritesPerFrame: streamDelta.storePartWrites / Math.max(1, streamDelta.frameEvents),
-      }),
-    )
-  }
+  // The windowed session streams too: a streamed frame has to cost the same whatever the length of the
+  // transcript above it, so the longest transcript is the one that proves it.
+  all.push(...(await runStream(harness)))
 
   if (full) {
     await fresh(harness)

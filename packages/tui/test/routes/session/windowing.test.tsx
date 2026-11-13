@@ -40,12 +40,14 @@ async function frameWithout(harness: Awaited<ReturnType<typeof mountHarness>>, t
 /**
  * Render until two consecutive frames match. After a scroll the windowed list
  * mounts the rows that came into view over the next few passes; sampling before
- * that settles would count layout changes as spinner motion.
+ * that settles would count layout changes as spinner motion. Their text
+ * highlights on a parser worker and appears when it answers, which on a slower
+ * machine is after two frames that look alike, so every pass waits for it.
  */
 async function settledFrame(harness: Awaited<ReturnType<typeof mountHarness>>) {
   let previous = ""
   for (let attempt = 0; attempt < 100; attempt++) {
-    await harness.app.renderOnce()
+    await settleHighlights(harness)
     const frame = harness.app.captureCharFrame()
     if (frame === previous) return frame
     previous = frame
@@ -98,6 +100,25 @@ async function sample(harness: Awaited<ReturnType<typeof mountHarness>>, rounds 
     frames.push(harness.app.captureCharFrame())
   }
   return frames
+}
+
+/** The first span of the frame that holds `text`, as the cell its first character sits in. */
+function locateText(harness: Harness, text: string) {
+  const frame = harness.app.captureSpans()
+  for (let row = 0; row < frame.lines.length; row++) {
+    let column = 0
+    for (const span of frame.lines[row].spans) {
+      const index = span.text.indexOf(text)
+      if (index !== -1) return { row, column: column + index }
+      column += span.text.length
+    }
+  }
+  return undefined
+}
+
+async function renderSettled(harness: Harness, frames = 4) {
+  for (let frame = 0; frame < frames; frame++) await harness.app.renderOnce()
+  await settleHighlights(harness)
 }
 
 test("windowed transcript mounts a bounded row set and follows the viewport", async () => {
@@ -258,3 +279,52 @@ test("the last-message command lands on the real bottom from the middle of the t
     await harness.dispose()
   }
 })
+
+// The window mounts the rows around the viewport and at the tail, and the rows the reader opened: an opened
+// row keeps its place in the transcript while the viewport is elsewhere, so closing it later is one click.
+test("a row the reader opened stays mounted while the viewport is away from it", async () => {
+  const harness = await mountHarness(createFixture("XL"))
+  try {
+    await harness.reset()
+    await Bun.sleep(60)
+    const scroll = harness.scroll()!
+    scroll.stickyScroll = false
+    scroll.scrollTo(0)
+    await renderSettled(harness)
+    const baseline = harness.counters.mountedRows(scroll)
+
+    // A collapsed thought, somewhere in the middle of the transcript.
+    const page = scroll.viewport.height - 1
+    const middle = Math.floor(scroll.scrollHeight / 2)
+    let header: ReturnType<typeof locateText>
+    for (let attempt = 0; attempt < 30 && !header; attempt++) {
+      scroll.scrollTo(middle + attempt * page)
+      await renderSettled(harness)
+      header = locateText(harness, "+ Thought")
+    }
+    expect(header).toBeDefined()
+    const opened = scroll.scrollTop
+    await harness.app.mockMouse.click(header!.column + 2, header!.row)
+    await renderSettled(harness)
+    expect(locateText(harness, "- Thought")).toBeDefined()
+
+    // Far from it, the row is still one of the mounted ones.
+    scroll.scrollTo(0)
+    await renderSettled(harness)
+    expect(harness.counters.mountedRows(scroll)).toBe(baseline + 1)
+
+    // Back at it, it is open as it was left, and closing it returns the window to what the viewport needs.
+    scroll.scrollTo(opened)
+    await renderSettled(harness)
+    const open = locateText(harness, "- Thought")
+    expect(open).toBeDefined()
+    await harness.app.mockMouse.click(open!.column + 2, open!.row)
+    await renderSettled(harness)
+    expect(locateText(harness, "+ Thought")).toBeDefined()
+    scroll.scrollTo(0)
+    await renderSettled(harness)
+    expect(harness.counters.mountedRows(scroll)).toBe(baseline)
+  } finally {
+    await harness.dispose()
+  }
+}, 60_000)

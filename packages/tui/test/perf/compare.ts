@@ -103,6 +103,18 @@ export const P2_MAX_SCALE = 1.5
  */
 export const P2_NOISE_FLOOR_MS = 2
 /**
+ * P12: a reply written at the tail has to cost the same whatever the length of the transcript above it
+ * (#1260), so the windowed session (`XL`, p95 of a streamed frame) may not cost more than this many times
+ * the longest fully mounted one (`L`). Before #1260 it cost ten times as much.
+ */
+export const P12_MAX_SCALE = 2
+/**
+ * Like `P2_NOISE_FLOOR_MS`: two sub-millisecond p95s swing on noise alone, so `P12_MAX_SCALE` fails only when
+ * the windowed session is also this much slower in absolute milliseconds (scaled by a slower runner's
+ * machine factor). A cost that grows with the transcript shows up in milliseconds, above this floor.
+ */
+export const P12_NOISE_FLOOR_MS = 2
+/**
  * P14: with a sub-millisecond p95 the 10% rule measures the scheduler, so the
  * gate reads the absolute increase instead.
  */
@@ -174,14 +186,16 @@ export const WINDOWED_RELATIVE_EXEMPT: ReadonlySet<string> = new Set(["P8", "P8'
 
 /**
  * What a session marked `windowed` has to carry. Its cold scroll is the only
- * measurement of the windowed path against the scroll budget, and `compareReports`
- * lets a scenario be absent from a partial report, so without this a scenario
- * removed from the windowed scope would take the budget with it and the run would
- * still pass.
+ * measurement of the windowed path against the scroll budget, and its stream is
+ * the only one over a transcript that long. `compareReports` lets a scenario be
+ * absent from a partial report, so without this a scenario removed from the
+ * windowed scope would take its budget with it and the run would still pass.
  */
 export const WINDOWED_REQUIRED: readonly { id: string; metrics: readonly string[] }[] = [
   { id: "P8", metrics: ["p99Ms", "maxMs"] },
   { id: "P8'", metrics: ["p99Ms", "maxMs"] },
+  { id: "P12", metrics: ["p95Ms"] },
+  { id: "P13", metrics: ["deltaMessageWrites", "deltaPartWrites", "messageWritesPerFrame", "partWritesPerFrame"] },
 ]
 
 const SIZE_ORDER = ["S", "M", "L", "XL"]
@@ -336,6 +350,25 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
       const slower = small === undefined || here === undefined ? Infinity : (here - small) / noiseScale(factor)
       if (slower > P2_NOISE_FLOOR_MS) {
         fail(size, "P2", "p95Scale", `≤ ${P2_MAX_SCALE} (or less than ${P2_NOISE_FLOOR_MS} ms slower than S)`, scale)
+      }
+    }
+
+    // P12: a streamed frame over the windowed transcript costs what it costs over L, not what the
+    // transcript is long. Only the windowed session is held to it; a partial report without L is not drift.
+    if (windowedSession) {
+      const streamed = read(size, "P12", "p95Ms")
+      const reference = read("L", "P12", "p95Ms")
+      if (streamed !== undefined && reference !== undefined && streamed > P12_MAX_SCALE * reference) {
+        const slower = (streamed - reference) / noiseScale(factor)
+        if (slower > P12_NOISE_FLOOR_MS) {
+          fail(
+            size,
+            "P12",
+            "p95Scale",
+            `≤ ${P12_MAX_SCALE} × L (or less than ${P12_NOISE_FLOOR_MS} ms slower than L)`,
+            Number((streamed / reference).toFixed(3)),
+          )
+        }
       }
     }
 
