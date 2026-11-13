@@ -28,6 +28,8 @@ import type { Instruction } from "../instruction"
 import type { LLM } from "../llm"
 import type { SystemPrompt } from "../system"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { ChildSlot } from "../child/slot"
+import type { ChildRuns } from "../child/run"
 import { EngineProcess } from "../engine-process"
 import { RuntimeSlots } from "../runtime-slots"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -248,6 +250,8 @@ export interface PrepareDeps {
   }>
   readonly dropPendingBudget: (sessionID: SessionID, messageID: MessageID) => Effect.Effect<void>
   readonly hookQuestions: Question.Interface | undefined
+  /** The parent's delegations travel in the request's runtime context (`ChildSlot`). */
+  readonly children: ChildRuns.Interface
   readonly ops: () => Effect.Effect<TaskPromptOps>
 }
 
@@ -1733,7 +1737,7 @@ export function makePrepare(deps: PrepareDeps) {
       memory: memoryDocs,
       environment: { directory: ctx.directory, root: ctx.root, git: ctx.project.vcs === "git" },
       now: yield* DateTime.nowAsDate,
-      custom: EngineProcess.runtimes.runtimeSlots.list(input.sessionID),
+      custom: yield* ChildSlot.custom(deps.children, input.sessionID),
     })
     const runtimeEvents: string[] = []
     if (structuredFormat?.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

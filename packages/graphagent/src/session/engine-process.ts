@@ -254,6 +254,12 @@ export interface ChildRunRegistryState {
    * over from before a restart, and which cancellation epoch it ended in.
    */
   readonly reports: Map<string, ChildReport>
+  /**
+   * The parents that registered a child run in this process (Issue #1026,
+   * PR3b), until the session is deleted. Only their requests can carry a
+   * delegations slot, so a session that never delegated costs no read.
+   */
+  readonly parents: Set<string>
 }
 
 /**
@@ -309,7 +315,7 @@ export const EngineProcess: EngineProcess = {
   },
   scheduler: AgentSchedulerState.makeState(),
   runner: makeRunnerIdentity(),
-  children: { byRun: new Map(), bySession: new Map(), reports: new Map() },
+  children: { byRun: new Map(), bySession: new Map(), reports: new Map(), parents: new Set() },
 }
 
 /**

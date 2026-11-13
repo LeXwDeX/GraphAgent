@@ -13,14 +13,15 @@ import type { SessionID } from "./schema"
  * requests, or that differs between directories, therefore lives in slots and
  * is appended to the history only when its content changes.
  *
- * Goal, memory, environment and date are computed by the request builder.
- * Tool and feature owners register additional slots (for example DAG mode)
- * through `Slots.set`; they never write the system prompt or the tool list.
+ * Goal, memory, environment, date and the parent's delegations are computed by
+ * the request builder. Tool and feature owners register additional slots (for
+ * example DAG mode) through `Slots.set`; they never write the system prompt or
+ * the tool list.
  */
 export type Slot = RuntimeContext.State
 
 /** Slot keys the request builder owns. Owners cannot replace them. */
-const RESERVED = new Set(["goal", "memory", "env", "date"])
+const RESERVED = new Set(["goal", "memory", "env", "date", "delegations"])
 
 export const cleared = {
   goal: "No autonomous goal is active.",

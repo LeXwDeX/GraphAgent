@@ -70,6 +70,9 @@ export interface ChildRunView {
   readonly reportedAt?: number
   readonly timeCreated: number
   readonly timeEnded?: number
+  /** The child session's title and agent, on the reads that join the session (`listByParent`). */
+  readonly title?: string
+  readonly agent?: string
 }
 
 /**
@@ -160,7 +163,15 @@ export interface ChildRunsInterface {
   readonly adopt: (spec: ChildRunSpec) => Effect.Effect<ChildRunHandle, ChildRunError>
   readonly inspect: (runID: string) => Effect.Effect<Option.Option<ChildRunView>>
   readonly latest: (childSessionID: SessionID) => Effect.Effect<Option.Option<ChildRunView>>
-  readonly listByParent: (parentSessionID: SessionID) => Effect.Effect<ReadonlyArray<ChildRunView>>
+  /**
+   * The runs of one parent, newest first, with the title and agent of their
+   * child sessions. `limit` bounds how many are read (the newest ones); without
+   * it every run is.
+   */
+  readonly listByParent: (
+    parentSessionID: SessionID,
+    options?: { readonly limit?: number },
+  ) => Effect.Effect<ReadonlyArray<ChildRunView>>
   /**
    * Signal-and-return cancellation: the run ends `cancelled` synchronously
    * (compare-and-swap, credential revoked, row written), then the child

@@ -46,7 +46,22 @@ export function register(entry: ActiveChildRun): boolean {
   if (registry.bySession.has(entry.childSessionID)) return false
   registry.bySession.set(entry.childSessionID, entry.id)
   registry.byRun.set(entry.id, entry)
+  registry.parents.add(entry.parentSessionID)
   return true
+}
+
+/**
+ * Whether this process registered a run for `parentSessionID`. The delegations
+ * slot reads the database only for such parents: a session that never
+ * delegated costs no read.
+ */
+export function delegated(parentSessionID: string): boolean {
+  return registry.parents.has(parentSessionID)
+}
+
+/** A deleted parent no longer carries a slot. */
+export function forgetParent(parentSessionID: string): void {
+  registry.parents.delete(parentSessionID)
 }
 
 export function get(runID: string): ActiveChildRun | undefined {

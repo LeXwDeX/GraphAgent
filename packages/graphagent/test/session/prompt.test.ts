@@ -7520,6 +7520,63 @@ it.instance("an owner runtime slot adds a block without changing the system pref
   }),
 )
 
+// Issue #1026 PR3b: what a parent delegated travels in the runtime context. A parent that never delegated carries
+// nothing; one that did gets a block when its runs change, and every block already sent stays where it was.
+it.instance("a parent that delegated carries its runs in the runtime context, and the cached prefix stays put", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    const children = (yield* prompt.children).forParent(chat.id)
+    const ask = Effect.fn("test.ask")(function* (text: string) {
+      yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text }] })
+      yield* llm.text(`${text} done`)
+      yield* prompt.loop({ sessionID: chat.id })
+    })
+
+    yield* ask("one")
+    const worker = yield* sessions.create({
+      parentID: chat.id,
+      title: "audit the cache (@general subagent)",
+      agent: "general",
+    })
+    const run = yield* children.start({
+      childSessionID: worker.id,
+      owner: { kind: "task", toolCallID: "call_delegations" },
+      detached: true,
+    })
+    yield* run.markRunning
+    yield* ask("two")
+    // The same runs again: no second block.
+    yield* ask("three")
+    yield* run.settle({ type: "completed" }, { title: "audit the cache", text: "clean" })
+    yield* ask("four")
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(4)
+    const requests = inputs.map(requestMessages)
+    const messages = inputs.map((input) => JSON.stringify(input.messages))
+    const blocks = (text: string) => (text.match(/<delegations>/g) ?? []).length
+    expect(messages.map(blocks)).toEqual([0, 1, 1, 2])
+    expect(messages[1]).toContain(
+      `id=\\"${worker.id}\\" agent=\\"general\\" state=\\"running\\" background=\\"true\\">audit the cache`,
+    )
+    expect(messages[3]).toContain('state=\\"completed\\" background=\\"true\\" delivery=\\"pending\\"')
+    // The block is runtime context, never the system prompt or the tool list.
+    for (const [index, input] of inputs.entries()) {
+      expect(requests[index]?.system).toBe(requests[0]?.system)
+      expect(JSON.stringify(input.tools)).toBe(JSON.stringify(inputs[0]?.tools))
+    }
+    expect(requests[0]?.system).toContain("runtime_context")
+    expect(requests[0]?.system).not.toContain("delegations")
+    // Each request extends the one before it: what it sent earlier is still there, at the same positions.
+    for (const [index, request] of requests.entries()) {
+      if (index === 0) continue
+      const before = requests[index - 1]?.conversation ?? []
+      expect(request.conversation.slice(0, before.length)).toEqual(before)
+    }
+  }),
+)
+
 withMemoryContext.instance("does not inject MEMORY data into child agent sessions", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

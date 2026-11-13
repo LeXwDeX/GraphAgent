@@ -410,8 +410,10 @@ const inspect = (ctx: Ctx) => (runID: string) => Store.runOf(ctx.db, runID).pipe
 const latestView = (ctx: Ctx) => (childSessionID: SessionID) =>
   Store.latestOf(ctx.db, childSessionID).pipe(Effect.map((row) => Option.map(Option.fromNullishOr(row), Store.viewOf)))
 
-const listByParent = (ctx: Ctx) => (parentSessionID: SessionID) =>
-  Store.runsOfParent(ctx.db, parentSessionID).pipe(Effect.map((rows) => rows.map(Store.viewOf)))
+const listByParent = (ctx: Ctx) => (parentSessionID: SessionID, options?: { readonly limit?: number }) =>
+  Store.runsOfParent(ctx.db, parentSessionID, options?.limit).pipe(
+    Effect.map((rows) => rows.map((listed) => Store.viewOf(listed.run, listed))),
+  )
 
 /** The registry knows a parent's runs by session id; a run of another parent is never reachable through the scoped view. */
 const scoped = (api: Omit<ChildRunsInterface, "forParent">, parentSessionID: SessionID): ChildRunsScoped => ({
@@ -441,7 +443,10 @@ const assemble = (ctx: Ctx): ChildRunsInterface => {
     recover: () => recover({ db: ctx.db }),
     // Rows of a deleted session are gone with it (cascade); only the registry entries remain.
     forget: (sessionID) =>
-      Effect.sync(() => Registry.dropReportsWhere((report) => report.parentSessionID === sessionID)).pipe(
+      Effect.sync(() => {
+        Registry.forgetParent(sessionID)
+        Registry.dropReportsWhere((report) => report.parentSessionID === sessionID)
+      }).pipe(
         Effect.andThen(
           endWhere(
             ctx,
