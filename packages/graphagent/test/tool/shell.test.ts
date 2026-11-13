@@ -1573,3 +1573,62 @@ describe("tool.shell truncation", () => {
     ),
   )
 })
+
+describe("tool.shell preview", () => {
+  type Preview = { readonly tail: string; readonly totalLength: number }
+  const collecting = (previews: Preview[]): Tool.Context => ({
+    ...ctx,
+    preview: (input) => Effect.sync(() => void previews.push(input)),
+  })
+
+  it.live(
+    "bounds the message.part.preview tail to 4 KiB",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const previews: Preview[] = []
+          const bytes = 150_000
+          const result = yield* run({ command: fill("bytes", bytes) }, collecting(previews))
+
+          expect(result.metadata.exit).toBe(0)
+          expect(previews.length).toBeGreaterThan(0)
+          for (const preview of previews) {
+            expect(Buffer.byteLength(preview.tail, "utf-8")).toBeLessThanOrEqual(4 * 1024)
+          }
+          // The stream kept its complete length while the preview shipped only
+          // the final 4 KiB: the bound truncates the payload, not the output.
+          const last = previews.at(-1)
+          expect(last?.totalLength).toBe(bytes)
+          expect(Buffer.byteLength(last?.tail ?? "", "utf-8")).toBe(4 * 1024)
+        }),
+      ),
+    15_000,
+  )
+
+  it.live(
+    "keeps the preview tail on a UTF-8 code point boundary",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const previews: Preview[] = []
+          // 6000 three-byte characters: 18 KB, well past the 4 KiB tail.
+          const code = `process.stdout.write(String.fromCharCode(0x4e2d).repeat(6000))`
+          const result = yield* run({ command: `${bin} -e ${evalarg(code)}` }, collecting(previews))
+
+          expect(result.metadata.exit).toBe(0)
+          const last = previews.at(-1)
+          expect(last).toBeDefined()
+          const tail = last!.tail
+          expect(Buffer.byteLength(tail, "utf-8")).toBeLessThanOrEqual(4 * 1024)
+          // Dropping whole code points keeps the tail valid UTF-8: 1365
+          // characters fit in 4095 bytes and a 1366th would exceed the budget.
+          expect(tail).toBe(Buffer.from(tail, "utf-8").toString("utf-8"))
+          expect(tail).not.toContain("\uFFFD")
+          expect(tail.length).toBe(1365)
+        }),
+      ),
+    15_000,
+  )
+})

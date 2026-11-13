@@ -44,6 +44,16 @@ describe("S6 long shell command", () => {
         expect(result.firstCounts.commits).toBeGreaterThan(0)
         expect(result.firstCounts["json.encodeBytes"]).toBeGreaterThan(0)
 
+        // #1278 replaces the issue's DB-size/WAL measurement with a row-count
+        // gate: the perf database is in-memory (`:memory:` in the probe's
+        // counting client), so no WAL file exists and page_count would fold
+        // the fixture's own writes into the measured pass. Assert ADR 0002's
+        // decision directly instead: the session aggregate still allocates
+        // durable sequences but appends no `event` row, so reverting HS4d
+        // makes the row count equal the durable lifecycle events.
+        expect(result.sessionAggregateEventRows).toBe(0)
+        expect(result.sessionAggregateEventSeq).toBeGreaterThan(0)
+
         // The same scripted turn in a second session must produce the same
         // engine counts. Timestamped payload bytes and the event-level dedup
         // book are the tolerated differences; every other counter is exact.
