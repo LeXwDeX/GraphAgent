@@ -864,14 +864,14 @@ export function spawnNode(
                 worktreeHandled = true
                 isolatedWorktree = { ...isolatedWorktree, state: "kept" }
               }
-              // Settle first: the attempt is over even when the durable
-              // transition below is rejected as stale (a cancellation then
-              // already won the run's compare-and-swap).
-              return (run === undefined ? Effect.void : run.settle({ type: "error", message: reason })).pipe(
-                Effect.andThen(
-                  dag.nodeFailed(input.dagID, input.nodeID, reason, trigger, attempt, errorClass, isolatedWorktree),
-                ),
-              )
+              // Settle only after the durable failure is accepted: a stale-input
+              // rejection (new mailbox input arrived) keeps the attempt alive
+              // through `promptSvc.loop`, so its run must stay active with its
+              // credential and Stop delegation. A cancellation that already
+              // ended the run wins the compare-and-swap either way.
+              return dag
+                .nodeFailed(input.dagID, input.nodeID, reason, trigger, attempt, errorClass, isolatedWorktree)
+                .pipe(Effect.andThen(run === undefined ? Effect.void : run.settle({ type: "error", message: reason })))
             })
           // #946: isolate at the same point the child session materializes, so
           // a large fan-out never holds more worktrees than max_concurrency.
