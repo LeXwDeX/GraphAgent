@@ -196,10 +196,17 @@ const notOwned = (taskID: string) =>
   `task_id "${taskID}" is not a task started by this conversation. Pass a task_id returned by an earlier task call of this conversation, or omit it to start a new task.`
 
 // The child run of one tool call, recorded as soon as it is registered so an
-// interruption before the watcher below owns it can still settle it.
+// interruption before anyone else owns it can still settle it. A background
+// run (or a foreground run promoted to the background) is owned by its
+// settlement watcher once `armed`; a foreground run stays with the tool call,
+// which settles it from how the whole call ended.
 interface RunClaim {
   handle?: ChildRunHandle
   armed?: boolean
+  /** A foreground call that saw its job cancelled (the cascade, or another canceller). */
+  job?: ChildRunOutcome
+  /** Failure text of a foreground result a SubagentStop continuation replaced with an error. */
+  failure?: string
 }
 
 // The run ends with the job that carries it, so the persisted outcome and the
@@ -211,8 +218,13 @@ function outcomeOf(info: BackgroundJob.Info | undefined): ChildRunOutcome {
   return { type: "error", message: "The background job ended without a result" }
 }
 
-function unarmedOutcome(exit: Exit.Exit<unknown, unknown>): ChildRunOutcome {
-  if (Exit.isSuccess(exit)) return { type: "error", message: "The task run was never started" }
+// A foreground run ends with the whole call, not with its first job: a blocked
+// SubagentStop continues the child in this same call after the job completed,
+// and that continuation can still fail or be interrupted.
+function finalOutcome(exit: Exit.Exit<unknown, unknown>, claim: RunClaim): ChildRunOutcome {
+  if (claim.job?.type === "cancelled") return claim.job
+  if (Exit.isSuccess(exit))
+    return claim.failure === undefined ? { type: "completed" } : { type: "error", message: claim.failure }
   if (Cause.hasInterruptsOnly(exit.cause))
     return { type: "cancelled", by: { kind: "engine", reason: "tool-interrupted" } }
   const failure = Cause.squash(exit.cause)
@@ -254,11 +266,12 @@ export const TaskTool = Tool.define(
         ),
       )
 
-    // The settlement watcher owns the run from here: it ends the run with the
-    // job that carries it. Armed once, by whichever comes first (the job's own
-    // start, or the tool call once the job exists), so neither a job that
-    // never starts nor an interruption right after the start can leave the run
-    // without an owner. Once armed, the claim's guard stands down.
+    // The settlement watcher owns a background run from here: it ends the run
+    // with the job that carries it. Armed once, by whichever comes first (the
+    // job's own start, or the tool call once the job exists), so neither a job
+    // that never starts nor an interruption right after the start can leave
+    // the run without an owner. A foreground run is armed only if it is
+    // promoted to the background. Once armed, the claim's guard stands down.
     const watchSettlement = (handle: ChildRunHandle, jobID: string, claim: RunClaim) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.suspend(() => {
@@ -742,13 +755,14 @@ export const TaskTool = Tool.define(
             // From here the child is a background task and fires its own Stop.
             releaseSubagent,
           ]),
-          run: watchSettlement(registered, nextSession.id, claim).pipe(
+          // A background run is watched from the job's own start; a foreground
+          // run is settled by this call once it has seen the whole task through.
+          run: (runInBackground ? watchSettlement(registered, nextSession.id, claim) : Effect.void).pipe(
             Effect.andThen(runWithSlot(registered)),
             Effect.onInterrupt(() => ops.cancel(nextSession.id)),
           ),
         })
         .pipe(Effect.onError(() => releaseSubagent))
-      yield* watchSettlement(registered, info.id, claim)
 
       function backgroundResult() {
         return {
@@ -768,6 +782,7 @@ export const TaskTool = Tool.define(
       }
 
       if (runInBackground) {
+        yield* watchSettlement(registered, info.id, claim)
         yield* notify(info.id, registered)
         return backgroundResult()
       }
@@ -790,7 +805,12 @@ export const TaskTool = Tool.define(
                 background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
                 background.waitForPromotion(nextSession.id),
               )
-              if (result?.metadata?.background === true) return backgroundResult()
+              if (result?.metadata?.background === true) {
+                // Promoted: the job outlives this call, so its watcher takes the run over.
+                yield* watchSettlement(registered, nextSession.id, claim)
+                return backgroundResult()
+              }
+              claim.job = outcomeOf(result)
               if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
               if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
               return {
@@ -905,6 +925,7 @@ export const TaskTool = Tool.define(
             const failure = providerFailure(cont.value)
             if (failure) {
               lastStillBlocked = false
+              claim.failure = failure.message
               output = {
                 ...output,
                 output: renderOutput({ sessionID: nextSession.id, state: "error", text: failure.message }),
@@ -915,6 +936,7 @@ export const TaskTool = Tool.define(
             const settled = settle(cont.value)
             if (settled.error) {
               lastStillBlocked = false
+              claim.failure = settled.error.message
               output = {
                 ...output,
                 output: renderOutput({ sessionID: nextSession.id, state: "error", text: settled.error.message }),
@@ -956,9 +978,10 @@ export const TaskTool = Tool.define(
         Effect.suspend(() => {
           const claim: RunClaim = {}
           return run(params, ctx, claim).pipe(
-            // A run registered but never handed to its watcher must not stay queued.
+            // A run no watcher owns ends with this call: a foreground run with its
+            // final result, a run registered but never started with why it stopped.
             Effect.onExit((exit) =>
-              claim.handle && !claim.armed ? claim.handle.settle(unarmedOutcome(exit)) : Effect.void,
+              claim.handle && !claim.armed ? claim.handle.settle(finalOutcome(exit, claim)) : Effect.void,
             ),
             Effect.orDie,
           )

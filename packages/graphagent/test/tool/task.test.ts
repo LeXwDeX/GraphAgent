@@ -203,6 +203,60 @@ function assistantReply(
 
 const TRUNCATED = { text: "", finish: "length", reasoning: 32_000, output: 0 } as const
 
+// Issue #1026 PR1: the task tool registers every child session with ChildRuns,
+// verifies task_id ownership before anything is written to the target session,
+// ends the run with the job that carries it, and lets the main agent cancel a
+// background task.
+const runsOf = (childSessionID: SessionID) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    return yield* db
+      .select()
+      .from(ChildRunTable)
+      .where(eq(ChildRunTable.child_session_id, childSessionID))
+      .all()
+      .pipe(Effect.orDie)
+  })
+
+const bindingsOf = (childSessionID: SessionID) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    return yield* db
+      .select()
+      .from(ChildBindingTable)
+      .where(eq(ChildBindingTable.child_session_id, childSessionID))
+      .all()
+      .pipe(Effect.orDie)
+  })
+
+// The watcher settles the run when the job ends, a moment after the tool call returns.
+const endedRun = (childSessionID: SessionID, attempt = 1) =>
+  pollWithTimeout(
+    runsOf(childSessionID).pipe(
+      Effect.map((rows) => rows.find((row) => row.attempt === attempt && row.state === "ended")),
+    ),
+    `run ${attempt} of ${childSessionID} never ended`,
+  )
+
+const taskCtx = (
+  chat: Session.Info,
+  assistant: SessionV1.Assistant,
+  promptOps: TaskPromptOps,
+  extra: Partial<Tool.Context> = {},
+): Tool.Context => ({
+  sessionID: chat.id,
+  messageID: assistant.id,
+  agent: "build",
+  abort: new AbortController().signal,
+  extra: { promptOps },
+  messages: [],
+  metadata: () => Effect.void,
+  ask: () => Effect.void,
+  ...extra,
+})
+
+const general = { description: "inspect bug", prompt: "look into the cache key path", subagent_type: "general" }
+
 describe("tool.task", () => {
   it.instance("rejects direct task execution from a child before permission or session creation", () =>
     Effect.gen(function* () {
@@ -1009,6 +1063,13 @@ describe("tool.task", () => {
       expect(result.output).toContain("reasoning 32000")
       expect(result.output).not.toContain('state="completed"')
       expect(prompts).toBe(2)
+      // The run ends with the whole task: its continuation failed, so the run failed.
+      const child = SessionID.make(result.metadata.sessionID)
+      const run = (yield* runsOf(child))[0]
+      expect(run?.state).toBe("ended")
+      expect(ChildStore.parseOutcome(run?.outcome)).toMatchObject({ type: "error" })
+      expect(JSON.stringify(run?.outcome)).toContain("output token cap")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1052,6 +1113,9 @@ describe("tool.task", () => {
       expect(result.output).toContain("FINAL-VERIFIED-ANSWER")
       expect(result.output).not.toContain("STALE-FIRST-ANSWER")
       expect(prompts).toBe(2)
+      const child = SessionID.make(result.metadata.sessionID)
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "ended", outcome: { type: "completed" } })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1099,6 +1163,13 @@ describe("tool.task", () => {
         expect(message).toContain("stop continuation socket closed")
         expect(message).not.toContain('state="completed"')
       }
+      // The job had completed when the continuation failed: the run is not completed.
+      const child = (yield* (yield* Session.Service).children(chat.id))[0].id
+      const run = (yield* runsOf(child))[0]
+      expect(run?.state).toBe("ended")
+      expect(ChildStore.parseOutcome(run?.outcome)).toMatchObject({ type: "error" })
+      expect(JSON.stringify(run?.outcome)).toContain("stop continuation socket closed")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1145,6 +1216,12 @@ describe("tool.task", () => {
       expect(result.output).toContain("PARTIAL")
       expect(result.output).not.toContain('state="completed"')
       expect(prompts).toBe(2)
+      const child = SessionID.make(result.metadata.sessionID)
+      const run = (yield* runsOf(child))[0]
+      expect(run?.state).toBe("ended")
+      expect(ChildStore.parseOutcome(run?.outcome)).toMatchObject({ type: "error" })
+      expect(JSON.stringify(run?.outcome)).toContain("MessageOutputLengthError")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1186,6 +1263,60 @@ describe("tool.task", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       expect(prompts).toBe(2)
       if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
+      // An interruption during the continuation ends the run cancelled, not completed.
+      const child = (yield* (yield* Session.Service).children(chat.id))[0].id
+      expect((yield* runsOf(child))[0]).toMatchObject({
+        state: "ended",
+        outcome: { type: "cancelled", by: { kind: "engine", reason: "tool-interrupted" } },
+      })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  stopped.instance("keeps a foreground run active until its SubagentStop continuation is done", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const entered = yield* Deferred.make<void>()
+      const finish = yield* Deferred.make<void>()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => {
+          prompts += 1
+          if (prompts === 1) return Effect.succeed(assistantReply(input, { text: "FIRST ANSWER" }))
+          return Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(finish)),
+            Effect.as(assistantReply(input, { text: "FINAL ANSWER" })),
+          )
+        },
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      yield* Deferred.await(entered)
+      const child = (yield* sessions.children(chat.id))[0].id
+
+      // The first job is over, but the task is not: the continuation is still working
+      // on the child, so the run is still running and still owns the child session.
+      expect((yield* jobs.get(child))?.status).toBe("completed")
+      const during = (yield* runsOf(child))[0]
+      expect(during).toMatchObject({ state: "running", outcome: null, reported_at: null, time_ended: null })
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
+      // Nothing can start a second run on it meanwhile.
+      const resumed = yield* def
+        .execute({ ...general, task_id: child }, taskCtx(chat, assistant, promptOps))
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(resumed)).toBe(true)
+      if (Exit.isFailure(resumed)) expect(Cause.pretty(resumed.cause)).toContain("finishing its previous run")
+      expect(yield* runsOf(child)).toHaveLength(1)
+
+      yield* Deferred.succeed(finish, undefined)
+      const result = yield* Fiber.join(fiber)
+      expect(result.output).toContain("FINAL ANSWER")
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "ended", outcome: { type: "completed" } })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -2000,60 +2131,6 @@ describe("tool.task", () => {
     }),
   )
 })
-
-// Issue #1026 PR1: the task tool registers every child session with ChildRuns,
-// verifies task_id ownership before anything is written to the target session,
-// ends the run with the job that carries it, and lets the main agent cancel a
-// background task.
-const runsOf = (childSessionID: SessionID) =>
-  Effect.gen(function* () {
-    const { db } = yield* Database.Service
-    return yield* db
-      .select()
-      .from(ChildRunTable)
-      .where(eq(ChildRunTable.child_session_id, childSessionID))
-      .all()
-      .pipe(Effect.orDie)
-  })
-
-const bindingsOf = (childSessionID: SessionID) =>
-  Effect.gen(function* () {
-    const { db } = yield* Database.Service
-    return yield* db
-      .select()
-      .from(ChildBindingTable)
-      .where(eq(ChildBindingTable.child_session_id, childSessionID))
-      .all()
-      .pipe(Effect.orDie)
-  })
-
-// The watcher settles the run when the job ends, a moment after the tool call returns.
-const endedRun = (childSessionID: SessionID, attempt = 1) =>
-  pollWithTimeout(
-    runsOf(childSessionID).pipe(
-      Effect.map((rows) => rows.find((row) => row.attempt === attempt && row.state === "ended")),
-    ),
-    `run ${attempt} of ${childSessionID} never ended`,
-  )
-
-const taskCtx = (
-  chat: Session.Info,
-  assistant: SessionV1.Assistant,
-  promptOps: TaskPromptOps,
-  extra: Partial<Tool.Context> = {},
-): Tool.Context => ({
-  sessionID: chat.id,
-  messageID: assistant.id,
-  agent: "build",
-  abort: new AbortController().signal,
-  extra: { promptOps },
-  messages: [],
-  metadata: () => Effect.void,
-  ask: () => Effect.void,
-  ...extra,
-})
-
-const general = { description: "inspect bug", prompt: "look into the cache key path", subagent_type: "general" }
 
 describe("tool.task child runs", () => {
   it.instance("registers one binding and one run for a foreground task and ends the run with the job", () =>
