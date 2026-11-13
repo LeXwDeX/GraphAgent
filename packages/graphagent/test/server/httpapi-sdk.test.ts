@@ -326,6 +326,19 @@ function seedMessage(directory: string, sessionID: string) {
   )
 }
 
+// #1026: the public create payload no longer takes `parentID`, so a child
+// session is seeded in-process, the way the task tool and DAG spawn make one.
+function seedChildSession(directory: string, parentID: string) {
+  return InstanceStore.Service.use((store) =>
+    store.provide(
+      { directory },
+      SessionNs.Service.use((svc) => svc.create({ parentID: SessionID.make(parentID), title: "child" })).pipe(
+        Effect.provide(SessionNs.defaultLayer),
+      ),
+    ),
+  )
+}
+
 const h0Files = ["s09-h0-a.txt", "s09-h0-b.txt", "s09-h0-c.txt"] as const
 const h0Markers = h0Files.map((_, index) => `s09-h0-file-${index}-marker`)
 const h0FileContents = h0Files.map((_, index) =>
@@ -886,12 +899,23 @@ describe("HttpApi SDK", () => {
   )
 
   serverPathParity("matches generated SDK session lifecycle routes", (serverPath) =>
-    withStandardProject(serverPath, ({ sdk }) =>
+    withStandardProject(serverPath, ({ sdk, directory }) =>
       Effect.gen(function* () {
         const parent = yield* capture(() => sdk.session.create({ title: "parent" }))
         const parentID = String(record(parent.data).id)
-        const child = yield* capture(() => sdk.session.create({ title: "child", parentID }))
-        const childID = String(record(child.data).id)
+        // The SDK no longer offers `parentID` and drops it from the body; a raw
+        // payload that still carries it is rejected instead of being stripped
+        // into a top-level session.
+        const rawFetch = yield* serverFetch(serverPath)
+        const smuggled = yield* call(() =>
+          rawFetch("http://localhost/session", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-graphagent-directory": directory },
+            body: JSON.stringify({ title: "smuggled", parentID }),
+          }),
+        )
+        expect(smuggled.status).toBe(400)
+        const childID = String((yield* seedChildSession(directory, parentID)).id)
         const get = yield* capture(() => sdk.session.get({ sessionID: parentID }))
         const update = yield* capture(() => sdk.session.update({ sessionID: parentID, title: "renamed" }))
         const roots = yield* capture(() => sdk.session.list({ roots: true, limit: 10 }))
@@ -905,13 +929,18 @@ describe("HttpApi SDK", () => {
         const invalidCursor = yield* capture(() =>
           sdk.session.messages({ sessionID: parentID, limit: 2, before: "bad" }),
         )
-        const deleted = yield* capture(() => sdk.session.delete({ sessionID: childID }))
-        const getDeleted = yield* capture(() => sdk.session.get({ sessionID: childID }))
+        // A child session is read-only over HTTP: delete is refused with the typed 409.
+        const deleteChild = yield* capture(() => sdk.session.delete({ sessionID: childID }))
+        expect(deleteChild.status).toBe(409)
+        expect(record(deleteChild.error).name).toBe("ChildSessionReadOnlyError")
+        const scratch = yield* capture(() => sdk.session.create({ title: "scratch" }))
+        const scratchID = String(record(scratch.data).id)
+        const deleted = yield* capture(() => sdk.session.delete({ sessionID: scratchID }))
+        const getDeleted = yield* capture(() => sdk.session.get({ sessionID: scratchID }))
 
         return {
           statuses: statuses({
             parent,
-            child,
             get,
             update,
             roots,
@@ -923,6 +952,8 @@ describe("HttpApi SDK", () => {
             missingGet,
             missingMessages,
             invalidCursor,
+            deleteChild,
+            scratch,
             deleted,
             getDeleted,
           }),

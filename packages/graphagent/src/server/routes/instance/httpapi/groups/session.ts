@@ -16,6 +16,7 @@ import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, Struct } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api"
+import { ChildSessionReadOnlyMiddleware } from "../middleware/child-session-guard"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import {
@@ -657,6 +658,9 @@ export const SessionApi = HttpApi.make("session")
         }),
       )
       .middleware(InstanceContextMiddleware)
+      // #1026: sits inside routing (it reads the route's session) and outside
+      // instance loading, so a refused write never loads the instance.
+      .middleware(ChildSessionReadOnlyMiddleware)
       .middleware(WorkspaceRoutingMiddleware),
   )
   .annotateMerge(

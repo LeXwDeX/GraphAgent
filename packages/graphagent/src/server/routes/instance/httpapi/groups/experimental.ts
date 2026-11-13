@@ -2,6 +2,7 @@ import { MCP } from "@/mcp"
 import { SessionID } from "@/session/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/http-api"
+import { ChildSessionReadOnlyMiddleware } from "../middleware/child-session-guard"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -31,14 +32,17 @@ export const ExperimentalApi = HttpApi.make("experimental")
           params: { sessionID: SessionID },
           success: described(Schema.Boolean, "Backgrounded subagents"),
           error: HttpApiError.BadRequest,
-        }).annotateMerge(
-          OpenApi.annotations({
-            identifier: "experimental.session.background",
-            summary: "Background subagents",
-            description:
-              "Detach any synchronous subagents currently blocking the session and continue them in the background.",
-          }),
-        ),
+        })
+          .annotateMerge(
+            OpenApi.annotations({
+              identifier: "experimental.session.background",
+              summary: "Background subagents",
+              description:
+                "Detach any synchronous subagents currently blocking the session and continue them in the background.",
+            }),
+          )
+          // #1026: a write that addresses a session, outside the session group.
+          .middleware(ChildSessionReadOnlyMiddleware),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {
           success: described(Schema.Record(Schema.String, MCP.Resource), "MCP resources"),
         }).annotateMerge(

@@ -7,6 +7,7 @@ import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { Installation } from "../../src/installation"
 import { MoveSession } from "@graphagent/core/control-plane/move-session"
+import { Session } from "../../src/session/session"
 import { RootHttpApi } from "../../src/server/routes/instance/httpapi/api"
 import { GlobalPaths } from "../../src/server/routes/instance/httpapi/groups/global"
 import { controlHandlers } from "../../src/server/routes/instance/httpapi/handlers/control"
@@ -33,6 +34,7 @@ const apiLayer = HttpRouter.serve(
   Layer.provide(Layer.mock(Auth.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
   Layer.provide(Layer.mock(MoveSession.Service)({})),
+  Layer.provide(Layer.mock(Session.Service)({})),
   Layer.provide(
     Layer.mock(Installation.Service)({
       method: installationCall,

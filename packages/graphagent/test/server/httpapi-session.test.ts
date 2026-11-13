@@ -71,7 +71,8 @@ function pathFor(path: string, params: Record<string, string>) {
   return Object.entries(params).reduce((result, [key, value]) => result.replace(`:${key}`, value), path)
 }
 
-function createSession(input?: Session.CreateInput) {
+// In-process creation (task/DAG path): the only place a test can give a session a parent.
+function createSession(input?: Session.InternalCreateInput) {
   return Session.use.create(input)
 }
 
