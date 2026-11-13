@@ -302,6 +302,66 @@ export function richTail(fixture: PerfFixture, count: number): PerfFixture {
 }
 
 /**
+ * Gives every `every`-th bash call of the fixture an output of 30 lines. A tool whose output runs past ten
+ * lines shows the first ten under a "Click to expand" and opens to the whole of it when clicked; the bash
+ * parts of the default fixture carry no output in their metadata and render as a single line, so nothing in
+ * it can be opened. It edits the fixture in place; call it before mounting.
+ */
+export function expandableOutputs(fixture: PerfFixture, every: number): PerfFixture {
+  const output = Array.from({ length: 30 }, (_, line) => `output line ${line}`).join("\n")
+  const calls = fixture.parts.filter((part) => part.type === "tool" && part.tool === "bash")
+  calls.forEach((part, ordinal) => {
+    if (ordinal % every === 0 && part.type === "tool" && part.state.status === "completed") {
+      part.state.metadata = { output }
+    }
+  })
+  return fixture
+}
+
+/**
+ * Puts a user message with one short text part in front of every `every`-th assistant message, so the
+ * transcript has user rows to jump between (`session.message.next` and `session.message.previous`; the
+ * default fixtures have none: the first message is not in the loaded page). Like `richTail` it edits the
+ * fixture in place, before mounting. The session keeps its last `PAGE` messages and the users are among
+ * them, so give the assistants enough parts (`partsPerMessage`) to keep the page above `WINDOW_MIN_ROWS`.
+ */
+export function withUserMessages(fixture: PerfFixture, every: number): PerfFixture {
+  const messages: PerfFixture["messages"] = []
+  let slot = 0
+  for (const entry of fixture.messages) {
+    if (entry.info.role === "assistant") {
+      if (slot % every === 0) {
+        const ordinal = slot / every
+        const id = `msg_${fixture.session.id}_ask_${ordinal}`
+        // Between the assistant before it and the one it precedes.
+        const info = message(id, fixture.session.id, "user", slot + 1.5)
+        const part: Part = {
+          id: `prt_${fixture.session.id}_ask_${ordinal}`,
+          sessionID: fixture.session.id,
+          messageID: id,
+          type: "text",
+          text: `Question ${ordinal}: what does the session show here?`,
+          time: { start: slot, end: slot + 1 },
+        }
+        messages.push({ info, parts: [part] })
+      }
+      slot++
+    }
+    messages.push(entry)
+  }
+  fixture.messages = messages
+  fixture.rows = messages.slice(-PAGE).reduce((total, entry) => {
+    if (entry.info.role === "user") return total + entry.parts.filter((part) => part.type === "text").length
+    return (
+      total +
+      1 +
+      entry.parts.filter((part) => part.type === "text" || part.type === "reasoning" || part.type === "tool").length
+    )
+  }, 0)
+  return fixture
+}
+
+/**
  * A text part the server is still writing. It hangs off the last assistant
  * message, so it sits at the tail of the transcript like a live reply, and it
  * has no `time.end` until its terminal snapshot. The session loads only its
