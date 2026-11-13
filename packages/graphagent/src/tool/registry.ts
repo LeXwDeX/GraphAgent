@@ -27,6 +27,7 @@ import { DagAgentMessages } from "@/dag/agent-messages"
 import { Dag } from "@/dag/dag"
 import { DagControl } from "@/dag/control"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { ChildRegistry } from "@/session/child/registry"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -36,7 +37,7 @@ import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { usesApplyPatch } from "./editing-tools"
-import { Effect, Layer, Context, Option } from "effect"
+import { Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -77,40 +78,17 @@ export function webSearchEnabled(flags = { exa: false, parallel: false }) {
 
 /**
  * The agent tool is only meaningful when this session can actually exchange
- * messages with a running DAG node. Resolved once per request so the model
- * never sees an unusable tool.
+ * messages with a running DAG node. Both sides answer from this process's
+ * child registry, so the decision costs no query: a parent sees the tool while
+ * it has an active DAG node run, and a node session while its own run is
+ * active. A finished or paused workflow with no running node therefore hides
+ * the tool (Issue #1026 migration), where the durable workflow row used to keep
+ * it visible.
  */
 export const canUseAgentMessages = Effect.fn("ToolRegistry.canUseAgentMessages")(function* (session: Session.Info) {
-  const store = yield* Effect.serviceOption(DagStore.Service)
-  const messages = yield* Effect.serviceOption(DagMessages.Service)
-  if (Option.isNone(store) || Option.isNone(messages)) return false
-  const workflows = yield* store.value.listBySession(session.parentID ?? session.id)
-  const caller = { projectID: session.projectID, directory: session.directory, sessionID: session.id }
-  if (!session.parentID) {
-    for (const workflow of workflows) {
-      const endpoint = yield* messages.value.resolve(caller, workflow.id)
-      if (endpoint.ok && endpoint.value.kind === "main") return true
-    }
-    return false
-  }
-  const endpoint = yield* messages.value.revisions(caller)
-  if (!endpoint.ok || endpoint.value.endpoint.kind !== "node") return false
-  for (const workflow of workflows) {
-    if (endpoint.value.endpoint.workflowID !== workflow.id) continue
-    const nodes = yield* store.value.getNodes(workflow.id)
-    if (
-      nodes.some(
-        (node) =>
-          node.status === "running" &&
-          !node.superseded &&
-          node.childSessionId === session.id &&
-          node.id === endpoint.value.endpoint.nodeID &&
-          DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts) === endpoint.value.endpoint.attemptID,
-      )
-    )
-      return true
-  }
-  return false
+  return session.parentID === undefined
+    ? ChildRegistry.hasDagChild(session.id)
+    : ChildRegistry.dagOwnerOf(session.id) !== undefined
 })
 
 type TaskDef = Tool.InferDef<typeof TaskTool>

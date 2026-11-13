@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
-import { clearCaptureSlot, validateAgainstSchema, validatePayloadAsync } from "@/dag/runtime/capture"
+import { closeCaptureSlot, createCaptureSlot, validateAgainstSchema, validatePayloadAsync } from "@/dag/runtime/capture"
 import { evaluateCondition, resolveInputMapping } from "@/dag/runtime/eval"
 
 // --- Unit tests for eval.ts ---
@@ -212,9 +212,10 @@ describe("validateAgainstSchema", () => {
   })
 })
 describe("validatePayloadAsync", () => {
-  it("rejects when no schema registered", async () => {
-    clearCaptureSlot("nonexistent")
-    const result = await validatePayloadAsync("nonexistent", {}, new AbortController().signal)
+  it("rejects a closed capture slot", async () => {
+    const slot = createCaptureSlot({ type: "object" })
+    closeCaptureSlot(slot)
+    const result = await validatePayloadAsync(slot, {}, new AbortController().signal)
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.notAvailable).toBe(true)
   })

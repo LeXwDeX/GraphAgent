@@ -37,7 +37,13 @@ import { DagLocation } from "../location"
 import { InstanceRef } from "@/effect/instance-ref"
 import { resolveInputMapping } from "./eval"
 import { childFailureReason } from "./child-failure-reason"
-import { settleCapturedOutput, settlePlainTextOutput, registerCaptureSlot, clearCaptureSlot } from "./capture"
+import {
+  closeCaptureSlot,
+  createCaptureSlot,
+  settleCapturedOutput,
+  settlePlainTextOutput,
+  type CaptureSlot,
+} from "./capture"
 import type { CapturedSettlement } from "./capture"
 import { captureFinalResponse, finalAssistantText, type FinalCaptureResult } from "./final-response"
 import { commitOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "./output-ref"
@@ -317,10 +323,11 @@ export function reconcileWorkflow(
           } else if (!message || (Option.isSome(messages) && caller && !snapshotID)) {
             captured = { ok: false, reason: "recovered final assistant response or input snapshot is unavailable" }
           } else {
-            registerCaptureSlot(node.childSessionId, nodeConfig.output_schema)
+            const slot = createCaptureSlot(nodeConfig.output_schema)
             captured = yield* captureFinalResponse({
               store: dag.store,
               sessionID: node.childSessionId,
+              slot,
               message,
               snapshotID,
               caller,
@@ -329,7 +336,7 @@ export function reconcileWorkflow(
                 nodeID: node.id,
                 attemptID: DagMessages.nodeAttemptID(node.childSessionId, node.replanAttempts),
               },
-            }).pipe(Effect.ensuring(Effect.sync(() => clearCaptureSlot(node.childSessionId!))))
+            }).pipe(Effect.ensuring(Effect.sync(() => closeCaptureSlot(slot))))
           }
           if (!captured.ok && (captured.code === "stale_input" || captured.code === "unassociated")) {
             continuations.add(node.id)
@@ -654,6 +661,9 @@ export function continueRecoveredMessageNode(
     // The run this continuation registers on the existing child session (a new
     // episode after the interrupted one). Settled by every terminal path.
     let run: ChildRunHandle | undefined
+    // The episode's capture slot, created once admission succeeds and closed by
+    // the episode cleanup below.
+    let captureSlot: CaptureSlot | undefined
     // Workflow ownership remains with the parent, while the mailbox belongs to the child session.
     const ownerDirectory = workflow.directory
     const ownerExecutionDirectory =
@@ -834,7 +844,7 @@ export function continueRecoveredMessageNode(
           }
         })
         if (!(yield* admit)) return
-        if (nodeConfig?.output_schema) registerCaptureSlot(childSessionID, nodeConfig.output_schema)
+        if (nodeConfig?.output_schema) captureSlot = createCaptureSlot(nodeConfig.output_schema)
         // Recovery owns the full historical attempt, not each resumed model turn.
         // Do not replay its historical Start/Stop hooks in a new process.
         //
@@ -925,6 +935,7 @@ export function continueRecoveredMessageNode(
               const captured = yield* captureFinalResponse({
                 store: dag.store,
                 sessionID: childSessionID,
+                slot: captureSlot!,
                 message: result,
                 snapshotID,
                 caller,
@@ -1032,7 +1043,7 @@ export function continueRecoveredMessageNode(
         ),
         Effect.ensuring(
           Effect.gen(function* () {
-            clearCaptureSlot(childSessionID)
+            if (captureSlot) closeCaptureSlot(captureSlot)
             // An abandoned continuation (a control op replaced the attempt)
             // returns without a durable settlement; the run must not stay
             // active for the next adopt.

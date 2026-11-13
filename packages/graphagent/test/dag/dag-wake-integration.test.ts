@@ -665,12 +665,25 @@ describe("DagLoop atomic wake integration", () => {
             "second admission did not surface as durably queued",
           )
           expect(queued.childSessionId).toBeNull()
-          expect(queued.deadlineMs).not.toBeNull()
+          // Queue wait does not consume the execution budget: the queued row
+          // carries no deadline, which starts only at permit acquisition.
+          expect(queued.deadlineMs).toBeNull()
           expect((yield* store.getNodes(dagID)).filter((n) => n.status === "running")).toHaveLength(1)
 
           yield* Deferred.succeed(first.release, "done")
           const second = yield* takeWithin(childPrompts, "queued node did not start after permit release")
           expect(second.title).toBe(queued.id)
+          // Once the permit is held, nodeStarted persists the anchored
+          // deadline: it starts at running time, not at admission.
+          const running = yield* pollWithTimeout(
+            store
+              .getNode(dagID, second.title)
+              .pipe(Effect.map((current) => (current?.status === "running" ? current : undefined))),
+            "second admission did not surface as running",
+          )
+          expect(running.deadlineMs).not.toBeNull()
+          expect(running.startedAt).not.toBeNull()
+          expect(running.deadlineMs ?? 0).toBeGreaterThanOrEqual(running.startedAt ?? 0)
           yield* Deferred.succeed(second.release, "done")
 
           yield* pollWithTimeout(

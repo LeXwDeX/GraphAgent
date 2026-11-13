@@ -19,6 +19,8 @@ import { ToolRegistry, canUseAgentMessages } from "@/tool/registry"
 import { ROOT_ONLY_TOOLS } from "@/tool/pipeline"
 import type { TaskPromptOps } from "@/tool/task"
 import { Truncate } from "@/tool/truncate"
+import { ChildRegistry } from "@/session/child/registry"
+import type { ChildOwner } from "@/session/child/types"
 import { testEffect } from "../lib/effect"
 import { builtinEntry } from "../fixture/tool-registry"
 import { ProviderTest } from "../fake/provider"
@@ -26,7 +28,6 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Database } from "@graphagent/core/database/database"
 import { sql } from "drizzle-orm"
-import { registerCaptureSlot, clearCaptureSlot } from "@/dag/runtime/capture"
 
 const Parameters = Schema.Struct({})
 const workflowDefinition: Tool.Def<typeof Parameters> = {
@@ -101,123 +102,37 @@ describe("workflow child boundary", () => {
     }),
   )
 
-  it.instance("exposes DAG tools only to workflow owners and their current node sessions", () =>
+  it.instance("exposes the agent tool only to sessions with an active DAG node run", () =>
     Effect.gen(function* () {
       const agents = yield* Agent.Service
       const build = yield* agents.get("build")
       if (!build) throw new Error("Expected configured agent fixture")
       const owner = SessionID.make("ses_workflow_owner")
-      const legacy = SessionID.make("ses_legacy_node")
-      const final = SessionID.make("ses_final_node")
-      const plain = SessionID.make("ses_plain_node")
-      const replaced = SessionID.make("ses_replaced_node")
-      const workflow: DagStore.WorkflowRow = {
-        id: "workflow_owned",
-        projectId: ProjectV2.ID.global,
-        sessionId: owner,
-        directory: "/tmp/opencode",
-        targetFingerprint: { kind: "none" },
-        title: "Owned workflow",
-        status: "running",
-        pauseReason: null,
-        config: "{}",
-        seq: 1,
-        wakeReported: false,
-        graphRev: 0,
-        startedAt: 1,
-        completedAt: null,
-        timeCreated: 1,
-        timeUpdated: 1,
-      }
-      const store = Layer.mock(DagStore.Service, {
-        listBySession: (id) => Effect.succeed(id === owner ? [workflow] : []),
-        getNodes: () =>
-          Effect.succeed(
-            [legacy, final, plain, replaced].map((childSessionId): DagStore.NodeRow => ({
-              id: childSessionId,
-              workflowId: workflow.id,
-              name: "worker",
-              workerType: "general",
-              status: "running",
-              required: true,
-              dependsOn: [],
-              modelId: null,
-              modelProviderId: null,
-              childSessionId,
-              superseded: childSessionId === replaced,
-              output: null,
-              capturedOutput: null,
-              errorReason: null,
-              errorClass: null,
-              deadlineMs: null,
-              wakeEligible: true,
-              wakeReported: false,
-              replanAttempts: 0,
-              timeoutExtensions: 0,
-              escalationPending: false,
-              seq: 1,
-              startedAt: 1,
-              completedAt: null,
-            })),
-          ),
-      })
-      // The owner endpoint is a main mailbox; children report the node mailbox
-      // of their own session, matching DagMessages.revisions.
-      const messages = Layer.mock(DagMessages.Service, {
-        resolve: (caller, workflowID) =>
-          Effect.succeed(
-            workflowID === workflow.id && caller.directory === workflow.directory && caller.sessionID === owner
-              ? { ok: true, value: { id: `main:${owner}`, kind: "main", sessionID: owner } }
-              : { ok: false, reason: "unauthorized" },
-          ),
-        revisions: (caller) =>
-          Effect.succeed(
-            caller.directory === workflow.directory
-              ? {
-                  ok: true,
-                  value: {
-                    endpoint: {
-                      id: caller.sessionID,
-                      kind: "node",
-                      sessionID: caller.sessionID,
-                      workflowID: workflow.id,
-                      nodeID: caller.sessionID,
-                      attemptID: DagMessages.nodeAttemptID(caller.sessionID, 0),
-                    },
-                    accepted: 0,
-                    snapshot: 0,
-                    queued: 0,
-                    delivered: 0,
-                    undeliverable: 0,
-                  },
-                }
-              : { ok: false, reason: "unauthorized" },
-          ),
-      })
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          registerCaptureSlot(legacy, { type: "object" })
-          registerCaptureSlot(final, { type: "object" })
-        }),
-        () =>
-          Effect.sync(() => {
-            clearCaptureSlot(legacy)
-            clearCaptureSlot(final)
-          }),
-      )
-      for (const [info, expected] of [
-        [session(owner), ["agent"]],
-        [session(SessionID.make("ses_without_workflow")), []],
-        [session(SessionID.make("ses_task_child"), owner), []],
-        [session(legacy, owner), ["agent"]],
-        [session(final, owner), ["agent"]],
-        [session(plain, owner), ["agent"]],
-        [session(replaced, owner), []],
-        [{ ...session(owner), directory: "/tmp/other-worktree" }, []],
-      ] as const) {
-        const ids = yield* resolvedToolIDs(build, info).pipe(Effect.provide(Layer.merge(store, messages)))
-        expect(ids.filter((id) => id === "agent")).toEqual([...expected])
-      }
+      const node = SessionID.make("ses_workflow_node")
+      const idle = SessionID.make("ses_workflow_idle_node")
+      const taskChild = SessionID.make("ses_workflow_task_child")
+
+      // No run in this process: neither the owner nor a child session sees the
+      // tool, though the owner may still own a durable workflow.
+      expect(yield* resolvedToolIDs(build, session(owner))).not.toContain("agent")
+      expect(yield* resolvedToolIDs(build, session(node, owner))).not.toContain("agent")
+
+      // A task-owned run is not a DAG endpoint.
+      yield* dagRun(taskChild, owner, { kind: "task", toolCallID: "call_task" })
+      expect(yield* resolvedToolIDs(build, session(owner))).not.toContain("agent")
+      expect(yield* resolvedToolIDs(build, session(taskChild, owner))).not.toContain("agent")
+
+      // A running DAG node is reachable from both sides of the boundary.
+      const run = yield* dagRun(node, owner)
+      expect(yield* resolvedToolIDs(build, session(owner))).toContain("agent")
+      expect(yield* resolvedToolIDs(build, session(node, owner))).toContain("agent")
+      // A child of the owner with no run of its own is not a node session.
+      expect(yield* resolvedToolIDs(build, session(idle, owner))).not.toContain("agent")
+
+      // Cancelling ends the run: the next resolution no longer sees a mailbox.
+      expect(ChildRegistry.end(run, { type: "cancelled", by: { kind: "engine", reason: "test" } })).toBe(true)
+      expect(yield* resolvedToolIDs(build, session(owner))).not.toContain("agent")
+      expect(yield* resolvedToolIDs(build, session(node, owner))).not.toContain("agent")
     }),
   )
   it.instance("resolves workspace child tools using durable mailbox membership", () =>
@@ -252,15 +167,14 @@ describe("workflow child boundary", () => {
         yield* db.run(
           sql`INSERT INTO workflow_node (id,workflow_id,name,worker_type,status,depends_on,child_session_id,directory,seq,time_created,time_updated) VALUES ('n','wf-real','N','task','running','[]',${worker.id},${worker.directory},1,1,1)`,
         )
+        // Visibility comes from the process registry; the rows above authorize
+        // the messages themselves.
+        yield* dagRun(worker.id, owner.id)
         expect(yield* resolvedToolIDs(build, owner)).toContain("agent")
         const childTools = yield* resolvedToolIDs(build, worker)
         expect(childTools).toContain("agent")
         expect(childTools).not.toContain("task")
         expect(childTools).not.toContain("workflow")
-        expect(yield* resolvedToolIDs(build, { ...worker, directory: owner.directory })).not.toContain("agent")
-        expect(yield* resolvedToolIDs(build, { ...worker, projectID: ProjectV2.ID.make("foreign") })).not.toContain(
-          "agent",
-        )
         const parentCaller = { projectID: owner.projectID, directory: owner.directory, sessionID: owner.id }
         const childCaller = { projectID: worker.projectID, directory: worker.directory, sessionID: worker.id }
         const sent = yield* messages.send(parentCaller, {
@@ -276,11 +190,6 @@ describe("workflow child boundary", () => {
         expect(
           (yield* messages.send(childCaller, { workflowID: "wf-real", idempotencyKey: "reply", content: "reply" })).ok,
         ).toBe(true)
-        yield* db.run(sql`UPDATE session SET parent_id = 'wrong' WHERE id = ${worker.id}`)
-        expect(yield* resolvedToolIDs(build, worker)).not.toContain("agent")
-        yield* db.run(sql`UPDATE session SET parent_id = ${owner.id} WHERE id = ${worker.id}`)
-        yield* db.run(sql`UPDATE workflow_node SET status = 'pending', replan_attempts = 1 WHERE id = 'n'`)
-        expect(yield* resolvedToolIDs(build, worker)).not.toContain("agent")
       }).pipe(Effect.provide(services))
     }),
   )
@@ -316,6 +225,41 @@ describe("workflow child boundary", () => {
     }),
   )
 })
+
+/**
+ * One registered run of this process, released with the test (Issue #1026,
+ * PR6): the agent tool's visibility reads the registry, not the database.
+ */
+function dagRun(childSessionID: SessionID, parentSessionID: SessionID, owner?: ChildOwner) {
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      const ownerKey: ChildOwner = owner ?? {
+        kind: "dag_node",
+        workflowID: "workflow_owned",
+        nodeID: `node_${childSessionID}`,
+        attempt: 0,
+      }
+      const entry = ChildRegistry.create({
+        id: `crun_${childSessionID}`,
+        childSessionID,
+        parentSessionID,
+        ownerKind: ownerKey.kind,
+        ownerKey,
+        permission: { ask: "auto" },
+        detached: false,
+        directory: undefined,
+        owner: {},
+      })
+      expect(ChildRegistry.register(entry)).toBe(true)
+      return entry
+    }),
+    (entry) =>
+      Effect.sync(() => {
+        ChildRegistry.end(entry, { type: "completed" })
+        ChildRegistry.release(entry)
+      }),
+  )
+}
 
 function resolveSessionTools(agent: Agent.Info, info: Session.Info) {
   const userID = MessageID.make(`msg_${info.id}`)

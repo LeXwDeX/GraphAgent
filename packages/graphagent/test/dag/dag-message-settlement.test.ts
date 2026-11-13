@@ -17,7 +17,6 @@ import { EventV2 } from "@graphagent/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Dag } from "@/dag/dag"
 import { ProjectV2 } from "@graphagent/core/project"
-import { clearCaptureSlot, hasCaptureSlot } from "@/dag/runtime/capture"
 import { reconcileWorkflow, continueRecoveredMessageNode, makeSessionStatusChecker } from "@/dag/runtime/recovery"
 import { Session } from "@/session/session"
 import { NonNegativeInt } from "@graphagent/core/schema"
@@ -233,13 +232,10 @@ describe("message settlement through durable DAG events", () => {
           )
           const node = yield* dag.store.getNode("dag_messages", "n")
           const message = value(yield* messages.receive(child))[0]
-          const captureRegistered = hasCaptureSlot(child.sessionID)
-          clearCaptureSlot(child.sessionID)
           expect(calls).toBe(1)
-          expect({ nodeStatus: node?.status, inputState: message.state, captureRegistered }).toEqual({
+          expect({ nodeStatus: node?.status, inputState: message.state }).toEqual({
             nodeStatus: "failed",
             inputState: "undeliverable",
-            captureRegistered: false,
           })
           expect(node).toMatchObject({ childSessionId: child.sessionID, replanAttempts: 0, errorClass: "exec_failed" })
           expect(node?.errorReason).toContain("recovered provider preparation failed")

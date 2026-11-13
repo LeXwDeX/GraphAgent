@@ -95,6 +95,31 @@ export function activeWhere(predicate: (entry: ActiveChildRun) => boolean): Acti
 }
 
 /**
+ * The DAG node owner of `childSessionID`'s active run, if this process has one
+ * (Issue #1026, PR6). The tool registry reads it to decide whether the child
+ * session can exchange messages with its node; a task run, an ended run and a
+ * missing run all answer undefined.
+ */
+export function dagOwnerOf(childSessionID: string): ChildOwner | undefined {
+  const entry = activeFor(childSessionID)
+  if (!entry || entry.phase === "ended" || entry.ownerKind !== "dag_node") return undefined
+  return entry.ownerKey
+}
+
+/**
+ * Whether this process has an active DAG node run under `parentSessionID`
+ * (Issue #1026, PR6). This replaces the durable "owns a workflow" read behind
+ * the agent tool: a parent sees the tool only while one of its nodes runs, so a
+ * finished or paused workflow with no running node hides it.
+ */
+export function hasDagChild(parentSessionID: string): boolean {
+  for (const entry of registry.byRun.values())
+    if (entry.ownerKind === "dag_node" && entry.phase !== "ended" && entry.parentSessionID === parentSessionID)
+      return true
+  return false
+}
+
+/**
  * The credential of a child session's active run. Admission and the loop of
  * later PRs call this instead of reading the process state themselves.
  */

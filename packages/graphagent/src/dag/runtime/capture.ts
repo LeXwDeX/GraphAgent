@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * DAG structured-output schema registry + validation.
+ * DAG structured-output capture slot + validation.
  *
- * The schema for each child session is held in-memory (it comes from the
- * workflow config and is re-registered on recovery). The validated payload
- * is persisted to the `captured_output` column of `workflow_node` via
- * DagStore — surviving a process crash (but reset to null on a replan-restart
- * via NodeStarted, so each attempt starts with a clean slate).
+ * The owner of an attempt (spawn or recovery) holds its own slot in-memory;
+ * the schema comes from the workflow config and a fresh slot is created on
+ * every attempt and recovery episode. The validated payload is persisted to
+ * the `captured_output` column of `workflow_node` via DagStore — surviving a
+ * process crash (but reset to null on a replan-restart via NodeStarted, so
+ * each attempt starts with a clean slate).
  */
 
 import { acceptConsistencyErrors, validateReviewResult, type VerdictEvidence } from "../review-lifecycle"
@@ -17,30 +18,29 @@ import { validateInWorker, type Validation } from "./schema-validation"
 export { validateAgainstSchema, unsupportedSchemaKeywords } from "./schema-validator"
 export type { SchemaValidationFix } from "./schema-validator"
 
-type CaptureSlot = {
+export type CaptureSlot = {
   schema: Record<string, unknown>
   generation: number
   pending?: AbortController
-}
-const schemas = new Map<string, CaptureSlot>()
-let generation = 0
-
-export function registerCaptureSlot(sessionID: string, schema: Record<string, unknown>): void {
-  schemas.get(sessionID)?.pending?.abort("capture slot changed")
-  schemas.set(sessionID, { schema, generation: ++generation })
+  closed?: boolean
 }
 
-export function hasCaptureSlot(sessionID: string): boolean {
-  return schemas.has(sessionID)
+export function createCaptureSlot(schema: Record<string, unknown>): CaptureSlot {
+  return { schema, generation: 1 }
 }
 
-export function getCaptureSchema(sessionID: string): Record<string, unknown> | undefined {
-  return schemas.get(sessionID)?.schema
+/** A stale-input continuation keeps the attempt but must reject the older turn's result. */
+export function resetCaptureSlot(slot: CaptureSlot, schema: Record<string, unknown>): void {
+  slot.pending?.abort("capture slot changed")
+  delete slot.pending
+  slot.schema = schema
+  slot.generation++
 }
 
-export function clearCaptureSlot(sessionID: string): void {
-  schemas.get(sessionID)?.pending?.abort("capture slot changed")
-  schemas.delete(sessionID)
+export function closeCaptureSlot(slot: CaptureSlot): void {
+  slot.pending?.abort("capture slot changed")
+  delete slot.pending
+  slot.closed = true
 }
 
 export type CaptureValidation =
@@ -49,12 +49,11 @@ export type CaptureValidation =
 
 /** One worker per admitted child session, owned by this exact slot generation. */
 export async function validatePayloadAsync(
-  sessionID: string,
+  slot: CaptureSlot,
   payload: unknown,
   signal: AbortSignal,
 ): Promise<CaptureValidation> {
-  const slot = schemas.get(sessionID)
-  if (!slot) return { ok: false, error: "no capture slot is registered in this session", notAvailable: true }
+  if (slot.closed) return { ok: false, error: "capture slot is closed", notAvailable: true }
   if (slot.pending) return { ok: false, error: "schema validation is already running in this session" }
   const pending = new AbortController()
   slot.pending = pending
@@ -66,8 +65,7 @@ export async function validatePayloadAsync(
   if (signal.aborted) cancel()
   try {
     const result: Validation = await validateInWorker(slot.schema, payload, pending.signal)
-    if (schemas.get(sessionID) !== slot)
-      return { ok: false, error: "capture slot changed during schema validation", notAvailable: true }
+    if (slot.closed) return { ok: false, error: "capture slot changed during schema validation", notAvailable: true }
     return result.ok ? { ...result, generation: slot.generation } : result
   } finally {
     signal.removeEventListener("abort", cancel)
@@ -76,8 +74,8 @@ export async function validatePayloadAsync(
 }
 
 /** Rechecked in the persistence effect, after asynchronous validation and admission. */
-export function isCaptureValidationCurrent(sessionID: string, validated: { generation: number }): boolean {
-  return schemas.get(sessionID)?.generation === validated.generation
+export function isCaptureValidationCurrent(slot: CaptureSlot, validated: { generation: number }): boolean {
+  return !slot.closed && slot.generation === validated.generation
 }
 
 /**

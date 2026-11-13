@@ -44,7 +44,8 @@ function changedObjectFields(
 /**
  * Execution fields changed by a replan replacement after a node was admitted.
  * Control markers are not part of the node definition. A running attempt may
- * hot-update only timeout_ms; queued attempts have already fixed that deadline.
+ * hot-update only timeout_ms; a queued attempt has no deadline yet — its
+ * budget starts at permit acquisition.
  */
 export function changedAdmittedNodeFields<T extends object>(
   current: T,
