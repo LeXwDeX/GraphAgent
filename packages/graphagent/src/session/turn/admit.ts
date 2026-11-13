@@ -614,7 +614,7 @@ export function makeAdmit(deps: AdmitDeps) {
           initialOnly: true,
           followup: { kind: "prompt", ...followup },
         },
-        options?.internalDelegation ? { internalDelegation: true } : undefined,
+        options?.internalDelegation ? { internalDelegation: true, credential: extras?.credential } : undefined,
       )
       if (initial) return initial
     }

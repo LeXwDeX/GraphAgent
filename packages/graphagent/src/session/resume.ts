@@ -8,6 +8,8 @@ import { Effect, Option, Schema } from "effect"
 import type { HookLifecycle } from "@/hook/lifecycle"
 import type { HookStartContext } from "@/hook/start-context"
 import { SessionCancellation } from "./cancellation"
+import { ChildAdmission } from "./child/admission"
+import type { ChildRunCredential } from "./child/types"
 import type { SessionLocks } from "./locks"
 import { MessageV2 } from "./message-v2"
 import type { Interface, PromptError } from "./prompt"
@@ -16,7 +18,7 @@ import type { SessionRunState } from "./run-state"
 import { MessageID, type SessionID } from "./schema"
 import type { Session } from "./session"
 import type { Admit } from "./turn/admit"
-import type { Interface as TurnsInterface, TurnExecution, TurnOrigin } from "./turns"
+import { originFor, type Interface as TurnsInterface, type TurnExecution, type TurnOrigin } from "./turns"
 
 export class NoPendingHookInput extends Schema.TaggedError<NoPendingHookInput>()("NoPendingHookInput", {
   message: Schema.String,
@@ -101,6 +103,7 @@ export function makeResume(deps: ResumeDeps) {
     sessionID: SessionID,
     completed: SessionV1.WithParts | null,
     epoch: number,
+    credential?: ChildRunCredential,
   ) {
     if (
       !completed ||
@@ -159,6 +162,8 @@ export function makeResume(deps: ResumeDeps) {
                     skipHookStart: true,
                     ...(pending.internalDelegation ? { internalDelegation: true as const } : {}),
                   },
+                  // A delegation's saved followup is the prompt of the run that saved it: it runs under that credential.
+                  pending.internalDelegation && credential ? { credential } : undefined,
                 )
           ).pipe(
             Effect.ensuring(
@@ -254,6 +259,9 @@ export function makeResume(deps: ResumeDeps) {
                       },
                       undefined,
                       options?.internalDelegation ? { internalDelegation: true } : undefined,
+                      undefined,
+                      undefined,
+                      options?.credential,
                     )
                     .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
                   if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
@@ -267,7 +275,7 @@ export function makeResume(deps: ResumeDeps) {
                 // a cancel cannot land between the check and the fork. Wait outside
                 // the prompt lock; the loop machine claims it for its snapshot.
                 const origin: TurnOrigin = options?.internalDelegation
-                  ? { kind: "child_run" }
+                  ? originFor(options, options.credential)
                   : input.followup?.kind === "command"
                     ? { kind: "user", via: "command" }
                     : { kind: "user", via: "prompt" }
@@ -278,7 +286,12 @@ export function makeResume(deps: ResumeDeps) {
                       input.sessionID,
                       lastAssistant(input.sessionID),
                       turns()
-                        .track(handle, runTurn(input.sessionID))
+                        .track(
+                          handle,
+                          ChildAdmission.observe("loop", { id: input.sessionID }, options?.credential).pipe(
+                            Effect.andThen(runTurn(input.sessionID)),
+                          ),
+                        )
                         .pipe(Effect.map((turn) => turn.message)),
                       request,
                     )
@@ -298,7 +311,7 @@ export function makeResume(deps: ResumeDeps) {
           Effect.fail(new NoPendingHookInput({ message: error.reason })),
         ),
       )
-    return yield* finishPendingInput(input.sessionID, yield* result, epoch)
+    return yield* finishPendingInput(input.sessionID, yield* result, epoch, options?.credential)
   })
 
   return { resume }

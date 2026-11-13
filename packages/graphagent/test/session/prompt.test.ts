@@ -3174,6 +3174,76 @@ it.instance("admission records the credential a child is prompted under at both 
   }),
 )
 
+// A child with a queued initial hook message (SessionStart `initialUserMessage`) is not started by the task's prompt
+// alone: `resume` admits the hook message as the first turn, and finishes with the task prompt it saved as a followup.
+// Both turns are the run's, so both name it in their origin and carry its credential through both junctions.
+it.instance(
+  "a child with an initial hook message carries its run's credential on the initial turn and on the saved followup",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      const lifecycle = yield* HookLifecycle.Service
+      const { db } = yield* Database.Service
+      const child = yield* sessions.create({ parentID: chat.id, title: "probe (@general subagent)", agent: "general" })
+      const children = (yield* prompt.children).forParent(chat.id)
+      const run = yield* children.start({
+        childSessionID: child.id,
+        owner: { kind: "task", toolCallID: "call_initial_hook" },
+        detached: false,
+      })
+      yield* run.markRunning
+      yield* lifecycle.queueInitial(child.id, "HOOK_INITIAL_MESSAGE")
+      yield* llm.text("initial answer")
+      yield* llm.text("followup answer")
+      const lines: string[] = []
+      const record = Logger.make((entry) => {
+        lines.push(JSON.stringify(entry.message))
+      })
+
+      const answered = yield* children
+        .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "TASK_PROMPT" }] })
+        .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
+
+      // The task prompt ran as the followup, after the hook message's turn.
+      expect(answered.parts.some((part) => part.type === "text" && part.text === "followup answer")).toBe(true)
+      const requests = yield* llm.inputs
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[0]?.messages)).toContain("HOOK_INITIAL_MESSAGE")
+      expect(JSON.stringify(requests[0]?.messages)).not.toContain("TASK_PROMPT")
+      expect(JSON.stringify(requests[1]?.messages)).toContain("TASK_PROMPT")
+      expect((yield* sessions.get(child.id)).metadata?.hookPendingInput).toBeUndefined()
+
+      // Both turns name the run that drove them.
+      const turns = yield* db
+        .select()
+        .from(SessionTurnTable)
+        .where(eq(SessionTurnTable.session_id, child.id))
+        .all()
+        .pipe(Effect.orDie)
+      expect(turns).toHaveLength(2)
+      for (const turn of turns) {
+        expect(turn).toMatchObject({
+          state: "ended",
+          origin: JSON.stringify({ kind: "child_run", childRunID: run.id }),
+          origin_ref: run.id,
+        })
+      }
+      // Both junctions saw the live credential, on both turns: the admitted message, then the start of its turn.
+      const presented = lines.filter((line) => line.includes("child run credential presented"))
+      expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual([
+        "admit",
+        "loop",
+        "admit",
+        "loop",
+      ])
+      for (const line of presented) expect(line).toContain(`"runID":"${run.id}"`)
+      expect(lines.filter((line) => line.includes("without a run credential"))).toEqual([])
+      expect(lines.filter((line) => line.includes("does not belong"))).toEqual([])
+      yield* run.settle({ type: "completed" })
+    }),
+)
+
 backgroundUnix(
   "task tool repairs exact string background booleans through the full AI SDK tool path (#647)",
   () =>

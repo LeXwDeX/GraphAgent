@@ -201,9 +201,14 @@ export interface Interface {
     sessionID: SessionID
     apiModelID: string
   }) => Effect.Effect<readonly string[]>
+  /**
+   * `options.credential` is the credential of the child run a delegation is
+   * driven under (Issue #1026, PR3b). The initial hook message, the turn it
+   * starts and the saved followup it finishes with are all admitted under it.
+   */
   readonly resume: (
     input: ResumeInput,
-    options?: Pick<AdmissionOptions, "internalDelegation">,
+    options?: Pick<AdmissionOptions, "internalDelegation"> & Pick<AdmissionExtras, "credential">,
   ) => Effect.Effect<SessionV1.WithParts | null, PromptError | NoPendingHookInput>
   /** Read-only diagnostic: followup admission owners still registered for a session. */
   readonly followupAdmissionOwnerCount: (sessionID: SessionID) => Effect.Effect<number>
