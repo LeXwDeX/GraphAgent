@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { expect } from "bun:test"
+import { Database } from "@graphagent/core/database/database"
+import { sql } from "drizzle-orm"
 import { Clock, Effect, Fiber } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { Session } from "@/session/session"
@@ -27,9 +29,19 @@ export interface S6Result extends Measurement {
   readonly requests: ReadonlyArray<BaselineRequest>
   /** Counters from the first measured pass, for the determinism comparison. */
   readonly firstCounts: Counters
+  /**
+   * Rows the measured session's aggregate appended to the durable `event` table.
+   * HS4d (#1016) omits them while still allocating sequence numbers.
+   */
+  readonly sessionAggregateEventRows: number
+  /** Last durable sequence allocated for the measured session aggregate. */
+  readonly sessionAggregateEventSeq: number
 }
 
-export function s6Scenario(): Scenario<S6Result, Session.Service | SessionPrompt.Service> {
+export function s6Scenario(): Scenario<
+  S6Result,
+  Session.Service | SessionPrompt.Service | Database.Service
+> {
   const shell = makeFakeShell({ chunks: CHUNKS, intervalMs: INTERVAL_MS })
 
   let conversation = 0
@@ -51,6 +63,7 @@ export function s6Scenario(): Scenario<S6Result, Session.Service | SessionPrompt
   const run = Effect.gen(function* () {
     const sessions = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
+    const { db } = yield* Database.Service
 
     const runScenario = (title: string) =>
       Effect.gen(function* () {
@@ -93,11 +106,22 @@ export function s6Scenario(): Scenario<S6Result, Session.Service | SessionPrompt
         yield* settle({ activity: fake.activity })
         const counts = snapshot()
         const book = stepBook()
+        // ADR 0002 (#1162): session aggregates allocate a durable sequence but
+        // append no `event` row. Both reads use the same counting database the
+        // projector and event bus wrote through.
+        const eventRow = yield* db.get<{ n: number }>(
+          sql`SELECT count(*) AS n FROM event WHERE aggregate_id = ${session.id}`,
+        )
+        const sequence = yield* db.get<{ seq: number }>(
+          sql`SELECT seq FROM event_sequence WHERE aggregate_id = ${session.id}`,
+        )
         return {
           counts,
           steps: book.steps,
           perStep: book.perStep,
           requests: fingerprintRequests(fake.requests),
+          sessionAggregateEventRows: eventRow?.n ?? 0,
+          sessionAggregateEventSeq: sequence?.seq ?? 0,
         }
       })
 
@@ -114,6 +138,8 @@ export function s6Scenario(): Scenario<S6Result, Session.Service | SessionPrompt
       steps: second.steps,
       perStep: second.perStep,
       requests: second.requests,
+      sessionAggregateEventRows: second.sessionAggregateEventRows,
+      sessionAggregateEventSeq: second.sessionAggregateEventSeq,
     }
   })
 

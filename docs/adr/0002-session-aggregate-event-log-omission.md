@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-10
-- **Issue:** #1016 (delivery: PR pending)
+- **Issue:** #1016 (delivery: #1162)
 - **Supersedes:** none
 
 ## Context

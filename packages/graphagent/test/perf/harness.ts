@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { NodeFileSystem } from "@effect/platform-node"
+import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import { FetchHttpClient } from "effect/http"
 import { Effect, Layer } from "effect"
@@ -284,7 +285,7 @@ export interface PerfLayerOptions {
 export function makePerfLayer(
   provider: FakeProvider,
   options?: PerfLayerOptions,
-): Layer.Layer<SessionPrompt.Service | Session.Service, never, never> {
+): Layer.Layer<SessionPrompt.Service | Session.Service | Database.Service, never, never> {
   const { deps, registry, trunc } = makeStacks(
     options?.hooks ?? hookRecorderLayer,
     options?.shell ?? CrossSpawnSpawner.defaultLayer,
