@@ -10,7 +10,7 @@ import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { isTerminalValue } from "@graphagent/core/lifecycle/vocabulary"
 import { Database } from "@graphagent/core/database/database"
 import { BackgroundJob } from "@/background/job"
-import { readPersistedJob, runtimeJobProcessID, type PersistedJob } from "@/background/persist"
+import { readPersistedJob, type PersistedJob } from "@/background/persist"
 import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { GoalState } from "./state"
@@ -19,7 +19,7 @@ import { GoalEvent } from "./events"
 import { GoalPrompts } from "./prompts"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
-import { ExclusiveRegistry } from "@/session/engine-process"
+import { ExclusiveRegistry, runnerAlive } from "@/session/engine-process"
 import { SessionCancellation } from "@/session/cancellation"
 import { SessionLocation } from "@/session/location"
 import { DagLocation } from "@/dag/location"
@@ -342,10 +342,12 @@ const awaitWaitFor = (job: BackgroundJob.Info, now: number): GoalState.Wait => {
  * The review reason for a wait whose job can no longer wake it, or undefined
  * when its owner may still deliver a wake (#1069). A terminal row is a job that
  * ended without its wake arriving, or that restart recovery failed as
- * `process_restart`; a non-terminal row of another process is one recovery has
- * not reached yet; a row that was never written leaves nothing to wait for
- * either. The text reaches the agent in the review prompt, so it names the job
- * (title and id), its state, and the decision that is wanted.
+ * `process_restart`; a non-terminal row whose owner process is gone is one
+ * recovery has not reached yet; a row that was never written leaves nothing to
+ * wait for either. A non-terminal row of a live process, this one or another,
+ * may still deliver its wake, the same verdict recovery applies (#1272). The
+ * text reaches the agent in the review prompt, so it names the job (title and
+ * id), its state, and the decision that is wanted.
  */
 const orphanReason = (jobID: string, row: PersistedJob | undefined): string | undefined => {
   const subject = `等待的后台任务 ${row?.title ? `${row.title}（${jobID}）` : jobID}`
@@ -355,7 +357,7 @@ const orphanReason = (jobID: string, row: PersistedJob | undefined): string | un
     return row.error === "process_restart"
       ? `${subject} 因进程重启已终止（状态 ${row.status}：process_restart），${decision}`
       : `${subject} 已结束（状态 ${row.status}${row.error ? `：${row.error}` : ""}），唤醒因进程重启（process_restart）丢失，${decision}`
-  if (row.process_id !== runtimeJobProcessID)
+  if (!runnerAlive(row.process_id))
     return `${subject} 因进程重启已丢失（状态 ${row.status}，由已退出的进程留下；process_restart），${decision}`
   return undefined
 }

@@ -4,14 +4,24 @@
 import type { BackgroundJob } from "@graphagent/core/background-job"
 import type { Database } from "@graphagent/core/database/database"
 import { RuntimeJobTable } from "@graphagent/core/lifecycle/runtime-job.sql"
+import { EngineProcess } from "@/session/engine-process"
 import { eq } from "drizzle-orm"
-import { randomUUID } from "node:crypto"
 import { Clock, Effect } from "effect"
 
-/** One token per process: a second service instance in the same process (the
- * sidecar and AppLayer can both build the graph) must not treat this
- * process's live rows as leftovers. */
-export const runtimeJobProcessID = `proc_${randomUUID()}`
+/**
+ * The owner written to `runtime_job.process_id`: this process's `pid:nonce`
+ * runner identity, the same vocabulary `session_turn` and `child_run` use
+ * (Issue #1272). One identity per process: a second service instance in the
+ * same process (the sidecar and AppLayer can both build the graph) must not
+ * treat this process's live rows as leftovers. Because the value names a pid,
+ * another process can ask `runnerAlive` whether the owner still exists before
+ * it treats a running row as a leftover.
+ *
+ * Rows written before #1272 carry a `proc_<uuid>` token instead. It names no
+ * pid, so `runnerAlive` reports it dead and recovery fails such a row exactly
+ * as it did before the identity changed.
+ */
+export const runtimeJobProcessID = EngineProcess.runner.id
 
 const isTerminal = (status: BackgroundJob.Status) =>
   status === "completed" || status === "error" || status === "cancelled"

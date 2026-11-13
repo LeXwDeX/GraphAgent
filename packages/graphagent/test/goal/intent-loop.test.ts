@@ -275,6 +275,7 @@ describe("GoalLoop — waits", () => {
       const instance = yield* requireInstance
       const alive = SessionID.descending()
       const lost = SessionID.descending()
+      const foreign = SessionID.descending()
       const seedSession = (id: string) =>
         Effect.gen(function* () {
           yield* db
@@ -296,6 +297,7 @@ describe("GoalLoop — waits", () => {
         })
       yield* seedSession(alive)
       yield* seedSession(lost)
+      yield* seedSession(foreign)
       const awaitRow = (jobID: string): GoalState.Intent => ({
         kind: "await",
         wait: {
@@ -308,7 +310,9 @@ describe("GoalLoop — waits", () => {
         },
       })
       // Durable state written by the previous process: one job it left running,
-      // plus a running job owned by this very process.
+      // plus a running job owned by this very process, and one owned by another
+      // process that is still alive (#1272: the database is shared by every
+      // graphagent process, so that job is neither failed nor reviewed here).
       const watchTitle = "watch https://github.com/acme/widgets/pull/42"
       yield* db
         .insert(RuntimeJobTable)
@@ -332,12 +336,24 @@ describe("GoalLoop — waits", () => {
             started_at: 1,
             updated_at: 1,
           },
+          {
+            id: "job_restart_foreign",
+            type: "watch_pr",
+            // The parent process exists for as long as this test runs; its nonce is not ours to judge.
+            process_id: `${process.ppid}:other-process`,
+            session_id: foreign,
+            status: "running",
+            started_at: 1,
+            updated_at: 1,
+          },
         ])
         .run()
       yield* goal.set(lost, "merge the PR", 10)
       yield* goal.setIntent(lost, awaitRow("job_restart_lost"))
       yield* goal.set(alive, "merge the other PR", 10)
       yield* goal.setIntent(alive, awaitRow("job_restart_alive"))
+      yield* goal.set(foreign, "merge the third PR", 10)
+      yield* goal.setIntent(foreign, awaitRow("job_restart_foreign"))
 
       // Process start order: recovery first, then the instance boots its goal loop.
       expect(yield* (yield* RuntimeJobRecovery.Service).recoverOnce()).toBe(1)
@@ -401,6 +417,13 @@ describe("GoalLoop — waits", () => {
       ).toBe(true)
       expect(promptCalls.filter((call) => !call.noReply)).toHaveLength(1)
       expect((yield* goal.load(alive))?.status).toBe("waiting")
+      // The other live process still owns its job: recovery left the row running
+      // (the first recovery pass above counted exactly one failed row) and the
+      // scan sent no review for the goal waiting on it.
+      expect((yield* goal.load(foreign))?.status).toBe("waiting")
+      expect(
+        yield* db.select().from(RuntimeJobTable).where(eq(RuntimeJobTable.id, "job_restart_foreign")).get(),
+      ).toMatchObject({ status: "running", error: null })
     }),
   )
 
