@@ -417,6 +417,26 @@ test("a P14 sample at the floor still gates the relative increase", () => {
   expect(failures[0]?.metric).toBe("relativeIncrease")
 })
 
+test("P15b requires zero idle ticks while DAG mode is on", () => {
+  const idle = (metrics: Record<string, number>) => ({
+    scenarios: { L: { P15b: { frames: 0, seconds: 0, renderRequests: 0, ...metrics } } },
+  })
+
+  expect(compareReports({ scenarios: {} }, idle({})).failures).toEqual([])
+  // A footer segment that subscribes to the animation ticker shows up as frames...
+  expect(compareReports({ scenarios: {} }, idle({ frames: 1 })).failures).toEqual([
+    { size: "L", id: "P15b", metric: "frames", limit: "0", value: 1 },
+  ])
+  // ...one that refreshes once a second shows up as seconds...
+  expect(compareReports({ scenarios: {} }, idle({ seconds: 2 })).failures).toEqual([
+    { size: "L", id: "P15b", metric: "seconds", limit: "0", value: 2 },
+  ])
+  // ...and one that asks the renderer to repaint shows up as render requests.
+  expect(compareReports({ scenarios: {} }, idle({ renderRequests: 2 })).failures).toEqual([
+    { size: "L", id: "P15b", metric: "renderRequests", limit: "0", value: 2 },
+  ])
+})
+
 test("a gate metric the report does not carry is reported, not skipped", () => {
   // The slash scenario once emitted `maxFrame` while the ceiling read `maxMs`:
   // the ceiling never ran and nothing said so.
@@ -796,6 +816,7 @@ function scenarios(size = "L"): Record<string, ScenarioMetrics> {
       nonCurrentPartWrites: 0,
     },
     P15: { frames: 0 },
+    P15b: { frames: 0, seconds: 0, renderRequests: 0 },
     P16: { frames: 22 },
     P17: { framesEmpty: 22, framesEight: 22 },
     P17b: { frames: 0 },

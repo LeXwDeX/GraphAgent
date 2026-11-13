@@ -426,6 +426,13 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
     // P15-P19: timer and mouse frames.
     const tickLimit = Math.ceil((2 * 1_000) / TICK_MS) + 2
     check("P15", "frames", "0", (value) => value === 0)
+    // P15b: with DAG mode on and no workflow running, the footer indicator and
+    // the prompt's usage segment are static, so an idle session renders no frame.
+    // `seconds` and `renderRequests` cover a segment that repaints on its own
+    // timer without subscribing to the animation ticker.
+    check("P15b", "frames", "0", (value) => value === 0)
+    check("P15b", "seconds", "0", (value) => value === 0)
+    check("P15b", "renderRequests", "0", (value) => value === 0)
     check("P16", "frames", `≤ ${tickLimit}`, (value) => value <= tickLimit)
     check("P17", "framesEmpty", `≤ ${tickLimit}`, (value) => value <= tickLimit)
     check("P17", "framesEight", `≤ ${tickLimit}`, (value) => value <= tickLimit)

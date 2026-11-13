@@ -32,6 +32,7 @@ import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
 import { Home } from "../../src/routes/home"
 import { Main } from "../../src/routes/session"
+import { useDagIndicator } from "../../src/routes/session/dag-mode"
 import {
   BottomZone,
   BottomZoneProvider,
@@ -51,6 +52,7 @@ import {
   deltaEvent,
   makeFetchFixture,
   type PerfFixture,
+  sessionUpdatedEvent,
   streamTextPart,
   updatePartEvent,
 } from "./fixtures"
@@ -87,6 +89,8 @@ export type PerfHarness = {
   /** Opens a live reply at the tail of the transcript (one `message.part.updated` snapshot). */
   openStream(): PerfStream
   tickBackground(tick: number): void
+  /** Switches the session's DAG mode through a `session.updated`, as the server does. */
+  setDagMode(mode: "on" | "off"): void
   hideAutocomplete(): void
   /** Runs a registered command by name, the way its key binding would. */
   command(name: string): void
@@ -173,11 +177,15 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
   let activeSubscriptions = 0
   let streams = 0
   let deltas = 0
+  let dagModeUpdates = 0
 
   function Probe(props: { bottomZone: BottomZoneStateApi }) {
     const sync = useSync()
     const promptRef = usePromptRef()
     const route = useRoute()
+    // The production footer indicator: its state comes from `Session.dagMode`
+    // and its availability from `GET /session/:id/dag-mode` (#1280).
+    const dagIndicator = useDagIndicator()
     state.sync = sync
     state.promptRef = promptRef
     state.route = route
@@ -193,7 +201,7 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
     return (
       <AppFrame
         topBar={{ path: directory }}
-        footer={{ agent: "build" }}
+        footer={{ agent: "build", dag: dagIndicator() }}
         bottomZone={<BottomZone state={props.bottomZone} composer={<></>} />}
       >
         <Show when={options.routes} fallback={<Main />}>
@@ -400,6 +408,10 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
     },
     tickBackground(tick) {
       fixture.backgroundParts.forEach((part) => emit(backgroundEvent(part, tick)))
+    },
+    setDagMode(mode) {
+      fixture.session.dagMode = mode
+      emit(sessionUpdatedEvent(fixture.session, `evt_dag_mode_${mode}_${++dagModeUpdates}`))
     },
     hideAutocomplete() {
       keymap.dispatchCommand("prompt.autocomplete.hide")
