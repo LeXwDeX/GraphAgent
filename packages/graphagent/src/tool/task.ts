@@ -272,7 +272,10 @@ export const TaskTool = Tool.define(
 
     // A background task is cancelled by the main agent through its child run:
     // the run ends cancelled first (so no result is delivered for it), then the
-    // job that carries it. Foreground tasks and tasks of other conversations are refused.
+    // job that carries it. Foreground tasks and tasks of other conversations are
+    // refused. Cancelling stops work the `task` permission governs, so it asks
+    // that permission for the agent the task runs, like starting or resuming
+    // it, before anything is touched.
     const cancelTask = Effect.fn("TaskTool.cancel")(function* (
       children: Tool.ChildRuns,
       taskID: string,
@@ -290,6 +293,21 @@ export const TaskTool = Tool.define(
             `Task ${taskID} is a foreground task. A foreground task is cancelled by stopping this session, not with action="cancel".`,
           ),
         )
+      }
+      const childSession = yield* sessions.get(sessionID)
+      const subagentType = childSession.agent
+      if (subagentType === undefined) {
+        return yield* Effect.fail(
+          new Error(`Task ${taskID} has no recorded agent, so its cancellation cannot be authorized.`),
+        )
+      }
+      if (!ctx.extra?.bypassAgentCheck) {
+        yield* ctx.ask({
+          permission: id,
+          patterns: [subagentType],
+          always: ["*"],
+          metadata: { action: "cancel", task_id: taskID, subagent_type: subagentType, description: childSession.title },
+        })
       }
       const cancelled = yield* children.cancel(view.id, { kind: "main_agent_tool", toolCallID: ctx.callID ?? "" })
       if (cancelled === "not_active") return yield* Effect.fail(finished)

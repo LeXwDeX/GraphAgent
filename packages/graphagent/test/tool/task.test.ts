@@ -2334,6 +2334,21 @@ describe("tool.task child runs", () => {
     return { chat, assistant, def, cancels, jobCancels, release, injected, promptOps }
   })
 
+  const runningTask = (fixture: Effect.Success<typeof cancelFixture>, callID = "call_start") =>
+    Effect.gen(function* () {
+      const { chat, assistant, def, promptOps } = fixture
+      const started = yield* def.execute(
+        { ...general, background: true },
+        taskCtx(chat, assistant, promptOps, { callID }),
+      )
+      const child = SessionID.make(started.metadata.sessionID)
+      yield* pollWithTimeout(
+        runsOf(child).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? true : undefined))),
+        "task run never reached running",
+      )
+      return child
+    })
+
   background.instance("action cancel stops a background task: run cancelled, job cancelled, no result delivered", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
@@ -2415,6 +2430,132 @@ describe("tool.task child runs", () => {
       yield* endedRun(foregroundChild)
       expect(yield* cancel(foregroundChild)).toContain("already finished")
       yield* theirRun.settle({ type: "completed" })
+    }),
+  )
+
+  background.instance("action cancel waits for the task permission before it stops anything", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, cancels, jobCancels, release, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+      const asked = yield* Deferred.make<void>()
+      const approval = yield* Deferred.make<void>()
+
+      const cancelling = yield* def
+        .execute(
+          { action: "cancel", task_id: child },
+          taskCtx(chat, assistant, promptOps, {
+            callID: "call_cancel",
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }).pipe(Effect.andThen(Deferred.succeed(asked, undefined)), Effect.andThen(Deferred.await(approval))),
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(asked), "the cancel call never asked the task permission")
+
+      // The permission is the one starting or resuming this task asks, for the agent it runs.
+      expect(asks).toEqual([
+        {
+          permission: "task",
+          patterns: ["general"],
+          always: ["*"],
+          metadata: {
+            action: "cancel",
+            task_id: child,
+            subagent_type: "general",
+            description: expect.stringContaining("inspect bug"),
+          },
+        },
+      ])
+      // While the user has not answered, nothing was touched.
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "running", outcome: null })
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect(cancels).toEqual([])
+      expect(jobCancels).toEqual([])
+
+      yield* Deferred.succeed(approval, undefined)
+      const result = yield* Fiber.join(cancelling)
+
+      expect(result.output).toContain('state="cancelled"')
+      expect((yield* endedRun(child)).outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+      })
+      expect(cancels).toEqual([`${child}:task-cancelled:main-agent`])
+      yield* Deferred.succeed(release, undefined)
+    }),
+  )
+
+  background.instance("action cancel denied by the task permission touches nothing", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, cancels, jobCancels, release, injected, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+
+      // A denial reaches the tool as a defect, the way the engine's `ctx.ask` raises it.
+      const exit = yield* def
+        .execute(
+          { action: "cancel", task_id: child },
+          taskCtx(chat, assistant, promptOps, {
+            callID: "call_cancel",
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }).pipe(Effect.andThen(Effect.die(new Error("The task permission is denied for general")))),
+          }),
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("The task permission is denied")
+      expect(asks).toHaveLength(1)
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "running", outcome: null })
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect(cancels).toEqual([])
+      expect(jobCancels).toEqual([])
+
+      // The task carries on and still delivers its result.
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+      expect((yield* endedRun(child)).outcome).toEqual({ type: "completed" })
+      yield* pollWithTimeout(
+        Effect.sync(() => (injected.length > 0 ? true : undefined)),
+        "the finished task was never delivered",
+      )
+    }),
+  )
+
+  background.instance("action cancel skips the permission check when the agent was invoked explicitly", () =>
+    Effect.gen(function* () {
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, release, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+
+      // Like starting a task, a user-invoked agent (`@general`) bypasses the permission prompt.
+      const result = yield* def.execute(
+        { action: "cancel", task_id: child },
+        taskCtx(chat, assistant, promptOps, {
+          callID: "call_cancel",
+          extra: { promptOps, bypassAgentCheck: true },
+          ask: (input) =>
+            Effect.sync(() => {
+              asks.push(input)
+            }),
+        }),
+      )
+
+      expect(result.output).toContain('state="cancelled"')
+      expect(asks).toEqual([])
+      yield* Deferred.succeed(release, undefined)
     }),
   )
 
