@@ -84,7 +84,7 @@ v1 里有一组管上下文的功能：限制工具输出的长度、限制每�
 
 ## 快速开始
 
-预构建的二进制（Linux、macOS、Windows，附 SHA256SUMS）在 [Releases](https://github.com/LeXwDeX/GraphAgent/releases) 页，解压后把 `graphagent` 放进 PATH，在项目目录里运行。仓库里的 `oc` 是个 bash 脚本，用 fzf 菜单选版本、校验 SHA256SUMS 后安装（需要 curl 和 fzf）。这个 fork 不发布到 npm、brew 和 scoop，上游的 `opencode-ai` 装的是上游 opencode，不是这个 fork。
+预构建的二进制（Linux、macOS、Windows，附 SHA256SUMS）在 [Releases](https://github.com/LeXwDeX/GraphAgent/releases) 页，解压后把 `graphagent` 放进 PATH，在项目目录里运行。仓库里现有的 `oc` 安装脚本会在 v2.1 删除，安装和升级都并入主程序，见路线图。这个 fork 不发布到 npm、brew 和 scoop，上游的 `opencode-ai` 装的是上游 opencode，不是这个 fork。
 
 从源码运行需要 `package.json` 里 `packageManager` 固定的 Bun，以及 `.node-version` 指定的 Node：
 
@@ -149,6 +149,7 @@ v2 的进度在[里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7)里
 - `/remind`：持久化的定时提醒。
 - PR 监听重做为事件源。
 - 后台任务的显示。
+- v2.1：安装与升级并入主程序，直接从 GitHub 检索新版本并升级，不再需要 `oc` 脚本；release 打包随之调整，macOS 上安装不用再输密码；配置也可以从 GitHub 仓库读取（[#1281](https://github.com/LeXwDeX/GraphAgent/issues/1281)）。
 - v2.0.0 发布，附中英文迁移指南。
 
 这些都是计划，实际状态以里程碑为准。

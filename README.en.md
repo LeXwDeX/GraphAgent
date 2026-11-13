@@ -72,7 +72,7 @@ v1 has a set of context-management features: limits on tool output length, a cap
 
 ## Quick start
 
-Prebuilt binaries (Linux, macOS, Windows, with SHA256SUMS) are on the [Releases](https://github.com/LeXwDeX/GraphAgent/releases) page. Unpack one, put `graphagent` on your PATH and run it in your project directory. The `oc` script in this repo is a bash installer with an fzf menu: it picks a version, checks it against SHA256SUMS and installs it (it needs curl and fzf). The fork is not published to npm, brew or scoop, and the upstream `opencode-ai` package installs upstream opencode, not this fork.
+Prebuilt binaries (Linux, macOS, Windows, with SHA256SUMS) are on the [Releases](https://github.com/LeXwDeX/GraphAgent/releases) page. Unpack one, put `graphagent` on your PATH and run it in your project directory. The `oc` installer script in this repo goes away in v2.1, when installing and upgrading move into the main program (see the roadmap). The fork is not published to npm, brew or scoop, and the upstream `opencode-ai` package installs upstream opencode, not this fork.
 
 To run from source you need the Bun version pinned in `package.json` (`packageManager`) and the Node version in `.node-version`:
 
@@ -104,6 +104,7 @@ v2 is tracked on the [milestone](https://github.com/LeXwDeX/GraphAgent/milestone
 - `/remind`: persistent scheduled reminders.
 - PR watching rebuilt as an event source.
 - Background task display.
+- v2.1: install and upgrade move into the main program. It looks up new versions on GitHub and upgrades itself, so the `oc` script is gone. Release packaging changes with it, so installing on macOS no longer asks for a password. Configuration can also be read from a GitHub repository ([#1281](https://github.com/LeXwDeX/GraphAgent/issues/1281)).
 - The v2.0.0 release, with migration guides in Chinese and English.
 
 These are plans. The milestone has the actual status.
