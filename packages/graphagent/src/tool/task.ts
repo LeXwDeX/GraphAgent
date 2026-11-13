@@ -326,9 +326,16 @@ export const TaskTool = Tool.define(
           metadata: { action: "cancel", task_id: taskID, subagent_type: subagentType, description: childSession.title },
         })
       }
+      // Bind the job to this run before the run ends: once it ends, the job's own
+      // completion may release the child and a resume may start a new job under
+      // the same task ID, which an ID-only cancel would then stop instead.
+      const carrier =
+        job && (job.metadata?.childRunID === undefined || job.metadata.childRunID === view.id)
+          ? yield* background.capture(job)
+          : undefined
       const cancelled = yield* children.cancel(view.id, { kind: "main_agent_tool", toolCallID: ctx.callID ?? "" })
       if (cancelled === "not_active") return yield* Effect.fail(finished)
-      yield* background.cancel(taskID)
+      if (carrier) yield* carrier.cancel
       return {
         title: "Task cancelled",
         metadata: { parentSessionID: ctx.sessionID, sessionID, background: true, jobId: taskID },

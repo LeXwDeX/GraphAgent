@@ -2391,17 +2391,25 @@ describe("tool.task child runs", () => {
       const cancels: string[] = []
       const jobCancels: SessionID[] = []
       const jobs = yield* BackgroundJob.Service
+      const gated = <A>(effect: Effect.Effect<A>) =>
+        gate
+          ? Deferred.succeed(gate.reached, undefined).pipe(
+              Effect.andThen(Deferred.await(gate.open)),
+              Effect.andThen(effect),
+            )
+          : effect
       const tool = yield* TaskTool.pipe(
         Effect.provideService(
           BackgroundJob.Service,
           gate
             ? {
                 ...jobs,
-                cancel: (jobID) =>
-                  Deferred.succeed(gate.reached, undefined).pipe(
-                    Effect.andThen(Deferred.await(gate.open)),
-                    Effect.andThen(jobs.cancel(jobID)),
-                  ),
+                cancel: (jobID) => gated(jobs.cancel(jobID)),
+                // The tool cancels the job it captured before ending the run.
+                capture: (info) =>
+                  jobs
+                    .capture(info)
+                    .pipe(Effect.map((captured) => captured && { ...captured, cancel: gated(captured.cancel) })),
               }
             : jobs,
         ),
@@ -2808,6 +2816,63 @@ describe("tool.task child runs", () => {
         outcome: { type: "completed" },
       })
       expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  // Codex review on #1275: the old job completes while the cancel call is still in
+  // front of the job cancellation, which frees the child; a resume then starts a
+  // new job under the same task ID. The pending cancellation must stop only the job
+  // it captured, never the newly accepted attempt.
+  background.instance("a pending cancel stops only the job it captured, not a job a resume started meanwhile", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const fixture = yield* cancelFixtureFor({ reached, open })
+      const { chat, assistant, def, promptOps, release } = fixture
+      const child = yield* runningTask(fixture)
+      const second = yield* Deferred.make<void>()
+      const prompted: string[] = []
+      const resumeOps: TaskPromptOps = {
+        ...promptOps,
+        prompt: (input) => {
+          if (input.sessionID !== child) return promptOps.prompt(input)
+          prompted.push(...input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+          return Deferred.await(second).pipe(Effect.as(reply(input, "second answer")))
+        },
+      }
+      const cancelling = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(reached), "the cancel call never reached the job cancellation")
+      const firstJob = yield* jobs.get(child)
+
+      // The old job completes inside the window and frees the child; the resume starts its own job.
+      const resuming = yield* def
+        .execute(
+          { ...general, prompt: "follow-up question", task_id: child, background: true },
+          taskCtx(chat, assistant, resumeOps, { callID: "call_resume" }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* Fiber.join(resuming)).output).toContain("Background task started")
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompted.length > 0 ? true : undefined)),
+        "the resumed run never prompted the child",
+      )
+      const secondJob = yield* jobs.get(child)
+      expect(secondJob?.status).toBe("running")
+      expect(secondJob?.metadata?.childRunID).not.toBe(firstJob?.metadata?.childRunID)
+
+      // The pending cancellation goes through now: the new attempt keeps running.
+      yield* Deferred.succeed(open, undefined)
+      yield* Fiber.join(cancelling)
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect((yield* runsOf(child)).find((row) => row.attempt === 2)).toMatchObject({ state: "running" })
+
+      yield* Deferred.succeed(second, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info).toMatchObject({ status: "completed" })
+      expect((yield* endedRun(child, 2)).outcome).toEqual({ type: "completed" })
     }),
   )
 
