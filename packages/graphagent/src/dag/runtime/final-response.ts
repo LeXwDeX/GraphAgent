@@ -9,6 +9,7 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 import {
   isCaptureValidationCurrent,
   validatePayloadAsync,
+  type CaptureSlot,
   type CaptureValidation,
   type SchemaValidationFix,
 } from "./capture"
@@ -81,6 +82,7 @@ export function repairPrompt(fix: SchemaValidationFix): string {
 export function persistValidatedCapture(input: {
   store: DagStore.Interface
   sessionID: string
+  slot: CaptureSlot
   validated: Extract<CaptureValidation, { ok: true }>
   abort: AbortSignal
   snapshotID?: string
@@ -90,7 +92,7 @@ export function persistValidatedCapture(input: {
   return Effect.gen(function* () {
     const messages = yield* Effect.serviceOption(DagMessages.Service)
     const commit = Effect.gen(function* () {
-      if (input.abort.aborted || !isCaptureValidationCurrent(input.sessionID, input.validated)) return false
+      if (input.abort.aborted || !isCaptureValidationCurrent(input.slot, input.validated)) return false
       yield* input.store
         .setCapturedOutput(input.sessionID, input.validated.payload, input.snapshotID)
         .pipe(Effect.orDie)
@@ -117,6 +119,7 @@ export function persistValidatedCapture(input: {
 export function captureFinalResponse(input: {
   store: DagStore.Interface
   sessionID: string
+  slot: CaptureSlot
   message: SessionV1.WithParts
   abort?: AbortSignal
   snapshotID?: string
@@ -135,7 +138,7 @@ export function captureFinalResponse(input: {
     const validated = yield* Effect.promise((signal) => {
       validationSignal = signal
       return validatePayloadAsync(
-        input.sessionID,
+        input.slot,
         parsed.payload,
         input.abort ? AbortSignal.any([signal, input.abort]) : signal,
       )

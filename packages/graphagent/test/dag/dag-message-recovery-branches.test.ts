@@ -16,7 +16,6 @@ import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagStore } from "@graphagent/core/dag/store"
 import { continueRecoveredMessageNode } from "@/dag/runtime/recovery"
 import { workflowReportsArea } from "@/dag/runtime/output-ref"
-import { hasCaptureSlot } from "@/dag/runtime/capture"
 import { Worktree } from "@/worktree"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { ModelV2 } from "@graphagent/core/model"
@@ -490,14 +489,12 @@ describe("message recovery continuation admission and settlement branches", () =
     expect(h.completed).toEqual([
       { output: null, attempt: { childSessionID: "ses_recovery", replanAttempts: 0, inputSnapshotID: "ags_current" } },
     ])
-    expect(hasCaptureSlot("ses_recovery")).toBe(false)
   })
   test("missing structured final response fails instead of interpreting null as a value", async () => {
     const { h, run } = harness()
     await run(structured)
     expect(h.failed[0].errorClass).toBe("verdict_fail")
     expect(h.completed).toEqual([])
-    expect(hasCaptureSlot("ses_recovery")).toBe(false)
   })
   test("a recovered preparation defect fails only its current execution attempt", async () => {
     const { h, run } = harness({ loopFault: "defect" })
@@ -527,24 +524,15 @@ describe("message recovery continuation admission and settlement branches", () =
       expect(h.failureAttempts[0].attempt).toEqual({ childSessionID: "ses_recovery", replanAttempts: 0 })
       expect(h.failed).toEqual([])
       expect(h.completed).toEqual([])
-      expect(hasCaptureSlot("ses_recovery")).toBe(false)
     })
-  test("interruption propagates without turning cancellation into node failure and clears capture state", async () => {
-    let registered = false
-    const { h, runExit } = harness({
-      loopFault: "interrupt",
-      afterLoop: () => {
-        registered = hasCaptureSlot("ses_recovery")
-      },
-    })
+  test("interruption propagates without turning cancellation into node failure", async () => {
+    const { h, runExit } = harness({ loopFault: "interrupt" })
     const result = await runExit(structured)
-    expect(registered).toBe(true)
     expect(Exit.isFailure(result)).toBe(true)
     if (Exit.isFailure(result)) expect(Cause.hasInterrupts(result.cause)).toBe(true)
     expect(h.failureAttempts).toEqual([])
     expect(h.failed).toEqual([])
     expect(h.completed).toEqual([])
-    expect(hasCaptureSlot("ses_recovery")).toBe(false)
   })
   test("stale output with queued input resumes its existing child instead of issuing a new prompt", async () => {
     const { h, run } = harness({ stale: 1, queued: 1 })

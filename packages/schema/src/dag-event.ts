@@ -276,7 +276,8 @@ export type NodeRegistered = typeof NodeRegistered.Type
 
 // Admission: the scheduler accepted the node into an execution attempt but it
 // has not acquired an execution permit yet — no child session exists. The
-// deadline starts here so queue wait counts toward the node's budget (P0-2).
+// queued row carries no deadline: the execution budget starts at permit
+// acquisition (nodeStarted), so queue wait does not count toward it.
 export const NodeQueued = Event.define({
   type: "dag.node.queued",
   ...options,

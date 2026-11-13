@@ -10,15 +10,15 @@
  * Admission model (P0-2): the node is durably QUEUED at dispatch — the child
  * session and NodeStarted only materialize INSIDE the concurrency permit, so a
  * 100-node fan-out no longer creates 100 sessions and shows 100 "running"
- * rows while true concurrency is 5. The admission deadline is fixed when the
- * node is admitted (deadline = admission time + timeout_ms) and is NOT
- * adjusted by running-node extensions (F4): the replan/extend handler re-times
- * RUNNING nodes only, so a queued node's pre-permit wait keeps its admission
- * deadline — queue wait counts toward the node's budget, and an expired
- * queued node fails directly via the pre-permit timeout path (no progress to
- * protect). A queued node absent from a plain replan fragment is superseded
- * (cancelled) by planReplan; the additive extend path re-admits it with a
- * fresh admission deadline.
+ * rows while true concurrency is 5. The execution deadline is anchored at
+ * permit acquisition, not admission: the queued row carries NO deadline and
+ * queue wait does not consume the node's budget. The permit wait itself is
+ * bounded by timeout_ms, so a node that never gets a permit fails as a timeout
+ * without spawning a session (no progress to protect). Running-node extensions
+ * (F4) re-time RUNNING nodes only; a queued node has no deadline to move.
+ * A queued node absent from a plain replan fragment is superseded (cancelled)
+ * by planReplan; the additive extend path re-admits it with the same
+ * permit-anchored budget.
  *
  * Completion model (mirrors task.ts:210-221): a node completes when its child
  * session's prompt() resolves; it fails when prompt() fails. The completion
@@ -65,7 +65,14 @@ import {
 import type { DagStore } from "@graphagent/core/dag/store"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
-import { registerCaptureSlot, clearCaptureSlot, settleCapturedOutput, settlePlainTextOutput } from "./capture"
+import {
+  closeCaptureSlot,
+  createCaptureSlot,
+  resetCaptureSlot,
+  settleCapturedOutput,
+  settlePlainTextOutput,
+  type CaptureSlot,
+} from "./capture"
 import { captureFinalResponse, finalAssistantText, outputLimitReason, repairPrompt } from "./final-response"
 import { commitOutputFileRef, reportAreaDirective, verifyOutputFileRef, type ManagedOutputFileRef } from "./output-ref"
 import { artifactPermissionBase, artifactReadPermissions, makeArtifactSourceAuthorizer } from "./artifact-permissions"
@@ -187,9 +194,9 @@ export interface DeadlineWatcherInput {
  * from now per §3.7) is picked up on the next read; a deadline the main agent
  * never adjudicated escalates AGAIN, so the extension count climbs toward the
  * cap and supervision stays bounded even when no replan ever arrives. F5: a
- * queued/pending/paused node past its deadline still polls instead of
- * exiting — the node may yet acquire the permit inside its admission window
- * (edge-deadline permit) and start running under supervision.
+ * queued/pending/paused node has no deadline (the budget starts at permit
+ * acquisition) — the watcher still polls instead of exiting so it can
+ * supervise the node once it starts.
  */
 export function makeDeadlineWatcher(
   input: DeadlineWatcherInput,
@@ -269,10 +276,10 @@ export function makeDeadlineWatcher(
       const now = yield* Clock.currentTimeMillis
       const deadline = node.deadlineMs
       if (node.status !== "running") {
-        // Pre-running wait (F5): a queued/pending/paused node past its
-        // deadline may still acquire the permit inside its admission window —
-        // do not abandon supervision; poll until it starts, terminalizes, or
-        // the pre-permit timeout path fails it.
+        // Pre-running wait (F5): a queued/pending/paused node has no deadline
+        // (the budget starts at permit acquisition) — do not abandon
+        // supervision; poll until it starts, terminalizes, or the scheduler's
+        // bounded permit wait fails it.
         yield* Effect.sleep(sleepUntilDeadlineMs(deadline, now, 1_000))
         continue
       }
@@ -422,7 +429,10 @@ export function makeDeadlineWatcher(
  * deadline, back off by overdueMs before the next read.
  */
 function sleepUntilDeadlineMs(deadlineMs: number | null, now: number, overdueMs: number) {
-  if (deadlineMs === null) return 100
+  // A null deadline means the node is pre-running (queued/paused): poll at a
+  // relaxed interval to avoid O(queued_nodes × 10/s) store reads while permits
+  // are held. The watcher only needs to notice the transition to running.
+  if (deadlineMs === null) return 1_000
   if (deadlineMs > now) return Math.max(deadlineMs - now, 10)
   return overdueMs
 }
@@ -621,18 +631,17 @@ export function spawnNode(
         : effect
     }
 
-    // Resolve timeout and compute the absolute deadline at ADMISSION time
-    // (P0-2). The deadline is persisted on the durable queued row so
-    // crash-recovery can inherit it; queue wait counts toward the budget.
+    // Resolve the execution budget. The deadline is anchored at permit
+    // acquisition, not admission (queue wait does not consume it), so the
+    // durable queued row carries NO deadline; nodeStarted persists the
+    // anchored deadline once the permit is held.
     const timeoutMs = input.timeoutMs ?? Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs
-    const spawnTime = yield* Clock.currentTimeMillis
-    const deadlineMs = spawnTime + timeoutMs
 
     // If a concurrent replan(cancel/restart) terminalized the node during the
     // async window above (agent/model resolution), the queued guard rejects.
     // The winning control op is the sole terminalization — no spurious
     // NodeFailed, no execution fiber.
-    const admitted = yield* dag.nodeQueued(input.dagID, input.nodeID, deadlineMs, admissionAttempt).pipe(
+    const admitted = yield* dag.nodeQueued(input.dagID, input.nodeID, undefined, admissionAttempt).pipe(
       Effect.as(true),
       Effect.catchIf(isTransitionRejection, () =>
         Effect.logWarning(`Node ${input.nodeID} admission was rejected — no execution attempt started`).pipe(
@@ -653,6 +662,9 @@ export function spawnNode(
     // The attempt's child run, registered after the child session exists and
     // before NodeStarted; read by every terminal path and the fiber's cleanup.
     let run: ChildRunHandle | undefined
+    // The attempt's capture slot, created once the child session exists and
+    // closed by the fiber's cleanup; a stale-input continuation resets it.
+    let captureSlot: CaptureSlot | undefined
     // Lazy, like InstanceStore: Worktree statically imports the instance
     // chain, so a static import here closes bootstrap → DAG → spawn → worktree.
     const { Worktree } = yield* Effect.promise(() => import("@/worktree"))
@@ -682,53 +694,35 @@ export function spawnNode(
 
     const fiber = yield* Effect.forkIn(scope)(
       Effect.gen(function* () {
-        // P1(#1): Acquire permit with a deadline-bounded timeout so the node
-        // doesn't wait unbounded in the scheduler queue. If the deadline
-        // elapses while waiting, fail immediately.
-        const queueTime = yield* Clock.currentTimeMillis
-        const queueRemaining = deadlineMs - queueTime
-        if (queueRemaining <= 0) {
-          yield* dag
-            .nodeFailed(
-              input.dagID,
-              input.nodeID,
-              `node exceeded timeout before acquiring execution permit`,
-              "timeout",
-              executionAttempt,
-            )
-            .pipe(
-              Effect.catchIf(isTransitionRejection, () =>
-                Effect.logWarning("nodeFailed (pre-permit timeout) guard rejected — node already terminal"),
-              ),
-            )
-          return
-        }
-        // Race permit acquisition against the remaining queue budget. The
-        // scheduler wait itself is unbounded: this option is the single
-        // timeout path, and an interrupt cancels the queued reservation
-        // through the permit's acquireRelease.
-        let slot: AgentScheduler.SlotPermit | undefined
-        const permitAcquired = yield* Effect.gen(function* () {
-          slot = yield* scheduler.childSlot(schedule.limit, schedule.cap, {
+        // Acquire the execution permit with a bounded wait of timeout_ms. The
+        // scheduler cancels the queued waiter itself when the wait expires, so
+        // no reservation leaks; the node fails as a timeout without spawning.
+        const acquirePermit = () =>
+          scheduler.childSlot(schedule.limit, schedule.cap, {
             rootSessionID: input.parentSessionID,
-          })
-        }).pipe(Effect.timeoutOption(queueRemaining))
-        if (Option.isNone(permitAcquired)) {
-          yield* dag
-            .nodeFailed(
-              input.dagID,
-              input.nodeID,
-              `node exceeded timeout while waiting for execution permit`,
-              "timeout",
-              executionAttempt,
-            )
-            .pipe(
-              Effect.catchIf(isTransitionRejection, () =>
-                Effect.logWarning("nodeFailed (permit-wait timeout) guard rejected — node already terminal"),
-              ),
-            )
-          return
-        }
+            timeoutMs,
+          }).pipe(
+            Effect.map(Option.some),
+            Effect.catchTag("AgentSchedulerTimeout", () =>
+              dag
+                .nodeFailed(
+                  input.dagID,
+                  input.nodeID,
+                  `node exceeded timeout while waiting for execution permit`,
+                  "timeout",
+                  executionAttempt,
+                )
+                .pipe(
+                  Effect.catchIf(isTransitionRejection, () =>
+                    Effect.logWarning("nodeFailed (permit-wait timeout) guard rejected — node already terminal"),
+                  ),
+                  Effect.as(Option.none<AgentScheduler.SlotPermit>()),
+                ),
+            ),
+          )
+        const acquired = yield* acquirePermit()
+        if (Option.isNone(acquired)) return
+        let slot: AgentScheduler.SlotPermit | undefined = acquired.value
         yield* Effect.gen(function* () {
           // #379 pause fence: scheduler admission is the only pause gate, so a
           // node queued before control(pause) still holds a spawn fiber that
@@ -753,15 +747,21 @@ export function spawnNode(
             )
             // A paused node must not keep a child-run slot: another workflow
             // and the foreground task pool have to be able to run while this
-            // one is paused. Resume re-queues the node for a fresh slot.
+            // one is paused. Resume re-queues the node for a fresh slot, with
+            // the same bounded permit wait.
             if (slot) yield* slot.release
             while ((yield* readPauseStatus) === "paused") {
               yield* Effect.sleep(250)
             }
-            slot = yield* scheduler.childSlot(schedule.limit, schedule.cap, {
-              rootSessionID: input.parentSessionID,
-            })
+            const reacquired = yield* acquirePermit()
+            if (Option.isNone(reacquired)) return
+            slot = reacquired.value
           }
+          // The execution budget starts at permit acquisition: the queue wait
+          // (including a pause hold) does not consume it. nodeStarted persists
+          // this anchored deadline for the deadline watcher and crash recovery.
+          const permitTime = yield* Clock.currentTimeMillis
+          const deadlineMs = permitTime + timeoutMs
           // #270 window-2 spawn-admission fence (C4): the node was durably
           // admitted (nodeQueued above) but the child session is about to
           // materialize — a deletion cascade (Session.remove → FK) committed in
@@ -1129,7 +1129,7 @@ export function spawnNode(
               if (run) yield* run.settle({ type: "completed" })
             })
 
-          if (input.outputSchema) registerCaptureSlot(childSession.id, input.outputSchema)
+          if (input.outputSchema) captureSlot = createCaptureSlot(input.outputSchema)
 
           // The prompt runs WITHOUT a timeout — the deadline watcher owns the
           // timeout path (escalate signal vs exhausted-force-cancel). A timeout
@@ -1421,6 +1421,7 @@ export function spawnNode(
                   let captured = yield* captureFinalResponse({
                     store: dag.store,
                     sessionID: childSession.id,
+                    slot: captureSlot!,
                     message: result,
                     snapshotID,
                     caller,
@@ -1463,6 +1464,7 @@ export function spawnNode(
                     captured = yield* captureFinalResponse({
                       store: dag.store,
                       sessionID: childSession.id,
+                      slot: captureSlot!,
                       message: result,
                       snapshotID,
                       caller,
@@ -1604,7 +1606,7 @@ export function spawnNode(
                 )
                 break
               }
-              if (input.outputSchema) registerCaptureSlot(childSession.id, input.outputSchema)
+              if (input.outputSchema) resetCaptureSlot(captureSlot!, input.outputSchema)
               if (!(yield* awaitContinuationAdmission)) break
               const revisions =
                 Option.isSome(messageService) && caller ? yield* messageService.value.revisions(caller) : undefined
@@ -1642,8 +1644,8 @@ export function spawnNode(
             // The prompt finished (or this fiber was interrupted) — the
             // deadline watcher has no further job.
             yield* Fiber.interrupt(watcherFiber).pipe(Effect.ignore)
+            if (captureSlot) closeCaptureSlot(captureSlot)
             if (childSessionID) {
-              clearCaptureSlot(childSessionID)
               if (hooks?.unregisterScoped) yield* hooks.unregisterScoped(childSessionID, hookOrigin)
             }
             // #946: a worktree whose NodeStarted never published has no

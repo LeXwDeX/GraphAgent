@@ -839,7 +839,7 @@ describe("DagLoop timeout escalation", () => {
     )
   })
 
-  it("keeps the pre-permit queue-wait timeout as a direct nodeFailed (F4: queued admission deadline is fixed)", async () => {
+  it("anchors the deadline at permit acquisition and fails an expired permit wait (F4)", async () => {
     await Effect.runPromise(
       runLoopTest(({ dag, store, childPrompts, parentPrompts }) =>
         Effect.gen(function* () {
@@ -849,7 +849,7 @@ describe("DagLoop timeout escalation", () => {
           const dagID = yield* dag.create({
             projectID: "project-1",
             sessionID: "ses_parent",
-            title: "Pre-permit timeout",
+            title: "Permit-anchored timeout",
             config: {
               name: "pre-permit",
               max_concurrency: 1,
@@ -864,6 +864,10 @@ describe("DagLoop timeout escalation", () => {
               .pipe(Effect.map((current) => (current?.status === "queued" ? current : undefined))),
             "b was not queued",
           )
+
+          // Queue wait does not consume the execution budget: the queued row
+          // carries no deadline at all.
+          expect(queuedB.deadlineMs).toBeNull()
 
           // a escalates at its own deadline — the RUNNING node's timeout
           // signal fires and wakes the main agent.
@@ -881,24 +885,35 @@ describe("DagLoop timeout escalation", () => {
           expect(wake.text).toContain("[DAG Node Timeout]")
           yield* Deferred.succeed(wake.release, "success")
 
-          // F4: the running node's escalation/adjudication does NOT adjust the
-          // queued node's admission deadline — it stays exactly as fixed at
-          // admission (P0-2: queue wait counts toward the budget).
+          // The running node's escalation does not touch the queued node: it
+          // has no deadline to move, and its row stays untouched.
           const stillQueuedB = yield* store.getNode(dagID, "b")
           expect(stillQueuedB?.status).toBe("queued")
-          expect(stillQueuedB?.deadlineMs).toBe(queuedB.deadlineMs)
+          expect(stillQueuedB?.deadlineMs).toBeNull()
           expect(escalated.timeoutExtensions).toBe(1)
 
-          // b waits for the permit past its own deadline — the queue-wait
-          // timeout still hard-fails with no progress to protect.
+          // The permit wait is bounded by timeout_ms: b fails as a timeout
+          // without ever spawning a child session (no progress to protect).
           const failedB = yield* pollWithTimeout(
             store
               .getNode(dagID, "b")
               .pipe(Effect.map((current) => (current?.status === "failed" ? current : undefined))),
-            "b did not fail on the queue-wait timeout",
+            "b did not fail on the permit-wait timeout",
           )
           expect(failedB.errorClass).toBe("timeout")
           expect(failedB.errorReason).toContain("execution permit")
+
+          // The deadline nodeStarted persisted is anchored at permit
+          // acquisition: deadline - startedAt is the node's execution budget,
+          // not the budget minus queue wait. F9 clamps this 300ms config to
+          // the 1000ms floor; the small delta is session creation between the
+          // permit and NodeStarted.
+          const startedA = yield* store.getNode(dagID, "a")
+          expect(startedA?.deadlineMs).not.toBeNull()
+          expect(startedA?.startedAt).not.toBeNull()
+          const budget = (startedA?.deadlineMs ?? 0) - (startedA?.startedAt ?? 0)
+          expect(budget).toBeGreaterThan(800)
+          expect(budget).toBeLessThanOrEqual(1_000)
         }),
       ),
     )

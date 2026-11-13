@@ -15,7 +15,6 @@ import { MessageID, SessionID, PartID } from "@/session/schema"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import type { SessionV1 } from "@graphagent/core/v1/session"
-import { hasCaptureSlot } from "@/dag/runtime/capture"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
@@ -112,7 +111,6 @@ async function exercise(options: Case = {}) {
   let accepted = 1
   let newInputQueued = false
   let permitReleased = false
-  let captureRegistered = false
   let receipts = 0
   let created = 0,
     loops = 0,
@@ -361,7 +359,6 @@ async function exercise(options: Case = {}) {
             ),
           )
         yield* Fiber.join(spawned.fiber)
-        captureRegistered = hasCaptureSlot("ses_child")
         // The child-run slot must be free again once the spawn settled.
         const scheduler = yield* AgentScheduler.Service
         const available = yield* Effect.scoped(
@@ -381,14 +378,13 @@ async function exercise(options: Case = {}) {
     node,
     receipts,
     permitReleased,
-    captureRegistered,
   }
 }
 
 describe("live durable message continuation", () => {
-  test("live preparation defects settle failure and release capture and concurrency ownership", async () => {
+  test("live preparation defects settle failure and release concurrency ownership", async () => {
     const r = await exercise({ structured: true, modelDefect: true })
-    expect(r).toMatchObject({ prompts: 1, loops: 0, permitReleased: true, captureRegistered: false })
+    expect(r).toMatchObject({ prompts: 1, loops: 0, permitReleased: true })
     expect(r.events[0]).toMatchObject({ type: "failed" })
     expect(r.events[0]?.reason).toContain("live preparation defect")
   })

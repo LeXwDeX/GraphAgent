@@ -55,10 +55,12 @@ const GATE_VOLATILE: ReadonlyArray<CounterKey> = [
   "sql.write",
 ]
 // 15-way concurrency reorders SQL and lock waits (S5 test states the reason).
+// git.spawns varies with worktree scheduling (44–48 observed across runners).
 const CONCURRENCY: ReadonlyArray<CounterKey> = [
   "sql.read",
   "sql.write",
   "commits",
+  "git.spawns",
   "json.parseBytes",
   "json.encodeBytes",
   "sha256Bytes",

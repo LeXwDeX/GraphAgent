@@ -368,7 +368,7 @@ describe("spawnNode pause fence (#379)", () => {
     )
   })
 
-  it("fails a node whose queue budget already elapsed before admission", async () => {
+  it("fails a node whose permit wait exceeds the scheduler timeout", async () => {
     const harness = makeHarness(
       () => "running",
       () => true,
@@ -376,8 +376,16 @@ describe("spawnNode pause fence (#379)", () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(workflowSchedule(), { ...makeSpawnInput(), timeoutMs: 0 })
-          yield* Fiber.await(result.fiber)
+          const scheduler = yield* AgentScheduler.Service
+          // Hold the workflow's only child slot so the spawn stays queued in
+          // the scheduler past its timeoutMs permit-wait bound. The scheduler
+          // cancels the queued waiter itself, so the node fails as a timeout
+          // without materializing a child session.
+          const held = yield* scheduler.childSlot({ kind: "workflow", workflowID: "wf-1" }, 1)
+          const result = yield* spawnNode(workflowSchedule(), { ...makeSpawnInput(), timeoutMs: 200 })
+          const settled = yield* Fiber.await(result.fiber).pipe(Effect.timeoutOption("5 seconds"))
+          expect(Option.isSome(settled)).toBe(true)
+          yield* held.release
         }),
       ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
     )

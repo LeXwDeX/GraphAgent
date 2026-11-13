@@ -118,10 +118,11 @@ function hash(value: string) {
 }
 
 // Tool descriptions may embed machine-specific global paths (the shell tool
-// publishes `Global.Path.tmp`). CI runners and developer machines resolve
-// different temp/config roots, so replace every resolved global path with a
-// stable placeholder before hashing. Longest-first keeps nested roots (a temp
-// directory inside the home directory) fully normalized.
+// publishes `Global.Path.tmp`) or the working directory. CI runners and
+// developer machines resolve different temp/config/project roots, so replace
+// every resolved path with a stable placeholder before hashing. Longest-first
+// keeps nested roots (a temp directory inside the home directory) fully
+// normalized.
 const environmentPaths = [
   Global.Path.tmp,
   Global.Path.home,
@@ -129,6 +130,7 @@ const environmentPaths = [
   Global.Path.data,
   Global.Path.cache,
   Global.Path.state,
+  process.cwd(),
 ]
   .filter((value, index, all) => value.length > 1 && all.indexOf(value) === index)
   .sort((left, right) => right.length - left.length)

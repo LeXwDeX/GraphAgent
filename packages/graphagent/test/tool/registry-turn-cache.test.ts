@@ -15,6 +15,7 @@ import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
+import { ChildRegistry } from "@/session/child/registry"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { ToolRegistry } from "@/tool/registry"
@@ -27,43 +28,30 @@ const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".agents")])),
 })
 
-// `canUseAgentMessages` reads the workflow list first; counting that call is
-// the probe for one visibility evaluation per turn (Issue #1022, HS6b).
-let checks = 0
-let usable = false
-
-const workflow: DagStore.WorkflowRow = {
-  id: "workflow_owned",
-  projectId: ProjectV2.ID.global,
-  sessionId: SessionID.make("ses_turn_cache"),
-  directory: "/tmp/opencode",
-  targetFingerprint: { kind: "none" },
-  title: "Owned workflow",
-  status: "running",
-  pauseReason: null,
-  config: "{}",
-  seq: 1,
-  wakeReported: false,
-  graphRev: 0,
-  startedAt: 1,
-  completedAt: null,
-  timeCreated: 1,
-  timeUpdated: 1,
-}
+// `canUseAgentMessages` answers from the child registry; the database calls the
+// old visibility query made must stay at zero (Issue #1026, PR6).
+const calls = { listBySession: 0, getNodes: 0, resolve: 0, revisions: 0 }
 
 const storeLayer = Layer.mock(DagStore.Service, {
   listBySession: () => {
-    checks += 1
-    return Effect.succeed(usable ? [workflow] : [])
+    calls.listBySession += 1
+    return Effect.succeed([])
+  },
+  getNodes: () => {
+    calls.getNodes += 1
+    return Effect.succeed([])
   },
 })
 
 const messagesLayer = Layer.mock(DagMessages.Service, {
-  resolve: (caller) =>
-    Effect.succeed({
-      ok: true,
-      value: { id: "mailbox_main", kind: "main", sessionID: caller.sessionID },
-    } satisfies DagMessages.Result<DagMessages.Endpoint>),
+  resolve: () => {
+    calls.resolve += 1
+    return Effect.succeed({ ok: false, reason: "unauthorized" } as const)
+  },
+  revisions: () => {
+    calls.revisions += 1
+    return Effect.succeed({ ok: false, reason: "unauthorized" } as const)
+  },
 })
 
 const mcpLayer = Layer.mock(MCP.Service, {
@@ -82,19 +70,18 @@ const replacements = [
   LayerNode.replace(DagStore.node, storeLayer),
   LayerNode.replace(DagMessages.node, messagesLayer),
 ]
-// `canUseAgentMessages` resolves its optional DAG services from the fiber
-// context, so the mocks must also be part of the test layer's output.
-const it = testEffect(Layer.merge(LayerNode.buildLayer(root, { replacements }), Layer.merge(storeLayer, messagesLayer)))
+// The visibility path no longer resolves either DAG service; the mocks stay
+// because the registry's own layer still provides them.
+const it = testEffect(LayerNode.buildLayer(root, { replacements }))
 
 afterEach(async () => {
   await disposeAllInstances()
 })
 
 describe("tool.registry agent turn cache", () => {
-  it.instance("evaluates agent-tool visibility once per user turn", () =>
+  it.instance("evaluates agent-tool visibility once per user turn without a query", () =>
     Effect.gen(function* () {
-      checks = 0
-      usable = false
+      for (const key of Object.keys(calls) as Array<keyof typeof calls>) calls[key] = 0
       const registry = yield* ToolRegistry.Service
       const agents = yield* Agent.Service
       const build = yield* agents.get("build")
@@ -114,24 +101,48 @@ describe("tool.registry agent turn cache", () => {
 
       const first = yield* registry.resolve({ model, agent: build, session, turnID: "turn-1" })
       expect(ids(first)).not.toContain("agent")
-      expect(checks).toBe(1)
 
-      // The mailbox becomes reachable mid-turn: the toolset stays stable for
-      // the turn that already made the decision.
-      usable = true
+      // A DAG node run appears mid-turn: the toolset stays stable for the turn
+      // that already made the decision.
+      const entry = yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const entry = ChildRegistry.create({
+            id: "crun_turn_cache",
+            childSessionID: SessionID.make("ses_turn_cache_node"),
+            parentSessionID: session.id,
+            ownerKind: "dag_node",
+            ownerKey: { kind: "dag_node", workflowID: "workflow_owned", nodeID: "node_1", attempt: 0 },
+            permission: { ask: "auto" },
+            detached: false,
+            directory: undefined,
+            owner: {},
+          })
+          expect(ChildRegistry.register(entry)).toBe(true)
+          return entry
+        }),
+        (entry) =>
+          Effect.sync(() => {
+            ChildRegistry.end(entry, { type: "completed" })
+            ChildRegistry.release(entry)
+          }),
+      )
       const sameTurn = yield* registry.resolve({ model, agent: build, session, turnID: "turn-1" })
       expect(ids(sameTurn)).not.toContain("agent")
-      expect(checks).toBe(1)
+
+      // Callers without a turn identity are never served the cached decision.
+      const untagged = yield* registry.resolve({ model, agent: build, session })
+      expect(ids(untagged)).toContain("agent")
 
       // A new user turn re-evaluates and sees the tool.
       const nextTurn = yield* registry.resolve({ model, agent: build, session, turnID: "turn-2" })
       expect(ids(nextTurn)).toContain("agent")
-      expect(checks).toBe(2)
 
-      // Callers without a turn identity keep the unbounded per-resolve read.
-      const untagged = yield* registry.resolve({ model, agent: build, session })
-      expect(ids(untagged)).toContain("agent")
-      expect(checks).toBe(3)
+      // An ended run is no longer exchangeable: the next turn hides the tool.
+      ChildRegistry.end(entry, { type: "completed" })
+      const endedTurn = yield* registry.resolve({ model, agent: build, session, turnID: "turn-3" })
+      expect(ids(endedTurn)).not.toContain("agent")
+
+      expect(calls).toEqual({ listBySession: 0, getNodes: 0, resolve: 0, revisions: 0 })
     }),
   )
 })
