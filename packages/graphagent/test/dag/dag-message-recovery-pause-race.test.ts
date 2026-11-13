@@ -20,12 +20,12 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "@/session/session"
-import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const parent = SessionID.make("ses_recovery_parent")
 const child = SessionID.make("ses_recovery_child")
@@ -103,7 +103,7 @@ function recoveryLayer(probe: {
       })
     }),
   ).pipe(Layer.provide(database))
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     cancel: () => Effect.void,
     loop: (input) =>
       Effect.sync(() => probe.resumed.push(input.sessionID)).pipe(

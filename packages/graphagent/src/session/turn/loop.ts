@@ -1132,7 +1132,10 @@ function makeScopedAgentCleanup(deps: LoopDeps) {
   return (sessionID: SessionID) =>
     Effect.gen(function* () {
       const session = yield* sessions.get(sessionID).pipe(Effect.option)
-      if (Option.isNone(session) || !session.value.parentID || ChildRegistry.delegateStop(sessionID)) return
+      // Only a foreground task's tool call delivers the later SubagentStop and
+      // needs the scoped hooks kept; a DAG node's notifyStop re-registers them,
+      // so its per-turn cleanup still unregisters (Issue #1026, PR4).
+      if (Option.isNone(session) || !session.value.parentID || ChildRegistry.keepScopedHooks(sessionID)) return
       const active = yield* readScopedAgents()
       const origin = active.get(sessionID)
       if (origin && settingsHook?.unregisterScoped) yield* settingsHook.unregisterScoped(sessionID, origin)

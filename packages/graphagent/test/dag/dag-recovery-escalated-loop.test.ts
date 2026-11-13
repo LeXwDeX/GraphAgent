@@ -16,12 +16,12 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { MessageID } from "@/session/schema"
-import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 function node(id: string, timeoutMs?: number): NodeConfig {
   return {
@@ -74,15 +74,14 @@ function recoveryLayer(input: { wakes: string[] }) {
     get: () => Effect.succeed({} as never),
     messages: () => Effect.succeed([]),
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: () => Effect.void,
-    prompt: () => Effect.never,
-    deliver: (value) =>
-      Effect.sync(() => {
-        const text = value.parts.find((part) => part.type === "text")?.text
-        if (text) input.wakes.push(text)
+      cancel: () => Effect.void,
+      prompt: () => Effect.never,
+      deliver: (value) =>
+        Effect.sync(() => {
+          const text = value.parts.find((part) => part.type === "text")?.text
+          if (text) input.wakes.push(text)
         }).pipe(Effect.map(() => Option.some(reply(value.sessionID as string, "wake handled")))),
     }),
   )
@@ -113,21 +112,21 @@ function runRecoveryTest<A>(
     yield* database.db
       .insert(ProjectTable)
       .values({
-      id: "project-1" as never,
-      worktree: process.cwd() as never,
-      sandboxes: [],
+        id: "project-1" as never,
+        worktree: process.cwd() as never,
+        sandboxes: [],
       })
       .run()
       .pipe(Effect.orDie)
     yield* database.db
       .insert(SessionTable)
       .values({
-      id: "ses_parent" as never,
-      project_id: "project-1" as never,
-      slug: "parent",
-      directory: process.cwd() as never,
-      title: "Parent",
-      version: "test",
+        id: "ses_parent" as never,
+        project_id: "project-1" as never,
+        slug: "parent",
+        directory: process.cwd() as never,
+        title: "Parent",
+        version: "test",
       })
       .run()
       .pipe(Effect.orDie)

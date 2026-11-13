@@ -9,7 +9,14 @@ import { randomUUID } from "node:crypto"
 import { makeSessionRuntimes, type SessionRuntimes } from "./runtime"
 import { SessionID } from "./schema"
 import { AgentSchedulerState } from "./agent-scheduler-state"
-import type { ChildCancelBy, ChildOwnerKind, ChildRunCredential, ChildRunOutcome } from "./child/types"
+import type {
+  ChildCancelBy,
+  ChildOwner,
+  ChildOwnerKind,
+  ChildPermissionPolicy,
+  ChildRunCredential,
+  ChildRunOutcome,
+} from "./child/types"
 
 /**
  * Process-wide engine state (Issue #1019, PR9).
@@ -209,6 +216,10 @@ export interface ActiveChildRun {
   readonly parentSessionID: SessionID
   /** Who owns the run. A foreground task's tool call delivers the child's `SubagentStop` (`ChildRegistry.delegateStop`). */
   readonly ownerKind: ChildOwnerKind
+  /** The durable owner key: the task call, or the DAG node and its attempt (Issue #1026, PR4). */
+  readonly ownerKey: ChildOwner
+  /** How this run's permission asks are settled (`session/child/policy.ts`). */
+  readonly permission: ChildPermissionPolicy
   /** Instance directory that started the run; disposing the instance ends its runs. */
   readonly directory: string | undefined
   /** The `ChildRuns` instance that started the run; closing it ends the runs it started. */
@@ -258,9 +269,11 @@ export interface ChildRunRegistryState {
    */
   readonly reports: Map<string, ChildReport>
   /**
-   * The parents that registered a child run in this process (Issue #1026,
+   * The parents that registered a task child run in this process (Issue #1026,
    * PR3b), until the session is deleted. Only their requests can carry a
-   * delegations slot, so a session that never delegated costs no read.
+   * delegations slot, so a session that never delegated costs no read. DAG
+   * node runs are excluded: the slot is the model's task view, and a
+   * DAG-only parent must keep costing no read.
    */
   readonly parents: Set<string>
 }

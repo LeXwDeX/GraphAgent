@@ -30,6 +30,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 interface PromptGate {
   readonly title: string
@@ -135,27 +136,26 @@ function loopLayer(input: {
     const outcome = yield* Deferred.await(release)
     return reply(sessionID, outcome)
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: (sessionID) => Effect.sync(() => input.cancelled.push(sessionID)),
-    prompt: deliver,
-    deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
+      cancel: (sessionID) => Effect.sync(() => input.cancelled.push(sessionID)),
+      prompt: deliver,
+      deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({
-      name: "build",
-      mode: "all",
-      permission: [],
-      options: {},
-      description: "",
-      prompt: "",
-      model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
-      tools: {},
-      hooks: {},
-    }),
+        name: "build",
+        mode: "all",
+        permission: [],
+        options: {},
+        description: "",
+        prompt: "",
+        model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
+        tools: {},
+        hooks: {},
+      }),
   })
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
@@ -190,21 +190,21 @@ function runLoop<A>(
       yield* database.db
         .insert(ProjectTable)
         .values({
-        id: projectID,
-        worktree: AbsolutePath.make(directory),
-        sandboxes: [],
+          id: projectID,
+          worktree: AbsolutePath.make(directory),
+          sandboxes: [],
         })
         .run()
         .pipe(Effect.orDie)
       yield* database.db
         .insert(SessionTable)
         .values({
-        id: parent,
-        project_id: projectID,
-        slug: "parent",
-        directory,
-        title: "Parent",
-        version: "test",
+          id: parent,
+          project_id: projectID,
+          slug: "parent",
+          directory,
+          title: "Parent",
+          version: "test",
         })
         .run()
         .pipe(Effect.orDie)
@@ -233,8 +233,8 @@ function takeGate(queue: Queue.Queue<PromptGate>, title: string) {
     Effect.timeoutOption("5 seconds"),
     Effect.flatMap(
       Option.match({
-      onNone: () => Effect.fail(new Error(`${title} did not start`)),
-      onSome: (gate) => Effect.succeed(gate),
+        onNone: () => Effect.fail(new Error(`${title} did not start`)),
+        onSome: (gate) => Effect.succeed(gate),
       }),
     ),
   )

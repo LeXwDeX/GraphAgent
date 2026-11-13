@@ -21,9 +21,10 @@ const slug = (value: string) =>
 export function abortReasonOf(by: ChildCancelBy): SessionAbortReason.Info {
   if (by.kind === "main_agent_tool") return SessionAbortReason.make("task-cancelled", "main-agent")
   const reason = slug(by.reason)
+  const actor = slug(by.actor ?? "") || "child-runs"
   return SessionAbortReason.make(
     reason === "" ? "engine-cancel" : /^[a-z]/.test(reason) ? reason : `engine-${reason}`,
-    "child-runs",
+    /^[a-z]/.test(actor) ? actor : `engine-${actor}`,
   )
 }
 

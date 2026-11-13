@@ -22,6 +22,7 @@ import {
   ActiveRunExists,
   NotOwner,
   type ChildCancelBy,
+  type ChildOwnerKind,
   type ChildPromptOptions,
   type ChildRunCancelResult,
   type ChildRunHandle,
@@ -152,6 +153,7 @@ const releaseAfterBound = (ctx: Ctx, entry: ActiveChildRun) =>
  * next, a cancelled run is delivered to nobody.
  */
 const reportEnding = (ctx: Ctx, entry: ActiveChildRun, outcome: ChildRunOutcome, epoch: number): void => {
+  if (entry.ownerKind !== "task") return
   if (outcome.type !== "completed" && outcome.type !== "error") return
   const directory = entry.directory === undefined ? undefined : DagLocation.canonicalDirectory(entry.directory)
   Registry.record({ runID: entry.id, parentSessionID: entry.parentSessionID, directory, epoch, owner: ctx.owner })
@@ -305,6 +307,8 @@ const newEntry = (ctx: Ctx, spec: ChildRunSpec) =>
       childSessionID: spec.childSessionID,
       parentSessionID: spec.parentSessionID,
       ownerKind: spec.owner.kind,
+      ownerKey: spec.owner,
+      permission: spec.permission ?? { ask: "user" },
       detached: spec.detached,
       directory: instance?.directory,
       owner: ctx.owner,
@@ -318,6 +322,7 @@ const newRun = (ctx: Ctx, entry: ActiveChildRun, spec: ChildRunSpec, attempt: nu
   owner: spec.owner,
   attempt,
   detached: spec.detached,
+  permission: spec.permission ?? { ask: "user" },
   runnerID: EngineProcess.runner.id,
   now,
 })
@@ -364,7 +369,14 @@ const adopt = (ctx: Ctx) =>
   Effect.fn("ChildRuns.adopt")(function* (spec: ChildRunSpec) {
     const binding = yield* Store.bindingOf(ctx.db, spec.childSessionID)
     // One verdict for every refusal: the caller learns nothing about sessions it does not own.
-    if (!binding || binding.parent_session_id !== spec.parentSessionID || binding.owner_kind !== spec.owner.kind)
+    // A DAG node also names its node: the same child session must not be adopted by a sibling.
+    // A task's owner ref is its (possibly different) tool call, so only the kind is compared.
+    if (
+      !binding ||
+      binding.parent_session_id !== spec.parentSessionID ||
+      binding.owner_kind !== spec.owner.kind ||
+      (spec.owner.kind === "dag_node" && binding.owner_ref !== Store.ownerRef(spec.owner))
+    )
       return yield* new NotOwner({ childSessionID: spec.childSessionID })
     // A run that already ended but whose row is still being written, or whose
     // cancelled driver is still stopping, frees the child session in a moment:
@@ -421,6 +433,18 @@ const cancel = (ctx: Ctx) =>
   })
 
 /**
+ * Engine-side cancellation by child session: the DAG loop and its deadline
+ * watcher know the session they drive but not the run id. A session with no
+ * active run in this process is `not_active`; the caller then cancels the
+ * session turn itself.
+ */
+const cancelActive = (ctx: Ctx) => (childSessionID: SessionID, by: ChildCancelBy) =>
+  Effect.suspend(() => {
+    const entry = Registry.activeFor(childSessionID)
+    return entry ? cancel(ctx)(entry.id, by) : Effect.succeed<ChildRunCancelResult>("not_active")
+  })
+
+/**
  * Ends the runs a dead or earlier-life process left active. Rows of this
  * process and of live foreign processes are untouched: another instance of this
  * process may be driving them right now.
@@ -447,10 +471,12 @@ const inspect = (ctx: Ctx) => (runID: string) => Store.runOf(ctx.db, runID).pipe
 const latestView = (ctx: Ctx) => (childSessionID: SessionID) =>
   Store.latestOf(ctx.db, childSessionID).pipe(Effect.map((row) => Option.map(Option.fromNullishOr(row), Store.viewOf)))
 
-const listByParent = (ctx: Ctx) => (parentSessionID: SessionID, options?: { readonly limit?: number }) =>
-  Store.runsOfParent(ctx.db, parentSessionID, options?.limit).pipe(
-    Effect.map((rows) => rows.map((listed) => Store.viewOf(listed.run, listed))),
-  )
+const listByParent =
+  (ctx: Ctx) =>
+  (parentSessionID: SessionID, options?: { readonly limit?: number; readonly ownerKind?: ChildOwnerKind }) =>
+    Store.runsOfParent(ctx.db, parentSessionID, options?.limit, options?.ownerKind).pipe(
+      Effect.map((rows) => rows.map((listed) => Store.viewOf(listed.run, listed))),
+    )
 
 const driverOf = (ctx: Ctx): Effect.Effect<Driver> =>
   ctx.driver ? Effect.succeed(ctx.driver) : Effect.die(new Error("child runs were built without a driver"))
@@ -468,9 +494,7 @@ const prompt = (ctx: Ctx) => (parentSessionID: SessionID, input: PromptInput, op
       Effect.suspend(() => {
         const entry = Registry.activeFor(input.sessionID)
         const credential =
-          entry && entry.parentSessionID === parentSessionID && !entry.credential.revoked
-            ? entry.credential
-            : undefined
+          entry && entry.parentSessionID === parentSessionID && !entry.credential.revoked ? entry.credential : undefined
         return driver.prompt(input, { ...options, internalDelegation: true }, credential ? { credential } : undefined)
       }),
     ),
@@ -517,6 +541,7 @@ const assemble = (ctx: Ctx): ChildRunsInterface => {
     interrupt: interrupt(ctx),
     resolvePromptParts: resolvePromptParts(ctx),
     cancel: cancel(ctx),
+    cancelActive: cancelActive(ctx),
     detach: detach(ctx),
     recover: () => recover({ db: ctx.db }),
     // Rows of a deleted session are gone with it (cascade); only the registry entries remain.

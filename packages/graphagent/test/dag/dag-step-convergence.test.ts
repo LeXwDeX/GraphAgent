@@ -24,6 +24,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const it = testEffect(Layer.empty)
 
@@ -98,8 +99,7 @@ function stepLayer(childPrompts: Queue.Queue<PromptGate>) {
     yield* Queue.offer(childPrompts, { title: titles.get(sessionID) ?? sessionID, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
       cancel: () => Effect.void,
       prompt: deliver,

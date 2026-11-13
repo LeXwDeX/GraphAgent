@@ -19,6 +19,7 @@ import { ChildRegistry } from "@/session/child/registry"
 import { ChildStore } from "@/session/child/store"
 import { boundedCancel, CANCEL_BOUND_MS } from "@/session/child/cancel"
 import { ChildRuns, makeChildRuns } from "@/session/child/run"
+import { ChildPolicy } from "@/session/child/policy"
 import { EngineProcess } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
@@ -170,6 +171,143 @@ describe("ChildRuns.start", () => {
       const outcome = ChildStore.parseOutcome((yield* runRows(db, child))[0]?.outcome)
       expect(outcome?.type).toBe("error")
       if (outcome?.type === "error") expect(outcome.message.length).toBeLessThan(1_100)
+    }),
+  )
+})
+
+describe("dag node runs", () => {
+  const dagOwner = (nodeID = "n01") => ({ kind: "dag_node" as const, workflowID: "wf", nodeID, attempt: 0 })
+
+  it.effect("registers the node's run with its policy: Stop delegated, ask unattended, not a ledger run", () =>
+    Effect.gen(function* () {
+      const { db, scoped, newChild } = yield* setup("dag-policy")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: dagOwner(),
+        detached: false,
+        permission: { ask: "auto" },
+      })
+
+      const row = (yield* runRows(db, child))[0]
+      expect(row).toMatchObject({
+        owner_kind: "dag_node",
+        owner_id: "wf/n01",
+        detached: false,
+        policy: { ask: "auto" },
+      })
+      expect(ChildRegistry.delegateStop(child)).toBe(true)
+      expect(Option.getOrUndefined(ChildPolicy.subjectOf(child))?.owner).toEqual(dagOwner())
+      expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child))?.ask).toBe("auto")
+
+      yield* handle.settle({ type: "completed" })
+      // The DAG delivers its own result: the ending is already reported.
+      expect((yield* runRows(db, child))[0]?.reported_at).not.toBeNull()
+    }),
+  )
+
+  it.effect("adopt refuses a sibling node and increments the attempt for the same node", () =>
+    Effect.gen(function* () {
+      const { db, scoped, newChild } = yield* setup("dag-adopt")
+      const child = yield* newChild()
+      const first = yield* scoped.start({
+        childSessionID: child,
+        owner: dagOwner(),
+        detached: false,
+        permission: { ask: "auto" },
+      })
+      yield* first.settle({ type: "completed" })
+
+      const refused = yield* scoped
+        .adopt({ childSessionID: child, owner: dagOwner("n02"), detached: false, permission: { ask: "auto" } })
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(refused)).toBe(true)
+      if (Exit.isFailure(refused)) expect(String(refused.cause)).toContain("ChildRunNotOwner")
+
+      const second = yield* scoped.adopt({
+        childSessionID: child,
+        owner: dagOwner(),
+        detached: false,
+        permission: { ask: "auto" },
+      })
+      expect(second.attempt).toBe(2)
+      expect((yield* runRows(db, child)).map((row) => row.attempt)).toEqual([1, 2])
+      yield* second.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("cancelActive cancels by child session and keeps the engine attribution", () =>
+    Effect.gen(function* () {
+      const { children, scoped, cancelled, newChild } = yield* setup("dag-cancel")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: dagOwner(),
+        detached: false,
+        permission: { ask: "auto" },
+      })
+
+      expect(
+        yield* children.cancelActive(child, {
+          kind: "engine",
+          reason: "deadline-cap",
+          actor: "deadline-watcher",
+        }),
+      ).toBe("cancelled")
+      yield* Effect.yieldNow
+      expect(yield* handle.settled).toEqual({
+        type: "cancelled",
+        by: { kind: "engine", reason: "deadline-cap", actor: "deadline-watcher" },
+      })
+      expect(cancelled).toEqual([{ sessionID: child, reason: "deadline-cap", actor: "deadline-watcher" }])
+    }),
+  )
+
+  it.effect("listByParent filters by owner kind before applying the limit", () =>
+    Effect.gen(function* () {
+      const { children, scoped, parent, newChild } = yield* setup("list-kind")
+      const taskChild = yield* newChild("task")
+      const taskRun = yield* scoped.start({ childSessionID: taskChild, owner: taskOwner, detached: true })
+      yield* taskRun.settle({ type: "completed" })
+      for (let index = 0; index < 3; index++) {
+        const child = yield* newChild(`dag-${index}`)
+        const handle = yield* children.start({
+          parentSessionID: parent,
+          childSessionID: child,
+          owner: { kind: "dag_node", workflowID: "wf", nodeID: `n0${index}`, attempt: 0 },
+          detached: false,
+          permission: { ask: "auto" },
+        })
+        yield* handle.settle({ type: "completed" })
+      }
+
+      // The limit alone sees only the newest DAG runs; the owner filter sees
+      // the task run even though three DAG rows are newer.
+      expect((yield* children.listByParent(parent, { limit: 2 })).every((run) => run.ownerKind === "dag_node")).toBe(
+        true,
+      )
+      const tasks = yield* children.listByParent(parent, { limit: 2, ownerKind: "task" })
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0]?.childSessionID).toBe(taskChild)
+    }),
+  )
+
+  it.effect("root-dag-mode follows the root session's mode at each ask", () =>
+    Effect.gen(function* () {
+      const { db, scoped, parent, newChild } = yield* setup("root-mode")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: taskOwner,
+        detached: true,
+        permission: { ask: "root-dag-mode" },
+      })
+      expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child))?.ask).toBe("user")
+
+      yield* db.update(SessionTable).set({ dag_mode: "on" }).where(eq(SessionTable.id, parent)).run().pipe(Effect.orDie)
+      expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child))?.ask).toBe("auto")
+
+      yield* handle.settle({ type: "completed" })
     }),
   )
 })
@@ -334,6 +472,23 @@ describe("ChildRuns.cancel", () => {
       if (Exit.isSuccess(exit)) expect(Option.isSome(exit.value)).toBe(true)
     }),
   )
+
+  it.live("does not interrupt an uninterruptible cancellation at its bound", () =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>()
+      const entered = yield* Deferred.make<void>()
+      const fiber = yield* boundedCancel(
+        Effect.uninterruptible(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+        "uninterruptible-test",
+        20,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(entered)
+
+      expect(Option.isNone(yield* Fiber.await(fiber).pipe(Effect.timeoutOption("100 millis")))).toBe(true)
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.await(fiber)
+    }),
+  )
 })
 
 describe("a cancelled run keeps its child session reserved", () => {
@@ -489,6 +644,8 @@ describe("registry hold", () => {
       childSessionID: childID(name),
       parentSessionID: parentID(name),
       ownerKind: "task",
+      ownerKey: { kind: "task" },
+      permission: { ask: "user" },
       detached: false,
       directory: undefined,
       owner: {},
@@ -702,6 +859,8 @@ describe("ChildRuns.adopt", () => {
         childSessionID: elsewhere,
         parentSessionID: parent,
         ownerKind: "task",
+        ownerKey: { kind: "task" },
+        permission: { ask: "user" },
         detached: false,
         directory: undefined,
         owner: {},

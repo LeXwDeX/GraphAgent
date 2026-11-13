@@ -23,6 +23,7 @@ import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const parent = SessionID.make("ses_mailbox_parent")
 const message: DagMessages.Message = {
@@ -73,7 +74,7 @@ function mailboxLayer(probe: MailboxProbe) {
     getPart: () => Effect.succeed(undefined),
     messages: () => Effect.sync(() => probe.history ?? []),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     prepareTurn: (input) =>
       Effect.sync(() => {
         probe.admissions.push(input)

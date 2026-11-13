@@ -19,13 +19,13 @@ import { Dag } from "@/dag/dag"
 import { ProjectV2 } from "@graphagent/core/project"
 import { clearCaptureSlot, hasCaptureSlot } from "@/dag/runtime/capture"
 import { reconcileWorkflow, continueRecoveredMessageNode, makeSessionStatusChecker } from "@/dag/runtime/recovery"
-import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { NonNegativeInt } from "@graphagent/core/schema"
 import { MessageID, SessionID, PartID } from "@/session/schema"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const parent = { projectID: "p", directory: process.cwd(), sessionID: "ses_parent" }
 const child = { ...parent, sessionID: "ses_child" }
@@ -214,7 +214,7 @@ describe("message settlement through durable DAG events", () => {
           const messages = yield* DagMessages.Service
           value(yield* accept("waiting-on-recovered-model"))
           let calls = 0
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             loop: () =>
               Effect.suspend(() => {
                 calls++
@@ -258,7 +258,7 @@ describe("message settlement through durable DAG events", () => {
         const turn = MessageID.ascending()
         const database = yield* Database.Service
         const { db } = database
-        const prompt = Layer.mock(SessionPrompt.Service, {
+        const prompt = mockSessionPrompt({
           loop: () =>
             associate(turn).pipe(
               Effect.provideService(DagMessages.Service, messages),
@@ -376,7 +376,7 @@ describe("message settlement through durable DAG events", () => {
         let called = 0
         const database = yield* Database.Service
         const messages = yield* DagMessages.Service
-        const prompt = Layer.mock(SessionPrompt.Service, {
+        const prompt = mockSessionPrompt({
           loop: () =>
             Effect.gen(function* () {
               called++
@@ -409,7 +409,7 @@ describe("message settlement through durable DAG events", () => {
         yield* messages.markStopped(child, snapshot.id, "budget_exhausted")
         value(yield* accept("late"))
         let called = 0
-        const prompt = Layer.mock(SessionPrompt.Service, {
+        const prompt = mockSessionPrompt({
           loop: () =>
             Effect.sync(() => {
               called++

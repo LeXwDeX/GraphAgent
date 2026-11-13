@@ -13,7 +13,14 @@ import { and, asc, desc, eq, exists, inArray, isNull, or, sql, type SQL } from "
 import { Cause, Effect, Option } from "effect"
 import { isRecord } from "@/util/record"
 import { SessionID } from "../schema"
-import type { ChildCancelBy, ChildOwner, ChildRunOutcome, ChildRunReport, ChildRunView } from "./types"
+import type {
+  ChildCancelBy,
+  ChildOwner,
+  ChildPermissionPolicy,
+  ChildRunOutcome,
+  ChildRunReport,
+  ChildRunView,
+} from "./types"
 
 /**
  * Durable side of the child runs (Issue #1026): the `child_binding` and
@@ -49,7 +56,8 @@ const MAX_ERROR_CHARS = 1_000
  */
 export const MAX_REPORT_CHARS = 200_000
 
-const ownerRef = (owner: ChildOwner): string | null =>
+/** The durable owner reference: the task call, or the DAG node. The DAG attempt is per run, not part of the owner. */
+export const ownerRef = (owner: ChildOwner): string | null =>
   owner.kind === "task" ? (owner.toolCallID ?? null) : `${owner.workflowID}/${owner.nodeID}`
 
 const truncate = (text: string) => (text.length > MAX_ERROR_CHARS ? `${text.slice(0, MAX_ERROR_CHARS)}...` : text)
@@ -85,7 +93,12 @@ function cancelBy(value: unknown): ChildCancelBy | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === "main_agent_tool" && typeof value.toolCallID === "string")
     return { kind: "main_agent_tool", toolCallID: value.toolCallID }
-  if (value.kind === "engine" && typeof value.reason === "string") return { kind: "engine", reason: value.reason }
+  if (value.kind === "engine" && typeof value.reason === "string")
+    return {
+      kind: "engine",
+      reason: value.reason,
+      ...(typeof value.actor === "string" ? { actor: value.actor } : {}),
+    }
   return undefined
 }
 
@@ -107,8 +120,19 @@ export function parseOutcome(value: Record<string, unknown> | null | undefined):
   }
 }
 
+function parsePermission(value: Record<string, unknown> | null): ChildPermissionPolicy | undefined {
+  if (!value) return undefined
+  const ask = value.ask
+  if (ask !== "user" && ask !== "auto" && ask !== "root-dag-mode") return undefined
+  return {
+    ask,
+    ...(value.workspaceWrites === "deny" ? { workspaceWrites: "deny" as const } : {}),
+  }
+}
+
 export function viewOf(row: RunRow, session?: Pick<ListedRun, "title" | "agent">): ChildRunView {
   const outcome = parseOutcome(row.outcome)
+  const permission = parsePermission(row.policy)
   return {
     id: row.id,
     childSessionID: SessionID.make(row.child_session_id),
@@ -117,6 +141,7 @@ export function viewOf(row: RunRow, session?: Pick<ListedRun, "title" | "agent">
     state: row.state,
     attempt: row.attempt ?? 1,
     detached: row.detached === true,
+    ...(permission ? { permission } : {}),
     ...(outcome ? { outcome } : {}),
     ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
     timeCreated: row.time_created,
@@ -133,6 +158,7 @@ export interface NewRun {
   readonly owner: ChildOwner
   readonly attempt: number
   readonly detached: boolean
+  readonly permission: ChildPermissionPolicy
   readonly runnerID: string
   readonly now: number
 }
@@ -146,6 +172,7 @@ const runValues = (run: NewRun) => ({
   attempt: run.attempt,
   state: "queued" as const,
   detached: run.detached,
+  policy: { ...run.permission },
   runner_id: run.runnerID,
   time_created: run.now,
 })
@@ -235,12 +262,24 @@ export interface ListedRun {
  * child session's title and agent. Read in `child_run_parent_time_idx` order,
  * so a bound costs the rows it returns, not the parent's history.
  */
-export const runsOfParent = (db: Db, parentSessionID: SessionID, limit?: number): Effect.Effect<ListedRun[]> =>
+export const runsOfParent = (
+  db: Db,
+  parentSessionID: SessionID,
+  limit?: number,
+  ownerKind?: ChildOwnerKind,
+): Effect.Effect<ListedRun[]> =>
   db
     .select({ run: ChildRunTable, title: SessionTable.title, agent: SessionTable.agent })
     .from(ChildRunTable)
     .leftJoin(SessionTable, eq(SessionTable.id, ChildRunTable.child_session_id))
-    .where(eq(ChildRunTable.parent_session_id, parentSessionID))
+    .where(
+      and(
+        eq(ChildRunTable.parent_session_id, parentSessionID),
+        // Filter before LIMIT: a parent with many DAG node runs must not push
+        // the task runs the delegations slot reads out of the window.
+        ...(ownerKind === undefined ? [] : [eq(ChildRunTable.owner_kind, ownerKind)]),
+      ),
+    )
     .orderBy(desc(ChildRunTable.time_created))
     // SQLite reads a negative limit as none.
     .limit(limit ?? -1)
@@ -421,6 +460,21 @@ export const parentOf = (db: Db, sessionID: SessionID): Effect.Effect<ParentSess
     .where(eq(SessionTable.id, sessionID))
     .get()
     .pipe(Effect.orDie)
+
+/**
+ * The DAG mode of a root session, read when a task child run's policy is
+ * `root-dag-mode`. A missing row (deleted session) reads as off.
+ */
+export const dagModeOf = (db: Db, sessionID: SessionID): Effect.Effect<"on" | "off"> =>
+  db
+    .select({ dagMode: SessionTable.dag_mode })
+    .from(SessionTable)
+    .where(eq(SessionTable.id, sessionID))
+    .get()
+    .pipe(
+      Effect.orDie,
+      Effect.map((row) => row?.dagMode ?? "off"),
+    )
 
 export const activeRows = (db: Db): Effect.Effect<Array<Pick<RunRow, "id" | "runner_id">>> =>
   db

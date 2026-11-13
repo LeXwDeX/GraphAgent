@@ -20,15 +20,15 @@
  * and terminalize on fabricated evidence (P2-2 recovery-pause).
  */
 
-import { HookLifecycle } from "@/hook/lifecycle"
 import { Effect, Clock, Cause, Exit, Option } from "effect"
 import { Dag, isStaleMessageInput, type NodeExecutionAttempt } from "../dag"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { SessionPrompt } from "@/session/prompt"
+import type { ChildRunHandle } from "@/session/child/run"
 import type { NodeConfig } from "../dag"
 import { Session } from "@/session/session"
-import { SessionID, MessageID } from "@/session/schema"
+import { SessionID } from "@/session/schema"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { isTransitionRejection } from "@graphagent/core/dag/core/types"
@@ -37,12 +37,7 @@ import { DagLocation } from "../location"
 import { InstanceRef } from "@/effect/instance-ref"
 import { resolveInputMapping } from "./eval"
 import { childFailureReason } from "./child-failure-reason"
-import {
-  settleCapturedOutput,
-  settlePlainTextOutput,
-  registerCaptureSlot,
-  clearCaptureSlot,
-} from "./capture"
+import { settleCapturedOutput, settlePlainTextOutput, registerCaptureSlot, clearCaptureSlot } from "./capture"
 import type { CapturedSettlement } from "./capture"
 import { captureFinalResponse, finalAssistantText, type FinalCaptureResult } from "./final-response"
 import { commitOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "./output-ref"
@@ -357,9 +352,7 @@ export function reconcileWorkflow(
           )
           if (completed) reconciled++
         } else {
-          const finalMessage = lastAssistantMessage
-            ? yield* lastAssistantMessage(node.childSessionId)
-            : undefined
+          const finalMessage = lastAssistantMessage ? yield* lastAssistantMessage(node.childSessionId) : undefined
           const final = finalAssistantText(finalMessage)
           const frozen =
             Option.isSome(messages) && caller && finalMessage
@@ -418,10 +411,7 @@ export function reconcileWorkflow(
             ),
           )
           if (!previousRefValid) continue
-          if (
-            isManagedOutputFileRef(node.capturedOutput) &&
-            (restorableFinalRef || Option.isNone(messages))
-          ) {
+          if (isManagedOutputFileRef(node.capturedOutput) && (restorableFinalRef || Option.isNone(messages))) {
             const ref = node.capturedOutput
             const restored = yield* Effect.gen(function* () {
               if (
@@ -661,6 +651,9 @@ export function continueRecoveredMessageNode(
     )
       return
     const childSessionID = node.childSessionId
+    // The run this continuation registers on the existing child session (a new
+    // episode after the interrupted one). Settled by every terminal path.
+    let run: ChildRunHandle | undefined
     // Workflow ownership remains with the parent, while the mailbox belongs to the child session.
     const ownerDirectory = workflow.directory
     const ownerExecutionDirectory =
@@ -760,15 +753,21 @@ export function continueRecoveredMessageNode(
       errorClass?: string,
     ) => {
       const metadata = recoverWorktreeMetadata(row)
-      return dag.nodeFailed(
-        dagID,
-        nodeID,
-        reason,
-        trigger,
-        attempt,
-        errorClass,
-        metadata ? { ...metadata, state: "kept" as const } : undefined,
-      )
+      return dag
+        .nodeFailed(
+          dagID,
+          nodeID,
+          reason,
+          trigger,
+          attempt,
+          errorClass,
+          metadata ? { ...metadata, state: "kept" as const } : undefined,
+        )
+        .pipe(
+          // The run's outcome follows the durable node outcome: an error here
+          // must not be outlived by a completed settle from a wrapper.
+          Effect.andThen(run === undefined ? Effect.void : run.settle({ type: "error", message: reason })),
+        )
     }
     const completeNode = (
       row: DagStore.NodeRow,
@@ -790,15 +789,19 @@ export function continueRecoveredMessageNode(
         })
         if (!completion.ok)
           return yield* failNode(row, `worktree completion failed: ${completion.reason}`, "exec_failed", attempt)
-        return yield* dag.nodeCompleted(
-          dagID,
-          nodeID,
-          output,
-          attempt,
-          capturedOutput,
-          completion.worktree,
-          completion.worktree ? completion.touchedPaths : undefined,
-        )
+        // Settle only after the durable completion; the worktree failure above
+        // already settled the run as an error through `failNode`.
+        return yield* dag
+          .nodeCompleted(
+            dagID,
+            nodeID,
+            output,
+            attempt,
+            capturedOutput,
+            completion.worktree,
+            completion.worktree ? completion.touchedPaths : undefined,
+          )
+          .pipe(Effect.andThen(run === undefined ? Effect.void : run.settle({ type: "completed" })))
       })
     yield* inExecution(
       Effect.gen(function* () {
@@ -834,8 +837,60 @@ export function continueRecoveredMessageNode(
         if (nodeConfig?.output_schema) registerCaptureSlot(childSessionID, nodeConfig.output_schema)
         // Recovery owns the full historical attempt, not each resumed model turn.
         // Do not replay its historical Start/Stop hooks in a new process.
-        const lifecycle = yield* Effect.serviceOption(HookLifecycle.Service)
-        if (Option.isSome(lifecycle)) yield* lifecycle.value.delegateChildStop(childSessionID)
+        //
+        // The continuation is a new episode on the existing child session:
+        // adopt it as a run so the child's own loop delegates its Stop (the
+        // DAG owns the one notification) and the loop carries a credential.
+        // A child session created before PR4 has no binding; its first run is
+        // registered with `start`. An active run means another driver owns the
+        // session: leave it be. A binding of another owner refuses adoption.
+        const childRuns = yield* prompt.children
+        const scoped = childRuns.forParent(SessionID.make(workflow.sessionId))
+        const owner = { kind: "dag_node" as const, workflowID: dagID, nodeID, attempt: node.replanAttempts }
+        const latestRun = yield* scoped.latest(SessionID.make(childSessionID))
+        run = yield* (
+          Option.isNone(latestRun)
+            ? scoped.start({
+                childSessionID: SessionID.make(childSessionID),
+                owner,
+                detached: false,
+                permission: { ask: "auto" },
+              })
+            : scoped.adopt({
+                childSessionID: SessionID.make(childSessionID),
+                owner,
+                detached: false,
+                permission: { ask: "auto" },
+              })
+        ).pipe(
+          // Another driver owns the session (or won the check-then-act race
+          // between `latest` and `start`). Leave the node to it and retry
+          // later instead of failing a live attempt; the pause keeps the
+          // re-arm from hot-polling the row.
+          Effect.catchTag("ChildRunActive", () => Effect.sleep(2_000).pipe(Effect.as(undefined))),
+          Effect.catchTag("ChildRunNotOwner", () =>
+            failNode(
+              node,
+              "child session is owned by another run; the attempt cannot be adopted",
+              "exec_failed",
+              attempt,
+            ).pipe(Effect.as(undefined)),
+          ),
+          // `start` reports a lost registration as a defect (unique violation
+          // or the registry's duplicate guard), not a typed `ChildRunActive`.
+          // That is still a concurrent driver, never a node failure.
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("recovery run registration raced; leaving the attempt to its driver", {
+                  dagID,
+                  nodeID,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.andThen(Effect.sleep(2_000)), Effect.as(undefined)),
+          ),
+        )
+        if (!run) return
+        if (!(yield* run.markRunning)) return
         let result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) }, { kind: "child_run" })
         for (;;) {
           if (!(yield* admit)) return
@@ -967,13 +1022,21 @@ export function continueRecoveredMessageNode(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.failCause(cause)
-            : dag
-                .nodeFailed(dagID, nodeID, Cause.pretty(cause), "exec_failed", attempt)
-                .pipe(Effect.catchIf(isTransitionRejection, () => Effect.void)),
+            : (run === undefined ? Effect.void : run.settle({ type: "error", message: Cause.pretty(cause) })).pipe(
+                Effect.andThen(
+                  dag
+                    .nodeFailed(dagID, nodeID, Cause.pretty(cause), "exec_failed", attempt)
+                    .pipe(Effect.catchIf(isTransitionRejection, () => Effect.void)),
+                ),
+              ),
         ),
         Effect.ensuring(
-          Effect.sync(() => {
+          Effect.gen(function* () {
             clearCaptureSlot(childSessionID)
+            // An abandoned continuation (a control op replaced the attempt)
+            // returns without a durable settlement; the run must not stay
+            // active for the next adopt.
+            if (run) yield* run.settle({ type: "interrupted", reason: "recovery-continuation-ended" })
           }),
         ),
       ),

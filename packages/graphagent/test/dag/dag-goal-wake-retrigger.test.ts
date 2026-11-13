@@ -30,6 +30,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 // GOAL-FP-01-02: the final DAG lease unregister (U2) lands AFTER the wake
 // turn's idle event. GoalLoop's claim runs on idle while the dag registration
@@ -231,12 +232,11 @@ function goalWakeLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>; fail
     yield* Queue.offer(input.childPrompts, { title: childTitles.get(sessionID) ?? sessionID, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: () => Effect.void,
-    prompt: deliver,
-    deliver: (value: SessionPrompt.PromptInput) => deliver(value).pipe(Effect.map(Option.some)),
+      cancel: () => Effect.void,
+      prompt: deliver,
+      deliver: (value: SessionPrompt.PromptInput) => deliver(value).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {

@@ -3,11 +3,12 @@
 
 import { Database } from "@graphagent/core/database/database"
 import type { SessionV1 } from "@graphagent/core/v1/session"
-import { Effect, Scope } from "effect"
-import { makeChildRuns, type ChildRuns } from "@/session/child/run"
+import { Effect, Layer, Option, Scope } from "effect"
+import { ActiveRunExists, makeChildRuns, NotOwner, type ChildRuns } from "@/session/child/run"
 import { ChildRegistry } from "@/session/child/registry"
-import type { ChildRunCredential } from "@/session/child/types"
+import type { ChildCancelBy, ChildRunCredential, ChildRunOutcome, ChildRunView } from "@/session/child/types"
 import type { PromptInput } from "@/session/prompt-input"
+import { SessionPrompt } from "@/session/prompt"
 import type { SessionID } from "@/session/schema"
 import type { AdmissionOptions } from "@/session/turns"
 import type { Tool } from "@/tool/tool"
@@ -72,6 +73,173 @@ const isStubDriver = (value: unknown): value is StubDriver =>
  * read the rows and registry state, and so are the `drives`: every prompt the
  * task sent, with the credential it carried next to the one it had to carry.
  */
+/**
+ * A SessionPrompt layer whose child-run seam is a recording stub (Issue #1026,
+ * PR4). The DAG spawn and recovery now register runs and drive prompts through
+ * `SessionPrompt.children`; a mock that only spells `prompt` would die at the
+ * first drive. The stub delegates `prompt` to the implementation the test gave
+ * (so its assertions keep working) and records the start/adopt/cancel calls a
+ * test wants to see.
+ */
+export interface StubChildren {
+  readonly runs: Array<{
+    readonly childSessionID: SessionID
+    readonly owner: unknown
+    readonly detached: boolean
+    readonly via: "start" | "adopt"
+  }>
+  readonly prompts: Array<{ readonly input: PromptInput; readonly options?: AdmissionOptions }>
+  readonly settled: Array<{ readonly id: string; readonly outcome: ChildRunOutcome }>
+  readonly cancelled: Array<{ readonly id: string | undefined; readonly by: ChildCancelBy }>
+  /** What `latest(childSessionID)` answers; set it to make a path adopt instead of start. */
+  latest?: ChildRunView
+  /** Makes the next adopt fail with the matching ownership error. */
+  adoptError?: "not-owner" | "active"
+  /** Makes `cancelActive` report no run, exercising the caller's session-cancel fallback. */
+  cancelActiveResult?: "not_active"
+  /** Makes registration die (a lost unique constraint or the registry's duplicate guard). */
+  registrationDefect?: Error
+}
+
+export const stubChildren = (
+  impl: Partial<SessionPrompt.Interface> = {},
+): { readonly children: ChildRuns.Interface; readonly stub: StubChildren } => {
+  const runs: StubChildren["runs"] = []
+  const prompts: StubChildren["prompts"] = []
+  const settled: StubChildren["settled"] = []
+  const cancelled: StubChildren["cancelled"] = []
+  const runSessions = new Map<string, SessionID>()
+  const stub: StubChildren = { runs, prompts, settled, cancelled }
+  let sequence = 0
+  // A cancelled run's session cancellation is what the engine-side tests
+  // watched for before runs existed; the stub forwards it to the prompt mock.
+  const cancelSession = (childSessionID: SessionID, by: ChildCancelBy): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (!impl.cancel) return Effect.void
+      const reason =
+        by.kind === "main_agent_tool"
+          ? { reason: "task-cancelled", actor: "main-agent" }
+          : { reason: by.reason, actor: by.actor ?? "child-runs" }
+      return impl.cancel(childSessionID, { reason })
+    })
+  const handle = (childSessionID: SessionID) => {
+    const id = `crun_stub_${++sequence}`
+    runSessions.set(id, childSessionID)
+    return {
+      id,
+      childSessionID,
+      attempt: 1,
+      markRunning: Effect.succeed(true),
+      settle: (outcome: ChildRunOutcome) =>
+        Effect.sync(() => {
+          settled.push({ id, outcome })
+          return true
+        }),
+      detach: Effect.succeed(true),
+      stopDelegated: Effect.succeed(false),
+      settled: Effect.never,
+      cancelled: Effect.never,
+    }
+  }
+  const register = (spec: { childSessionID: SessionID; owner: unknown; detached: boolean }, via: "start" | "adopt") =>
+    Effect.suspend(() => {
+      if (stub.registrationDefect) return Effect.die(stub.registrationDefect)
+      if (via === "adopt" && stub.adoptError)
+        return Effect.fail(
+          stub.adoptError === "not-owner"
+            ? new NotOwner({ childSessionID: spec.childSessionID })
+            : new ActiveRunExists({ childSessionID: spec.childSessionID, runID: "crun_stub_live" }),
+        )
+      runs.push({
+        childSessionID: spec.childSessionID,
+        owner: spec.owner,
+        detached: spec.detached,
+        via,
+      })
+      return Effect.succeed(handle(spec.childSessionID))
+    })
+  const scoped = (parentSessionID: SessionID): ChildRuns.Scoped => ({
+    parentSessionID,
+    prompt: (input, options) =>
+      Effect.suspend(() => {
+        // Mirrors `ChildRuns.prompt`: every delegation carries
+        // `internalDelegation`, whether or not the caller spelled it.
+        const admitted = { ...options, internalDelegation: true as const }
+        prompts.push({ input, options: admitted })
+        return impl.prompt
+          ? impl.prompt(input, admitted).pipe(Effect.catch((error) => Effect.die(error)))
+          : Effect.die(new Error("stub child prompt"))
+      }),
+    interrupt: () => Effect.void,
+    resolvePromptParts: () => Effect.succeed([]),
+    start: (spec) => register(spec, "start").pipe(Effect.orDie),
+    adopt: (spec) => register(spec, "adopt"),
+    latest: () => Effect.succeed(Option.fromNullishOr(stub.latest)),
+    list: () => Effect.succeed([]),
+    cancel: (id, by) =>
+      Effect.suspend(() => {
+        cancelled.push({ id, by })
+        const childSessionID = runSessions.get(id)
+        return childSessionID
+          ? cancelSession(childSessionID, by).pipe(Effect.as("cancelled" as const))
+          : Effect.succeed("cancelled" as const)
+      }),
+  })
+  const children: ChildRuns.Interface = {
+    start: (spec) => register(spec, "start").pipe(Effect.orDie),
+    adopt: (spec) => register(spec, "adopt"),
+    inspect: () => Effect.succeed(Option.none()),
+    latest: () => Effect.succeed(Option.fromNullishOr(stub.latest)),
+    listByParent: () => Effect.succeed([]),
+    prompt: (parentSessionID, input, options) => scoped(parentSessionID).prompt(input, options),
+    interrupt: () => Effect.void,
+    resolvePromptParts: () => Effect.succeed([]),
+    cancel: (id, by) =>
+      Effect.suspend(() => {
+        cancelled.push({ id, by })
+        const childSessionID = runSessions.get(id)
+        return childSessionID
+          ? cancelSession(childSessionID, by).pipe(Effect.as("cancelled" as const))
+          : Effect.succeed("cancelled" as const)
+      }),
+    cancelActive: (childSessionID, by) =>
+      Effect.suspend(() => {
+        cancelled.push({ id: childSessionID, by })
+        if (stub.cancelActiveResult === "not_active") return Effect.succeed("not_active" as const)
+        return cancelSession(childSessionID, by).pipe(Effect.as("cancelled" as const))
+      }),
+    detach: () => Effect.succeed(true),
+    recover: () => Effect.void,
+    forget: () => Effect.void,
+    forParent: scoped,
+  }
+  return { children, stub }
+}
+
+/**
+ * A `SessionPrompt.Service` mock with a stub `children` seam; everything else
+ * comes from `impl`. The index signature keeps the contextual type as wide as
+ * `Layer.mock`'s own, so helpers like `withIdleAdmission` keep inferring their
+ * prompt/cancel members.
+ */
+export const mockSessionPrompt = (impl: Partial<SessionPrompt.Interface> & Record<string, unknown> = {}) =>
+  Layer.mock(SessionPrompt.Service, {
+    ...impl,
+    children: Effect.succeed(stubChildren(impl).children),
+  } as Partial<SessionPrompt.Interface>)
+
+/** `mockSessionPrompt` plus the recording stub, for tests that assert run registration. */
+export const mockSessionPromptWithStub = (impl: Partial<SessionPrompt.Interface> & Record<string, unknown> = {}) => {
+  const built = stubChildren(impl)
+  return {
+    layer: Layer.mock(SessionPrompt.Service, {
+      ...impl,
+      children: Effect.succeed(built.children),
+    } as Partial<SessionPrompt.Interface>),
+    stub: built.stub,
+  }
+}
+
 export const initTaskTool = <D extends { execute: (args: never, ctx: Tool.Context) => unknown }>(
   tool: { init: () => Effect.Effect<D> },
   cancelSession?: ChildRuns.Deps["cancelSession"],

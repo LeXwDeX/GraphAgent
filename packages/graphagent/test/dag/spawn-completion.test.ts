@@ -4,7 +4,7 @@
 import { SettingsHook } from "@/hook"
 import { $ } from "bun"
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer, Fiber, Deferred, Option } from "effect"
+import { Effect, Layer, Fiber } from "effect"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -19,13 +19,15 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import type { DagStore } from "@graphagent/core/dag/store"
-import { boundedCancel, spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
+import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { commitOutputFileRef } from "@/dag/runtime/output-ref"
 import { Permission } from "@/permission"
+import { Config } from "@/config/config"
 import { TerminalViolationError } from "@graphagent/core/dag/core/types"
 import { InstanceStore } from "@/project/instance-store"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 import { tmpdir } from "../fixture/fixture"
+import { mockSessionPrompt, mockSessionPromptWithStub } from "../lib/child-runs"
 
 type TrackedEvent = {
   type: string
@@ -141,13 +143,13 @@ function reply(text: string, includeText = text !== ""): SessionV1.WithParts {
 }
 
 function makePromptLayer(result: SessionV1.WithParts): Layer.Layer<SessionPrompt.Service> {
-  return Layer.mock(SessionPrompt.Service, {
+  return mockSessionPrompt({
     prompt: () => Effect.succeed(result),
   })
 }
 
 function makeFailingPromptLayer(error: string): Layer.Layer<SessionPrompt.Service> {
-  return Layer.mock(SessionPrompt.Service, {
+  return mockSessionPrompt({
     prompt: () => Effect.die(new Error(error)),
   })
 }
@@ -188,7 +190,7 @@ describe("spawnNode completion bridge", () => {
     await using tmp = await tmpdir({ git: true })
     const head = (await $`git -C ${tmp.path} rev-parse HEAD`.text()).trim()
     let promptSystem: SessionPrompt.PromptInput["system"]
-    const prompt = Layer.mock(SessionPrompt.Service, {
+    const prompt = mockSessionPrompt({
       prompt: (input) =>
         Effect.sync(() => {
           promptSystem = input.system
@@ -510,7 +512,7 @@ describe("spawnNode completion bridge", () => {
       create: (input?: { directory?: string }) =>
         Effect.succeed(sessionInfo("ses_child", input?.directory ?? process.cwd())),
     })
-    const prompt = Layer.mock(SessionPrompt.Service, {
+    const prompt = mockSessionPrompt({
       prompt: (input) =>
         Effect.sync(() => {
           promptModel = input.model
@@ -542,7 +544,7 @@ describe("spawnNode completion bridge", () => {
   it("prefers the configured DAG tier over the worker agent model", async () => {
     const { events, dagLayer } = makeEventTracker()
     let promptModel: SessionPrompt.PromptInput["model"]
-    const prompt = Layer.mock(SessionPrompt.Service, {
+    const prompt = mockSessionPrompt({
       prompt: (input) =>
         Effect.sync(() => {
           promptModel = input.model
@@ -578,7 +580,7 @@ describe("spawnNode completion bridge", () => {
   it("canonicalizes a provider-qualified model from a persisted node", async () => {
     const { events, dagLayer } = makeEventTracker()
     let promptModel: SessionPrompt.PromptInput["model"]
-    const prompt = Layer.mock(SessionPrompt.Service, {
+    const prompt = mockSessionPrompt({
       prompt: (input) =>
         Effect.sync(() => {
           promptModel = input.model
@@ -896,6 +898,94 @@ describe("spawnNode completion bridge", () => {
   })
 })
 
+describe("spawnNode child run", () => {
+  it("registers the node's run before the prompt and settles it with the attempt", async () => {
+    const { events, dagLayer } = makeEventTracker()
+    const { layer, stub } = mockSessionPromptWithStub({ prompt: () => Effect.succeed(reply("done")) })
+
+    await runSpawn(dagLayer, layer)
+
+    expect(stub.runs).toHaveLength(1)
+    expect(stub.runs[0]).toMatchObject({
+      owner: { kind: "dag_node", workflowID: "wf-1", nodeID: "node-1", attempt: 0 },
+      detached: false,
+    })
+    expect(stub.prompts).toHaveLength(1)
+    // The real handle settles once (compare-and-swap); the stub records every
+    // caller, so the assertion is on the winning first outcome.
+    expect(stub.settled[0]?.outcome).toEqual({ type: "completed" })
+    expect(events.some((event) => event.type === "nodeCompleted")).toBe(true)
+  })
+
+  it("applies the task tool's primary_tools denials to a node", async () => {
+    const created: Array<{ permission?: ReadonlyArray<{ permission: string; pattern: string; action: string }> }> = []
+    const sessions = Layer.mock(Session.Service, {
+      ...sessionStub,
+      create: (input?: { permission?: ReadonlyArray<{ permission: string; pattern: string; action: string }> }) =>
+        Effect.sync(() => {
+          created.push(input ?? {})
+          return { id: "ses_child", directory: process.cwd() } as never
+        }),
+    })
+    const config = Layer.mock(Config.Service, {
+      get: () => Effect.succeed({ experimental: { primary_tools: ["bash"] } } as never),
+    })
+    const { dagLayer } = makeEventTracker()
+    const prompt = mockSessionPrompt({ prompt: () => Effect.succeed(reply("done")) })
+    const fullLayer = Layer.mergeAll(dagLayer, agentLayer, AgentScheduler.defaultLayer, sessions, prompt, config)
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
+          yield* Fiber.await(result.fiber)
+        }),
+      ).pipe(Effect.provide(fullLayer)) as Effect.Effect<never>,
+    )
+
+    expect(created[0]?.permission ?? []).toContainEqual({ permission: "bash", pattern: "*", action: "deny" })
+  })
+
+  it("settles an unexpected prompt failure as an error, never as an abandoned interrupt", async () => {
+    const { dagLayer } = makeEventTracker()
+    const { layer, stub } = mockSessionPromptWithStub({
+      prompt: () => Effect.die(new Error("provider crashed")),
+    })
+
+    await runSpawn(dagLayer, layer)
+
+    expect(stub.settled[0]?.outcome).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("provider crashed"),
+    })
+    expect(stub.settled.some((entry) => entry.outcome.type === "interrupted")).toBe(false)
+  })
+
+  it("cancels the registered run when nodeStarted rejects the attempt", async () => {
+    const events: TrackedEvent[] = []
+    const dagLayer = Layer.mock(Dag.Service, {
+      store: { tryClaimAdoption: () => Effect.succeed(true) } as unknown as DagStore.Interface,
+      nodeQueued: () => Effect.void,
+      nodeStarted: () => Effect.fail(new TerminalViolationError("node-1", "failed", "running")),
+      nodeFailed: Effect.fn("stub.nodeFailed")((dagID: string, nodeID: string, reason: string) =>
+        Effect.sync(() => events.push({ type: "nodeFailed", dagID, nodeID, reason })),
+      ),
+    })
+    const { layer, stub } = mockSessionPromptWithStub({
+      prompt: () => Effect.die(new Error("prompt should NOT be called after terminalization")),
+    })
+
+    await runSpawn(dagLayer, layer)
+
+    expect(stub.prompts).toHaveLength(0)
+    // The run may be settled by the cancellation or by the fiber's cleanup;
+    // either way it is not left active and the cancellation names the reason.
+    expect(stub.cancelled.length).toBeGreaterThan(0)
+    expect(stub.cancelled[0]?.by).toMatchObject({ kind: "engine", reason: "admission-rejected" })
+    expect(events).toEqual([])
+  })
+})
+
 describe("spawnNode terminalization during spawn window", () => {
   it("does NOT publish spurious NodeFailed when node was cancelled mid-spawn", async () => {
     const events: TrackedEvent[] = []
@@ -911,7 +1001,7 @@ describe("spawnNode terminalization during spawn window", () => {
         Effect.sync(() => events.push({ type: "nodeFailed", dagID, nodeID, reason })),
       ),
     })
-    const promptLayer = Layer.mock(SessionPrompt.Service, {
+    const promptLayer = mockSessionPrompt({
       prompt: () => Effect.die(new Error("prompt should NOT be called after terminalization")),
       cancel: () =>
         Effect.sync(() => {
@@ -951,7 +1041,7 @@ describe("spawnNode terminalization during spawn window", () => {
         Effect.sync(() => events.push({ type: "nodeFailed", dagID, nodeID, reason })),
       ),
     })
-    const promptLayer = Layer.mock(SessionPrompt.Service, {
+    const promptLayer = mockSessionPrompt({
       prompt: () =>
         Effect.sync(() => {
           promptCalled = true
@@ -977,27 +1067,5 @@ describe("spawnNode terminalization during spawn window", () => {
     expect(promptCalled).toBe(false)
     expect(findEvent(events, "nodeFailed")?.reason).toContain("nodeStarted write failed")
     expect(cancelCalled).toBe(true)
-  })
-})
-
-describe("boundedCancel", () => {
-  it("does not interrupt an uninterruptible cancellation at its bound", async () => {
-    const release = Deferred.makeUnsafe<void>()
-    const entered = Deferred.makeUnsafe<void>()
-    const fiber = Effect.runFork(
-      boundedCancel(
-        Effect.uninterruptible(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
-        "uninterruptible-test",
-        20,
-      ),
-    )
-    const result = await Effect.runPromise(
-      Deferred.await(entered).pipe(Effect.andThen(Fiber.await(fiber).pipe(Effect.timeoutOption("100 millis")))),
-    )
-
-    expect(Option.isNone(result)).toBe(true)
-    expect(Deferred.isDoneUnsafe(release)).toBe(false)
-    Deferred.doneUnsafe(release, Effect.void)
-    await Effect.runPromise(Fiber.await(fiber))
   })
 })

@@ -28,11 +28,11 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { SessionInbox } from "@/session/inbox"
-import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { it, pollWithTimeout } from "../lib/effect"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const DIRECTORY = process.cwd()
 const PARENT = SessionID.make("ses_mailbox_event_parent")
@@ -119,7 +119,8 @@ function turnResult(state: Probe, sessionID: SessionID): Effect.Effect<SessionV1
   return state.hold ? Effect.never : Effect.succeed(reply(sessionID))
 }
 
-function messageFor(sessionID: string, sequence: number): DagMessages.Message {  return {
+function messageFor(sessionID: string, sequence: number): DagMessages.Message {
+  return {
     id: `agent_report_${sequence}`,
     workflowID: "dag_absent",
     sender: {
@@ -174,7 +175,7 @@ function mailboxLayer(state: Probe, changes: Stream.Stream<DagMessages.Change>) 
     getPart: () => Effect.succeed(undefined),
     messages: (input) => Effect.sync(() => state.history.get(input.sessionID) ?? []),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     prepareTurn: (input) =>
       Effect.sync(() => {
         state.admissions.push(input.sessionID)
@@ -322,7 +323,8 @@ describe("DagDelivery event-driven mailboxes (#1027 D5)", () => {
       const state = probe()
       state.hold = false
       const sessions = Array.from({ length: LATENCY_SAMPLES }, (_, index) => `ses_latency_${index}`)
-      for (const [index, sessionID] of sessions.entries()) state.messages.set(sessionID, messageFor(sessionID, index + 1))
+      for (const [index, sessionID] of sessions.entries())
+        state.messages.set(sessionID, messageFor(sessionID, index + 1))
       const changes = yield* Queue.unbounded<DagMessages.Change>()
       yield* run(
         state,
@@ -436,10 +438,7 @@ describe("DagDelivery event-driven mailboxes (#1027 D5)", () => {
           // Tick 2 starts after the first page and reaches the later mailboxes.
           // Every admitted turn then hangs, which must not hold the tick back.
           yield* tick(2)
-          yield* settleUntil(
-            () => state.admissions.length >= laterIDs.length,
-            "the later mailboxes were not admitted",
-          )
+          yield* settleUntil(() => state.admissions.length >= laterIDs.length, "the later mailboxes were not admitted")
           expect(state.admissions.toSorted()).toEqual(laterIDs.map((id) => SessionID.make(id)))
           // A mailbox queued while those turns are still running is admitted by
           // a later tick: the cursor wraps to the first page (tick 3), then

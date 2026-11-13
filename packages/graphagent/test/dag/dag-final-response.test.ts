@@ -20,10 +20,10 @@ import { commitOutputFileRef } from "@/dag/runtime/output-ref"
 import { continueRecoveredMessageNode, makeLastAssistantMessageReader, reconcileWorkflow } from "@/dag/runtime/recovery"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { Session } from "@/session/session"
-import { SessionPrompt } from "@/session/prompt"
-import { MessageID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
 import { makeNodeRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt, mockSessionPromptWithStub } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -140,7 +140,7 @@ describe("spawn final-response protocol", () => {
           events.push({ type: "failed", reason })
         }),
     })
-    const prompt = Layer.mock(SessionPrompt.Service, {
+    const prompt = mockSessionPrompt({
       prompt: (input) =>
         Effect.sync(() => {
           prompts++
@@ -305,7 +305,12 @@ describe("recovered final-response settlement", () => {
         getNode: () => Effect.succeed(node),
         getNodes: () => Effect.succeed([node]),
         getWorkflow: () =>
-          Effect.succeed({ status: "running", projectId: "project", directory: process.cwd() } as never),
+          Effect.succeed({
+            sessionId: "ses_parent",
+            status: "running",
+            projectId: "project",
+            directory: process.cwd(),
+          } as never),
         setCapturedOutput: (_sessionID: string, value: unknown, snapshotID?: string) =>
           Effect.sync(() => {
             writes.push({ value, snapshotID })
@@ -316,9 +321,21 @@ describe("recovered final-response settlement", () => {
           completions.push({ output, snapshotID: attempt?.inputSnapshotID })
         }),
     })
-    const prompt = Layer.mock(SessionPrompt.Service, {
+    const { layer: prompt, stub } = mockSessionPromptWithStub({
       loop: () => Effect.succeed(message),
     })
+    // A recovered attempt adopts the existing child session: the previous run
+    // has ended, so this is a new episode, not a new child.
+    stub.latest = {
+      id: "crun_previous",
+      childSessionID: SessionID.make("ses_final_child"),
+      parentSessionID: SessionID.make("ses_parent"),
+      ownerKind: "dag_node",
+      state: "ended",
+      attempt: 1,
+      detached: false,
+      timeCreated: 0,
+    }
     const messages = Layer.mock(DagMessages.Service, {
       latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
       snapshotForTurn: (_caller, turnID) =>
@@ -337,8 +354,158 @@ describe("recovered final-response settlement", () => {
         nodes: [{ id: "n", output_schema: { type: "boolean" } }],
       }).pipe(Effect.provide(Layer.mergeAll(dag, prompt, messages))),
     )
+    expect(stub.runs.map((entry) => entry.via)).toEqual(["adopt"])
+    expect(stub.settled[0]?.outcome).toEqual({ type: "completed" })
     expect(writes).toEqual([{ value: false, snapshotID: "snap-current" }])
     expect(completions).toEqual([{ output: false, snapshotID: "snap-current" }])
+  })
+
+  it("fails the node when the existing child session belongs to another run", async () => {
+    const failed: string[] = []
+    const node = makeNodeRow({ id: "n", status: "running", childSessionId: "ses_final_child" })
+    const dag = Layer.mock(Dag.Service, {
+      store: {
+        getNode: () => Effect.succeed(node),
+        getNodes: () => Effect.succeed([node]),
+        getWorkflow: () =>
+          Effect.succeed({
+            sessionId: "ses_parent",
+            status: "running",
+            projectId: "project",
+            directory: process.cwd(),
+          } as never),
+      } as unknown as DagStore.Interface,
+      nodeFailed: (_dagID, _nodeID, reason) =>
+        Effect.sync(() => {
+          failed.push(reason)
+        }),
+    })
+    const { layer: prompt, stub } = mockSessionPromptWithStub({
+      loop: () => Effect.die(new Error("must not drive a session owned by another run")),
+    })
+    stub.latest = {
+      id: "crun_other",
+      childSessionID: SessionID.make("ses_final_child"),
+      parentSessionID: SessionID.make("ses_parent"),
+      ownerKind: "dag_node",
+      state: "ended",
+      attempt: 1,
+      detached: false,
+      timeCreated: 0,
+    }
+    stub.adoptError = "not-owner"
+    const messages = Layer.mock(DagMessages.Service, {
+      latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
+    })
+
+    await Effect.runPromise(
+      continueRecoveredMessageNode("wf", "n", { nodes: [{ id: "n" }] }).pipe(
+        Effect.provide(Layer.mergeAll(dag, prompt, messages)),
+      ),
+    )
+
+    expect(stub.runs).toHaveLength(0)
+    expect(failed[0]).toContain("owned by another run")
+  })
+
+  it("leaves the attempt to its driver when run registration races", async () => {
+    const failed: string[] = []
+    const node = makeNodeRow({ id: "n", status: "running", childSessionId: "ses_final_child" })
+    const dag = Layer.mock(Dag.Service, {
+      store: {
+        getNode: () => Effect.succeed(node),
+        getNodes: () => Effect.succeed([node]),
+        getWorkflow: () =>
+          Effect.succeed({
+            sessionId: "ses_parent",
+            status: "running",
+            projectId: "project",
+            directory: process.cwd(),
+          } as never),
+      } as unknown as DagStore.Interface,
+      nodeFailed: (_dagID, _nodeID, reason) =>
+        Effect.sync(() => {
+          failed.push(reason)
+        }),
+    })
+    const { layer: prompt, stub } = mockSessionPromptWithStub({
+      loop: () => Effect.die(new Error("must not drive a session another run owns")),
+    })
+    // No prior run: recovery uses `start`, which loses a concurrent
+    // registration as a defect (unique constraint or the registry's guard).
+    stub.registrationDefect = new Error("UNIQUE constraint failed: child_binding.child_session_id")
+    const messages = Layer.mock(DagMessages.Service, {
+      latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
+    })
+
+    await Effect.runPromise(
+      continueRecoveredMessageNode("wf", "n", { nodes: [{ id: "n" }] }).pipe(
+        Effect.provide(Layer.mergeAll(dag, prompt, messages)),
+      ),
+    )
+
+    expect(stub.runs).toHaveLength(0)
+    // A lost registration is a concurrent driver, never a node failure.
+    expect(failed).toEqual([])
+  })
+
+  it("settles the adopted run as an error when the isolated worktree cannot be completed", async () => {
+    const message = assistant([{ text: "done" }])
+    // An active worktree with no Worktree service in the layer: recovery
+    // refuses to finish the node, and the run must follow that failure.
+    const node = makeNodeRow({
+      id: "n",
+      status: "running",
+      childSessionId: "ses_final_child",
+      worktreeDirectory: "/tmp/dag-nonexistent-worktree",
+      worktreeState: "active",
+    })
+    const failed: string[] = []
+    const dag = Layer.mock(Dag.Service, {
+      store: {
+        getNode: () => Effect.succeed(node),
+        getNodes: () => Effect.succeed([node]),
+        getWorkflow: () =>
+          Effect.succeed({
+            sessionId: "ses_parent",
+            status: "running",
+            projectId: "project",
+            directory: process.cwd(),
+          } as never),
+        setCapturedOutput: () => Effect.void,
+      } as unknown as DagStore.Interface,
+      nodeFailed: (_dagID, _nodeID, reason) =>
+        Effect.sync(() => {
+          failed.push(reason)
+        }),
+      nodeCompleted: () => Effect.die(new Error("must not complete an unfinished worktree")),
+    })
+    const { layer: prompt, stub } = mockSessionPromptWithStub({
+      loop: () => Effect.succeed(message),
+    })
+    stub.latest = {
+      id: "crun_previous",
+      childSessionID: SessionID.make("ses_final_child"),
+      parentSessionID: SessionID.make("ses_parent"),
+      ownerKind: "dag_node",
+      state: "ended",
+      attempt: 1,
+      detached: false,
+      timeCreated: 0,
+    }
+    const messages = Layer.mock(DagMessages.Service, {
+      latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
+      snapshotForTurn: () => Effect.succeed({ ok: true, value: undefined } as never),
+    })
+
+    await Effect.runPromise(
+      continueRecoveredMessageNode("wf", "n", { nodes: [{ id: "n" }] }).pipe(
+        Effect.provide(Layer.mergeAll(dag, prompt, messages)),
+      ),
+    )
+
+    expect(failed[0]).toContain("worktree completion failed")
+    expect(stub.settled[0]?.outcome).toMatchObject({ type: "error" })
   })
 
   it("binds recovered plaintext completion to its final message snapshot when mailbox revisions exist", async () => {
@@ -349,7 +516,8 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
+        getWorkflow: () =>
+          Effect.succeed({ sessionId: "ses_parent", projectId: "project", directory: process.cwd() } as never),
       } as unknown as DagStore.Interface,
       nodeCompleted: (_dagID, _nodeID, output, attempt) =>
         Effect.sync(() => {
@@ -389,7 +557,8 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
+        getWorkflow: () =>
+          Effect.succeed({ sessionId: "ses_parent", projectId: "project", directory: process.cwd() } as never),
       } as unknown as DagStore.Interface,
       nodeCompleted: () =>
         Effect.sync(() => {
@@ -439,7 +608,7 @@ describe("recovered final-response settlement", () => {
       const dag = Layer.mock(Dag.Service, {
         store: {
           getNodes: () => Effect.succeed([node]),
-          getWorkflow: () => Effect.succeed({ projectId: "project", directory } as never),
+          getWorkflow: () => Effect.succeed({ sessionId: "ses_parent", projectId: "project", directory } as never),
           setCapturedOutput: (_sessionID: string, value: unknown, snapshotID?: string) =>
             Effect.sync(() => {
               node.capturedOutput = value
@@ -522,7 +691,7 @@ describe("recovered final-response settlement", () => {
       const dag = Layer.mock(Dag.Service, {
         store: {
           getNodes: () => Effect.succeed([node]),
-          getWorkflow: () => Effect.succeed({ projectId: "project", directory } as never),
+          getWorkflow: () => Effect.succeed({ sessionId: "ses_parent", projectId: "project", directory } as never),
         } as unknown as DagStore.Interface,
         nodeCompleted: (_dagID: string, _nodeID: string, output: unknown) =>
           Effect.sync(() => {
@@ -570,7 +739,8 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
+        getWorkflow: () =>
+          Effect.succeed({ sessionId: "ses_parent", projectId: "project", directory: process.cwd() } as never),
         setCapturedOutput: () =>
           Effect.sync(() => {
             writes++
@@ -616,7 +786,8 @@ describe("recovered final-response settlement", () => {
     const dag = Layer.mock(Dag.Service, {
       store: {
         getNodes: () => Effect.succeed([node]),
-        getWorkflow: () => Effect.succeed({ projectId: "project", directory: process.cwd() } as never),
+        getWorkflow: () =>
+          Effect.succeed({ sessionId: "ses_parent", projectId: "project", directory: process.cwd() } as never),
         setCapturedOutput: (_sessionID: string, value: unknown) =>
           Effect.sync(() => {
             persisted = value

@@ -32,6 +32,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const realSleep = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)))
 
@@ -79,10 +80,7 @@ async function run(planOutput: unknown, expectedWriters: number) {
   // Children never finish: the test observes admission, not settlement.
   const never = (value: SessionPrompt.PromptInput) =>
     Effect.sync(() => prompts.push(JSON.stringify(value))).pipe(Effect.andThen(Effect.never))
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
-    withIdleAdmission({ cancel: () => Effect.void, prompt: never, deliver: never }),
-  )
+  const prompt = mockSessionPrompt(withIdleAdmission({ cancel: () => Effect.void, prompt: never, deliver: never }))
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({

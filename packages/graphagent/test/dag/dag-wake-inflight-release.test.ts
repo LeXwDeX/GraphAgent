@@ -32,6 +32,7 @@ import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 function reply(sessionID: string, text: string): SessionV1.WithParts {
   return {
@@ -130,8 +131,7 @@ const scenario = (mode: "none" | "expire" | "defect") =>
         create: () => Effect.sync(() => ({ id: `ses_child_${++created}` }) as never),
         messages: () => Effect.succeed([]),
       })
-      const prompt = Layer.mock(
-        SessionPrompt.Service,
+      const prompt = mockSessionPrompt(
         withIdleAdmission({
           cancel: () => Effect.void,
           prompt: deliver,

@@ -11,7 +11,6 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
-import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID, PartID } from "@/session/schema"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -20,6 +19,7 @@ import { hasCaptureSlot } from "@/dag/runtime/capture"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -285,7 +285,7 @@ async function exercise(options: Case = {}) {
     node = { ...node, capturedOutput: { result: "updated" }, capturedSnapshotID: "updated-snapshot" }
     return updated
   })
-  const promptLayer = Layer.mock(SessionPrompt.Service, {
+  const promptLayer = mockSessionPrompt({
     prompt: () =>
       Effect.gen(function* () {
         prompts++

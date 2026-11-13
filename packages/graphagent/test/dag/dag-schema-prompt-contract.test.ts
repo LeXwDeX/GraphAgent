@@ -34,6 +34,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 interface PromptGate {
   readonly input: SessionPrompt.PromptInput
@@ -99,27 +100,26 @@ function contractLayer(childPrompts: Queue.Queue<PromptGate>) {
     yield* Queue.offer(childPrompts, { input: value, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: () => Effect.void,
-    prompt: deliver,
-    deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
+      cancel: () => Effect.void,
+      prompt: deliver,
+      deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({
-      name: "build",
-      mode: "all",
-      permission: [],
-      options: {},
-      description: "",
-      prompt: "",
-      model: { providerID: "test" as never, modelID: "test-model" as never },
-      tools: {},
-      hooks: {},
-    }),
+        name: "build",
+        mode: "all",
+        permission: [],
+        options: {},
+        description: "",
+        prompt: "",
+        model: { providerID: "test" as never, modelID: "test-model" as never },
+        tools: {},
+        hooks: {},
+      }),
   })
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
@@ -132,10 +132,10 @@ function contractLayer(childPrompts: Queue.Queue<PromptGate>) {
 
 function runContractTest(
   test: (services: {
-  readonly dag: Dag.Interface
-  readonly loop: DagLoop.Interface
-  readonly store: DagStore.Interface
-  readonly childPrompts: Queue.Queue<PromptGate>
+    readonly dag: Dag.Interface
+    readonly loop: DagLoop.Interface
+    readonly store: DagStore.Interface
+    readonly childPrompts: Queue.Queue<PromptGate>
   }) => Effect.Effect<void, Error>,
 ) {
   return Effect.gen(function* () {
@@ -148,21 +148,21 @@ function runContractTest(
       yield* database.db
         .insert(ProjectTable)
         .values({
-        id: "project-1" as never,
-        worktree: process.cwd() as never,
-        sandboxes: [],
+          id: "project-1" as never,
+          worktree: process.cwd() as never,
+          sandboxes: [],
         })
         .run()
         .pipe(Effect.orDie)
       yield* database.db
         .insert(SessionTable)
         .values({
-        id: "ses_parent" as never,
-        project_id: "project-1" as never,
-        slug: "parent",
-        directory: process.cwd(),
-        title: "Parent",
-        version: "test",
+          id: "ses_parent" as never,
+          project_id: "project-1" as never,
+          slug: "parent",
+          directory: process.cwd(),
+          title: "Parent",
+          version: "test",
         })
         .run()
         .pipe(Effect.orDie)

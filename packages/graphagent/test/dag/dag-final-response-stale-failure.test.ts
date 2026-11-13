@@ -17,10 +17,10 @@ import { continueRecoveredMessageNode, reconcileWorkflow } from "@/dag/runtime/r
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "@/session/session"
-import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt, mockSessionPromptWithStub } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -162,7 +162,7 @@ describe("final-response failure freshness", () => {
             Effect.provideService(Database.Service, database),
             Effect.provideService(DagMessages.Service, messages),
           )
-        const prompt = Layer.mock(SessionPrompt.Service, {
+        const { layer: prompt, stub } = mockSessionPromptWithStub({
           prompt: () => {
             prompts++
             return modelTurn('"invalid old answer"')
@@ -206,6 +206,10 @@ describe("final-response failure freshness", () => {
           )
           expect(Exit.isSuccess(yield* Fiber.await(spawned.fiber))).toBe(true)
           expect({ prompts, loops }).toEqual({ prompts: 1, loops: 1 })
+          // The stale rejection of `nodeFailed` must leave the run active for
+          // the continuation: no error settlement, and the completion wins.
+          expect(stub.settled[0]?.outcome).toEqual({ type: "completed" })
+          expect(stub.settled.some((entry) => entry.outcome.type === "error")).toBe(false)
         } else if (mode === "continue") {
           yield* continueRecoveredMessageNode(workflowID, "n", config).pipe(Effect.provide(prompt))
           expect({ prompts, loops }).toEqual({ prompts: 0, loops: 2 })
@@ -367,7 +371,7 @@ describe("final-response failure freshness", () => {
         expect((yield* dag.store.getNode(workflowID, "n"))?.status).toBe("running")
         expect(value(yield* messages.receive(child))[0].state).toBe("queued")
         expect(value(yield* messages.metadata(parent, workflowID, "n")).closedReason).toBeUndefined()
-        const prompt = Layer.mock(SessionPrompt.Service, {
+        const prompt = mockSessionPrompt({
           loop: () =>
             Effect.gen(function* () {
               const turn = MessageID.ascending()

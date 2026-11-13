@@ -43,8 +43,9 @@ import { Database } from "@graphagent/core/database/database"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionID, MessageID, PartID } from "@/session/schema"
-import { deriveSubagentSessionPermission } from "@/agent/subagent-permissions"
+import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "@/agent/subagent-permissions"
 import { SessionPrompt } from "@/session/prompt"
+import type { ChildRunHandle } from "@/session/child/run"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import type { LimitKey } from "@/session/agent-scheduler-state"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
@@ -54,6 +55,7 @@ import { DagModel } from "../model"
 import { DagLocation } from "../location"
 import { DagIsolation } from "../isolation"
 import { childAbort, childFailureReason } from "./child-failure-reason"
+import { boundedCancel } from "@/session/child/cancel"
 import { InstanceRef } from "@/effect/instance-ref"
 import {
   isTransitionRejection,
@@ -161,6 +163,12 @@ export interface DeadlineWatcherInput {
   timeoutMs?: number
   /** Workflow-level timeout extension cap (defaults to DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions). */
   maxTimeoutExtensions?: number
+  /**
+   * Scope to detach a fallback session cancellation into. The watcher owns no
+   * scope of its own; without one (unit harnesses) the bounded cancellation is
+   * awaited in place.
+   */
+  scope?: Scope.Scope
 }
 
 /**
@@ -189,6 +197,7 @@ export function makeDeadlineWatcher(
   return Effect.gen(function* () {
     const dag = yield* Dag.Service
     const promptSvc = yield* SessionPrompt.Service
+    const childRuns = yield* promptSvc.children
     const escalateIntervalMs = Math.max(1_000, input.timeoutMs ?? Dag.DEFAULT_WORKFLOW_CONFIG.nodeTimeoutMs)
     // Read the durable row. Transient store failures (SQLite lock blips,
     // connection hiccups) must NOT end supervision — a single failed read
@@ -310,11 +319,28 @@ export function makeDeadlineWatcher(
               replanAttempts: node.replanAttempts,
               childSessionID: node.childSessionId,
             })
-            yield* boundedCancel(
-              promptSvc.cancel(node.childSessionId as never, {
-                reason: childAbort("deadline-cap", "deadline-watcher"),
-              }),
-            )
+            // End the attempt's run and cancel its turn in one call. A session
+            // this process has no active run for (a later process's row, an
+            // already-finished attempt) still gets the turn cancellation.
+            const cancelled = yield* childRuns.cancelActive(SessionID.make(node.childSessionId), {
+              kind: "engine",
+              reason: "deadline-cap",
+              actor: "deadline-watcher",
+            })
+            if (cancelled === "not_active") {
+              // A session this process has no active run for still gets a
+              // bounded cancellation, detached when the caller owns a scope:
+              // the watcher must not wait on an uninterruptible cancel here.
+              const cancel = boundedCancel(
+                promptSvc.cancel(node.childSessionId as never, {
+                  reason: childAbort("deadline-cap", "deadline-watcher"),
+                }),
+                "dag.deadlineWatcher.cap",
+              )
+              yield* input.scope
+                ? cancel.pipe(Effect.forkIn(input.scope, { startImmediately: true }), Effect.asVoid)
+                : cancel
+            }
           }
           return
         }
@@ -401,49 +427,6 @@ function sleepUntilDeadlineMs(deadlineMs: number | null, now: number, overdueMs:
   return overdueMs
 }
 
-/**
- * Best-effort bounded child cancellation. SessionAdmission.cancel is
- * uninterruptible and waits for the commit lock, so the timeout is not a hard
- * limit: an uninterruptible loser can keep the race from settling. The warning
- * records that the cancellation is still running instead of pretending it
- * finished.
- */
-export const boundedCancel = <E, R>(
-  effect: Effect.Effect<void, E, R>,
-  label = "session-cancel",
-  timeoutMs = 5_000,
-): Effect.Effect<void, never, R> =>
-  Effect.gen(function* () {
-    const outcome = yield* Effect.race(
-      effect.pipe(Effect.ignore, Effect.as("completed" as const)),
-      Effect.sleep(timeoutMs).pipe(Effect.as("timed-out" as const)),
-    )
-    if (outcome === "timed-out") {
-      yield* Effect.logWarning(
-        "session cancellation exceeded its bound; the uninterruptible admission wait may still be running",
-        { label },
-      )
-    }
-  })
-
-/**
- * Fork bounded cancellation into the owning scope. The caller returns at
- * once (so an evalLock is not held behind the commit lock); the time bound
- * keeps the detached work from running forever after the caller gives up.
- * Typed errors are ignored; defects stay visible to the scope supervisor.
- */
-export const forkCancel = <E, R>(
-  effect: Effect.Effect<void, E, R>,
-  label = "session-cancel",
-): Effect.Effect<void, never, R | Scope.Scope> =>
-  boundedCancel(effect, label).pipe(
-    Effect.forkScoped,
-    // Let the detached fiber reach its first suspension point. This does not
-    // wait for cancellation to finish; it only makes the start observable.
-    Effect.andThen(Effect.yieldNow),
-    Effect.asVoid,
-  )
-
 export function spawnNode(
   schedule: { readonly limit: LimitKey; readonly cap: number },
   input: NodeSpawnInput,
@@ -457,9 +440,27 @@ export function spawnNode(
     const agentService = yield* Agent.Service
     const sessions = yield* Session.Service
     const promptSvc = yield* SessionPrompt.Service
+    // The parent's scoped view registers and drives this node's run; the full
+    // view is for cancellation by child session, whose run id the engine-side
+    // cancellation points do not know.
+    const childRuns = yield* promptSvc.children
+    const children = childRuns.forParent(SessionID.make(input.parentSessionID))
     const scheduler = yield* AgentScheduler.Service
+    const configService = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const scope = yield* Scope.Scope
+    // A session whose run this process no longer holds is cancelled in a
+    // detached, bounded fiber, like the old forkCancel: never wait for the
+    // commit lock on the caller's (possibly eval-lock-held) fiber.
+    const cancelSession = (
+      sessionID: SessionID,
+      reason: ReturnType<typeof childAbort>,
+      label: string,
+    ): Effect.Effect<void> =>
+      boundedCancel(promptSvc.cancel(sessionID, { reason }), label).pipe(
+        Effect.forkIn(scope, { startImmediately: true }),
+        Effect.asVoid,
+      )
     const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const hookLifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
     const hookStart = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
@@ -575,6 +576,32 @@ export function spawnNode(
           ...artifactReadPermissions(input.inputArtifacts, worktree, agent.permission, childPermission),
         )
     }
+    // The same tool denials the task tool applies (Issue #1026, PR4): the
+    // per-agent defaults and the global `primary_tools` restriction. DAG
+    // nodes previously missed both, so a node could use a tool its worker
+    // agent denies. Deduplicated exactly like task.ts.
+    const cfg = configService ? yield* configService.get() : undefined
+    const scriptedDenies = [
+      ...subagentDefaultDeniedTools(agent).map((permission) => ({
+        permission,
+        pattern: "*" as const,
+        action: "deny" as const,
+      })),
+      ...(cfg?.experimental?.primary_tools?.map((permission) => ({
+        permission,
+        pattern: "*" as const,
+        action: "deny" as const,
+      })) ?? []),
+    ]
+    childPermission.push(
+      ...scriptedDenies.filter(
+        (deny) =>
+          !childPermission.some(
+            (rule) =>
+              rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
+          ),
+      ),
+    )
     // Child prompts and their tools resolve `InstanceState` from the fiber.
     // A bound workspace must therefore execute inside that directory's
     // instance, not the owner's ambient one. The module is imported lazily:
@@ -623,6 +650,9 @@ export function spawnNode(
     // Assigned inside the fiber once the child session materializes; read by
     // the ensuring/onInterrupt cleanups below.
     let childSessionID: string | undefined
+    // The attempt's child run, registered after the child session exists and
+    // before NodeStarted; read by every terminal path and the fiber's cleanup.
+    let run: ChildRunHandle | undefined
     // Lazy, like InstanceStore: Worktree statically imports the instance
     // chain, so a static import here closes bootstrap → DAG → spawn → worktree.
     const { Worktree } = yield* Effect.promise(() => import("@/worktree"))
@@ -646,6 +676,7 @@ export function spawnNode(
         attempt: executionAttempt,
         timeoutMs,
         maxTimeoutExtensions: input.maxTimeoutExtensions,
+        scope,
       }),
     )
 
@@ -833,7 +864,14 @@ export function spawnNode(
                 worktreeHandled = true
                 isolatedWorktree = { ...isolatedWorktree, state: "kept" }
               }
-              return dag.nodeFailed(input.dagID, input.nodeID, reason, trigger, attempt, errorClass, isolatedWorktree)
+              // Settle only after the durable failure is accepted: a stale-input
+              // rejection (new mailbox input arrived) keeps the attempt alive
+              // through `promptSvc.loop`, so its run must stay active with its
+              // credential and Stop delegation. A cancellation that already
+              // ended the run wins the compare-and-swap either way.
+              return dag
+                .nodeFailed(input.dagID, input.nodeID, reason, trigger, attempt, errorClass, isolatedWorktree)
+                .pipe(Effect.andThen(run === undefined ? Effect.void : run.settle({ type: "error", message: reason })))
             })
           // #946: isolate at the same point the child session materializes, so
           // a large fan-out never holds more worktrees than max_concurrency.
@@ -916,6 +954,22 @@ export function spawnNode(
               ? DagLocation.fingerprintTarget(nodeDirectory)
               : undefined
 
+          // Register the attempt's run before the durable start: the Stop
+          // delegation, the cancellation points and the recovery adopt all
+          // read it. A terminalized admission cancels it below. `queued` until
+          // nodeStarted accepts (markRunning); a DAG result is delivered by the
+          // DAG itself, so the run is not a result-ledger run.
+          run = yield* children.start({
+            childSessionID: childSession.id,
+            owner: {
+              kind: "dag_node",
+              workflowID: input.dagID,
+              nodeID: input.nodeID,
+              attempt: input.node.replanAttempts,
+            },
+            detached: false,
+            permission: { ask: "auto" },
+          })
           // A concurrent replan(cancel/restart) may have terminalized the node
           // while it waited for the permit. nodeStarted's guard rejects; cancel
           // the just-created child session and stop — the winning control op is
@@ -944,9 +998,18 @@ export function spawnNode(
                     replanAttempts: input.node.replanAttempts,
                     childSessionID: childSession.id,
                   })
-                  yield* forkCancel(
-                    promptSvc.cancel(childSession.id, { reason: childAbort("admission-rejected", "dag-loop") }),
-                  )
+                  if (run)
+                    yield* children.cancel(run.id, {
+                      kind: "engine",
+                      reason: "admission-rejected",
+                      actor: "dag-loop",
+                    })
+                  else
+                    yield* cancelSession(
+                      childSession.id,
+                      childAbort("admission-rejected", "dag-loop"),
+                      "dag.spawn.admission-rejected",
+                    )
                   yield* Effect.logWarning(
                     `Node ${input.nodeID} was terminalized during queue wait — child session cancelled, no spurious failure published`,
                   )
@@ -962,9 +1025,13 @@ export function spawnNode(
                   childSessionID: childSession.id,
                 }).pipe(
                   Effect.andThen(
-                    forkCancel(
-                      promptSvc.cancel(childSession.id, { reason: childAbort("admission-error", "dag-loop") }),
-                    ),
+                    run
+                      ? children.cancel(run.id, { kind: "engine", reason: "admission-error", actor: "dag-loop" })
+                      : cancelSession(
+                          childSession.id,
+                          childAbort("admission-error", "dag-loop"),
+                          "dag.spawn.admission-error",
+                        ),
                   ),
                 ),
               ),
@@ -979,6 +1046,13 @@ export function spawnNode(
             replanAttempts: input.node.replanAttempts,
             childSessionID: childSession.id,
           } satisfies NodeExecutionAttempt
+          // queued -> running. False means the run was cancelled while the
+          // node awaited its permit: fail the attempt, and let the guard
+          // reject it when the cancellation's control op already did.
+          if (run && !(yield* run.markRunning)) {
+            yield* nodeFailure("child run ended before the attempt started", "exec_failed", settlementAttempt)
+            return
+          }
 
           // #946: warn when a non-isolated writer overlaps another writer's
           // touched paths without an ordering edge. The durable view computes
@@ -1050,6 +1124,9 @@ export function spawnNode(
                 metadata,
                 touchedPaths,
               )
+              // The attempt's run ended with its durable completion; a
+              // cancellation that already won the swap keeps its outcome.
+              if (run) yield* run.settle({ type: "completed" })
             })
 
           if (input.outputSchema) registerCaptureSlot(childSession.id, input.outputSchema)
@@ -1140,7 +1217,9 @@ export function spawnNode(
               hooks: agent.hooks,
               child: true,
             })
-          if (hookLifecycle) yield* hookLifecycle.delegateChildStop(childSession.id)
+          // The clean Stop of this child is the DAG's to deliver after the
+          // attempt settles; `ChildRegistry.delegateStop` sees the active
+          // dag_node run registered above.
           const hookAttempt = DagMessages.nodeAttemptID(childSession.id, settlementAttempt.replanAttempts)
           if (hooks && (!hookLifecycle || (yield* hookLifecycle.claimChildStart(childSession.id, hookAttempt)))) {
             const started = yield* hooks.trigger(
@@ -1158,19 +1237,18 @@ export function spawnNode(
           // it started from. Only the DAG path injects this; the shared
           // environment prompt keeps its existing content.
           const executionContext = dagExecutionContext(nodeDirectory, baseHead, targetFingerprint)
+          // Every prompt to the child goes through its run: it is admitted as
+          // the delegation it is, under the run's credential.
           let result = yield* nodeExecution(
-            promptSvc.prompt(
-              {
-                messageID: MessageID.ascending(),
-                sessionID: childSession.id,
-                model,
-                agent: agent.name,
-                ...(executionContext ? { system: executionContext } : {}),
-                ...(input.variant ? { variant: input.variant } : {}),
-                parts,
-              },
-              { internalDelegation: true },
-            ),
+            children.prompt({
+              messageID: MessageID.ascending(),
+              sessionID: childSession.id,
+              model,
+              agent: agent.name,
+              ...(executionContext ? { system: executionContext } : {}),
+              ...(input.variant ? { variant: input.variant } : {}),
+              parts,
+            }),
           )
           // A stale-input continuation is still the same live attempt.
           // The finalizer is installed before settlement can publish a terminal
@@ -1286,7 +1364,7 @@ export function spawnNode(
                 if (result.info.finish === "length" && !continuedFromLength) {
                   if (!(yield* awaitContinuationAdmission)) return
                   result = yield* nodeExecution(
-                    promptSvc.prompt(
+                    children.prompt(
                       {
                         messageID: MessageID.ascending(),
                         sessionID: childSession.id,
@@ -1300,7 +1378,7 @@ export function spawnNode(
                           },
                         ],
                       },
-                      { continueToolBudget: true, internalDelegation: true },
+                      { continueToolBudget: true },
                     ),
                   )
                   continuedFromLength = true
@@ -1360,7 +1438,7 @@ export function spawnNode(
                     if (!(yield* claimResubmission)) return
                     const repair = captured.fix
                     result = yield* nodeExecution(
-                      promptSvc.prompt(
+                      children.prompt(
                         {
                           messageID: MessageID.ascending(),
                           sessionID: childSession.id,
@@ -1369,7 +1447,7 @@ export function spawnNode(
                           ...(input.variant ? { variant: input.variant } : {}),
                           parts: [{ type: "text", text: repairPrompt(repair) }],
                         },
-                        { continueToolBudget: true, internalDelegation: true },
+                        { continueToolBudget: true },
                       ),
                     )
                     if (Option.isSome(messageService) && caller) {
@@ -1540,7 +1618,23 @@ export function spawnNode(
               }
               result = yield* nodeExecution(promptSvc.loop({ sessionID: childSession.id }, { kind: "child_run" }))
             }
-          }).pipe(Effect.ensuring(notifyStop))
+          }).pipe(
+            Effect.ensuring(notifyStop),
+            // A control op that abandons the attempt (replan, pause-replace,
+            // deletion) breaks the continuation loop without a durable
+            // settlement; the run must not stay active for the next adopt.
+            // A non-interrupt failure is left to the outer catchCause, which
+            // settles the run with the real error *after* nodeFailed accepts
+            // it; settling "interrupted" here would win the first-writer-wins
+            // swap and hide that error.
+            Effect.onExit((exit) =>
+              Effect.suspend(() => {
+                if (run === undefined) return Effect.void
+                if (Exit.isFailure(exit) && !Cause.hasInterrupts(exit.cause)) return Effect.void
+                return run.settle({ type: "interrupted", reason: "attempt-abandoned" })
+              }),
+            ),
+          )
         }).pipe(Effect.ensuring(Effect.suspend(() => (slot ? slot.release : Effect.void))))
       }).pipe(
         Effect.ensuring(
@@ -1590,12 +1684,22 @@ export function spawnNode(
               replanAttempts: input.node.replanAttempts,
               childSessionID,
             })
-            if (childSessionID)
-              yield* forkCancel(
-                promptSvc.cancel(SessionID.make(childSessionID), {
-                  reason: childAbort("runtime-interrupt", "runtime-scope"),
-                }),
-              )
+            if (childSessionID) {
+              // Cancel the run first (it ends cancelled and its session turn
+              // is cancelled in the background); a session whose run this
+              // process no longer holds still gets the turn cancellation.
+              const cancelled = yield* childRuns.cancelActive(SessionID.make(childSessionID), {
+                kind: "engine",
+                reason: "runtime-interrupt",
+                actor: "runtime-scope",
+              })
+              if (cancelled === "not_active")
+                yield* cancelSession(
+                  SessionID.make(childSessionID),
+                  childAbort("runtime-interrupt", "runtime-scope"),
+                  "dag.spawn.runtime-interrupt",
+                )
+            }
             // A started attempt keeps its worktree for inspection; a
             // pre-NodeStarted attempt was already removed by the ensuring
             // cleanup above.
@@ -1605,6 +1709,7 @@ export function spawnNode(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             if (Cause.hasInterrupts(cause)) return
+            if (run) yield* run.settle({ type: "error", message: Cause.pretty(cause) })
             const attempt = childSessionID
               ? { replanAttempts: input.node.replanAttempts, childSessionID }
               : executionAttempt

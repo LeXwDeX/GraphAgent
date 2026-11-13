@@ -20,7 +20,6 @@ import { Effect, Fiber, Layer } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { Global } from "@graphagent/core/global"
-import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
@@ -39,6 +38,7 @@ import {
 import { makeNodeRow } from "./fixtures"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -160,7 +160,7 @@ function reply(text: string): SessionV1.WithParts {
 }
 
 function makePromptLayer(result: SessionV1.WithParts, onPrompt?: (parts: unknown) => void): Layer.Layer<never> {
-  return Layer.mock(SessionPrompt.Service, {
+  return mockSessionPrompt({
     prompt: (input) =>
       Effect.sync(() => {
         onPrompt?.(input.parts)

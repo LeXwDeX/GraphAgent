@@ -27,10 +27,10 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { reconcileWorkflow } from "@/dag/runtime/recovery"
 import { makeDeadlineWatcher } from "@/dag/runtime/spawn"
-import { SessionPrompt } from "@/session/prompt"
 import { Truncate } from "@/tool/truncate"
 import { makeNodeRow } from "./fixtures"
 import { pollWithTimeout } from "../lib/effect"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 function node(id: string, timeoutMs?: number): NodeConfig {
   return {
@@ -56,24 +56,35 @@ const harness = (() => {
 })()
 
 function runTest<A, R = never>(
-  test: (services: { readonly dag: Dag.Interface; readonly store: DagStore.Interface }) => Effect.Effect<A, Error, Scope.Scope | R>,
+  test: (services: {
+    readonly dag: Dag.Interface
+    readonly store: DagStore.Interface
+  }) => Effect.Effect<A, Error, Scope.Scope | R>,
 ) {
   return Effect.gen(function* () {
     return yield* Effect.gen(function* () {
       const database = yield* Database.Service
-      yield* database.db.insert(ProjectTable).values({
-        id: "project-1" as never,
-        worktree: process.cwd() as never,
-        sandboxes: [],
-      }).run().pipe(Effect.orDie)
-      yield* database.db.insert(SessionTable).values({
-        id: "ses_parent" as never,
-        project_id: "project-1" as never,
-        slug: "parent",
-        directory: process.cwd() as never,
-        title: "Parent",
-        version: "test",
-      }).run().pipe(Effect.orDie)
+      yield* database.db
+        .insert(ProjectTable)
+        .values({
+          id: "project-1" as never,
+          worktree: process.cwd() as never,
+          sandboxes: [],
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* database.db
+        .insert(SessionTable)
+        .values({
+          id: "ses_parent" as never,
+          project_id: "project-1" as never,
+          slug: "parent",
+          directory: process.cwd() as never,
+          title: "Parent",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
       const dag = yield* Dag.Service
       const store = yield* DagStore.Service
       return yield* test({ dag, store })
@@ -105,14 +116,18 @@ describe("Dag timeout escalation fixes (unit)", () => {
     // re-published via NodeRegistered and the runtime rebuilds its graph from
     // them. The replan's cycle check must use the SAME deps (a→b, b→a = cycle).
     const plan = planReplan(
-      { nodes: [
-        { id: "a", status: NodeStatus.RUNNING, depends_on: [] },
-        { id: "b", status: NodeStatus.RUNNING, depends_on: ["a"] },
-      ] },
-      { nodes: [
-        { id: "a", depends_on: ["b"] },
-        { id: "b", depends_on: ["a"] },
-      ] },
+      {
+        nodes: [
+          { id: "a", status: NodeStatus.RUNNING, depends_on: [] },
+          { id: "b", status: NodeStatus.RUNNING, depends_on: ["a"] },
+        ],
+      },
+      {
+        nodes: [
+          { id: "a", depends_on: ["b"] },
+          { id: "b", depends_on: ["a"] },
+        ],
+      },
     )
     expect(plan.errors.join(" ")).toContain("cycle")
   })
@@ -134,12 +149,14 @@ describe("Dag timeout escalation fixes (unit)", () => {
           // marker (replace bucket): its NEW deps (a→b) are what the runtime
           // would execute, so the cycle a↔b must be caught BEFORE any event is
           // published — the replan is rejected, the running node is untouched.
-          const exit = yield* dag.replan(dagID, {
-            nodes: [
-              { ...node("a", 60_000), depends_on: ["b"] },
-              { ...node("b", 60_000), depends_on: ["a"] },
-            ],
-          }).pipe(Effect.exit)
+          const exit = yield* dag
+            .replan(dagID, {
+              nodes: [
+                { ...node("a", 60_000), depends_on: ["b"] },
+                { ...node("b", 60_000), depends_on: ["a"] },
+              ],
+            })
+            .pipe(Effect.exit)
           expect(Exit.isFailure(exit)).toBe(true)
           if (Exit.isFailure(exit)) {
             expect(Cause.pretty(exit.cause)).toContain("cycle")
@@ -363,7 +380,7 @@ describe("Dag timeout escalation fixes (unit)", () => {
         }),
       ),
     ).pipe(Layer.provide(storeLayer))
-    const promptLayer = Layer.mock(SessionPrompt.Service, {
+    const promptLayer = mockSessionPrompt({
       cancel: () => Effect.void,
     })
     await Effect.runPromise(
@@ -380,11 +397,7 @@ describe("Dag timeout escalation fixes (unit)", () => {
         )
         expect(reads).toBe(4)
         yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
-      }).pipe(
-        Effect.provide(dagLayer),
-        Effect.provide(promptLayer),
-        Effect.scoped,
-      ),
+      }).pipe(Effect.provide(dagLayer), Effect.provide(promptLayer), Effect.scoped),
     )
   })
 
@@ -393,59 +406,83 @@ describe("Dag timeout escalation fixes (unit)", () => {
     let escalations = 0
     let deadlineMs = Date.now() + 60_000
     const storeLayer = Layer.mock(DagStore.Service)({
-      getNode: () => Effect.sync(() => {
-        reads++
-        return makeNodeRow({
-          id: "a", workflowId: "dag-shortened", name: "a", status: "running",
-          deadlineMs, timeoutExtensions: 0, childSessionId: "ses_child_1",
-        })
-      }),
+      getNode: () =>
+        Effect.sync(() => {
+          reads++
+          return makeNodeRow({
+            id: "a",
+            workflowId: "dag-shortened",
+            name: "a",
+            status: "running",
+            deadlineMs,
+            timeoutExtensions: 0,
+            childSessionId: "ses_child_1",
+          })
+        }),
     })
     const dagLayer = Layer.unwrap(
-      Effect.map(DagStore.Service, (store) => Layer.mock(Dag.Service)({
-        store,
-        nodeTimeoutEscalated: () => Effect.sync(() => { escalations++ }),
-      })),
+      Effect.map(DagStore.Service, (store) =>
+        Layer.mock(Dag.Service)({
+          store,
+          nodeTimeoutEscalated: () =>
+            Effect.sync(() => {
+              escalations++
+            }),
+        }),
+      ),
     ).pipe(Layer.provide(storeLayer))
-    const promptLayer = Layer.mock(SessionPrompt.Service, { cancel: () => Effect.void })
-    await Effect.runPromise(Effect.gen(function* () {
-      const scope = yield* Scope.Scope
-      const watcher = yield* makeDeadlineWatcher({ dagID: "dag-shortened", nodeID: "a", timeoutMs: 300 }).pipe(Effect.forkIn(scope))
-      yield* pollWithTimeout(Effect.sync(() => reads > 0 ? true : undefined), "watcher did not read initial long deadline")
-      deadlineMs = Date.now() - 1
-      yield* pollWithTimeout(Effect.sync(() => escalations > 0 ? true : undefined), "shortened deadline was not enforced", "3 seconds")
-      yield* Fiber.interrupt(watcher)
-      expect(reads).toBeGreaterThan(1)
-    }).pipe(Effect.provide(dagLayer), Effect.provide(promptLayer), Effect.scoped))
+    const promptLayer = mockSessionPrompt({ cancel: () => Effect.void })
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const scope = yield* Scope.Scope
+        const watcher = yield* makeDeadlineWatcher({ dagID: "dag-shortened", nodeID: "a", timeoutMs: 300 }).pipe(
+          Effect.forkIn(scope),
+        )
+        yield* pollWithTimeout(
+          Effect.sync(() => (reads > 0 ? true : undefined)),
+          "watcher did not read initial long deadline",
+        )
+        deadlineMs = Date.now() - 1
+        yield* pollWithTimeout(
+          Effect.sync(() => (escalations > 0 ? true : undefined)),
+          "shortened deadline was not enforced",
+          "3 seconds",
+        )
+        yield* Fiber.interrupt(watcher)
+        expect(reads).toBeGreaterThan(1)
+      }).pipe(Effect.provide(dagLayer), Effect.provide(promptLayer), Effect.scoped),
+    )
   }, 5000)
 
   it("re-reads a long sleeping watcher after control(extend_timeout) moves the deadline earlier", async () => {
-    const promptLayer = Layer.mock(SessionPrompt.Service, { cancel: () => Effect.void })
+    const promptLayer = mockSessionPrompt({ cancel: () => Effect.void })
     const testModel = ProviderTest.model({ providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") })
     const toolDependencies = Layer.mergeAll(
       Layer.mock(Session.Service, {
-        get: () => Effect.succeed({
-          id: SessionID.make("ses_parent"),
-          slug: "parent",
-          projectID: Project.ID.make("project-1"),
-          directory: process.cwd(),
-          title: "Parent",
-          agent: "build",
-          model: { providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") },
-          version: "test",
-          time: { created: 0, updated: 0 },
-        } satisfies Session.Info),
+        get: () =>
+          Effect.succeed({
+            id: SessionID.make("ses_parent"),
+            slug: "parent",
+            projectID: Project.ID.make("project-1"),
+            directory: process.cwd(),
+            title: "Parent",
+            agent: "build",
+            model: { providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") },
+            version: "test",
+            time: { created: 0, updated: 0 },
+          } satisfies Session.Info),
       }),
       Layer.mock(Agent.Service, {
-        get: () => Effect.succeed({
-          name: "build",
-          mode: "all",
-          permission: [],
-          options: {},
-          description: "",
-          prompt: "",
-          model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
-        } satisfies Agent.Info),
+        get: () =>
+          Effect.succeed({
+            name: "build",
+            mode: "all",
+            permission: [],
+            options: {},
+            description: "",
+            prompt: "",
+            model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
+          } satisfies Agent.Info),
         list: () => Effect.succeed([] as Agent.Info[]),
       }),
       Layer.mock(RuntimeProvider.Service, {
@@ -475,27 +512,32 @@ describe("Dag timeout escalation fixes (unit)", () => {
           yield* dag.nodeTimeoutEscalated(dagID, "a", "ses_child_1", 1)
           yield* store.markNodeWakeReported(dagID, "a")
           const workflowTool = yield* (yield* WorkflowTool).init()
-          const result = yield* workflowTool.execute({ params: {
-            action: "control",
-            workflow_id: Dag.ID.make(dagID),
-            operation: "extend_timeout",
-            node_id: Dag.NodeID.make("a"),
-            timeout_ms: 1_000,
-          } }, {
-            sessionID: SessionID.make("ses_parent"),
-            messageID: MessageID.ascending(),
-            agent: "build",
-            abort: new AbortController().signal,
-            messages: [],
-            metadata: () => Effect.void,
-            ask: () => Effect.void,
-          } satisfies Tool.Context)
+          const result = yield* workflowTool.execute(
+            {
+              params: {
+                action: "control",
+                workflow_id: Dag.ID.make(dagID),
+                operation: "extend_timeout",
+                node_id: Dag.NodeID.make("a"),
+                timeout_ms: 1_000,
+              },
+            },
+            {
+              sessionID: SessionID.make("ses_parent"),
+              messageID: MessageID.ascending(),
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            } satisfies Tool.Context,
+          )
           expect(result.output).toContain('status="extended"')
 
           yield* pollWithTimeout(
-            store.getNode(dagID, "a").pipe(
-              Effect.map((node) => node && node.timeoutExtensions >= 2 ? node : undefined),
-            ),
+            store
+              .getNode(dagID, "a")
+              .pipe(Effect.map((node) => (node && node.timeoutExtensions >= 2 ? node : undefined))),
             "the existing watcher did not observe and escalate the shortened direct-extension deadline",
             "4 seconds",
           )
@@ -534,7 +576,7 @@ describe("Dag timeout escalation fixes (unit)", () => {
         }),
       ),
     ).pipe(Layer.provide(storeLayer))
-    const promptLayer = Layer.mock(SessionPrompt.Service, {
+    const promptLayer = mockSessionPrompt({
       cancel: (sessionID: string) =>
         Effect.sync(() => {
           cancelled.push(sessionID)
@@ -576,10 +618,10 @@ describe("Dag timeout escalation fixes (unit)", () => {
           throw new Error("database locked")
         }),
     })
-    const dagLayer = Layer.unwrap(
-      Effect.map(DagStore.Service, (store) => Layer.mock(Dag.Service)({ store })),
-    ).pipe(Layer.provide(storeLayer))
-    const promptLayer = Layer.mock(SessionPrompt.Service, {
+    const dagLayer = Layer.unwrap(Effect.map(DagStore.Service, (store) => Layer.mock(Dag.Service)({ store }))).pipe(
+      Layer.provide(storeLayer),
+    )
+    const promptLayer = mockSessionPrompt({
       cancel: () => Effect.void,
     })
     await Effect.runPromise(
@@ -600,11 +642,7 @@ describe("Dag timeout escalation fixes (unit)", () => {
         )
         yield* Fiber.interrupt(watcher)
         expect(reads).toBeGreaterThan(4)
-      }).pipe(
-        Effect.provide(dagLayer),
-        Effect.provide(promptLayer),
-        Effect.scoped,
-      ),
+      }).pipe(Effect.provide(dagLayer), Effect.provide(promptLayer), Effect.scoped),
     )
   }, 15000)
 })
