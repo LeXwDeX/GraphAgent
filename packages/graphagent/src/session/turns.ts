@@ -13,6 +13,7 @@ import type { RewakeToken, SettingsHook } from "@/hook"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
 import { ChildAdmission } from "./child/admission"
+import { ChildRegistry } from "./child/registry"
 import type { ChildRunCredential } from "./child/types"
 import { EngineProcess, runnerAlive } from "./engine-process"
 import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
@@ -86,6 +87,8 @@ export type AdmissionCommit = <B, E, R>(
 export interface Admission {
   readonly message: SessionV1.WithParts
   readonly run: boolean
+  /** The admitted session's parent, read once at admission and carried to the loop junction (zero extra reads). */
+  readonly parentID?: SessionID
 }
 
 /** Two-phase idle admission reserved by `prepare`, activated by its owner. */
@@ -226,6 +229,7 @@ export interface TurnDeps {
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
     credential?: ChildRunCredential,
+    origin?: TurnOrigin,
   ) => Effect.Effect<Admission, PromptError | SessionAdmission.Blocked>
   readonly fenceRewake: (
     sessionID: SessionID,
@@ -252,6 +256,7 @@ export interface Interface {
     options?: AdmissionOptions,
     persistAdmission?: Effect.Effect<void, unknown>,
     request?: ReturnType<typeof SessionCancellation.request>,
+    credential?: ChildRunCredential,
   ) => Effect.Effect<Option.Option<IdleAdmission>, PromptError>
   readonly current: (sessionID: SessionID) => Effect.Effect<Option.Option<TurnHandle>>
   readonly lastOutcome: (sessionID: SessionID) => Effect.Effect<Option.Option<TurnOutcome>>
@@ -502,7 +507,13 @@ function makePrepareIdle(deps: TurnDeps, flow: TurnFlow) {
     options: AdmissionOptions | undefined,
     persistAdmission: Effect.Effect<void, unknown> | undefined,
     request: ReturnType<typeof SessionCancellation.request> | undefined,
+    credential: ChildRunCredential | undefined,
   ) {
+    // A caller that already holds the run's credential passes it; otherwise the
+    // process registry answers without a read (the idle admission path must
+    // stay query-free). The admission guard still decides whether it is live.
+    const active = credential ?? ChildRegistry.credentialOf(input.sessionID)
+    const origin = originFor(options, active)
     return yield* deps.withRunRequest(
       input.sessionID,
       (req, witness) =>
@@ -512,7 +523,7 @@ function makePrepareIdle(deps: TurnDeps, flow: TurnFlow) {
               if (!req.valid()) return Option.none<IdleAdmission>()
               const activation = yield* Deferred.make<void>()
               const gate = yield* Deferred.make<Exit.Exit<Admission, PromptError>>()
-              const handle = begin(input.sessionID, originFor(options))
+              const handle = begin(input.sessionID, origin)
               const work = Effect.gen(function* () {
                 yield* Deferred.await(activation)
                 if (!req.current()) return yield* Effect.interrupt
@@ -524,6 +535,12 @@ function makePrepareIdle(deps: TurnDeps, flow: TurnFlow) {
                   Effect.gen(function* () {
                     if (!(yield* deps.fenceRewake(input.sessionID, options, admitted.value.message)))
                       return blockedExecution(admitted.value.message)
+                    yield* ChildAdmission.observe(
+                      "loop",
+                      { id: input.sessionID, parentID: admitted.value.parentID },
+                      active,
+                      origin,
+                    ).pipe(Effect.orDie)
                     return yield* deps.runLoop(input.sessionID)
                   }),
                 ).pipe(Effect.map((turn) => turn.message))
@@ -541,8 +558,14 @@ function makePrepareIdle(deps: TurnDeps, flow: TurnFlow) {
 
               const admitted = yield* restore(
                 deps
-                  .admitPrompt(input, persistAdmission, options, (body) =>
-                    Effect.suspend(() => (req.valid() ? body : Effect.interrupt)),
+                  .admitPrompt(
+                    input,
+                    persistAdmission,
+                    options,
+                    (body) => Effect.suspend(() => (req.valid() ? body : Effect.interrupt)),
+                    undefined,
+                    active,
+                    origin,
                   )
                   .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error))),
               ).pipe(Effect.exit)
@@ -698,7 +721,13 @@ export function makeTurns(deps: TurnDeps): Interface {
 
   const start = Effect.fn("Turns.start")(function* (input: PromptInput, options: TurnStartOptions) {
     if (options.when === "idle") {
-      const prepared = yield* prepare(input, options.admissionOptions, options.persistAdmission, options.request)
+      const prepared = yield* prepare(
+        input,
+        options.admissionOptions,
+        options.persistAdmission,
+        options.request,
+        options.credential,
+      )
       if (Option.isNone(prepared)) {
         return {
           admission: { kind: "skipped_busy" },
@@ -736,6 +765,7 @@ export function makeTurns(deps: TurnDeps): Interface {
             options.commitAdmission,
             options.modelBaseline,
             options.credential,
+            options.origin,
           )
           if (!admitted.run) {
             return {
@@ -753,7 +783,12 @@ export function makeTurns(deps: TurnDeps): Interface {
             Effect.gen(function* () {
               if (!(yield* deps.fenceRewake(input.sessionID, options.admissionOptions, admitted.message)))
                 return blockedExecution(admitted.message)
-              yield* ChildAdmission.observe("loop", { id: input.sessionID }, options.credential)
+              yield* ChildAdmission.observe(
+                "loop",
+                { id: input.sessionID, parentID: admitted.parentID },
+                options.credential,
+                options.origin,
+              ).pipe(Effect.orDie)
               return yield* deps.runLoop(input.sessionID)
             }),
           )

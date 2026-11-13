@@ -33,6 +33,7 @@ import type { Admit } from "./turn/admit"
 import { ModelSwitchBlocked } from "./turn/prepare"
 import type { PrepareApi } from "./turn/prepare"
 import type { AdmissionCommit, ModelBaseline } from "./turns"
+import type { ChildRunCredential } from "./child/types"
 import type { CommandInput, Interface, LoopInput, PromptError } from "./prompt"
 
 export interface CommandDeps {
@@ -69,6 +70,22 @@ export interface CommandDeps {
   readonly modelWriteBegin: (sessionID: SessionID) => { epoch: number; release: () => void }
   readonly followupAdmissions: ReturnType<typeof SessionAdmission.make>
 }
+
+/**
+ * Options of one command invocation. `credential` is the live child-run
+ * credential a resumed followup carries (Issue #1026, PR5): the command's own
+ * admission through `promptImpl` refuses a child session without it.
+ */
+interface CommandOptions {
+  readonly skipHookStart?: boolean
+  readonly credential?: ChildRunCredential
+}
+
+/** The extras of a command admission: its origin, and the credential of the child run replaying it. */
+const commandExtras = (credential: ChildRunCredential | undefined) => ({
+  origin: { kind: "user" as const, via: "command" as const },
+  ...(credential ? { credential } : {}),
+})
 
 /** Maps an admission cancellation to the prompt's typed rejected-command error. */
 function mapAdmissionBlocked<A, E, R>(
@@ -231,7 +248,7 @@ export function makeCommand(deps: CommandDeps) {
 
   const commandBody = Effect.fnUntraced(function* (
     input: CommandInput,
-    options: { skipHookStart?: boolean } | undefined,
+    options: CommandOptions | undefined,
     commitAdmission: AdmissionCommit | undefined,
     epoch: number,
   ) {
@@ -576,7 +593,7 @@ export function makeCommand(deps: CommandDeps) {
       { skipHookStart: true },
       commitAdmission,
       modelBaseline,
-      { origin: { kind: "user", via: "command" } },
+      commandExtras(options?.credential),
     )
     yield* events.publish(Command.Event.Executed, {
       name: input.command,
@@ -588,7 +605,7 @@ export function makeCommand(deps: CommandDeps) {
   })
   const commandImpl = Effect.fnUntraced(function* (
     input: CommandInput,
-    options: { skipHookStart?: boolean } | undefined,
+    options: CommandOptions | undefined,
     commitAdmission?: AdmissionCommit,
   ) {
     return yield* Effect.acquireUseRelease(
@@ -602,7 +619,7 @@ export function makeCommand(deps: CommandDeps) {
   // even while it is still expanding, and so its commit cannot land afterwards.
   const command: (
     input: CommandInput,
-    options?: { skipHookStart?: boolean },
+    options?: CommandOptions,
   ) => Effect.Effect<SessionV1.WithParts, PromptError> = Effect.fn("SessionPrompt.command")(function* (input, options) {
     if (options?.skipHookStart)
       return yield* mapAdmissionBlocked<SessionV1.WithParts, PromptError, never>(commandImpl(input, options))

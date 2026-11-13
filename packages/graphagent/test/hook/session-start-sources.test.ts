@@ -8,6 +8,7 @@ import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionSummary } from "@/session/summary"
 import { SessionLifecycle } from "@/session/lifecycle"
+import { ChildRegistry } from "@/session/child/registry"
 import { SettingsHook } from "@/hook"
 import { Database } from "@graphagent/core/database/database"
 import { SessionProjector } from "@graphagent/core/session/projector"
@@ -241,9 +242,17 @@ it.live("resume does not fire for child sessions", () =>
       const parent = yield* sessions.create({ title: "Parent", permission: [] })
       const child = yield* sessions.create({ parentID: parent.id, title: "Child", permission: [] })
       yield* seedHistory(sessions, child.id)
+      const childRuns = (yield* prompt.children).forParent(parent.id)
+      const run = yield* childRuns.start({
+        childSessionID: child.id,
+        owner: { kind: "dag_node", workflowID: "wf-start", nodeID: "child", attempt: 0 },
+        detached: false,
+        permission: { ask: "auto" },
+      })
       yield* llm.text("one")
-      yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "first" }] })
+      yield* childRuns.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "first" }] })
       expect(forSession(child.id)).toEqual([])
+      yield* run.settle({ type: "completed" })
     }),
     { git: true, config: providerCfg },
   ),
@@ -307,14 +316,32 @@ it.live("UserPromptSubmit reports dag_mode on/off for a top-level session and om
       yield* prompt.prompt({ sessionID: parent.id, agent: "build", parts: [{ type: "text", text: "on" }] })
       yield* setDagMode(parent.id, "off")
       yield* prompt.prompt({ sessionID: parent.id, agent: "build", parts: [{ type: "text", text: "off" }] })
-      yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "child" }] })
+      // The child prompt still runs UserPromptSubmit, so it carries the run's
+      // credential rather than going through the internal-delegation path.
+      const childRuns = (yield* prompt.children).forParent(parent.id)
+      const run = yield* childRuns.start({
+        childSessionID: child.id,
+        owner: { kind: "dag_node", workflowID: "wf-start", nodeID: "dag-mode", attempt: 0 },
+        detached: false,
+        permission: { ask: "auto" },
+      })
+      yield* prompt.prompt(
+        { sessionID: child.id, agent: "build", parts: [{ type: "text", text: "child" }] },
+        undefined,
+        {
+          credential: ChildRegistry.credentialOf(child.id),
+        },
+      )
 
-      const parentPrompts = sources.filter((entry) => entry.sessionID === parent.id && entry.event === "UserPromptSubmit")
+      const parentPrompts = sources.filter(
+        (entry) => entry.sessionID === parent.id && entry.event === "UserPromptSubmit",
+      )
       expect(parentPrompts.map((entry) => entry.dagMode)).toEqual(["on", "off"])
       expect(parentPrompts.every((entry) => entry.hasDagMode)).toBe(true)
       const childPrompts = sources.filter((entry) => entry.sessionID === child.id && entry.event === "UserPromptSubmit")
       expect(childPrompts).toHaveLength(1)
       expect(childPrompts[0].hasDagMode).toBe(false)
+      yield* run.settle({ type: "completed" })
     }),
     { git: true, config: providerCfg },
   ),
