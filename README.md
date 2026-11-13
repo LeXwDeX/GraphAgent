@@ -1,485 +1,177 @@
 <p align="center">
-  <a href="./README.md"><b>English</b></a> ·
-  <a href="./README.zh.md">简体中文</a>
+  <b>简体中文</b> ·
+  <a href="./README.en.md">English</a>
 </p>
 
 # GraphAgent
 
-> An opencode fork for long, multi-step coding work: durable DAG workflows of child agents, reasoning shaping, project memory, autonomous goals, and Claude Code–compatible hooks — all inspectable and controllable from the terminal.
+> 跑动态工作流的终端编码智能体：主智能体自己设计依赖图，子智能体按波次并行执行，状态持久化，崩溃后能恢复。
 
-GraphAgent is the product name for this project; the repository is published as
-**GraphAgent**, a fork of the MIT-licensed
-[opencode](https://github.com/anomalyco/opencode) terminal AI agent that adds
-the DAG workflow engine and the features listed below. Code inherited from
-upstream opencode stays MIT; code written for this fork is Apache-2.0. **Not
-affiliated with or endorsed by the OpenCode team.**
+[![release](https://img.shields.io/github/v/release/LeXwDeX/GraphAgent)](https://github.com/LeXwDeX/GraphAgent/releases)
+[![license](https://img.shields.io/badge/license-MIT%20%2B%20Apache--2.0-blue)](#与-opencode-的关系和许可)
+[![stars](https://img.shields.io/github/stars/LeXwDeX/GraphAgent)](https://github.com/LeXwDeX/GraphAgent/stargazers)
 
-> [!IMPORTANT]
-> **GraphAgent v1 is in focused maintenance.** Maintenance is limited to DAG
-> configuration, curated workflow templates, and reproducible defects reported
-> through [GitHub Issues](https://github.com/LeXwDeX/GraphAgent/issues).
-> Architecture defects that affect stability, data integrity, or the core DAG
-> experience will receive narrowly scoped compatibility patches; v1 will not
-> take new platform features or large foundational refactors. A successor
-> project will redesign the runtime independently, without extending v1's
-> compatibility constraints.
+<!-- 这里将来放一张 DAG 运行的截图或 GIF：主对话建图、节点分波次并行、TUI 检查器里的实时状态。 -->
 
----
+GraphAgent 是 [opencode](https://github.com/anomalyco/opencode) 早期 v1 的非官方 fork，与 OpenCode 团队没有关系。我们在它上面加了一套 DAG 工作流引擎，外加几个围绕长任务的功能。
 
-## What GraphAgent adds
+单个智能体循环处理一步到位的任务没有问题。任务一旦有先后依赖、有能并行的部分、中途还要过一道审查，它就吃力了：本该并行的活被串着跑，中间结论也没人复核。进程一挂，只能从头来。GraphAgent 让主智能体先把任务画成一张依赖图，再按图执行。图不是预先写死的，是它按任务现设计的，所以 DAG 工作流基本上就是动态工作流。
 
-Everything below is developed in this fork on top of opencode. Each feature is opt-in or self-contained; the rest of
-opencode (providers, LSP, client/server and TUI) retains its existing behavior.
+图里每个节点是一个真实的子会话，有自己的智能体和上下文窗口；依赖都满足的节点算一个波次，同一波次里并行跑。状态以事件持久化，所以能暂停、单步、重规划，崩溃后按持久化的记录恢复，不会凭空重放模型调用。
 
-| Feature                                    | What it does                                                                                         | How to use it                                           |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| [Reasoning shaping](#reasoning-shaping)    | Reorganizes reasoning in the background and adopts completed rewrites between steps (off by default) | `reasoningDistillation.enabled` + `small_model`         |
-| [DAG workflows](#dag-workflows)            | Decomposes a task into a durable dependency graph of child agents                                    | `/dag-auto`, the `workflow` tool, `.opencode/dag.jsonc` |
-| [Project Memory](#project-memory)          | Keeps confirmed preferences, decisions and terminology per project                                   | `/memory on`                                            |
-| [Autonomous goals](#autonomous-goals-goal) | Works one durable, budgeted goal across turns, judged externally                                     | `/goal`, `/subgoal`                                     |
-| [Hooks](#hooks)                            | Claude Code–compatible lifecycle hooks                                                               | `hooks.json`, `/create-hook`, `/import-claude`          |
-| [Context management](#context-management)  | Bounds tool output, limits tool calls, compacts long sessions                                        | `tool_output`, `compaction`, `maxToolCalls`             |
+## 项目状态
 
----
+v1 可用，目前发布的版本都是 v1。我们只修它的缺陷（可复现的问题请提 [Issue](https://github.com/LeXwDeX/GraphAgent/issues)），不再往里加新的平台能力。v2 正在重写，运行时会重新设计。下面表格里“v2 方向”一列是计划，不是现有功能。
 
-## Reasoning shaping
+## 核心能力
 
-Thinking models send their earlier reasoning back to the provider on later steps. Long reasoning is full of restated
-requests, abandoned guesses and correction narrative, and every later request pays for it again.
+| 能力        | v1 现在                                                                              | v2 方向                                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| DAG 工作流  | 主智能体设计依赖图，每个节点是真实的子会话，按波次并行；持久化，可暂停、恢复、重规划 | agent 契约与 composer，在 DAG 内组合公共智能体（调研、架构设计、原型设计等）；DAG 模式开关（并发池、预算、审核） |
+| 思考塑形 🧪 | 实验性功能，默认关闭                                                                 | —                                                                                                                |
+| 项目记忆    | `/memory`，只保存用户确认过的内容                                                    | 项目内建一个指针文档，加载到前缀提示词区域                                                                       |
+| Goal / Loop | `/goal`、`/subgoal`，外部 judge 判断进度，有回合预算                                 | 更名为 loop，可配置自动更新 loop 提示词                                                                          |
+| Hooks       | 兼容 Claude Code hooks 协议                                                          | 完全重构：事件从规范的状态转换派生，单一派发器                                                                   |
+| 上下文管理  | 工具输出限制、工具调用上限、长会话压缩                                               | 删除                                                                                                             |
 
-Reasoning shaping is off by default. Set `reasoningDistillation.enabled` to `true` globally or on a model to opt in.
-Eligible reasoning parts are organized in the background after they settle, with at most two organizer jobs running
-per session. The provider stream and the next step do not wait for these jobs. Before building each step's request,
-the session adopts completed rewrites; unfinished parts retain their original text in that request. The organizer is
-the configured `small_model`, otherwise the provider's own small model; with neither, nothing is rewritten.
+### DAG 工作流
 
-The feature does not inject a continuation when a response contains only reasoning. Such a response follows the same
-turn-ending behavior as it does with shaping disabled.
+主智能体觉得任务值得拆，就自己建图，不用你开口；你也可以用 `/dag-auto <任务>` 直接要求。边只表示“下游要读上游的产出”，没有这层关系的节点就并行。负责审查和仲裁的节点叫门禁，输出 ACCEPT、REVISE、REJECT 或 BLOCKED，下游可以按裁定决定跑不跑。TUI 里有 DAG 检查器，能看各波次和节点的实时状态，也能进入任何一个节点的子会话。
 
-The organizer keeps final facts, values, calculations, constraints, real execution results and open items, plus the
-working state the reasoning built: excluded hypotheses with their evidence, checked locations with their results
-(including "nothing found") and confirmed references. It removes duplicates, refuted guesses and filler; paths,
-commands, code, URLs, configuration keys and numbers stay verbatim.
+模型分层写在 `.agents/dag.jsonc`（关键节点用 advanced，跑量的用 standard），常用的图存进 `.agents/workflows/`，之后按名字就能启动。精选模板在 [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config)。崩溃恢复只认持久化的记录。引擎不假设有跨进程的锁，也不保证节点恰好执行一次。用法和引擎细节见 [docs/dag-workflows.md](./docs/dag-workflows.md)。
 
-- **Only safe carriers.** Plain reasoning and plaintext mirrors are rewritten. Signed, encrypted or referenced reasoning
-  (Anthropic thinking signatures, OpenAI encrypted reasoning, Gemini thought signatures) is never touched.
-- **Step boundaries.** Completed rewrites affect later requests; they do not mutate a request already being sent.
-- **Fallback.** If organization fails, times out or no organizer is available, the original reasoning remains.
-  Organizer failures do not fail the main turn.
-- **Reversible.** The original text and metadata are stored with the part; turning the feature off replays originals.
-- **Engine-level.** The organizer call goes through the built-in `@graphagent/llm` engine with no tools and
-  `none`/`low` reasoning effort. A rejected noise verdict on a long input may receive one bounded retry; a rewrite is
-  adopted only if it is actually smaller.
+### 思考塑形
+
+🧪 实验性功能，默认关闭。思考型模型会把之前的思考内容在后续请求里回传，里面常有复述、被推翻的猜测和纠错过程。这个功能在后台把已完成的思考整理得更短，在后续步骤的请求里换用整理后的版本。整理失败、超时或没有可用的小模型时保留原文；原文一直存着，关掉功能后回放的就是原文。带签名或加密的思考不会碰。
+
+我们想知道的是，开源模型的思考内容经过塑形之后，输出能力会不会提高。效果还在验证，所以标成实验性、默认关闭。整理用配置的 `small_model`，没配就用服务商自带的小模型：
 
 ```jsonc
-// opencode.json
+// graphagent.json
 {
-  "small_model": "provider/small-model", // prefer one with a `none` reasoning variant
+  "small_model": "provider/small-model", // 建议选有 `none` 推理档位的模型
   "reasoningDistillation": {
-    "enabled": true, // opt in; the default is false
-    "language": "zh", // organizer prose language: "zh" (default) or "en"
+    "enabled": true, // 显式开启；默认 false
   },
 }
 ```
 
-Cancelling a turn leaves its background organization jobs running. Deleting the session or disposing its directory
-cancels those jobs. There is no size limit on a reasoning part: every eligible part is sent to the organizer, whose output cap is the model's declared output limit. `GRAPHAGENT_REASONING_DISTILLATION_AUX_TIMEOUT_MS` (default 120 s) bounds organizer inactivity; a streaming response is never cut off.
-`GRAPHAGENT_DISABLE_REASONING_DISTILLATION=1` turns the feature off regardless of configuration. Logs report every
-rewrite (`reasoning distillation`) and fallbacks that keep the original reasoning.
+### 项目记忆
 
----
+`/memory on` 开启后，v1 按项目保存偏好、决策和术语，只保存经你确认的内容，同一项目的所有 worktree 共用一份。它不是代码索引，也不会压过你当前的输入和更高优先级的指令。v2 要大改：项目里内建一个指针文档，加载到前缀提示词区域。
 
-## Project Memory
+### Goal 与 Loop
 
-Project Memory keeps durable, **user-confirmed** context for a project: preferences, decisions and terminology.
+`/goal <目标>` 让智能体在当前会话里跨回合自己推进一个目标，`/subgoal` 管子目标。每个回合结束后由外部 judge 判断进度：done 就收工，continue 就接着跑。总回合数有预算（默认 20），用尽后暂停，可以恢复。目标状态持久化，重启不丢。v2 里它更名为 loop，并支持配置自动更新 loop 提示词。
 
-- `/memory on` / `/memory off` control it. The project needs a real identity first (run `/init`); Memory stays inert
-  for uninitialized projects.
-- One Memory per project, shared by all of its worktrees. It never forks per worktree, and it moves with the project
-  when the repository gains its first remote.
-- The main session injects relevant Memory into context; `memory_search` retrieves topics on demand.
-- The controller owns persistence, limits and migration; models only propose bounded changes. Memory is not a code
-  index and never an instruction source: current user input and higher-priority instructions always win.
-- Policy lives in `.opencode/memory.jsonc`.
+### Hooks
 
----
+v1 兼容 Claude Code 的 hooks 协议。`hooks.json` 从全局配置目录和项目的 `.agents` 目录读取，执行类型有 command、HTTP、MCP 工具、prompt 和 agent 五种；项目里的 hooks 要先经过信任确认才会生效。`/import-claude` 把 `.claude/settings*.json` 审阅后转换进 `.agents/`，`/create-hook` 带你写新的 hook。
 
-## Autonomous goals (`/goal`)
+v2 完全重构，不再用补丁式的写法：hook 事件从规范的状态转换派生，由单一派发器分发。v2 是否继续兼容 Claude Code 的协议，目前不做承诺。v1 的详细说明见 [hooks 指南](./packages/graphagent/src/skill/builtin/configure-hooks.md)。
 
-The goal loop works one durable goal autonomously across turns of the current session; graph orchestration (below) is
-its multi-session counterpart.
+### 上下文管理
 
-- Commands: `/goal <text>` sets a goal and starts the loop; `/goal status|pause|resume|done|clear|stop` controls it;
-  `/subgoal <text>|list|remove <n>|clear` manages subgoals attached to the active goal.
-- Budget: `/goal --max-turns 30 <text>` sets a positive integer total budget (default 20). `/goal resume --max-turns 50`
-  changes the total budget without resetting used turns; the new total must exceed used turns. Plain `/goal resume`
-  retains the budget and permits one more execution when exhausted.
-- Judge loop: after each turn an external judge evaluates progress — `done` clears the goal, `continue` injects the next
-  continuation turn against the turn budget (exhaustion pauses the goal; it stays resumable). The agent can
-  self-declare completion with `goal(action: "complete")`; `goal(action: "status")` inspects state.
-- Visibility: while a goal is active or paused, the system prompt carries a live goal block; the TUI sidebar shows a
-  compact goal widget; `GET /session/:sessionID/goal` exposes the state (`404` when no goal is set).
-- Durability: goal state is persisted per session, survives restarts, and is cleared when the session is deleted. Only
-  the main conversation can create or resume a goal.
+v1 里有一组管上下文的功能：限制工具输出的长度、限制每次输入的工具调用次数、自动压缩长会话。v2 把它们删掉。我们的判断是，这些功能是为窗口更小、模型更弱的环境准备的；硬件环境和模型能力改善之后，它们已经没有价值，留着只是继续付维护成本。
 
----
+## 其他改动
 
-## Hooks
+- `task` 可以按 `task_id` 续接子智能体，也支持后台子智能体，完成时自动通知。
+- 所有模型共用一份系统提示词，工具的用法写在各自的描述里，不再按 Provider 挑提示词。
+- 工具更严格，也更容易排错：`edit` 严格匹配（多处命中时列出候选行，找不到时给出最接近的片段），参数校验的报错带字段级提示。
+- 支持用独立的 git worktree 管理工作目录。工作流不会自动隔离，并发的工作流要用不同的 worktree，或者串行跑。
+- `config_assistant`（命令 `ocfg`）是一个用 Go 写的独立 TUI，用来定位、校验和编辑配置。
 
-Lifecycle hooks compatible with the Claude Code hooks protocol: 33 recognised events (`PreToolUse`, `PostToolUse`,
-`SessionStart`, `PermissionRequest`, `WorktreeCreate`, …) × 5 execution types (`command`, `mcp`, `http`, `prompt`,
-`agent`). `PermissionDenied` and `TeammateIdle` are accepted for configuration compatibility but have no runtime
-producer in this build.
+## 快速开始
 
-- `hooks.json` is read from the global opencode config directory and from project/worktree `.agents` directories,
-  merged by appending and hot-reloaded; hooks can also be registered per session over HTTP. Project-layer hooks are
-  trust-gated: when the TUI starts from the home screen with entries pending, it opens the trust panel before the
-  first session (with `--continue` or `--session` it only shows a footer reminder), and `/trust` reviews, trusts,
-  declines, or revokes entries at any time. Decisions live only in `trust.json` in the local state directory, never in
-  the project; non-interactive `graphagent run` skips untrusted entries and prints a summary (pass `--trust-project` to
-  allow them for that run), and user-level hooks are unaffected. `hooks.local.json` and `settings.local.json` that Git
-  does not track are user configuration and skip trust; once Git tracks them they are project files and need it.
-- Currently not trustable: a top-level `shell` in project settings (`.agents/settings.json`, or a tracked
-  `settings.local.json`) is ignored in favor of the default shell. A user-level `shell` is unaffected, and
-  `--trust-project` still allows it for that run.
-- Also not trustable: skills that project settings (`.agents/settings.json` or `settings.local.json`, tracked or not)
-  bring in from outside `.agents/skills/` through `skills.paths` or `skills.urls`. They do not appear in `/trust`;
-  their frontmatter hooks are never registered, and their embedded shell (`` !`cmd` `` segments) is refused with a
-  `/trust` hint when they run as slash commands, whether or not they declare hooks. Ownership follows the layer that
-  declares the key: the same keys in user-level config stay user-owned wherever they point, as do skills in the user
-  config directory or `~/.agents` and built-in skills. `--trust-project` still allows all of this for that run.
-- Hooks of every execution type can declare `inputFormat: "claude-code"` to receive Claude Code tool names and input keys. This gives
-  naming compatibility, not full behavioral parity.
-- Claude `.claude/settings*.json` files are not loaded automatically: `/import-claude` reviews and converts them into
-  `.agents/`, and `/create-hook` walks through authoring a new hook.
-- Background waits: an `asyncRewake` command hook can watch CI, reviews or deploys while the agent keeps working; a
-  conclusion exits with code 2 and wakes the session with a bounded summary. The Active Hooks block marks such hooks
-  `background`. See the [background watcher recipe](./packages/graphagent/src/skill/builtin/configure-hooks.md#background-watcher-recipe).
-- Reference: [hooks guide](./packages/graphagent/src/skill/builtin/configure-hooks.md).
+预构建的二进制（Linux、macOS、Windows，附 SHA256SUMS）在 [Releases](https://github.com/LeXwDeX/GraphAgent/releases) 页，解压后把 `graphagent` 放进 PATH，在项目目录里运行。仓库里的 `oc` 是个 bash 脚本，用 fzf 菜单选版本、校验 SHA256SUMS 后安装（需要 curl 和 fzf）。这个 fork 不发布到 npm、brew 和 scoop，上游的 `opencode-ai` 装的是上游 opencode，不是这个 fork。
 
----
-
-## Provider retries
-
-Every provider failure on the default AI SDK request path goes through one dispatch table before any backoff is
-scheduled. Any HTTP 4xx/5xx status and every recognised network failure retries with the same exponential backoff
-(2 s initial delay, doubling, 25% jitter, 30 s cap, five retries); `429`/`503` honor `retry-after`, `401`/`403` get one
-credential-refresh retry, `413` and context overflow hand off to compaction instead of resending, and aborts, missing
-credentials, output-length and structured-output limits, content filters and rejected reasoning state stay terminal.
-When the processor gate or the attempt cap stops a retry, the session logs `retry stopped` with the branch, status,
-attempt, cap and gate state. The opt-in experimental native runtime (`GRAPHAGENT_NATIVE_LLM`, off by default)
-disables its `RequestExecutor` retries when the session processor drives the request, so this table owns retry timing
-and the attempt count; direct native-runtime calls that bypass the processor keep the executor's own bounded retry
-budget. See [compaction retry](./docs/compaction-retry.md#provider-retry-dispatch).
-
----
-
-## Context management
-
-- **Bounded tool use**: generic tool output is bounded by `tool_output.max_lines`/`tool_output.max_bytes`, while
-  `read`, `grep` and `glob` enforce their own fixed budgets (`maxLineLength`, `limit`) and `shell` keeps its own
-  20-line tail while sharing `tool_output.max_bytes` as its inline byte cap and saved-file threshold;
-  `maxToolCalls` caps tool calls per user input. Truncated results state what was omitted and the exact continuation —
-  a saved file with its offset, a character offset, a larger `limit`, or a narrower query — so the model can continue
-  without guessing.
-- **Compaction**: automatic summarization of long sessions at the model's usable context limit (`compaction.auto`,
-  `compaction.tail_turns`, `compaction.preserve_recent_tokens`, `compaction.reserved`).
-
-Which of these apply depends on configuration, provider support and request purpose.
-
----
-
-## DAG workflows
-
-A workflow is a set of nodes connected by dependency edges. Each node is a real child session with its own agent and context window; an edge means the downstream node consumes the upstream node's output. Nodes run wave by wave in dependency order, so independent work executes in parallel and dependent work waits.
-
-The parent agent (your main conversation) owns the graph. It designs the graph for a task, starts it, and gets woken when a node reports or the workflow finishes — it never polls. When a wave fails, the parent requests recovery of the affected nodes and the engine continues in the same workflow; the view always shows the current graph, not the history of rewrites (more on this under [Revisions](#revisions)).
-
-Three terms worth knowing:
-
-- **Node** — one unit of work: an `explore`, `build`, `general`, or custom agent running one prompt, with optional timeout, retry budget, and structured-output contract.
-- **Wave** — the set of nodes whose dependencies are all satisfied; a wave runs in parallel up to a concurrency limit.
-- **Gate** — a node whose job is judgment (review, verification, arbitration). Gates emit verdicts (`ACCEPT` / `REVISE` / `REJECT` / `BLOCKED`) and downstream nodes can be conditioned on the verdict.
-
-### DAG features
-
-**Orchestration**
-
-- Composable blocks (`explore`, `plan`, `prototype`, `debug`, `coding`, `verify`, `review`, `synthesize`) compile into the node graph; low-level node fields remain available for anything blocks cannot express.
-- `workflow(action="draft")` renders a structured graph through the tool schema into a validated YAML spec — field-name mistakes are rejected by the provider, not discovered at validation time.
-- Saved workflow libraries at three scopes (project / global / builtin), startable by name; the `/dag-auto` command routes a requirement to a curated reference topology and retargets it to the task at hand.
-- The agent promotes to a workflow on its own judgment — the user need not ask — and declares the graph structure up front, mutating it at runtime only for structure that depends on results. When later work depends on items a node produces (for example one verifier per finding), the parent turns that node into a checkpoint, deduplicates and ranks the reported items, and adds only the needed item nodes with a bounded `extend`; `fan_out` is for writers from a plan's `packages`, not general per-item expansion.
-- Model tiers in `dag.jsonc` separate decisions from volume: critical nodes on the `advanced` model, fan-out work on `standard`.
-
-**Reliability**
-
-- Event-sourced state with a declared state machine; the SQLite read model is projected inside the publish transaction. Crash recovery reconciles from durable evidence and never fabricates provider work.
-- Execution-location authority: each workflow row carries the directory stamp of the session that created it, re-read from the database on every ownership check, so sibling worktrees of one project cannot act on each other's workflows. Stamps move with the session when it moves.
-- Revision view: a replan supersedes the replaced segment — the inspector, status output, and summary counts render the current graph only. Live failures on the current graph (quota exhausted, API error, timeout cap) stay visible; superseded ones do not count toward the workflow's terminal state.
-- Node outputs that are a single absolute file path are captured as `{content_ref, size, sha256, summary}`; the result action returns the pointer and the parent reads the file. Inline and structured payloads unchanged.
-
-**Observability & control**
-
-- TUI DAG inspector (`dag.open` in the command palette): workflow list, wave-ordered node view with live status, node detail with deadline countdown; `p`/`r`/`s`/`x` for pause/resume/step/cancel, `enter` drops into a node's child session.
-- Sidebar panel with per-session progress; HTTP API mirroring every tool action (see [below](#observing--controlling)).
-- Deep mode admission: a bounded Q&A pass (1/3/5 rounds) produces a fingerprinted Requirement Brief with a `READY` / `NOT_READY` / `WAIVED` verdict before an expensive graph starts.
-
-**Messaging**
-
-- The main agent can observe nodes of its own workflows and exchange messages with an exact current node attempt. Sending is non-blocking; messages provide context and never grant authorization or change workflow lifecycle.
-
-## Using workflows
-
-Nothing has to be configured to try it: ask for work that has stages, parallel
-parts, or a review gate in the middle (`/dag-auto <task>`), and the agent
-designs a graph and runs it. Three things turn that into a repeatable setup of
-your own.
-
-### 1. Choose the model tiers — `.opencode/dag.jsonc`
-
-Nodes never name their own model. The graph declares _which nodes are critical_
-and configuration decides _what runs them_:
-
-```jsonc
-{
-  // Critical nodes: required: true, plus review/arbiter workers.
-  "model": {
-    "advanced": "anthropic/claude-sonnet-4-5",
-    "standard": "anthropic/claude-haiku-4-5",
-  },
-  // Reasoning variant for DAG child sessions, when the model defines one.
-  "thinking_depth": "medium",
-}
-```
-
-A project `.opencode/dag.jsonc` overrides the global one in the opencode config
-dir; a commented default is seeded there on first use. With only one tier
-configured, it serves as the unified default. Resolution order per node is
-tier → worker agent model → parent session model; when none of them yields a
-model, the workflow is not created and you are asked to configure one.
-
-### 2. Save the workflows you rerun — `.opencode/workflows/`
-
-A workflow spec is a YAML file describing the graph. Put it in a workflow
-directory and it gains a **name**:
-
-| Scope   | Path                                          | Availability                                                          |
-| ------- | --------------------------------------------- | --------------------------------------------------------------------- |
-| Project | `.opencode/workflows/<name>.yaml`             | This repo, committed with it — the whole team gets the same procedure |
-| Global  | `<opencode config dir>/workflows/<name>.yaml` | Every project on the machine                                          |
-| Builtin | Compiled into release binaries                | Every release install — the last-resort tier                          |
-
-Resolution takes the first match in that order, so a project file shadows a
-global one with the same name, and both shadow the builtin tier. The global
-scope is maintained by the [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config)
-repository (sync it with a plain `git clone`/`git pull` into your config
-dir). A minimal spec:
-
-```yaml
-title: Dependency audit
-config:
-  name: dependency-audit
-  nodes:
-    - id: inventory
-      name: inventory
-      worker_type: explore
-      depends_on: []
-      required: true
-      prompt_template:
-        id: config-explore
-        input:
-          target: "package.json files and lockfiles"
-
-    - id: report
-      name: report
-      worker_type: general
-      depends_on: [inventory]
-      report_to_parent: true
-      prompt_template:
-        inline: "Flag outdated or duplicated dependencies in {{inventory}} and propose an upgrade order."
-```
-
-Then just say "run the dependency-audit workflow" — the agent starts it by
-name, no path needed. Ad-hoc specs still work exactly as before: a `spec_path`
-that looks like a path (has a separator or a `.yaml`/`.yml` extension) is read
-relative to the session directory instead of the library.
-
-### 3. Let the agent author it
-
-For one-off graphs, `workflow(action="draft")` takes the structured graph as
-tool parameters and hands back a validated `spec_path`, so field drift never
-reaches the file.
-
-Node prompts referenced by `prompt_template.id` resolve from the project's
-`.opencode/dag-prompts/<id>.md`, then the global `<config dir>/dag-prompts/`.
-Add your own `.md` file there to make a new template available; a global
-workflow should prefer `inline` prompts so it does not depend on a repo-local
-template.
-
-## The engine
-
-The engine lives in [`packages/core/src/dag`](./packages/core/src/dag) (state machine, dependency graph, scheduling, event projection, SQLite read model) and [`packages/graphagent/src/dag`](./packages/graphagent/src/dag) (workflow service, execution loop, node spawn, admission, review lifecycle, crash recovery, templates). Agents drive it through a single `workflow` tool; humans watch and control it through the TUI or HTTP API.
-
-### Graph definition
-
-Each node declares:
-
-| Field              | Purpose                                                                                             |
-| ------------------ | --------------------------------------------------------------------------------------------------- |
-| `depends_on`       | Dependency edges; cycle detection and dangling-reference validation at creation                     |
-| `worker_type`      | Which agent runs the node (`explore`, `build`, `general`, or any configured agent)                  |
-| `prompt_template`  | Prompt by `id` (from project, then global `dag-prompts/`) or `inline`, with `{{var}}` interpolation |
-| `input_mapping`    | Map upstream node outputs into template variables (`"count": "node-b.output.count"`)                |
-| `condition`        | Expression over upstream outputs; false → node skipped, pure descendants cascade-skip               |
-| `output_schema`    | JSON Schema; the child agent's final answer must be exactly one JSON value matching it              |
-| `required`         | Failure of a required node fails the workflow                                                       |
-| `report_to_parent` | Wake the parent agent when this node reaches a terminal state                                       |
-| `review`           | `design` or `diff` review phase with an implementation-fingerprint contract (below)                 |
-
-Workflow-level knobs: `max_concurrency` (default 5), `max_node_replan_attempts` (5), `max_total_nodes` (100), per-node `timeout_ms` (default 10 min, queue wait counts toward the deadline).
-
-### Scheduling & execution
-
-- Nodes spawn as real child sessions through the same code path as the `task` tool, wave by wave in dependency order, bounded by a concurrency semaphore. A node is durably `queued` at admission and the child session only materializes inside the permit, so a 100-node fan-out never creates 100 sessions at once.
-- Dynamic replanning, pause-first: `pause` freezes scheduling, `replan` merges a fragment atomically, and `resume` continues. `control(recover)` replaces selected nodes and their downstream attempts in the same failed or paused workflow, using `expected_graph_rev` to reject stale requests. Old attempts remain immutable. Cancelled workflows require explicit resume intent. `extend` appends nodes and may reopen a naturally completed workflow at a reporting checkpoint.
-- Step mode runs one node at a time for debugging.
-- The parent does not poll. Synthetic messages wake it when a `report_to_parent` node or the workflow terminalizes. Checkpoint nodes emit a normalized verdict (`ACCEPT` / `REVISE` / `REJECT` / `BLOCKED`), and the disposal contract governs what happens next. Iteration is a bounded, verdict-driven replan wave; the graph never contains a cyclic edge.
-
-### Revisions
-
-Rewriting a graph does not erase history, but it does retire it. A replan that supersedes nodes marks them; the workflow row carries a `graph_rev` counter and every view — status output, HTTP API, TUI inspector, summary counts — filters to the current revision. Unrelated completed nodes and valid outputs survive into the new revision untouched; recovery replaces the selected nodes and their downstream closure. Audit of superseded nodes stays possible through the result store (an agent can look it up by node id); the TUI exposes no entry to it.
-
-Two things this fixes. A workflow whose failed segment was rewritten now reports `completed` when the replacement succeeds, instead of dragging the old failure along. And the failure counts you see are the failures that exist — a quota exhaustion or API error on the current graph stays visible until it is actually fixed.
-
-### State machine & persistence
-
-- Declared transition tables for workflow and node status; every mutation goes through a guard, invalid transitions and terminal violations are typed errors (HTTP 409, not 500).
-- All changes are published as durable `dag.*` events; a projector writes the SQLite read model _inside_ the publish transaction. History is event replay, not a log table. A drift test fails whenever the projector's guards and the declared transition tables are edited out of sync.
-- Crash recovery is lazy, per-workflow, and evidence-based: nodes left `running` are reconciled against their child session's durable state. Sessions that finished back-fill their captured output; when execution ownership was genuinely lost, the workflow pauses and the parent decides disposition (replan / resume / cancel). Recovery never adopts or restarts provider work on its own.
-- Failure triage: every failed node carries a failure class (`timeout` / `exec_failed` / `verdict_fail`) surfaced in `workflow(action=status)` and in the parent's wake — including a failed-nodes attribution digest when a workflow terminalizes failed — so the parent agent can select the failed node for local recovery instead of rebuilding the graph.
-
-### Node outputs
-
-A node's final reply can be plain text, a structured payload (one final JSON value matching `output_schema`), or a file. For a node without an output schema, a final reply containing one absolute path to a non-empty file (up to 64 MiB) commits a managed copy under application data. Its receipt records the digest, size, short summary and execution provenance. Downstream nodes receive a path and read the body as needed; deleting the source working tree does not delete the managed result. Result reads, downstream execution and local recovery verify managed object integrity before reuse. Legacy receipts remain compatible. See [file artifacts and recovery](docs/dag-file-artifacts-and-recovery.md) for the tool calls and limits.
-
-### Deep mode: admission & review
-
-- Admission Q&A covers six dimensions (goal, scope, constraints/assumptions, acceptance criteria, evidence, risks) under a bounded policy: `LIGHT` (1 round), `STANDARD` (3), `GRILL` (5, adversarial). The resulting Requirement Brief is fingerprinted (SHA-256 over a canonical form); material changes invalidate the fingerprint and return admission to questioning. A consumed record is persisted with the workflow and never replayed.
-- Review nodes declare their phase honestly: `design` reviews pre-implementation artifacts; `diff` reviews the actual implementation and requires the implementation node, a passing verification node, and a fingerprint echo. Changing the implementation changes the fingerprint, so a stale `ACCEPT` cannot satisfy the gate.
-
-### Observing
-
-- TUI DAG inspector (command palette → `dag.open`): workflow list, wave-ordered node view with live status, node detail (deps, errors, output preview, deadline countdown); `enter` drops into a node's child session. Workflow control goes through the `workflow` tool, not the inspector.
-- Sidebar panel: per-session workflow progress (completed/running/failed/queued), expandable node list, driven by ephemeral summary events, with a fetch-on-open safety net instead of polling.
-- HTTP API (read-only queries; mutations go through the `workflow` tool):
-
-  ```
-  GET  /dag                              list workflows
-  GET  /dag/session/:sessionID           workflows for a session
-  GET  /dag/session/:sessionID/summary   progress summaries
-  GET  /dag/:dagID                       workflow detail
-  GET  /dag/:dagID/nodes                 node list
-  GET  /dag/:dagID/nodes/:nodeID         node detail
-  ```
-
-### Project configuration files
-
-Everything DAG-specific lives under `.opencode/`, with a global counterpart in
-the opencode config dir (`GRAPHAGENT_CONFIG_DIR`, else `~/.config/opencode`).
-Everything else inherits the main opencode configuration.
-
-| Path                          | Purpose                                                                       | Global counterpart                                          |
-| ----------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `.opencode/dag.jsonc`         | Model tiers (`advanced` / `standard`) and `thinking_depth` for child sessions | `<config dir>/dag.jsonc`, seeded with comments on first use |
-| `.opencode/workflows/*.yaml`  | Saved workflow specs, startable by name                                       | `<config dir>/workflows/*.yaml`                             |
-| `.opencode/dag-prompts/*.md`  | Node prompt templates referenced by `prompt_template.id` (project first)      | `<config dir>/dag-prompts/*.md`                             |
-| `.opencode/workflow-reports/` | Node report files (auto-gitignored)                                           | —                                                           |
-
-Both `dag.jsonc` and the workflow library are read lazily, so an edit applies to
-the next workflow start without a restart.
-
-## Background
-
-GraphAgent treats a graph as an executable, durable, inspectable contract — not a diagram of agents, and not a prompt chain with arrows added afterward. The first complete DAG-engine commit landed on **2026-07-02**; the paper [_What makes prompts a graph_](https://arxiv.org/abs/2607.27578), which formalized explicit structure, prompt/topology separation, executable semantics, and the graph as a first-class artifact, appeared on **2026-07-30**.
-
-The operating doctrine that came out of it:
-
-1. Edges must carry work. A dependency exists only when the downstream node consumes the upstream artifact; ceremonial sequencing gets deleted, independent work runs in parallel.
-2. A template is a reference topology, not a cage. The parent agent may expand or prune lanes to match the task, but every prune records its reason and replacement coverage.
-3. Prediction, verification, and merge have different owners. A `reasoner` simulates likely execution paths, a fresh-context reviewer checks the preceding local wave, and exactly one arbiter owns the verdict. These gates cannot be pruned.
-4. Iteration is a bounded local graph rewrite. `PASS` finalizes, `LOOP` adds a new correction/review wave through pause → replan → resume, and `BLOCKED` stops with evidence. Completed nodes never form a hidden cycle.
-5. Reality outranks self-report. State is event-sourced, recovery follows durable evidence, tests and code settle claims, and humans retain pause/step/cancel/replan authority where mistakes are expensive.
-
-Why a DAG at all: a single agent loop struggles once a task has staged dependencies, parallelizable independent work, or a quality gate in the middle. Splitting decisions from volume (advanced vs. standard tiers), asking before building (deep-mode admission), gating verdicts with mandatory disposal, and recovering from evidence rather than guesses are the four judgments this engine is built on.
-
-Curated reference topologies — design decision deep-dive, parallel project delivery, deep review of an existing subsystem, compact change review — ship through the workflow library's global scope (curated by the [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) repo) and a builtin tier embedded in release binaries. See the [workflow library](https://github.com/LeXwDeX/opencode-dag-config) for the catalog.
-
----
-
-## Other changes in this fork
-
-- **Delegated agents**: `task` delegates to sub-agents and continues them by `task_id`; background sub-agents are available and notify on completion automatically.
-- **Unified system prompt**: every model receives the same system prompt — identity, the hooks and DAG entry points, working rules and safety — instead of a provider-specific prompt. Per-tool usage text lives in the tool descriptions, so the prompt no longer repeats it, and the always-on DAG and hooks guidance stays in entry form while detailed topics load on demand.
-- **Tool robustness**: self-describing tool descriptions (per-tool usage text removed from the system prompts, cutting the wire descriptions from ~31 KB to ~20 KB, 36.5 percent), strict `edit` matching that lists ambiguous candidate lines and the closest line when one is close instead of guessing, provider argument-shape repair for `edit`, JSON repair for broken multi-byte Unicode escapes in LLM output, structured validation errors with field-level hints, child-process pipe fixes.
-- **CJK & IME**: terminal input behavior depends on the terminal and input method.
-- **Worktree isolation**: per-workflow `git worktree` isolation, with experimental sandbox-worktree HTTP endpoints.
-- **Configuration assistant**: a standalone Go TUI under [`config_assistant`](./config_assistant) for locating, validating, and editing opencode configuration (`cd config_assistant && go run ./cmd/ocfg`).
-
-Retained capabilities include multi-provider support, built-in LSP, client/server architecture, and the TUI.
-
----
-
-## Install
-
-Prebuilt CLI binaries (Linux / macOS / Windows, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
-
-Built-in application updating is disabled in CLI and TUI. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `opencode upgrade` and `POST /global/upgrade` report that updates are disabled.
-
-Release acceptance enforces two distinct integrity boundaries:
-
-- **Archive integrity (before extraction)**: the `oc` installer verifies the release `SHA256SUMS` entry before unpacking and refuses to extract on mismatch. If upstream serves no `SHA256SUMS`, it installs with a warning (GitHub HTTPS transport only).
-- **Post-install signature validity (macOS)**: the installer clears quarantine attributes (`xattr -cr`) and ad-hoc re-signs (`codesign -fs -`); acceptance then asserts `codesign --verify` passes and the binary runs. The installed binary's hash is intentionally **not** compared to the archive payload — ad-hoc signing can rewrite the binary's bytes, so differing hashes are legitimate. No post-signature digest is published (cross-version reproducibility of codesign output has not been established, and no supported reproducibility matrix exists).
-
-From source (requires the [Bun](https://bun.sh) version pinned in `package.json` `packageManager` and the Node version in `.node-version`):
+从源码运行需要 `package.json` 里 `packageManager` 固定的 Bun，以及 `.node-version` 指定的 Node：
 
 ```bash
 bun install
-bun dev              # TUI
-bun dev serve        # headless API server (port 4096)
-
-# standalone binary
-./packages/graphagent/script/build.ts --single
+bun dev <项目目录>    # 启动 TUI；不带目录时在 packages/graphagent 里运行
 ```
 
-> This fork is not published to npm/brew/scoop. The upstream `opencode-ai` package installs upstream opencode, not this fork.
+启动之后，给它一件有阶段、有并行空间的活就行，不用先写任何 DAG 配置：
 
----
+```text
+/dag-auto 把 auth 和 server 两个包迁移到新 API，最后跑集成测试
+```
 
-## Quality gates
+想把常用的图固定下来，就存成 `.agents/workflows/parallel-migrate.yaml`，之后说一句“跑 parallel-migrate 工作流”就按名字启动。下面这份 spec 里，两个迁移节点在同一波次并行，`assemble` 等它们都完成才开始：
 
-- **CI**: typecheck on every PR; the `main` gate additionally runs the Bun/Turbo unit suite and config-assistant Go tests (Linux), an HTTP API contract exerciser, and generated-SDK freshness checks.
-- **DAG-specific tests**: core scheduling unit tests, projector/state-machine drift tests, workflow lifecycle integration tests, and HTTP API exercise scenarios for every DAG route.
+```yaml
+title: 并行迁移
+config:
+  name: parallel-migrate
+  nodes:
+    - id: discover
+      name: discover
+      worker_type: explore
+      depends_on: []
+      required: true
+      prompt_template: { inline: "列出所有需要迁移到新 API 的包。" }
 
-## License
+    - id: migrate-auth
+      name: migrate-auth
+      worker_type: build
+      depends_on: [discover]
+      prompt_template: { inline: "把 auth 包迁移到新 API。" }
 
-Two license rules:
+    - id: migrate-server
+      name: migrate-server
+      worker_type: build
+      depends_on: [discover]
+      prompt_template: { inline: "把 server 包迁移到新 API。" }
 
-| Content                              | License    | Text                                 |
-| ------------------------------------ | ---------- | ------------------------------------ |
-| Upstream opencode code               | MIT        | [`LICENSE`](./LICENSE)               |
-| Fork-authored code (everything else) | Apache-2.0 | [`LICENSE-APACHE`](./LICENSE-APACHE) |
+    - id: assemble
+      name: assemble
+      worker_type: build
+      depends_on: [migrate-auth, migrate-server]
+      prompt_template: { inline: "跑集成测试，汇总结果。" }
+```
 
-Exact file boundaries are listed in [`LICENSE-UPSTREAM.txt`](./LICENSE-UPSTREAM.txt) and summarized in [`NOTICE`](./NOTICE). Files inherited from upstream opencode stay MIT, including upstream files modified by the fork. Every other file written for this fork is Apache-2.0. Redistribution must retain the copyright and attribution notices in [`NOTICE`](./NOTICE).
+安装步骤、完整性校验和源码构建的细节见 [docs/install.md](./docs/install.md)。
 
-## Docs
+## 设计思路
 
-- [`docs/architecture.md`](./docs/architecture.md) — system overview, client/API boundaries, and source map
-- [`packages/graphagent/src/memory/CONTEXT.md`](./packages/graphagent/src/memory/CONTEXT.md) — Project Memory model and invariants
-- [Hooks guide](./packages/graphagent/src/skill/builtin/configure-hooks.md) — events, schemas and verification
-- [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config) — curated workflows, composable blocks and worker prompts
-- [`AGENTS.md`](./AGENTS.md) — contribution & development guide
+我们把图当成一份可执行、可持久化、可检查的契约，不是给人看的流程图，也不是事后给提示词链加的箭头。边必须真的传递产出：下游不读上游的东西，这条依赖就该删，独立的工作直接并行。模板只是参考拓扑，主智能体可以按任务增删分支，但每次剪枝要写明理由。预测、复审和裁决由不同的角色做，门禁不能剪。迭代只是有界的局部改图，不存在隐藏的环。最后，代码和测试说了算，状态靠事件记录恢复，代价高的地方留给人暂停、单步、取消和重规划。
 
-## Links
+第一个完整的 DAG 引擎提交是 2026-07-02；论文 [What makes prompts a graph](https://arxiv.org/abs/2607.27578) 到 2026-07-30 才把显式结构、提示词与拓扑分离、可执行语义和“图是一等制品”这些想法归纳出来，比引擎晚了四周。
 
-- [GitHub](https://github.com/LeXwDeX/GraphAgent) · [Issues](https://github.com/LeXwDeX/GraphAgent/issues)
-- [Upstream opencode](https://opencode.ai)
+## 路线图
+
+v2 的进度在[里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7)里跟踪。除了上面表格里各项的变化，计划中的还有：
+
+- 统一子运行 ChildRun：`task` 和 DAG 节点共用同一套子运行模型。
+- TUI 重做：主题、骨架、状态带、侧边栏抽屉，以及子智能体的只读界面。
+- `/remind`：持久化的定时提醒。
+- PR 监听重做为事件源。
+- 后台任务的显示。
+- v2.0.0 发布，附中英文迁移指南。
+
+这些都是计划，实际状态以里程碑为准。
+
+## 与 opencode 的关系和许可
+
+GraphAgent 源自早期的 opencode v1（MIT，[anomalyco/opencode](https://github.com/anomalyco/opencode)），是非官方 fork，与 OpenCode 团队没有隶属或背书关系。多 Provider、LSP、客户端/服务器架构和 TUI 沿用自上游。
+
+许可分两条：继承自上游的代码保持 MIT，包括被我们改过的上游文件，文本见 [LICENSE](./LICENSE)；本 fork 新写的代码是 Apache-2.0，文本见 [LICENSE-APACHE](./LICENSE-APACHE)。精确的文件边界在 [LICENSE-UPSTREAM.txt](./LICENSE-UPSTREAM.txt)，[NOTICE](./NOTICE) 有摘要。再分发时请保留 NOTICE 里的版权与归属声明。
+
+## 文档
+
+除 architecture.md 和功能清单外，下面的文档目前只有英文。
+
+- [docs/architecture.md](./docs/architecture.md)：v1 架构，包括组件与目录、客户端与协议、源码索引
+- [docs/dag-workflows.md](./docs/dag-workflows.md)：DAG 工作流的用法、配置和引擎细节
+- [docs/install.md](./docs/install.md)：安装、完整性校验和源码构建
+- [docs/compaction-retry.md](./docs/compaction-retry.md)：Provider 重试与压缩请求
+- [hooks 指南](./packages/graphagent/src/skill/builtin/configure-hooks.md)：事件、配置和验证方法
+- [docs/功能清单.md](./docs/功能清单.md)：功能与源码入口索引
+- [AGENTS.md](./AGENTS.md)：开发指南
+- [CONTRIBUTING.md](./CONTRIBUTING.md)：贡献说明
+
+## 链接
+
+[GitHub](https://github.com/LeXwDeX/GraphAgent) · [Issues](https://github.com/LeXwDeX/GraphAgent/issues) · [Releases](https://github.com/LeXwDeX/GraphAgent/releases) · [里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7) · [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config) · [上游 opencode](https://github.com/anomalyco/opencode)

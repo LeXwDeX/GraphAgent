@@ -17,7 +17,6 @@ CONTEXT.md
 CONTRIBUTING.md
 LICENSE
 README.md
-README.zh.md
 SECURITY.md
 bun.lock
 bunfig.toml

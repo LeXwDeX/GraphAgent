@@ -87,6 +87,8 @@ tsconfig.tsbuildinfo
 !/docs/architecture.md
 !/docs/compaction-retry.md
 !/docs/dag-file-artifacts-and-recovery.md
+!/docs/dag-workflows.md
+!/docs/install.md
 !/docs/功能清单.md
 /docs/agents/
 /docs/context-folding/evidence/
