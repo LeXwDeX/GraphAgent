@@ -19,8 +19,11 @@ import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
 import { Snapshot } from "@/snapshot"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
+import { FSUtil } from "@graphagent/core/fs-util"
+import { Config } from "@/config/config"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { countingAppProcessLayer, reset as resetProbe, snapshot as probeCounters } from "../lib/engine-probe"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
@@ -167,12 +170,21 @@ const countingSnapshot = Layer.succeed(
   }),
 )
 
+// The real Snapshot layer over the probe's counting AppProcess. Each
+// `track`/`patch` spawns git children, so the finish-side read-only skip is
+// asserted as a `git.spawns` gate instead of a service-call counter.
+const realSnapshot = Snapshot.layer.pipe(
+  Layer.provide(countingAppProcessLayer),
+  Layer.provide(FSUtil.defaultLayer),
+  Layer.provide(Config.defaultLayer),
+)
+
 /**
  * Builds a processor environment backed by one scripted stream and a counting
  * Snapshot service. The counters reset per test after `processors.create`
  * so they only measure what the stream itself triggers.
  */
-function scripted(script: LLMEvent[]) {
+function scripted(script: LLMEvent[], snapshotLayer: Layer.Layer<Snapshot.Service> = countingSnapshot) {
   const service = Layer.succeed(
     LLM.Service,
     LLM.Service.of({
@@ -185,7 +197,7 @@ function scripted(script: LLMEvent[]) {
       replacements: [
         LayerNode.replace(SessionSummary.node, summary),
         LayerNode.replace(LLM.node, service),
-        LayerNode.replace(Snapshot.node, countingSnapshot),
+        LayerNode.replace(Snapshot.node, snapshotLayer),
       ],
     }),
   )
@@ -319,6 +331,35 @@ describe("processor snapshot scope per step", () => {
           expect(finishes[1]?.snapshot).toBe("snap-3")
         }),
       { config: cfg },
+    ),
+  )
+
+  // The stub above proves the processor never calls `track`/`patch` for a
+  // read-only step. This case runs the production Snapshot layer so the same
+  // skip is measured as git child processes, which is the #1016 HS3 gate.
+  scripted(textOnlyScript, realSnapshot).instance(
+    "a read-only step spawns no git subprocesses on the finish side",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "hello")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          // `create` captures the start snapshot, and git children prove the
+          // probe is wired to the production Snapshot layer.
+          const beforeCreate = probeCounters()["git.spawns"]
+          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+          expect(probeCounters()["git.spawns"]).toBeGreaterThan(beforeCreate)
+
+          // Measure only the step itself.
+          resetProbe()
+          const result = yield* handle.process(input(chat.id, parent, mdl))
+          expect(result).toBe("continue")
+          expect(probeCounters()["git.spawns"]).toBe(0)
+        }),
+      { git: true, config: cfg },
     ),
   )
 })
