@@ -2071,19 +2071,25 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
 
       // 7. Internal delegation carries subagent/DAG input, not a user submit.
       {
-        const session = yield* sessions.create({ title: "ups internal delegation" })
+        const parent = yield* sessions.create({ title: "ups internal parent" })
+        const session = yield* sessions.create({ parentID: parent.id, title: "ups internal delegation" })
         const file = audit("internal-delegation")
         yield* addHook(session.id, file)
+        const childRuns = (yield* prompt.children).forParent(parent.id)
+        const run = yield* childRuns.start({
+          childSessionID: session.id,
+          owner: { kind: "dag_node", workflowID: "wf-ups", nodeID: "internal", attempt: 0 },
+          detached: false,
+          permission: { ask: "auto" },
+        })
         yield* llm.text("internal delegation answer")
-        yield* prompt.prompt(
-          {
-            sessionID: session.id,
-            agent: "build",
-            parts: [{ type: "text", text: "INTERNAL_DELEGATION_INPUT" }],
-          },
-          { internalDelegation: true },
-        )
+        yield* childRuns.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "INTERNAL_DELEGATION_INPUT" }],
+        })
         expect(yield* auditText(file)).toBeUndefined()
+        yield* run.settle({ type: "completed" })
       }
     }),
     { git: true, config: providerCfg },

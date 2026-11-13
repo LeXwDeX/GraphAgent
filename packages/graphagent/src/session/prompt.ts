@@ -238,11 +238,7 @@ export interface Interface {
 }
 
 export type PromptError =
-  | Image.Error
-  | ModelSwitchBlocked
-  | NoPendingHookInput
-  | AdmissionPersistFailed
-  | ChildAdmission.Refused
+  Image.Error | ModelSwitchBlocked | NoPendingHookInput | AdmissionPersistFailed | ChildAdmission.Refused
 
 export class Service extends Context.Service<Service, Interface>()("@graphagent/SessionPrompt") {}
 
@@ -525,12 +521,20 @@ export const layer = Layer.effect(
         prompt: (input: PromptInput, options?: AdmissionOptions) => {
           // The shell/watch_pr notice prompts its own session; a child session
           // carries the credential of its active run (zero reads). A run that
-          // already ended leaves none, and the guard refuses as for any other
-          // driver that lost its run.
+          // already ended leaves none: the notice is best-effort and must not
+          // turn a successful background job into an error, so a refusal is
+          // logged and resolved with the session's last message (the callers
+          // ignore the result).
           const credential = ChildRegistry.credentialOf(input.sessionID)
-          return admit
-            .prompt(input, options, credential ? { credential } : undefined)
-            .pipe(Effect.catch(Effect.die))
+          return admit.prompt(input, options, credential ? { credential } : undefined).pipe(
+            Effect.catchTag("ChildAdmissionRefused", (error) =>
+              Effect.logWarning("child session notice was refused after its run ended", {
+                sessionID: input.sessionID,
+                verdict: error.verdict,
+              }).pipe(Effect.andThen(lastAssistant(input.sessionID))),
+            ),
+            Effect.catch(Effect.die),
+          )
         },
         children,
       } satisfies TaskPromptOps

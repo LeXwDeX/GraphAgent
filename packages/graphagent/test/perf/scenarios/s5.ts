@@ -324,13 +324,14 @@ export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> 
               orElse: () => Effect.die(new Error("S5: workflows did not complete")),
             }),
           )
-          const results = yield* Effect.forEach(jobIDs, (id) => jobs.wait({ id, timeout: 120_000 }), {
+          return yield* Effect.forEach(jobIDs, (id) => jobs.wait({ id, timeout: 120_000 }), {
             concurrency: "unbounded",
           })
-          yield* Effect.forEach(runs, (run) => run.settle({ type: "completed" }), { discard: true })
-          return results
         })
         const waited = yield* options?.around ? options.around(label, load) : load
+        // The runs settle after the measured window: this is the settling
+        // phase, like every other teardown cost the window excludes.
+        yield* Effect.forEach(runs, (run) => run.settle({ type: "completed" }), { discard: true })
         yield* Fiber.interrupt(sampler)
         // Model-stream occupancy can only rise at a grant: fold in the exact
         // snapshots the provider took there (the polling fiber cannot catch a

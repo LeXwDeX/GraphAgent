@@ -488,6 +488,11 @@ describe("ChildAdmission.observe", () => {
         ChildAdmission.observe("admit", { id: child, parentID: SessionID.make("ses_cd_p") }, credential),
         ChildAdmission.observe("admit", { id: other, parentID: SessionID.make("ses_cd_p") }, credential),
         ChildAdmission.observe("loop", { id: child }, foreign, { kind: "child_run" }),
+        // The allowlist only lets a *missing* credential through; a stale one
+        // cannot borrow a hook origin.
+        ChildAdmission.observe("admit", { id: child, parentID: SessionID.make("ses_cd_p") }, credential, {
+          kind: "hook",
+        }),
       ]
       const outcomes = yield* Effect.all(effects.map((effect) => effect.pipe(Effect.exit)))
 
@@ -517,16 +522,19 @@ describe("ChildAdmission.observe", () => {
           attempt({ kind: "hook" }),
           attempt({ kind: "inbox", source: "dag.mailbox.step" }),
           attempt({ kind: "child_run" }),
+          attempt({ kind: "inbox", source: "child.result" }),
           attempt({ kind: "child_run" }, "loop", true),
           attempt({ kind: "user" }, "loop", true),
           attempt({ kind: "child_run" }, "loop", false),
+          attempt({ kind: "user" }, "loop", false),
         ])
 
-        // The child admit refuses none/user/child_run and lets hook and the DAG mailbox through.
-        expect(outcomes.slice(0, 5).map(Exit.isSuccess)).toEqual([false, false, true, true, false])
-        // The loop refuses a child without a credential unless its origin is
-        // allowed; without a parentID it has no evidence the session is a child.
-        expect(outcomes.slice(5).map(Exit.isSuccess)).toEqual([false, false, true])
+        // The child admit refuses none/user/child_run/other inbox sources and
+        // lets only hook and the DAG mailbox origin through.
+        expect(outcomes.slice(0, 6).map(Exit.isSuccess)).toEqual([false, false, true, true, false, false])
+        // The loop refuses a declared delegation or a known child without a
+        // credential; a top-level user loop start is not a delegation claim.
+        expect(outcomes.slice(6).map(Exit.isSuccess)).toEqual([false, false, false, true])
       }),
   )
 })

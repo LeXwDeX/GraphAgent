@@ -1132,6 +1132,34 @@ it.instance("DAG prepared parent answers while its node is waiting without ackno
   }),
 )
 
+it.instance("idle prepare refuses the child turn when its run ends before activation", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    const child = yield* sessions.create({ parentID: chat.id, title: "idle child" })
+    const children = (yield* prompt.children).forParent(chat.id)
+    const run = yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID: "wf-idle", nodeID: "n", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
+    yield* run.markRunning
+    yield* llm.text("must not run")
+    const prepared = yield* prompt.prepareTurn({
+      sessionID: child.id,
+      agent: "build",
+      parts: [{ type: "text", text: "IDLE_CHILD" }],
+    })
+    if (Option.isNone(prepared)) throw new Error("idle admission was unexpectedly busy")
+    // The run that admitted the idle turn is gone before its owner activates it.
+    yield* run.settle({ type: "completed" })
+    const exit = yield* prepared.value.activate.pipe(Effect.andThen(prepared.value.result), Effect.exit)
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) expect(String(exit.cause)).toContain("ChildAdmissionRefused")
+  }),
+)
+
 it.instance("DAG messages enter an actual model input once and receive does not acknowledge them", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

@@ -71,6 +71,10 @@ const allowedWithoutCredential = (origin: Origin | undefined): boolean =>
  * carried credential must still be live. A user/inbox/hook loop start without
  * a credential is not a delegation claim and stays allowed; the admission
  * junction already refused the child prompt without one.
+ *
+ * A run that ended cancelled interrupts the admission/turn instead of failing
+ * it: a cancellation that lands between admission and the loop start is the
+ * normal task/DAG stop path, not a driver bug.
  */
 export const observe = (
   junction: Junction,
@@ -82,6 +86,7 @@ export const observe = (
     const verdict = verdictOf(session.id, credential)
     const fields = { junction, sessionID: session.id, ...(credential ? { runID: credential.runID } : {}), verdict }
     if (verdict === "live") return Effect.logDebug("child run credential presented", fields)
+    if (Registry.activeFor(session.id)?.outcome?.type === "cancelled") return Effect.interrupt
     if (junction === "admit") {
       if (session.parentID === undefined) return Effect.void
       if (verdict === "none" && allowedWithoutCredential(origin))
@@ -91,13 +96,13 @@ export const observe = (
         })
       return Effect.fail(new Refused({ sessionID: session.id, junction, verdict }))
     }
-    // The loop junction: a stale/foreign credential never starts a turn. A
-    // missing one is refused only when the caller carried the session's
-    // parentID and the origin is not allowed; callers that cannot know the
-    // parent without a read (prompt.loop) pass no parentID, and the admission
-    // junction already refused that child prompt.
+    // The loop junction: stale/foreign never starts a turn; a declared
+    // delegation must carry a live credential even without a parentID (the
+    // zero-read path `prompt.loop` uses); another origin is refused only when
+    // the caller carried the session's parentID.
     if (verdict !== "none") return Effect.fail(new Refused({ sessionID: session.id, junction, verdict }))
-    if (session.parentID !== undefined && !allowedWithoutCredential(origin))
+    if (allowedWithoutCredential(origin)) return Effect.void
+    if (origin?.kind === "child_run" || session.parentID !== undefined)
       return Effect.fail(new Refused({ sessionID: session.id, junction, verdict }))
     return Effect.void
   })
