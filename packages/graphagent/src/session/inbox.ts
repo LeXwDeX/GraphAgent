@@ -56,6 +56,7 @@ import { SessionLocation } from "./location"
 import { MessageID, SessionID } from "./schema"
 import { SessionStatus } from "./status"
 import type { AdmissionOptions, PromptInput } from "./prompt"
+import type { TurnOrigin } from "./turns"
 
 /**
  * How an automatic input may enter a session.
@@ -274,6 +275,17 @@ const hasScan = (source: InboxSource): source is ScannableSource => source.scan 
 const byPriority = (a: InboxSource, b: InboxSource) => a.priority - b.priority
 
 const TICK_INTERVAL = Duration.seconds(30)
+
+/**
+ * The origin a source stamps on the turn it admits (Issue #1026, PR5).
+ * `originFor` derives one from the admission options, but only a Stop rewake
+ * carries a rewake token: a non-Stop async rewake (for example PostToolUse)
+ * would otherwise enter admission as a plain user prompt and be refused on a
+ * child session. The source is the only place that knows its input is a hook
+ * re-entry.
+ */
+const originForSource = (sourceID: InboxSourceID): TurnOrigin | undefined =>
+  sourceID === "hook.rewake" ? { kind: "hook", via: "rewake" } : undefined
 
 export const layer = Layer.effect(
   Service,
@@ -644,11 +656,13 @@ export const layer = Layer.effect(
         const committed = yield* ledger.seen(scope).pipe(Effect.mapError(failed))
         if (committed) return { state: "duplicate" } as const
       }
+      const origin = originForSource(sourceID)
       const admitted = yield* prompts
         .admit(
           { sessionID, ...item.prompt, ...(item.noReply === true ? { noReply: true } : {}) },
           item.admissionOptions,
           ledger && scope ? ledger.commit(scope) : undefined,
+          origin ? { origin } : undefined,
         )
         .pipe(
           Effect.map((value) => ({ tag: "admitted", value }) as const),

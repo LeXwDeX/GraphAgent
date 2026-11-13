@@ -212,14 +212,7 @@ it.live("resume does not wait on cancellation while holding the admission commit
 
 const goalIt = testEffect(
   LayerNode.buildLayer(
-    LayerNode.group([
-      root,
-      GoalLoop.node,
-      Goal.node,
-      SessionStatus.node,
-      ExclusiveRegistry.node,
-      SessionRunState.node,
-    ]),
+    LayerNode.group([root, GoalLoop.node, Goal.node, SessionStatus.node, ExclusiveRegistry.node, SessionRunState.node]),
     {
       replacements: [LayerNode.replace(MCP.node, mcp), LayerNode.replace(LSP.node, lsp)],
     },
@@ -321,7 +314,9 @@ goalIt.live("goal handoff abandons a start invalidated while holding the exclusi
         const cancelled = yield* prompt.cancel(session.id).pipe(Effect.forkChild)
         yield* awaitWithTimeout(Deferred.await(unregistering), "goal pause did not reach lease release")
         yield* Deferred.succeed(release, undefined)
-        expect((yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff did not settle")).tag).toBe("cancelled")
+        expect((yield* awaitWithTimeout(Fiber.join(handoff), "stale goal handoff did not settle")).tag).toBe(
+          "cancelled",
+        )
         yield* awaitWithTimeout(Fiber.join(cancelled), "goal cancel deadlocked on the handoff")
         expect((yield* goal.load(session.id))?.status).toBe("paused")
         expect(yield* llm.calls).toBe(0)
@@ -2032,21 +2027,27 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
 
       // 5. Child-run loop bypasses admission entirely (DAG spawn/recovery).
       {
-        const session = yield* sessions.create({ title: "ups child run" })
+        const parent = yield* sessions.create({ title: "ups child-run parent" })
+        const session = yield* sessions.create({ parentID: parent.id, title: "ups child run" })
         const file = audit("child-run")
         yield* addHook(session.id, file)
-        yield* prompt.prompt(
-          {
-            sessionID: session.id,
-            agent: "build",
-            noReply: true,
-            parts: [{ type: "text", text: "CHILD_RUN_INPUT" }],
-          },
-          { internalDelegation: true },
-        )
+        const childRuns = (yield* prompt.children).forParent(parent.id)
+        const run = yield* childRuns.start({
+          childSessionID: session.id,
+          owner: { kind: "dag_node", workflowID: "wf-ups", nodeID: "child-run", attempt: 0 },
+          detached: false,
+          permission: { ask: "auto" },
+        })
+        yield* childRuns.prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "CHILD_RUN_INPUT" }],
+        })
         yield* llm.text("child run answer")
         yield* prompt.loop({ sessionID: session.id }, { kind: "child_run" })
         expect(yield* auditText(file)).toBeUndefined()
+        yield* run.settle({ type: "completed" })
       }
 
       // 6. Hook rewake re-enters the session without another UPS round trip.
@@ -2070,19 +2071,25 @@ goalIt.live("UserPromptSubmit runs for automation entries and is skipped for int
 
       // 7. Internal delegation carries subagent/DAG input, not a user submit.
       {
-        const session = yield* sessions.create({ title: "ups internal delegation" })
+        const parent = yield* sessions.create({ title: "ups internal parent" })
+        const session = yield* sessions.create({ parentID: parent.id, title: "ups internal delegation" })
         const file = audit("internal-delegation")
         yield* addHook(session.id, file)
+        const childRuns = (yield* prompt.children).forParent(parent.id)
+        const run = yield* childRuns.start({
+          childSessionID: session.id,
+          owner: { kind: "dag_node", workflowID: "wf-ups", nodeID: "internal", attempt: 0 },
+          detached: false,
+          permission: { ask: "auto" },
+        })
         yield* llm.text("internal delegation answer")
-        yield* prompt.prompt(
-          {
-            sessionID: session.id,
-            agent: "build",
-            parts: [{ type: "text", text: "INTERNAL_DELEGATION_INPUT" }],
-          },
-          { internalDelegation: true },
-        )
+        yield* childRuns.prompt({
+          sessionID: session.id,
+          agent: "build",
+          parts: [{ type: "text", text: "INTERNAL_DELEGATION_INPUT" }],
+        })
         expect(yield* auditText(file)).toBeUndefined()
+        yield* run.settle({ type: "completed" })
       }
     }),
     { git: true, config: providerCfg },

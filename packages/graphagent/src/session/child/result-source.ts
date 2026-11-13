@@ -122,12 +122,16 @@ const deliver = (ctx: Ctx, parent: Store.ParentSession, row: Store.RunRow, claim
       ],
     }
     const origin = originOf(row.id)
+    // The recipient may itself be a child session (a subagent's background
+    // task reports back to it); carry its live credential so the admission
+    // guard does not refuse a legitimate result delivery.
+    const credential = Registry.credentialOf(parentSessionID)
     if (fresh) {
-      const fenced = yield* admitNowUnderFence(ctx.prompts, input, OPTIONS, mark, claimEpoch, origin)
+      const fenced = yield* admitNowUnderFence(ctx.prompts, input, OPTIONS, mark, claimEpoch, origin, credential)
       if (fenced.tag === "admitted") return true
       // An ESC landed after the claim. Nothing was committed; the result still belongs in the transcript.
     }
-    yield* ctx.prompts.admit({ ...input, noReply: true }, OPTIONS, mark, { origin })
+    yield* ctx.prompts.admit({ ...input, noReply: true }, OPTIONS, mark, { origin, ...(credential ? { credential } : {}) })
     return true
   }).pipe(
     // The mark found the row reported (or the transaction failed for another reason): the row decides.

@@ -244,6 +244,25 @@ export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> 
           (index) => sessions.create({ parentID: parent.id, title: `${label} bg ${index}`, model }),
           { concurrency: 1 },
         )
+        // PR5: the background jobs drive their child sessions as delegations,
+        // so each child registers a run. Registration and `markRunning` happen
+        // before the measurement window (the binding/run writes must not join
+        // the S5 probe); the prompts below then carry the run's credentials.
+        const childRuns = (yield* prompt.children).forParent(parent.id)
+        const runs = yield* Effect.forEach(
+          children,
+          (child, index) =>
+            Effect.gen(function* () {
+              const run = yield* childRuns.start({
+                childSessionID: child.id,
+                owner: { kind: "task", toolCallID: `s5-${label}-${index}` },
+                detached: false,
+              })
+              yield* run.markRunning
+              return run
+            }),
+          { concurrency: 1 },
+        )
         // A busy parent parks every wake at the status gate: no turn, no
         // parent messages, and no wake rows consumed.
         yield* status.set(parent.id, { type: "busy" })
@@ -286,7 +305,7 @@ export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> 
                   type: "task",
                   title: `${label} bg ${index}`,
                   metadata: { sessionID: child.id, parentSessionID: parent.id },
-                  run: prompt
+                  run: childRuns
                     .prompt({
                       sessionID: child.id,
                       agent: "build",
@@ -310,6 +329,9 @@ export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> 
           })
         })
         const waited = yield* options?.around ? options.around(label, load) : load
+        // The runs settle after the measured window: this is the settling
+        // phase, like every other teardown cost the window excludes.
+        yield* Effect.forEach(runs, (run) => run.settle({ type: "completed" }), { discard: true })
         yield* Fiber.interrupt(sampler)
         // Model-stream occupancy can only rise at a grant: fold in the exact
         // snapshots the provider took there (the polling fiber cannot catch a

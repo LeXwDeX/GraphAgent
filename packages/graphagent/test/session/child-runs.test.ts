@@ -260,6 +260,10 @@ describe("dag node runs", () => {
         by: { kind: "engine", reason: "deadline-cap", actor: "deadline-watcher" },
       })
       expect(cancelled).toEqual([{ sessionID: child, reason: "deadline-cap", actor: "deadline-watcher" }])
+      // The cancelled run is held until its driver reports stopped; settle
+      // loses the compare-and-swap but releases the registry entry.
+      expect(yield* handle.settle({ type: "interrupted", reason: "test-driver-stopped" })).toBe(false)
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 

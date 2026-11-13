@@ -87,9 +87,11 @@ function syntheticTextPart(input: { sessionID: SessionID; messageID: MessageID; 
 
 /** The tool switches of a prompt, as the permission rules they are. */
 function toolPermissions(tools: PromptInput["tools"]): PermissionV1.Rule[] {
-  return Object.entries(tools ?? {}).map(
-    ([permission, enabled]): PermissionV1.Rule => ({ permission, action: enabled ? "allow" : "deny", pattern: "*" }),
-  )
+  return Object.entries(tools ?? {}).map(([permission, enabled]): PermissionV1.Rule => ({
+    permission,
+    action: enabled ? "allow" : "deny",
+    pattern: "*",
+  }))
 }
 
 /**
@@ -429,10 +431,10 @@ export function makeAdmit(deps: AdmitDeps) {
     options?: AdmissionOptions,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
-    credential?: ChildRunCredential,
+    credential?: ChildRunCredential, origin?: TurnOrigin,
   ) {
     const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-    yield* ChildAdmission.observe("admit", session, credential)
+    yield* ChildAdmission.observe("admit", session, credential, origin)
     // Reverted turns disappear with the messages the cleanup removes.
     yield* dropReverted({ db, sessions }, session)
     yield* revert.cleanup(session)
@@ -472,7 +474,7 @@ export function makeAdmit(deps: AdmitDeps) {
           modelBaseline,
         )
         yield* sessions.touch(input.sessionID)
-        return { message, run: false as const }
+        return { message, run: false as const, parentID: session.parentID }
       }
     }
     // CC's `prompt_id` names the prompt being submitted, but the message row is
@@ -529,7 +531,7 @@ export function makeAdmit(deps: AdmitDeps) {
           "hook_blocked",
         )
       }
-      return { message, run: false as const }
+      return { message, run: false as const, parentID: session.parentID }
     }
 
     // Evaluated before the prompt is persisted so "earlier messages" excludes this turn.
@@ -549,7 +551,7 @@ export function makeAdmit(deps: AdmitDeps) {
     // stripped from model input (parts ignored) and never starts a run.
     if (isRewake && options?.rewakeToken !== undefined) {
       if (!(yield* fenceRewake(input.sessionID, options, message))) {
-        return { message, run: false as const }
+        return { message, run: false as const, parentID: session.parentID }
       }
     }
 
@@ -586,7 +588,7 @@ export function makeAdmit(deps: AdmitDeps) {
       state.pending.set(message.info.id, ToolBudget.create((yield* config.get()).maxToolCalls))
     }
 
-    return { message, run: input.noReply !== true }
+    return { message, run: input.noReply !== true, parentID: session.parentID }
   })
 
   const promptImpl = Effect.fnUntraced(function* (
@@ -755,6 +757,7 @@ export function admitNowUnderFence(
   persistAdmission?: Effect.Effect<void, unknown>,
   claimEpoch?: number,
   origin?: TurnOrigin,
+  credential?: ChildRunCredential,
 ): Effect.Effect<FencedNowAdmission, PromptError> {
   return Effect.suspend(() => {
     const request =
@@ -767,7 +770,11 @@ export function admitNowUnderFence(
       Effect.andThen(
         Effect.suspend(() =>
           request.valid()
-            ? service.admit(input, options, persistAdmission, { request, ...(origin ? { origin } : {}) }).pipe(
+            ? service.admit(input, options, persistAdmission, {
+                request,
+                ...(origin ? { origin } : {}),
+                ...(credential ? { credential } : {}),
+              }).pipe(
                 Effect.exit,
                 Effect.flatMap((exit) =>
                   Exit.isSuccess(exit)

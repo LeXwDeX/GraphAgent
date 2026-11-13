@@ -10,7 +10,7 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import type { SessionV1 } from "@graphagent/core/v1/session"
-import { Cause, Effect, Exit, Logger, References, Scope } from "effect"
+import { Cause, Effect, Exit, Scope } from "effect"
 import { ChildAdmission } from "@/session/child/admission"
 import { ChildRegistry } from "@/session/child/registry"
 import { makeChildRuns, type ChildRuns } from "@/session/child/run"
@@ -455,20 +455,7 @@ describe("ChildRegistry.delegateStop", () => {
 })
 
 describe("ChildAdmission.observe", () => {
-  const record = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      const lines: Array<{ readonly level: string; readonly message: string }> = []
-      const logger = Logger.make((entry) => {
-        lines.push({ level: entry.logLevel.toUpperCase(), message: String(entry.message) })
-      })
-      yield* effect.pipe(
-        Effect.provideService(References.MinimumLogLevel, "Debug"),
-        Effect.provide(Logger.layer([logger])),
-      )
-      return lines
-    })
-
-  it.effect("records a live credential at either junction and refuses nothing", () =>
+  it.effect("accepts a live credential at either junction", () =>
     Effect.gen(function* () {
       const { scoped, newChild } = yield* setup("observe-live")
       const child = yield* newChild()
@@ -476,20 +463,17 @@ describe("ChildAdmission.observe", () => {
       const credential = ChildRegistry.credentialOf(child)
       const parentID_ = SessionID.make("ses_cd_observe_parent")
 
-      const lines = yield* record(
-        Effect.all([
-          ChildAdmission.observe("admit", { id: child, parentID: parentID_ }, credential),
-          ChildAdmission.observe("loop", { id: child }, credential),
-        ]),
-      )
+      const outcomes = yield* Effect.all([
+        ChildAdmission.observe("admit", { id: child, parentID: parentID_ }, credential).pipe(Effect.exit),
+        ChildAdmission.observe("loop", { id: child }, credential).pipe(Effect.exit),
+      ])
 
-      expect(lines.map((line) => line.level)).toEqual(["DEBUG", "DEBUG"])
-      expect(lines.every((line) => line.message.includes("child run credential presented"))).toBe(true)
+      expect(outcomes.every(Exit.isSuccess)).toBe(true)
       yield* handle.settle({ type: "completed" })
     }),
   )
 
-  it.effect("warns about a credential that is stale or belongs to another session, and about nothing else", () =>
+  it.effect("refuses a stale or foreign credential at both junctions", () =>
     Effect.gen(function* () {
       const { scoped, newChild } = yield* setup("observe-bad")
       const child = yield* newChild("a")
@@ -500,34 +484,57 @@ describe("ChildAdmission.observe", () => {
       const foreign = ChildRegistry.credentialOf(other)
       yield* handle.settle({ type: "completed" })
 
-      const lines = yield* record(
-        Effect.all([
-          ChildAdmission.observe("admit", { id: child }, credential),
-          ChildAdmission.observe("admit", { id: other }, credential),
-          ChildAdmission.observe("loop", { id: child }, foreign),
-        ]),
-      )
+      const effects = [
+        ChildAdmission.observe("admit", { id: child, parentID: SessionID.make("ses_cd_p") }, credential),
+        ChildAdmission.observe("admit", { id: other, parentID: SessionID.make("ses_cd_p") }, credential),
+        ChildAdmission.observe("loop", { id: child }, foreign, { kind: "child_run" }),
+        // The allowlist only lets a *missing* credential through; a stale one
+        // cannot borrow a hook origin.
+        ChildAdmission.observe("admit", { id: child, parentID: SessionID.make("ses_cd_p") }, credential, {
+          kind: "hook",
+        }),
+      ]
+      const outcomes = yield* Effect.all(effects.map((effect) => effect.pipe(Effect.exit)))
 
-      expect(lines.map((line) => line.level)).toEqual(["WARN", "WARN", "WARN"])
+      for (const outcome of outcomes) {
+        expect(Exit.isFailure(outcome)).toBe(true)
+        if (Exit.isFailure(outcome)) expect(String(outcome.cause)).toContain("ChildAdmissionRefused")
+      }
       yield* otherHandle.settle({ type: "completed" })
     }),
   )
 
-  it.effect("a session without a credential is a debug note when it is a child, and silent when it is not", () =>
-    Effect.gen(function* () {
-      const lines = yield* record(
-        Effect.all([
-          ChildAdmission.observe(
-            "admit",
-            { id: SessionID.make("ses_cd_a"), parentID: SessionID.make("ses_cd_p") },
-            undefined,
-          ),
-          ChildAdmission.observe("admit", { id: SessionID.make("ses_cd_b") }, undefined),
-          ChildAdmission.observe("loop", { id: SessionID.make("ses_cd_a") }, undefined),
-        ]),
-      )
-      expect(lines.map((line) => line.level)).toEqual(["DEBUG"])
-      expect(lines[0]?.message).toContain("without a run credential")
-    }),
+  it.effect(
+    "refuses a child admit without a credential unless its origin is allowed; loops only refuse declared delegations",
+    () =>
+      Effect.gen(function* () {
+        const child = { id: SessionID.make("ses_cd_a"), parentID: SessionID.make("ses_cd_p") }
+        const attempt = (
+          origin?: { kind: string; source?: string },
+          junction: "admit" | "loop" = "admit",
+          withParent = junction === "admit",
+        ) =>
+          ChildAdmission.observe(junction, withParent ? child : { id: child.id }, undefined, origin).pipe(Effect.exit)
+
+        const outcomes = yield* Effect.all([
+          attempt(),
+          attempt({ kind: "user" }),
+          attempt({ kind: "hook" }),
+          attempt({ kind: "inbox", source: "dag.mailbox.step" }),
+          attempt({ kind: "child_run" }),
+          attempt({ kind: "inbox", source: "child.result" }),
+          attempt({ kind: "child_run" }, "loop", true),
+          attempt({ kind: "user" }, "loop", true),
+          attempt({ kind: "child_run" }, "loop", false),
+          attempt({ kind: "user" }, "loop", false),
+        ])
+
+        // The child admit refuses none/user/child_run/other inbox sources and
+        // lets hook, the DAG mailbox origin and child results through.
+        expect(outcomes.slice(0, 6).map(Exit.isSuccess)).toEqual([false, false, true, true, false, true])
+        // The loop refuses a declared delegation or a known child without a
+        // credential; a top-level user loop start is not a delegation claim.
+        expect(outcomes.slice(6).map(Exit.isSuccess)).toEqual([false, false, false, true])
+      }),
   )
 })

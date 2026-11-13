@@ -466,7 +466,11 @@ describe("SessionInbox", () => {
 
       // With an admission port, submit maps the outcome without awaiting the
       // turn: `wait` never resolves here and submit still returns.
-      const seen: { input: { sessionID: string; noReply?: boolean }; options?: unknown }[] = []
+      const seen: {
+        input: { sessionID: string; noReply?: boolean }
+        options?: unknown
+        extras?: unknown
+      }[] = []
       const createdAt = 1_700_000_000_000
       const startedID = MessageID.make("msg_started")
       const joinedID = MessageID.make("msg_joined")
@@ -483,9 +487,9 @@ describe("SessionInbox", () => {
       })
       let outcome = start({ kind: "not_started", reason: "test" })
       const promptMock = mockSessionPrompt({
-        admit: (input, options) =>
+        admit: (input, options, _persist, extras) =>
           Effect.sync(() => {
-            seen.push({ input, options })
+            seen.push({ input, options, extras })
             return outcome
           }),
       })
@@ -496,6 +500,9 @@ describe("SessionInbox", () => {
       expect(seen[0].input).toMatchObject({ sessionID, parts: [{ type: "text", text: "rewake" }] })
       expect(seen[0].input.noReply).toBeUndefined()
       expect(seen[0].options).toEqual({ continueToolBudget: true })
+      // A non-Stop rewake carries no token, so `originFor` would admit it as a
+      // plain user prompt; the source stamps the hook origin itself.
+      expect(seen[0].extras).toEqual({ origin: { kind: "hook", via: "rewake" } })
 
       outcome = start({ kind: "joined", turn: undefined as never, messageID: joinedID }, message(joinedID))
       expect(yield* submit()).toEqual({ state: "joined", messageID: joinedID, createdAt })
