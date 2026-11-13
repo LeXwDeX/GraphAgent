@@ -7,6 +7,7 @@ import type { Part } from "@graphagent/sdk"
 import { TICK_MS } from "../../src/context/ticker"
 import { isWindowed } from "../../src/routes/session/rows"
 import { dagIndicatorCompact, dagIndicatorText } from "../../src/shell/dag-indicator"
+import { readFrame } from "../routes/dag-mode-harness"
 import { type FixtureSize, updatePartEvent } from "./fixtures"
 import type { PerfHarness, PerfStream } from "./harness"
 import { within } from "./settle"
@@ -275,12 +276,8 @@ async function tickerFrames(harness: PerfHarness, ms: number) {
  * renderer for directly.
  */
 async function dagIdleFrames(harness: PerfHarness) {
-  harness.setDagMode("on")
-  for (let attempt = 0; attempt < 3; attempt++) {
-    await harness.app.renderOnce()
-    await Bun.sleep(0)
-  }
-  const frame = harness.app.captureCharFrame()
+  await harness.setDagMode("on")
+  const frame = await readFrame(harness.app)
   if (harness.sync.session.get(harness.fixture.session.id)?.dagMode !== "on") {
     invalid("P15b", "the session did not enter DAG mode", frame)
   }
@@ -769,7 +766,7 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
 
   await fresh(harness)
   const dagFrames = await dagIdleFrames(harness)
-  harness.setDagMode("off")
+  await harness.setDagMode("off")
   await harness.app.renderOnce()
   all.push(result("P15b", size, dagFrames))
 
