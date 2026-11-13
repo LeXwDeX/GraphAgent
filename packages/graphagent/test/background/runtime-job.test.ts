@@ -7,6 +7,7 @@ import { RuntimeJobRecovery } from "@/background/recovery"
 import { persistTransition, runtimeJobProcessID } from "@/background/persist"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Lifecycle } from "@/lifecycle/service"
+import { EngineProcess } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
@@ -217,6 +218,128 @@ describe("runtime_job startup recovery", () => {
           reason: "process_restart",
         },
       ])
+    }),
+  )
+})
+
+/**
+ * Issue #1272: the database is shared by every graphagent process of the
+ * install, so a running row is a leftover only when its owner process is gone.
+ * `process_id` is the `pid:nonce` runner identity; one row per owner shape.
+ */
+describe("runtime_job startup recovery by owner process", () => {
+  const seed = (db: Database.Interface["db"], id: string, status: string, processID: string | null) =>
+    db
+      .insert(RuntimeJobTable)
+      .values({
+        id,
+        type: "watch",
+        process_id: processID,
+        session_id: "ses_owner",
+        status,
+        started_at: 1000,
+        updated_at: 1000,
+      })
+      .run()
+  const rowOf = (db: Database.Interface["db"], id: string) =>
+    db.select().from(RuntimeJobTable).where(eq(RuntimeJobTable.id, id)).get()
+  const failed = { status: "error", error: "process_restart" }
+
+  it.live("never touches the rows of this process, whose identity is the runner id", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      expect(runtimeJobProcessID).toBe(EngineProcess.runner.id)
+      yield* seed(db, "own_running", "running", runtimeJobProcessID)
+      yield* seed(db, "own_settling", "settling", runtimeJobProcessID)
+
+      expect(yield* (yield* RuntimeJobRecovery.Service).recoverOnce()).toBe(0)
+
+      expect(yield* rowOf(db, "own_running")).toMatchObject({ status: "running", error: null, settled_at: null })
+      expect(yield* rowOf(db, "own_settling")).toMatchObject({ status: "settling", error: null, settled_at: null })
+    }),
+  )
+
+  it.live("fails the rows of an earlier life of this pid: same pid, another nonce", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      // A restarted container reuses its pid: the pid looks alive, the nonce says it is not the same process.
+      yield* seed(db, "earlier_running", "running", `${process.pid}:an-earlier-life`)
+      yield* seed(db, "earlier_settling", "settling", `${process.pid}:an-earlier-life`)
+
+      expect(yield* (yield* RuntimeJobRecovery.Service).recoverOnce()).toBe(2)
+
+      expect(yield* rowOf(db, "earlier_running")).toMatchObject(failed)
+      expect(yield* rowOf(db, "earlier_settling")).toMatchObject(failed)
+    }),
+  )
+
+  it.live("fails the rows of an exited pid", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      // No operating system hands out a pid this large, so the probe finds no such process.
+      yield* seed(db, "exited_running", "running", "2147483647:nonce")
+      yield* seed(db, "exited_settling", "settling", "2147483647:nonce")
+
+      expect(yield* (yield* RuntimeJobRecovery.Service).recoverOnce()).toBe(2)
+
+      expect(yield* rowOf(db, "exited_running")).toMatchObject(failed)
+      expect(yield* rowOf(db, "exited_settling")).toMatchObject(failed)
+    }),
+  )
+
+  it.live("leaves the rows of another live process alone, whichever their status", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      // The parent process exists for as long as this test runs; its nonce is not ours to judge.
+      const foreign = `${process.ppid}:other-process`
+      yield* seed(db, "foreign_running", "running", foreign)
+      yield* seed(db, "foreign_settling", "settling", foreign)
+
+      const service = yield* RuntimeJobRecovery.Service
+      expect(yield* service.recoverOnce()).toBe(0)
+      expect(yield* service.recoverOnce()).toBe(0)
+
+      expect(yield* rowOf(db, "foreign_running")).toMatchObject({ status: "running", error: null, settled_at: null })
+      expect(yield* rowOf(db, "foreign_settling")).toMatchObject({ status: "settling", error: null, settled_at: null })
+    }),
+  )
+
+  it.live("fails the rows no live process can own: a pre-#1272 token and no owner at all", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      // Rows written before the identity change carry `proc_<uuid>`, which names no pid.
+      yield* seed(db, "legacy_running", "running", "proc_5f0c1e2a-9a3b-4f0e-8f55-1c2d3e4f5a6b")
+      yield* seed(db, "legacy_settling", "settling", "proc_5f0c1e2a-9a3b-4f0e-8f55-1c2d3e4f5a6b")
+      yield* seed(db, "unowned_running", "running", null)
+
+      expect(yield* (yield* RuntimeJobRecovery.Service).recoverOnce()).toBe(3)
+
+      expect(yield* rowOf(db, "legacy_running")).toMatchObject(failed)
+      expect(yield* rowOf(db, "legacy_settling")).toMatchObject(failed)
+      expect(yield* rowOf(db, "unowned_running")).toMatchObject(failed)
+    }),
+  )
+
+  it.live("fails only the dead among rows of several owners in one pass", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* seed(db, "mix_own", "running", runtimeJobProcessID)
+      yield* seed(db, "mix_foreign_alive", "running", `${process.ppid}:other-process`)
+      yield* seed(db, "mix_earlier_life", "running", `${process.pid}:an-earlier-life`)
+      yield* seed(db, "mix_exited", "settling", "2147483647:nonce")
+      yield* seed(db, "mix_legacy", "running", "proc_dead")
+      yield* seed(db, "mix_terminal", "completed", "2147483647:nonce")
+
+      const service = yield* RuntimeJobRecovery.Service
+      expect(yield* service.recoverOnce()).toBe(3)
+      expect(yield* service.recoverOnce()).toBe(0)
+
+      expect((yield* rowOf(db, "mix_own"))?.status).toBe("running")
+      expect((yield* rowOf(db, "mix_foreign_alive"))?.status).toBe("running")
+      expect(yield* rowOf(db, "mix_earlier_life")).toMatchObject(failed)
+      expect(yield* rowOf(db, "mix_exited")).toMatchObject(failed)
+      expect(yield* rowOf(db, "mix_legacy")).toMatchObject(failed)
+      expect((yield* rowOf(db, "mix_terminal"))?.status).toBe("completed")
     }),
   )
 })

@@ -551,6 +551,9 @@ export function Main() {
 
   const windowed = () => isWindowed(rows().length)
 
+  // The message the last jump of a windowed session asked to put at the top of the viewport.
+  let aligning: string | undefined
+
   // Small sessions stay fully mounted, so keep using the rendered nodes for
   // exact positions. Windowed sessions locate the target in the row table.
   const scrollToMessageID = (messageID: string) => {
@@ -564,6 +567,14 @@ export function Main() {
     const index = rowIndexByMessage().get(messageID)
     if (index === undefined) return false
     scroll.scrollTo(positions()[index])
+    // The offset is only as good as the heights the rows above the target were estimated with. The next frame
+    // mounts the rows around the target and lays them out, and this puts the target at the top of the viewport
+    // after that layout, before the frame is drawn. A later jump takes the request over.
+    aligning = messageID
+    scroll.afterLayout(() => {
+      if (aligning === messageID && !scroll.isDestroyed)
+        scroll.scrollChildIntoView(messageID, { align: "start", inset: 1 })
+    })
     return true
   }
 
@@ -1652,17 +1663,59 @@ function SessionTranscript(props: {
   // The rows the viewport shows, as `visibleRange` last reported them.
   const [shown, setShown] = createSignal({ first: 0, last: 0 })
   let controller: BoxRenderable | undefined
-  // Measuring functions of the rows that are mounted now, in mount order.
-  const mountedRows = new Set<() => void>()
-  const track = (measure: () => void) => {
-    mountedRows.add(measure)
+  // The rows that are mounted now, by key: the element each one is laid out in and its measuring function.
+  const mountedRows = new Map<string, { el: BoxRenderable; measure: () => void }>()
+  const track = (key: string, el: BoxRenderable, measure: () => void) => {
+    const entry = { el, measure }
+    mountedRows.set(key, entry)
     return () => {
-      mountedRows.delete(measure)
+      if (mountedRows.get(key) === entry) mountedRows.delete(key)
     }
+  }
+
+  // The scroll box keeps one row where it is: the one the top of the viewport is in. A row above it that is
+  // measured for the first time, mounted, opened or closed moves everything under it in the layout, and the
+  // box takes the offset along in that same layout; left alone, the content under the reader jumps by the
+  // difference between what the row was estimated at and what it measures (#1277).
+  let held: { key: string; el: BoxRenderable; index: number; top: number } | undefined
+  let release: (() => void) | undefined
+
+  // Where the positions put the held row now, against where they put it when the last pass ended. They differ
+  // by a change made since to the rows or to a row the reader opened or closed above it: one this frame's
+  // layout applies, and the box holds the offset through. Measurements are not in it. They come after, from a
+  // layout that was held already.
+  const shifted = () => {
+    if (!held) return 0
+    const { key } = held
+    const index = props.rows[held.index]?.key === key ? held.index : props.rows.findIndex((row) => row.key === key)
+    return index === -1 ? 0 : props.positions[index] - held.top
+  }
+
+  const hold = (scroll: ScrollBoxRenderable, first: number) => {
+    // At the end the box follows the content that comes: there is nothing to keep still, and a held row would
+    // stop it from following.
+    const atEnd = scroll.scrollTop >= scroll.scrollHeight - scroll.viewport.height
+    const row = atEnd ? undefined : props.rows[first]
+    const entry = row ? mountedRows.get(row.key) : undefined
+    // Only a row an earlier layout has placed can be held. One this very pass mounted has no place yet.
+    if (!row || !entry || entry.el.isDestroyed || entry.el.height <= 0) {
+      release?.()
+      release = undefined
+      held = undefined
+      return
+    }
+    if (held?.el === entry.el) {
+      held.index = first
+      held.top = props.positions[first]
+      return
+    }
+    release = scroll.anchor(entry.el)
+    held = { key: row.key, el: entry.el, index: first, top: props.positions[first] }
   }
 
   onCleanup(() => {
     if (controller) renderer.unregisterLifecyclePass(controller)
+    release?.()
     ctx.setVisibleParts(undefined)
   })
 
@@ -1722,15 +1775,22 @@ function SessionTranscript(props: {
           el.onLifecyclePass = () => {
             const scroll = ctx.scroll()
             if (!scroll || scroll.isDestroyed) return
+            // What the positions already know of the held row's place that the layout of this frame has not
+            // applied yet, taken before anything is measured.
+            const shift = shifted()
             // Measure what the last layout produced before the window moves. A row
             // that was mounted for one layout and is unmounted by this very pass
             // would otherwise leave unmeasured, its estimate would stay in the
             // positions, and the window computed from them would flip between two
             // ranges on every frame once the viewport follows the end.
             batch(() => {
-              for (const measure of mountedRows) measure()
+              for (const { measure } of mountedRows.values()) measure()
             })
-            const range = visibleRange(props.positions, scroll.scrollTop, scroll.viewport.height)
+            // The window is the one the viewport will need after this frame's layout, at the offset the held
+            // row leaves it at. What only the layout will learn of is far smaller than the rows the window
+            // carries on either side.
+            const range = visibleRange(props.positions, scroll.scrollTop + shift, scroll.viewport.height)
+            hold(scroll, range.first)
             const current = shown()
             if (range.first === current.first && range.last === current.last) return
             const ids = new Set<string>()
@@ -1767,8 +1827,8 @@ function SessionRow(props: {
   row: Row
   revert: RevertState | undefined
   onUserMouseUp: (message: UserMessage) => void
-  /** Registers the row's measuring function with the transcript; the returned function removes it. */
-  track: (measure: () => void) => () => void
+  /** Registers the row's element and measuring function with the transcript; the returned function removes them. */
+  track: (key: string, el: BoxRenderable, measure: () => void) => () => void
 }) {
   const ctx = use()
   const sync = useSync()
@@ -1798,7 +1858,7 @@ function SessionRow(props: {
       flexShrink={0}
       paddingTop={props.row.kind === "tool" ? 1 : 0}
       ref={(el) => {
-        untrack = props.track(() => ctx.measureRow(props.row, el))
+        untrack = props.track(props.row.key, el, () => ctx.measureRow(props.row, el))
       }}
     >
       <Switch>

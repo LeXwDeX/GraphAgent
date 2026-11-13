@@ -88,6 +88,8 @@ export type PerfHarness = {
   openStream(): PerfStream
   tickBackground(tick: number): void
   hideAutocomplete(): void
+  /** Runs a registered command by name, the way its key binding would. */
+  command(name: string): void
   navigate(route: Parameters<ReturnType<typeof useRoute>["navigate"]>[0]): void
   /** Replaces the composer with a bottom-zone panel, as a real detail view does. */
   openPanel(): void
@@ -401,6 +403,9 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
     },
     hideAutocomplete() {
       keymap.dispatchCommand("prompt.autocomplete.hide")
+    },
+    command(name) {
+      keymap.dispatchCommand(name)
     },
     navigate(route) {
       state.route?.navigate(route)

@@ -177,6 +177,51 @@ describe("Goal.orphanedWait and Goal.expireOrphanedWait", () => {
     }),
   )
 
+  // #1272: the database is shared by every graphagent process of the install,
+  // so a second process starting up must not call the first one's live job lost.
+  it.live("keeps waiting while the job row belongs to another process that is still alive", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      // The parent process exists for as long as this test runs; its nonce is not ours to judge.
+      const foreign = `${process.ppid}:other-process`
+      yield* insertJob({ id: "orphan_job_foreign_running", process_id: foreign, status: "running" })
+      yield* insertJob({ id: "orphan_job_foreign_settling", process_id: foreign, status: "settling" })
+
+      for (const jobID of ["orphan_job_foreign_running", "orphan_job_foreign_settling"]) {
+        const sid = yield* waitingGoal(jobID)
+
+        expect(yield* goal.orphanedWait(sid)).toBeUndefined()
+        expect(yield* expireOrphaned(sid)).toBeUndefined()
+
+        const state = yield* goal.load(sid)
+        expect(state?.status).toBe("waiting")
+        expect(state?.intent?.kind).toBe("await")
+      }
+    }),
+  )
+
+  it.live("ends the wait of a job whose owner is an exited pid or an earlier life of this pid", () =>
+    Effect.gen(function* () {
+      yield* insertJob({ id: "orphan_job_exited", process_id: "2147483647:nonce", status: "running" })
+      yield* insertJob({
+        id: "orphan_job_earlier_life",
+        process_id: `${process.pid}:an-earlier-life`,
+        status: "settling",
+      })
+
+      expectReviewMarker(
+        yield* expireOrphaned(yield* waitingGoal("orphan_job_exited")),
+        "orphan_job_exited",
+        "因进程重启已丢失（状态 running，由已退出的进程留下",
+      )
+      expectReviewMarker(
+        yield* expireOrphaned(yield* waitingGoal("orphan_job_earlier_life")),
+        "orphan_job_earlier_life",
+        "因进程重启已丢失（状态 settling，由已退出的进程留下",
+      )
+    }),
+  )
+
   it.live("leaves a wait that does not name its job by reference to its deadline", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service

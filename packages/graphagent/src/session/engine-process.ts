@@ -179,11 +179,12 @@ export namespace ExclusiveRegistry {
 
 /**
  * Identity of this process as recorded in `runner_id` columns (Issue #1026,
- * PR1): `session_turn` and `child_run` share the `pid:nonce` vocabulary. The
- * nonce is drawn once when this module loads, so a container restart that
- * reuses the same pid still yields a different identity: a row carrying this
- * pid with another nonce was written by an earlier life of the process and can
- * never be live again. Leases and heartbeats stay with #1029.
+ * PR1): `session_turn` and `child_run` share the `pid:nonce` vocabulary, and
+ * `runtime_job.process_id` carries the same value (Issue #1272). The nonce is
+ * drawn once when this module loads, so a container restart that reuses the
+ * same pid still yields a different identity: a row carrying this pid with
+ * another nonce was written by an earlier life of the process and can never be
+ * live again. Leases and heartbeats stay with #1029.
  */
 export interface RunnerIdentity {
   readonly pid: number
@@ -309,6 +310,38 @@ export const EngineProcess: EngineProcess = {
   scheduler: AgentSchedulerState.makeState(),
   runner: makeRunnerIdentity(),
   children: { byRun: new Map(), bySession: new Map(), reports: new Map() },
+}
+
+/**
+ * True when the process named by a `runner_id` (or a `runtime_job.process_id`)
+ * can still own a running row. The identity is `pid:nonce` (Issue #1026): the
+ * nonce is drawn once per process start, so
+ *   - this process's nonce means this process, alive;
+ *   - this process's pid with another nonce is an earlier life of the pid (a
+ *     container restarts as pid 1) and is dead, however alive the pid looks;
+ *   - another pid is probed with `kill(pid, 0)`.
+ * A bare pid carries no nonce, so it can never be this process: it is an
+ * earlier life when the pid is ours and a probe otherwise. A value that names
+ * no pid at all (empty, malformed, or the `proc_<uuid>` token job rows carried
+ * before Issue #1272) belongs to no live process.
+ *
+ * It lives next to the identity it judges so that every recovery pass (session
+ * turns, child runs, background jobs) shares one verdict without depending on
+ * one another.
+ */
+export function runnerAlive(runnerID: string | null | undefined): boolean {
+  if (!runnerID) return false
+  const [pidText, nonce, ...extra] = runnerID.split(":")
+  const pid = Number(pidText)
+  if (!/^\d+$/.test(pidText) || !Number.isInteger(pid) || pid <= 0) return false
+  if (extra.length > 0 || nonce === "") return false
+  if (pid === EngineProcess.runner.pid) return nonce === EngineProcess.runner.nonce
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM"
+  }
 }
 
 const entry = (state: ExclusiveState, sessionID: SessionID) => {

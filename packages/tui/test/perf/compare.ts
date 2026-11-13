@@ -186,14 +186,17 @@ export const WINDOWED_RELATIVE_EXEMPT: ReadonlySet<string> = new Set(["P8", "P8'
 
 /**
  * What a session marked `windowed` has to carry. Its cold scroll is the only
- * measurement of the windowed path against the scroll budget, and its stream is
- * the only one over a transcript that long. `compareReports` lets a scenario be
- * absent from a partial report, so without this a scenario removed from the
- * windowed scope would take its budget with it and the run would still pass.
+ * measurement of the windowed path against the scroll budget, its walk up from the
+ * end is the only one that crosses rows whose heights are estimated until the
+ * window mounts them, and its stream is the only one over a transcript that long.
+ * `compareReports` lets a scenario be absent from a partial report, so without
+ * this a scenario removed from the windowed scope would take its budget with it
+ * and the run would still pass.
  */
 export const WINDOWED_REQUIRED: readonly { id: string; metrics: readonly string[] }[] = [
   { id: "P8", metrics: ["p99Ms", "maxMs"] },
   { id: "P8'", metrics: ["p99Ms", "maxMs"] },
+  { id: "P11", metrics: ["jumps", "driftPx"] },
   { id: "P12", metrics: ["p95Ms"] },
   { id: "P13", metrics: ["deltaMessageWrites", "deltaPartWrites", "messageWritesPerFrame", "partWritesPerFrame"] },
 ]
@@ -391,7 +394,9 @@ export function compareReports(baseline: PerfReport, current: PerfReport, option
       check("P10", "scrollChildren", `≤ ${rowLimit + 2}`, (value) => value <= rowLimit + 2)
     }
 
-    // P11: the viewport anchor may not drift by more than one line (2px rows).
+    // P11: walking up a line at a time, the row at the top of the viewport is one line further down the
+    // screen after every step (no jumps), and the steps add up to no more than a line of drift (2px rows).
+    check("P11", "jumps", "0", (value) => value === 0)
     check("P11", "driftPx", "≤ 2", (value) => value <= 2)
 
     // P13: a streamed token goes to the stream buffer, never to the store; the
