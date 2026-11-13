@@ -29,6 +29,7 @@ import { fileURLToPath } from "url"
 import { NamedError } from "@graphagent/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
+import { ChildRegistry } from "@/session/child/registry"
 import { Command } from "../../src/command"
 import { Config } from "@/config/config"
 import { LSP } from "@/lsp/lsp"
@@ -1034,6 +1035,14 @@ it.instance("DAG prepared parent answers while its node is waiting without ackno
     const sessions = yield* Session.Service
     const mailbox = yield* DagMessages.Service
     const { parent, child, childCaller, parentCaller, workflowID } = yield* seedAgentConversation()
+    // PR5: a child prompt must carry its run's live credential.
+    const children = (yield* prompt.children).forParent(parent.id)
+    const run = yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID, nodeID: "worker", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
     const question = "DAG_WAITING_NODE_QUESTION"
     const answer = "DAG_PREPARED_PARENT_ANSWER"
     const fromChild = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("DAG_WAITING_CHILD")
@@ -1074,11 +1083,15 @@ it.instance("DAG prepared parent answers while its node is waiting without ackno
       parentID: parent.id,
       parentCaller,
       question,
-      childPrompt: prompt.prompt({
-        sessionID: child.id,
-        model: ref,
-        parts: [{ type: "text", text: "DAG_WAITING_CHILD" }],
-      }),
+      childPrompt: prompt.prompt(
+        {
+          sessionID: child.id,
+          model: ref,
+          parts: [{ type: "text", text: "DAG_WAITING_CHILD" }],
+        },
+        undefined,
+        { credential: ChildRegistry.credentialOf(child.id) },
+      ),
       beforeActivate: pollWithTimeout(
         sessions
           .messages({ sessionID: child.id })
@@ -1115,6 +1128,7 @@ it.instance("DAG prepared parent answers while its node is waiting without ackno
     expect(inputs.filter(fromChild)).toHaveLength(3)
     expect(inputs.filter(fromParent)).toHaveLength(2)
     expect(JSON.stringify(inputs.filter(fromChild).at(-1)?.body)).toContain(answer)
+    yield* run.settle({ type: "completed" })
   }),
 )
 
@@ -1241,7 +1255,13 @@ it.instance("DAG late input continues the same child after a clean result withou
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const mailbox = yield* DagMessages.Service
-    const { child, parentCaller, childCaller, workflowID } = yield* seedAgentConversation()
+    const { parent, child, parentCaller, childCaller, workflowID } = yield* seedAgentConversation()
+    const run = yield* (yield* prompt.children).forParent(parent.id).start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID, nodeID: "worker", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
       release = resolve
@@ -1249,7 +1269,11 @@ it.instance("DAG late input continues the same child after a clean result withou
     yield* llm.hold("old result", gate)
     yield* llm.text("new result includes update")
     const running = yield* prompt
-      .prompt({ sessionID: child.id, model: ref, parts: [{ type: "text", text: "DAG child initial context" }] })
+      .prompt(
+        { sessionID: child.id, model: ref, parts: [{ type: "text", text: "DAG child initial context" }] },
+        undefined,
+        { credential: ChildRegistry.credentialOf(child.id) },
+      )
       .pipe(Effect.forkChild)
     yield* pollWithTimeout(
       llm.hits.pipe(
@@ -1282,6 +1306,7 @@ it.instance("DAG late input continues the same child after a clean result withou
     expect(yield* mailbox.revisions(childCaller)).toMatchObject({
       value: { accepted: 1, snapshot: 1, queued: 0, delivered: 1 },
     })
+    yield* run.settle({ type: "completed" })
   }),
 )
 
@@ -1301,14 +1326,22 @@ boundedMessageIt.instance("DAG late input cannot bypass the model step budget", 
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const mailbox = yield* DagMessages.Service
-    const { child, parentCaller, childCaller, workflowID } = yield* seedAgentConversation()
+    const { parent, child, parentCaller, childCaller, workflowID } = yield* seedAgentConversation()
+    const run = yield* (yield* prompt.children).forParent(parent.id).start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID, nodeID: "worker", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
     yield* llm.hold("budget boundary", gate)
     const running = yield* prompt
-      .prompt({ sessionID: child.id, model: ref, parts: [{ type: "text", text: "DAG bounded child" }] })
+      .prompt({ sessionID: child.id, model: ref, parts: [{ type: "text", text: "DAG bounded child" }] }, undefined, {
+        credential: ChildRegistry.credentialOf(child.id),
+      })
       .pipe(Effect.forkChild)
     yield* pollWithTimeout(
       llm.hits.pipe(
@@ -1337,6 +1370,7 @@ boundedMessageIt.instance("DAG late input cannot bypass the model step budget", 
     expect(yield* mailbox.receive(childCaller)).toMatchObject({
       value: [{ state: "undeliverable", reason: "budget_exhausted" }],
     })
+    yield* run.settle({ type: "completed" })
   }),
 )
 
@@ -1366,7 +1400,14 @@ it.instance("DAG late input respects a SubagentStop hook preventing continuation
     const { llm } = yield* useServerConfig(providerCfg)
     const prompt = yield* SessionPrompt.Service
     const mailbox = yield* DagMessages.Service
-    const { child, parentCaller, childCaller, workflowID } = yield* seedAgentConversation()
+    const { parent, child, parentCaller, childCaller, workflowID } = yield* seedAgentConversation()
+    // A background task's run does not delegate Stop, so the child fires its
+    // own SubagentStop for the hook this test asserts.
+    const run = yield* (yield* prompt.children).forParent(parent.id).start({
+      childSessionID: child.id,
+      owner: { kind: "task", toolCallID: "call_dag_stop" },
+      detached: true,
+    })
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
       release = resolve
@@ -1375,7 +1416,11 @@ it.instance("DAG late input respects a SubagentStop hook preventing continuation
     stopPreventContinuation = true
     yield* llm.hold("result before stop hook", gate)
     const running = yield* prompt
-      .prompt({ sessionID: child.id, model: ref, parts: [{ type: "text", text: "DAG hook controlled child" }] })
+      .prompt(
+        { sessionID: child.id, model: ref, parts: [{ type: "text", text: "DAG hook controlled child" }] },
+        undefined,
+        { credential: ChildRegistry.credentialOf(child.id) },
+      )
       .pipe(Effect.forkChild)
     yield* pollWithTimeout(
       llm.hits.pipe(
@@ -1405,6 +1450,7 @@ it.instance("DAG late input respects a SubagentStop hook preventing continuation
     expect(yield* mailbox.receive(childCaller)).toMatchObject({
       value: [{ state: "undeliverable", reason: "hook_blocked" }],
     })
+    yield* run.settle({ type: "completed" })
   }).pipe(
     Effect.ensuring(
       Effect.sync(() => {
@@ -3141,45 +3187,50 @@ unix(
 
 // The credential reaches admission at two junctions, the admitted prompt and the start of its turn, and both only
 // record it (PR5 refuses on it): the child's prompt still runs, with or without one.
-it.instance("admission records the credential a child is prompted under at both junctions, and refuses nothing", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
-    const { prompt, sessions, chat } = yield* boot()
-    const child = yield* sessions.create({ parentID: chat.id, title: "probe (@general subagent)", agent: "general" })
-    const children = (yield* prompt.children).forParent(chat.id)
-    const run = yield* children.start({
-      childSessionID: child.id,
-      owner: { kind: "task", toolCallID: "call_junctions" },
-      detached: false,
-    })
-    yield* run.markRunning
-    const lines: string[] = []
-    const record = Logger.make((entry) => {
-      lines.push(JSON.stringify(entry.message))
-    })
-    const drive = (text: string) =>
-      children
-        .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
-        .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
+it.instance(
+  "admission records the credential a child is prompted under at both junctions, and refuses a bare prompt",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      const child = yield* sessions.create({ parentID: chat.id, title: "probe (@general subagent)", agent: "general" })
+      const children = (yield* prompt.children).forParent(chat.id)
+      const run = yield* children.start({
+        childSessionID: child.id,
+        owner: { kind: "task", toolCallID: "call_junctions" },
+        detached: false,
+      })
+      yield* run.markRunning
+      const lines: string[] = []
+      const record = Logger.make((entry) => {
+        lines.push(JSON.stringify(entry.message))
+      })
+      const drive = (text: string) =>
+        children
+          .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
+          .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
 
-    yield* llm.text("child done")
-    const answered = yield* drive("under the credential")
-    expect(answered.info.role).toBe("assistant")
-    const presented = lines.filter((line) => line.includes("child run credential presented"))
-    expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual(["admit", "loop"])
-    for (const line of presented) expect(line).toContain(`"runID":"${run.id}"`)
+      yield* llm.text("child done")
+      const answered = yield* drive("under the credential")
+      expect(answered.info.role).toBe("assistant")
+      const presented = lines.filter((line) => line.includes("child run credential presented"))
+      expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual(["admit", "loop"])
+      for (const line of presented) expect(line).toContain(`"runID":"${run.id}"`)
 
-    // A prompt that carries none is recorded as the gap it is, and still runs.
-    lines.length = 0
-    yield* run.settle({ type: "completed" })
-    yield* llm.text("child done again")
-    const bare = yield* prompt
-      .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "no credential" }] })
-      .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
-    expect(bare.info.role).toBe("assistant")
-    expect(lines.filter((line) => line.includes("without a run credential"))).toHaveLength(1)
-    expect(lines.filter((line) => line.includes("child run credential presented"))).toEqual([])
-  }),
+      // PR5: a prompt that carries none is refused before anything is written.
+      lines.length = 0
+      yield* run.settle({ type: "completed" })
+      const bare = yield* prompt
+        .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "no credential" }] })
+        .pipe(
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
+          Effect.provide(Logger.layer([record])),
+          Effect.exit,
+        )
+      expect(Exit.isFailure(bare)).toBe(true)
+      if (Exit.isFailure(bare)) expect(String(bare.cause)).toContain("ChildAdmissionRefused")
+      expect(lines.filter((line) => line.includes("child run credential presented"))).toEqual([])
+    }),
 )
 
 // A child with a queued initial hook message (SessionStart `initialUserMessage`) is not started by the task's prompt
@@ -7765,7 +7816,15 @@ withMemoryContext.instance("does not inject MEMORY data into child agent session
     const { prompt, sessions } = yield* boot()
     const parent = yield* sessions.create({ title: "Parent" })
     const child = yield* sessions.create({ title: "Child", parentID: parent.id })
-    yield* prompt.prompt({
+    // PR5: the child's prompt is a delegation and carries its run's credential.
+    const children = (yield* prompt.children).forParent(parent.id)
+    const run = yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID: "wf-memory", nodeID: "child", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
+    yield* children.prompt({
       sessionID: child.id,
       agent: "build",
       noReply: true,
@@ -7773,9 +7832,10 @@ withMemoryContext.instance("does not inject MEMORY data into child agent session
     })
     yield* llm.text("done")
 
-    yield* prompt.loop({ sessionID: child.id })
+    yield* prompt.loop({ sessionID: child.id }, { kind: "child_run" })
 
     expect(JSON.stringify((yield* llm.hits)[0]?.body)).not.toContain("project-memory-probe")
+    yield* run.settle({ type: "completed" })
   }),
 )
 
@@ -10506,6 +10566,13 @@ wrapperUnix("SessionPrompt wrapper materializes parent context for child-scoped 
     const hooks = yield* SettingsHook.Service
     const parent = yield* sessions.create({ title: "child hook owner" })
     const child = yield* sessions.create({ parentID: parent.id, title: "scoped child" })
+    // A background task's run does not delegate Stop, so the child fires its
+    // own SubagentStop for the scoped hook this test audits.
+    const run = yield* (yield* prompt.children).forParent(parent.id).start({
+      childSessionID: child.id,
+      owner: { kind: "task", toolCallID: "call_wrapper_stop" },
+      detached: true,
+    })
     if (!hooks.registerScoped || !hooks.hasEvent) throw new Error("production hook service lacks scoped registration")
     yield* hooks.registerScoped(child.id, {
       kind: "agent",
@@ -10518,7 +10585,13 @@ wrapperUnix("SessionPrompt wrapper materializes parent context for child-scoped 
     expect(yield* hooks.hasEvent("SubagentStop", child.id)).toBe(true)
     const beforeTriggers = wrapperTriggers.length
     yield* llm.text("SCOPED_CHILD_DONE")
-    yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "Finish the child" }] })
+    yield* prompt.prompt(
+      { sessionID: child.id, agent: "build", parts: [{ type: "text", text: "Finish the child" }] },
+      undefined,
+      {
+        credential: ChildRegistry.credentialOf(child.id),
+      },
+    )
     const result = decodeRecord(JSON.parse(yield* Effect.promise(() => Bun.file(audit).text())))
     expect(result.agent_id).toBe(child.id)
     // The prompt layer forwards the event to the engine; the engine resolves the
@@ -10531,6 +10604,7 @@ wrapperUnix("SessionPrompt wrapper materializes parent context for child-scoped 
       .split("\n")
       .map((line) => decodeRecord(JSON.parse(line)))
     expect(rows.some((row) => JSON.stringify(row.message).includes("SCOPED_CHILD_DONE"))).toBe(true)
+    yield* run.settle({ type: "completed" })
   }),
 )
 
@@ -10543,14 +10617,25 @@ wrapperUnix(
       const prompt = yield* SessionPrompt.Service
       const parent = yield* sessions.create({ title: "no-hook parent" })
       const child = yield* sessions.create({ parentID: parent.id, title: "no-hook child" })
+      // A background task's run does not delegate Stop; the child keeps firing
+      // its own SubagentStop, which this test observes.
+      const run = yield* (yield* prompt.children).forParent(parent.id).start({
+        childSessionID: child.id,
+        owner: { kind: "task", toolCallID: "call_no_hooks" },
+        detached: true,
+      })
       wrapperTriggers.length = 0
       wrapperReads.length = 0
       yield* llm.text("NO_HOOK_CHILD_COMPLETED")
-      const result = yield* prompt.prompt({
-        sessionID: child.id,
-        agent: "build",
-        parts: [{ type: "text", text: "Complete without hooks" }],
-      })
+      const result = yield* prompt.prompt(
+        {
+          sessionID: child.id,
+          agent: "build",
+          parts: [{ type: "text", text: "Complete without hooks" }],
+        },
+        undefined,
+        { credential: ChildRegistry.credentialOf(child.id) },
+      )
       expect(result.parts.some((part) => part.type === "text" && part.text === "NO_HOOK_CHILD_COMPLETED")).toBe(true)
       expect(wrapperTriggers).toContain("SubagentStop")
       expect(wrapperReads.filter((read) => read.sessionID === parent.id && read.limit === undefined)).toEqual([])
@@ -10563,6 +10648,7 @@ wrapperUnix(
         )
         expect(yield* Effect.promise(() => Bun.file(snapshot).exists())).toBe(false)
       }
+      yield* run.settle({ type: "completed" })
     }),
 )
 

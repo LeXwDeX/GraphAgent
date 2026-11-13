@@ -244,6 +244,25 @@ export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> 
           (index) => sessions.create({ parentID: parent.id, title: `${label} bg ${index}`, model }),
           { concurrency: 1 },
         )
+        // PR5: the background jobs drive their child sessions as delegations,
+        // so each child registers a run. Registration and `markRunning` happen
+        // before the measurement window (the binding/run writes must not join
+        // the S5 probe); the prompts below then carry the run's credentials.
+        const childRuns = (yield* prompt.children).forParent(parent.id)
+        const runs = yield* Effect.forEach(
+          children,
+          (child, index) =>
+            Effect.gen(function* () {
+              const run = yield* childRuns.start({
+                childSessionID: child.id,
+                owner: { kind: "task", toolCallID: `s5-${label}-${index}` },
+                detached: false,
+              })
+              yield* run.markRunning
+              return run
+            }),
+          { concurrency: 1 },
+        )
         // A busy parent parks every wake at the status gate: no turn, no
         // parent messages, and no wake rows consumed.
         yield* status.set(parent.id, { type: "busy" })
@@ -286,7 +305,7 @@ export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> 
                   type: "task",
                   title: `${label} bg ${index}`,
                   metadata: { sessionID: child.id, parentSessionID: parent.id },
-                  run: prompt
+                  run: childRuns
                     .prompt({
                       sessionID: child.id,
                       agent: "build",
@@ -305,9 +324,11 @@ export function s5Scenario(options?: S5Options): Scenario<S5Result, S5Services> 
               orElse: () => Effect.die(new Error("S5: workflows did not complete")),
             }),
           )
-          return yield* Effect.forEach(jobIDs, (id) => jobs.wait({ id, timeout: 120_000 }), {
+          const results = yield* Effect.forEach(jobIDs, (id) => jobs.wait({ id, timeout: 120_000 }), {
             concurrency: "unbounded",
           })
+          yield* Effect.forEach(runs, (run) => run.settle({ type: "completed" }), { discard: true })
+          return results
         })
         const waited = yield* options?.around ? options.around(label, load) : load
         yield* Fiber.interrupt(sampler)

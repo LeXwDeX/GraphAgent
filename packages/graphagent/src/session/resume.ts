@@ -9,6 +9,7 @@ import type { HookLifecycle } from "@/hook/lifecycle"
 import type { HookStartContext } from "@/hook/start-context"
 import { SessionCancellation } from "./cancellation"
 import { ChildAdmission } from "./child/admission"
+import { ChildRegistry } from "./child/registry"
 import type { ChildRunCredential } from "./child/types"
 import type { SessionLocks } from "./locks"
 import { MessageV2 } from "./message-v2"
@@ -190,6 +191,10 @@ export function makeResume(deps: ResumeDeps) {
   })
 
   const resume: Interface["resume"] = Effect.fn("SessionPrompt.resume")(function* (input, options) {
+    // A caller that holds the run's credential passes it; otherwise the
+    // process registry answers without a read. The admission guard still
+    // decides whether it is live.
+    const credential = options?.credential ?? ChildRegistry.credentialOf(input.sessionID)
     const epoch = cancelEpoch(input.sessionID)
     // Register the owner before waiting on the prompt lock. Cancel then fences
     // a followup that has not reached the lock yet, and a resume started after
@@ -249,6 +254,13 @@ export function makeResume(deps: ResumeDeps) {
                     ),
                   )
                 }
+                // The origin is needed by the admission guard and the loop junction; it is
+                // the same for the initial followup and the turn it starts.
+                const origin: TurnOrigin = options?.internalDelegation
+                  ? originFor(options, credential)
+                  : input.followup?.kind === "command"
+                    ? { kind: "user", via: "command" }
+                    : { kind: "user", via: "prompt" }
                 if (initialTurn) {
                   const admitted = yield* admit
                     .admitPrompt(
@@ -261,7 +273,8 @@ export function makeResume(deps: ResumeDeps) {
                       options?.internalDelegation ? { internalDelegation: true } : undefined,
                       undefined,
                       undefined,
-                      options?.credential,
+                      credential,
+                      origin,
                     )
                     .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
                   if (!admitted.run) return Effect.succeed<SessionV1.WithParts | null>(admitted.message)
@@ -274,11 +287,6 @@ export function makeResume(deps: ResumeDeps) {
                 // Fork the runner under the same commit lock as the owner check:
                 // a cancel cannot land between the check and the fork. Wait outside
                 // the prompt lock; the loop machine claims it for its snapshot.
-                const origin: TurnOrigin = options?.internalDelegation
-                  ? originFor(options, options.credential)
-                  : input.followup?.kind === "command"
-                    ? { kind: "user", via: "command" }
-                    : { kind: "user", via: "prompt" }
                 const handle = turns().begin(input.sessionID, origin)
                 return yield* commit(
                   Effect.gen(function* () {
@@ -288,9 +296,12 @@ export function makeResume(deps: ResumeDeps) {
                       turns()
                         .track(
                           handle,
-                          ChildAdmission.observe("loop", { id: input.sessionID }, options?.credential).pipe(
-                            Effect.andThen(runTurn(input.sessionID)),
-                          ),
+                          ChildAdmission.observe(
+                            "loop",
+                            { id: input.sessionID, parentID: target.parentID },
+                            credential,
+                            origin,
+                          ).pipe(Effect.orDie, Effect.andThen(runTurn(input.sessionID))),
                         )
                         .pipe(Effect.map((turn) => turn.message)),
                       request,
@@ -311,7 +322,7 @@ export function makeResume(deps: ResumeDeps) {
           Effect.fail(new NoPendingHookInput({ message: error.reason })),
         ),
       )
-    return yield* finishPendingInput(input.sessionID, yield* result, epoch, options?.credential)
+    return yield* finishPendingInput(input.sessionID, yield* result, epoch, credential)
   })
 
   return { resume }

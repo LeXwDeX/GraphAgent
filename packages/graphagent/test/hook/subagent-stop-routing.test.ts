@@ -12,6 +12,7 @@ import path from "node:path"
 import { Effect, Layer } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Session } from "@/session/session"
+import { ChildRegistry } from "@/session/child/registry"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionSummary } from "@/session/summary"
 import { Database } from "@graphagent/core/database/database"
@@ -176,8 +177,21 @@ it.live("SDK-created child session emits parent-scoped SubagentStop", () =>
       const sessions = yield* Session.Service
       const parent = yield* sessions.create({ title: "SDK parent" })
       const child = yield* sessions.create({ parentID: parent.id, title: "SDK child" })
+      // PR5: a child prompt needs its run's live credential. A background
+      // task's run does not delegate Stop, so the child still fires its own.
+      const run = yield* (yield* prompt.children).forParent(parent.id).start({
+        childSessionID: child.id,
+        owner: { kind: "task", toolCallID: "call_sdk_child" },
+        detached: true,
+      })
       yield* llm.text("child answer")
-      yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "hello" }] })
+      yield* prompt.prompt(
+        { sessionID: child.id, agent: "build", parts: [{ type: "text", text: "hello" }] },
+        undefined,
+        {
+          credential: ChildRegistry.credentialOf(child.id),
+        },
+      )
       const events = (yield* Effect.promise(() => fs.readFile(capture, "utf8")))
         .split("\n")
         .filter((line) => line.trim())
@@ -185,6 +199,7 @@ it.live("SDK-created child session emits parent-scoped SubagentStop", () =>
       expect(events).toEqual([
         expect.objectContaining({ session_id: parent.id, agent_id: child.id, hook_event_name: "SubagentStop" }),
       ])
+      yield* run.settle({ type: "completed" })
     }),
     { git: true, config: providerCfg },
   ),
@@ -211,7 +226,9 @@ it.live("recovered DAG child loops do not replay historical SubagentStop", () =>
       })
       for (const text of ["resume accepted input", "submit updated result"]) {
         yield* llm.text(text)
-        yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
+        yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] }, undefined, {
+          credential: ChildRegistry.credentialOf(child.id),
+        })
       }
       expect(yield* Effect.promise(() => fs.readFile(capture, "utf8").catch(() => ""))).toBe("")
       expect(yield* lifecycle.claimChildStop(child.id, "historical-attempt")).toBe(false)
