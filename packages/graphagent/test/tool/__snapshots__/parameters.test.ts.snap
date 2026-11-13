@@ -550,7 +550,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "background": {
-      "description": "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      "description": "Run without waiting. Use only for independent, long-running work whose result you do not need for your next step (see "Choosing foreground or background"). You will be notified when it finishes.",
       "type": "boolean",
     },
     "command": {
