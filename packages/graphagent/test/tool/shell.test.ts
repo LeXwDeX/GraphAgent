@@ -108,6 +108,11 @@ const cmdShell = shells.find((item) => item.label === "cmd")
 
 const sh = () => Shell.name(Shell.acceptable())
 const evalarg = (text: string) => (sh() === "cmd" ? quote(text) : squote(text))
+const exec = (code: string) => {
+  const text = `${bin} -e ${evalarg(code)}`
+  if (PS.has(sh())) return `& ${text}`
+  return text
+}
 
 const fill = (mode: "lines" | "bytes" | "line", n: number) => {
   const code =
@@ -116,9 +121,7 @@ const fill = (mode: "lines" | "bytes" | "line", n: number) => {
       : mode === "bytes"
         ? "process.stdout.write(String.fromCharCode(97).repeat(Number(Bun.argv[1])))"
         : "process.stdout.write(String.fromCharCode(97).repeat(Number(Bun.argv[1]))+String.fromCharCode(10))"
-  const text = `${bin} -e ${evalarg(code)} ${n}`
-  if (PS.has(sh())) return `& ${text}`
-  return text
+  return `${exec(code)} ${n}`
 }
 const glob = (p: string) =>
   process.platform === "win32" ? Filesystem.normalizePathPattern(p) : p.replaceAll("\\", "/")
@@ -1615,7 +1618,7 @@ describe("tool.shell preview", () => {
           const previews: Preview[] = []
           // 6000 three-byte characters: 18 KB, well past the 4 KiB tail.
           const code = `process.stdout.write(String.fromCharCode(0x4e2d).repeat(6000))`
-          const result = yield* run({ command: `${bin} -e ${evalarg(code)}` }, collecting(previews))
+          const result = yield* run({ command: exec(code) }, collecting(previews))
 
           expect(result.metadata.exit).toBe(0)
           const last = previews.at(-1)
