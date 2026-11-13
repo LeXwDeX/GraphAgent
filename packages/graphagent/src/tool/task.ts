@@ -9,7 +9,8 @@ import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
-import type { ChildRunHandle, ChildRunOutcome, ChildRuns } from "../session/child/run"
+import type { ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
+import { renderTask as renderOutput } from "../session/child/notice"
 import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import * as Option from "effect/Option"
@@ -175,23 +176,6 @@ function repairBackgroundArgument(value: unknown): unknown {
   return { ...value, background: background === "true" }
 }
 
-function renderOutput(input: {
-  sessionID: SessionID
-  state: "running" | "completed" | "error" | "cancelled"
-  summary?: string
-  text: string
-}) {
-  const tag = input.state === "error" ? "task_error" : "task_result"
-  return [
-    `<task id="${input.sessionID}" state="${input.state}">`,
-    ...(input.summary ? [`<summary>${input.summary}</summary>`] : []),
-    `<${tag}>`,
-    input.text,
-    `</${tag}>`,
-    "</task>",
-  ].join("\n")
-}
-
 const notOwned = (taskID: string) =>
   `task_id "${taskID}" is not a task started by this conversation. Pass a task_id returned by an earlier task call of this conversation, or omit it to start a new task.`
 
@@ -216,6 +200,15 @@ function outcomeOf(info: BackgroundJob.Info | undefined): ChildRunOutcome {
   if (info?.status === "error") return { type: "error", message: info.error ?? "Task failed" }
   if (info?.status === "cancelled") return { type: "cancelled", by: { kind: "engine", reason: "job-cancelled" } }
   return { type: "error", message: "The background job ended without a result" }
+}
+
+// What a background run tells its parent: the job's output, or the error it
+// ended in. The result ledger delivers it (`child.result`); the run's row keeps
+// it until then. A job that was cancelled or vanished tells nothing.
+function reportOf(info: BackgroundJob.Info | undefined, title: string): ChildRunReport | undefined {
+  if (info?.status === "completed") return { title, text: info.output ?? "" }
+  if (info?.status === "error") return { title, text: info.error ?? "" }
+  return undefined
 }
 
 // A foreground run ends with the whole call, not with its first job: a blocked
@@ -272,13 +265,15 @@ export const TaskTool = Tool.define(
     // that never starts nor an interruption right after the start can leave
     // the run without an owner. A foreground run is armed only if it is
     // promoted to the background. Once armed, the claim's guard stands down.
-    const watchSettlement = (handle: ChildRunHandle, jobID: string, claim: RunClaim) =>
+    const watchSettlement = (handle: ChildRunHandle, jobID: string, claim: RunClaim, title: string) =>
       Effect.uninterruptibleMask((restore) =>
         Effect.suspend(() => {
           if (claim.armed) return Effect.void
           claim.armed = true
           return restore(
-            background.wait({ id: jobID }).pipe(Effect.flatMap((waited) => handle.settle(outcomeOf(waited.info)))),
+            background
+              .wait({ id: jobID })
+              .pipe(Effect.flatMap((waited) => handle.settle(outcomeOf(waited.info), reportOf(waited.info, title)))),
           ).pipe(Effect.forkIn(scope, { startImmediately: true }), Effect.asVoid)
         }),
       )
@@ -634,38 +629,6 @@ export const TaskTool = Tool.define(
         )
       })
 
-      const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
-        state: "completed" | "error",
-        text: string,
-      ) {
-        const currentParent = yield* sessions.get(ctx.sessionID)
-        yield* ops
-          .prompt(
-            {
-              sessionID: ctx.sessionID,
-              agent: currentParent.agent ?? ctx.agent,
-              variant,
-              parts: [
-                {
-                  type: "text",
-                  synthetic: true,
-                  text: renderOutput({
-                    sessionID: nextSession.id,
-                    state,
-                    summary:
-                      state === "completed"
-                        ? `Background task completed: ${description}`
-                        : `Background task failed: ${description}`,
-                    text,
-                  }),
-                },
-              ],
-            },
-            { continueToolBudget: true },
-          )
-          .pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
-      })
-
       // A goal waiting on this background task registers its task id. Wake
       // only that wait; see watch_pr for the evaluate semantics.
       const wakeGoal = (jobID: string, payload: string, evaluate: boolean): Effect.Effect<void> =>
@@ -676,6 +639,10 @@ export const TaskTool = Tool.define(
           yield* loops.wake(ctx.sessionID, { source: "background_job", ids: [jobID] }, payload, { evaluate })
         }).pipe(Effect.ignore)
 
+      // The ending of the run is the whole delivery: the result ledger tells the
+      // parent about a finished background run (`child.result`), woken by the
+      // ending itself. What stays here is what only this tool knows: the goal
+      // waiting on this task, and the notification of a user who is watching.
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string, run: ChildRunHandle) {
         yield* background.wait({ id: jobID }).pipe(
           Effect.flatMap((result) =>
@@ -684,17 +651,17 @@ export const TaskTool = Tool.define(
               // watcher, whoever swaps it first. A run the main agent cancelled
               // delivers nothing, even when its job finished in the window
               // before the job itself was cancelled.
-              yield* run.settle(outcomeOf(result.info))
+              yield* run.settle(outcomeOf(result.info), reportOf(result.info, description))
               const cancelledRun = (yield* run.settled).type === "cancelled"
               if ((result.info?.status !== "completed" && result.info?.status !== "error") || cancelledRun) {
-                // No result prompt follows (cancelled or vanished job): end the
+                // No result follows (cancelled or vanished job): end the
                 // wait now so the goal does not sleep until its deadline.
                 yield* wakeGoal(
                   jobID,
                   `Background task ${description} ended without a result (${cancelledRun ? "cancelled" : (result.info?.status ?? "missing")})`,
                   true,
                 )
-                return undefined
+                return
               }
               yield* wakeGoal(
                 jobID,
@@ -713,9 +680,6 @@ export const TaskTool = Tool.define(
                   notificationType: "agent_completed",
                   message: "A background agent finished",
                 })
-              return yield* result.info.status === "completed"
-                ? inject("completed", result.info.output ?? "")
-                : inject("error", result.info.error ?? "")
             }),
           ),
           Effect.forkIn(scope, { startImmediately: true }),
@@ -762,6 +726,9 @@ export const TaskTool = Tool.define(
           // and the session records it only once the first message is written.
           metadata: { ...metadata, childRunID: registered.id, childRunAgent: subagentType },
           onPromote: Effect.all([
+            // Detached before anything can settle the run for the background: its ending must stay owed to the
+            // result ledger, not count as returned to a tool call that has already gone.
+            registered.detach,
             ctx.metadata({
               title: description,
               metadata: { ...metadata, background: true, jobId: nextSession.id },
@@ -772,7 +739,7 @@ export const TaskTool = Tool.define(
           ]),
           // A background run is watched from the job's own start; a foreground
           // run is settled by this call once it has seen the whole task through.
-          run: (runInBackground ? watchSettlement(registered, nextSession.id, claim) : Effect.void).pipe(
+          run: (runInBackground ? watchSettlement(registered, nextSession.id, claim, description) : Effect.void).pipe(
             Effect.andThen(runWithSlot(registered)),
             Effect.onInterrupt(() => ops.cancel(nextSession.id)),
           ),
@@ -806,7 +773,7 @@ export const TaskTool = Tool.define(
       }
 
       if (runInBackground) {
-        yield* watchSettlement(registered, info.id, claim)
+        yield* watchSettlement(registered, info.id, claim, description)
         yield* notify(info.id, registered)
         return backgroundResult()
       }
@@ -830,8 +797,10 @@ export const TaskTool = Tool.define(
                 background.waitForPromotion(nextSession.id),
               )
               if (result?.metadata?.background === true) {
-                // Promoted: the job outlives this call, so its watcher takes the run over.
-                yield* watchSettlement(registered, nextSession.id, claim)
+                // Promoted: the job outlives this call, so its watcher takes the run over. The promotion is
+                // also seen by the job's `onPromote`; detaching twice is harmless, and neither side may wait for the other.
+                yield* registered.detach
+                yield* watchSettlement(registered, nextSession.id, claim, description)
                 return backgroundResult()
               }
               claim.job = outcomeOf(result)
