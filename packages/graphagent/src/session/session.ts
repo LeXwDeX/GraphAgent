@@ -701,7 +701,9 @@ export const layer: Layer.Layer<
         const currentInstance = yield* InstanceState.context.pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         const hasInstance = currentInstance !== undefined
 
-        if (hasInstance) yield* cancelSessionJobs(background, sessionID)
+        // Removal is terminal: background jobs that survive an interrupt (Esc)
+        // must not outlive the session they report into.
+        if (hasInstance) yield* cancelSessionJobs(background, sessionID, false, true)
         const kids = yield* children(sessionID)
         for (const child of kids) {
           yield* remove(child.id)

@@ -69,6 +69,31 @@ describe("background.cancel", () => {
     }),
   )
 
+  it.instance("force cancels jobs marked to survive session cancel", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessionID = SessionID.create()
+      yield* jobs.start({
+        id: "remove-survivor",
+        type: "test",
+        metadata: { sessionID: sessionID, survivesSessionCancel: true },
+        run: Effect.never,
+      })
+      yield* jobs.start({
+        id: "remove-other",
+        type: "test",
+        metadata: { sessionID: "elsewhere", survivesSessionCancel: true },
+        run: Effect.never,
+      })
+
+      // Session removal passes force: nothing may outlive its session.
+      yield* cancelSessionJobs(jobs, sessionID, false, true)
+
+      expect((yield* jobs.get("remove-survivor"))?.status).toBe("cancelled")
+      expect((yield* jobs.get("remove-other"))?.status).toBe("running")
+    }),
+  )
+
   it.instance("session cancellation owners keep jobs marked to survive session cancel", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service

@@ -170,6 +170,12 @@ it.instance("review agent is a read-only subagent with a command allowlist", () 
     expect(Permission.evaluate("bash", "glab mr view 42", review!.permission).action).toBe("allow")
     expect(Permission.evaluate("bash", "rm -rf build", review!.permission).action).toBe("deny")
     expect(Permission.evaluate("bash", "git push", review!.permission).action).toBe("deny")
+    // `evaluate` is last-match-wins, so the --output deny rules must override
+    // the command allowlist at any option position and in the separated form.
+    expect(Permission.evaluate("bash", "git diff --output=marker", review!.permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git diff --cached --output marker", review!.permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git show --output=marker", review!.permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git log --format=x --output=marker", review!.permission).action).toBe("deny")
   }),
 )
 

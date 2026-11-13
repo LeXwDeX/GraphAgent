@@ -11,7 +11,9 @@ import { Effect } from "effect"
  * descendants of those jobs. Both turn cancellation and session removal use
  * this helper so they share one semantic:
  *
- * - jobs marked `survivesSessionCancel` are left alone;
+ * - jobs marked `survivesSessionCancel` are left alone, unless `force` is set
+ *   (session removal is terminal: nothing may outlive the session it reports
+ *   into);
  * - `skipCoordinated` leaves jobs registered with `SessionCancellation` to that
  *   owner, which reacts to the session cancellation request itself.
  */
@@ -19,13 +21,14 @@ export const cancelSessionJobs = Effect.fn("BackgroundJob.cancelSessionJobs")(fu
   background: BackgroundJob.Interface,
   sessionID: SessionID,
   skipCoordinated = false,
+  force = false,
 ) {
   const jobs = yield* background.list()
   const pending = new Set<string>([sessionID])
   const cancelled = new Set<string>()
   const matches = (job: BackgroundJob.Info) => {
     if (job.status !== "running") return false
-    if (job.metadata?.survivesSessionCancel === true) return false
+    if (!force && job.metadata?.survivesSessionCancel === true) return false
     if (cancelled.has(job.id)) return false
     if (pending.has(job.id)) return true
     const session = sessionIDOf(job.metadata)

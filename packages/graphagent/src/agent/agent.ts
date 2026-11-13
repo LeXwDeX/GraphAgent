@@ -254,6 +254,13 @@ export const layer = Layer.effect(
                   "gh pr diff*": "allow",
                   "glab mr view*": "allow",
                   "glab mr diff*": "allow",
+                  // `evaluate` takes the LAST matching rule, so output-writing
+                  // variants must follow the allowlist to win. `*` covers the
+                  // option at any position (`git diff --cached --output=...`)
+                  // and the separated form (`git diff --output file`).
+                  "git diff*--output*": "deny",
+                  "git show*--output*": "deny",
+                  "git log*--output*": "deny",
                 },
                 external_directory: readonlyExternalDirectory,
               }),
