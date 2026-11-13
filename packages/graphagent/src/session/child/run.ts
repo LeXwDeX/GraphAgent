@@ -10,7 +10,7 @@ import type { SessionAbortReason } from "../abort-reason"
 import { EngineProcess, type ActiveChildRun } from "../engine-process"
 import type { SessionID } from "../schema"
 import { runnerAlive } from "../turns"
-import { abortReasonOf, boundedCancel } from "./cancel"
+import { abortReasonOf, boundedCancel, CANCEL_BOUND_MS } from "./cancel"
 import { ChildRegistry as Registry } from "./registry"
 import { ChildStore as Store } from "./store"
 import {
@@ -84,21 +84,47 @@ const softly = (label: string, runID: string) =>
   )
 
 /**
+ * A cancelled run keeps its child session reserved until its driver stops (see
+ * `Registry.end`). When no driver ever reports, because it is gone or lingers
+ * past the bound the session cancellation itself gets, the entry leaves after
+ * that bound with a warning: a child session is never reserved for good.
+ */
+const releaseAfterBound = (ctx: Ctx, entry: ActiveChildRun) =>
+  Effect.race(
+    Deferred.await(entry.released),
+    Effect.sleep(CANCEL_BOUND_MS).pipe(
+      // Warn first: the release wakes the other side of the race, which ends this one.
+      Effect.andThen(
+        Effect.suspend(() =>
+          entry.held
+            ? Effect.logWarning("cancelled child run was released without its driver reporting that it stopped", {
+                runID: entry.id,
+                childSessionID: entry.childSessionID,
+              }).pipe(Effect.andThen(Effect.sync(() => Registry.driverStopped(entry))))
+            : Effect.void,
+        ),
+      ),
+    ),
+  ).pipe(Effect.interruptible, Effect.forkIn(ctx.scope, { startImmediately: true }), Effect.asVoid)
+
+/**
  * Ends a run: the in-memory compare-and-swap decides the winner, then the row
  * is written. `between` runs after the swap and before the write (the
  * cancellation fork); `persist: false` is for runs whose rows are already gone
- * with their session. A failed write is logged and never undoes the ending:
- * the registry is authoritative inside this process.
+ * with their session; `hold` keeps the entry, and the child session reserved,
+ * until the run's driver has stopped as well as the row is written (a
+ * cancellation, whose job may still be running). A failed write is logged and
+ * never undoes the ending: the registry is authoritative inside this process.
  */
 const finish = (
   ctx: Ctx,
   entry: ActiveChildRun,
   outcome: ChildRunOutcome,
-  options: { readonly between?: Effect.Effect<void>; readonly persist?: boolean } = {},
+  options: { readonly between?: Effect.Effect<void>; readonly persist?: boolean; readonly hold?: boolean } = {},
 ): Effect.Effect<boolean> =>
   Effect.uninterruptible(
     Effect.suspend(() => {
-      if (!Registry.end(entry, outcome)) return Effect.succeed(false)
+      if (!Registry.end(entry, outcome, { hold: options.hold })) return Effect.succeed(false)
       const persist =
         options.persist === false
           ? Effect.void
@@ -110,19 +136,27 @@ const finish = (
               ),
             )
       return (options.between ?? Effect.void).pipe(
+        Effect.andThen(options.hold ? releaseAfterBound(ctx, entry) : Effect.void),
         Effect.andThen(persist),
-        Effect.ensuring(Effect.sync(() => Registry.release(entry))),
+        Effect.ensuring(Effect.sync(() => Registry.persisted(entry))),
         Effect.as(true),
       )
     }),
   )
 
 // Lazy: the matching runs are read when the effect runs, not when it is described.
+// Whoever tears runs down tears their drivers down with them, so a cancelled run
+// still held for its driver leaves too.
 const endWhere = (ctx: Ctx, predicate: (entry: ActiveChildRun) => boolean, outcome: ChildRunOutcome, persist = true) =>
   Effect.suspend(() =>
-    Effect.forEach(Registry.activeWhere(predicate), (entry) => finish(ctx, entry, outcome, { persist }), {
-      discard: true,
-    }),
+    Effect.forEach(
+      Registry.activeWhere(predicate),
+      (entry) =>
+        finish(ctx, entry, outcome, { persist }).pipe(
+          Effect.ensuring(Effect.sync(() => Registry.driverStopped(entry))),
+        ),
+      { discard: true },
+    ),
   )
 
 const markRunning = (ctx: Ctx, entry: ActiveChildRun): Effect.Effect<boolean> =>
@@ -140,7 +174,16 @@ const handleOf = (ctx: Ctx, entry: ActiveChildRun, attempt: number): ChildRunHan
   childSessionID: entry.childSessionID,
   attempt,
   markRunning: markRunning(ctx, entry),
-  settle: (outcome) => finish(ctx, entry, outcome),
+  // Every settlement comes from the driver at the moment it stops (the watcher
+  // once the job is terminal, the tool call at its exit), so it also tells the
+  // registry that the driver is gone, even when it loses the race to a cancellation.
+  settle: (outcome) =>
+    Effect.uninterruptible(
+      Effect.suspend(() => {
+        Registry.driverStopped(entry)
+        return finish(ctx, entry, outcome)
+      }),
+    ),
   settled: Deferred.await(entry.done),
   cancelled: Deferred.await(entry.cancelled),
 })
@@ -213,11 +256,15 @@ const adopt = (ctx: Ctx) =>
     // One verdict for every refusal: the caller learns nothing about sessions it does not own.
     if (!binding || binding.parent_session_id !== spec.parentSessionID || binding.owner_kind !== spec.owner.kind)
       return yield* new NotOwner({ childSessionID: spec.childSessionID })
-    // A run that already ended but whose row is still being written frees the
-    // child session in a moment: wait for it instead of refusing.
+    // A run that already ended but whose row is still being written, or whose
+    // cancelled driver is still stopping, frees the child session in a moment:
+    // wait for it instead of refusing. The wait is bounded: a held entry leaves
+    // when its driver reports, after `CANCEL_BOUND_MS` at the latest, or when
+    // its owner is torn down. Callers register inside an uninterruptible step;
+    // nothing is registered yet here, so the wait itself stays interruptible.
     let driven = Registry.activeFor(spec.childSessionID)
     while (driven?.phase === "ended") {
-      yield* Deferred.await(driven.released)
+      yield* Effect.interruptible(Deferred.await(driven.released))
       driven = Registry.activeFor(spec.childSessionID)
     }
     if (driven) return yield* new ActiveRunExists({ childSessionID: spec.childSessionID, runID: driven.id })
@@ -244,7 +291,13 @@ const adopt = (ctx: Ctx) =>
     return handleOf(ctx, entry, attempt)
   })
 
-/** Signal-and-return: swap the state, revoke, start the bounded session cancellation, write the row. */
+/**
+ * Signal-and-return: swap the state, revoke, start the bounded session
+ * cancellation, write the row. The child session stays reserved after that
+ * until the run's driver reports it stopped: the job (or the tool call) that
+ * carries the run keeps running a moment longer, and a new run registered on
+ * the session in that window would be handed the old job instead of its own.
+ */
 const cancel = (ctx: Ctx) =>
   Effect.fn("ChildRuns.cancel")(function* (runID: string, by: ChildCancelBy): Effect.fn.Return<ChildRunCancelResult> {
     const entry = Registry.get(runID)
@@ -253,7 +306,7 @@ const cancel = (ctx: Ctx) =>
       ctx.cancelSession(entry.childSessionID, { reason: abortReasonOf(by) }),
       `child-run:${entry.id}`,
     ).pipe(Effect.forkIn(ctx.scope, { startImmediately: true }), Effect.asVoid)
-    const won = yield* finish(ctx, entry, { type: "cancelled", by }, { between: cancelSession })
+    const won = yield* finish(ctx, entry, { type: "cancelled", by }, { between: cancelSession, hold: true })
     return won ? "cancelled" : "not_active"
   })
 

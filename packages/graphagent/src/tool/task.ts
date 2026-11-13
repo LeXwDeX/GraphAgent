@@ -745,7 +745,9 @@ export const TaskTool = Tool.define(
           id: nextSession.id,
           type: id,
           title: description,
-          metadata,
+          // Names the run this job answers: `start` hands back the job already
+          // carrying the session, without starting ours, while that one is alive.
+          metadata: { ...metadata, childRunID: registered.id },
           onPromote: Effect.all([
             ctx.metadata({
               title: description,
@@ -762,7 +764,16 @@ export const TaskTool = Tool.define(
             Effect.onInterrupt(() => ops.cancel(nextSession.id)),
           ),
         })
-        .pipe(Effect.onError(() => releaseSubagent))
+        .pipe(
+          // A job that is not this run's is a previous run's, still winding down:
+          // reporting its result as this run's would drop the accepted prompt, so
+          // refuse instead. The run then ends with this call (nothing armed it).
+          Effect.filterOrFail(
+            (started) => started.metadata?.childRunID === registered.id,
+            () => new Error(`Task ${nextSession.id} is still finishing its previous run; try again in a moment.`),
+          ),
+          Effect.onError(() => releaseSubagent),
+        )
 
       function backgroundResult() {
         return {

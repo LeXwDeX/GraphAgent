@@ -294,6 +294,9 @@ live(
             return { elapsed, settled }
           }).pipe(Effect.ensuring(Effect.sync(() => release())))
           expect(Option.isSome(measured.settled)).toBe(true)
+          // What the task tool's watcher does once the job is over: the driver reports
+          // that it stopped, which frees the cancelled run's child session.
+          yield* run.settle({ type: "completed" })
           if (i >= WARMUP) samples.push(measured.elapsed)
         }
         const p95 = report("child run", samples)

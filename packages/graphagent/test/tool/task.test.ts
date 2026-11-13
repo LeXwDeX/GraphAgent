@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -2696,6 +2696,153 @@ describe("tool.task child runs", () => {
         type: "cancelled",
         by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
       })
+    }),
+  )
+
+  // Codex review on #1275: the cancel swaps the run to cancelled before the job
+  // that carries it is cancelled. A resume registered in that window used to be
+  // handed the still-running job, so its prompt was dropped and it reported the
+  // old job's outcome. The child session stays reserved until that job has stopped.
+  const resumeFixture = (reached: Deferred.Deferred<void>, open: Deferred.Deferred<void>) =>
+    Effect.gen(function* () {
+      const fixture = yield* cancelFixtureFor({ reached, open })
+      const { chat, assistant, def, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const prompted: string[] = []
+      const resumeOps: TaskPromptOps = {
+        ...promptOps,
+        prompt: (input) => {
+          if (input.sessionID === child)
+            prompted.push(...input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+          return promptOps.prompt(input)
+        },
+      }
+      // The cancel call swaps the run to cancelled, then stops in front of the job cancellation.
+      const cancelling = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(reached), "the cancel call never reached the job cancellation")
+      const resume = def.execute(
+        { ...general, prompt: "follow-up question", task_id: child, background: true },
+        taskCtx(chat, assistant, resumeOps, { callID: "call_resume" }),
+      )
+      return { ...fixture, child, prompted, cancelling, resume }
+    })
+
+  background.instance("a resume inside the cancel window waits for the old job, then runs its own prompt", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const { release, child, prompted, cancelling, resume } = yield* resumeFixture(reached, open)
+      const before = yield* jobs.get(child)
+      expect(before?.status).toBe("running")
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "ended" })
+
+      const resuming = yield* resume.pipe(Effect.forkChild)
+      yield* Effect.sleep("100 millis")
+      // Still waiting: nothing was registered, started or prompted, and the old job is the only job.
+      expect(Option.isNone(yield* Fiber.await(resuming).pipe(Effect.timeoutOption("10 millis")))).toBe(true)
+      expect(yield* runsOf(child)).toHaveLength(1)
+      expect(prompted).toEqual([])
+      expect((yield* jobs.get(child))?.started_at).toBe(before?.started_at)
+
+      // The old job stops; the resume then starts a job of its own and prompts the child.
+      yield* Deferred.succeed(open, undefined)
+      yield* Fiber.join(cancelling)
+      const resumed = yield* Fiber.join(resuming)
+      expect(resumed.output).toContain("Background task started")
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompted.length > 0 ? true : undefined)),
+        "the resumed run never prompted the child",
+      )
+      expect(prompted).toEqual(["follow-up question"])
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info).toMatchObject({
+        status: "completed",
+        output: expect.stringContaining("late answer"),
+      })
+      expect((yield* endedRun(child, 1)).outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+      })
+      expect(yield* endedRun(child, 2)).toMatchObject({
+        owner_id: "call_resume",
+        detached: true,
+        outcome: { type: "completed" },
+      })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  background.instance("a resume that still finds the old job running is refused, not answered with its result", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const { release, child, prompted, cancelling, resume } = yield* resumeFixture(reached, open)
+      const before = yield* jobs.get(child)
+
+      // Whatever frees the child session early (the bound on a driver that never
+      // reported, a teardown), the resume must not be handed a job that is not its own.
+      const entry = ChildRegistry.activeFor(child)
+      expect(entry?.phase).toBe("ended")
+      if (entry) ChildRegistry.driverStopped(entry)
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+
+      const exit = yield* resume.pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("is still finishing its previous run")
+      // The refused run ended with the call; the old job was neither touched nor reported as its result.
+      expect(yield* endedRun(child, 2)).toMatchObject({
+        owner_id: "call_resume",
+        outcome: { type: "error", message: expect.stringContaining("still finishing its previous run") },
+      })
+      expect(prompted).toEqual([])
+      expect((yield* jobs.get(child))?.started_at).toBe(before?.started_at)
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+
+      yield* Deferred.succeed(open, undefined)
+      yield* Fiber.join(cancelling)
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.get(child))?.status).toBe("cancelled")
+    }),
+  )
+
+  // The tool itself refuses `action: "cancel"` on a foreground task; the registry-level
+  // cancel is what later owners (DAG nodes) use. A foreground run's driver is the tool
+  // call that awaits its job, so the call's exit is what frees the child session.
+  background.instance("a cancelled foreground run frees its child session when the tool call exits", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant, def, release, promptOps } = yield* cancelFixture
+      const foreground = yield* def
+        .execute(general, taskCtx(chat, assistant, promptOps, { callID: "call_fg" }))
+        .pipe(Effect.forkChild)
+      const child = yield* pollWithTimeout(
+        sessions.children(chat.id).pipe(Effect.map((kids) => kids[0]?.id)),
+        "foreground task was never created",
+      )
+      const run = yield* pollWithTimeout(
+        runsOf(child).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? rows[0] : undefined))),
+        "foreground run never reached running",
+      )
+
+      expect(yield* def.children.cancel(run.id, { kind: "engine", reason: "test" })).toBe("cancelled")
+
+      // The call is still waiting for its job: the run is over, the child session is not free.
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("ended")
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.await(foreground)
+      yield* pollWithTimeout(
+        Effect.sync(() => (ChildRegistry.activeFor(child) === undefined ? true : undefined)),
+        "the child session was never freed when the tool call exited",
+        // Well inside the five second bound: the call's own exit frees it, not the fallback.
+        "2 seconds",
+      )
+      expect((yield* runsOf(child))[0]?.outcome).toEqual({ type: "cancelled", by: { kind: "engine", reason: "test" } })
     }),
   )
 

@@ -216,19 +216,32 @@ export interface ActiveChildRun {
   phase: ChildRunPhase
   outcome: ChildRunOutcome | undefined
   readonly credential: ChildRunCredential
+  /**
+   * An ended run's child session stays reserved while its driver may still be
+   * running: set by a cancellation, cleared once the driver reports it stopped.
+   */
+  held: boolean
+  /** The driver that carries the run (the job, or the tool call awaiting it) has stopped. */
+  stopped: boolean
+  /** The ending row write finished, or failed. */
+  written: boolean
   /** Completed once, when the run ends cancelled; drivers race their own work against it. */
   readonly cancelled: Deferred.Deferred<ChildCancelBy>
   /** Completed once, with the outcome that ended the run. */
   readonly done: Deferred.Deferred<ChildRunOutcome>
-  /** Completed once the ended run has left the registry, after its row write finished (or failed). */
+  /**
+   * Completed once the ended run has left the registry: its row is written and,
+   * for a cancellation, its driver has stopped.
+   */
   readonly released: Deferred.Deferred<void>
 }
 
 /**
  * Child runs by run id and by child session (a child session has at most one).
- * An entry stays here from registration until its ending is persisted: a run
- * that already swapped to `ended` but whose row is still being written must not
- * look like a free child session.
+ * An entry stays here from registration until its ending is persisted, and a
+ * cancelled run's until its driver has stopped as well: a run that already
+ * swapped to `ended` but whose row is still being written, or whose job is
+ * still winding down, must not look like a free child session.
  */
 export interface ChildRunRegistryState {
   readonly byRun: Map<string, ActiveChildRun>

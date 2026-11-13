@@ -9,13 +9,15 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { eq } from "drizzle-orm"
-import { Deferred, Effect, Exit, Option, Scope } from "effect"
+import { Deferred, Effect, Exit, Fiber, Option, Scope } from "effect"
+import * as TestClock from "effect/testing/TestClock"
+import { logLines } from "effect/testing/TestConsole"
 import { InstanceRef } from "@/effect/instance-ref"
 import { disposeInstance } from "@/effect/instance-registry"
 import type { InstanceContext } from "@/project/instance-context"
 import { ChildRegistry } from "@/session/child/registry"
 import { ChildStore } from "@/session/child/store"
-import { boundedCancel } from "@/session/child/cancel"
+import { boundedCancel, CANCEL_BOUND_MS } from "@/session/child/cancel"
 import { ChildRuns, makeChildRuns } from "@/session/child/run"
 import { EngineProcess } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
@@ -245,7 +247,6 @@ describe("ChildRuns.cancel", () => {
 
       expect(entry?.credential.revoked).toBe(true)
       expect(ChildRegistry.credentialOf(child)).toBeUndefined()
-      expect(EngineProcess.children.byRun.size).toBe(0)
       expect(yield* handle.cancelled).toEqual(by)
       const row = (yield* runRows(db, child))[0]
       expect(row?.state).toBe("ended")
@@ -255,6 +256,12 @@ describe("ChildRuns.cancel", () => {
       yield* Effect.yieldNow
       expect(cancelled).toEqual([{ sessionID: child, reason: "task-cancelled", actor: "main-agent" }])
       expect(yield* children.cancel(handle.id, by)).toBe("not_active")
+      // The run is over, but its driver has not stopped yet: the child session stays reserved.
+      expect(ChildRegistry.activeFor(child)).toBe(entry)
+      // The driver stops; its own settlement lost the race and changes nothing but that.
+      expect(yield* handle.settle({ type: "completed" })).toBe(false)
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+      expect(EngineProcess.children.byRun.size).toBe(0)
     }),
   )
 
@@ -326,6 +333,207 @@ describe("ChildRuns.cancel", () => {
       expect(Exit.isSuccess(exit)).toBe(true)
       if (Exit.isSuccess(exit)) expect(Option.isSome(exit.value)).toBe(true)
     }),
+  )
+})
+
+describe("a cancelled run keeps its child session reserved", () => {
+  // Issue #1026 / Codex review on #1275: a cancellation ends the run at once, but the
+  // job that carries it may still be running; a run adopted in that window would be
+  // handed the old job instead of its own.
+  const by = { kind: "main_agent_tool" as const, toolCallID: "call_hold" }
+  const resume = (scoped: ChildRuns.Scoped, childSessionID: SessionID) =>
+    scoped.adopt({ childSessionID, owner: { kind: "task", toolCallID: "call_resume" }, detached: true })
+  // The real clock gives a fiber that was able to finish room to do so.
+  const stillWaiting = (fiber: Fiber.Fiber<unknown, unknown>) =>
+    Fiber.await(fiber).pipe(Effect.timeoutOption("50 millis"), Effect.map(Option.isNone))
+  /** Let the TestClock runtime run the work it was just advanced past. */
+  const drain = Effect.gen(function* () {
+    for (let i = 0; i < 15; i++) yield* Effect.yieldNow
+  })
+
+  it.live("a resume waits for the driver to settle, then starts the next attempt", () =>
+    Effect.gen(function* () {
+      const { db, children, scoped, newChild } = yield* setup("hold-resume")
+      const child = yield* newChild()
+      const first = yield* scoped.start({ childSessionID: child, owner: taskOwner, detached: true })
+      yield* first.markRunning
+      expect(yield* children.cancel(first.id, by)).toBe("cancelled")
+
+      // Ended and persisted, but the driver has not stopped: the session is not free.
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("ended")
+      const resuming = yield* resume(scoped, child).pipe(Effect.forkChild)
+      expect(yield* stillWaiting(resuming)).toBe(true)
+      expect(yield* runRows(db, child)).toHaveLength(1)
+
+      // The driver reports; its settlement lost the race to the cancellation and changes nothing else.
+      expect(yield* first.settle({ type: "completed" })).toBe(false)
+      // Well inside the cancellation bound: the report frees the session, not the fallback.
+      const second = yield* Fiber.join(resuming).pipe(
+        Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.die("the resume never started") }),
+      )
+
+      expect(second.attempt).toBe(2)
+      const rows = (yield* runRows(db, child)).toSorted((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0))
+      expect(rows.map((row) => [row.attempt, row.state, row.detached])).toEqual([
+        [1, "ended", true],
+        [2, "queued", true],
+      ])
+      expect(rows[0]?.outcome).toEqual({ type: "cancelled", by })
+      yield* second.settle({ type: "completed" })
+    }),
+  )
+
+  it.live("a resume interrupted while it waits registers nothing, even when its caller cannot be interrupted", () =>
+    Effect.gen(function* () {
+      const { db, children, scoped, newChild } = yield* setup("hold-interrupt")
+      const child = yield* newChild()
+      const first = yield* scoped.start({ childSessionID: child, owner: taskOwner, detached: true })
+      yield* children.cancel(first.id, by)
+
+      // The task tool registers inside an uninterruptible step.
+      const resuming = yield* Effect.uninterruptible(resume(scoped, child)).pipe(Effect.forkChild)
+      expect(yield* stillWaiting(resuming)).toBe(true)
+      const stopped = yield* Fiber.interrupt(resuming).pipe(Effect.timeoutOption("2 seconds"))
+
+      expect(Option.isSome(stopped)).toBe(true)
+      expect(yield* runRows(db, child)).toHaveLength(1)
+      expect(ChildRegistry.activeFor(child)?.id).toBe(first.id)
+      // The cancelled run is still held; once its driver reports, the session is free again.
+      yield* first.settle({ type: "completed" })
+      const second = yield* resume(scoped, child).pipe(
+        Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.die("the resume never started") }),
+      )
+      expect(second.attempt).toBe(2)
+      yield* second.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("a driver that never reports is given up on after the cancellation bound, with a warning", () =>
+    Effect.gen(function* () {
+      const { children, scoped, newChild } = yield* setup("hold-bound")
+      const child = yield* newChild()
+      const first = yield* scoped.start({ childSessionID: child, owner: taskOwner, detached: true })
+      yield* first.markRunning
+      yield* children.cancel(first.id, by)
+      const resuming = yield* resume(scoped, child).pipe(Effect.forkChild)
+
+      yield* TestClock.adjust(CANCEL_BOUND_MS - 1)
+      yield* drain
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("ended")
+      expect(JSON.stringify(yield* logLines)).not.toContain("without its driver reporting")
+
+      yield* TestClock.adjust(1)
+      const second = yield* Fiber.join(resuming)
+
+      expect(second.attempt).toBe(2)
+      expect(JSON.stringify(yield* logLines)).toContain("without its driver reporting that it stopped")
+      yield* second.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("a driver that reports in time cancels the bound: no warning, no second release", () =>
+    Effect.gen(function* () {
+      const { children, scoped, newChild } = yield* setup("hold-in-time")
+      const child = yield* newChild()
+      const first = yield* scoped.start({ childSessionID: child, owner: taskOwner, detached: true })
+      yield* children.cancel(first.id, by)
+      yield* first.settle({ type: "completed" })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+      const second = yield* resume(scoped, child)
+
+      // The bound of the first run expires while the second one is registered: it must not touch it.
+      yield* TestClock.adjust(CANCEL_BOUND_MS * 2)
+      yield* drain
+
+      expect(ChildRegistry.activeFor(child)?.id).toBe(second.id)
+      expect(JSON.stringify(yield* logLines)).not.toContain("without its driver reporting")
+      yield* second.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("tearing the owner down releases a held entry and keeps the cancelled row", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const inner = yield* Scope.make()
+      const children = yield* makeChildRuns({ db, scope: inner, cancelSession: () => Effect.void })
+      const parent = parentID("hold-close")
+      const closing = childID("hold-close")
+      const deleted = childID("hold-forget")
+      yield* ensureSession(db, parent)
+      yield* ensureSession(db, closing)
+      yield* ensureSession(db, deleted)
+      const scoped = children.forParent(parent)
+      const a = yield* scoped.start({ childSessionID: closing, owner: taskOwner, detached: true })
+      const b = yield* scoped.start({ childSessionID: deleted, owner: taskOwner, detached: true })
+      yield* children.cancel(a.id, by)
+      yield* children.cancel(b.id, by)
+      expect(ChildRegistry.activeFor(closing)?.phase).toBe("ended")
+      expect(ChildRegistry.activeFor(deleted)?.phase).toBe("ended")
+
+      // A deleted session has no driver left to wait for.
+      yield* children.forget(deleted)
+      expect(ChildRegistry.activeFor(deleted)).toBeUndefined()
+      // Neither has a closed runtime.
+      yield* Scope.close(inner, Exit.void)
+
+      expect(ChildRegistry.activeFor(closing)).toBeUndefined()
+      expect((yield* runRows(db, closing))[0]?.outcome).toEqual({ type: "cancelled", by })
+    }),
+  )
+})
+
+describe("registry hold", () => {
+  const held = (name: string) => {
+    const entry = ChildRegistry.create({
+      id: `crun_hold_${name}_${Math.random().toString(36).slice(2)}`,
+      childSessionID: childID(name),
+      parentSessionID: parentID(name),
+      directory: undefined,
+      owner: {},
+    })
+    expect(ChildRegistry.register(entry)).toBe(true)
+    return entry
+  }
+  const registered = (entry: ReturnType<typeof held>) => ChildRegistry.get(entry.id) === entry
+
+  it.effect("a held entry leaves once its row is written and its driver has stopped, whichever comes last", () =>
+    Effect.sync(() => {
+      const rowFirst = held("row-first")
+      expect(
+        ChildRegistry.end(rowFirst, { type: "cancelled", by: { kind: "engine", reason: "x" } }, { hold: true }),
+      ).toBe(true)
+      ChildRegistry.persisted(rowFirst)
+      expect(registered(rowFirst)).toBe(true)
+      ChildRegistry.driverStopped(rowFirst)
+      expect(registered(rowFirst)).toBe(false)
+
+      const driverFirst = held("driver-first")
+      ChildRegistry.end(driverFirst, { type: "cancelled", by: { kind: "engine", reason: "x" } }, { hold: true })
+      // The driver is gone while the row is still being written: the write still finishes first.
+      ChildRegistry.driverStopped(driverFirst)
+      expect(registered(driverFirst)).toBe(true)
+      ChildRegistry.persisted(driverFirst)
+      expect(registered(driverFirst)).toBe(false)
+    }),
+  )
+
+  it.effect(
+    "an entry that is not held leaves with its row write, and a driver that stopped earlier holds nothing",
+    () =>
+      Effect.sync(() => {
+        const plain = held("plain")
+        ChildRegistry.end(plain, { type: "completed" })
+        expect(registered(plain)).toBe(true)
+        ChildRegistry.persisted(plain)
+        expect(registered(plain)).toBe(false)
+
+        const early = held("early")
+        ChildRegistry.driverStopped(early)
+        ChildRegistry.end(early, { type: "cancelled", by: { kind: "engine", reason: "x" } }, { hold: true })
+        expect(early.held).toBe(false)
+        ChildRegistry.persisted(early)
+        expect(registered(early)).toBe(false)
+      }),
   )
 })
 

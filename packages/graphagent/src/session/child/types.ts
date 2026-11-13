@@ -71,6 +71,9 @@ export interface ChildRunHandle {
   /**
    * Ends the run with `outcome`. The first of several racing settlements wins
    * (compare-and-swap); every later caller gets `false` and changes nothing.
+   * Call it when the run's driver stops (the job is terminal, the tool call
+   * exits): winner or not, it tells the registry the driver is gone, which
+   * frees the child session of a run a cancellation ended earlier.
    */
   readonly settle: (outcome: ChildRunOutcome) => Effect.Effect<boolean>
   /** Resolves with the outcome that won, whoever settled or cancelled the run. */
@@ -112,6 +115,8 @@ export interface ChildRunsScoped {
    * Registers a new run on an existing child session after verifying that this
    * parent started it as a task: anything else fails with `NotOwner` and
    * writes nothing. A child that is still running fails with `ActiveRunExists`.
+   * A run that has just ended, or that a cancellation ended while its driver is
+   * still stopping, is waited for (at most the cancellation bound) instead.
    */
   readonly adopt: (spec: Omit<ChildRunSpec, "parentSessionID">) => Effect.Effect<ChildRunHandle, ChildRunError>
   /** The latest run of one of this parent's child sessions. */
@@ -133,6 +138,9 @@ export interface ChildRunsInterface {
    * Signal-and-return cancellation: the run ends `cancelled` synchronously
    * (compare-and-swap, credential revoked, row written), then the child
    * session's turn is cancelled in the background under a five second bound.
+   * The child session stays reserved (`adopt` waits) until the run's driver
+   * settles, five seconds at the latest, so a new run cannot start while the
+   * old job still carries the session.
    */
   readonly cancel: (runID: string, by: ChildCancelBy) => Effect.Effect<ChildRunCancelResult>
   /** Ends rows a dead or earlier-life process left active (`interrupted`). */

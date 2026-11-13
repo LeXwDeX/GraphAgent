@@ -32,6 +32,9 @@ export function create(input: {
     phase: "queued",
     outcome: undefined,
     credential: { runID: input.id, revoked: false },
+    held: false,
+    stopped: false,
+    written: false,
     cancelled: Deferred.makeUnsafe<ChildCancelBy>(),
     done: Deferred.makeUnsafe<ChildRunOutcome>(),
     released: Deferred.makeUnsafe<void>(),
@@ -79,17 +82,42 @@ export function begin(entry: ActiveChildRun): boolean {
 /**
  * Ends the run; the first caller wins. Its credential is revoked and everyone
  * waiting on it is woken; a cancelled ending also fires the cancellation
- * signal. The entry stays registered until `release`: the row write that
- * follows must finish before the child session counts as free again.
+ * signal. The entry stays registered after that, and the child session with
+ * it, until the row write has finished (`persisted`). With `hold` it also
+ * waits for the run's driver to stop (`driverStopped`): a cancellation ends the
+ * run at once, but the job carrying it may still be running, and a new run
+ * registered in that window would be handed the old job instead of its own.
  */
-export function end(entry: ActiveChildRun, outcome: ChildRunOutcome): boolean {
+export function end(
+  entry: ActiveChildRun,
+  outcome: ChildRunOutcome,
+  options: { readonly hold?: boolean } = {},
+): boolean {
   if (entry.phase === "ended") return false
   entry.phase = "ended"
   entry.outcome = outcome
+  entry.held = options.hold === true && !entry.stopped
   entry.credential.revoked = true
   Deferred.doneUnsafe(entry.done, Effect.succeed(outcome))
   if (outcome.type === "cancelled") Deferred.doneUnsafe(entry.cancelled, Effect.succeed(outcome.by))
   return true
+}
+
+/** The ending row write finished, or failed. The entry leaves now unless a cancellation still holds it. */
+export function persisted(entry: ActiveChildRun): void {
+  entry.written = true
+  if (!entry.held) release(entry)
+}
+
+/**
+ * The driver that carries the run (the background job, or the tool call that
+ * awaits it) has stopped, or never will run. A held entry leaves as soon as its
+ * row is written; for any other entry this changes nothing.
+ */
+export function driverStopped(entry: ActiveChildRun): void {
+  entry.stopped = true
+  entry.held = false
+  if (entry.written) release(entry)
 }
 
 /** Removes an ended run from the registry and wakes whoever waited for the child session to become free. */
