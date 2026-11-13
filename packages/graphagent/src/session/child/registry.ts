@@ -3,7 +3,7 @@
 
 import { Deferred, Effect } from "effect"
 import { EngineProcess, type ActiveChildRun, type ChildReport, type IssuedCredential } from "../engine-process"
-import type { ChildCancelBy, ChildRunCredential, ChildRunOutcome } from "./types"
+import type { ChildCancelBy, ChildOwner, ChildPermissionPolicy, ChildRunCredential, ChildRunOutcome } from "./types"
 
 /**
  * Zero-dependency access to the active child runs of this process (Issue
@@ -31,6 +31,8 @@ export function create(input: {
   readonly childSessionID: ActiveChildRun["childSessionID"]
   readonly parentSessionID: ActiveChildRun["parentSessionID"]
   readonly ownerKind: ActiveChildRun["ownerKind"]
+  readonly ownerKey: ChildOwner
+  readonly permission: ChildPermissionPolicy
   readonly detached: boolean
   readonly directory: string | undefined
   readonly owner: object
@@ -55,7 +57,9 @@ export function register(entry: ActiveChildRun): boolean {
   if (registry.bySession.has(entry.childSessionID)) return false
   registry.bySession.set(entry.childSessionID, entry.id)
   registry.byRun.set(entry.id, entry)
-  registry.parents.add(entry.parentSessionID)
+  // Only a task run makes its parent a delegations-slot reader: the slot is
+  // the model's task view, and a DAG-only parent must keep costing no read.
+  if (entry.ownerKind === "task") registry.parents.add(entry.parentSessionID)
   return true
 }
 
@@ -103,18 +107,35 @@ export function live(credential: ChildRunCredential): boolean {
 
 /**
  * The child's own loop calls this when it exits cleanly: true while the run
- * that drives the child session is a foreground task's, whose tool call
- * delivers `SubagentStop` (and drives its continuation) itself, so the loop
- * must not also fire the main-agent `Stop`. Every other child session (SDK
- * created, DAG nodes, background tasks) keeps firing its own. The delegation is
- * recorded on the run, so a task promoted after that exit can still deliver
- * the stop event.
+ * that drives the child session owns the Stop event itself. A foreground task's
+ * tool call delivers `SubagentStop` (and drives its continuation); a DAG node's
+ * owner delivers its one notification when the attempt settles. Every other
+ * child session (SDK created, background task) keeps firing its own. The
+ * delegation is recorded on the run, so a task promoted after that exit can
+ * still deliver the stop event.
  */
 export function delegateStop(childSessionID: string): boolean {
   const entry = activeFor(childSessionID)
-  if (!entry || entry.phase === "ended" || entry.ownerKind !== "task" || entry.detached) return false
+  if (!entry || entry.phase === "ended") return false
+  if (entry.ownerKind === "task" && entry.detached) return false
   entry.stopDelegated = true
   return true
+}
+
+/**
+ * The permission subject of a child session's active run, if this process has
+ * one. Synchronous and read-free: permission hot paths use it to decide
+ * whether an ask is unattended. A session with no active run has no subject
+ * (the SDK, a finished child, a dead process's row).
+ */
+export function subjectOf(
+  childSessionID: string,
+):
+  | { readonly owner: ChildOwner; readonly permission: ChildPermissionPolicy; readonly rootSessionID: string }
+  | undefined {
+  const entry = activeFor(childSessionID)
+  if (!entry || entry.phase === "ended") return undefined
+  return { owner: entry.ownerKey, permission: entry.permission, rootSessionID: entry.parentSessionID }
 }
 
 /**

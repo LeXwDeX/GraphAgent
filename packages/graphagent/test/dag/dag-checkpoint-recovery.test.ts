@@ -28,6 +28,7 @@ import { SessionStatus } from "@/session/status"
 import { awaitWithTimeout, it, pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 interface Probe {
   readonly childCreated: Deferred.Deferred<string>
@@ -97,8 +98,7 @@ function checkpointLayer(probe: Probe) {
       }),
     messages: () => Effect.succeed([]),
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
       cancel: () => Effect.void,
       prompt: (input: SessionPrompt.PromptInput) =>

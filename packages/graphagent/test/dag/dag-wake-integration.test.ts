@@ -45,6 +45,7 @@ import { WorkflowParameters, WorkflowTool } from "@/tool/workflow"
 import { ProviderTest } from "../fake/provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const integration = testEffect(Layer.empty)
 
@@ -79,8 +80,8 @@ function takeWithin<A>(
     Effect.timeoutOption(timeout),
     Effect.flatMap(
       Option.match({
-      onNone: () => Effect.fail(new Error(message)),
-      onSome: Effect.succeed,
+        onNone: () => Effect.fail(new Error(message)),
+        onSome: Effect.succeed,
       }),
     ),
   )
@@ -164,16 +165,16 @@ function wakeLayer(input: {
     getPart: () => Effect.succeed(undefined),
     get: () =>
       Effect.succeed({
-      id: SessionID.make("ses_parent"),
-      slug: "parent",
-      projectID: Project.ID.make("project-1"),
-      directory: process.cwd(),
-      title: "parent",
-      agent: "build",
-      model: { providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") },
-      version: "test",
-      time: { created: 0, updated: 0 },
-    }),
+        id: SessionID.make("ses_parent"),
+        slug: "parent",
+        projectID: Project.ID.make("project-1"),
+        directory: process.cwd(),
+        title: "parent",
+        agent: "build",
+        model: { providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") },
+        version: "test",
+        time: { created: 0, updated: 0 },
+      }),
     create: (value) =>
       Effect.sync(() => {
         const id = `ses_child_${created.length + 1}`
@@ -200,27 +201,26 @@ function wakeLayer(input: {
     })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: () => Effect.void,
-    prompt: deliver,
-    deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
+      cancel: () => Effect.void,
+      prompt: deliver,
+      deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({
-      name: "build",
-      mode: "all",
-      permission: [...input.agentPermissions],
-      options: {},
-      description: "",
-      prompt: "",
-      model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
-      tools: {},
-      hooks: {},
-    }),
+        name: "build",
+        mode: "all",
+        permission: [...input.agentPermissions],
+        options: {},
+        description: "",
+        prompt: "",
+        model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
+        tools: {},
+        hooks: {},
+      }),
     list: () => Effect.succeed([{ name: "build", mode: "all", permission: [], options: {} }]),
   })
   const testModel = ProviderTest.model({ providerID: Provider.ID.make("test"), id: Model.ID.make("test-model") })
@@ -273,21 +273,21 @@ function runWakeTest<A>(
       yield* database.db
         .insert(ProjectTable)
         .values({
-        id: "project-1" as never,
-        worktree: process.cwd() as never,
-        sandboxes: [],
+          id: "project-1" as never,
+          worktree: process.cwd() as never,
+          sandboxes: [],
         })
         .run()
         .pipe(Effect.orDie)
       yield* database.db
         .insert(SessionTable)
         .values({
-        id: "ses_parent" as never,
-        project_id: "project-1" as never,
-        slug: "parent",
-        directory: process.cwd(),
-        title: "Parent",
-        version: "test",
+          id: "ses_parent" as never,
+          project_id: "project-1" as never,
+          slug: "parent",
+          directory: process.cwd(),
+          title: "Parent",
+          version: "test",
         })
         .run()
         .pipe(Effect.orDie)
@@ -316,7 +316,7 @@ describe("DagLoop atomic wake integration", () => {
         const childTitles = new Map<string, string>()
         const created: string[] = []
         const session = Layer.mock(Session.Service, {
-    getPart: () => Effect.succeed(undefined),
+          getPart: () => Effect.succeed(undefined),
           get: () =>
             Effect.succeed({
               id: SessionID.make("ses_parent"),
@@ -389,12 +389,11 @@ describe("DagLoop atomic wake integration", () => {
           readonly parentPrompts: Queue.Queue<ParentPromptGate>
           readonly parentSettled: Queue.Queue<void>
         }) =>
-          Layer.mock(
-            SessionPrompt.Service,
+          mockSessionPrompt(
             withIdleAdmission({
-          cancel: () => Effect.void,
-          prompt: deliver(queues),
-          deliver: (value) => deliver(queues)(value).pipe(Effect.map(Option.some)),
+              cancel: () => Effect.void,
+              prompt: deliver(queues),
+              deliver: (value) => deliver(queues)(value).pipe(Effect.map(Option.some)),
             }),
           )
 
@@ -427,21 +426,21 @@ describe("DagLoop atomic wake integration", () => {
           yield* databaseService.db
             .insert(ProjectTable)
             .values({
-            id: Project.ID.make("project-1"),
-            worktree: AbsolutePath.make(process.cwd()),
-            sandboxes: [],
+              id: Project.ID.make("project-1"),
+              worktree: AbsolutePath.make(process.cwd()),
+              sandboxes: [],
             })
             .run()
             .pipe(Effect.orDie)
           yield* databaseService.db
             .insert(SessionTable)
             .values({
-            id: SessionID.make("ses_parent"),
-            project_id: Project.ID.make("project-1"),
-            slug: "parent",
-            directory: AbsolutePath.make(process.cwd()),
-            title: "Parent",
-            version: "test",
+              id: SessionID.make("ses_parent"),
+              project_id: Project.ID.make("project-1"),
+              slug: "parent",
+              directory: AbsolutePath.make(process.cwd()),
+              title: "Parent",
+              version: "test",
             })
             .run()
             .pipe(Effect.orDie)
@@ -499,10 +498,10 @@ describe("DagLoop atomic wake integration", () => {
             }).pipe(
               Effect.provide(
                 DagLoop.layer.pipe(
-              Layer.provide(session),
-              Layer.provide(promptLayer(firstQueues)),
-              Layer.provide(agent),
-              Layer.provide(inbox),
+                  Layer.provide(session),
+                  Layer.provide(promptLayer(firstQueues)),
+                  Layer.provide(agent),
+                  Layer.provide(inbox),
                 ),
               ),
             ),
@@ -527,10 +526,10 @@ describe("DagLoop atomic wake integration", () => {
             }).pipe(
               Effect.provide(
                 DagLoop.layer.pipe(
-              Layer.provide(session),
-              Layer.provide(promptLayer(restartedQueues)),
-              Layer.provide(agent),
-              Layer.provide(inbox),
+                  Layer.provide(session),
+                  Layer.provide(promptLayer(restartedQueues)),
+                  Layer.provide(agent),
+                  Layer.provide(inbox),
                 ),
               ),
             ),
@@ -558,28 +557,28 @@ describe("DagLoop atomic wake integration", () => {
   integration.effect("acknowledges one paused reminder and rearms only on the next pause episode", () =>
     runWakeTest(({ dag, store, childPrompts }) =>
       Effect.gen(function* () {
-      const dagID = yield* dag.create({
+        const dagID = yield* dag.create({
           projectID: "project-1",
           sessionID: "ses_parent",
           title: "Pause reminder",
-        config: { name: "pause-reminder", nodes: [node("work")] },
-      })
-      yield* takeWithin(childPrompts, "work did not start")
-      yield* dag.pause(dagID)
-      const firstPause = yield* store.getWorkflow(dagID)
-      expect(firstPause?.status).toBe("paused")
-      expect(firstPause?.wakeReported).toBe(false)
-      yield* store.markWakeBatchReported({ nodes: [], workflows: [firstPause!] })
-      expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(true)
-      yield* dag.resume(dagID)
-      expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
-      yield* dag.pause(dagID)
-      expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(false)
-      const secondPause = yield* store.getWorkflow(dagID)
-      expect(secondPause?.status).toBe("paused")
-      expect(secondPause?.seq).toBeGreaterThan(firstPause!.seq)
-      expect(secondPause?.timeUpdated).toBe(firstPause?.timeUpdated)
-      yield* dag.cancel(dagID)
+          config: { name: "pause-reminder", nodes: [node("work")] },
+        })
+        yield* takeWithin(childPrompts, "work did not start")
+        yield* dag.pause(dagID)
+        const firstPause = yield* store.getWorkflow(dagID)
+        expect(firstPause?.status).toBe("paused")
+        expect(firstPause?.wakeReported).toBe(false)
+        yield* store.markWakeBatchReported({ nodes: [], workflows: [firstPause!] })
+        expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(true)
+        yield* dag.resume(dagID)
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+        yield* dag.pause(dagID)
+        expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(false)
+        const secondPause = yield* store.getWorkflow(dagID)
+        expect(secondPause?.status).toBe("paused")
+        expect(secondPause?.seq).toBeGreaterThan(firstPause!.seq)
+        expect(secondPause?.timeUpdated).toBe(firstPause?.timeUpdated)
+        yield* dag.cancel(dagID)
       }),
     ),
   )
@@ -971,38 +970,38 @@ describe("DagLoop atomic wake integration", () => {
       await Effect.runPromise(
         runWakeTest(
           ({ dag, store, childPrompts }) =>
-          Effect.gen(function* () {
-            const dagID = yield* dag.create({
-              projectID: "project-1",
-              sessionID: "ses_parent",
-              title: "File-ref live capture",
-              config: { name: "file-ref-live-capture", nodes: [node("file-report")] },
-            })
+            Effect.gen(function* () {
+              const dagID = yield* dag.create({
+                projectID: "project-1",
+                sessionID: "ses_parent",
+                title: "File-ref live capture",
+                config: { name: "file-ref-live-capture", nodes: [node("file-report")] },
+              })
 
-            const report = yield* takeWithin(childPrompts, "file-report did not start")
-            yield* Deferred.succeed(report.release, reportPath)
-            const row = yield* pollWithTimeout(
+              const report = yield* takeWithin(childPrompts, "file-report did not start")
+              yield* Deferred.succeed(report.release, reportPath)
+              const row = yield* pollWithTimeout(
                 store
                   .getNode(dagID, "file-report")
                   .pipe(Effect.map((item) => (item?.status === "completed" ? item : undefined))),
-              "file-ref node did not complete",
-            )
-            expect(row.output).toEqual(expect.stringContaining("workflow-artifacts"))
+                "file-ref node did not complete",
+              )
+              expect(row.output).toEqual(expect.stringContaining("workflow-artifacts"))
               expect(row.capturedOutput).toEqual(
                 expect.objectContaining({
-              kind: "file_ref",
-              storage: "managed-v1",
-              source_path: FSUtil.normalizePath(reportPath),
-              content_ref: row.output,
-              path: row.output,
-              size: Buffer.byteLength(content),
-              sha256: createHash("sha256").update(content).digest("hex"),
-              summary: content,
+                  kind: "file_ref",
+                  storage: "managed-v1",
+                  source_path: FSUtil.normalizePath(reportPath),
+                  content_ref: row.output,
+                  path: row.output,
+                  size: Buffer.byteLength(content),
+                  sha256: createHash("sha256").update(content).digest("hex"),
+                  summary: content,
                 }),
               )
-            yield* Effect.promise(() => fs.rm(dir, { recursive: true, force: true }))
-            expect(yield* Effect.promise(() => fs.readFile(String(row.output), "utf8"))).toBe(content)
-          }),
+              yield* Effect.promise(() => fs.rm(dir, { recursive: true, force: true }))
+              expect(yield* Effect.promise(() => fs.readFile(String(row.output), "utf8"))).toBe(content)
+            }),
           undefined,
           [
             {
@@ -1317,20 +1316,20 @@ describe("DagLoop atomic wake integration", () => {
           // "Added, then spawn-dead" silent window is gone.
           const createError = yield* dag
             .create({
-            projectID: "project-1",
-            sessionID: "ses_parent",
-            title: "Unresolved aggregate input",
-            config: {
-              name: "unresolved-aggregate-input",
-              nodes: [
-                node("node-a"),
-                {
-                  ...node("summary", ["node-a"]),
-                  input_mapping: {},
-                  prompt_template: { inline: "汇总结果：{{node-a}}" },
-                },
-              ],
-            },
+              projectID: "project-1",
+              sessionID: "ses_parent",
+              title: "Unresolved aggregate input",
+              config: {
+                name: "unresolved-aggregate-input",
+                nodes: [
+                  node("node-a"),
+                  {
+                    ...node("summary", ["node-a"]),
+                    input_mapping: {},
+                    prompt_template: { inline: "汇总结果：{{node-a}}" },
+                  },
+                ],
+              },
             })
             .pipe(Effect.catch((cause: Error) => Effect.succeed(cause.message)))
           expect(createError).toContain('unbound variable "{{node-a}}"')
@@ -1635,39 +1634,39 @@ describe("DagLoop atomic wake integration", () => {
         ({ database }) =>
           database.db
             .transaction((tx) =>
-            Effect.gen(function* () {
+              Effect.gen(function* () {
                 yield* tx
                   .insert(WorkflowTable)
                   .values({
-                id: "recovered-workflow",
-                project_id: "project-1" as never,
-                session_id: "ses_parent" as never,
-                directory: process.cwd(),
-                target_fingerprint: { kind: "none" },
-                title: "Recovered workflow",
-                status: "completed",
-                config: "{}",
-                seq: 10,
-                wake_reported: false,
+                    id: "recovered-workflow",
+                    project_id: "project-1" as never,
+                    session_id: "ses_parent" as never,
+                    directory: process.cwd(),
+                    target_fingerprint: { kind: "none" },
+                    title: "Recovered workflow",
+                    status: "completed",
+                    config: "{}",
+                    seq: 10,
+                    wake_reported: false,
                   })
                   .run()
                 yield* tx
                   .insert(WorkflowNodeTable)
                   .values({
-                id: "recovered-node",
-                workflow_id: "recovered-workflow",
-                name: "recovered-node",
-                worker_type: "build",
-                status: "completed",
-                required: true,
-                depends_on: [],
-                output: "recovered",
-                wake_eligible: true,
-                wake_reported: false,
-                seq: 9,
+                    id: "recovered-node",
+                    workflow_id: "recovered-workflow",
+                    name: "recovered-node",
+                    worker_type: "build",
+                    status: "completed",
+                    required: true,
+                    depends_on: [],
+                    output: "recovered",
+                    wake_eligible: true,
+                    wake_reported: false,
+                    seq: 9,
                   })
                   .run()
-            }),
+              }),
             )
             .pipe(Effect.orDie),
       ),
@@ -1685,7 +1684,7 @@ describe("DagLoop atomic wake integration", () => {
         const childTitles = new Map<string, string>()
         const created: string[] = []
         const session = Layer.mock(Session.Service, {
-    getPart: () => Effect.succeed(undefined),
+          getPart: () => Effect.succeed(undefined),
           get: () =>
             Effect.succeed({
               id: SessionID.make("ses_parent"),
@@ -1758,12 +1757,11 @@ describe("DagLoop atomic wake integration", () => {
           readonly parentPrompts: Queue.Queue<ParentPromptGate>
           readonly parentSettled: Queue.Queue<void>
         }) =>
-          Layer.mock(
-            SessionPrompt.Service,
+          mockSessionPrompt(
             withIdleAdmission({
-          cancel: () => Effect.void,
-          prompt: deliver(queues),
-          deliver: (value) => deliver(queues)(value).pipe(Effect.map(Option.some)),
+              cancel: () => Effect.void,
+              prompt: deliver(queues),
+              deliver: (value) => deliver(queues)(value).pipe(Effect.map(Option.some)),
             }),
           )
 
@@ -1791,21 +1789,21 @@ describe("DagLoop atomic wake integration", () => {
           yield* databaseSvc.db
             .insert(ProjectTable)
             .values({
-            id: Project.ID.make("project-1"),
-            worktree: AbsolutePath.make(process.cwd()),
-            sandboxes: [],
+              id: Project.ID.make("project-1"),
+              worktree: AbsolutePath.make(process.cwd()),
+              sandboxes: [],
             })
             .run()
             .pipe(Effect.orDie)
           yield* databaseSvc.db
             .insert(SessionTable)
             .values({
-            id: SessionID.make("ses_parent"),
-            project_id: Project.ID.make("project-1"),
-            slug: "parent",
-            directory: AbsolutePath.make(process.cwd()),
-            title: "Parent",
-            version: "test",
+              id: SessionID.make("ses_parent"),
+              project_id: Project.ID.make("project-1"),
+              slug: "parent",
+              directory: AbsolutePath.make(process.cwd()),
+              title: "Parent",
+              version: "test",
             })
             .run()
             .pipe(Effect.orDie)
@@ -1944,79 +1942,79 @@ describe("DagLoop atomic wake integration", () => {
         ({ database }) =>
           database.db
             .transaction((tx) =>
-            Effect.gen(function* () {
+              Effect.gen(function* () {
                 yield* tx
                   .insert(WorkflowTable)
                   .values({
-                id: "dag_recovered_conditional",
-                project_id: "project-1" as never,
-                session_id: "ses_parent" as never,
-                directory: process.cwd(),
-                target_fingerprint: { kind: "none" },
-                title: "Recovered conditional workflow",
-                status: "running",
-                config: JSON.stringify({
-                  name: "dag_recovered_conditional",
-                  nodes: [
-                    node("quality-gate"),
-                    {
-                      ...node("conditional", ["quality-gate"]),
-                      report_to_parent: false,
-                      condition: 'quality-gate.output.verdict == "ACCEPT"',
-                    },
-                    {
-                      ...node("after-conditional", ["conditional"]),
-                      report_to_parent: false,
-                    },
-                  ],
-                }),
-                seq: 6,
-                wake_reported: false,
+                    id: "dag_recovered_conditional",
+                    project_id: "project-1" as never,
+                    session_id: "ses_parent" as never,
+                    directory: process.cwd(),
+                    target_fingerprint: { kind: "none" },
+                    title: "Recovered conditional workflow",
+                    status: "running",
+                    config: JSON.stringify({
+                      name: "dag_recovered_conditional",
+                      nodes: [
+                        node("quality-gate"),
+                        {
+                          ...node("conditional", ["quality-gate"]),
+                          report_to_parent: false,
+                          condition: 'quality-gate.output.verdict == "ACCEPT"',
+                        },
+                        {
+                          ...node("after-conditional", ["conditional"]),
+                          report_to_parent: false,
+                        },
+                      ],
+                    }),
+                    seq: 6,
+                    wake_reported: false,
                   })
                   .run()
                 yield* tx
                   .insert(WorkflowNodeTable)
                   .values([
-                {
-                  id: "quality-gate",
-                  workflow_id: "dag_recovered_conditional",
-                  name: "quality-gate",
-                  worker_type: "build",
-                  status: "completed",
-                  required: true,
-                  depends_on: [],
-                  output: "REJECT",
-                  wake_eligible: true,
-                  wake_reported: false,
-                  seq: 4,
-                },
-                {
-                  id: "conditional",
-                  workflow_id: "dag_recovered_conditional",
-                  name: "conditional",
-                  worker_type: "build",
-                  status: "pending",
-                  required: true,
-                  depends_on: ["quality-gate"],
-                  wake_eligible: false,
-                  wake_reported: false,
-                  seq: 2,
-                },
-                {
-                  id: "after-conditional",
-                  workflow_id: "dag_recovered_conditional",
-                  name: "after-conditional",
-                  worker_type: "build",
-                  status: "pending",
-                  required: true,
-                  depends_on: ["conditional"],
-                  wake_eligible: false,
-                  wake_reported: false,
-                  seq: 1,
-                },
+                    {
+                      id: "quality-gate",
+                      workflow_id: "dag_recovered_conditional",
+                      name: "quality-gate",
+                      worker_type: "build",
+                      status: "completed",
+                      required: true,
+                      depends_on: [],
+                      output: "REJECT",
+                      wake_eligible: true,
+                      wake_reported: false,
+                      seq: 4,
+                    },
+                    {
+                      id: "conditional",
+                      workflow_id: "dag_recovered_conditional",
+                      name: "conditional",
+                      worker_type: "build",
+                      status: "pending",
+                      required: true,
+                      depends_on: ["quality-gate"],
+                      wake_eligible: false,
+                      wake_reported: false,
+                      seq: 2,
+                    },
+                    {
+                      id: "after-conditional",
+                      workflow_id: "dag_recovered_conditional",
+                      name: "after-conditional",
+                      worker_type: "build",
+                      status: "pending",
+                      required: true,
+                      depends_on: ["conditional"],
+                      wake_eligible: false,
+                      wake_reported: false,
+                      seq: 1,
+                    },
                   ])
                   .run()
-            }),
+              }),
             )
             .pipe(Effect.orDie),
       ),
@@ -2193,65 +2191,65 @@ describe("DagLoop atomic wake integration", () => {
         ({ database }) =>
           database.db
             .transaction((tx) =>
-            Effect.gen(function* () {
+              Effect.gen(function* () {
                 yield* tx
                   .insert(WorkflowTable)
                   .values({
-                id: "dag_recovered_required_skip",
-                project_id: Project.ID.make("project-1"),
-                session_id: SessionID.make("ses_parent"),
-                directory: process.cwd(),
-                target_fingerprint: { kind: "none" },
-                title: "Recovered required skip",
-                status: "running",
-                config: JSON.stringify({
-                  name: "dag_recovered_required_skip",
-                  nodes: [
-                    node("gate"),
-                    {
-                      ...node("branch", ["gate"]),
-                      report_to_parent: false,
-                      condition: 'gate.output.verdict == "ACCEPT"',
-                      skip_ok: false,
-                    },
-                  ],
-                }),
-                seq: 4,
-                wake_reported: false,
+                    id: "dag_recovered_required_skip",
+                    project_id: Project.ID.make("project-1"),
+                    session_id: SessionID.make("ses_parent"),
+                    directory: process.cwd(),
+                    target_fingerprint: { kind: "none" },
+                    title: "Recovered required skip",
+                    status: "running",
+                    config: JSON.stringify({
+                      name: "dag_recovered_required_skip",
+                      nodes: [
+                        node("gate"),
+                        {
+                          ...node("branch", ["gate"]),
+                          report_to_parent: false,
+                          condition: 'gate.output.verdict == "ACCEPT"',
+                          skip_ok: false,
+                        },
+                      ],
+                    }),
+                    seq: 4,
+                    wake_reported: false,
                   })
                   .run()
                 yield* tx
                   .insert(WorkflowNodeTable)
                   .values([
-                {
-                  id: "gate",
-                  workflow_id: "dag_recovered_required_skip",
-                  name: "gate",
-                  worker_type: "build",
-                  status: "completed",
-                  required: true,
-                  depends_on: [],
-                  output: { verdict: "REJECT" },
-                  wake_eligible: false,
-                  wake_reported: true,
-                  seq: 2,
-                },
-                {
-                  id: "branch",
-                  workflow_id: "dag_recovered_required_skip",
-                  name: "branch",
-                  worker_type: "build",
-                  status: "skipped",
-                  required: true,
-                  depends_on: ["gate"],
-                  error_reason: "condition_false",
-                  wake_eligible: false,
-                  wake_reported: false,
-                  seq: 1,
-                },
+                    {
+                      id: "gate",
+                      workflow_id: "dag_recovered_required_skip",
+                      name: "gate",
+                      worker_type: "build",
+                      status: "completed",
+                      required: true,
+                      depends_on: [],
+                      output: { verdict: "REJECT" },
+                      wake_eligible: false,
+                      wake_reported: true,
+                      seq: 2,
+                    },
+                    {
+                      id: "branch",
+                      workflow_id: "dag_recovered_required_skip",
+                      name: "branch",
+                      worker_type: "build",
+                      status: "skipped",
+                      required: true,
+                      depends_on: ["gate"],
+                      error_reason: "condition_false",
+                      wake_eligible: false,
+                      wake_reported: false,
+                      seq: 1,
+                    },
                   ])
                   .run()
-            }),
+              }),
             )
             .pipe(Effect.orDie),
       ),
@@ -2264,159 +2262,159 @@ describe("DagLoop atomic wake integration", () => {
   it.each(["deep", "standard"] as const)(
     "fails a recovered %s workflow when verification skips every diff review",
     async (mode) => {
-    await Effect.runPromise(
-      runWakeTest(
-        ({ store, parentPrompts }) =>
-          Effect.gen(function* () {
-            const workflow = yield* pollWithTimeout(
+      await Effect.runPromise(
+        runWakeTest(
+          ({ store, parentPrompts }) =>
+            Effect.gen(function* () {
+              const workflow = yield* pollWithTimeout(
                 store
                   .getWorkflow("dag_recovered_review_rejection")
                   .pipe(Effect.map((row) => (row && ["completed", "failed"].includes(row.status) ? row : undefined))),
-              "recovered workflow without an accepted review did not settle",
-            )
-            expect(workflow.status).toBe("failed")
-            expect((yield* store.getNode(workflow.id, "review-diff"))?.status).toBe("skipped")
-            expect((yield* store.getNode(workflow.id, "final-audit"))?.status).toBe("skipped")
+                "recovered workflow without an accepted review did not settle",
+              )
+              expect(workflow.status).toBe("failed")
+              expect((yield* store.getNode(workflow.id, "review-diff"))?.status).toBe("skipped")
+              expect((yield* store.getNode(workflow.id, "final-audit"))?.status).toBe("skipped")
 
-            const parent = yield* takeWithin(parentPrompts, "review rejection failure did not wake the parent")
-            expect(promptText(parent.input)).toContain(
-              '[DAG Workflow failed] Workflow "Recovered review rejection" has reached terminal status.',
-            )
-            yield* Deferred.succeed(parent.release, "success")
-          }),
-        ({ database }) =>
+              const parent = yield* takeWithin(parentPrompts, "review rejection failure did not wake the parent")
+              expect(promptText(parent.input)).toContain(
+                '[DAG Workflow failed] Workflow "Recovered review rejection" has reached terminal status.',
+              )
+              yield* Deferred.succeed(parent.release, "success")
+            }),
+          ({ database }) =>
             database.db
               .transaction((tx) =>
-            Effect.gen(function* () {
-              const nodes = [
-                {
-                  ...node("implement"),
-                  output_schema: {
-                    type: "object",
-                    properties: {
-                      diff: { type: "string" },
-                      fingerprint: { type: "string" },
+                Effect.gen(function* () {
+                  const nodes = [
+                    {
+                      ...node("implement"),
+                      output_schema: {
+                        type: "object",
+                        properties: {
+                          diff: { type: "string" },
+                          fingerprint: { type: "string" },
+                        },
+                        required: ["diff", "fingerprint"],
+                      },
                     },
-                    required: ["diff", "fingerprint"],
-                  },
-                },
-                {
-                  ...node("verify", ["implement"]),
-                  output_schema: {
-                    type: "object",
-                    properties: { verdict: { enum: ["PASS", "FAIL"] } },
-                    required: ["verdict"],
-                  },
-                },
-                {
-                  ...node("review-diff", ["verify"]),
-                  worker_type: "review",
-                  review: {
-                    phase: "diff" as const,
-                    implementation_node_id: "implement",
-                    verification_node_id: "verify",
-                  },
-                  input_mapping: {
-                    diff: "implement.output.diff",
-                    implementation_fingerprint: "implement.output.fingerprint",
-                    verification: "verify.output",
-                  },
-                  condition: 'verify.output.verdict == "PASS"',
-                  output_schema: {
-                    type: "object",
-                    properties: {
-                      verdict: { enum: ["ACCEPT", "REJECT"] },
-                      implementation_fingerprint: { type: "string" },
+                    {
+                      ...node("verify", ["implement"]),
+                      output_schema: {
+                        type: "object",
+                        properties: { verdict: { enum: ["PASS", "FAIL"] } },
+                        required: ["verdict"],
+                      },
                     },
-                    required: ["verdict", "implementation_fingerprint"],
-                  },
-                },
-                {
-                  ...node("final-audit", ["review-diff"]),
-                  worker_type: "audit",
-                  input_mapping: { review: "review-diff.output" },
-                  condition: 'review-diff.output.verdict == "ACCEPT"',
-                },
-              ]
+                    {
+                      ...node("review-diff", ["verify"]),
+                      worker_type: "review",
+                      review: {
+                        phase: "diff" as const,
+                        implementation_node_id: "implement",
+                        verification_node_id: "verify",
+                      },
+                      input_mapping: {
+                        diff: "implement.output.diff",
+                        implementation_fingerprint: "implement.output.fingerprint",
+                        verification: "verify.output",
+                      },
+                      condition: 'verify.output.verdict == "PASS"',
+                      output_schema: {
+                        type: "object",
+                        properties: {
+                          verdict: { enum: ["ACCEPT", "REJECT"] },
+                          implementation_fingerprint: { type: "string" },
+                        },
+                        required: ["verdict", "implementation_fingerprint"],
+                      },
+                    },
+                    {
+                      ...node("final-audit", ["review-diff"]),
+                      worker_type: "audit",
+                      input_mapping: { review: "review-diff.output" },
+                      condition: 'review-diff.output.verdict == "ACCEPT"',
+                    },
+                  ]
                   yield* tx
                     .insert(WorkflowTable)
                     .values({
-                id: "dag_recovered_review_rejection",
-                project_id: "project-1" as never,
-                session_id: "ses_parent" as never,
-                directory: process.cwd(),
-                target_fingerprint: { kind: "none" },
-                title: "Recovered review rejection",
-                status: "running",
-                config: JSON.stringify({
-                  name: "dag_recovered_review_rejection",
-                  mode,
-                  nodes,
-                }),
-                seq: 10,
-                wake_reported: false,
+                      id: "dag_recovered_review_rejection",
+                      project_id: "project-1" as never,
+                      session_id: "ses_parent" as never,
+                      directory: process.cwd(),
+                      target_fingerprint: { kind: "none" },
+                      title: "Recovered review rejection",
+                      status: "running",
+                      config: JSON.stringify({
+                        name: "dag_recovered_review_rejection",
+                        mode,
+                        nodes,
+                      }),
+                      seq: 10,
+                      wake_reported: false,
                     })
                     .run()
                   yield* tx
                     .insert(WorkflowNodeTable)
                     .values([
-                {
-                  id: "implement",
-                  workflow_id: "dag_recovered_review_rejection",
-                  name: "implement",
-                  worker_type: "build",
-                  status: "completed",
-                  required: true,
-                  depends_on: [],
-                  output: { diff: "diff --git a/a b/a", fingerprint: "fp-1" },
-                  wake_eligible: false,
-                  wake_reported: true,
-                  seq: 6,
-                },
-                {
-                  id: "verify",
-                  workflow_id: "dag_recovered_review_rejection",
-                  name: "verify",
-                  worker_type: "build",
-                  status: "completed",
-                  required: true,
-                  depends_on: ["implement"],
-                  output: { verdict: "FAIL" },
-                  wake_eligible: false,
-                  wake_reported: true,
-                  seq: 5,
-                },
-                {
-                  id: "review-diff",
-                  workflow_id: "dag_recovered_review_rejection",
-                  name: "review-diff",
-                  worker_type: "review",
-                  status: "pending",
-                  required: true,
-                  depends_on: ["verify"],
-                  wake_eligible: false,
-                  wake_reported: false,
-                  seq: 4,
-                },
-                {
-                  id: "final-audit",
-                  workflow_id: "dag_recovered_review_rejection",
-                  name: "final-audit",
-                  worker_type: "audit",
-                  status: "pending",
-                  required: true,
-                  depends_on: ["review-diff"],
-                  wake_eligible: false,
-                  wake_reported: false,
-                  seq: 3,
-                },
+                      {
+                        id: "implement",
+                        workflow_id: "dag_recovered_review_rejection",
+                        name: "implement",
+                        worker_type: "build",
+                        status: "completed",
+                        required: true,
+                        depends_on: [],
+                        output: { diff: "diff --git a/a b/a", fingerprint: "fp-1" },
+                        wake_eligible: false,
+                        wake_reported: true,
+                        seq: 6,
+                      },
+                      {
+                        id: "verify",
+                        workflow_id: "dag_recovered_review_rejection",
+                        name: "verify",
+                        worker_type: "build",
+                        status: "completed",
+                        required: true,
+                        depends_on: ["implement"],
+                        output: { verdict: "FAIL" },
+                        wake_eligible: false,
+                        wake_reported: true,
+                        seq: 5,
+                      },
+                      {
+                        id: "review-diff",
+                        workflow_id: "dag_recovered_review_rejection",
+                        name: "review-diff",
+                        worker_type: "review",
+                        status: "pending",
+                        required: true,
+                        depends_on: ["verify"],
+                        wake_eligible: false,
+                        wake_reported: false,
+                        seq: 4,
+                      },
+                      {
+                        id: "final-audit",
+                        workflow_id: "dag_recovered_review_rejection",
+                        name: "final-audit",
+                        worker_type: "audit",
+                        status: "pending",
+                        required: true,
+                        depends_on: ["review-diff"],
+                        wake_eligible: false,
+                        wake_reported: false,
+                        seq: 3,
+                      },
                     ])
                     .run()
-            }),
+                }),
               )
               .pipe(Effect.orDie),
-      ),
-    )
+        ),
+      )
     },
   )
 
@@ -2619,14 +2617,14 @@ describe("DagLoop atomic wake integration", () => {
     try {
       await Effect.runPromise(
         runWakeTest(({ dag, workflow, store, parentPrompts, parentSettled, childPrompts }) =>
-            Effect.gen(function* () {
+          Effect.gen(function* () {
             const dagID = yield* dag.create({
               projectID: "project-1",
               sessionID: "ses_parent",
               title: "Escalated replan",
               config: { name: "escalated-replan", nodes: [node("anchor")] },
             })
-              const anchor = yield* takeWithin(childPrompts, "anchor did not start")
+            const anchor = yield* takeWithin(childPrompts, "anchor did not start")
             const running = yield* pollWithTimeout(
               store
                 .getNode(dagID, "anchor")
@@ -2637,18 +2635,18 @@ describe("DagLoop atomic wake integration", () => {
                 ),
               "anchor did not reach running",
             )
-              yield* dag.nodeTimeoutEscalated(dagID, "anchor", running.childSessionId!, 1)
-              const parent = yield* takeWithin(parentPrompts, "timeout escalation did not wake the parent")
-              expect(promptText(parent.input)).toContain("Act on these workflows this turn")
-              const context = {
-                sessionID: SessionID.make("ses_parent"),
-                messageID: MessageID.ascending(),
-                agent: "build",
-                abort: new AbortController().signal,
-                messages: [],
-                metadata: () => Effect.void,
-                ask: () => Effect.void,
-              } satisfies Tool.Context
+            yield* dag.nodeTimeoutEscalated(dagID, "anchor", running.childSessionId!, 1)
+            const parent = yield* takeWithin(parentPrompts, "timeout escalation did not wake the parent")
+            expect(promptText(parent.input)).toContain("Act on these workflows this turn")
+            const context = {
+              sessionID: SessionID.make("ses_parent"),
+              messageID: MessageID.ascending(),
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            } satisfies Tool.Context
             const rejected = yield* workflow
               .execute(
                 Schema.decodeUnknownSync(WorkflowParameters)({
@@ -2662,15 +2660,15 @@ describe("DagLoop atomic wake integration", () => {
                 context,
               )
               .pipe(Effect.exit)
-              expect(Exit.isFailure(rejected)).toBe(true)
-              if (Exit.isFailure(rejected)) expect(Cause.pretty(rejected.cause)).toContain("Workflow state: paused")
-              expect((yield* store.getWorkflow(dagID))?.status).toBe("paused")
+            expect(Exit.isFailure(rejected)).toBe(true)
+            if (Exit.isFailure(rejected)) expect(Cause.pretty(rejected.cause)).toContain("Workflow state: paused")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("paused")
 
-              yield* Deferred.succeed(parent.release, "success")
-              yield* takeWithin(parentSettled, "parent did not settle after the rejected replan")
-              expect((yield* store.getWorkflow(dagID))?.status).toBe("paused")
+            yield* Deferred.succeed(parent.release, "success")
+            yield* takeWithin(parentSettled, "parent did not settle after the rejected replan")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("paused")
 
-              const repaired = yield* workflow.execute(
+            const repaired = yield* workflow.execute(
               Schema.decodeUnknownSync(WorkflowParameters)({
                 params: {
                   action: "control",
@@ -2679,15 +2677,15 @@ describe("DagLoop atomic wake integration", () => {
                   spec_path: correctedPath,
                 },
               }),
-                context,
-              )
-              expect(repaired.title).toContain("Workflow replanned")
-              expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
-              const child = yield* takeWithin(childPrompts, "corrective node did not start")
-              expect(child.title).toBe("repair")
-              yield* Deferred.succeed(child.release, "repaired")
-              yield* Deferred.succeed(anchor.release, "anchor done")
-            }),
+              context,
+            )
+            expect(repaired.title).toContain("Workflow replanned")
+            expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+            const child = yield* takeWithin(childPrompts, "corrective node did not start")
+            expect(child.title).toBe("repair")
+            yield* Deferred.succeed(child.release, "repaired")
+            yield* Deferred.succeed(anchor.release, "anchor done")
+          }),
         ),
       )
     } finally {

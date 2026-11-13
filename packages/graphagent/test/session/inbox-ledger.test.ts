@@ -11,13 +11,13 @@ import { EventV2 } from "@graphagent/core/event"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionInbox, type InboxItem, type InboxLedger, type LedgerScope } from "@/session/inbox"
-import { SessionPrompt } from "@/session/prompt"
 import { MessageID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { AdmissionPersistFailed } from "@/session/turn/prepare"
 import type { TurnStart } from "@/session/turns"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 type Db = Database.Interface["db"]
 
@@ -98,7 +98,7 @@ let admitCalls = 0
 const admission = Layer.unwrap(
   Effect.gen(function* () {
     const { db } = yield* Database.Service
-    return Layer.mock(SessionPrompt.Service, {
+    return mockSessionPrompt({
       admit: (input, _options, persistAdmission) =>
         Effect.gen(function* () {
           admitCalls += 1
@@ -285,9 +285,7 @@ describe("SessionInbox ledger", () => {
       const sessionID = SessionID.descending()
       yield* seedSession(db, sessionID, directory)
       admitCalls = 0
-      yield* inbox.register(
-        source(makeLedger(db, () => Effect.fail(new Error("ledger commit failed")))),
-      )
+      yield* inbox.register(source(makeLedger(db, () => Effect.fail(new Error("ledger commit failed")))))
 
       const failure = yield* Effect.flip(inbox.submit("child.result", sessionID, item("failing-key")))
       expect(failure._tag).toBe("SessionInboxAdmissionFailed")

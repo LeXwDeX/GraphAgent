@@ -13,10 +13,10 @@ import { Dag } from "@/dag/dag"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import * as AgentSchedulerState from "@/session/agent-scheduler-state"
-import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { it } from "../lib/effect"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 // Issue #1021 acceptance: a paused workflow does not occupy a child slot.
 // `spawnNode` releases its slot while the workflow reads `paused` — both while
@@ -126,7 +126,7 @@ function makeHarness(options: Options = {}) {
     list: () => Effect.succeed([]),
     messages: () => Effect.succeed([]),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     prompt: (input) =>
       Effect.sync(() => {
         // The node prompt is its workflow ID. The only other prompt is A's own

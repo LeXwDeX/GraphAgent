@@ -21,9 +21,9 @@ import { Dag } from "@/dag/dag"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionPrompt } from "@/session/prompt"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionStatus } from "@/session/status"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 describe("DagSupervisionSweep attempt identity", () => {
   it("does not fail a new attempt that started after the sweep observed the frozen one", async () => {
@@ -37,7 +37,7 @@ describe("DagSupervisionSweep attempt identity", () => {
     const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
     const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
     const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
-    const prompt = Layer.mock(SessionPrompt.Service, {
+    const prompt = mockSessionPrompt({
       cancel: (sessionID: string) =>
         Effect.suspend(() => {
           cancels.push(sessionID)

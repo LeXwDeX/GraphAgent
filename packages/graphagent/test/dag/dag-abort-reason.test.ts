@@ -17,7 +17,6 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { Dag } from "@/dag/dag"
 import { InstanceRef } from "@/effect/instance-ref"
 import type { InstanceContext } from "@/project/instance-context"
-import { SessionPrompt } from "@/session/prompt"
 import { SessionAbortReason } from "@/session/abort-reason"
 import { MessageID, SessionID } from "@/session/schema"
 import {
@@ -29,6 +28,7 @@ import {
 import { makeDeadlineWatcher } from "../../src/dag/runtime/spawn"
 import { reconcileWorkflow } from "../../src/dag/runtime/recovery"
 import { makeNodeRow } from "./fixtures"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const paths: ReadonlyArray<readonly [ChildAbortReason, ChildAbortActor]> = [
   ["deadline-cap", "deadline-watcher"],
@@ -131,7 +131,7 @@ describe("DAG deadline watcher abort reason", () => {
         }),
       ),
     ).pipe(Layer.provide(store))
-    const promptLayer = Layer.mock(SessionPrompt.Service, {
+    const promptLayer = mockSessionPrompt({
       cancel: (sessionID: SessionID, options?: { readonly reason?: SessionAbortReason.Info }) =>
         Effect.sync(() => {
           cancelled.push({ sessionID, reason: options?.reason })

@@ -106,16 +106,21 @@ function block(shown: ReadonlyArray<ChildRunView>, omitted: number): string {
  * the oldest are dropped when the entry cap or the byte budget bites.
  */
 export function render(runs: ReadonlyArray<ChildRunView>): string | undefined {
+  // The slot is the model's task view: a DAG node's child session is not a
+  // task (the task tool refuses to cancel or resume it), and a DAG-only parent
+  // must not spend requests on a block. Rows written by an earlier process or
+  // version are filtered here too, not only at the read gate.
+  const taskRuns = runs.filter((run) => run.ownerKind === "task")
   const keep = new Set<string>()
   let recent = 0
-  for (const run of runs) {
+  for (const run of taskRuns) {
     if (run.state !== "ended" || pending(run)) keep.add(run.id)
     else if (recent < MAX_RECENT) {
       recent += 1
       keep.add(run.id)
     }
   }
-  const chosen = runs.filter((run) => keep.has(run.id))
+  const chosen = taskRuns.filter((run) => keep.has(run.id))
   if (chosen.length === 0) return undefined
   let shown = chosen.slice(0, MAX_LISTED)
   while (shown.length > 1 && Buffer.byteLength(block(shown, chosen.length - shown.length)) > MAX_BYTES) {

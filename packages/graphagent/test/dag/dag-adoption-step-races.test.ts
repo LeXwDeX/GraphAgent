@@ -24,6 +24,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 interface PromptGate {
   readonly title: string
@@ -35,8 +36,8 @@ function takeWithin<A>(queue: Queue.Queue<A>, message: string) {
     Effect.timeoutOption("2 seconds"),
     Effect.flatMap(
       Option.match({
-      onNone: () => Effect.fail(new Error(message)),
-      onSome: Effect.succeed,
+        onNone: () => Effect.fail(new Error(message)),
+        onSome: Effect.succeed,
       }),
     ),
   )
@@ -102,36 +103,35 @@ function raceLayer(input: {
       }),
     messages: (value) => input.messages(value as never) as never,
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: (sessionID) => Effect.sync(() => void input.cancelled.push(sessionID as string)),
-    prompt: Effect.fn("test.SessionPrompt.prompt")(function* (value: SessionPrompt.PromptInput) {
-      const sessionID = value.sessionID as string
-      const release = yield* Deferred.make<string>()
-      yield* Queue.offer(input.childPrompts, {
-        title: childTitles.get(sessionID) ?? sessionID,
-        release,
-      })
-      return reply(sessionID, yield* Deferred.await(release))
-    }),
-    // Keep wake delivery pending so the tests observe scheduling only.
-    deliver: () => Effect.succeed(Option.none()),
+      cancel: (sessionID) => Effect.sync(() => void input.cancelled.push(sessionID as string)),
+      prompt: Effect.fn("test.SessionPrompt.prompt")(function* (value: SessionPrompt.PromptInput) {
+        const sessionID = value.sessionID as string
+        const release = yield* Deferred.make<string>()
+        yield* Queue.offer(input.childPrompts, {
+          title: childTitles.get(sessionID) ?? sessionID,
+          release,
+        })
+        return reply(sessionID, yield* Deferred.await(release))
+      }),
+      // Keep wake delivery pending so the tests observe scheduling only.
+      deliver: () => Effect.succeed(Option.none()),
     }),
   )
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({
-      name: "build",
-      mode: "all",
-      permission: [],
-      options: {},
-      description: "",
-      prompt: "",
-      model: { providerID: "test" as never, modelID: "test-model" as never },
-      tools: {},
-      hooks: {},
-    }),
+        name: "build",
+        mode: "all",
+        permission: [],
+        options: {},
+        description: "",
+        prompt: "",
+        model: { providerID: "test" as never, modelID: "test-model" as never },
+        tools: {},
+        hooks: {},
+      }),
   })
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
@@ -168,21 +168,21 @@ function runRaceTest<A>(
       yield* database.db
         .insert(ProjectTable)
         .values({
-        id: "project-1" as never,
-        worktree: process.cwd() as never,
-        sandboxes: [],
+          id: "project-1" as never,
+          worktree: process.cwd() as never,
+          sandboxes: [],
         })
         .run()
         .pipe(Effect.orDie)
       yield* database.db
         .insert(SessionTable)
         .values({
-        id: "ses_parent" as never,
-        project_id: "project-1" as never,
-        slug: "parent",
-        directory: process.cwd(),
-        title: "Parent",
-        version: "test",
+          id: "ses_parent" as never,
+          project_id: "project-1" as never,
+          slug: "parent",
+          directory: process.cwd(),
+          title: "Parent",
+          version: "test",
         })
         .run()
         .pipe(Effect.orDie)
@@ -267,94 +267,94 @@ describe("DagLoop stepping race window", () => {
   it("does not spawn a second node when a stale stepped event lands while one is in flight", async () => {
     await Effect.runPromise(
       runRaceTest({ messages: () => Effect.succeed([]) }, ({ dag, loop, store, events, database, childPrompts }) =>
-          Effect.gen(function* () {
-            const dagID = "dag_step_race"
+        Effect.gen(function* () {
+          const dagID = "dag_step_race"
           yield* database.db
             .transaction((tx) =>
               Effect.gen(function* () {
                 yield* tx
                   .insert(WorkflowTable)
                   .values({
-                  id: dagID,
-                  project_id: "project-1" as never,
-                  session_id: "ses_parent" as never,
-                  directory: process.cwd(),
-                  target_fingerprint: { kind: "none" },
-                  title: "Step race",
-                  status: "stepping",
-                  config: JSON.stringify({ name: "step-race", nodes: [nodeConfig("a"), nodeConfig("b")] }),
-                  seq: 2,
-                  wake_reported: false,
+                    id: dagID,
+                    project_id: "project-1" as never,
+                    session_id: "ses_parent" as never,
+                    directory: process.cwd(),
+                    target_fingerprint: { kind: "none" },
+                    title: "Step race",
+                    status: "stepping",
+                    config: JSON.stringify({ name: "step-race", nodes: [nodeConfig("a"), nodeConfig("b")] }),
+                    seq: 2,
+                    wake_reported: false,
                   })
                   .run()
                 yield* tx
                   .insert(WorkflowNodeTable)
                   .values([
-                  {
-                    id: "a",
-                    workflow_id: dagID,
-                    name: "a",
-                    worker_type: "build",
-                    status: "pending",
-                    required: true,
-                    depends_on: [],
-                    wake_eligible: false,
-                    wake_reported: false,
-                    seq: 1,
-                  },
-                  {
-                    id: "b",
-                    workflow_id: dagID,
-                    name: "b",
-                    worker_type: "build",
-                    status: "pending",
-                    required: true,
-                    depends_on: [],
-                    wake_eligible: false,
-                    wake_reported: false,
-                    seq: 0,
-                  },
+                    {
+                      id: "a",
+                      workflow_id: dagID,
+                      name: "a",
+                      worker_type: "build",
+                      status: "pending",
+                      required: true,
+                      depends_on: [],
+                      wake_eligible: false,
+                      wake_reported: false,
+                      seq: 1,
+                    },
+                    {
+                      id: "b",
+                      workflow_id: dagID,
+                      name: "b",
+                      worker_type: "build",
+                      status: "pending",
+                      required: true,
+                      depends_on: [],
+                      wake_eligible: false,
+                      wake_reported: false,
+                      seq: 0,
+                    },
                   ])
                   .run()
               }),
             )
             .pipe(Effect.orDie)
 
-            yield* loop.init()
-            expect(yield* dag.step(dagID)).toEqual({ status: "stepping", nodeID: "a" })
-            const first = yield* takeWithin(childPrompts, "stepped node a did not start")
-            expect(first.title).toBe("a")
+          yield* loop.init()
+          expect(yield* dag.step(dagID)).toEqual({ status: "stepping", nodeID: "a" })
+          const first = yield* takeWithin(childPrompts, "stepped node a did not start")
+          expect(first.title).toBe("a")
 
-            // A second stepped event admitted on a snapshot that predated a's
-            // spawn (the step race): the handler must re-check in-flight work
-            // under the evalLock and refuse to put a second node in flight.
-            yield* events.publish(DagEvent.WorkflowStepped, {
-              dagID: dagID as never,
-              nodeID: "b" as never,
-              timestamp: yield* DateTime.now,
-            })
-            yield* Effect.sleep("150 millis")
-            expect(Option.isNone(yield* Queue.poll(childPrompts))).toBe(true)
-            expect((yield* store.getNode(dagID, "b"))?.status).toBe("pending")
-            expect((yield* store.getNode(dagID, "a"))?.status).toBe("running")
+          // A second stepped event admitted on a snapshot that predated a's
+          // spawn (the step race): the handler must re-check in-flight work
+          // under the evalLock and refuse to put a second node in flight.
+          yield* events.publish(DagEvent.WorkflowStepped, {
+            dagID: dagID as never,
+            nodeID: "b" as never,
+            timestamp: yield* DateTime.now,
+          })
+          yield* Effect.sleep("150 millis")
+          expect(Option.isNone(yield* Queue.poll(childPrompts))).toBe(true)
+          expect((yield* store.getNode(dagID, "b"))?.status).toBe("pending")
+          expect((yield* store.getNode(dagID, "a"))?.status).toBe("running")
 
-            // The next explicit step after a settles advances exactly one node.
-            yield* Deferred.succeed(first.release, "done")
-            yield* pollWithTimeout(
+          // The next explicit step after a settles advances exactly one node.
+          yield* Deferred.succeed(first.release, "done")
+          yield* pollWithTimeout(
             store.getNode(dagID, "a").pipe(Effect.map((item) => (item?.status === "completed" ? item : undefined))),
-              "stepped node a did not complete",
-            )
-            expect(yield* dag.step(dagID)).toEqual({ status: "stepping", nodeID: "b" })
-            const second = yield* takeWithin(childPrompts, "next step did not start node b")
-            expect(second.title).toBe("b")
-            yield* Deferred.succeed(second.release, "done")
-            yield* pollWithTimeout(
+            "stepped node a did not complete",
+          )
+          expect(yield* dag.step(dagID)).toEqual({ status: "stepping", nodeID: "b" })
+          const second = yield* takeWithin(childPrompts, "next step did not start node b")
+          expect(second.title).toBe("b")
+          yield* Deferred.succeed(second.release, "done")
+          yield* pollWithTimeout(
             store
               .getWorkflow(dagID)
               .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
-              "step-race workflow did not complete",
-            )
-          }),
+            "step-race workflow did not complete",
+          )
+        }),
       ),
     )
   })

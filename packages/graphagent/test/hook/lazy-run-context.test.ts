@@ -26,8 +26,6 @@ const lifecycle = Layer.succeed(
   HookLifecycle.Service.of({
     claimChildStart: () => Effect.succeed(true),
     claimChildStop: () => Effect.succeed(true),
-    delegateChildStop: () => Effect.void,
-    isChildStopDelegated: () => Effect.succeed(false),
     attach: () => Effect.void,
     detach: () => Effect.void,
     claimEnd: () => Effect.succeed(true),

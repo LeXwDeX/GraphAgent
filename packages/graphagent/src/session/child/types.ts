@@ -47,10 +47,10 @@ export type ChildOwner =
   | { readonly kind: "task"; readonly toolCallID?: string }
   | { readonly kind: "dag_node"; readonly workflowID: string; readonly nodeID: string; readonly attempt: number }
 
-/** Who ended a run on purpose. */
+/** Who ended a run on purpose. `actor` keeps the engine-side attribution of a cancellation (DAG loop, deadline watcher, recovery). */
 export type ChildCancelBy =
   | { readonly kind: "main_agent_tool"; readonly toolCallID: string }
-  | { readonly kind: "engine"; readonly reason: string }
+  | { readonly kind: "engine"; readonly reason: string; readonly actor?: string }
 
 /**
  * How a run ended. `interrupted` is what recovery and instance disposal record:
@@ -73,6 +73,23 @@ export interface ChildRunReport {
   readonly text: string
 }
 
+/**
+ * How the permission asks of a child session are settled (Issue #1026, PR4;
+ * the adjudicator itself arrives with #1031). `root-dag-mode` is the task
+ * tool's policy: the root session's `dag_mode` is read at each ask, so a mode
+ * switch applies to the next request. DAG nodes are always `auto`.
+ */
+export type ChildAskPolicy = "user" | "auto" | "root-dag-mode"
+
+export interface ChildPermissionPolicy {
+  readonly ask: ChildAskPolicy
+  /**
+   * Deny the tools whose declared effects are workspace writes (E3 supplies
+   * this for read-only workflows). Absent means no extra restriction.
+   */
+  readonly workspaceWrites?: "deny"
+}
+
 export interface ChildRunSpec {
   readonly parentSessionID: SessionID
   readonly childSessionID: SessionID
@@ -81,8 +98,16 @@ export interface ChildRunSpec {
    * A background run reports back to its parent through the result ledger
    * after it ends; a foreground run returns to its tool call. A foreground run
    * the user promotes to the background becomes detached with `detach`.
+   * DAG node runs are not ledger runs: the DAG delivers their result itself,
+   * so they register `detached: false` and their ending counts as reported.
    */
   readonly detached: boolean
+  /**
+   * How permission asks of this run are settled; see `ChildPermissionPolicy`.
+   * Defaults to `user` (always ask) for callers that predate the policy,
+   * notably SDK-created child sessions and fixtures.
+   */
+  readonly permission?: ChildPermissionPolicy
 }
 
 /** Read model of one `child_run` row. */
@@ -94,6 +119,7 @@ export interface ChildRunView {
   readonly state: ChildRunState
   readonly attempt: number
   readonly detached: boolean
+  readonly permission?: ChildPermissionPolicy
   readonly outcome?: ChildRunOutcome
   readonly reportedAt?: number
   readonly timeCreated: number
@@ -148,12 +174,12 @@ export interface ChildRunHandle {
   readonly cancelled: Effect.Effect<ChildCancelBy>
 }
 
-/** The session is not a child session this parent started with the requested owner kind. */
+/** The session is not a child session this parent started with the requested owner (kind and, for DAG nodes, owner ref). */
 export class NotOwner extends Schema.TaggedError<NotOwner>()("ChildRunNotOwner", {
   childSessionID: Schema.String,
 }) {
   override get message() {
-    return `Session ${this.childSessionID} is not a task session started by this conversation`
+    return `Session ${this.childSessionID} was not started by this conversation with the requested owner`
   }
 }
 
@@ -201,7 +227,8 @@ export interface ChildRunsScoped {
   readonly start: (spec: Omit<ChildRunSpec, "parentSessionID">) => Effect.Effect<ChildRunHandle>
   /**
    * Registers a new run on an existing child session after verifying that this
-   * parent started it as a task: anything else fails with `NotOwner` and
+   * parent started it with the same owner (task: owner kind; DAG node: owner
+   * kind and `workflowID/nodeID`). Anything else fails with `NotOwner` and
    * writes nothing. A child that is still running fails with `ActiveRunExists`.
    * A run that has just ended, or that a cancellation ended while its driver is
    * still stopping, is waited for (at most the cancellation bound) instead.
@@ -248,6 +275,14 @@ export interface ChildRunsInterface {
    * old job still carries the session.
    */
   readonly cancel: (runID: string, by: ChildCancelBy) => Effect.Effect<ChildRunCancelResult>
+  /**
+   * Cancels the active run of a child session, whichever parent started it.
+   * Engine-side cancellation points (the DAG loop, its deadline watcher) know
+   * the child session but not the run id. `not_active` when this process has
+   * no active run for the session (a later process's row, a finished run); the
+   * caller then cancels the session turn itself.
+   */
+  readonly cancelActive: (childSessionID: SessionID, by: ChildCancelBy) => Effect.Effect<ChildRunCancelResult>
   /**
    * Makes a run detached (`child_run.detached = 1`): from here its result goes
    * to the parent through the result ledger. One-way and idempotent: true only

@@ -90,7 +90,10 @@ const setup = (name: string, options: { readonly driver?: boolean } = {}) =>
               prompt: (input, promptOptions, extras) =>
                 Effect.sync(() => {
                   sent.push({ input, options: promptOptions, extras })
-                  return { info: { id: MessageID.ascending(), role: "assistant" }, parts: [] } as unknown as SessionV1.WithParts
+                  return {
+                    info: { id: MessageID.ascending(), role: "assistant" },
+                    parts: [],
+                  } as unknown as SessionV1.WithParts
                 }),
               resolvePromptParts: (template) =>
                 Effect.sync(() => {
@@ -102,7 +105,10 @@ const setup = (name: string, options: { readonly driver?: boolean } = {}) =>
     })
     const parent = parentID(name)
     yield* ensureSession(db, parent)
-    const newChild = Effect.fn("ChildDriverTest.newChild")(function* (label = name, fields?: Parameters<typeof ensureSession>[2]) {
+    const newChild = Effect.fn("ChildDriverTest.newChild")(function* (
+      label = name,
+      fields?: Parameters<typeof ensureSession>[2],
+    ) {
       const id = childID(label)
       yield* ensureSession(db, id, fields)
       return id
@@ -117,7 +123,18 @@ const setup = (name: string, options: { readonly driver?: boolean } = {}) =>
       yield* ensureSession(db, id)
       return children.forParent(id)
     })
-    return { db, children, scoped: children.forParent(parent), parent, sent, resolved, cancelled, newChild, stranger, input }
+    return {
+      db,
+      children,
+      scoped: children.forParent(parent),
+      parent,
+      sent,
+      resolved,
+      cancelled,
+      newChild,
+      stranger,
+      input,
+    }
   })
 
 describe("child run credential", () => {
@@ -235,23 +252,25 @@ describe("ChildRuns.prompt", () => {
     }),
   )
 
-  it.effect("sends the revoked credential of a cancelled run to nobody, though the session is still held for its driver", () =>
-    Effect.gen(function* () {
-      const { children, scoped, sent, newChild, input } = yield* setup("cancelled")
-      const child = yield* newChild()
-      const handle = yield* scoped.start({ childSessionID: child, owner: task("call_1"), detached: true })
-      yield* handle.markRunning
-      const credential = ChildRegistry.credentialOf(child)
+  it.effect(
+    "sends the revoked credential of a cancelled run to nobody, though the session is still held for its driver",
+    () =>
+      Effect.gen(function* () {
+        const { children, scoped, sent, newChild, input } = yield* setup("cancelled")
+        const child = yield* newChild()
+        const handle = yield* scoped.start({ childSessionID: child, owner: task("call_1"), detached: true })
+        yield* handle.markRunning
+        const credential = ChildRegistry.credentialOf(child)
 
-      yield* children.cancel(handle.id, { kind: "main_agent_tool", toolCallID: "call_2" })
-      // The run is over but its driver has not stopped: the session is still reserved, and its credential is dead.
-      expect(ChildRegistry.activeFor(child)?.phase).toBe("ended")
-      expect(credential?.revoked).toBe(true)
+        yield* children.cancel(handle.id, { kind: "main_agent_tool", toolCallID: "call_2" })
+        // The run is over but its driver has not stopped: the session is still reserved, and its credential is dead.
+        expect(ChildRegistry.activeFor(child)?.phase).toBe("ended")
+        expect(credential?.revoked).toBe(true)
 
-      yield* scoped.prompt(input(child))
-      expect(sent[0]?.extras).toBeUndefined()
-      yield* handle.settle({ type: "completed" })
-    }),
+        yield* scoped.prompt(input(child))
+        expect(sent[0]?.extras).toBeUndefined()
+        yield* handle.settle({ type: "completed" })
+      }),
   )
 
   it.effect("a factory built without a driver cannot drive", () =>
@@ -352,7 +371,7 @@ describe("ChildRegistry.delegateStop", () => {
     }),
   )
 
-  it.effect("never delegates for a background run, a DAG node's run, or a session with no run", () =>
+  it.effect("delegates for a DAG node's run, never for a background run or a session with no run", () =>
     Effect.gen(function* () {
       const { children, scoped, parent, newChild } = yield* setup("others")
       const background = yield* newChild("background")
@@ -367,7 +386,8 @@ describe("ChildRegistry.delegateStop", () => {
       })
 
       expect(ChildRegistry.delegateStop(background)).toBe(false)
-      expect(ChildRegistry.delegateStop(node)).toBe(false)
+      // The DAG owns the child's one Stop notification when the attempt settles.
+      expect(ChildRegistry.delegateStop(node)).toBe(true)
       expect(ChildRegistry.delegateStop(loose)).toBe(false)
       yield* detached.settle({ type: "completed" })
       yield* dag.settle({ type: "completed" })
@@ -466,7 +486,11 @@ describe("ChildAdmission.observe", () => {
     Effect.gen(function* () {
       const lines = yield* record(
         Effect.all([
-          ChildAdmission.observe("admit", { id: SessionID.make("ses_cd_a"), parentID: SessionID.make("ses_cd_p") }, undefined),
+          ChildAdmission.observe(
+            "admit",
+            { id: SessionID.make("ses_cd_a"), parentID: SessionID.make("ses_cd_p") },
+            undefined,
+          ),
           ChildAdmission.observe("admit", { id: SessionID.make("ses_cd_b") }, undefined),
           ChildAdmission.observe("loop", { id: SessionID.make("ses_cd_a") }, undefined),
         ]),

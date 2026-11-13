@@ -31,6 +31,7 @@ import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { makeNodeRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 interface PromptGate {
   readonly title: string
@@ -159,8 +160,7 @@ function wakeLayer(input: {
     })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
       cancel: () => Effect.void,
       prompt: deliver,
@@ -392,10 +392,10 @@ it("keeps the final report and a completion wake after earlier checkpoint wakes 
         store
           .getCurrentNodes(dagID)
           .pipe(
-          Effect.map((nodes) =>
+            Effect.map((nodes) =>
               ["w1", "w2"].every((id) => nodes.find((node) => node.id === id)?.status === "running") ? true : undefined,
+            ),
           ),
-        ),
         "downstream workers did not enter the running state",
         "5 seconds",
       )
@@ -417,10 +417,10 @@ it("keeps the final report and a completion wake after earlier checkpoint wakes 
         store
           .getCurrentNodes(dagID)
           .pipe(
-          Effect.map((nodes) =>
-            checkpointIDs.every((id) => nodes.find((node) => node.id === id)?.wakeReported) ? true : undefined,
+            Effect.map((nodes) =>
+              checkpointIDs.every((id) => nodes.find((node) => node.id === id)?.wakeReported) ? true : undefined,
+            ),
           ),
-        ),
         "the single wake did not acknowledge every checkpoint",
         "5 seconds",
       )

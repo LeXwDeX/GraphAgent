@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { HookLifecycle } from "@/hook/lifecycle"
 import path from "node:path"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -18,7 +17,6 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { continueRecoveredMessageNode } from "@/dag/runtime/recovery"
 import { workflowReportsArea } from "@/dag/runtime/output-ref"
 import { hasCaptureSlot } from "@/dag/runtime/capture"
-import { SessionPrompt } from "@/session/prompt"
 import { Worktree } from "@/worktree"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { ModelV2 } from "@graphagent/core/model"
@@ -26,6 +24,7 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { Project } from "@graphagent/core/project"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { InstanceContext } from "@/project/instance-context"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 type Config = Parameters<typeof continueRecoveredMessageNode>[2]
 function reply(id: string, text = "updated result"): SessionV1.WithParts {
@@ -167,7 +166,7 @@ function harness(
     claimResultNudge: () => Effect.succeed({ ok: true as const, value: true }),
     snapshotForTurn: () => Effect.succeed({ ok: true, value: { ...snapshot, stopReason: input.settleStop } }),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     loop: () =>
       Effect.gen(function* () {
         const instance = Option.getOrUndefined(yield* Effect.serviceOption(InstanceRef))
@@ -213,12 +212,6 @@ function harness(
         return reply("msg_nudged")
       }),
   })
-  const lifecycle = Layer.mock(HookLifecycle.Service, {
-    delegateChildStop: (sessionID) =>
-      Effect.sync(() => {
-        h.delegatedStops.push(sessionID)
-      }),
-  })
   const instanceStore = Layer.mock(InstanceStore.Service, {
     provide: (load, effect) =>
       effect.pipe(
@@ -249,14 +242,7 @@ function harness(
     authorizeSource?: Parameters<typeof continueRecoveredMessageNode>[4],
     executionDirectory?: Parameters<typeof continueRecoveredMessageNode>[5],
   ) => {
-    const layers = Layer.mergeAll(
-      dag,
-      prompt,
-      lifecycle,
-      ...(input.noMessages ? [] : [messages]),
-      instanceStore,
-      worktree,
-    )
+    const layers = Layer.mergeAll(dag, prompt, ...(input.noMessages ? [] : [messages]), instanceStore, worktree)
     const effect = continueRecoveredMessageNode(
       "dag_recovery",
       "n",
@@ -297,7 +283,6 @@ function state(input: {
   stale?: number
 }) {
   return {
-    delegatedStops: [] as string[],
     node: input.noNode
       ? undefined
       : ({

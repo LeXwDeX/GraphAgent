@@ -29,6 +29,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 // Issue #1021 acceptance: with the process-wide child-run limit at ONE, a
 // workflow still completes. A node's slot is a single reservation that spans
@@ -155,8 +156,7 @@ function harness() {
       yield* Deferred.await(gate).pipe(Effect.ensuring(Effect.sync(() => void (prompts.active -= 1))))
       return reply(sessionID, "node done")
     })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
       cancel: () => Effect.void,
       prompt: answer,

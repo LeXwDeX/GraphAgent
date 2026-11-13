@@ -57,7 +57,7 @@ import { AgentScheduler } from "@/session/agent-scheduler"
 import { renderTemplate } from "../templates/resolve"
 import { sanitizeInput } from "../templates/sanitize"
 import { DagConfig } from "../config"
-import { spawnNode, makeDeadlineWatcher, forkCancel } from "./spawn"
+import { spawnNode, makeDeadlineWatcher } from "./spawn"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
   reconcileWorkflow,
@@ -68,6 +68,7 @@ import {
 } from "./recovery"
 import { Checkpoint } from "./checkpoint"
 import { childAbort } from "./child-failure-reason"
+import { boundedCancel } from "@/session/child/cancel"
 import { SessionAbortReason } from "@/session/abort-reason"
 import { normalizeOutput } from "./verdict"
 import { verifyOutputFileRef, isManagedOutputFileRef } from "./output-ref"
@@ -148,6 +149,7 @@ const serviceLayer = Layer.effect(
     const agentSvc = yield* Agent.Service
     const sessionSvc = yield* Session.Service
     const promptSvc = yield* SessionPrompt.Service
+    const childRuns = yield* promptSvc.children
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const statusSvc = yield* SessionStatus.Service
     // Optional: isolated unit graphs build DagLoop.layer without an inbox and
@@ -854,9 +856,19 @@ const serviceLayer = Layer.effect(
             nodeID,
             childSessionID: childSessionId,
           })
-          yield* forkCancel(promptSvc.cancel(childSessionId as never, { reason: abort })).pipe(
-            Effect.provideService(Scope.Scope, stateScope),
-          )
+          // End the attempt's run (signal-and-return; its session cancellation is
+          // bounded inside ChildRuns). A child session this process has no
+          // active run for still gets a best-effort turn cancellation.
+          const cancelled = yield* childRuns.cancelActive(SessionID.make(childSessionId), {
+            kind: "engine",
+            reason: abort.reason,
+            actor: abort.actor,
+          })
+          if (cancelled === "not_active")
+            yield* boundedCancel(promptSvc.cancel(childSessionId as never, { reason: abort }), "dag.abortChild").pipe(
+              Effect.forkIn(stateScope, { startImmediately: true }),
+              Effect.asVoid,
+            )
         })
 
         // Subscription handlers must never die. dag.ts guards and checkCompletion
@@ -1019,9 +1031,10 @@ const serviceLayer = Layer.effect(
                   childSessionID: sid,
                 }).pipe(
                   Effect.andThen(
-                    forkCancel(promptSvc.cancel(sid as never, { reason: childAbort("recovery", "recovery") })).pipe(
-                      Effect.provideService(Scope.Scope, stateScope),
-                    ),
+                    boundedCancel(
+                      promptSvc.cancel(sid as never, { reason: childAbort("recovery", "recovery") }),
+                      "dag.recovery.cancel",
+                    ).pipe(Effect.forkIn(stateScope, { startImmediately: true }), Effect.asVoid),
                   ),
                 ),
               // null (not undefined) marks an unparseable row so recovery

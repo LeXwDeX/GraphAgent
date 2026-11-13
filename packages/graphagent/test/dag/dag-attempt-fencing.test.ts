@@ -17,9 +17,9 @@ import { makeDeadlineWatcher } from "@/dag/runtime/spawn"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import type { InstanceContext } from "@/project/instance-context"
-import { SessionPrompt } from "@/session/prompt"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const directory = process.cwd()
 const projectID = Project.ID.make("project-attempt-fence")
@@ -55,7 +55,7 @@ const harness = (() => {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     cancel: (childSessionID) =>
       Effect.sync(() => {
         cancellations.push(childSessionID)
@@ -129,11 +129,11 @@ describe("DAG execution-attempt fencing (DAG-A01)", () => {
       })
       yield* dag.nodeStarted(dagID, "a", "ses_new", Date.now() + 60_000, false, attempt(replacement))
 
-      expect(Exit.isFailure(yield* dag.nodeCompleted(dagID, "a", "old success", oldAttempt).pipe(Effect.exit))).toBe(true)
+      expect(Exit.isFailure(yield* dag.nodeCompleted(dagID, "a", "old success", oldAttempt).pipe(Effect.exit))).toBe(
+        true,
+      )
       expect(
-        Exit.isFailure(
-          yield* dag.nodeFailed(dagID, "a", "old failure", "exec_failed", oldAttempt).pipe(Effect.exit),
-        ),
+        Exit.isFailure(yield* dag.nodeFailed(dagID, "a", "old failure", "exec_failed", oldAttempt).pipe(Effect.exit)),
       ).toBe(true)
       expect(yield* store.getNode(dagID, "a")).toEqual(
         expect.objectContaining({ status: "running", childSessionId: "ses_new", replanAttempts: 1 }),
@@ -150,10 +150,7 @@ describe("DAG execution-attempt fencing (DAG-A01)", () => {
     Effect.gen(function* () {
       const { dag, dagID, store } = yield* setup()
       const stale = (yield* store.getNode(dagID, "a"))!
-      const staleWorkflow = yield* requireValue(
-        yield* store.getWorkflow(dagID),
-        "workflow row missing before replan",
-      )
+      const staleWorkflow = yield* requireValue(yield* store.getWorkflow(dagID), "workflow row missing before replan")
       const staleGraphRev = staleWorkflow.graphRev
       yield* dag.replan(dagID, { nodes: [node("replacement definition")] })
 
@@ -171,17 +168,16 @@ describe("DAG execution-attempt fencing (DAG-A01)", () => {
       ).toBe(true)
       const current = (yield* store.getNode(dagID, "a"))!
       expect(current).toEqual(expect.objectContaining({ status: "pending", name: "replacement definition" }))
-      const currentWorkflow = yield* requireValue(
-        yield* store.getWorkflow(dagID),
-        "workflow row missing after replan",
-      )
+      const currentWorkflow = yield* requireValue(yield* store.getWorkflow(dagID), "workflow row missing after replan")
       expect(
         Exit.isFailure(
-          yield* dag.nodeQueued(dagID, "a", Date.now() + 60_000, {
-            ...attempt(current),
-            nodeSeq: current.seq,
-            graphRev: staleGraphRev,
-          }).pipe(Effect.exit),
+          yield* dag
+            .nodeQueued(dagID, "a", Date.now() + 60_000, {
+              ...attempt(current),
+              nodeSeq: current.seq,
+              graphRev: staleGraphRev,
+            })
+            .pipe(Effect.exit),
         ),
       ).toBe(true)
       yield* dag.nodeQueued(dagID, "a", Date.now() + 60_000, {

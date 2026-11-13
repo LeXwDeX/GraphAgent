@@ -13,10 +13,10 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
 import { Session } from "@/session/session"
-import { SessionPrompt } from "@/session/prompt"
 import { MessageID } from "@/session/schema"
 import { makeNodeRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -137,7 +137,7 @@ async function run(
         events.push({ type: "failed", reason, trigger, errorClass })
       }),
   })
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     prompt: (input, options) =>
       Effect.sync(() => {
         prompts.push({

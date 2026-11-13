@@ -12,6 +12,8 @@ import { AgentScheduler } from "./agent-scheduler"
 import { makeSessionLocks } from "./locks"
 import { SessionRevert } from "./revert"
 import { makeChildRuns, type ChildRuns } from "./child/run"
+import { ChildAdmission } from "./child/admission"
+import { ChildRegistry } from "./child/registry"
 
 // #404: headless clients (`opencode run "/init"`, SDK text prompts) deliver
 // slash commands as plain text parts to POST /session/:id/message. The TUI
@@ -474,7 +476,6 @@ export const layer = Layer.effect(
     const stopFns = Stop.makeStop({
       sessions,
       settingsHook,
-      hookLifecycle,
       agentMessages,
       backgroundJobs,
       workflowStore,
@@ -616,14 +617,26 @@ export const layer = Layer.effect(
     const loop: (input: LoopInput, origin?: TurnOrigin) => Effect.Effect<SessionV1.WithParts> = Effect.fn(
       "SessionPrompt.loop",
     )(function* (input: LoopInput, origin: TurnOrigin = { kind: "user", via: "command" }) {
+      // The credential of the run that drives this session, if any. The run
+      // was registered through `ChildRuns` before its driver prompts or
+      // continues; reading it from the process registry costs no query, which
+      // the loop junction must keep (PR5 refuses a child turn without one).
+      const credential = ChildRegistry.credentialOf(input.sessionID)
+      const admittedOrigin: TurnOrigin =
+        origin.kind === "child_run" && credential !== undefined ? { ...origin, childRunID: credential.runID } : origin
       // Register the runner under the prompt lock, then wait outside it: the
       // loop machine claims the same lock for its snapshot.
       const result = yield* withRunRequest(input.sessionID, (request, witness) =>
         locks.withPromptLock(witness, input.sessionID, () =>
           Effect.gen(function* () {
-            const handle = turns().begin(input.sessionID, origin)
+            const handle = turns().begin(input.sessionID, admittedOrigin)
             const tracked = turns()
-              .track(handle, runTurn(input.sessionID))
+              .track(
+                handle,
+                ChildAdmission.observe("loop", { id: input.sessionID }, credential).pipe(
+                  Effect.andThen(runTurn(input.sessionID)),
+                ),
+              )
               .pipe(Effect.map((turn) => turn.message))
             const result = yield* state.ensureRunningHandle(
               input.sessionID,

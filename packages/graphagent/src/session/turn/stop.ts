@@ -6,7 +6,6 @@ import type { DagStore } from "@graphagent/core/dag/store"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { BackgroundJob } from "@/background/job"
 import { SettingsHook, type TriggerResult } from "@/hook"
-import type { HookLifecycle } from "@/hook/lifecycle"
 import { HookTurnContext } from "@/hook/turn-context"
 import { Effect } from "effect"
 import { ChildRegistry } from "../child/registry"
@@ -32,7 +31,6 @@ export function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 export interface StopDeps {
   readonly sessions: Session.Interface
   readonly settingsHook: SettingsHook.Interface | undefined
-  readonly hookLifecycle: HookLifecycle.Interface | undefined
   readonly agentMessages: DagMessages.Interface | undefined
   readonly backgroundJobs: BackgroundJob.Interface
   readonly workflowStore: DagStore.Interface
@@ -72,20 +70,17 @@ export interface StopFeedbackInput {
 const EMPTY_TRIGGER: TriggerResult = { additionalContexts: [], systemMessages: [] }
 
 function makePolicyResolver(deps: StopDeps) {
-  const { settingsHook, hookLifecycle } = deps
+  const { settingsHook } = deps
   return Effect.fnUntraced(function* (input: StopPolicyInput) {
     const event: Decide.StopHookEvent = input.error ? "StopFailure" : input.session.parentID ? "SubagentStop" : "Stop"
     // Main-agent Stop does not fire for a foreground task-tool subagent's clean
     // exit: task.ts fires SubagentStop (and drives its continuation) for it.
     // task.ts fails a child that ended in error or was cancelled without
     // SubagentStop, so StopFailure still fires for those. Only a session whose
-    // active run is a foreground task's is skipped (`ChildRegistry.delegateStop`);
-    // any other child still fires Stop. DAG owners defer their one notification
-    // until the whole attempt settles.
-    const ownerDefersStop =
-      !input.error &&
-      (ChildRegistry.delegateStop(input.sessionID) ||
-        (hookLifecycle !== undefined && (yield* hookLifecycle.isChildStopDelegated(input.sessionID))))
+    // active run is a foreground task's, or a DAG node's (whose owner delivers
+    // its one notification when the attempt settles), is skipped
+    // (`ChildRegistry.delegateStop`); any other child still fires Stop.
+    const ownerDefersStop = !input.error && ChildRegistry.delegateStop(input.sessionID)
     return { policy: { event, enabled: settingsHook !== undefined }, ownerDefersStop }
   })
 }

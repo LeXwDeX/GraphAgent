@@ -20,7 +20,6 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
 import { Session } from "@/session/session"
-import { SessionPrompt } from "@/session/prompt"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
@@ -28,6 +27,7 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 import { tmpdir } from "../fixture/fixture"
 import { makeNodeRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -136,7 +136,7 @@ describe("live cross-workspace DAG continuation", () => {
           ),
       })
 
-      const prompt = Layer.mock(SessionPrompt.Service, {
+      const prompt = mockSessionPrompt({
         prompt: () =>
           Effect.gen(function* () {
             prompts++

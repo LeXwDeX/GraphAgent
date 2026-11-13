@@ -47,6 +47,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 /** Child release: reply text (node completes) or a simulated exec failure. */
 type ChildOutcome = { text: string } | { fail: true }
@@ -66,8 +67,8 @@ function takeWithin<A>(queue: Queue.Queue<A>, message: string) {
     Effect.timeoutOption("2 seconds"),
     Effect.flatMap(
       Option.match({
-      onNone: () => Effect.fail(new Error(message)),
-      onSome: Effect.succeed,
+        onNone: () => Effect.fail(new Error(message)),
+        onSome: Effect.succeed,
       }),
     ),
   )
@@ -173,27 +174,26 @@ function loopLayer(input: {
     if ("fail" in outcome) return yield* Effect.die(new Error("simulated exec failure"))
     return reply(sessionID, outcome.text)
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: () => Effect.void,
-    prompt: deliver,
-    deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
+      cancel: () => Effect.void,
+      prompt: deliver,
+      deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {
     get: () =>
       Effect.succeed({
-      name: "build",
-      mode: "all",
-      permission: [],
-      options: {},
-      description: "",
-      prompt: "",
-      model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
-      tools: {},
-      hooks: {},
-    }),
+        name: "build",
+        mode: "all",
+        permission: [],
+        options: {},
+        description: "",
+        prompt: "",
+        model: { providerID: Provider.ID.make("test"), modelID: Model.ID.make("test-model") },
+        tools: {},
+        hooks: {},
+      }),
   })
   const loop = DagLoop.layer.pipe(
     Layer.provide(base),
@@ -225,21 +225,21 @@ function runLoopTest<A>(
       yield* database.db
         .insert(ProjectTable)
         .values({
-        id: projectID,
-        worktree: AbsolutePath.make(process.cwd()),
-        sandboxes: [],
+          id: projectID,
+          worktree: AbsolutePath.make(process.cwd()),
+          sandboxes: [],
         })
         .run()
         .pipe(Effect.orDie)
       yield* database.db
         .insert(SessionTable)
         .values({
-        id: parentSessionID,
-        project_id: projectID,
-        slug: "parent",
-        directory: process.cwd(),
-        title: "Parent",
-        version: "test",
+          id: parentSessionID,
+          project_id: projectID,
+          slug: "parent",
+          directory: process.cwd(),
+          title: "Parent",
+          version: "test",
         })
         .run()
         .pipe(Effect.orDie)

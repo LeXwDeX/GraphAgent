@@ -31,11 +31,11 @@ import { Dag } from "@/dag/dag"
 import type { NodeConfig, WorkflowConfig } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
-import { SessionPrompt } from "@/session/prompt"
 import { validateReviewExecutionInput, unresolvedReviewOutcomes } from "@/dag/review-lifecycle"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { makeNodeRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -399,9 +399,9 @@ describe("B5: spawn pre-admission failures", () => {
     const sessionLayer = Layer.mock(Session.Service, {
       get: () => Effect.succeed({ id: "ses_parent" as never, permission: [], agent: "build" } as never),
       create: (input?: { directory?: string }) =>
-    Effect.succeed({ id: "ses_child" as never, directory: input?.directory ?? process.cwd() } as never),
+        Effect.succeed({ id: "ses_child" as never, directory: input?.directory ?? process.cwd() } as never),
     })
-    const promptLayer = Layer.mock(SessionPrompt.Service, {})
+    const promptLayer = mockSessionPrompt({})
     return { events, dagLayer, sessionLayer, promptLayer }
   }
 

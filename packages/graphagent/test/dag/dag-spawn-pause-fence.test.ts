@@ -9,7 +9,6 @@
 import { describe, expect, it } from "bun:test"
 import { Effect, Layer, Fiber, Option } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
-import { SessionPrompt } from "@/session/prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
@@ -20,6 +19,7 @@ import type { DagStore } from "@graphagent/core/dag/store"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 type TrackedEvent = { type: string; nodeID: string }
 
@@ -105,7 +105,7 @@ function makeHarness(
     list: () => Effect.succeed([]),
     messages: () => Effect.succeed([]),
   })
-  const promptLayer = Layer.mock(SessionPrompt.Service, {
+  const promptLayer = mockSessionPrompt({
     prompt: () => Effect.succeed(reply()),
   })
   return {

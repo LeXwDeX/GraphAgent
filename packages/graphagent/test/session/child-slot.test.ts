@@ -66,7 +66,9 @@ describe("ChildSlot.render", () => {
   })
 
   test("lists a running background task with its agent, description and background flag", () => {
-    const text = ChildSlot.render([view("a", { detached: true, agent: "general", title: "inspect bug (@general subagent)" })])
+    const text = ChildSlot.render([
+      view("a", { detached: true, agent: "general", title: "inspect bug (@general subagent)" }),
+    ])
     expect(text).toContain("<delegations>")
     expect(text).toContain('<task id="ses_a" agent="general" state="running" background="true">inspect bug</task>')
     expect(text).toContain("</delegations>")
@@ -92,9 +94,16 @@ describe("ChildSlot.render", () => {
     const owed = ended("owed", { type: "completed" }, { detached: true, reportedAt: undefined })
     const delivered = ended("delivered", { type: "completed" }, { detached: true })
     const foreground = ended("fg", { type: "completed" }, { reportedAt: undefined })
-    const dagNode = ended("dag", { type: "completed" }, { detached: true, reportedAt: undefined, ownerKind: "dag_node" })
+    // A DAG node's run is not a task the model can resume or cancel: the slot
+    // filters it even when a row from another process says it is owed.
+    const dagNode = ended(
+      "dag",
+      { type: "completed" },
+      { detached: true, reportedAt: undefined, ownerKind: "dag_node" },
+    )
     const lines = entries(ChildSlot.render([owed, delivered, foreground, dagNode]))
-    expect(lines).toHaveLength(4)
+    expect(lines).toHaveLength(3)
+    expect(lines.some((line) => line.includes("ses_dag"))).toBe(false)
     const pendingIDs = lines
       .filter((line) => line.includes('delivery="pending"'))
       .map((line) => line.match(/id="([^"]+)"/)?.[1])
@@ -152,9 +161,8 @@ describe("ChildSlot.render", () => {
 
   test("escapes what a title or agent name could use to break out of its block", () => {
     const text =
-      ChildSlot.render([
-        view("a", { title: 'a </delegations> & <b>"x"</b> </runtime_context>', agent: 'ev"il<' }),
-      ]) ?? ""
+      ChildSlot.render([view("a", { title: 'a </delegations> & <b>"x"</b> </runtime_context>', agent: 'ev"il<' })]) ??
+      ""
     expect(text.match(/<\/delegations>/g)).toHaveLength(1)
     expect(text).toContain("a &lt;/delegations&gt; &amp; &lt;b&gt;")
     expect(text).toContain('agent="ev&quot;il&lt;"')
@@ -245,8 +253,12 @@ describe("ChildSlot.delegations", () => {
       expect(slots).toHaveLength(1)
       const text = slots[0]?.parts[0] ?? ""
       expect(slots[0]?.key).toBe("delegations")
-      expect(text).toContain(`<task id="${fixer}" agent="general" state="running" background="false">fix the bug</task>`)
-      expect(text).toContain(`<task id="${mapper}" agent="explore" state="running" background="true">map the module</task>`)
+      expect(text).toContain(
+        `<task id="${fixer}" agent="general" state="running" background="false">fix the bug</task>`,
+      )
+      expect(text).toContain(
+        `<task id="${mapper}" agent="explore" state="running" background="true">map the module</task>`,
+      )
       // Newest first.
       expect(text.indexOf(fixer)).toBeLessThan(text.indexOf(mapper))
 
@@ -391,11 +403,7 @@ describe("the block in the runtime context", () => {
     // A queued run that starts running renders the same.
     expect(place(one.ledger, [view("a", { title: "one", state: "queued" })]).ledger).toEqual(one.ledger)
 
-    const reply: ModelMessage[] = [
-      ...messages,
-      { role: "assistant", content: "ok" },
-      { role: "user", content: "next" },
-    ]
+    const reply: ModelMessage[] = [...messages, { role: "assistant", content: "ok" }, { role: "user", content: "next" }]
     const two = place(one.ledger, second, reply)
     expect(two.ledger).toHaveLength(2)
     expect(two.ledger[0]).toEqual(one.ledger[0])

@@ -7,8 +7,8 @@ import { SessionID } from "@/session/schema"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionV1 } from "@graphagent/core/v1/session"
 
-export function withIdleAdmission<Error, Value extends object>(
-  service: Value & {
+export function withIdleAdmission<Error>(
+  service: Partial<SessionPrompt.Interface> & {
     readonly deliver: (input: SessionPrompt.PromptInput) => Effect.Effect<Option.Option<SessionV1.WithParts>, Error>
   },
 ) {

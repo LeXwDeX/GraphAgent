@@ -16,12 +16,12 @@ import { DagLoop } from "@/dag/runtime/loop"
 import { fingerprintBrief } from "@/dag/admission"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 type ChildStatus = "active" | "completed" | "failed" | "unknown"
 
@@ -65,15 +65,14 @@ function recoveryLayer(input: { childStatuses: Map<string, ChildStatus>; cancell
       return Effect.succeed(message({ role: "assistant", finish: "stop" }))
     }),
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: Effect.fn("test.SessionPrompt.cancel")((sessionID: string) =>
-      Effect.sync(() => input.cancelled.push(sessionID)),
-    ),
-    // Keep wake delivery pending so tests can inspect durable unreported rows.
-    prompt: () => Effect.never,
-    deliver: () => Effect.succeed(Option.none()),
+      cancel: Effect.fn("test.SessionPrompt.cancel")((sessionID: string) =>
+        Effect.sync(() => input.cancelled.push(sessionID)),
+      ),
+      // Keep wake delivery pending so tests can inspect durable unreported rows.
+      prompt: () => Effect.never,
+      deliver: () => Effect.succeed(Option.none()),
     }),
   )
   const loop = DagLoop.layer.pipe(
@@ -130,21 +129,21 @@ function createRunningNode(
     yield* database.db
       .insert(ProjectTable)
       .values({
-      id: "project-1" as never,
-      worktree: process.cwd() as never,
-      sandboxes: [],
+        id: "project-1" as never,
+        worktree: process.cwd() as never,
+        sandboxes: [],
       })
       .run()
       .pipe(Effect.orDie)
     yield* database.db
       .insert(SessionTable)
       .values({
-      id: "ses_parent1" as never,
-      project_id: "project-1" as never,
-      slug: "parent",
-      directory: process.cwd() as never,
-      title: "Parent",
-      version: "test",
+        id: "ses_parent1" as never,
+        project_id: "project-1" as never,
+        slug: "parent",
+        directory: process.cwd() as never,
+        title: "Parent",
+        version: "test",
       })
       .run()
       .pipe(Effect.orDie)
@@ -177,18 +176,18 @@ describe("DagLoop crash recovery integration", () => {
       runRecovery("active", ({ dag, database, loop, store, created }) =>
         Effect.gen(function* () {
           const dagID = yield* createRunningNode(dag, database, [node()], undefined, undefined, {
-              mode: "deep",
-              admission: {
-                protocol_version: 1,
-                brief_revision: 2,
-                qa_mode: "GRILL",
-                verdict: "WAIVED",
-                state: "WAIVED",
-                fingerprint: fingerprintBrief(brief),
-                brief,
-                waiver_reason: "Preview recovery coverage only",
-                acknowledged_risks: ["Production rollout is unspecified"],
-              },
+            mode: "deep",
+            admission: {
+              protocol_version: 1,
+              brief_revision: 2,
+              qa_mode: "GRILL",
+              verdict: "WAIVED",
+              state: "WAIVED",
+              fingerprint: fingerprintBrief(brief),
+              brief,
+              waiver_reason: "Preview recovery coverage only",
+              acknowledged_risks: ["Production rollout is unspecified"],
+            },
           })
 
           yield* loop.init()
@@ -196,15 +195,15 @@ describe("DagLoop crash recovery integration", () => {
           const workflow = yield* store.getWorkflow(dagID)
           expect(Dag.parseWorkflowConfig(workflow?.config ?? "")).toEqual(
             expect.objectContaining({
-            mode: "deep",
-            admission: expect.objectContaining({
-              state: "CONSUMED",
-              verdict: "WAIVED",
-              brief_revision: 2,
-              brief,
-              waiver_reason: "Preview recovery coverage only",
-              acknowledged_risks: ["Production rollout is unspecified"],
-            }),
+              mode: "deep",
+              admission: expect.objectContaining({
+                state: "CONSUMED",
+                verdict: "WAIVED",
+                brief_revision: 2,
+                brief,
+                waiver_reason: "Preview recovery coverage only",
+                acknowledged_risks: ["Production rollout is unspecified"],
+              }),
             }),
           )
           expect(created).toEqual([])
@@ -260,8 +259,8 @@ describe("DagLoop crash recovery integration", () => {
           expect(cancelled).toEqual(["ses_child1"])
           expect(failures).toContainEqual(
             expect.objectContaining({
-            reason: "deadline exceeded on recovery",
-            trigger: "timeout",
+              reason: "deadline exceeded on recovery",
+              trigger: "timeout",
             }),
           )
           expect((yield* store.getNode(dagID, "n1"))?.errorReason).toBe("deadline exceeded on recovery")

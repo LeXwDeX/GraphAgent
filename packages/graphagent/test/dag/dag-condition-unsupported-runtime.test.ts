@@ -33,6 +33,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const realSleep = (ms: number) => Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)))
 
@@ -77,8 +78,7 @@ describe("DagLoop unsupported condition syntax in an adopted workflow", () => {
     })
     const never = (value: SessionPrompt.PromptInput) =>
       Effect.sync(() => childPrompts.push(value.sessionID as string)).pipe(Effect.andThen(Effect.never))
-    const prompt = Layer.mock(
-      SessionPrompt.Service,
+    const prompt = mockSessionPrompt(
       withIdleAdmission({
         cancel: () => Effect.void,
         prompt: never,

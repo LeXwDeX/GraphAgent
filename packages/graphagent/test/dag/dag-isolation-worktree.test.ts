@@ -22,7 +22,6 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionSchema } from "@graphagent/core/session/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { DagEvent } from "@graphagent/schema/dag-event"
-import { SessionPrompt } from "@/session/prompt"
 import { Dag } from "@/dag/dag"
 import { DagControl } from "@/dag/control"
 import { Agent } from "@/agent/agent"
@@ -39,6 +38,7 @@ import { WorkflowTool } from "@/tool/workflow"
 import { TerminalViolationError } from "@graphagent/core/dag/core/types"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -246,7 +246,7 @@ function makeHarness(
     list: () => Effect.succeed([]),
     messages: () => Effect.succeed([]),
   })
-  const promptLayer = Layer.mock(SessionPrompt.Service, {
+  const promptLayer = mockSessionPrompt({
     prompt: (input: { sessionID: string }) =>
       Effect.sync(() => {
         if (harness.fail) throw new Error("prompt failed")

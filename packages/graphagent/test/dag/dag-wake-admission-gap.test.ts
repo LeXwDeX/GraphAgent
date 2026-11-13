@@ -23,12 +23,12 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
-import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 function userData(created: number): Omit<SessionV1.User, "id" | "sessionID"> {
   return {
@@ -92,15 +92,15 @@ function restartLayer(filename: string, probe: Probe) {
               Effect.orDie,
               Effect.map((rows) =>
                 rows.map((row): SessionV1.WithParts => ({
-                    info: {
-                      id: row.id,
-                      sessionID: row.session_id,
-                      role: "user",
-                      agent: "build",
-                      model: { modelID: ModelV2.ID.make("test"), providerID: ProviderV2.ID.make("test") },
-                      time: { created: row.data.time.created },
-                    },
-                    parts: [],
+                  info: {
+                    id: row.id,
+                    sessionID: row.session_id,
+                    role: "user",
+                    agent: "build",
+                    model: { modelID: ModelV2.ID.make("test"), providerID: ProviderV2.ID.make("test") },
+                    time: { created: row.data.time.created },
+                  },
+                  parts: [],
                 })),
               ),
             ),
@@ -137,7 +137,7 @@ function restartLayer(filename: string, probe: Probe) {
   const prompt = Layer.unwrap(
     Effect.gen(function* () {
       const { db } = yield* Database.Service
-      return Layer.mock(SessionPrompt.Service, {
+      return mockSessionPrompt({
         prepareTurn: (input, persistAdmission) =>
           Effect.gen(function* () {
             const messageID = input.messageID ?? MessageID.ascending()

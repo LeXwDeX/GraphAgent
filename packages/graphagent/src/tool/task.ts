@@ -409,6 +409,9 @@ export const TaskTool = Tool.define(
             childSessionID: session.id,
             owner: { kind: "task", toolCallID: ctx.callID },
             detached: runInBackground,
+            // The task's asks are unattended only while the root session runs
+            // in DAG mode; the policy is read at each ask, never fixed here.
+            permission: { ask: "root-dag-mode" },
           }),
         ).pipe(
           Effect.catchTag("ChildRunActive", () => Effect.succeed(undefined)),
@@ -458,6 +461,7 @@ export const TaskTool = Tool.define(
             childSessionID: nextSession.id,
             owner: { kind: "task", toolCallID: ctx.callID },
             detached: runInBackground,
+            permission: { ask: "root-dag-mode" },
           }),
         )
       }

@@ -25,7 +25,6 @@ import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { continueRecoveredMessageNode } from "@/dag/runtime/recovery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { SessionPrompt } from "@/session/prompt"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { SessionStatus } from "@/session/status"
 import { SessionID } from "@/session/schema"
@@ -33,6 +32,7 @@ import { and, eq } from "drizzle-orm"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const workflowFailureCount = (database: Database.Interface, dagID: string) =>
   database.db
@@ -54,7 +54,7 @@ function sweepHarness() {
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
   const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
-  const prompt = Layer.mock(SessionPrompt.Service, {
+  const prompt = mockSessionPrompt({
     cancel: () => Effect.void,
   })
   const automation = ExclusiveRegistry.defaultLayer
@@ -221,7 +221,7 @@ describe("DAG workspace failure terminalization (#948)", () => {
       const store = DagStore.layer.pipe(Layer.provide(database))
       const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
       const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-      const prompt = Layer.mock(SessionPrompt.Service, {
+      const prompt = mockSessionPrompt({
         loop: () =>
           Effect.sync(() => {
             loops++
@@ -309,7 +309,7 @@ describe("DAG workspace failure terminalization (#948)", () => {
       const store = DagStore.layer.pipe(Layer.provide(database))
       const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
       const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
-      const prompt = Layer.mock(SessionPrompt.Service, {
+      const prompt = mockSessionPrompt({
         loop: () =>
           Effect.sync(() => {
             loops++

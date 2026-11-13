@@ -85,10 +85,7 @@ const root = LayerNode.group([
 ])
 const it = testEffect(
   LayerNode.buildLayer(root, {
-    replacements: [
-      LayerNode.replace(MCP.node, mcp),
-      LayerNode.replace(LSP.node, lsp),
-    ],
+    replacements: [LayerNode.replace(MCP.node, mcp), LayerNode.replace(LSP.node, lsp)],
   }),
 )
 
@@ -204,13 +201,21 @@ it.live("recovered DAG child loops do not replay historical SubagentStop", () =>
       const lifecycle = yield* HookLifecycle.Service
       const parent = yield* sessions.create({ title: "Recovered DAG parent" })
       const child = yield* sessions.create({ parentID: parent.id, title: "Recovered DAG child" })
-      yield* lifecycle.delegateChildStop(child.id)
+      // The recovered attempt's run is what delegates the Stop: the DAG owns
+      // the one notification when the attempt settles.
+      const run = yield* (yield* prompt.children).forParent(parent.id).start({
+        childSessionID: child.id,
+        owner: { kind: "dag_node", workflowID: "wf_recovered", nodeID: "node", attempt: 0 },
+        detached: false,
+        permission: { ask: "auto" },
+      })
       for (const text of ["resume accepted input", "submit updated result"]) {
         yield* llm.text(text)
         yield* prompt.prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
       }
       expect(yield* Effect.promise(() => fs.readFile(capture, "utf8").catch(() => ""))).toBe("")
       expect(yield* lifecycle.claimChildStop(child.id, "historical-attempt")).toBe(false)
+      yield* run.settle({ type: "completed" })
     }),
     { git: true, config: providerCfg },
   ),

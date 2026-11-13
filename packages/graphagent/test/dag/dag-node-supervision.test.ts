@@ -37,6 +37,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 // Production-incident harness (2026-08-18, dag_fe5feabfcae607fqVdRh47lN1B):
 // a coding node's child session LLM stream died silently mid-turn; the node
@@ -125,8 +126,7 @@ function supervisionLayer(input: {
     })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
       // cancelDefect simulates the production sweep context: the layer-scoped
       // fiber has no ambient InstanceRef, so a REAL SessionPrompt.cancel dies
@@ -291,7 +291,7 @@ describe("DAG node supervision — deadline enforcement (production incident)", 
 
   it("stream-hang: the incident shape — prompt never resolves, node still must not rot in running", async () => {
     await Effect.runPromise(
-      runSupervisionTest({ instanceProject: "project-1" }, ({ dag, store, childPrompts }: SupervisionServices ) =>
+      runSupervisionTest({ instanceProject: "project-1" }, ({ dag, store, childPrompts }: SupervisionServices) =>
         Effect.gen(function* () {
           const dagID = yield* dag.create(incidentGraph)
           const child = yield* takeWithin(childPrompts, "worker did not start")

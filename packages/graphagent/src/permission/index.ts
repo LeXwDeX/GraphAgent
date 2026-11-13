@@ -11,6 +11,9 @@ import { isDeepStrictEqual } from "node:util"
 import { emptyPolicy, updateSessionPolicy, type SessionPolicy } from "./session-policy"
 import type { PermissionUpdate } from "@/hook/trigger-result"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { Database } from "@graphagent/core/database/database"
+import { ChildPolicy } from "@/session/child/policy"
+import { AskAdjudicator } from "./ask-adjudicator"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { type TriggerResult } from "@/hook/trigger-result"
 import { SettingsHook } from "@/hook"
@@ -155,6 +158,10 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
+    // The unattended-ask seam (Issue #1026, PR4). Absent until E4 registers its
+    // SafetyGuard: the ask path then behaves exactly as before.
+    const adjudicator = Option.getOrUndefined(yield* Effect.serviceOption(AskAdjudicator.Service))
+    const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
     const layerNotification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
@@ -265,8 +272,15 @@ export const layer = Layer.effect(
         : { native: [], rules: originalRuleset }
       const ruleset = [...resolved.rules, ...policy.rules]
       const force = options?.force === true
-      let needsAsk = force
+      // A forced ask still needs a dialog unless the unattended adjudicator
+      // settles every pattern (`allow`); `forced` is cleared per pattern by
+      // such a decision, and only then becomes `needsAsk`.
+      let forced = force
+      let needsAsk = false
       let explicitAskRequired = false
+      // Read once per ask, and only when an adjudicator exists: the run policy
+      // of the asking child session (a task's root dag mode may have changed).
+      const subject = adjudicator ? yield* ChildPolicy.askOf(database?.db)(request.sessionID) : Option.none()
 
       for (const pattern of request.patterns) {
         const nativeRule = evaluate(request.permission, pattern, resolved.native)
@@ -295,6 +309,33 @@ export const layer = Layer.effect(
             ...(reason ? { reason } : {}),
           })
         }
+        // A run whose policy is `auto` never reaches the user (Issue #1026,
+        // PR4 seam; E4 supplies the decision). Deny rules above always win;
+        // `explicit` tells the adjudicator whether the matching allow is the
+        // user's own, not a role/default rule. Without a registered service
+        // nothing happens here.
+        if (adjudicator && Option.isSome(subject) && subject.value.ask === "auto") {
+          const index = matchingRuleIndex(request.permission, pattern, ruleset)
+          const roleStart = Math.max(0, resolved.rules.length - (options?.sessionRuleCount ?? 0))
+          const explicit = rule.action === "allow" && !(options?.roleDefaultIndices ?? []).includes(index - roleStart)
+          const decision = yield* adjudicator.decide({
+            request: { permission: request.permission, patterns: request.patterns, metadata: request.metadata },
+            pattern,
+            rule: { action: rule.action === "allow" ? "allow" : "ask", explicit },
+            owner: subject.value.owner,
+            rootSessionID: subject.value.rootSessionID,
+          })
+          if (decision === "allow") {
+            // The adjudicator settled this pattern; a forced ask no longer
+            // needs its dialog for it.
+            forced = false
+            continue
+          }
+          return yield* new PermissionV1.DeniedError({
+            ruleset: ruleset.filter((entry) => Wildcard.match(request.permission, entry.permission)),
+            reason: `dag_safety:${decision.deny.ruleID}: ${decision.deny.reason}`,
+          })
+        }
         if (rule.action === "allow") continue
         if (!force && policy.mode === "bypassPermissions" && (yield* capabilities.has(request.sessionID))) continue
         const explicitAsk = ruleset.some(
@@ -319,8 +360,9 @@ export const layer = Layer.effect(
           continue
         needsAsk = true
       }
+      if (forced) needsAsk = true
 
-      if (!needsAsk || (options?.confirmed === true && !force)) return
+      if (!needsAsk || (options?.confirmed === true && !forced)) return
 
       const id = request.id ?? PermissionV1.ID.ascending()
       const info: PermissionV1.Request = {

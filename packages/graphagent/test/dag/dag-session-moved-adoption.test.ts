@@ -34,6 +34,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const PROJECT_ID = "project-1"
 // #948: adoption now requires the stamped execution directory to exist.
@@ -110,7 +111,7 @@ describe("DagLoop session move with a running workflow", () => {
             parts: [{ type: "text", text }],
           } as never as SessionV1.WithParts
         })
-        const prompt = Layer.mock(SessionPrompt.Service, {
+        const prompt = mockSessionPrompt({
           cancel: (sessionID) =>
             Effect.gen(function* () {
               const dir = (yield* InstanceRef)?.directory ?? DIR_A

@@ -35,6 +35,7 @@ import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { awaitWithTimeout, pollWithTimeout } from "../lib/effect"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 const DIRECTORY = process.cwd()
 const PROJECT_ID = "project-1"
@@ -242,7 +243,7 @@ function inertGraph() {
     messages: () => Effect.succeed([]),
     getPart: () => Effect.succeed(undefined),
   })
-  return Layer.mergeAll(baseLayers().all, session, Layer.mock(SessionPrompt.Service, {}))
+  return Layer.mergeAll(baseLayers().all, session, mockSessionPrompt({}))
 }
 
 /** A mailbox ledger that honors the real `pendingRecipients` contract: session-ID
@@ -291,7 +292,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
@@ -358,7 +359,7 @@ describe("DagDelivery drain", () => {
           const prompt = Layer.unwrap(
             Effect.gen(function* () {
               const { db } = yield* Database.Service
-              return Layer.mock(SessionPrompt.Service, {
+              return mockSessionPrompt({
                 prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
                   Effect.gen(function* () {
                     if (mode === "park") {
@@ -442,7 +443,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
@@ -502,7 +503,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
@@ -551,7 +552,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
@@ -598,7 +599,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
@@ -648,7 +649,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1
@@ -704,7 +705,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {})
+          const prompt = mockSessionPrompt({})
           const mailSession = "ses_mail_scan"
           const messages = {
             receive: () => Effect.succeed({ ok: false as const }),
@@ -849,7 +850,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {})
+          const prompt = mockSessionPrompt({})
           yield* Effect.gen(function* () {
             const deps = yield* services()
             yield* startDelivery({ ...deps, messages: undefined, inbox })
@@ -889,7 +890,7 @@ describe("DagDelivery drain", () => {
             messages: () => Effect.succeed([]),
             getPart: () => Effect.succeed(undefined),
           })
-          const prompt = Layer.mock(SessionPrompt.Service, {
+          const prompt = mockSessionPrompt({
             prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
               Effect.gen(function* () {
                 admissions += 1

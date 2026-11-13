@@ -20,11 +20,11 @@ import type { InstanceContext } from "@/project/instance-context"
 import { Provider } from "@/provider/provider"
 import { ChildResults } from "@/session/child/result-source"
 import { SessionInbox } from "@/session/inbox"
-import { SessionPrompt } from "@/session/prompt"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { countingDatabaseLayer, countingEventLayer, reset, settle, snapshot } from "../lib/engine-probe"
 import { it } from "../lib/effect"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 // H0 read budget for the whole inbox tick (Issue #1021, invariant 7).
 // `dag-tick-reads.test.ts` pins the DAG ledgers on their own; this probe pins
@@ -74,7 +74,7 @@ const messagesLayer = DagMessages.layer.pipe(Layer.provide(databaseLayer))
 // the identical instance to the test body (layer memoization is by reference).
 const loopLayer = GoalLoop.layer.pipe(
   Layer.provide(Layer.mock(Session.Service, {})),
-  Layer.provide(Layer.mock(SessionPrompt.Service, {})),
+  Layer.provide(mockSessionPrompt({})),
   Layer.provide(Layer.mock(Provider.Service, {})),
   Layer.provideMerge(goalLayer),
   Layer.provideMerge(statusLayer),

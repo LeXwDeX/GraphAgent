@@ -29,6 +29,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { mockSessionPrompt } from "../lib/child-runs"
 
 // GOAL-FP-01-01 / GOAL-FP-01-03: the DAG exclusive-registry registration lifetime
 // must be bound to WORKFLOW STATE, not to wake delivery.
@@ -172,12 +173,11 @@ function leaseLifecycleLayer(input: { childPrompts: Queue.Queue<ChildPromptGate>
     yield* Queue.offer(input.childPrompts, { title: childTitles.get(sessionID) ?? sessionID, release })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = Layer.mock(
-    SessionPrompt.Service,
+  const prompt = mockSessionPrompt(
     withIdleAdmission({
-    cancel: () => Effect.void,
-    prompt: deliver,
-    deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
+      cancel: () => Effect.void,
+      prompt: deliver,
+      deliver: (value) => deliver(value).pipe(Effect.map(Option.some)),
     }),
   )
   const agent = Layer.mock(Agent.Service, {
