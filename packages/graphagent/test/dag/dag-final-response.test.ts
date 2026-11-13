@@ -408,6 +408,106 @@ describe("recovered final-response settlement", () => {
     expect(failed[0]).toContain("owned by another run")
   })
 
+  it("leaves the attempt to its driver when run registration races", async () => {
+    const failed: string[] = []
+    const node = makeNodeRow({ id: "n", status: "running", childSessionId: "ses_final_child" })
+    const dag = Layer.mock(Dag.Service, {
+      store: {
+        getNode: () => Effect.succeed(node),
+        getNodes: () => Effect.succeed([node]),
+        getWorkflow: () =>
+          Effect.succeed({
+            sessionId: "ses_parent",
+            status: "running",
+            projectId: "project",
+            directory: process.cwd(),
+          } as never),
+      } as unknown as DagStore.Interface,
+      nodeFailed: (_dagID, _nodeID, reason) =>
+        Effect.sync(() => {
+          failed.push(reason)
+        }),
+    })
+    const { layer: prompt, stub } = mockSessionPromptWithStub({
+      loop: () => Effect.die(new Error("must not drive a session another run owns")),
+    })
+    // No prior run: recovery uses `start`, which loses a concurrent
+    // registration as a defect (unique constraint or the registry's guard).
+    stub.registrationDefect = new Error("UNIQUE constraint failed: child_binding.child_session_id")
+    const messages = Layer.mock(DagMessages.Service, {
+      latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
+    })
+
+    await Effect.runPromise(
+      continueRecoveredMessageNode("wf", "n", { nodes: [{ id: "n" }] }).pipe(
+        Effect.provide(Layer.mergeAll(dag, prompt, messages)),
+      ),
+    )
+
+    expect(stub.runs).toHaveLength(0)
+    // A lost registration is a concurrent driver, never a node failure.
+    expect(failed).toEqual([])
+  })
+
+  it("settles the adopted run as an error when the isolated worktree cannot be completed", async () => {
+    const message = assistant([{ text: "done" }])
+    // An active worktree with no Worktree service in the layer: recovery
+    // refuses to finish the node, and the run must follow that failure.
+    const node = makeNodeRow({
+      id: "n",
+      status: "running",
+      childSessionId: "ses_final_child",
+      worktreeDirectory: "/tmp/dag-nonexistent-worktree",
+      worktreeState: "active",
+    })
+    const failed: string[] = []
+    const dag = Layer.mock(Dag.Service, {
+      store: {
+        getNode: () => Effect.succeed(node),
+        getNodes: () => Effect.succeed([node]),
+        getWorkflow: () =>
+          Effect.succeed({
+            sessionId: "ses_parent",
+            status: "running",
+            projectId: "project",
+            directory: process.cwd(),
+          } as never),
+        setCapturedOutput: () => Effect.void,
+      } as unknown as DagStore.Interface,
+      nodeFailed: (_dagID, _nodeID, reason) =>
+        Effect.sync(() => {
+          failed.push(reason)
+        }),
+      nodeCompleted: () => Effect.die(new Error("must not complete an unfinished worktree")),
+    })
+    const { layer: prompt, stub } = mockSessionPromptWithStub({
+      loop: () => Effect.succeed(message),
+    })
+    stub.latest = {
+      id: "crun_previous",
+      childSessionID: SessionID.make("ses_final_child"),
+      parentSessionID: SessionID.make("ses_parent"),
+      ownerKind: "dag_node",
+      state: "ended",
+      attempt: 1,
+      detached: false,
+      timeCreated: 0,
+    }
+    const messages = Layer.mock(DagMessages.Service, {
+      latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
+      snapshotForTurn: () => Effect.succeed({ ok: true, value: undefined } as never),
+    })
+
+    await Effect.runPromise(
+      continueRecoveredMessageNode("wf", "n", { nodes: [{ id: "n" }] }).pipe(
+        Effect.provide(Layer.mergeAll(dag, prompt, messages)),
+      ),
+    )
+
+    expect(failed[0]).toContain("worktree completion failed")
+    expect(stub.settled[0]?.outcome).toMatchObject({ type: "error" })
+  })
+
   it("binds recovered plaintext completion to its final message snapshot when mailbox revisions exist", async () => {
     const message = assistant([{ text: "first " }, { text: "second" }])
     let completed: { output: unknown; snapshotID?: string } | undefined

@@ -95,6 +95,10 @@ export interface StubChildren {
   latest?: ChildRunView
   /** Makes the next adopt fail with the matching ownership error. */
   adoptError?: "not-owner" | "active"
+  /** Makes `cancelActive` report no run, exercising the caller's session-cancel fallback. */
+  cancelActiveResult?: "not_active"
+  /** Makes registration die (a lost unique constraint or the registry's duplicate guard). */
+  registrationDefect?: Error
 }
 
 export const stubChildren = (
@@ -139,6 +143,7 @@ export const stubChildren = (
   }
   const register = (spec: { childSessionID: SessionID; owner: unknown; detached: boolean }, via: "start" | "adopt") =>
     Effect.suspend(() => {
+      if (stub.registrationDefect) return Effect.die(stub.registrationDefect)
       if (via === "adopt" && stub.adoptError)
         return Effect.fail(
           stub.adoptError === "not-owner"
@@ -200,6 +205,7 @@ export const stubChildren = (
     cancelActive: (childSessionID, by) =>
       Effect.suspend(() => {
         cancelled.push({ id: childSessionID, by })
+        if (stub.cancelActiveResult === "not_active") return Effect.succeed("not_active" as const)
         return cancelSession(childSessionID, by).pipe(Effect.as("cancelled" as const))
       }),
     detach: () => Effect.succeed(true),

@@ -255,7 +255,7 @@ export interface ChildRunsInterface {
    */
   readonly listByParent: (
     parentSessionID: SessionID,
-    options?: { readonly limit?: number },
+    options?: { readonly limit?: number; readonly ownerKind?: ChildOwnerKind },
   ) => Effect.Effect<ReadonlyArray<ChildRunView>>
   /** `ChildRunsScoped.prompt` for a named parent. */
   readonly prompt: (

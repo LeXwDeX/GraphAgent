@@ -2,12 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Database } from "@graphagent/core/database/database"
+import { Project } from "@graphagent/core/project"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { SessionTable } from "@graphagent/core/session/sql"
 import { expect } from "bun:test"
 import { Effect, Exit, Fiber, Layer } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Permission } from "@/permission"
 import { AskAdjudicator, type DecideInput, type Decision } from "@/permission/ask-adjudicator"
 import { ChildRegistry } from "@/session/child/registry"
+import type { ChildOwner, ChildPermissionPolicy } from "@/session/child/types"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 
@@ -45,18 +50,26 @@ const it = testEffect(env)
 
 const rootSessionID = SessionID.make("ses_adjudicator_root")
 
-/** One registered dag_node run of this process; unique per test so no prior test's entry can collide. */
-const makeRun = (label: string) =>
+/** One registered run of this process; unique per test so no prior test's entry can collide. */
+const makeRun = (
+  label: string,
+  options: {
+    readonly owner?: ChildOwner
+    readonly permission?: ChildPermissionPolicy
+    readonly parentSessionID?: SessionID
+  } = {},
+) =>
   Effect.acquireRelease(
     Effect.sync(() => {
       const childSessionID = SessionID.make(`ses_adjudicator_${label}`)
+      const owner = options.owner ?? { kind: "dag_node" as const, workflowID: "wf", nodeID: "n01", attempt: 0 }
       const entry = ChildRegistry.create({
         id: `crun_adjudicator_${label}`,
         childSessionID,
-        parentSessionID: rootSessionID,
-        ownerKind: "dag_node",
-        ownerKey: { kind: "dag_node", workflowID: "wf", nodeID: "n01", attempt: 0 },
-        permission: { ask: "auto" },
+        parentSessionID: options.parentSessionID ?? rootSessionID,
+        ownerKind: owner.kind,
+        ownerKey: owner,
+        permission: options.permission ?? { ask: "auto" },
         detached: false,
         directory: undefined,
         owner: {},
@@ -91,6 +104,45 @@ const ask = (
     )
   })
 
+/** The root session row the task policy reads at ask time. */
+const setRootDagMode = (mode: "on" | "off") =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(ProjectTable)
+      .values({ id: Project.ID.make("prj_adjudicator"), worktree: AbsolutePath.make("/tmp"), sandboxes: [] })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id: rootSessionID,
+        project_id: Project.ID.make("prj_adjudicator"),
+        slug: "adjudicator",
+        directory: AbsolutePath.make("/tmp"),
+        title: "adjudicator root",
+        version: "0",
+        dag_mode: mode,
+      })
+      .onConflictDoUpdate({ target: SessionTable.id, set: { dag_mode: mode } })
+      .run()
+      .pipe(Effect.orDie)
+  })
+
+it.instance(
+  "a deny rule wins before the adjudicator is consulted",
+  () =>
+    Effect.gen(function* () {
+      decisions.length = 0
+      const { childSessionID } = yield* makeRun("deny-rule")
+      const exit = yield* ask(childSessionID, [{ permission: "bash", pattern: "*", action: "deny" }]).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(decisions).toHaveLength(0)
+    }),
+  { git: true },
+)
+
 it.instance(
   "an auto DAG run resolves an ask without a user prompt and without a pending request",
   () =>
@@ -107,6 +159,43 @@ it.instance(
         rootSessionID,
       })
       expect(yield* permission.list()).toEqual([])
+    }),
+  { git: true },
+)
+
+it.instance(
+  "a task run keeps the ask with the user while the root is not in DAG mode",
+  () =>
+    Effect.gen(function* () {
+      yield* setRootDagMode("off")
+      decisions.length = 0
+      const { childSessionID } = yield* makeRun("task-user", {
+        owner: { kind: "task", toolCallID: "call_user" },
+        permission: { ask: "root-dag-mode" },
+      })
+      const permission = yield* Permission.Service
+      const pending = yield* ask(childSessionID).pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
+      expect(decisions).toHaveLength(0)
+      expect((yield* permission.list()).length).toBe(1)
+      yield* Fiber.interrupt(pending)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "a task run is auto-adjudicated once its root switches to DAG mode",
+  () =>
+    Effect.gen(function* () {
+      yield* setRootDagMode("on")
+      decisions.length = 0
+      const { childSessionID } = yield* makeRun("task-auto", {
+        owner: { kind: "task", toolCallID: "call_auto" },
+        permission: { ask: "root-dag-mode" },
+      })
+      yield* ask(childSessionID)
+      expect(decisions).toHaveLength(1)
+      expect(decisions[0]?.owner).toMatchObject({ kind: "task", toolCallID: "call_auto" })
     }),
   { git: true },
 )

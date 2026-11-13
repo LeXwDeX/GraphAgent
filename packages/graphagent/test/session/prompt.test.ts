@@ -1167,6 +1167,16 @@ it.instance("prompt.loop records one ended turn row for the DAG child-run entry"
     const sessions = yield* Session.Service
     const { db } = yield* Database.Service
     const chat = yield* sessions.create({ title: "DAG child run turn row" })
+    // The loop junction must name the driving run on the turn's origin: it
+    // reads the process registry (zero queries) and stamps the childRunID.
+    const parent = yield* sessions.create({ title: "DAG child run parent" })
+    const run = yield* (yield* prompt.children).start({
+      parentSessionID: parent.id,
+      childSessionID: chat.id,
+      owner: { kind: "dag_node", workflowID: "wf", nodeID: "n", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
     yield* prompt.prompt({
       sessionID: chat.id,
       model: ref,
@@ -1185,11 +1195,12 @@ it.instance("prompt.loop records one ended turn row for the DAG child-run entry"
     expect(turns).toHaveLength(1)
     expect(turns[0]).toMatchObject({
       state: "ended",
-      origin: JSON.stringify({ kind: "child_run" }),
+      origin: JSON.stringify({ kind: "child_run", childRunID: run.id }),
       last_assistant_id: String(result.info.id),
     })
     expect(turns[0].outcome).toEqual({ type: "completed" })
     expect(turns[0].time_ended).toBeGreaterThan(0)
+    yield* run.settle({ type: "completed" })
   }),
 )
 
@@ -3149,10 +3160,7 @@ it.instance("admission records the credential a child is prompted under at both 
     const drive = (text: string) =>
       children
         .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
-        .pipe(
-          Effect.provideService(References.MinimumLogLevel, "Debug"),
-          Effect.provide(Logger.layer([record])),
-        )
+        .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
 
     yield* llm.text("child done")
     const answered = yield* drive("under the credential")
@@ -3231,12 +3239,7 @@ it.instance(
       }
       // Both junctions saw the live credential, on both turns: the admitted message, then the start of its turn.
       const presented = lines.filter((line) => line.includes("child run credential presented"))
-      expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual([
-        "admit",
-        "loop",
-        "admit",
-        "loop",
-      ])
+      expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual(["admit", "loop", "admit", "loop"])
       for (const line of presented) expect(line).toContain(`"runID":"${run.id}"`)
       expect(lines.filter((line) => line.includes("without a run credential"))).toEqual([])
       expect(lines.filter((line) => line.includes("does not belong"))).toEqual([])
@@ -11068,9 +11071,9 @@ it.instance("prompt.admit commits its admission write inside the message transac
       db.run(sql`INSERT INTO admit_ledger (id) VALUES (${"commit-key"})`),
     )
     expect(admitted.admission.kind).toBe("not_started")
-    expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM message WHERE session_id = ${committed.id}`)).toEqual(
-      { n: 1 },
-    )
+    expect(
+      yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM message WHERE session_id = ${committed.id}`),
+    ).toEqual({ n: 1 })
     expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM admit_ledger`)).toEqual({ n: 1 })
 
     // The admission write shares the transaction: its failure must roll the
@@ -11084,9 +11087,9 @@ it.instance("prompt.admit commits its admission write inside the message transac
       ),
     )
     expect(failure._tag).toBe("SessionPromptAdmissionPersistFailed")
-    expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM message WHERE session_id = ${rejected.id}`)).toEqual(
-      { n: 0 },
-    )
+    expect(
+      yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM message WHERE session_id = ${rejected.id}`),
+    ).toEqual({ n: 0 })
     expect(yield* db.get<{ n: number }>(sql`SELECT COUNT(*) AS n FROM admit_ledger`)).toEqual({ n: 1 })
   }),
 )

@@ -146,7 +146,7 @@ export const delegations = (
   sessionID: SessionID,
 ): Effect.Effect<ReadonlyArray<RuntimeSlots.Slot>> =>
   Registry.delegated(sessionID)
-    ? children.listByParent(sessionID, { limit: WINDOW }).pipe(
+    ? children.listByParent(sessionID, { limit: WINDOW, ownerKind: "task" }).pipe(
         Effect.map((runs) => [slot(runs)]),
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)

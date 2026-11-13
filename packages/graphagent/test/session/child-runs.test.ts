@@ -263,6 +263,35 @@ describe("dag node runs", () => {
     }),
   )
 
+  it.effect("listByParent filters by owner kind before applying the limit", () =>
+    Effect.gen(function* () {
+      const { children, scoped, parent, newChild } = yield* setup("list-kind")
+      const taskChild = yield* newChild("task")
+      const taskRun = yield* scoped.start({ childSessionID: taskChild, owner: taskOwner, detached: true })
+      yield* taskRun.settle({ type: "completed" })
+      for (let index = 0; index < 3; index++) {
+        const child = yield* newChild(`dag-${index}`)
+        const handle = yield* children.start({
+          parentSessionID: parent,
+          childSessionID: child,
+          owner: { kind: "dag_node", workflowID: "wf", nodeID: `n0${index}`, attempt: 0 },
+          detached: false,
+          permission: { ask: "auto" },
+        })
+        yield* handle.settle({ type: "completed" })
+      }
+
+      // The limit alone sees only the newest DAG runs; the owner filter sees
+      // the task run even though three DAG rows are newer.
+      expect((yield* children.listByParent(parent, { limit: 2 })).every((run) => run.ownerKind === "dag_node")).toBe(
+        true,
+      )
+      const tasks = yield* children.listByParent(parent, { limit: 2, ownerKind: "task" })
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0]?.childSessionID).toBe(taskChild)
+    }),
+  )
+
   it.effect("root-dag-mode follows the root session's mode at each ask", () =>
     Effect.gen(function* () {
       const { db, scoped, parent, newChild } = yield* setup("root-mode")
@@ -441,6 +470,23 @@ describe("ChildRuns.cancel", () => {
       const exit = yield* boundedCancel(Effect.never, "test", 10).pipe(Effect.timeoutOption("2 seconds"), Effect.exit)
       expect(Exit.isSuccess(exit)).toBe(true)
       if (Exit.isSuccess(exit)) expect(Option.isSome(exit.value)).toBe(true)
+    }),
+  )
+
+  it.live("does not interrupt an uninterruptible cancellation at its bound", () =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>()
+      const entered = yield* Deferred.make<void>()
+      const fiber = yield* boundedCancel(
+        Effect.uninterruptible(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))),
+        "uninterruptible-test",
+        20,
+      ).pipe(Effect.forkScoped)
+      yield* Deferred.await(entered)
+
+      expect(Option.isNone(yield* Fiber.await(fiber).pipe(Effect.timeoutOption("100 millis")))).toBe(true)
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.await(fiber)
     }),
   )
 })

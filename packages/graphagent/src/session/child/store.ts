@@ -262,12 +262,24 @@ export interface ListedRun {
  * child session's title and agent. Read in `child_run_parent_time_idx` order,
  * so a bound costs the rows it returns, not the parent's history.
  */
-export const runsOfParent = (db: Db, parentSessionID: SessionID, limit?: number): Effect.Effect<ListedRun[]> =>
+export const runsOfParent = (
+  db: Db,
+  parentSessionID: SessionID,
+  limit?: number,
+  ownerKind?: ChildOwnerKind,
+): Effect.Effect<ListedRun[]> =>
   db
     .select({ run: ChildRunTable, title: SessionTable.title, agent: SessionTable.agent })
     .from(ChildRunTable)
     .leftJoin(SessionTable, eq(SessionTable.id, ChildRunTable.child_session_id))
-    .where(eq(ChildRunTable.parent_session_id, parentSessionID))
+    .where(
+      and(
+        eq(ChildRunTable.parent_session_id, parentSessionID),
+        // Filter before LIMIT: a parent with many DAG node runs must not push
+        // the task runs the delegations slot reads out of the window.
+        ...(ownerKind === undefined ? [] : [eq(ChildRunTable.owner_kind, ownerKind)]),
+      ),
+    )
     .orderBy(desc(ChildRunTable.time_created))
     // SQLite reads a negative limit as none.
     .limit(limit ?? -1)

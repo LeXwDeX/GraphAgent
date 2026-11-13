@@ -55,6 +55,7 @@ import { DagModel } from "../model"
 import { DagLocation } from "../location"
 import { DagIsolation } from "../isolation"
 import { childAbort, childFailureReason } from "./child-failure-reason"
+import { boundedCancel } from "@/session/child/cancel"
 import { InstanceRef } from "@/effect/instance-ref"
 import {
   isTransitionRejection,
@@ -162,6 +163,12 @@ export interface DeadlineWatcherInput {
   timeoutMs?: number
   /** Workflow-level timeout extension cap (defaults to DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions). */
   maxTimeoutExtensions?: number
+  /**
+   * Scope to detach a fallback session cancellation into. The watcher owns no
+   * scope of its own; without one (unit harnesses) the bounded cancellation is
+   * awaited in place.
+   */
+  scope?: Scope.Scope
 }
 
 /**
@@ -320,10 +327,20 @@ export function makeDeadlineWatcher(
               reason: "deadline-cap",
               actor: "deadline-watcher",
             })
-            if (cancelled === "not_active")
-              yield* promptSvc.cancel(node.childSessionId as never, {
-                reason: childAbort("deadline-cap", "deadline-watcher"),
-              })
+            if (cancelled === "not_active") {
+              // A session this process has no active run for still gets a
+              // bounded cancellation, detached when the caller owns a scope:
+              // the watcher must not wait on an uninterruptible cancel here.
+              const cancel = boundedCancel(
+                promptSvc.cancel(node.childSessionId as never, {
+                  reason: childAbort("deadline-cap", "deadline-watcher"),
+                }),
+                "dag.deadlineWatcher.cap",
+              )
+              yield* input.scope
+                ? cancel.pipe(Effect.forkIn(input.scope, { startImmediately: true }), Effect.asVoid)
+                : cancel
+            }
           }
           return
         }
@@ -432,6 +449,18 @@ export function spawnNode(
     const configService = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
     const permissionSvc = Option.getOrUndefined(yield* Effect.serviceOption(Permission.Service))
     const scope = yield* Scope.Scope
+    // A session whose run this process no longer holds is cancelled in a
+    // detached, bounded fiber, like the old forkCancel: never wait for the
+    // commit lock on the caller's (possibly eval-lock-held) fiber.
+    const cancelSession = (
+      sessionID: SessionID,
+      reason: ReturnType<typeof childAbort>,
+      label: string,
+    ): Effect.Effect<void> =>
+      boundedCancel(promptSvc.cancel(sessionID, { reason }), label).pipe(
+        Effect.forkIn(scope, { startImmediately: true }),
+        Effect.asVoid,
+      )
     const hooks = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const hookLifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
     const hookStart = Option.getOrUndefined(yield* Effect.serviceOption(HookStartContext.Service))
@@ -647,6 +676,7 @@ export function spawnNode(
         attempt: executionAttempt,
         timeoutMs,
         maxTimeoutExtensions: input.maxTimeoutExtensions,
+        scope,
       }),
     )
 
@@ -975,9 +1005,11 @@ export function spawnNode(
                       actor: "dag-loop",
                     })
                   else
-                    yield* promptSvc.cancel(childSession.id, {
-                      reason: childAbort("admission-rejected", "dag-loop"),
-                    })
+                    yield* cancelSession(
+                      childSession.id,
+                      childAbort("admission-rejected", "dag-loop"),
+                      "dag.spawn.admission-rejected",
+                    )
                   yield* Effect.logWarning(
                     `Node ${input.nodeID} was terminalized during queue wait — child session cancelled, no spurious failure published`,
                   )
@@ -995,7 +1027,11 @@ export function spawnNode(
                   Effect.andThen(
                     run
                       ? children.cancel(run.id, { kind: "engine", reason: "admission-error", actor: "dag-loop" })
-                      : promptSvc.cancel(childSession.id, { reason: childAbort("admission-error", "dag-loop") }),
+                      : cancelSession(
+                          childSession.id,
+                          childAbort("admission-error", "dag-loop"),
+                          "dag.spawn.admission-error",
+                        ),
                   ),
                 ),
               ),
@@ -1652,9 +1688,11 @@ export function spawnNode(
                 actor: "runtime-scope",
               })
               if (cancelled === "not_active")
-                yield* promptSvc.cancel(SessionID.make(childSessionID), {
-                  reason: childAbort("runtime-interrupt", "runtime-scope"),
-                })
+                yield* cancelSession(
+                  SessionID.make(childSessionID),
+                  childAbort("runtime-interrupt", "runtime-scope"),
+                  "dag.spawn.runtime-interrupt",
+                )
             }
             // A started attempt keeps its worktree for inspection; a
             // pre-NodeStarted attempt was already removed by the ensuring

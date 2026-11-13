@@ -394,6 +394,37 @@ describe("ChildRegistry.delegateStop", () => {
     }),
   )
 
+  it.effect("a DAG run delegates from registration and sticks until its driver reports stopped", () =>
+    Effect.gen(function* () {
+      const { children, scoped, parent, newChild } = yield* setup("dag-stop")
+      const node = yield* newChild("node")
+      const handle = yield* children.start({
+        parentSessionID: parent,
+        childSessionID: node,
+        owner: { kind: "dag_node", workflowID: "wf", nodeID: "n01", attempt: 0 },
+        detached: false,
+      })
+      expect(ChildRegistry.delegateStop(node)).toBe(true)
+      // The per-turn scoped-hook cleanup still runs for a DAG node: its owner
+      // re-registers the hooks before the one notification.
+      expect(ChildRegistry.keepScopedHooks(node)).toBe(false)
+
+      yield* children.cancel(handle.id, { kind: "engine", reason: "cap" })
+      yield* Effect.yieldNow
+      // The cancelled entry is held until its driver reports stopped; during
+      // that window the child must still not fire its own SubagentStop.
+      expect(ChildRegistry.delegateStop(node)).toBe(true)
+      yield* handle.settle({ type: "interrupted" })
+      yield* Effect.yieldNow
+      expect(ChildRegistry.delegateStop(node)).toBe(false)
+
+      const foreground = yield* newChild("foreground")
+      const taskRun = yield* scoped.start({ childSessionID: foreground, owner: task("call_fg"), detached: false })
+      expect(ChildRegistry.keepScopedHooks(foreground)).toBe(true)
+      yield* taskRun.settle({ type: "completed" })
+    }),
+  )
+
   it.effect("a run that ended delegates nothing, even while its session is still held for its driver", () =>
     Effect.gen(function* () {
       const { children, scoped, newChild } = yield* setup("ended")

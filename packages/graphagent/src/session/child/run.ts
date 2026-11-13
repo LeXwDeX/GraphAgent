@@ -22,6 +22,7 @@ import {
   ActiveRunExists,
   NotOwner,
   type ChildCancelBy,
+  type ChildOwnerKind,
   type ChildPromptOptions,
   type ChildRunCancelResult,
   type ChildRunHandle,
@@ -470,10 +471,12 @@ const inspect = (ctx: Ctx) => (runID: string) => Store.runOf(ctx.db, runID).pipe
 const latestView = (ctx: Ctx) => (childSessionID: SessionID) =>
   Store.latestOf(ctx.db, childSessionID).pipe(Effect.map((row) => Option.map(Option.fromNullishOr(row), Store.viewOf)))
 
-const listByParent = (ctx: Ctx) => (parentSessionID: SessionID, options?: { readonly limit?: number }) =>
-  Store.runsOfParent(ctx.db, parentSessionID, options?.limit).pipe(
-    Effect.map((rows) => rows.map((listed) => Store.viewOf(listed.run, listed))),
-  )
+const listByParent =
+  (ctx: Ctx) =>
+  (parentSessionID: SessionID, options?: { readonly limit?: number; readonly ownerKind?: ChildOwnerKind }) =>
+    Store.runsOfParent(ctx.db, parentSessionID, options?.limit, options?.ownerKind).pipe(
+      Effect.map((rows) => rows.map((listed) => Store.viewOf(listed.run, listed))),
+    )
 
 const driverOf = (ctx: Ctx): Effect.Effect<Driver> =>
   ctx.driver ? Effect.succeed(ctx.driver) : Effect.die(new Error("child runs were built without a driver"))

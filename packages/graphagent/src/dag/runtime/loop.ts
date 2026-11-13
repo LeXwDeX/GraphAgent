@@ -973,6 +973,7 @@ const serviceLayer = Layer.effect(
                 timeoutMs: nodeConfig?.worker_config?.timeout_ms,
                 maxTimeoutExtensions:
                   entry.config?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
+                scope: stateScope,
               }).pipe(
                 Effect.provideService(Dag.Service, dag),
                 Effect.provideService(SessionPrompt.Service, promptSvc),
@@ -1840,6 +1841,7 @@ const serviceLayer = Layer.effect(
                       timeoutMs: fragTimeoutMs,
                       maxTimeoutExtensions:
                         newConfig?.max_timeout_extensions ?? Dag.DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
+                      scope: stateScope,
                     }).pipe(
                       Effect.provideService(Dag.Service, dag),
                       Effect.provideService(SessionPrompt.Service, promptSvc),

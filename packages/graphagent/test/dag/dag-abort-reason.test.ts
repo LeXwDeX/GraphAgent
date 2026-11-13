@@ -28,7 +28,7 @@ import {
 import { makeDeadlineWatcher } from "../../src/dag/runtime/spawn"
 import { reconcileWorkflow } from "../../src/dag/runtime/recovery"
 import { makeNodeRow } from "./fixtures"
-import { mockSessionPrompt } from "../lib/child-runs"
+import { mockSessionPromptWithStub } from "../lib/child-runs"
 
 const paths: ReadonlyArray<readonly [ChildAbortReason, ChildAbortActor]> = [
   ["deadline-cap", "deadline-watcher"],
@@ -131,12 +131,15 @@ describe("DAG deadline watcher abort reason", () => {
         }),
       ),
     ).pipe(Layer.provide(store))
-    const promptLayer = mockSessionPrompt({
+    const { layer: promptLayer, stub } = mockSessionPromptWithStub({
       cancel: (sessionID: SessionID, options?: { readonly reason?: SessionAbortReason.Info }) =>
         Effect.sync(() => {
           cancelled.push({ sessionID, reason: options?.reason })
         }),
     })
+    // No run in this process: the watcher must fall back to cancelling the
+    // session turn itself with the deadline reason.
+    stub.cancelActiveResult = "not_active"
     const instance: InstanceContext = {
       directory: "/tmp",
       worktree: "/tmp",

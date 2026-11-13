@@ -28,7 +28,7 @@ import { SessionPrompt } from "@/session/prompt"
 import type { ChildRunHandle } from "@/session/child/run"
 import type { NodeConfig } from "../dag"
 import { Session } from "@/session/session"
-import { SessionID, MessageID } from "@/session/schema"
+import { SessionID } from "@/session/schema"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { isTransitionRejection } from "@graphagent/core/dag/core/types"
@@ -753,15 +753,21 @@ export function continueRecoveredMessageNode(
       errorClass?: string,
     ) => {
       const metadata = recoverWorktreeMetadata(row)
-      return dag.nodeFailed(
-        dagID,
-        nodeID,
-        reason,
-        trigger,
-        attempt,
-        errorClass,
-        metadata ? { ...metadata, state: "kept" as const } : undefined,
-      )
+      return dag
+        .nodeFailed(
+          dagID,
+          nodeID,
+          reason,
+          trigger,
+          attempt,
+          errorClass,
+          metadata ? { ...metadata, state: "kept" as const } : undefined,
+        )
+        .pipe(
+          // The run's outcome follows the durable node outcome: an error here
+          // must not be outlived by a completed settle from a wrapper.
+          Effect.andThen(run === undefined ? Effect.void : run.settle({ type: "error", message: reason })),
+        )
     }
     const completeNode = (
       row: DagStore.NodeRow,
@@ -783,15 +789,19 @@ export function continueRecoveredMessageNode(
         })
         if (!completion.ok)
           return yield* failNode(row, `worktree completion failed: ${completion.reason}`, "exec_failed", attempt)
-        return yield* dag.nodeCompleted(
-          dagID,
-          nodeID,
-          output,
-          attempt,
-          capturedOutput,
-          completion.worktree,
-          completion.worktree ? completion.touchedPaths : undefined,
-        )
+        // Settle only after the durable completion; the worktree failure above
+        // already settled the run as an error through `failNode`.
+        return yield* dag
+          .nodeCompleted(
+            dagID,
+            nodeID,
+            output,
+            attempt,
+            capturedOutput,
+            completion.worktree,
+            completion.worktree ? completion.touchedPaths : undefined,
+          )
+          .pipe(Effect.andThen(run === undefined ? Effect.void : run.settle({ type: "completed" })))
       })
     yield* inExecution(
       Effect.gen(function* () {
@@ -853,7 +863,11 @@ export function continueRecoveredMessageNode(
                 permission: { ask: "auto" },
               })
         ).pipe(
-          Effect.catchTag("ChildRunActive", () => Effect.succeed(undefined)),
+          // Another driver owns the session (or won the check-then-act race
+          // between `latest` and `start`). Leave the node to it and retry
+          // later instead of failing a live attempt; the pause keeps the
+          // re-arm from hot-polling the row.
+          Effect.catchTag("ChildRunActive", () => Effect.sleep(2_000).pipe(Effect.as(undefined))),
           Effect.catchTag("ChildRunNotOwner", () =>
             failNode(
               node,
@@ -862,32 +876,21 @@ export function continueRecoveredMessageNode(
               attempt,
             ).pipe(Effect.as(undefined)),
           ),
+          // `start` reports a lost registration as a defect (unique violation
+          // or the registry's duplicate guard), not a typed `ChildRunActive`.
+          // That is still a concurrent driver, never a node failure.
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("recovery run registration raced; leaving the attempt to its driver", {
+                  dagID,
+                  nodeID,
+                  cause: Cause.pretty(cause),
+                }).pipe(Effect.andThen(Effect.sleep(2_000)), Effect.as(undefined)),
+          ),
         )
         if (!run) return
         if (!(yield* run.markRunning)) return
-        const active = run
-        // Settle the adopted run with the durable outcome of this
-        // continuation. A control-op cancellation already ended it, so the
-        // compare-and-swap keeps `cancelled`.
-        const completeRun = (
-          row: DagStore.NodeRow,
-          output: unknown,
-          settlement: NodeExecutionAttempt,
-          capturedOutput?: unknown,
-        ) =>
-          completeNode(row, output, settlement, capturedOutput).pipe(
-            Effect.andThen(active.settle({ type: "completed" })),
-          )
-        const failRun = (
-          row: DagStore.NodeRow,
-          reason: string,
-          trigger: string,
-          settlement: NodeExecutionAttempt,
-          errorClass?: string,
-        ) =>
-          failNode(row, reason, trigger, settlement, errorClass).pipe(
-            Effect.andThen(active.settle({ type: "error", message: reason })),
-          )
         let result = yield* prompt.loop({ sessionID: SessionID.make(childSessionID) }, { kind: "child_run" })
         for (;;) {
           if (!(yield* admit)) return
@@ -903,7 +906,7 @@ export function continueRecoveredMessageNode(
           )
             return
           if (result.info.role !== "assistant" || result.info.error) {
-            yield* failRun(
+            yield* failNode(
               current,
               childFailureReason(
                 "recovered model turn stopped without a successful result",
@@ -938,7 +941,7 @@ export function continueRecoveredMessageNode(
                 ? recoveredSettlement(nodeConfig, all, captured.output, true)
                 : ({ kind: "fail", reason: captured.reason } as const)
               if (settlement.kind === "fail")
-                return yield* failRun(
+                return yield* failNode(
                   current,
                   settlement.reason,
                   "verdict_fail",
@@ -948,7 +951,7 @@ export function continueRecoveredMessageNode(
                   },
                   !captured.ok && captured.schemaInvalid ? "schema_invalid" : undefined,
                 )
-              return yield* completeRun(current, settlement.output, {
+              return yield* completeNode(current, settlement.output, {
                 ...attempt,
                 inputSnapshotID: snapshotID,
               })
@@ -956,7 +959,7 @@ export function continueRecoveredMessageNode(
             const final = finalAssistantText(result, true)
             const settlement = settlePlainTextOutput(final.ok ? final.text : undefined)
             if (settlement.kind === "fail")
-              return yield* failRun(current, settlement.reason, "verdict_fail", {
+              return yield* failNode(current, settlement.reason, "verdict_fail", {
                 ...attempt,
                 inputSnapshotID: snapshotID,
               })
@@ -991,7 +994,7 @@ export function continueRecoveredMessageNode(
                 yield* Effect.fail(new Error(`Recovered output receipt rejected: ${receipt.reason}`))
               }
             }
-            return yield* completeRun(
+            return yield* completeNode(
               current,
               ref?.path ?? settlement.output,
               { ...attempt, inputSnapshotID: snapshotID },
@@ -1003,7 +1006,7 @@ export function continueRecoveredMessageNode(
           )
           if (settled) return
           if (frozen.ok && frozen.value?.stopReason) {
-            yield* failRun(
+            yield* failNode(
               current,
               `message recovery continuation blocked: ${frozen.value.stopReason}`,
               "exec_failed",

@@ -41,7 +41,10 @@ export function create(input: {
     ...input,
     phase: "queued",
     outcome: undefined,
-    stopDelegated: false,
+    // A DAG node's owner delivers the attempt's one Stop notification, so the
+    // child must never fire its own for the whole attempt, including the
+    // window after the run ended but before its driver turned down.
+    stopDelegated: input.ownerKind === "dag_node",
     credential: issue(input.id, input.childSessionID),
     held: false,
     stopped: false,
@@ -116,10 +119,28 @@ export function live(credential: ChildRunCredential): boolean {
  */
 export function delegateStop(childSessionID: string): boolean {
   const entry = activeFor(childSessionID)
-  if (!entry || entry.phase === "ended") return false
-  if (entry.ownerKind === "task" && entry.detached) return false
+  if (!entry) return false
+  // A DAG node's owner owns Stop for the whole attempt: from registration
+  // through the window after the run ended but before its driver turned down
+  // (a cancellation). A fresh run gets a fresh entry.
+  if (entry.ownerKind === "dag_node") return true
+  // A task delegates only while foreground and active; a promotion hands Stop
+  // back to the child, and an ended run delegates nothing. The flag stays on
+  // record for the task tool's later SubagentStop delivery.
+  if (entry.phase === "ended" || entry.detached) return false
   entry.stopDelegated = true
   return true
+}
+
+/**
+ * Whether the child's own loop must keep its scoped agent hooks registered
+ * after this turn: only a foreground task's tool call delivers the later
+ * `SubagentStop` and needs them. A DAG node's notifyStop re-registers the
+ * hooks before its one notification, so its per-turn cleanup still runs.
+ */
+export function keepScopedHooks(childSessionID: string): boolean {
+  const entry = activeFor(childSessionID)
+  return entry !== undefined && entry.phase !== "ended" && entry.ownerKind === "task" && !entry.detached
 }
 
 /**
