@@ -457,6 +457,54 @@ describe("ChildRuns.adopt", () => {
       yield* adopted.settle({ type: "completed" })
     }),
   )
+
+  // Codex review on #1275: two resumes race; the loser passes the registry check
+  // before the winner registers, then reads the winner's freshly inserted row.
+  // That row belongs to a registered run of this process and must not be ended
+  // as an orphan. The winner's entry is keyed to another session here so the
+  // loser's session check misses it, as it did at the moment of the race.
+  it.effect("does not release a row whose run this process has registered", () =>
+    Effect.gen(function* () {
+      const { db, scoped, parent, newChild } = yield* setup("racing")
+      const child = yield* newChild("racing")
+      const elsewhere = yield* newChild("elsewhere")
+      const runID = `crun_seed_${child}`
+      yield* db
+        .insert(ChildBindingTable)
+        .values({ child_session_id: child, parent_session_id: parent, owner_kind: "task" })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(ChildRunTable)
+        .values({
+          id: runID,
+          child_session_id: child,
+          parent_session_id: parent,
+          owner_kind: "task",
+          attempt: 1,
+          state: "queued",
+          runner_id: EngineProcess.runner.id,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const winner = ChildRegistry.create({
+        id: runID,
+        childSessionID: elsewhere,
+        parentSessionID: parent,
+        directory: undefined,
+        owner: {},
+      })
+      expect(ChildRegistry.register(winner)).toBe(true)
+
+      const blocked = yield* refuse(scoped, child)
+      expect(String(blocked)).toContain("ChildRunActive")
+      const rows = yield* runRows(db, child)
+      expect(rows.map((row) => [row.id, row.state, row.outcome])).toEqual([[runID, "queued", null]])
+
+      ChildRegistry.end(winner, { type: "completed" })
+      ChildRegistry.release(winner)
+    }),
+  )
 })
 
 describe("ChildRuns.recover", () => {

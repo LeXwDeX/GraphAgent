@@ -192,9 +192,14 @@ const start = (ctx: Ctx) =>
  * An active row with no registry entry belongs to a run nobody drives: a dead
  * or earlier-life process left it, or this process lost its ending write. A
  * live foreign process keeps its row. Returns whether the row was released.
+ *
+ * A row of this process is re-checked against the registry first: a concurrent
+ * adopt registers its entry before inserting its row, so a row read after that
+ * insert always finds its entry here and is not an orphan.
  */
 const releaseOrphan = (ctx: Ctx, row: Store.RunRow) =>
   Effect.suspend(() => {
+    if (Registry.get(row.id)) return Effect.succeed(false)
     if (row.runner_id !== EngineProcess.runner.id && runnerAlive(row.runner_id)) return Effect.succeed(false)
     return Clock.currentTimeMillis.pipe(
       Effect.flatMap((now) => Store.endRun(ctx.db, row.id, { type: "interrupted", reason: "orphaned" }, now)),
