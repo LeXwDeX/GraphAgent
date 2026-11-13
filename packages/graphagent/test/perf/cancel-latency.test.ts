@@ -16,6 +16,7 @@ import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { Session } from "@/session/session"
 import { SessionPrompt } from "@/session/prompt"
+import { ChildRegistry } from "@/session/child/registry"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
@@ -197,10 +198,9 @@ live(
           yield* llm.wait(requests)
           const measured = yield* Effect.gen(function* () {
             const started = performance.now()
-            const settled = yield* prompt.cancel(session.id).pipe(
-              Effect.andThen(Fiber.await(running)),
-              Effect.timeoutOption("10 seconds"),
-            )
+            const settled = yield* prompt
+              .cancel(session.id)
+              .pipe(Effect.andThen(Fiber.await(running)), Effect.timeoutOption("10 seconds"))
             const elapsed = performance.now() - started
             return { elapsed, settled }
           }).pipe(Effect.ensuring(Effect.sync(() => release())))
@@ -230,10 +230,9 @@ live(
             .pipe(Effect.forkChild)
           yield* waitForBusy(session.id)
           const started = performance.now()
-          const settled = yield* prompt.cancel(session.id).pipe(
-            Effect.andThen(Fiber.await(running)),
-            Effect.timeoutOption("10 seconds"),
-          )
+          const settled = yield* prompt
+            .cancel(session.id)
+            .pipe(Effect.andThen(Fiber.await(running)), Effect.timeoutOption("10 seconds"))
           const elapsed = performance.now() - started
           expect(Option.isSome(settled)).toBe(true)
           if (i >= WARMUP) samples.push(elapsed)
@@ -276,6 +275,7 @@ live(
             .prompt(
               { sessionID: child.id, agent: "build", parts: [{ type: "text", text: `child cancel ${i}` }] },
               { internalDelegation: true },
+              { credential: ChildRegistry.credentialOf(child.id) },
             )
             .pipe(Effect.forkChild)
           requests += 1
