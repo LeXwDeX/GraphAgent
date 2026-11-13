@@ -20,6 +20,7 @@ import { AgentScheduler } from "@/session/agent-scheduler"
 import { SettingsHook, type TriggerResult } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
 import { HookTurnContext } from "@/hook/turn-context"
+import { isRecord } from "@/util/record"
 
 /**
  * What the shell tool's background mode and `watch_pr` prompt their own
@@ -37,6 +38,32 @@ export interface TaskPromptOps {
    * tool a view narrowed to its own session and no other tool sees it.
    */
   readonly children?: ChildRuns.Interface
+}
+
+/**
+ * Who drove a task call (#1057): a user-issued slash command, or the agent.
+ * Command-driven subtasks reach the tool through `handleSubtask`, which knows
+ * whether the turn came from a user or from a hook followup and passes it in
+ * through `ctx.extra`.
+ */
+export interface TaskOrigin {
+  readonly initiator: "user" | "agent"
+  readonly command?: string
+}
+
+/** Reads a task origin from a value that carries `initiator` (and optionally `command`). */
+function readOrigin(value: unknown): TaskOrigin | undefined {
+  if (!isRecord(value)) return undefined
+  if (value.initiator !== "user" && value.initiator !== "agent") return undefined
+  return {
+    initiator: value.initiator,
+    ...(typeof value.command === "string" ? { command: value.command } : {}),
+  }
+}
+
+/** The task origin a command-driven subtask passed in (`ctx.extra.taskOrigin`); agent calls have none. */
+function taskOriginOf(extra: { readonly [key: string]: unknown } | undefined): TaskOrigin | undefined {
+  return readOrigin(extra?.taskOrigin)
 }
 
 const id = "task"
@@ -203,11 +230,20 @@ function outcomeOf(info: BackgroundJob.Info | undefined): ChildRunOutcome {
 }
 
 // What a background run tells its parent: the job's output, or the error it
-// ended in. The result ledger delivers it (`child.result`); the run's row keeps
+// ended in, plus who asked for it so the delivery can present it accordingly
+// (#1057). The result ledger delivers it (`child.result`); the run's row keeps
 // it until then. A job that was cancelled or vanished tells nothing.
 function reportOf(info: BackgroundJob.Info | undefined, title: string): ChildRunReport | undefined {
-  if (info?.status === "completed") return { title, text: info.output ?? "" }
-  if (info?.status === "error") return { title, text: info.error ?? "" }
+  const origin = readOrigin(info?.metadata)
+  // Only a user-issued run needs the origin in the durable report: the
+  // delivery presents it as findings. An agent-started run keeps the older
+  // report shape and is read back as the default initiator.
+  const who =
+    origin?.initiator === "user"
+      ? { initiator: "user" as const, ...(origin.command === undefined ? {} : { command: origin.command }) }
+      : {}
+  if (info?.status === "completed") return { title, text: info.output ?? "", ...who }
+  if (info?.status === "error") return { title, text: info.error ?? "", ...who }
   return undefined
 }
 
@@ -371,6 +407,11 @@ export const TaskTool = Tool.define(
       const subagentType: string = params.subagent_type
       const cfg = yield* config.get()
       const runInBackground = params.background === true
+      // #1057: a user-issued background command survives ESC and is presented
+      // back as its findings; an agent-started task is ordinary background work.
+      const origin = taskOriginOf(ctx.extra)
+      const initiator: TaskOrigin["initiator"] = origin?.initiator ?? "agent"
+      const command = initiator === "user" ? origin?.command : undefined
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
@@ -523,7 +564,10 @@ export const TaskTool = Tool.define(
         parentSessionID: ctx.sessionID,
         sessionID: nextSession.id,
         model,
+        initiator,
+        ...(command === undefined ? {} : { command }),
         ...(runInBackground ? { background: true } : {}),
+        ...(runInBackground && initiator === "user" ? { survivesSessionCancel: true } : {}),
       }
 
       yield* ctx.metadata({
@@ -728,7 +772,7 @@ export const TaskTool = Tool.define(
             registered.detach,
             ctx.metadata({
               title: description,
-              metadata: { ...metadata, background: true, jobId: nextSession.id },
+              metadata: { ...metadata, background: true, jobId: nextSession.id, promoted: true },
             }),
             notify(nextSession.id, registered),
           ]),
@@ -749,13 +793,14 @@ export const TaskTool = Tool.define(
           ),
         )
 
-      function backgroundResult() {
+      function backgroundResult(promoted = false) {
         return {
           title: description,
           metadata: {
             ...metadata,
             background: true,
             jobId: info.id,
+            ...(promoted ? { promoted: true } : {}),
           },
           output: renderOutput({
             sessionID: nextSession.id,
@@ -795,7 +840,7 @@ export const TaskTool = Tool.define(
                 // also seen by the job's `onPromote`; detaching twice is harmless, and neither side may wait for the other.
                 yield* registered.detach
                 yield* watchSettlement(registered, nextSession.id, claim, description)
-                return backgroundResult()
+                return backgroundResult(true)
               }
               claim.job = outcomeOf(result)
               if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))

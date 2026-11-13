@@ -26,6 +26,18 @@ export function renderTask(input: { sessionID: SessionID; state: TaskState; summ
 }
 
 /**
+ * The instruction above a result the user's own background command left
+ * (#1057): the parent presents the findings instead of acting on them.
+ */
+export function userBackgroundNotice(command: string | undefined) {
+  return [
+    `The user ran ${command === undefined ? "a command" : `/${command}`} in the background and it has finished.`,
+    "Present its findings to the user faithfully and concisely, grouped by severity.",
+    "Do not edit files or act on the findings unless the user asks.",
+  ].join(" ")
+}
+
+/**
  * The notice for a detached task run that ended: the result it produced, the
  * failure it ended in, or, for a run its process lost, the fact that it left no
  * result. A cancelled run is never delivered; it is described here only so a

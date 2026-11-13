@@ -5,6 +5,7 @@ import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { cancelSessionJobs } from "@/background/cancel"
 import { BackgroundJob } from "@/background/job"
+import { SessionCancellation } from "@/session/cancellation"
 import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 
@@ -65,6 +66,32 @@ describe("background.cancel", () => {
 
       yield* cancelSessionJobs(jobs, sessionID)
       expect((yield* jobs.get("coordinated"))?.status).toBe("cancelled")
+    }),
+  )
+
+  it.instance("session cancellation owners keep jobs marked to survive session cancel", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessionID = SessionID.create()
+      yield* jobs.start({
+        id: "owner-survivor",
+        type: "test",
+        metadata: { sessionID: sessionID, survivesSessionCancel: true },
+        run: Effect.never,
+      })
+      yield* jobs.start({
+        id: "owner-doomed",
+        type: "test",
+        metadata: { sessionID: sessionID },
+        run: Effect.never,
+      })
+
+      const cancellation = SessionCancellation.begin(sessionID)
+      yield* Effect.all(cancellation.owners, { discard: true })
+      cancellation.finish()
+
+      expect((yield* jobs.get("owner-survivor"))?.status).toBe("running")
+      expect((yield* jobs.get("owner-doomed"))?.status).toBe("cancelled")
     }),
   )
 })

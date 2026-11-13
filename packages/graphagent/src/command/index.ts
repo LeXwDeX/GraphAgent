@@ -32,6 +32,7 @@ export const Info = Schema.Struct({
   // Some command templates are lazy promises from MCP prompt resolution.
   template: Schema.Unknown,
   subtask: Schema.optional(Schema.Boolean),
+  background: Schema.optional(Schema.Boolean),
   hints: Schema.Array(Schema.String),
 }).annotate({ identifier: "Command" })
 
@@ -108,10 +109,12 @@ export const layer = Layer.effect(
         name: Default.REVIEW,
         description: "review changes [commit|branch|pr], defaults to uncommitted",
         source: "command",
+        agent: "review",
         get template() {
           return PROMPT_REVIEW.replace("${path}", ctx.worktree)
         },
         subtask: true,
+        background: true,
         hints: hints(PROMPT_REVIEW),
       }
       commands[Default.GOAL] = {
@@ -169,6 +172,7 @@ export const layer = Layer.effect(
             return command.template
           },
           subtask: command.subtask,
+          background: command.background,
           hints: hints(command.template),
         }
       }

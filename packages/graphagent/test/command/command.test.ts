@@ -13,7 +13,10 @@ import { testInstanceStoreLayer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 function commandLayer(
-  commands: Record<string, { template: string; description?: string }> = {},
+  commands: Record<
+    string,
+    { template: string; description?: string; agent?: string; subtask?: boolean; background?: boolean }
+  > = {},
   skills: Skill.Info[] = [],
 ) {
   return Layer.mergeAll(
@@ -44,6 +47,15 @@ const overridden = testEffect(
     "dag-auto": {
       description: "Custom DAG auto",
       template: "Custom task:\n$ARGUMENTS",
+    },
+  }),
+)
+const withBackgroundCommand = testEffect(
+  commandLayer({
+    "deep-check": {
+      description: "Configured background check",
+      template: "Check $ARGUMENTS",
+      background: true,
     },
   }),
 )
@@ -103,6 +115,36 @@ describe("legacy command registry", () => {
       expect(command?.subtask).toBeUndefined()
       expect(command?.template).toContain("# Import Claude Configuration")
       expect(yield* commands.get("import-claude-hooks")).toBeUndefined()
+    }),
+  )
+
+  it.instance("registers review as a background subtask run by the review agent", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      const command = yield* commands.get("review")
+
+      expect(command).toMatchObject({
+        name: "review",
+        description: "review changes [commit|branch|pr], defaults to uncommitted",
+        source: "command",
+        agent: "review",
+        subtask: true,
+        background: true,
+      })
+    }),
+  )
+
+  withBackgroundCommand.instance("keeps the background flag of a configured command", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+
+      expect(yield* commands.get("deep-check")).toMatchObject({
+        name: "deep-check",
+        description: "Configured background check",
+        background: true,
+        source: "command",
+      })
+      expect((yield* commands.get("review"))?.background).toBe(true)
     }),
   )
 

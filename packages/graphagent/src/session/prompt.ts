@@ -461,6 +461,7 @@ export const layer = Layer.effect(
       budgetState,
       dropPendingBudget,
       hookQuestions,
+      commands,
       children,
       ops: () => ops(),
     })

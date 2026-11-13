@@ -71,6 +71,10 @@ export type ChildRunOutcome =
 export interface ChildRunReport {
   readonly title: string
   readonly text: string
+  /** Who asked for the run (#1057): a user-issued command, or the agent. */
+  readonly initiator?: "user" | "agent"
+  /** The slash command that started a user-initiated run. */
+  readonly command?: string
 }
 
 /**

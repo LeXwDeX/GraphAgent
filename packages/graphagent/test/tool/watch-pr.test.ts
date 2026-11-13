@@ -991,7 +991,7 @@ describe("watch_pr notice and tool", () => {
   const withRealTool = testEffect(
     Layer.mergeAll(BackgroundJob.defaultLayer, Truncate.defaultLayer, Agent.defaultLayer, sessionLayer),
   )
-  withRealTool.instance("cancels a real watch execution without delivering a notice", () =>
+  withRealTool.instance("a real watch execution survives session cancellation", () =>
     Effect.gen(function* () {
       const tool = yield* (yield* WatchPrTool).init()
       const sessionID = SessionID.make("ses_watch_tool_cancel")
@@ -1010,7 +1010,7 @@ describe("watch_pr notice and tool", () => {
         extra: {
           promptOps: {
             ...promptOps,
-            prompt: () => Effect.die("a cancelled watch must not deliver"),
+            prompt: () => Effect.die("a surviving watch must not deliver without a change"),
           },
           watchPrRunner: runner,
         },
@@ -1021,7 +1021,9 @@ describe("watch_pr notice and tool", () => {
       cancellation.finish()
       const background = yield* BackgroundJob.Service
       const waited = yield* background.wait({ id: result.metadata.jobId, timeout: 1_000 })
-      expect(waited.info?.status).toBe("cancelled")
+      expect(waited.timedOut).toBe(true)
+      expect(waited.info?.status).toBe("running")
+      yield* background.cancel(result.metadata.jobId)
     }),
   )
 })

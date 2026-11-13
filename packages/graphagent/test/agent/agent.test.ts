@@ -145,6 +145,46 @@ it.instance("explore agent asks for external directories and allows whitelisted 
   }),
 )
 
+it.instance("review agent is a read-only subagent with a command allowlist", () =>
+  Effect.gen(function* () {
+    const review = yield* load((svc) => svc.get("review"))
+    expect(review).toBeDefined()
+    expect(review?.mode).toBe("subagent")
+    expect(review?.native).toBe(true)
+    expect(evalPerm(review, "edit")).toBe("deny")
+    expect(evalPerm(review, "write")).toBe("deny")
+    expect(evalPerm(review, "todowrite")).toBe("deny")
+    expect(evalPerm(review, "task")).toBe("deny")
+    expect(evalPerm(review, "read")).toBe("allow")
+    expect(evalPerm(review, "grep")).toBe("allow")
+    expect(evalPerm(review, "glob")).toBe("allow")
+    expect(evalPerm(review, "lsp")).toBe("allow")
+    expect(evalPerm(review, "skill")).toBe("allow")
+    expect(evalPerm(review, "serena_initial_instructions")).toBe("allow")
+    expect(evalPerm(review, "webfetch")).toBe("deny")
+    expect(evalPerm(review, "websearch")).toBe("deny")
+    expect(Permission.evaluate("bash", "git diff --cached", review!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "git log --oneline -5", review!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "git rev-parse HEAD", review!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "gh pr diff 42", review!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "glab mr view 42", review!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "rm -rf build", review!.permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git push", review!.permission).action).toBe("deny")
+  }),
+)
+
+it.instance("review agent asks for external directories and allows whitelisted external paths", () =>
+  Effect.gen(function* () {
+    const review = yield* load((svc) => svc.get("review"))
+    expect(review).toBeDefined()
+    expect(Permission.evaluate("external_directory", "/some/other/path", review!.permission).action).toBe("ask")
+    expect(Permission.evaluate("external_directory", Truncate.GLOB, review!.permission).action).toBe("allow")
+    expect(
+      Permission.evaluate("external_directory", path.join(Global.Path.tmp, "agent-work"), review!.permission).action,
+    ).toBe("allow")
+  }),
+)
+
 it.instance(
   "reference config does not create subagents",
   () =>
