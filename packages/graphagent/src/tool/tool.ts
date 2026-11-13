@@ -1,5 +1,5 @@
 import { PermissionV1 } from "@graphagent/core/v1/permission"
-import { Effect, Option, Schema, type Scope } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { SessionID, MessageID } from "../session/schema"
@@ -7,6 +7,7 @@ import * as Truncate from "./truncate"
 import { ToolJsonSchema } from "./json-schema"
 import { formatSchemaFailures } from "./schema-error"
 import { Agent } from "@/agent/agent"
+import type { ChildRuns as ChildRunsModule } from "@/session/child/run"
 
 interface Metadata {
   [key: string]: any
@@ -39,32 +40,15 @@ export class InvalidArgumentsError extends Schema.TaggedError<InvalidArgumentsEr
 }
 
 /**
- * Typed child-run capability reserved for H3 (#1026) and H6. Optional and
- * unused until H3 lands; `ctx.extra.promptOps` remains the active path until
- * then. H3 owns the concrete `ChildRunSpec`, `ChildRunView`, `ChildRunError`
- * and `ChildRunHandle` types in `src/session/child/run.ts`; this declaration
- * only reserves the typed context slot so tools stop reaching through
- * `extra.promptOps`. Only task/workflow receive it.
+ * Typed child-run capability (H3 #1026). The concrete types live in
+ * `src/session/child/run.ts`; this module re-exports the ones a tool sees.
+ * `ChildRuns` is the view narrowed to the calling session: the parent is fixed
+ * by the engine and cannot be named by the tool. Only the task tool receives
+ * it; `ctx.extra.promptOps` stays the active driver path until PR3.
  */
-export interface ChildRunHandle {
-  readonly id: string
-}
-
-export interface ChildRunView {
-  readonly id: string
-  readonly childSessionID: SessionID
-  readonly parentSessionID: SessionID
-  readonly state: string
-}
-
-export type ChildRunCancelOrigin = { kind: "main_agent_tool"; toolCallID: string } | { kind: "engine"; reason: string }
-
-export interface ChildRuns {
-  start(spec: unknown): Effect.Effect<ChildRunHandle, unknown, Scope.Scope>
-  cancel(id: string, by: ChildRunCancelOrigin): Effect.Effect<void>
-  inspect(id: string): Effect.Effect<ChildRunView>
-  listByParent(parentSessionID: SessionID): Effect.Effect<readonly ChildRunView[]>
-}
+export type { ChildRunHandle, ChildRunView } from "@/session/child/run"
+export type ChildRunCancelOrigin = ChildRunsModule.ChildCancelBy
+export type ChildRuns = ChildRunsModule.Scoped
 
 export type Context<M extends Metadata = Metadata> = {
   sessionID: SessionID
@@ -73,7 +57,7 @@ export type Context<M extends Metadata = Metadata> = {
   abort: AbortSignal
   callID?: string
   extra?: { [key: string]: unknown }
-  /** Typed child-run capability (H3 #1026); absent until the service lands. */
+  /** Typed child-run capability (H3 #1026), narrowed to the calling session; only the task tool receives it. */
   children?: ChildRuns
   messages: SessionV1.WithParts[]
   metadata(input: { title?: string; metadata?: M }): Effect.Effect<void>

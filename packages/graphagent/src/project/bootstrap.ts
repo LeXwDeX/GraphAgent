@@ -17,6 +17,7 @@ import { Service } from "./bootstrap-service"
 import { Memory } from "@/memory/memory"
 import { SessionInbox } from "@/session/inbox"
 import { Turns } from "@/session/turns"
+import { ChildRuns } from "@/session/child/run"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -52,10 +53,16 @@ export const layer = Layer.effect(
       const ctx = yield* InstanceState.context
       yield* Effect.logInfo("bootstrapping", { directory: ctx.directory })
       // Turn rows from a previous process cannot still be running. Settle them
-      // before any new admission in this instance can observe `running`.
+      // before any new admission in this instance can observe `running`. Child
+      // runs follow the same rule: a run whose runner is gone must not keep
+      // its child session busy (the active-run unique index) for a driver that
+      // no longer exists.
       if (database._tag === "Some") {
         yield* Turns.recover(database.value).pipe(
           Effect.catchCause((cause) => Effect.logWarning("session turn recovery failed", { cause })),
+        )
+        yield* ChildRuns.recover(database.value).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("child run recovery failed", { cause })),
         )
       }
       // everything depends on config so eager load it for nice traces

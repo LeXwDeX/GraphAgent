@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Database } from "@graphagent/core/database/database"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -24,7 +24,14 @@ import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { disposeAllInstances } from "../fixture/fixture"
-import { awaitWithTimeout, testEffect } from "../lib/effect"
+import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
+import { initTaskTool } from "../lib/child-runs"
+import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
+import { SessionTable } from "@graphagent/core/session/sql"
+import { ChildRegistry } from "@/session/child/registry"
+import { ChildStore } from "@/session/child/store"
+import { EngineProcess } from "@/session/engine-process"
+import { eq } from "drizzle-orm"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 
@@ -197,6 +204,60 @@ function assistantReply(
 
 const TRUNCATED = { text: "", finish: "length", reasoning: 32_000, output: 0 } as const
 
+// Issue #1026 PR1: the task tool registers every child session with ChildRuns,
+// verifies task_id ownership before anything is written to the target session,
+// ends the run with the job that carries it, and lets the main agent cancel a
+// background task.
+const runsOf = (childSessionID: SessionID) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    return yield* db
+      .select()
+      .from(ChildRunTable)
+      .where(eq(ChildRunTable.child_session_id, childSessionID))
+      .all()
+      .pipe(Effect.orDie)
+  })
+
+const bindingsOf = (childSessionID: SessionID) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    return yield* db
+      .select()
+      .from(ChildBindingTable)
+      .where(eq(ChildBindingTable.child_session_id, childSessionID))
+      .all()
+      .pipe(Effect.orDie)
+  })
+
+// The watcher settles the run when the job ends, a moment after the tool call returns.
+const endedRun = (childSessionID: SessionID, attempt = 1) =>
+  pollWithTimeout(
+    runsOf(childSessionID).pipe(
+      Effect.map((rows) => rows.find((row) => row.attempt === attempt && row.state === "ended")),
+    ),
+    `run ${attempt} of ${childSessionID} never ended`,
+  )
+
+const taskCtx = (
+  chat: Session.Info,
+  assistant: SessionV1.Assistant,
+  promptOps: TaskPromptOps,
+  extra: Partial<Tool.Context> = {},
+): Tool.Context => ({
+  sessionID: chat.id,
+  messageID: assistant.id,
+  agent: "build",
+  abort: new AbortController().signal,
+  extra: { promptOps },
+  messages: [],
+  metadata: () => Effect.void,
+  ask: () => Effect.void,
+  ...extra,
+})
+
+const general = { description: "inspect bug", prompt: "look into the cache key path", subagent_type: "general" }
+
 describe("tool.task", () => {
   it.instance("rejects direct task execution from a child before permission or session creation", () =>
     Effect.gen(function* () {
@@ -205,7 +266,7 @@ describe("tool.task", () => {
       const child = yield* sessions.create({ title: "DAG child", parentID: chat.id })
       const state = { asks: 0, prompts: 0 }
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const exit = yield* def
         .execute(
           {
@@ -498,7 +559,12 @@ describe("tool.task", () => {
       const { chat, assistant } = yield* seed()
       const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
+      // An earlier task run of this conversation that already finished.
+      const earlier = yield* def.children
+        .forParent(chat.id)
+        .start({ childSessionID: child.id, owner: { kind: "task", toolCallID: "call_earlier" }, detached: false })
+      yield* earlier.settle({ type: "completed" })
       let seen: SessionPrompt.PromptInput | undefined
       const promptOps = stubOps({ text: "resumed", onPrompt: (input) => (seen = input) })
 
@@ -535,7 +601,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const calls: unknown[] = []
       const promptOps = stubOps()
 
@@ -581,7 +647,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const promptOps: TaskPromptOps = {
         ...stubOps(),
         prompt: (input) =>
@@ -628,7 +694,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const prompts: { input: SessionPrompt.PromptInput; options?: SessionPrompt.AdmissionOptions }[] = []
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
@@ -676,7 +742,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let prompts = 0
       let childSession = ""
       const promptOps: TaskPromptOps = {
@@ -727,7 +793,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let prompts = 0
       let childSession = ""
       const promptOps: TaskPromptOps = {
@@ -799,7 +865,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const { chat, assistant } = yield* seed()
         const tool = yield* TaskTool
-        const def = yield* tool.init()
+        const def = yield* initTaskTool(tool)
         let prompts = 0
         const promptOps: TaskPromptOps = {
           cancel: () => Effect.void,
@@ -846,7 +912,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
       let childPrompts = 0
       const promptOps: TaskPromptOps = {
@@ -904,7 +970,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
       let childPrompts = 0
       const promptOps: TaskPromptOps = {
@@ -963,7 +1029,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let prompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
@@ -998,6 +1064,13 @@ describe("tool.task", () => {
       expect(result.output).toContain("reasoning 32000")
       expect(result.output).not.toContain('state="completed"')
       expect(prompts).toBe(2)
+      // The run ends with the whole task: its continuation failed, so the run failed.
+      const child = SessionID.make(result.metadata.sessionID)
+      const run = (yield* runsOf(child))[0]
+      expect(run?.state).toBe("ended")
+      expect(ChildStore.parseOutcome(run?.outcome)).toMatchObject({ type: "error" })
+      expect(JSON.stringify(run?.outcome)).toContain("output token cap")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1005,7 +1078,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let prompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
@@ -1041,6 +1114,9 @@ describe("tool.task", () => {
       expect(result.output).toContain("FINAL-VERIFIED-ANSWER")
       expect(result.output).not.toContain("STALE-FIRST-ANSWER")
       expect(prompts).toBe(2)
+      const child = SessionID.make(result.metadata.sessionID)
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "ended", outcome: { type: "completed" } })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1048,7 +1124,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let prompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
@@ -1088,6 +1164,13 @@ describe("tool.task", () => {
         expect(message).toContain("stop continuation socket closed")
         expect(message).not.toContain('state="completed"')
       }
+      // The job had completed when the continuation failed: the run is not completed.
+      const child = (yield* (yield* Session.Service).children(chat.id))[0].id
+      const run = (yield* runsOf(child))[0]
+      expect(run?.state).toBe("ended")
+      expect(ChildStore.parseOutcome(run?.outcome)).toMatchObject({ type: "error" })
+      expect(JSON.stringify(run?.outcome)).toContain("stop continuation socket closed")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1095,7 +1178,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let prompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
@@ -1134,6 +1217,12 @@ describe("tool.task", () => {
       expect(result.output).toContain("PARTIAL")
       expect(result.output).not.toContain('state="completed"')
       expect(prompts).toBe(2)
+      const child = SessionID.make(result.metadata.sessionID)
+      const run = (yield* runsOf(child))[0]
+      expect(run?.state).toBe("ended")
+      expect(ChildStore.parseOutcome(run?.outcome)).toMatchObject({ type: "error" })
+      expect(JSON.stringify(run?.outcome)).toContain("MessageOutputLengthError")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1141,7 +1230,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let prompts = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
@@ -1175,6 +1264,60 @@ describe("tool.task", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       expect(prompts).toBe(2)
       if (Exit.isFailure(exit)) expect(Cause.hasInterrupts(exit.cause)).toBe(true)
+      // An interruption during the continuation ends the run cancelled, not completed.
+      const child = (yield* (yield* Session.Service).children(chat.id))[0].id
+      expect((yield* runsOf(child))[0]).toMatchObject({
+        state: "ended",
+        outcome: { type: "cancelled", by: { kind: "engine", reason: "tool-interrupted" } },
+      })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  stopped.instance("keeps a foreground run active until its SubagentStop continuation is done", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const entered = yield* Deferred.make<void>()
+      const finish = yield* Deferred.make<void>()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => {
+          prompts += 1
+          if (prompts === 1) return Effect.succeed(assistantReply(input, { text: "FIRST ANSWER" }))
+          return Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(finish)),
+            Effect.as(assistantReply(input, { text: "FINAL ANSWER" })),
+          )
+        },
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      yield* Deferred.await(entered)
+      const child = (yield* sessions.children(chat.id))[0].id
+
+      // The first job is over, but the task is not: the continuation is still working
+      // on the child, so the run is still running and still owns the child session.
+      expect((yield* jobs.get(child))?.status).toBe("completed")
+      const during = (yield* runsOf(child))[0]
+      expect(during).toMatchObject({ state: "running", outcome: null, reported_at: null, time_ended: null })
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
+      // Nothing can start a second run on it meanwhile.
+      const resumed = yield* def
+        .execute({ ...general, task_id: child }, taskCtx(chat, assistant, promptOps))
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(resumed)).toBe(true)
+      if (Exit.isFailure(resumed)) expect(Cause.pretty(resumed.cause)).toContain("finishing its previous run")
+      expect(yield* runsOf(child)).toHaveLength(1)
+
+      yield* Deferred.succeed(finish, undefined)
+      const result = yield* Fiber.join(fiber)
+      expect(result.output).toContain("FINAL ANSWER")
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "ended", outcome: { type: "completed" } })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
     }),
   )
 
@@ -1182,7 +1325,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const ready = defer<SessionPrompt.PromptInput>()
       const cancelled = defer<SessionID>()
       const abort = new AbortController()
@@ -1233,7 +1376,7 @@ describe("tool.task", () => {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       let seen: SessionPrompt.PromptInput | undefined
       const promptOps = stubOps({ text: "created", onPrompt: (input) => (seen = input) })
 
@@ -1281,7 +1424,7 @@ describe("tool.task", () => {
               id === child.id ? (failure === "defect" ? Effect.die(lookupError) : Effect.interrupt) : sessions.get(id),
           }),
         )
-        const def = yield* tool.init()
+        const def = yield* initTaskTool(tool)
         const result = yield* def
           .execute(
             {
@@ -1326,7 +1469,7 @@ describe("tool.task", () => {
         const sessions = yield* Session.Service
         const { chat, assistant } = yield* seed()
         const tool = yield* TaskTool
-        const def = yield* tool.init()
+        const def = yield* initTaskTool(tool)
         let seen: SessionPrompt.PromptInput | undefined
         const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
 
@@ -1392,7 +1535,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const ready = yield* Deferred.make<void>()
       const done = yield* Deferred.make<void>()
       const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
@@ -1458,7 +1601,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
 
       const execute = executeRaw(def.execute)
       const result = yield* execute(
@@ -1496,7 +1639,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const execute = executeRaw(def.execute)
 
       const result = yield* execute(
@@ -1528,7 +1671,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const first = defer<void>()
       const second = defer<void>()
       const updated = defer<SessionPrompt.PromptInput>()
@@ -1603,7 +1746,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
 
       const result = yield* def.execute(
         {
@@ -1644,7 +1787,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
 
       const result = yield* def.execute(
         {
@@ -1677,7 +1820,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
 
       const result = yield* def.execute(
         {
@@ -1716,7 +1859,7 @@ describe("tool.task", () => {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
 
       const result = yield* def.execute(
         {
@@ -1755,7 +1898,7 @@ describe("tool.task", () => {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
 
       const result = yield* def.execute(
         {
@@ -1794,7 +1937,7 @@ describe("tool.task", () => {
       const runState = yield* SessionRunState.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
 
       const result = yield* def.execute(
         {
@@ -1881,7 +2024,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const execute = executeRaw(def.execute)
 
       for (const value of ["TRUE", "FALSE", " true", "true ", "1", "yes", ""]) {
@@ -1915,7 +2058,7 @@ describe("tool.task", () => {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const execute = executeRaw(def.execute)
 
       const raw = Object.assign(Object.create({ background: "true" }), {
@@ -1946,7 +2089,7 @@ describe("tool.task", () => {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const execute = executeRaw(def.execute)
       const promptOps = stubOps({ text: "reviewer done" })
 
@@ -1986,6 +2129,866 @@ describe("tool.task", () => {
 
       yield* jobs.wait({ id: stringTrue.metadata.sessionID, timeout: 5_000 })
       expect((yield* jobs.get(stringTrue.metadata.sessionID))?.status).toBe("completed")
+    }),
+  )
+})
+
+describe("tool.task child runs", () => {
+  it.instance("registers one binding and one run for a foreground task and ends the run with the job", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+
+      const result = yield* def.execute(general, taskCtx(chat, assistant, stubOps(), { callID: "call_fg" }))
+
+      const child = SessionID.make(result.metadata.sessionID)
+      const ended = yield* endedRun(child)
+      expect(ended).toMatchObject({
+        parent_session_id: chat.id,
+        owner_kind: "task",
+        owner_id: "call_fg",
+        attempt: 1,
+        detached: false,
+        state: "ended",
+        outcome: { type: "completed" },
+        runner_id: EngineProcess.runner.id,
+      })
+      // The run ended with the job: same outcome, and counted as reported at once.
+      expect((yield* jobs.get(child))?.status).toBe("completed")
+      expect(ended.reported_at).toBe(ended.time_ended ?? -1)
+      const bindings = yield* bindingsOf(child)
+      expect(bindings).toHaveLength(1)
+      expect(bindings[0]).toMatchObject({ parent_session_id: chat.id, owner_kind: "task", owner_ref: "call_fg" })
+      expect(yield* runsOf(child)).toHaveLength(1)
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  background.instance("records a background task as detached and a failing job as an error outcome", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.succeed(reply(input, "noted"))
+            : Effect.succeed(assistantReply(input, TRUNCATED)),
+      }
+
+      const started = yield* def.execute(
+        { ...general, background: true },
+        taskCtx(chat, assistant, promptOps, { callID: "call_bg" }),
+      )
+
+      const child = SessionID.make(started.metadata.sessionID)
+      const waited = yield* jobs.wait({ id: child, timeout: 2_000 })
+      expect(waited.info?.status).toBe("error")
+      const ended = yield* endedRun(child)
+      expect(ended.detached).toBe(true)
+      expect(ended.outcome).toMatchObject({ type: "error" })
+      expect(ChildStore.parseOutcome(ended.outcome)).toMatchObject({ type: "error" })
+      expect(JSON.stringify(ended.outcome)).toContain("output token cap")
+    }),
+  )
+
+  it.instance("ends the run cancelled when its job is cancelled", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const ready = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => Deferred.succeed(ready, input).pipe(Effect.andThen(Effect.never)),
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      const child = SessionID.make((yield* Deferred.await(ready)).sessionID)
+      expect((yield* runsOf(child))[0]?.state).toBe("running")
+      // What the ESC cascade does to a running task job.
+      yield* jobs.cancel(child)
+
+      const ended = yield* endedRun(child)
+      expect(ended.outcome).toEqual({ type: "cancelled", by: { kind: "engine", reason: "job-cancelled" } })
+      expect((yield* jobs.get(child))?.status).toBe("cancelled")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+      yield* Fiber.interrupt(fiber)
+    }),
+  )
+
+  it.instance("an interruption before the job starts still ends the registered run", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const blocked = yield* Deferred.make<void>()
+
+      // The run is registered when the child session is created; the tool then
+      // announces itself (ctx.metadata) before it starts the job. Stop it there.
+      const fiber = yield* def
+        .execute(
+          general,
+          taskCtx(chat, assistant, stubOps(), {
+            metadata: () => Deferred.succeed(blocked, undefined).pipe(Effect.andThen(Effect.never)),
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(blocked)
+      const child = (yield* sessions.children(chat.id))[0].id
+      expect((yield* runsOf(child))[0]?.state).toBe("queued")
+      yield* Fiber.interrupt(fiber)
+
+      const ended = yield* endedRun(child)
+      expect(ended.outcome).toEqual({ type: "cancelled", by: { kind: "engine", reason: "tool-interrupted" } })
+      expect(yield* jobs.get(child)).toBeUndefined()
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  it.instance("resuming a finished task adds attempt 2 under the same binding", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const first = yield* def.execute(general, taskCtx(chat, assistant, stubOps(), { callID: "call_first" }))
+      const child = SessionID.make(first.metadata.sessionID)
+      yield* endedRun(child)
+
+      const resumed = yield* def.execute(
+        { ...general, task_id: child },
+        taskCtx(chat, assistant, stubOps(), { callID: "call_resume" }),
+      )
+
+      expect(resumed.metadata.sessionID).toBe(child)
+      const second = yield* endedRun(child, 2)
+      expect(second).toMatchObject({ owner_id: "call_resume", state: "ended", outcome: { type: "completed" } })
+      expect(yield* runsOf(child)).toHaveLength(2)
+      expect(yield* bindingsOf(child)).toHaveLength(1)
+    }),
+  )
+
+  background.instance("resuming a running background task appends input and adds no run row", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const first = defer<void>()
+      const second = defer<void>()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) return Effect.succeed(reply(input, "noted"))
+          prompts++
+          return prompts === 1
+            ? Effect.promise(() => first.promise).pipe(Effect.as(reply(input, "first done")))
+            : Effect.promise(() => second.promise).pipe(Effect.as(reply(input, "second done")))
+        },
+      }
+      const ctx = taskCtx(chat, assistant, promptOps)
+
+      const started = yield* def.execute({ ...general, background: true }, ctx)
+      const child = SessionID.make(started.metadata.sessionID)
+      const updated = yield* def.execute({ ...general, prompt: "also inspect cancellation", task_id: child }, ctx)
+
+      expect(updated.output).toContain("Background task updated")
+      const rows = yield* runsOf(child)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.attempt).toBe(1)
+      expect(yield* bindingsOf(child)).toHaveLength(1)
+
+      first.resolve()
+      second.resolve()
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+      expect((yield* endedRun(child)).outcome).toEqual({ type: "completed" })
+      expect(yield* runsOf(child)).toHaveLength(1)
+    }),
+  )
+
+  it.instance("refuses a task_id that is not a task of this conversation before writing anything to it", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const other = yield* seed("Other conversation")
+      const def = yield* initTaskTool(yield* TaskTool)
+      const scoped = def.children.forParent(chat.id)
+
+      // Another conversation's task session, already finished.
+      const theirs = yield* sessions.create({ parentID: other.chat.id, title: "their task" })
+      yield* def.children
+        .forParent(other.chat.id)
+        .start({ childSessionID: theirs.id, owner: { kind: "task" }, detached: false })
+        .pipe(Effect.flatMap((run) => run.settle({ type: "completed" })))
+      // A DAG node's session of this very conversation.
+      const dagNode = yield* sessions.create({ parentID: chat.id, title: "node (DAG node)" })
+      yield* scoped
+        .start({
+          childSessionID: dagNode.id,
+          owner: { kind: "dag_node", workflowID: "wf_1", nodeID: "node_1", attempt: 1 },
+          detached: true,
+        })
+        .pipe(Effect.flatMap((run) => run.settle({ type: "completed" })))
+      // A child session of this conversation that nobody registered.
+      const unregistered = yield* sessions.create({ parentID: chat.id, title: "unregistered child" })
+
+      const targets: Array<[string, SessionID]> = [
+        ["another conversation's task session", theirs.id],
+        ["a top-level session", other.chat.id],
+        ["the calling session itself", chat.id],
+        ["a DAG node session", dagNode.id],
+        ["an unregistered child session", unregistered.id],
+      ]
+      for (const [label, target] of targets) {
+        let prompted = false
+        let metadataCalls = 0
+        const messagesBefore = (yield* sessions.messages({ sessionID: target })).length
+        const runsBefore = (yield* runsOf(target)).length
+        const exit = yield* def
+          .execute(
+            { ...general, task_id: target },
+            taskCtx(
+              chat,
+              assistant,
+              stubOps({
+                onPrompt: () => {
+                  prompted = true
+                },
+              }),
+              {
+                metadata: () =>
+                  Effect.sync(() => {
+                    metadataCalls += 1
+                  }),
+              },
+            ),
+          )
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit), label).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(Cause.pretty(exit.cause), label).toContain("is not a task started by this conversation")
+        expect(prompted, label).toBe(false)
+        expect(metadataCalls, label).toBe(0)
+        expect((yield* sessions.messages({ sessionID: target })).length, label).toBe(messagesBefore)
+        expect((yield* runsOf(target)).length, label).toBe(runsBefore)
+        expect(yield* jobs.get(target), label).toBeUndefined()
+      }
+      // Only the two legitimate children of this conversation exist; nothing was created for a refused call.
+      expect((yield* sessions.children(chat.id)).map((child) => child.id).toSorted()).toEqual(
+        [dagNode.id, unregistered.id].toSorted(),
+      )
+    }),
+  )
+
+  // `gate` holds the tool's job cancellation: `reached` fires when the call gets there, `open` lets it through.
+  const cancelFixtureFor = (gate?: { reached: Deferred.Deferred<void>; open: Deferred.Deferred<void> }) =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const cancels: string[] = []
+      const jobCancels: SessionID[] = []
+      const jobs = yield* BackgroundJob.Service
+      const gated = <A>(effect: Effect.Effect<A>) =>
+        gate
+          ? Deferred.succeed(gate.reached, undefined).pipe(
+              Effect.andThen(Deferred.await(gate.open)),
+              Effect.andThen(effect),
+            )
+          : effect
+      const tool = yield* TaskTool.pipe(
+        Effect.provideService(
+          BackgroundJob.Service,
+          gate
+            ? {
+                ...jobs,
+                cancel: (jobID) => gated(jobs.cancel(jobID)),
+                // The tool cancels the job it captured before ending the run.
+                capture: (info) =>
+                  jobs
+                    .capture(info)
+                    .pipe(Effect.map((captured) => captured && { ...captured, cancel: gated(captured.cancel) })),
+              }
+            : jobs,
+        ),
+      )
+      const def = yield* initTaskTool(tool, (sessionID, options) =>
+        Effect.sync(() => {
+          cancels.push(`${sessionID}:${options?.reason?.reason}:${options?.reason?.actor}`)
+        }),
+      )
+      const release = yield* Deferred.make<void>()
+      const injected: SessionPrompt.PromptInput[] = []
+      const promptOps: TaskPromptOps = {
+        cancel: (sessionID) =>
+          Effect.sync(() => {
+            jobCancels.push(sessionID)
+          }),
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            injected.push(input)
+            return Effect.succeed(reply(input, "noted"))
+          }
+          return Deferred.await(release).pipe(Effect.as(reply(input, "late answer")))
+        },
+      }
+      return { chat, assistant, def, cancels, jobCancels, release, injected, promptOps }
+    })
+  const cancelFixture = cancelFixtureFor()
+
+  const runningTask = (fixture: Effect.Success<typeof cancelFixture>, callID = "call_start") =>
+    Effect.gen(function* () {
+      const { chat, assistant, def, promptOps } = fixture
+      const started = yield* def.execute(
+        { ...general, background: true },
+        taskCtx(chat, assistant, promptOps, { callID }),
+      )
+      const child = SessionID.make(started.metadata.sessionID)
+      yield* pollWithTimeout(
+        runsOf(child).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? true : undefined))),
+        "task run never reached running",
+      )
+      return child
+    })
+
+  background.instance("action cancel stops a background task: run cancelled, job cancelled, no result delivered", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant, def, cancels, jobCancels, release, injected, promptOps } = yield* cancelFixture
+      const started = yield* def.execute(
+        { ...general, background: true },
+        taskCtx(chat, assistant, promptOps, { callID: "call_start" }),
+      )
+      const child = SessionID.make(started.metadata.sessionID)
+      yield* pollWithTimeout(
+        runsOf(child).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? true : undefined))),
+        "task run never reached running",
+      )
+
+      const result = yield* def.execute(
+        { action: "cancel", task_id: child },
+        taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }),
+      )
+
+      expect(result.output).toContain(`<task id="${child}" state="cancelled">`)
+      const ended = yield* endedRun(child)
+      expect(ended.outcome).toEqual({ type: "cancelled", by: { kind: "main_agent_tool", toolCallID: "call_cancel" } })
+      expect((yield* jobs.get(child))?.status).toBe("cancelled")
+      // The child's turn was told to stop, with a reason naming the main agent.
+      yield* pollWithTimeout(
+        Effect.sync(() => (cancels.length > 0 ? true : undefined)),
+        "the child turn was never cancelled",
+      )
+      expect(cancels).toEqual([`${child}:task-cancelled:main-agent`])
+      expect(jobCancels).toContain(child)
+      // A late answer from the cancelled child must not reach the parent.
+      yield* Deferred.succeed(release, undefined)
+      yield* Effect.sleep("100 millis")
+      expect(injected).toEqual([])
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  background.instance("action cancel refuses foreground, foreign, unknown and finished tasks", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant, def, release, promptOps } = yield* cancelFixture
+      const other = yield* seed("Other conversation")
+      const cancel = (task_id: string) =>
+        def.execute({ action: "cancel", task_id }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" })).pipe(
+          Effect.exit,
+          Effect.map((exit) => (Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "cancelled")),
+        )
+
+      // A running foreground task of this conversation.
+      const foreground = yield* def
+        .execute(general, taskCtx(chat, assistant, promptOps, { callID: "call_fg" }))
+        .pipe(Effect.forkChild)
+      const foregroundChild = yield* pollWithTimeout(
+        sessions.children(chat.id).pipe(Effect.map((kids) => kids[0]?.id)),
+        "foreground task was never created",
+      )
+      yield* pollWithTimeout(
+        runsOf(foregroundChild).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? true : undefined))),
+        "foreground run never reached running",
+      )
+      expect(yield* cancel(foregroundChild)).toContain("is a foreground task")
+      expect((yield* runsOf(foregroundChild))[0]?.state).toBe("running")
+
+      // Another conversation's background task, an unknown id, a top-level session.
+      const theirs = yield* sessions.create({ parentID: other.chat.id, title: "their task" })
+      const theirRun = yield* def.children
+        .forParent(other.chat.id)
+        .start({ childSessionID: theirs.id, owner: { kind: "task" }, detached: true })
+      expect(yield* cancel(theirs.id)).toContain("is not a task started by this conversation")
+      expect(yield* cancel("ses_does_not_exist")).toContain("is not a task started by this conversation")
+      expect(yield* cancel("not even a session id")).toContain("is not a task started by this conversation")
+      expect(yield* cancel(other.chat.id)).toContain("is not a task started by this conversation")
+      expect(ChildRegistry.activeFor(theirs.id)?.id).toBe(theirRun.id)
+
+      // A task that already finished.
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(foreground)
+      yield* endedRun(foregroundChild)
+      expect(yield* cancel(foregroundChild)).toContain("already finished")
+      yield* theirRun.settle({ type: "completed" })
+    }),
+  )
+
+  background.instance("action cancel waits for the task permission before it stops anything", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, cancels, jobCancels, release, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+      const asked = yield* Deferred.make<void>()
+      const approval = yield* Deferred.make<void>()
+
+      const cancelling = yield* def
+        .execute(
+          { action: "cancel", task_id: child },
+          taskCtx(chat, assistant, promptOps, {
+            callID: "call_cancel",
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }).pipe(Effect.andThen(Deferred.succeed(asked, undefined)), Effect.andThen(Deferred.await(approval))),
+          }),
+        )
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(asked), "the cancel call never asked the task permission")
+
+      // The permission is the one starting or resuming this task asks, for the agent it runs.
+      expect(asks).toEqual([
+        {
+          permission: "task",
+          patterns: ["general"],
+          always: ["*"],
+          metadata: {
+            action: "cancel",
+            task_id: child,
+            subagent_type: "general",
+            description: expect.stringContaining("inspect bug"),
+          },
+        },
+      ])
+      // While the user has not answered, nothing was touched.
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "running", outcome: null })
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect(cancels).toEqual([])
+      expect(jobCancels).toEqual([])
+
+      yield* Deferred.succeed(approval, undefined)
+      const result = yield* Fiber.join(cancelling)
+
+      expect(result.output).toContain('state="cancelled"')
+      expect((yield* endedRun(child)).outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+      })
+      expect(cancels).toEqual([`${child}:task-cancelled:main-agent`])
+      yield* Deferred.succeed(release, undefined)
+    }),
+  )
+
+  // Codex review on #1275: a resume may pick another agent than the session last
+  // recorded (the session records it only with the run's first message, after the
+  // scheduler slot). Cancelling asks the permission of the run's own agent.
+  background.instance(
+    "action cancel authorizes against the agent of the run, not the session's last recorded one",
+    () =>
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const fixture = yield* cancelFixture
+        const { chat, assistant, def, release, promptOps } = fixture
+        const child = yield* runningTask(fixture)
+        yield* db
+          .update(SessionTable)
+          .set({ agent: "explore" })
+          .where(eq(SessionTable.id, child))
+          .run()
+          .pipe(Effect.orDie)
+        const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+
+        yield* def.execute(
+          { action: "cancel", task_id: child },
+          taskCtx(chat, assistant, promptOps, {
+            callID: "call_cancel",
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }),
+          }),
+        )
+
+        expect(asks.map((input) => [input.patterns, input.metadata?.subagent_type])).toEqual([[["general"], "general"]])
+        yield* Deferred.succeed(release, undefined)
+      }),
+  )
+
+  background.instance("action cancel denied by the task permission touches nothing", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, cancels, jobCancels, release, injected, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+
+      // A denial reaches the tool as a defect, the way the engine's `ctx.ask` raises it.
+      const exit = yield* def
+        .execute(
+          { action: "cancel", task_id: child },
+          taskCtx(chat, assistant, promptOps, {
+            callID: "call_cancel",
+            ask: (input) =>
+              Effect.sync(() => {
+                asks.push(input)
+              }).pipe(Effect.andThen(Effect.die(new Error("The task permission is denied for general")))),
+          }),
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("The task permission is denied")
+      expect(asks).toHaveLength(1)
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "running", outcome: null })
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("running")
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect(cancels).toEqual([])
+      expect(jobCancels).toEqual([])
+
+      // The task carries on and still delivers its result.
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+      expect((yield* endedRun(child)).outcome).toEqual({ type: "completed" })
+      yield* pollWithTimeout(
+        Effect.sync(() => (injected.length > 0 ? true : undefined)),
+        "the finished task was never delivered",
+      )
+    }),
+  )
+
+  background.instance("action cancel skips the permission check when the agent was invoked explicitly", () =>
+    Effect.gen(function* () {
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, release, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const asks: Array<Parameters<Tool.Context["ask"]>[0]> = []
+
+      // Like starting a task, a user-invoked agent (`@general`) bypasses the permission prompt.
+      const result = yield* def.execute(
+        { action: "cancel", task_id: child },
+        taskCtx(chat, assistant, promptOps, {
+          callID: "call_cancel",
+          extra: { promptOps, bypassAgentCheck: true },
+          ask: (input) =>
+            Effect.sync(() => {
+              asks.push(input)
+            }),
+        }),
+      )
+
+      expect(result.output).toContain('state="cancelled"')
+      expect(asks).toEqual([])
+      yield* Deferred.succeed(release, undefined)
+    }),
+  )
+
+  backgroundWithGoal.instance("a result that completes after the main agent cancelled the task is not delivered", () =>
+    Effect.gen(function* () {
+      goalWakes.length = 0
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const fixture = yield* cancelFixtureFor({ reached, open })
+      const { chat, assistant, def, release, injected, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+
+      // The cancel call swaps the run to cancelled, then stops right in front
+      // of the job cancellation: the window the review pointed at.
+      const cancelling = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(reached), "the cancel call never reached the job cancellation")
+      expect((yield* runsOf(child))[0]).toMatchObject({
+        state: "ended",
+        outcome: { type: "cancelled", by: { kind: "main_agent_tool", toolCallID: "call_cancel" } },
+      })
+      expect((yield* jobs.get(child))?.status).toBe("running")
+
+      // In that window the child finishes: its job completes before it is cancelled.
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+      yield* Deferred.succeed(open, undefined)
+      const result = yield* Fiber.join(cancelling)
+      expect(result.output).toContain("No result will be delivered")
+
+      // The goal wait is ended without a result and nothing reaches the parent.
+      const wake = yield* pollWithTimeout(
+        Effect.sync(() => goalWakes.find((entry) => entry.match.ids.includes(child))),
+        "the goal wait was never woken",
+      )
+      expect(wake.evaluate).toBe(true)
+      expect(wake.payload).toContain("ended without a result (cancelled)")
+      expect(injected).toEqual([])
+      expect((yield* endedRun(child)).outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+      })
+    }),
+  )
+
+  // Codex review on #1275: the cancel swaps the run to cancelled before the job
+  // that carries it is cancelled. A resume registered in that window used to be
+  // handed the still-running job, so its prompt was dropped and it reported the
+  // old job's outcome. The child session stays reserved until that job has stopped.
+  const resumeFixture = (reached: Deferred.Deferred<void>, open: Deferred.Deferred<void>) =>
+    Effect.gen(function* () {
+      const fixture = yield* cancelFixtureFor({ reached, open })
+      const { chat, assistant, def, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+      const prompted: string[] = []
+      const resumeOps: TaskPromptOps = {
+        ...promptOps,
+        prompt: (input) => {
+          if (input.sessionID === child)
+            prompted.push(...input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+          return promptOps.prompt(input)
+        },
+      }
+      // The cancel call swaps the run to cancelled, then stops in front of the job cancellation.
+      const cancelling = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(reached), "the cancel call never reached the job cancellation")
+      const resume = def.execute(
+        { ...general, prompt: "follow-up question", task_id: child, background: true },
+        taskCtx(chat, assistant, resumeOps, { callID: "call_resume" }),
+      )
+      return { ...fixture, child, prompted, cancelling, resume }
+    })
+
+  background.instance("a resume inside the cancel window waits for the old job, then runs its own prompt", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const { release, child, prompted, cancelling, resume } = yield* resumeFixture(reached, open)
+      const before = yield* jobs.get(child)
+      expect(before?.status).toBe("running")
+      expect((yield* runsOf(child))[0]).toMatchObject({ state: "ended" })
+
+      const resuming = yield* resume.pipe(Effect.forkChild)
+      yield* Effect.sleep("100 millis")
+      // Still waiting: nothing was registered, started or prompted, and the old job is the only job.
+      expect(Option.isNone(yield* Fiber.await(resuming).pipe(Effect.timeoutOption("10 millis")))).toBe(true)
+      expect(yield* runsOf(child)).toHaveLength(1)
+      expect(prompted).toEqual([])
+      expect((yield* jobs.get(child))?.started_at).toBe(before?.started_at)
+
+      // The old job stops; the resume then starts a job of its own and prompts the child.
+      yield* Deferred.succeed(open, undefined)
+      yield* Fiber.join(cancelling)
+      const resumed = yield* Fiber.join(resuming)
+      expect(resumed.output).toContain("Background task started")
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompted.length > 0 ? true : undefined)),
+        "the resumed run never prompted the child",
+      )
+      expect(prompted).toEqual(["follow-up question"])
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info).toMatchObject({
+        status: "completed",
+        output: expect.stringContaining("late answer"),
+      })
+      expect((yield* endedRun(child, 1)).outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+      })
+      expect(yield* endedRun(child, 2)).toMatchObject({
+        owner_id: "call_resume",
+        detached: true,
+        outcome: { type: "completed" },
+      })
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+    }),
+  )
+
+  // Codex review on #1275: the old job completes while the cancel call is still in
+  // front of the job cancellation, which frees the child; a resume then starts a
+  // new job under the same task ID. The pending cancellation must stop only the job
+  // it captured, never the newly accepted attempt.
+  background.instance("a pending cancel stops only the job it captured, not a job a resume started meanwhile", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const fixture = yield* cancelFixtureFor({ reached, open })
+      const { chat, assistant, def, promptOps, release } = fixture
+      const child = yield* runningTask(fixture)
+      const second = yield* Deferred.make<void>()
+      const prompted: string[] = []
+      const resumeOps: TaskPromptOps = {
+        ...promptOps,
+        prompt: (input) => {
+          if (input.sessionID !== child) return promptOps.prompt(input)
+          prompted.push(...input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+          return Deferred.await(second).pipe(Effect.as(reply(input, "second answer")))
+        },
+      }
+      const cancelling = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(reached), "the cancel call never reached the job cancellation")
+      const firstJob = yield* jobs.get(child)
+
+      // The old job completes inside the window and frees the child; the resume starts its own job.
+      const resuming = yield* def
+        .execute(
+          { ...general, prompt: "follow-up question", task_id: child, background: true },
+          taskCtx(chat, assistant, resumeOps, { callID: "call_resume" }),
+        )
+        .pipe(Effect.forkChild)
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* Fiber.join(resuming)).output).toContain("Background task started")
+      yield* pollWithTimeout(
+        Effect.sync(() => (prompted.length > 0 ? true : undefined)),
+        "the resumed run never prompted the child",
+      )
+      const secondJob = yield* jobs.get(child)
+      expect(secondJob?.status).toBe("running")
+      expect(secondJob?.metadata?.childRunID).not.toBe(firstJob?.metadata?.childRunID)
+
+      // The pending cancellation goes through now: the new attempt keeps running.
+      yield* Deferred.succeed(open, undefined)
+      yield* Fiber.join(cancelling)
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect((yield* runsOf(child)).find((row) => row.attempt === 2)).toMatchObject({ state: "running" })
+
+      yield* Deferred.succeed(second, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info).toMatchObject({ status: "completed" })
+      expect((yield* endedRun(child, 2)).outcome).toEqual({ type: "completed" })
+    }),
+  )
+
+  background.instance("a resume that still finds the old job running is refused, not answered with its result", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const { release, child, prompted, cancelling, resume } = yield* resumeFixture(reached, open)
+      const before = yield* jobs.get(child)
+
+      // Whatever frees the child session early (the bound on a driver that never
+      // reported, a teardown), the resume must not be handed a job that is not its own.
+      const entry = ChildRegistry.activeFor(child)
+      expect(entry?.phase).toBe("ended")
+      if (entry) ChildRegistry.driverStopped(entry)
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+
+      const exit = yield* resume.pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("is still finishing its previous run")
+      // The refused run ended with the call; the old job was neither touched nor reported as its result.
+      expect(yield* endedRun(child, 2)).toMatchObject({
+        owner_id: "call_resume",
+        outcome: { type: "error", message: expect.stringContaining("still finishing its previous run") },
+      })
+      expect(prompted).toEqual([])
+      expect((yield* jobs.get(child))?.started_at).toBe(before?.started_at)
+      expect((yield* jobs.get(child))?.status).toBe("running")
+      expect(ChildRegistry.activeFor(child)).toBeUndefined()
+
+      yield* Deferred.succeed(open, undefined)
+      yield* Fiber.join(cancelling)
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.get(child))?.status).toBe("cancelled")
+    }),
+  )
+
+  // The tool itself refuses `action: "cancel"` on a foreground task; the registry-level
+  // cancel is what later owners (DAG nodes) use. A foreground run's driver is the tool
+  // call that awaits its job, so the call's exit is what frees the child session.
+  background.instance("a cancelled foreground run frees its child session when the tool call exits", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant, def, release, promptOps } = yield* cancelFixture
+      const foreground = yield* def
+        .execute(general, taskCtx(chat, assistant, promptOps, { callID: "call_fg" }))
+        .pipe(Effect.forkChild)
+      const child = yield* pollWithTimeout(
+        sessions.children(chat.id).pipe(Effect.map((kids) => kids[0]?.id)),
+        "foreground task was never created",
+      )
+      const run = yield* pollWithTimeout(
+        runsOf(child).pipe(Effect.map((rows) => (rows[0]?.state === "running" ? rows[0] : undefined))),
+        "foreground run never reached running",
+      )
+
+      expect(yield* def.children.cancel(run.id, { kind: "engine", reason: "test" })).toBe("cancelled")
+
+      // The call is still waiting for its job: the run is over, the child session is not free.
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("ended")
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.await(foreground)
+      yield* pollWithTimeout(
+        Effect.sync(() => (ChildRegistry.activeFor(child) === undefined ? true : undefined)),
+        "the child session was never freed when the tool call exited",
+        // Well inside the five second bound: the call's own exit frees it, not the fallback.
+        "2 seconds",
+      )
+      expect((yield* runsOf(child))[0]?.outcome).toEqual({ type: "cancelled", by: { kind: "engine", reason: "test" } })
+    }),
+  )
+
+  background.instance("a task that finished before the cancel keeps its delivered result", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, release, injected, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+      yield* endedRun(child)
+      yield* pollWithTimeout(
+        Effect.sync(() => (injected.length > 0 ? true : undefined)),
+        "the finished task was never delivered",
+      )
+
+      const exit = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("already finished")
+      expect((yield* runsOf(child))[0]?.outcome).toEqual({ type: "completed" })
+    }),
+  )
+
+  it.instance("action cancel without a task_id is rejected by the schema", () =>
+    Effect.gen(function* () {
+      const { chat, assistant, def, promptOps } = yield* cancelFixture
+      const exit = yield* executeRaw(def.execute)({ action: "cancel" }, taskCtx(chat, assistant, promptOps)).pipe(
+        Effect.exit,
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+    }),
+  )
+
+  it.instance("fails closed without a children capability", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const exit = yield* def.execute(general, taskCtx(chat, assistant, stubOps())).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("requires ctx.children")
     }),
   )
 })

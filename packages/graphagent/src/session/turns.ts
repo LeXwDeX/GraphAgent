@@ -12,6 +12,7 @@ import type { Goal } from "@/goal/goal"
 import type { RewakeToken, SettingsHook } from "@/hook"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
+import { EngineProcess } from "./engine-process"
 import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
 import { MessageV2 } from "./message-v2"
 import type { PromptError, PromptInput } from "./prompt"
@@ -326,11 +327,24 @@ function storedOutcome(value: Record<string, unknown> | null | undefined): Optio
   }
 }
 
-/** True when the PID named by a running row can still own it. */
+/**
+ * True when the process named by a `runner_id` can still own a running row.
+ * The identity is `pid:nonce` (Issue #1026): the nonce is drawn once per
+ * process start, so
+ *   - this process's nonce means this process, alive;
+ *   - this process's pid with another nonce is an earlier life of the pid (a
+ *     container restarts as pid 1) and is dead, however alive the pid looks;
+ *   - another pid is probed with `kill(pid, 0)`.
+ * A bare pid carries no nonce, so it can never be this process: it is an
+ * earlier life when the pid is ours and a probe otherwise.
+ */
 export function runnerAlive(runnerID: string | null | undefined): boolean {
   if (!runnerID) return false
-  const pid = Number(runnerID)
-  if (!Number.isInteger(pid) || pid <= 0) return false
+  const [pidText, nonce, ...extra] = runnerID.split(":")
+  const pid = Number(pidText)
+  if (!/^\d+$/.test(pidText) || !Number.isInteger(pid) || pid <= 0) return false
+  if (extra.length > 0 || nonce === "") return false
+  if (pid === EngineProcess.runner.pid) return nonce === EngineProcess.runner.nonce
   try {
     process.kill(pid, 0)
     return true
@@ -620,7 +634,7 @@ export function makeTurns(deps: TurnDeps): Interface {
             origin_ref: originRef(handle.origin),
             state: "running",
             user_message_id: handle.userMessageID ?? null,
-            runner_id: String(process.pid),
+            runner_id: EngineProcess.runner.id,
             time_started: Date.now(),
           })
           .run()

@@ -6,12 +6,14 @@ import { Dag } from "@/dag/dag"
 import { InstanceState } from "@/effect/instance-state"
 import { InstanceStore } from "@/project/instance-store"
 import { Project } from "@/project/project"
+import { EngineProcess } from "@/session/engine-process"
 import { Session } from "@/session/session"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Database } from "@graphagent/core/database/database"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionProjector } from "@graphagent/core/session/projector"
+import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
 import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
@@ -198,6 +200,73 @@ describe("instance bootstrap DAG wiring", () => {
           )
           expect(recovered.outcome).toEqual({ type: "interrupted" })
           expect(recovered.time_ended).not.toBeNull()
+        }),
+      )
+    }),
+  )
+
+  appIt.live("ChildRuns.recover ends a run whose runner is gone and keeps this process's run during bootstrap", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped({ git: true })
+      const instances = yield* InstanceStore.Service
+      yield* instances.provide(
+        { directory },
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const database = yield* Database.Service
+          const parent = yield* session.create({ title: "bootstrap child run recovery" })
+          const gone = yield* session.create({ title: "gone child", parentID: parent.id })
+          const mine = yield* session.create({ title: "live child", parentID: parent.id })
+          for (const id of [parent.id, gone.id, mine.id]) {
+            yield* pollWithTimeout(
+              session.get(id).pipe(
+                Effect.as(true as const),
+                Effect.catch(() => Effect.succeed(undefined)),
+              ),
+              "session projection did not become visible",
+            )
+          }
+          for (const [child, runID, runner] of [
+            [gone.id, "crun_bootstrap_gone", `${process.pid}:an-earlier-life`],
+            [mine.id, "crun_bootstrap_mine", EngineProcess.runner.id],
+          ] as const) {
+            yield* database.db
+              .insert(ChildBindingTable)
+              .values({ child_session_id: child, parent_session_id: parent.id, owner_kind: "task" })
+              .run()
+              .pipe(Effect.orDie)
+            yield* database.db
+              .insert(ChildRunTable)
+              .values({
+                id: runID,
+                child_session_id: child,
+                parent_session_id: parent.id,
+                owner_kind: "task",
+                attempt: 1,
+                state: "running",
+                detached: true,
+                runner_id: runner,
+              })
+              .run()
+              .pipe(Effect.orDie)
+          }
+        }),
+      )
+      yield* instances.reload({ directory })
+      yield* instances.provide(
+        { directory },
+        Effect.gen(function* () {
+          const database = yield* Database.Service
+          const read = (id: string) =>
+            database.db.select().from(ChildRunTable).where(eq(ChildRunTable.id, id)).get().pipe(Effect.orDie)
+          const recovered = yield* pollWithTimeout(
+            read("crun_bootstrap_gone").pipe(Effect.map((row) => (row?.state === "ended" ? row : undefined))),
+            "bootstrap did not recover the orphaned child run",
+            "1 second",
+          )
+          expect(recovered.outcome).toEqual({ type: "interrupted", reason: "process-restart" })
+          expect(recovered.time_ended).not.toBeNull()
+          expect((yield* read("crun_bootstrap_mine"))?.state).toBe("running")
         }),
       )
     }),

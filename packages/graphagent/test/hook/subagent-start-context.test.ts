@@ -27,6 +27,7 @@ import { ModelV2 } from "@graphagent/core/model"
 import { disposeAllInstances } from "../fixture/fixture"
 import { decodeRecord, decodeString } from "../lib/hook-json"
 import { testEffect } from "../lib/effect"
+import { initTaskTool } from "../lib/child-runs"
 
 // Claude Code injects SubagentStart hookSpecificOutput.additionalContext into the
 // subagent's context. The task tool must queue every non-empty additionalContext
@@ -149,11 +150,13 @@ function drainingOps(
 const run = Effect.fn("SubagentStartContextTest.run")(function* (
   drained: { sessionID: string; texts: readonly string[] }[],
   extra?: { task_id?: string },
+  // A task_id resumes a task of the calling conversation, so a resume runs in the same one.
+  seeded?: { chat: Session.Info; assistant: SessionV1.Assistant },
 ) {
-  const { chat, assistant } = yield* seed()
+  const { chat, assistant } = seeded ?? (yield* seed())
   const startCtx = yield* HookStartContext.Service
   const tool = yield* TaskTool
-  const def = yield* tool.init()
+  const def = yield* initTaskTool(tool)
   const result = yield* def.execute(
     { description: "ctx", prompt: "do it", subagent_type: "general", ...extra },
     {
@@ -167,7 +170,7 @@ const run = Effect.fn("SubagentStartContextTest.run")(function* (
       ask: () => Effect.void,
     },
   )
-  return { chat, result }
+  return { chat, assistant, result }
 })
 
 describe("SubagentStart additionalContext injection", () => {
@@ -203,14 +206,14 @@ describe("SubagentStart additionalContext injection", () => {
       recorded.length = 0
       startContexts = []
       const first: { sessionID: string; texts: readonly string[] }[] = []
-      const { chat } = yield* run(first)
+      const { chat, assistant } = yield* run(first)
       const sessions = yield* Session.Service
       const child = (yield* sessions.list()).find((info) => info.parentID === chat.id)!
 
       startContexts = ["RESUME_CTX"]
       const second: { sessionID: string; texts: readonly string[] }[] = []
-      const { chat: chat2 } = yield* run(second, { task_id: child.id })
-      expect(chat2.id).not.toBe(chat.id)
+      const { chat: chat2 } = yield* run(second, { task_id: child.id }, { chat, assistant })
+      expect(chat2.id).toBe(chat.id)
       expect(second).toEqual([{ sessionID: child.id, texts: ["RESUME_CTX"] }])
     }),
   )
@@ -222,7 +225,7 @@ describe("SubagentStart additionalContext injection", () => {
       const { chat, assistant } = yield* seed()
       const startCtx = yield* HookStartContext.Service
       const tool = yield* TaskTool
-      const def = yield* tool.init()
+      const def = yield* initTaskTool(tool)
       const ops: TaskPromptOps = {
         ...drainingOps(startCtx, []),
         resolvePromptParts: () => Effect.die(new Error("resolve failed")),

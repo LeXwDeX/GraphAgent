@@ -16,6 +16,7 @@ import { Deferred, Effect, Fiber, Option, Scope } from "effect"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Runner } from "@/effect/runner"
 import { SessionCancellation } from "@/session/cancellation"
+import { EngineProcess } from "@/session/engine-process"
 import { makeSessionLocks } from "@/session/locks"
 import type { PromptInput } from "@/session/prompt"
 import type { SessionRunState } from "@/session/run-state"
@@ -275,7 +276,7 @@ describe("orphan recovery", () => {
             session_id: sessionID,
             origin: JSON.stringify({ kind: "user", via: "prompt" }),
             state: "running",
-            runner_id: String(process.pid),
+            runner_id: EngineProcess.runner.id,
             time_started: now,
           },
           {
@@ -284,9 +285,43 @@ describe("orphan recovery", () => {
             origin: JSON.stringify({ kind: "user", via: "prompt" }),
             state: "ended",
             outcome: { type: "completed" },
-            runner_id: String(process.pid),
+            runner_id: EngineProcess.runner.id,
             time_started: now,
             time_ended: now,
+          },
+          // Same pid, other nonce: an earlier life of this pid (a restarted
+          // container reuses pid 1), however alive the pid looks.
+          {
+            id: "turn-earlier-life",
+            session_id: sessionID,
+            origin: JSON.stringify({ kind: "user", via: "prompt" }),
+            state: "running",
+            runner_id: `${process.pid}:an-earlier-life`,
+            time_started: now,
+          },
+          {
+            id: "turn-bare-own-pid",
+            session_id: sessionID,
+            origin: JSON.stringify({ kind: "user", via: "prompt" }),
+            state: "running",
+            runner_id: String(process.pid),
+            time_started: now,
+          },
+          {
+            id: "turn-dead-pid",
+            session_id: sessionID,
+            origin: JSON.stringify({ kind: "user", via: "prompt" }),
+            state: "running",
+            runner_id: "2147483647:some-nonce",
+            time_started: now,
+          },
+          {
+            id: "turn-foreign-alive",
+            session_id: sessionID,
+            origin: JSON.stringify({ kind: "user", via: "prompt" }),
+            state: "running",
+            runner_id: `${process.ppid}:some-nonce`,
+            time_started: now,
           },
         ])
         .run()
@@ -301,6 +336,12 @@ describe("orphan recovery", () => {
       expect(byID.get("turn-dead")?.time_ended).not.toBeNull()
       expect(byID.get("turn-live")?.state).toBe("running")
       expect(byID.get("turn-ended")?.outcome).toEqual({ type: "completed" })
+      for (const id of ["turn-earlier-life", "turn-bare-own-pid", "turn-dead-pid"]) {
+        expect(byID.get(id)?.state, id).toBe("ended")
+        expect(byID.get(id)?.outcome, id).toEqual({ type: "interrupted" })
+      }
+      // Another live process still owns its row.
+      expect(byID.get("turn-foreign-alive")?.state).toBe("running")
     }),
   )
 
@@ -310,9 +351,29 @@ describe("orphan recovery", () => {
       expect(runnerAlive(null)).toBe(false)
       expect(runnerAlive("")).toBe(false)
       expect(runnerAlive("abc")).toBe(false)
+      expect(runnerAlive("abc:nonce")).toBe(false)
       expect(runnerAlive("0")).toBe(false)
+      expect(runnerAlive("0:nonce")).toBe(false)
       expect(runnerAlive("2147483647")).toBe(false)
-      expect(runnerAlive(String(process.pid))).toBe(true)
+      expect(runnerAlive("2147483647:nonce")).toBe(false)
+      expect(runnerAlive(`${process.pid}:`)).toBe(false)
+      expect(runnerAlive(`${process.pid}:a:b`)).toBe(false)
+    }),
+  )
+
+  it.effect("tells this process, an earlier life of its pid, and another live pid apart", () =>
+    Effect.sync(() => {
+      // The identity this process writes is its own and alive.
+      expect(EngineProcess.runner.id).toBe(`${process.pid}:${EngineProcess.runner.nonce}`)
+      expect(runnerAlive(EngineProcess.runner.id)).toBe(true)
+      // The same pid with another nonce was written by an earlier life of the
+      // pid (a restarted container reuses pid 1): never alive again.
+      expect(runnerAlive(`${process.pid}:${EngineProcess.runner.nonce}-earlier`)).toBe(false)
+      // A bare pid carries no nonce, so it cannot be this process either.
+      expect(runnerAlive(String(process.pid))).toBe(false)
+      // Another pid is probed: the parent process exists, the nonce is not ours to judge.
+      expect(runnerAlive(`${process.ppid}:whatever`)).toBe(true)
+      expect(runnerAlive(String(process.ppid))).toBe(true)
     }),
   )
 })
@@ -543,7 +604,7 @@ describe("admission", () => {
         user_message_id: user.info.id,
         last_assistant_id: assistant.info.id,
         steps: 2,
-        runner_id: String(process.pid),
+        runner_id: EngineProcess.runner.id,
       })
       expect(rows[0]?.time_ended).not.toBeNull()
       const timeEnded = rows[0].time_ended!

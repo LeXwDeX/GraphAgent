@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "3a8d65c2-bee8-4588-a9fa-180ca3d66374",
+  "id": "fc902230-34ec-4b45-9c9c-6b0c7fe5c5e1",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -859,6 +859,16 @@
       "default": null,
       "generated": null,
       "name": "outcome",
+      "entityType": "columns",
+      "table": "child_run"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "runner_id",
       "entityType": "columns",
       "table": "child_run"
     },
@@ -3291,6 +3301,20 @@
     {
       "columns": [
         {
+          "value": "parent_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "child_binding_parent_idx",
+      "entityType": "indexes",
+      "table": "child_binding"
+    },
+    {
+      "columns": [
+        {
           "value": "child_session_id",
           "isExpression": false
         },
@@ -3303,6 +3327,24 @@
       "where": null,
       "origin": "manual",
       "name": "child_run_session_time_idx",
+      "entityType": "indexes",
+      "table": "child_run"
+    },
+    {
+      "columns": [
+        {
+          "value": "parent_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_created",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "child_run_parent_time_idx",
       "entityType": "indexes",
       "table": "child_run"
     },
