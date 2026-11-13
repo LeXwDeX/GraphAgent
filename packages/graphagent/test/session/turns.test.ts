@@ -12,7 +12,7 @@ import { ModelV2 } from "@graphagent/core/model"
 import { ProviderV2 } from "@graphagent/core/provider"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { eq } from "drizzle-orm"
-import { Deferred, Effect, Fiber, Option, Scope } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Option, Scope } from "effect"
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { Runner } from "@/effect/runner"
 import { SessionCancellation } from "@/session/cancellation"
@@ -165,6 +165,8 @@ function makeHarness(db: Database.Interface["db"]) {
     // stub state above does not model. Passing it as an admitted request skips
     // the release in `withRunRequest`.
     const admitted = new Map<SessionID, ReturnType<typeof SessionCancellation.request>>()
+    // The request each admission handed the lock layer (undefined: `start` opened its own).
+    const requests: Array<ReturnType<typeof SessionCancellation.request> | undefined> = []
     const admittedFor = (sessionID: SessionID) => {
       const existing = admitted.get(sessionID)
       if (existing) return existing
@@ -178,7 +180,10 @@ function makeHarness(db: Database.Interface["db"]) {
       sessions: mockSessions(),
       state,
       scope,
-      withRunRequest: (sessionID, use) => locks.withRunRequest(sessionID, use, admittedFor(sessionID)),
+      withRunRequest: (sessionID, use, requested) => {
+        requests.push(requested)
+        return locks.withRunRequest(sessionID, use, requested ?? admittedFor(sessionID))
+      },
       withPromptLock: locks.withPromptLock,
       goal: undefined,
       settingsHook: undefined,
@@ -197,6 +202,7 @@ function makeHarness(db: Database.Interface["db"]) {
       turns,
       runnerFor,
       settled,
+      requests,
       setAdmit: (next: (input: PromptInput) => Effect.Effect<Admission>) => {
         admit = next
       },
@@ -828,6 +834,55 @@ describe("admission", () => {
       expect(started.admission.kind).toBe("not_started")
       expect((yield* started.wait).info.id).toBe(user.info.id)
       expect(yield* turnRows(db, sessionID)).toHaveLength(0)
+    }),
+  )
+
+  // Issue #1026 PR3a: `TurnStartOptions.request`, the seam `admitNowUnderFence` fences through.
+  it.effect("start runs under the cancellation request the caller registered, in both admission modes", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(`ses_request_${Date.now()}`)
+      yield* ensureSession(db, sessionID)
+      const harness = yield* makeHarness(db)
+      harness.setAdmit(() => Effect.succeed({ message: userMessage(sessionID), run: false }))
+      const request = SessionCancellation.request(sessionID)
+      const origin = { kind: "inbox", source: "child.result", key: "crun_1" } as const
+
+      yield* harness.turns.start(startInput(sessionID), { origin, when: "now", request })
+      yield* harness.turns.start(startInput(sessionID), { origin, when: "idle", request })
+      yield* harness.turns.start(startInput(sessionID), { origin, when: "now" })
+
+      // The registered request reaches the lock layer in both modes; without one, `start` opens its own.
+      expect(harness.requests).toEqual([request, request, undefined])
+      request.release()
+    }),
+  )
+
+  it.effect("a request that lost its epoch ends the admission before anything is committed", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(`ses_stale_request_${Date.now()}`)
+      yield* ensureSession(db, sessionID)
+      const harness = yield* makeHarness(db)
+      let admitted = 0
+      harness.setAdmit(() => {
+        admitted += 1
+        return Effect.succeed({ message: userMessage(sessionID), run: true })
+      })
+      const request = SessionCancellation.request(sessionID)
+      // The user pressed ESC after the caller registered its request.
+      SessionCancellation.begin(sessionID).finish()
+      const origin = { kind: "inbox", source: "child.result", key: "crun_2" } as const
+
+      const now = yield* harness.turns.start(startInput(sessionID), { origin, when: "now", request }).pipe(Effect.exit)
+      const idle = yield* harness.turns.start(startInput(sessionID), { origin, when: "idle", request })
+
+      // `now` interrupts its own fiber (the caller of a fence maps that to cancelled); `idle` declines.
+      expect(Exit.isFailure(now) && Cause.hasInterruptsOnly(now.cause)).toBe(true)
+      expect(idle.admission.kind).toBe("skipped_busy")
+      expect(admitted).toBe(0)
+      expect(yield* turnRows(db, sessionID)).toHaveLength(0)
+      request.release()
     }),
   )
 

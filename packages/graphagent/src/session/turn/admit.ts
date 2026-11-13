@@ -8,7 +8,7 @@ import { Logging } from "@graphagent/core/observability/logging"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { SessionV1 } from "@graphagent/core/v1/session"
-import { Deferred, Effect, Exit, Fiber, Option, type Scope } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Option, type Scope } from "effect"
 import { HOOK_REWAKE_SENTINEL, SettingsHook, type TriggerResult } from "@/hook"
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookSessionContext } from "@/hook/session-context"
@@ -33,6 +33,7 @@ import {
   dropReverted,
   originFor,
   type AdmissionCommit,
+  type AdmissionExtras,
   type AdmissionOptions,
   type Interface as TurnsInterface,
   type ModelBaseline,
@@ -80,6 +81,36 @@ function syntheticTextPart(input: { sessionID: SessionID; messageID: MessageID; 
     text: input.text,
     synthetic: true,
   }
+}
+
+/**
+ * Immediate admission for automatic sources (`SessionInbox.submit`): commit
+ * the user message (and any ledger key inside the same transaction) and
+ * return the turn classification without awaiting the turn itself. The
+ * initial hook-resume branch belongs to `prompt`; a rewake carries
+ * `continueToolBudget`, so skipping it matches the old path. `extras` names
+ * what the options cannot: the origin an inbox source stamps on the turn, and
+ * the cancellation request an epoch-fenced caller already holds.
+ */
+function makeAdmitNow(deps: Pick<AdmitDeps, "attention" | "turns">): Interface["admit"] {
+  const { attention, turns } = deps
+  return Effect.fn("SessionPrompt.admit")(function* (
+    input: PromptInput,
+    options?: AdmissionOptions,
+    persistAdmission?: Effect.Effect<void, unknown>,
+    extras?: AdmissionExtras,
+  ): Effect.fn.Return<TurnStart, PromptError> {
+    if (attention) yield* attention.input(input.sessionID)
+    return yield* turns()
+      .start(input, {
+        origin: extras?.origin ?? originFor(options),
+        when: "now",
+        admissionOptions: options,
+        persistAdmission,
+        ...(extras?.request ? { request: extras.request } : {}),
+      })
+      .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
+  })
 }
 
 export function makeAdmit(deps: AdmitDeps) {
@@ -616,33 +647,12 @@ export function makeAdmit(deps: AdmitDeps) {
     return yield* turns().prepare(input, options, persistAdmission, request)
   })
 
-  // Immediate admission for automatic sources (`SessionInbox.submit`): commit
-  // the user message (and any ledger key inside the same transaction) and
-  // return the turn classification without awaiting the turn itself. The
-  // initial hook-resume branch belongs to `prompt`; a rewake carries
-  // `continueToolBudget`, so skipping it matches the old path.
-  const admitNow: Interface["admit"] = Effect.fn("SessionPrompt.admit")(function* (
-    input: PromptInput,
-    options?: AdmissionOptions,
-    persistAdmission?: Effect.Effect<void, unknown>,
-  ): Effect.fn.Return<TurnStart, PromptError> {
-    if (attention) yield* attention.input(input.sessionID)
-    return yield* turns()
-      .start(input, {
-        origin: originFor(options),
-        when: "now",
-        admissionOptions: options,
-        persistAdmission,
-      })
-      .pipe(Effect.catchTag("SessionConversationHookBlocked", (error) => Effect.die(error)))
-  })
-
   return {
     cancel,
     prompt,
     withIdle,
     prepareTurn,
-    admit: admitNow,
+    admit: makeAdmitNow({ attention, turns }),
     admitPrompt,
     resumeContexts,
     promptImpl,
@@ -703,6 +713,64 @@ export function admitIdleUnderFence(
             // released the session entry may vanish, and `current()` would
             // then read as cancelled.
             ({ tag: request.current() ? "skipped" : "cancelled" } as const),
+      ),
+      Effect.ensuring(Effect.sync(() => request.release())),
+    )
+  })
+}
+
+/**
+ * How an immediate admission under the cancellation fence ended:
+ *
+ * - `admitted`: the message committed (with its ledger mark, if any) and
+ *   `start` classifies the turn: started, joined to a running one, or none.
+ * - `cancelled`: a cancellation advanced the session's epoch (ESC) after the
+ *   caller's claim, before or during the admission. Nothing was committed;
+ *   the caller decides whether to write the input without a turn.
+ */
+export type FencedNowAdmission = { readonly tag: "admitted"; readonly start: TurnStart } | { readonly tag: "cancelled" }
+
+/**
+ * `admitIdleUnderFence` for sources that join a running turn or start one
+ * (`join_or_start`): no exclusive-registry token, only the cancellation fence.
+ * A caller that observed the epoch at its claim (the inbox drain) gets a
+ * request only while that epoch stands, so an ESC that lands after the claim
+ * cannot be bypassed by binding a fresh request to the advanced epoch. The
+ * request is released here once the admission ends, never later.
+ */
+export function admitNowUnderFence(
+  service: Pick<Interface, "admit">,
+  input: PromptInput,
+  options?: AdmissionOptions,
+  persistAdmission?: Effect.Effect<void, unknown>,
+  claimEpoch?: number,
+  origin?: TurnOrigin,
+): Effect.Effect<FencedNowAdmission, PromptError> {
+  return Effect.suspend(() => {
+    const request =
+      claimEpoch === undefined
+        ? SessionCancellation.request(input.sessionID)
+        : SessionCancellation.requestIfEpoch(input.sessionID, claimEpoch)
+    if (!request) return Effect.succeed<FencedNowAdmission>({ tag: "cancelled" })
+    // A cancellation in flight may need the prompt lock; wait for its barrier first.
+    return request.wait.pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          request.valid()
+            ? service.admit(input, options, persistAdmission, { request, ...(origin ? { origin } : {}) }).pipe(
+                Effect.exit,
+                Effect.flatMap((exit) =>
+                  Exit.isSuccess(exit)
+                    ? Effect.succeed<FencedNowAdmission>({ tag: "admitted", start: exit.value })
+                    : // `Turns.start` interrupts its own fiber when the request lost its epoch; any other
+                      // interruption or failure is not the fence's to absorb.
+                      Cause.hasInterruptsOnly(exit.cause) && !request.current()
+                      ? Effect.succeed<FencedNowAdmission>({ tag: "cancelled" })
+                      : Effect.failCause(exit.cause),
+                ),
+              )
+            : Effect.succeed<FencedNowAdmission>({ tag: "cancelled" }),
+        ),
       ),
       Effect.ensuring(Effect.sync(() => request.release())),
     )
