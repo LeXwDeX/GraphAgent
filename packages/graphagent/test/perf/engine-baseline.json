@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "collectedAt": "2026-11-13T18:08:16.771Z",
-  "commit": "bc56a7bcf",
+  "collectedAt": "2026-11-14T02:20:00Z",
+  "commit": "67fe5ac99",
   "scenarios": {
     "S1": {
       "perTurn": {
