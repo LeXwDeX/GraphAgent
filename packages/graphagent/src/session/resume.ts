@@ -163,8 +163,10 @@ export function makeResume(deps: ResumeDeps) {
                     skipHookStart: true,
                     ...(pending.internalDelegation ? { internalDelegation: true as const } : {}),
                   },
-                  // A delegation's saved followup is the prompt of the run that saved it: it runs under that credential.
-                  pending.internalDelegation && credential ? { credential } : undefined,
+                  // A saved followup runs under the run's credential regardless of
+                  // whether it was flagged as a delegation (initial-hook followups
+                  // may lack the flag but still need the credential to pass the guard).
+                  credential ? { credential } : undefined,
                 )
           ).pipe(
             Effect.ensuring(

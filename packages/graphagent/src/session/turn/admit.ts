@@ -757,6 +757,7 @@ export function admitNowUnderFence(
   persistAdmission?: Effect.Effect<void, unknown>,
   claimEpoch?: number,
   origin?: TurnOrigin,
+  credential?: ChildRunCredential,
 ): Effect.Effect<FencedNowAdmission, PromptError> {
   return Effect.suspend(() => {
     const request =
@@ -769,7 +770,11 @@ export function admitNowUnderFence(
       Effect.andThen(
         Effect.suspend(() =>
           request.valid()
-            ? service.admit(input, options, persistAdmission, { request, ...(origin ? { origin } : {}) }).pipe(
+            ? service.admit(input, options, persistAdmission, {
+                request,
+                ...(origin ? { origin } : {}),
+                ...(credential ? { credential } : {}),
+              }).pipe(
                 Effect.exit,
                 Effect.flatMap((exit) =>
                   Exit.isSuccess(exit)
