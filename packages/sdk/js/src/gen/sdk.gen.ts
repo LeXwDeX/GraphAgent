@@ -1743,7 +1743,7 @@ export class Question extends HeyApiClient {
   /**
    * Reply to question request
    *
-   * Provide answers to a question request from the AI assistant.
+   * Provide answers to a question request from the AI assistant. A request raised by a child session accepts only its offered options: a custom answer is refused with 400.
    */
   public reply<ThrowOnError extends boolean = false>(
     parameters: {
@@ -1832,7 +1832,7 @@ export class Permission extends HeyApiClient {
   /**
    * Respond to permission request
    *
-   * Approve or deny a permission request from the AI assistant.
+   * Approve or deny a permission request from the AI assistant. A request raised by a child session accepts only a fixed reply: a `message` is refused with 400.
    */
   public reply<ThrowOnError extends boolean = false>(
     parameters: {
@@ -2302,7 +2302,6 @@ export class Session2 extends HeyApiClient {
    */
   public create<ThrowOnError extends boolean = false>(
     parameters?: {
-      parentID?: string
       title?: string
       agent?: string
       model?: {
@@ -2324,7 +2323,6 @@ export class Session2 extends HeyApiClient {
       [
         {
           args: [
-            { in: "body", key: "parentID" },
             { in: "body", key: "title" },
             { in: "body", key: "agent" },
             { in: "body", key: "model" },

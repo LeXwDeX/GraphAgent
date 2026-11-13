@@ -36,10 +36,47 @@ import { coverageResult, parseOptions, routeKey, routeKeys, selectedScenarios } 
 import { runScenario } from "./runner"
 import { runtime } from "./runtime"
 import { runMainWithHardExit, teardown } from "./teardown"
-import { type Options, type Scenario } from "./types"
+import { type Options, type Scenario, type ScenarioContext } from "./types"
 import { startProgressWatchdog } from "./watchdog"
 
 enterExerciseWorkingDirectory()
+
+// #1026: a child session (parentID != null) only takes input from its parent
+// agent. These seed a parent + child through the in-process Session service
+// (the way task/DAG create one) and drive the HTTP route against the child.
+const seedChild = (ctx: ScenarioContext) =>
+  Effect.gen(function* () {
+    const parent = yield* ctx.session({ title: "Child guard parent" })
+    return yield* ctx.session({ title: "Child guard child", parentID: parent.id })
+  })
+
+type SessionWrite = ReturnType<typeof http.protected.post>
+
+/** A write the guard refuses: 409 with the ChildSessionReadOnlyError envelope naming the session. */
+const refusedForChild = (
+  builder: SessionWrite,
+  template: string,
+  input: { params?: Record<string, string>; body?: unknown } = {},
+) =>
+  builder
+    .mutating()
+    .seeded(seedChild)
+    .at((ctx) => ({
+      path: route(template, { sessionID: ctx.state.id, ...input.params }),
+      headers: ctx.headers(),
+      body: input.body,
+    }))
+    .status(409, (ctx, result) =>
+      Effect.sync(() => {
+        const body = result.body
+        object(body)
+        check(body.name === "ChildSessionReadOnlyError", "a child-session write should name ChildSessionReadOnlyError")
+        object(body.data)
+        check(body.data.sessionID === ctx.state.id, "the error should name the child session")
+        check(typeof body.data.message === "string", "the error should carry a message")
+        check(!("code" in body) && !("code" in body.data), "the unified error shape has no code field")
+      }),
+    )
 
 const scenarios: Scenario[] = [
   http.protected
@@ -1697,6 +1734,183 @@ const scenarios: Scenario[] = [
       body: { response: "once" },
     }))
     .json(404, object, "status"),
+
+  // ── Child session read-only guard (#1026) ───────────────────────────
+  // Refused: one scenario per class of write. The reflection test in
+  // test/server/httpapi-child-readonly.test.ts covers every endpoint.
+  refusedForChild(
+    http.protected.post("/session/{sessionID}/message", "session.prompt.childReadOnly"),
+    "/session/{sessionID}/message",
+    {
+      body: { agent: "build", noReply: true, parts: [{ type: "text", text: "hello" }] },
+    },
+  ),
+  http.protected
+    .post("/session/{sessionID}/prompt_async", "session.prompt_async.childReadOnly")
+    .mutating()
+    .seeded(seedChild)
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/prompt_async", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { agent: "build", parts: [{ type: "text", text: "hello" }] },
+    }))
+    // Not the 204 a forked handler returns: the guard answers before the fork.
+    .jsonEffect(
+      409,
+      (body, ctx) =>
+        Effect.gen(function* () {
+          object(body)
+          check(
+            body.name === "ChildSessionReadOnlyError",
+            "promptAsync on a child should name ChildSessionReadOnlyError",
+          )
+          check(
+            (yield* ctx.messages(ctx.state.id)).length === 0,
+            "a refused promptAsync must not leave a message in the child session",
+          )
+        }),
+      "status",
+    ),
+  refusedForChild(
+    http.protected.post("/session/{sessionID}/abort", "session.abort.childReadOnly"),
+    "/session/{sessionID}/abort",
+  ),
+  refusedForChild(
+    http.protected.patch("/session/{sessionID}", "session.update.childReadOnly"),
+    "/session/{sessionID}",
+    {
+      body: { title: "renamed" },
+    },
+  ),
+  refusedForChild(
+    http.protected.delete("/session/{sessionID}", "session.delete.childReadOnly"),
+    "/session/{sessionID}",
+  ),
+  refusedForChild(
+    http.protected.post("/session/{sessionID}/fork", "session.fork.childReadOnly"),
+    "/session/{sessionID}/fork",
+    {
+      body: {},
+    },
+  ),
+  refusedForChild(
+    http.protected.post("/session/{sessionID}/hook", "session.hook.add.childReadOnly"),
+    "/session/{sessionID}/hook",
+    {
+      body: { event: "PreToolUse", hooks: [{ type: "command", command: "true" }] },
+    },
+  ),
+  refusedForChild(
+    http.protected.delete("/session/{sessionID}/message/{messageID}", "session.deleteMessage.childReadOnly"),
+    "/session/{sessionID}/message/{messageID}",
+    { params: { messageID: "msg_httpapi_child" } },
+  ),
+  // Outside the session group.
+  refusedForChild(
+    http.protected.post(
+      "/experimental/session/{sessionID}/background",
+      "experimental.session.background.childReadOnly",
+    ),
+    "/experimental/session/{sessionID}/background",
+  ),
+  http.protected
+    .post("/experimental/workspace/warp", "experimental.workspace.warp.childReadOnly")
+    .mutating()
+    .seeded(seedChild)
+    .at((ctx) => ({
+      path: "/experimental/workspace/warp",
+      headers: ctx.headers(),
+      body: { id: null, sessionID: ctx.state.id },
+    }))
+    .json(409, (body, ctx) => {
+      object(body)
+      check(body.name === "ChildSessionReadOnlyError", "warp of a child should name ChildSessionReadOnlyError")
+      object(body.data)
+      check(body.data.sessionID === ctx.state.id, "the error should name the child session")
+    }),
+  http.protected
+    .post("/experimental/control-plane/move-session", "experimental.controlPlane.moveSession.childReadOnly")
+    // A root route: it needs no instance, but the seeded child does.
+    .mutating()
+    .seeded(seedChild)
+    .at((ctx) => ({
+      path: "/experimental/control-plane/move-session",
+      body: { sessionID: ctx.state.id, destination: { directory: ctx.directory ?? "/tmp" } },
+    }))
+    .json(409, (body, ctx) => {
+      object(body)
+      check(body.name === "ChildSessionReadOnlyError", "move of a child should name ChildSessionReadOnlyError")
+      object(body.data)
+      check(body.data.sessionID === ctx.state.id, "the error should name the child session")
+    }),
+
+  // Left open on a child: a fixed permission reply, the read-only side
+  // question, the attention lease. They reach their handler (not 409).
+  http.protected
+    .post("/session/{sessionID}/permissions/{permissionID}", "permission.respond.childAllowed")
+    .seeded(seedChild)
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/permissions/{permissionID}", {
+        sessionID: ctx.state.id,
+        permissionID: "per_httpapi_child_allowed",
+      }),
+      headers: ctx.headers(),
+      body: { response: "once" },
+    }))
+    // The handler runs and finds no such request; the guard did not answer.
+    .json(
+      404,
+      (body) => {
+        object(body)
+        check(body.name === "PermissionNotFoundError", "a child permission reply should reach the permission handler")
+      },
+      "status",
+    ),
+  http.protected
+    .post("/session/{sessionID}/attention", "session.attention.childAllowed")
+    .seeded(seedChild)
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/attention", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { clientID: "httpapi-exercise", clientType: "web", activity: 1, closed: true },
+    }))
+    .json(200, (body) => check(body === true, "attention on a child session should be acknowledged")),
+  http.protected
+    .delete("/session/{sessionID}/btw/{btwID}", "session.btw.cancel.childAllowed")
+    .seeded(seedChild)
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/btw/{btwID}", { sessionID: ctx.state.id, btwID: "unknown" }),
+      headers: ctx.headers(),
+    }))
+    .status(204),
+
+  // Reads stay open.
+  http.protected
+    .get("/session/{sessionID}", "session.get.child")
+    .seeded(seedChild)
+    .at((ctx) => ({ path: route("/session/{sessionID}", { sessionID: ctx.state.id }), headers: ctx.headers() }))
+    .json(200, (body, ctx) => {
+      object(body)
+      check(body.id === ctx.state.id, "a child session should be readable")
+      check(typeof body.parentID === "string", "the child session should expose its parentID")
+    }),
+  http.protected
+    .get("/session/{sessionID}/message", "session.messages.child")
+    .seeded(seedChild)
+    .at((ctx) => ({ path: route("/session/{sessionID}/message", { sessionID: ctx.state.id }), headers: ctx.headers() }))
+    .json(200, array),
+
+  // A child session is never created from a public payload.
+  http.protected
+    .post("/session", "session.create.rejectsParentID")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Would-be parent" }))
+    .at((ctx) => ({
+      path: "/session",
+      headers: ctx.headers(),
+      body: { title: "Smuggled child", parentID: ctx.state.id },
+    }))
+    .status(400),
   http.protected
     .post("/global/upgrade", "global.upgrade")
     .global()

@@ -1,17 +1,22 @@
 import { MoveSession } from "@graphagent/core/control-plane/move-session"
 import { ClientSessions } from "@/session/client-sessions"
+import { Session } from "@/session/session"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/http-api"
 import { RootHttpApi } from "../api"
 import { ApiMoveSessionError, MoveSessionPayload } from "../groups/control-plane"
+import { assertSessionWritable } from "../middleware/child-session-guard"
 
 export const controlPlaneHandlers = HttpApiBuilder.group(RootHttpApi, "controlPlane", (handlers) =>
   Effect.gen(function* () {
     const service = yield* MoveSession.Service
+    const sessions = yield* Session.Service
 
     const moveSession = Effect.fn("ControlPlaneHttpApi.moveSession")(function* (ctx: {
       payload: typeof MoveSessionPayload.Type
     }) {
+      // #1026: the session is in the payload, out of the session group's reach.
+      yield* assertSessionWritable(sessions, ctx.payload.sessionID)
       yield* service.moveSession(ctx.payload).pipe(
         Effect.mapError(
           (error) =>

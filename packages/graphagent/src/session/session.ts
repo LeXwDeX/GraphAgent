@@ -294,7 +294,11 @@ export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
 export const CreateInput = Schema.optional(
   Schema.Struct({
-    parentID: Schema.optional(SessionID),
+    // #1026: child sessions are created only by ChildRun owners (task, DAG
+    // spawn) through `Session.Service.create`, never from a public payload.
+    // `Never` makes the decoder reject the key with a 400 instead of silently
+    // stripping it into a top-level session.
+    parentID: Schema.optional(Schema.Never),
     title: Schema.optional(Schema.String),
     agent: Schema.optional(Schema.String),
     model: Schema.optional(Model),
@@ -306,6 +310,25 @@ export const CreateInput = Schema.optional(
   }),
 )
 export type CreateInput = Types.DeepMutable<Schema.Schema.Type<typeof CreateInput>>
+
+/**
+ * Input of `Session.Service.create`, the in-process entry. Unlike the public
+ * `CreateInput` payload it carries `parentID` (child sessions) and an explicit
+ * `directory`; it never goes through a request schema.
+ */
+export interface InternalCreateInput {
+  parentID?: SessionID
+  title?: string
+  agent?: string
+  model?: Schema.Schema.Type<typeof Model>
+  metadata?: typeof Metadata.Type
+  permission?: PermissionV1.Ruleset
+  workspaceID?: WorkspaceV2.ID
+  /** #1013 (C1 PR5): creation-time DAG mode; defaults to "off". */
+  dagMode?: "on" | "off"
+  /** #943: explicit execution directory; defaults to the ambient instance. */
+  directory?: string
+}
 
 export const ForkInput = Schema.Struct({
   sessionID: SessionID,
@@ -442,19 +465,7 @@ export type NotFound = NotFoundError
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
-  readonly create: (input?: {
-    parentID?: SessionID
-    title?: string
-    agent?: string
-    model?: Schema.Schema.Type<typeof Model>
-    metadata?: typeof Metadata.Type
-    permission?: PermissionV1.Ruleset
-    workspaceID?: WorkspaceV2.ID
-    /** #1013 (C1 PR5): creation-time DAG mode; defaults to "off". */
-    dagMode?: "on" | "off"
-    /** #943: explicit execution directory; defaults to the ambient instance. */
-    directory?: string
-  }) => Effect.Effect<Info>
+  readonly create: (input?: InternalCreateInput) => Effect.Effect<Info>
   readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
@@ -904,17 +915,7 @@ export const layer: Layer.Layer<
       } as SessionV1.Part
     })
 
-    const create = Effect.fn("Session.create")(function* (input?: {
-      parentID?: SessionID
-      title?: string
-      agent?: string
-      model?: Schema.Schema.Type<typeof Model>
-      metadata?: typeof Metadata.Type
-      permission?: PermissionV1.Ruleset
-      workspaceID?: WorkspaceV2.ID
-      dagMode?: "on" | "off"
-      directory?: string
-    }) {
+    const create = Effect.fn("Session.create")(function* (input?: InternalCreateInput) {
       const ctx = yield* InstanceState.context
       const workspace = yield* InstanceState.workspaceID
       const directory = input?.directory ?? ctx.directory

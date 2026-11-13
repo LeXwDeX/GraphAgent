@@ -107,6 +107,7 @@ import { questionHandlers } from "./handlers/question"
 import { referenceHandlers } from "./handlers/reference"
 import { sessionHandlers } from "./handlers/session"
 import { workspaceHandlers } from "./handlers/workspace"
+import { childSessionReadOnlyLayer } from "./middleware/child-session-guard"
 import { instanceContextLayer } from "./middleware/instance-context"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { afterResponseLayer } from "./lifecycle"
@@ -151,7 +152,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
 )
 
 const instanceRoutes = instanceApiRoutes.pipe(
-  Layer.provide([workspaceRoutingLive, instanceContextLayer, schemaErrorLayer]),
+  Layer.provide([workspaceRoutingLive, instanceContextLayer, childSessionReadOnlyLayer, schemaErrorLayer]),
 )
 
 type RouteRequirements =

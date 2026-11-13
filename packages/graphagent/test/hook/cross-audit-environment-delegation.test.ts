@@ -8,8 +8,8 @@ import path from "node:path"
 import { cliIt } from "../lib/cli-process"
 import { decodeRecord, decodeRecords, decodeSession } from "../lib/hook-json"
 
-// Task and DAG runtimes feed their own child session; that is delegation, not a user submission. A real client that
-// submits to the same child session is a user submission and still runs, and can block on, UserPromptSubmit.
+// Task and DAG runtimes feed their own child session; that is delegation, not a user submission. A client that submits
+// to the same child session over HTTP is refused (#1026): a child session takes input only from its parent agent.
 const fixture = (name: string, subagentStopOnce: boolean) =>
   cliIt.live(name, ({ home, llm, opencode }) =>
     Effect.gen(function* () {
@@ -78,20 +78,23 @@ const fixture = (name: string, subagentStopOnce: boolean) =>
       // The delegated continuation really ran: its text reached the child's model request.
       if (subagentStopOnce) expect(JSON.stringify(yield* llm.inputs)).toContain("CHILD_CONTINUE")
       const calls = yield* llm.calls
-      yield* llm.text("CHILD_USER_FOLLOWUP")
-      const blocked = yield* post(`/session/${child}/message`, {
+      // Refused before any hook or model request runs: no UserPromptSubmit row, no new model call.
+      const refused = yield* post(`/session/${child}/message`, {
         model: { providerID: "test", modelID: "test-model" },
         parts: [{ type: "text", text: "BLOCK_ME please" }],
       })
-      expect(blocked.status).toBe(200)
-      expect(JSON.stringify(yield* Effect.promise(() => blocked.json()))).toContain("[Hook stopped] user blocked")
+      expect(refused.status).toBe(409)
+      expect(yield* Effect.promise(() => refused.json())).toMatchObject({
+        name: "ChildSessionReadOnlyError",
+        data: { sessionID: child },
+      })
       expect(yield* llm.calls).toBe(calls)
-      expect((yield* rows()).map((row) => row.session)).toEqual([parent, child])
+      expect((yield* rows()).map((row) => row.session)).toEqual([parent])
     }),
   )
 
 fixture(
-  "a task child's initial prompt skips UserPromptSubmit while a real client prompt to it still runs and blocks",
+  "a task child's initial prompt skips UserPromptSubmit and a client prompt to it over HTTP is refused as read-only",
   false,
 )
 fixture("a task child's Stop continuation skips UserPromptSubmit", true)

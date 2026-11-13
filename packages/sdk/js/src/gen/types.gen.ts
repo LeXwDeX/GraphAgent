@@ -1555,6 +1555,14 @@ export type BtwTimeoutError = {
   }
 }
 
+export type ChildSessionReadOnlyError = {
+  name: "ChildSessionReadOnlyError"
+  data: {
+    sessionID: string
+    message: string
+  }
+}
+
 export type ConfigMcpLocal = {
   type: "local"
   command: Array<string>
@@ -2814,6 +2822,10 @@ export type ExperimentalControlPlaneMoveSessionErrors = {
    * MoveSessionError | InvalidRequestError
    */
   400: MoveSessionError | InvalidRequestError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type ExperimentalControlPlaneMoveSessionError =
@@ -3104,6 +3116,10 @@ export type ExperimentalSessionBackgroundErrors = {
    * BadRequest | InvalidRequestError
    */
   400: BadRequestError | InvalidRequestError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type ExperimentalSessionBackgroundError =
@@ -4582,7 +4598,6 @@ export type SessionListResponse = SessionListResponses[keyof SessionListResponse
 
 export type SessionCreateData = {
   body?: {
-    parentID?: string
     title?: string
     agent?: string
     model?: {
@@ -4665,6 +4680,10 @@ export type SessionDeleteErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionDeleteError = SessionDeleteErrors[keyof SessionDeleteErrors]
@@ -4736,6 +4755,10 @@ export type SessionUpdateErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionUpdateError = SessionUpdateErrors[keyof SessionUpdateErrors]
@@ -5051,6 +5074,10 @@ export type SessionHookAddErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionHookAddError = SessionHookAddErrors[keyof SessionHookAddErrors]
@@ -5085,6 +5112,10 @@ export type SessionHookRemoveErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionHookRemoveError = SessionHookRemoveErrors[keyof SessionHookRemoveErrors]
@@ -5117,6 +5148,10 @@ export type SessionHookCancelErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionHookCancelError = SessionHookCancelErrors[keyof SessionHookCancelErrors]
@@ -5232,6 +5267,10 @@ export type SessionPromptErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionPromptError = SessionPromptErrors[keyof SessionPromptErrors]
@@ -5268,9 +5307,9 @@ export type SessionDeleteMessageErrors = {
    */
   404: NotFoundError
   /**
-   * SessionBusyError
+   * SessionBusyError | ChildSessionReadOnlyError
    */
-  409: SessionBusyError
+  409: SessionBusyError | ChildSessionReadOnlyError
 }
 
 export type SessionDeleteMessageError = SessionDeleteMessageErrors[keyof SessionDeleteMessageErrors]
@@ -5439,6 +5478,10 @@ export type SessionForkErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionForkError = SessionForkErrors[keyof SessionForkErrors]
@@ -5466,6 +5509,10 @@ export type SessionAbortErrors = {
    * BadRequest | InvalidRequestError
    */
   400: BadRequestError | InvalidRequestError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionAbortError = SessionAbortErrors[keyof SessionAbortErrors]
@@ -5501,6 +5548,10 @@ export type SessionInitErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionInitError = SessionInitErrors[keyof SessionInitErrors]
@@ -5536,6 +5587,10 @@ export type SessionSummarizeErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionSummarizeError = SessionSummarizeErrors[keyof SessionSummarizeErrors]
@@ -5575,6 +5630,10 @@ export type SessionSetModelErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionSetModelError = SessionSetModelErrors[keyof SessionSetModelErrors]
@@ -5693,6 +5752,10 @@ export type SessionResumeErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionResumeError = SessionResumeErrors[keyof SessionResumeErrors]
@@ -5743,6 +5806,10 @@ export type SessionPromptAsyncErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionPromptAsyncError = SessionPromptAsyncErrors[keyof SessionPromptAsyncErrors]
@@ -5790,6 +5857,10 @@ export type SessionCommandErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type SessionCommandError = SessionCommandErrors[keyof SessionCommandErrors]
@@ -5834,9 +5905,9 @@ export type SessionShellErrors = {
    */
   404: NotFoundError
   /**
-   * SessionBusyError
+   * SessionBusyError | ChildSessionReadOnlyError
    */
-  409: SessionBusyError
+  409: SessionBusyError | ChildSessionReadOnlyError
 }
 
 export type SessionShellError = SessionShellErrors[keyof SessionShellErrors]
@@ -5875,9 +5946,9 @@ export type SessionRevertErrors = {
    */
   404: NotFoundError
   /**
-   * SessionBusyError
+   * SessionBusyError | ChildSessionReadOnlyError
    */
-  409: SessionBusyError
+  409: SessionBusyError | ChildSessionReadOnlyError
 }
 
 export type SessionRevertError = SessionRevertErrors[keyof SessionRevertErrors]
@@ -5910,9 +5981,9 @@ export type SessionUnrevertErrors = {
    */
   404: NotFoundError
   /**
-   * SessionBusyError
+   * SessionBusyError | ChildSessionReadOnlyError
    */
-  409: SessionBusyError
+  409: SessionBusyError | ChildSessionReadOnlyError
 }
 
 export type SessionUnrevertError = SessionUnrevertErrors[keyof SessionUnrevertErrors]
@@ -5984,9 +6055,9 @@ export type SessionDeleteQueuedMessageErrors = {
    */
   404: NotFoundError
   /**
-   * ConflictError
+   * ConflictError | ChildSessionReadOnlyError
    */
-  409: ConflictError
+  409: ConflictError | ChildSessionReadOnlyError
 }
 
 export type SessionDeleteQueuedMessageError = SessionDeleteQueuedMessageErrors[keyof SessionDeleteQueuedMessageErrors]
@@ -6026,9 +6097,9 @@ export type SessionEditQueuedMessageErrors = {
    */
   404: NotFoundError
   /**
-   * ConflictError
+   * ConflictError | ChildSessionReadOnlyError
    */
-  409: ConflictError
+  409: ConflictError | ChildSessionReadOnlyError
 }
 
 export type SessionEditQueuedMessageError = SessionEditQueuedMessageErrors[keyof SessionEditQueuedMessageErrors]
@@ -6066,6 +6137,10 @@ export type PartDeleteErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type PartDeleteError = PartDeleteErrors[keyof PartDeleteErrors]
@@ -6099,6 +6174,10 @@ export type PartUpdateErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type PartUpdateError = PartUpdateErrors[keyof PartUpdateErrors]
@@ -6559,6 +6638,10 @@ export type ExperimentalWorkspaceWarpErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * ChildSessionReadOnlyError
+   */
+  409: ChildSessionReadOnlyError
 }
 
 export type ExperimentalWorkspaceWarpError = ExperimentalWorkspaceWarpErrors[keyof ExperimentalWorkspaceWarpErrors]
