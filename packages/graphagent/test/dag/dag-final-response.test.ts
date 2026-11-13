@@ -360,6 +360,54 @@ describe("recovered final-response settlement", () => {
     expect(completions).toEqual([{ output: false, snapshotID: "snap-current" }])
   })
 
+  it("fails the node when the existing child session belongs to another run", async () => {
+    const failed: string[] = []
+    const node = makeNodeRow({ id: "n", status: "running", childSessionId: "ses_final_child" })
+    const dag = Layer.mock(Dag.Service, {
+      store: {
+        getNode: () => Effect.succeed(node),
+        getNodes: () => Effect.succeed([node]),
+        getWorkflow: () =>
+          Effect.succeed({
+            sessionId: "ses_parent",
+            status: "running",
+            projectId: "project",
+            directory: process.cwd(),
+          } as never),
+      } as unknown as DagStore.Interface,
+      nodeFailed: (_dagID, _nodeID, reason) =>
+        Effect.sync(() => {
+          failed.push(reason)
+        }),
+    })
+    const { layer: prompt, stub } = mockSessionPromptWithStub({
+      loop: () => Effect.die(new Error("must not drive a session owned by another run")),
+    })
+    stub.latest = {
+      id: "crun_other",
+      childSessionID: SessionID.make("ses_final_child"),
+      parentSessionID: SessionID.make("ses_parent"),
+      ownerKind: "dag_node",
+      state: "ended",
+      attempt: 1,
+      detached: false,
+      timeCreated: 0,
+    }
+    stub.adoptError = "not-owner"
+    const messages = Layer.mock(DagMessages.Service, {
+      latestSnapshot: () => Effect.succeed({ ok: true, value: undefined } as never),
+    })
+
+    await Effect.runPromise(
+      continueRecoveredMessageNode("wf", "n", { nodes: [{ id: "n" }] }).pipe(
+        Effect.provide(Layer.mergeAll(dag, prompt, messages)),
+      ),
+    )
+
+    expect(stub.runs).toHaveLength(0)
+    expect(failed[0]).toContain("owned by another run")
+  })
+
   it("binds recovered plaintext completion to its final message snapshot when mailbox revisions exist", async () => {
     const message = assistant([{ text: "first " }, { text: "second" }])
     let completed: { output: unknown; snapshotID?: string } | undefined

@@ -4,7 +4,7 @@
 import { Database } from "@graphagent/core/database/database"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Effect, Layer, Option, Scope } from "effect"
-import { makeChildRuns, type ChildRuns } from "@/session/child/run"
+import { ActiveRunExists, makeChildRuns, NotOwner, type ChildRuns } from "@/session/child/run"
 import { ChildRegistry } from "@/session/child/registry"
 import type { ChildCancelBy, ChildRunCredential, ChildRunOutcome, ChildRunView } from "@/session/child/types"
 import type { PromptInput } from "@/session/prompt-input"
@@ -93,6 +93,8 @@ export interface StubChildren {
   readonly cancelled: Array<{ readonly id: string | undefined; readonly by: ChildCancelBy }>
   /** What `latest(childSessionID)` answers; set it to make a path adopt instead of start. */
   latest?: ChildRunView
+  /** Makes the next adopt fail with the matching ownership error. */
+  adoptError?: "not-owner" | "active"
 }
 
 export const stubChildren = (
@@ -136,14 +138,20 @@ export const stubChildren = (
     }
   }
   const register = (spec: { childSessionID: SessionID; owner: unknown; detached: boolean }, via: "start" | "adopt") =>
-    Effect.sync(() => {
+    Effect.suspend(() => {
+      if (via === "adopt" && stub.adoptError)
+        return Effect.fail(
+          stub.adoptError === "not-owner"
+            ? new NotOwner({ childSessionID: spec.childSessionID })
+            : new ActiveRunExists({ childSessionID: spec.childSessionID, runID: "crun_stub_live" }),
+        )
       runs.push({
         childSessionID: spec.childSessionID,
         owner: spec.owner,
         detached: spec.detached,
         via,
       })
-      return handle(spec.childSessionID)
+      return Effect.succeed(handle(spec.childSessionID))
     })
   const scoped = (parentSessionID: SessionID): ChildRuns.Scoped => ({
     parentSessionID,
@@ -159,7 +167,7 @@ export const stubChildren = (
       }),
     interrupt: () => Effect.void,
     resolvePromptParts: () => Effect.succeed([]),
-    start: (spec) => register(spec, "start"),
+    start: (spec) => register(spec, "start").pipe(Effect.orDie),
     adopt: (spec) => register(spec, "adopt"),
     latest: () => Effect.succeed(Option.fromNullishOr(stub.latest)),
     list: () => Effect.succeed([]),
@@ -173,7 +181,7 @@ export const stubChildren = (
       }),
   })
   const children: ChildRuns.Interface = {
-    start: (spec) => register(spec, "start"),
+    start: (spec) => register(spec, "start").pipe(Effect.orDie),
     adopt: (spec) => register(spec, "adopt"),
     inspect: () => Effect.succeed(Option.none()),
     latest: () => Effect.succeed(Option.fromNullishOr(stub.latest)),
