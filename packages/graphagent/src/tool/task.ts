@@ -652,16 +652,22 @@ export const TaskTool = Tool.define(
           yield* loops.wake(ctx.sessionID, { source: "background_job", ids: [jobID] }, payload, { evaluate })
         }).pipe(Effect.ignore)
 
-      const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
+      const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string, run: ChildRunHandle) {
         yield* background.wait({ id: jobID }).pipe(
           Effect.flatMap((result) =>
             Effect.gen(function* () {
-              if (result.info?.status !== "completed" && result.info?.status !== "error") {
+              // The run's ending is decided exactly once, here or by its
+              // watcher, whoever swaps it first. A run the main agent cancelled
+              // delivers nothing, even when its job finished in the window
+              // before the job itself was cancelled.
+              yield* run.settle(outcomeOf(result.info))
+              const cancelledRun = (yield* run.settled).type === "cancelled"
+              if ((result.info?.status !== "completed" && result.info?.status !== "error") || cancelledRun) {
                 // No result prompt follows (cancelled or vanished job): end the
                 // wait now so the goal does not sleep until its deadline.
                 yield* wakeGoal(
                   jobID,
-                  `Background task ${description} ended without a result (${result.info?.status ?? "missing"})`,
+                  `Background task ${description} ended without a result (${cancelledRun ? "cancelled" : (result.info?.status ?? "missing")})`,
                   true,
                 )
                 return undefined
@@ -732,7 +738,7 @@ export const TaskTool = Tool.define(
               title: description,
               metadata: { ...metadata, background: true, jobId: nextSession.id },
             }),
-            notify(nextSession.id),
+            notify(nextSession.id, registered),
             // From here the child is a background task and fires its own Stop.
             releaseSubagent,
           ]),
@@ -762,7 +768,7 @@ export const TaskTool = Tool.define(
       }
 
       if (runInBackground) {
-        yield* notify(info.id)
+        yield* notify(info.id, registered)
         return backgroundResult()
       }
 

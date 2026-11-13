@@ -2306,33 +2306,52 @@ describe("tool.task child runs", () => {
     }),
   )
 
-  const cancelFixture = Effect.gen(function* () {
-    const { chat, assistant } = yield* seed()
-    const cancels: string[] = []
-    const jobCancels: SessionID[] = []
-    const def = yield* initTaskTool(yield* TaskTool, (sessionID, options) =>
-      Effect.sync(() => {
-        cancels.push(`${sessionID}:${options?.reason?.reason}:${options?.reason?.actor}`)
-      }),
-    )
-    const release = yield* Deferred.make<void>()
-    const injected: SessionPrompt.PromptInput[] = []
-    const promptOps: TaskPromptOps = {
-      cancel: (sessionID) =>
+  // `gate` holds the tool's job cancellation: `reached` fires when the call gets there, `open` lets it through.
+  const cancelFixtureFor = (gate?: { reached: Deferred.Deferred<void>; open: Deferred.Deferred<void> }) =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const cancels: string[] = []
+      const jobCancels: SessionID[] = []
+      const jobs = yield* BackgroundJob.Service
+      const tool = yield* TaskTool.pipe(
+        Effect.provideService(
+          BackgroundJob.Service,
+          gate
+            ? {
+                ...jobs,
+                cancel: (jobID) =>
+                  Deferred.succeed(gate.reached, undefined).pipe(
+                    Effect.andThen(Deferred.await(gate.open)),
+                    Effect.andThen(jobs.cancel(jobID)),
+                  ),
+              }
+            : jobs,
+        ),
+      )
+      const def = yield* initTaskTool(tool, (sessionID, options) =>
         Effect.sync(() => {
-          jobCancels.push(sessionID)
+          cancels.push(`${sessionID}:${options?.reason?.reason}:${options?.reason?.actor}`)
         }),
-      resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
-      prompt: (input) => {
-        if (input.sessionID === chat.id) {
-          injected.push(input)
-          return Effect.succeed(reply(input, "noted"))
-        }
-        return Deferred.await(release).pipe(Effect.as(reply(input, "late answer")))
-      },
-    }
-    return { chat, assistant, def, cancels, jobCancels, release, injected, promptOps }
-  })
+      )
+      const release = yield* Deferred.make<void>()
+      const injected: SessionPrompt.PromptInput[] = []
+      const promptOps: TaskPromptOps = {
+        cancel: (sessionID) =>
+          Effect.sync(() => {
+            jobCancels.push(sessionID)
+          }),
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            injected.push(input)
+            return Effect.succeed(reply(input, "noted"))
+          }
+          return Deferred.await(release).pipe(Effect.as(reply(input, "late answer")))
+        },
+      }
+      return { chat, assistant, def, cancels, jobCancels, release, injected, promptOps }
+    })
+  const cancelFixture = cancelFixtureFor()
 
   const runningTask = (fixture: Effect.Success<typeof cancelFixture>, callID = "call_start") =>
     Effect.gen(function* () {
@@ -2556,6 +2575,75 @@ describe("tool.task child runs", () => {
       expect(result.output).toContain('state="cancelled"')
       expect(asks).toEqual([])
       yield* Deferred.succeed(release, undefined)
+    }),
+  )
+
+  backgroundWithGoal.instance("a result that completes after the main agent cancelled the task is not delivered", () =>
+    Effect.gen(function* () {
+      goalWakes.length = 0
+      const jobs = yield* BackgroundJob.Service
+      const reached = yield* Deferred.make<void>()
+      const open = yield* Deferred.make<void>()
+      const fixture = yield* cancelFixtureFor({ reached, open })
+      const { chat, assistant, def, release, injected, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+
+      // The cancel call swaps the run to cancelled, then stops right in front
+      // of the job cancellation: the window the review pointed at.
+      const cancelling = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.forkChild)
+      yield* awaitWithTimeout(Deferred.await(reached), "the cancel call never reached the job cancellation")
+      expect((yield* runsOf(child))[0]).toMatchObject({
+        state: "ended",
+        outcome: { type: "cancelled", by: { kind: "main_agent_tool", toolCallID: "call_cancel" } },
+      })
+      expect((yield* jobs.get(child))?.status).toBe("running")
+
+      // In that window the child finishes: its job completes before it is cancelled.
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+      yield* Deferred.succeed(open, undefined)
+      const result = yield* Fiber.join(cancelling)
+      expect(result.output).toContain("No result will be delivered")
+
+      // The goal wait is ended without a result and nothing reaches the parent.
+      const wake = yield* pollWithTimeout(
+        Effect.sync(() => goalWakes.find((entry) => entry.match.ids.includes(child))),
+        "the goal wait was never woken",
+      )
+      expect(wake.evaluate).toBe(true)
+      expect(wake.payload).toContain("ended without a result (cancelled)")
+      expect(injected).toEqual([])
+      expect((yield* endedRun(child)).outcome).toEqual({
+        type: "cancelled",
+        by: { kind: "main_agent_tool", toolCallID: "call_cancel" },
+      })
+    }),
+  )
+
+  background.instance("a task that finished before the cancel keeps its delivered result", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const fixture = yield* cancelFixture
+      const { chat, assistant, def, release, injected, promptOps } = fixture
+      const child = yield* runningTask(fixture)
+
+      yield* Deferred.succeed(release, undefined)
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+      yield* endedRun(child)
+      yield* pollWithTimeout(
+        Effect.sync(() => (injected.length > 0 ? true : undefined)),
+        "the finished task was never delivered",
+      )
+
+      const exit = yield* def
+        .execute({ action: "cancel", task_id: child }, taskCtx(chat, assistant, promptOps, { callID: "call_cancel" }))
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("already finished")
+      expect((yield* runsOf(child))[0]?.outcome).toEqual({ type: "completed" })
     }),
   )
 
