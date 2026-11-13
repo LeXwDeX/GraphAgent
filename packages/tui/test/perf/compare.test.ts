@@ -517,10 +517,75 @@ test("a P10 that does not say whether its session is windowed is drift", () => {
   expect(missing).toContainEqual({ size: "XL", id: "P10", metric: "windowed" })
 })
 
+test("P11 fails on a single jump of the row at the top of the viewport, whatever the session", () => {
+  for (const size of ["L", "XL"]) {
+    const { failures } = compareReports(
+      { scenarios: {} },
+      fullReport((name, items) => {
+        if (name === size) items.P11 = { ...items.P11, jumps: 1, maxJumpPx: 3 }
+      }),
+    )
+
+    expect(failures).toEqual([{ size, id: "P11", metric: "jumps", limit: "0", value: 1 }])
+  }
+})
+
+test("P11 holds the drift of the walk to a line, and a P11 without the jumps is drift", () => {
+  const drifted = (driftPx: number) =>
+    compareReports(
+      { scenarios: {} },
+      fullReport((size, items) => {
+        if (size === "XL") items.P11 = { ...items.P11, driftPx }
+      }),
+    ).failures.map((failure) => `${failure.size}.${failure.id}.${failure.metric}`)
+
+  expect(drifted(2)).toEqual([])
+  expect(drifted(3)).toEqual(["XL.P11.driftPx"])
+
+  // A report from before the walk counted jumps has the drift and not the count the gate needs.
+  const stale = compareReports(
+    { scenarios: {} },
+    fullReport((_, items) => {
+      items.P11 = { driftPx: 0, stepMismatches: 0 }
+    }),
+  )
+  expect(stale.failures).toEqual([])
+  expect(stale.missing.map((item) => `${item.size}.${item.id}.${item.metric}`)).toEqual([
+    "S.P11.jumps",
+    "M.P11.jumps",
+    "L.P11.jumps",
+    "XL.P11.jumps",
+  ])
+})
+
+test("the walk up from the end is what a windowed session must carry of P11", () => {
+  const { missing, failures } = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "XL") delete items.P11
+    }),
+  )
+
+  expect(failures).toEqual([])
+  expect(missing).toEqual([
+    { size: "XL", id: "P11", metric: "jumps" },
+    { size: "XL", id: "P11", metric: "driftPx" },
+  ])
+
+  // A fully mounted session may be absent from a partial report, as with the cold scroll.
+  const fullyMounted = compareReports(
+    { scenarios: {} },
+    fullReport((size, items) => {
+      if (size === "L") delete items.P11
+    }),
+  )
+  expect(fullyMounted.missing).toEqual([])
+})
+
 test("a session marked windowed has to carry the cold scroll, or the budget leaves with the scenario", () => {
   // Codex review of #1266: with the cold scroll out of the windowed scope, a frame of
   // 150 ms in the windowed scroll passed the gate because nothing measured it.
-  expect(WINDOWED_REQUIRED.map((item) => item.id)).toEqual(["P8", "P8'", "P12", "P13"])
+  expect(WINDOWED_REQUIRED.map((item) => item.id)).toEqual(["P8", "P8'", "P11", "P12", "P13"])
   // The scope has to run what the gate requires of it.
   for (const item of WINDOWED_REQUIRED) expect([...WINDOWED_SKIPS]).not.toContain(item.id)
 
@@ -719,7 +784,7 @@ function scenarios(size = "L"): Record<string, ScenarioMetrics> {
     P10: windowed
       ? { mountedRows: 22, scrollChildren: 26, viewportRows: 19, rows: 2080, windowed: 1 }
       : { mountedRows: 190, scrollChildren: 191, viewportRows: 19, rows: 190, windowed: 0 },
-    P11: { driftPx: 0, stepMismatches: 0 },
+    P11: { jumps: 0, driftPx: 0, maxJumpPx: 0, steps: 450 },
     P12: { p95Ms: 8 },
     P13: { deltaMessageWrites: 0, deltaPartWrites: 0, messageWritesPerFrame: 0, partWritesPerFrame: 0.01 },
     P14: {

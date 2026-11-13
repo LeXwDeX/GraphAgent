@@ -57,6 +57,8 @@ const WHEEL_ROWS = 3
 const WHEEL_STEPS = 100
 const STREAM_SCROLL_STEPS = 100
 const STREAM_SCROLL_ROWS = 5
+/** P11: single lines the reader goes back from the live end. */
+const ANCHOR_STEPS = 450
 /**
  * Server command declared by the fixture. It only ever appears as a menu row:
  * the input line holds "/mod", never "/mode".
@@ -157,6 +159,90 @@ async function followTail(harness: PerfHarness) {
   scroll.scrollTo(Infinity)
   await harness.app.renderOnce()
   await settleHighlights(harness)
+}
+
+/**
+ * Renders until the scroll offset and the content height have held still for `quiet` frames in a row. A
+ * transcript whose window keeps flipping between two layouts never does: it changes both on every frame.
+ * Code blocks highlight on a worker and re-wrap when it answers, so a reading taken before every mounted
+ * block has answered is not a settled one.
+ */
+export async function settleScroll(harness: PerfHarness, quiet = 10, limit = 120) {
+  const scroll = harness.scroll()
+  if (!scroll) return
+  let previous = ""
+  let still = 0
+  for (let attempt = 0; attempt < limit; attempt++) {
+    await settleHighlights(harness)
+    const reading = `${scroll.scrollTop}/${scroll.scrollHeight}`
+    still = reading === previous ? still + 1 : 0
+    previous = reading
+    if (still >= quiet) return
+  }
+  invalid("settleScroll", `the scroll position never settled (last reading ${previous})`)
+}
+
+/**
+ * The row the reader is looking at: the first child of the scroll box that holds content and whose bottom edge
+ * is below the top of the viewport. The header spacer, the window controller and the boxes that stand in for
+ * unmounted rows hold nothing, so they are not rows. A fully mounted transcript has messages where a windowed
+ * one has rows.
+ */
+export function topRow(scroll: ScrollBoxRenderable): Renderable | undefined {
+  const top = scroll.viewport.y
+  return scroll.getChildren().find((node) => node.getChildren().length > 0 && node.y + node.height > top)
+}
+
+export type Walk = {
+  /** Lines scrolled up. */
+  steps: number
+  /** Steps after which the row at the top of the viewport was not one line further down the screen. */
+  jumps: number
+  /** What the walk moved that row by, beyond the line each step scrolled, added up, in lines. */
+  driftPx: number
+  /** The most one step moved it by beyond that line, in lines. */
+  maxJumpPx: number
+  /** Steps after which the content was another height: rows mounted and measured at other than their estimate. */
+  corrected: number
+}
+
+/**
+ * Walks up one line at a time, `steps` of them or to the top, and follows the row at the top of the viewport.
+ * A line of scroll moves a row one line down the screen whatever the layout does above it: rows that are
+ * measured for the first time, mounted, opened or closed. A step after which the row is anywhere else is a
+ * jump, and so is one after which the row is gone: the viewport held content and it is not there any more.
+ *
+ * It reads where the row is after each frame and never the scroll offset. A transcript that holds its place
+ * moves the offset on its own, by what the layout above the viewport changed by, and the offset of one that
+ * does not is exactly what the reader does not see move.
+ */
+export async function walkUp(harness: PerfHarness, scroll: ScrollBoxRenderable, steps: number): Promise<Walk> {
+  let row = topRow(scroll)
+  let line = row?.y ?? 0
+  let height = scroll.scrollHeight
+  let walked = 0
+  let jumps = 0
+  let drift = 0
+  let widest = 0
+  let corrected = 0
+  while (walked < steps && scroll.scrollTop > 0) {
+    scroll.scrollBy(-1)
+    await harness.app.renderOnce()
+    walked++
+    if (scroll.scrollHeight !== height) corrected++
+    height = scroll.scrollHeight
+    if (row && !row.isDestroyed && scroll.getChildren().includes(row)) {
+      const extra = row.y - line - 1
+      if (extra !== 0) jumps++
+      drift += extra
+      widest = Math.max(widest, Math.abs(extra))
+    } else {
+      jumps++
+    }
+    row = topRow(scroll)
+    line = row?.y ?? 0
+  }
+  return { steps: walked, jumps, driftPx: Math.abs(drift), maxJumpPx: widest, corrected }
 }
 
 /**
@@ -529,6 +615,29 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
 
   const scroll = harness.scroll()
   if (scroll) {
+    // P11: the reader goes back through the transcript from the live end, a line at a time, the way a session
+    // is configured (the scroll box follows the end). A row's height is an estimate until the window mounts it
+    // and is measured from then on, and what it measures is rarely what it was estimated at, so this has to go
+    // first: after a scenario that scrolled through the transcript, there is nothing left to correct.
+    await fresh(harness)
+    await followTail(harness)
+    await settleScroll(harness)
+    const walk = await walkUp(harness, scroll, ANCHOR_STEPS)
+    if (walk.steps === 0) invalid("P11", "the viewport could not scroll up from the end")
+    // A walk that corrected nothing has nothing to hold in place and would pass any transcript.
+    if (isWindowed(harness.fixture.rows) && walk.corrected === 0) {
+      invalid("P11", "the walk met no row that was estimated: an earlier scenario already measured the transcript")
+    }
+    all.push(
+      result("P11", size, {
+        jumps: walk.jumps,
+        driftPx: walk.driftPx,
+        maxJumpPx: walk.maxJumpPx,
+        steps: walk.steps,
+        corrected: walk.corrected,
+      }),
+    )
+
     await fresh(harness)
     const cold = await coldScroll(harness, scroll)
     all.push(result("P8", size, { p99Ms: percentile(cold, 0.99), maxMs: Math.max(...cold), steps: cold.length }))
@@ -552,27 +661,6 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
     }
     all.push(result("P9", size, { p99Ms: percentile(hot, 0.99) }))
 
-    await fresh(harness)
-    scroll.stickyScroll = false
-    scroll.scrollTo(1_000_000)
-    await harness.app.renderOnce()
-    const anchorStart = scroll.scrollTop
-    const anchor: number[] = []
-    for (let index = 0; index < 200; index++) {
-      scroll.scrollBy(-1)
-      await harness.app.renderOnce()
-      anchor.push(scroll.scrollTop)
-    }
-    const anchorEnd = scroll.scrollTop
-    const expected = Math.max(0, anchorStart - 200)
-    all.push(
-      result("P11", size, {
-        driftPx: Math.abs(anchorEnd - expected),
-        stepMismatches: anchor.filter((top, index) => top - (index === 0 ? anchorStart : anchor[index - 1]) !== -1)
-          .length,
-      }),
-    )
-
     all.push(
       result("P10", size, {
         mountedRows: harness.counters.mountedRows(scroll),
@@ -588,7 +676,7 @@ export async function runScenarios(harness: PerfHarness, scope: ScenarioScope = 
     all.push(result("P8", size, { p99Ms: 0, maxMs: 0, steps: 0 }))
     all.push(result("P8'", size, { p99Ms: 0, maxMs: 0, steps: 0 }))
     all.push(result("P9", size, { p99Ms: 0 }))
-    all.push(result("P11", size, { driftPx: 0, stepMismatches: 0 }))
+    all.push(result("P11", size, { jumps: 0, driftPx: 0, maxJumpPx: 0, steps: 0, corrected: 0 }))
     all.push(result("P10", size, { mountedRows: 0, scrollChildren: 0, viewportRows: 0, rows: 0, windowed: 0 }))
   }
 
