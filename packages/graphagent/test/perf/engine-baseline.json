@@ -468,7 +468,8 @@
         "json.parseBytes",
         "json.encodeBytes",
         "sha256Bytes",
-        "snapshot.lockWaits"
+        "snapshot.lockWaits",
+        "git.spawns"
       ]
     },
     "S6": {
