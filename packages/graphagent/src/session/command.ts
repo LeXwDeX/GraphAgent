@@ -576,7 +576,7 @@ export function makeCommand(deps: CommandDeps) {
       { skipHookStart: true },
       commitAdmission,
       modelBaseline,
-      { kind: "user", via: "command" },
+      { origin: { kind: "user", via: "command" } },
     )
     yield* events.publish(Command.Event.Executed, {
       name: input.command,

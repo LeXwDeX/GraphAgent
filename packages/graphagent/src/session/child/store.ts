@@ -107,7 +107,7 @@ export function parseOutcome(value: Record<string, unknown> | null | undefined):
   }
 }
 
-export function viewOf(row: RunRow): ChildRunView {
+export function viewOf(row: RunRow, session?: Pick<ListedRun, "title" | "agent">): ChildRunView {
   const outcome = parseOutcome(row.outcome)
   return {
     id: row.id,
@@ -121,6 +121,8 @@ export function viewOf(row: RunRow): ChildRunView {
     ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
     timeCreated: row.time_created,
     ...(row.time_ended === null ? {} : { timeEnded: row.time_ended }),
+    ...(session?.title ? { title: session.title } : {}),
+    ...(session?.agent ? { agent: session.agent } : {}),
   }
 }
 
@@ -221,12 +223,27 @@ export const runOf = (db: Db, runID: string): Effect.Effect<Option.Option<RunRow
     .get()
     .pipe(Effect.orDie, Effect.map(Option.fromNullishOr))
 
-export const runsOfParent = (db: Db, parentSessionID: SessionID): Effect.Effect<RunRow[]> =>
+/** A run with the title and agent of its child session. */
+export interface ListedRun {
+  readonly run: RunRow
+  readonly title: string | null
+  readonly agent: string | null
+}
+
+/**
+ * The newest runs of one parent (`limit`; all of them without), each with its
+ * child session's title and agent. Read in `child_run_parent_time_idx` order,
+ * so a bound costs the rows it returns, not the parent's history.
+ */
+export const runsOfParent = (db: Db, parentSessionID: SessionID, limit?: number): Effect.Effect<ListedRun[]> =>
   db
-    .select()
+    .select({ run: ChildRunTable, title: SessionTable.title, agent: SessionTable.agent })
     .from(ChildRunTable)
+    .leftJoin(SessionTable, eq(SessionTable.id, ChildRunTable.child_session_id))
     .where(eq(ChildRunTable.parent_session_id, parentSessionID))
     .orderBy(desc(ChildRunTable.time_created))
+    // SQLite reads a negative limit as none.
+    .limit(limit ?? -1)
     .all()
     .pipe(Effect.orDie)
 

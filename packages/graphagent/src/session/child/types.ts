@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ChildOwnerKind, ChildRunState } from "@graphagent/core/session/child.sql"
+import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Schema, type Effect, type Option } from "effect"
+import type { PromptInput } from "../prompt-input"
 import type { SessionID } from "../schema"
 
 /**
@@ -13,6 +15,32 @@ import type { SessionID } from "../schema"
  */
 
 export type { ChildOwnerKind, ChildRunState }
+
+/**
+ * Declared and never defined: the key of the credential's brand. It is not
+ * exported, so no other module can name it and an object literal can never
+ * satisfy `ChildRunCredential`; only the registry's issuer casts one into being.
+ */
+declare const issuedByChildRuns: unique symbol
+
+/**
+ * The witness a driver of a child session carries into admission (Issue #1026,
+ * PR3b): proof that the prompt comes from the run that owns the child session.
+ * It is issued when a run is registered (`ChildRegistry.create`), by nothing
+ * else, and revoked when the run ends. A value of this type is never built
+ * outside `ChildRuns`: drivers receive it from the run and hand it on.
+ *
+ * Admission only records it for now; PR5 refuses a child session's prompt that
+ * does not carry the credential of its active run.
+ */
+export interface ChildRunCredential {
+  readonly [issuedByChildRuns]: true
+  readonly runID: string
+  /** The child session the run drives; a credential is valid for that session only. */
+  readonly childSessionID: SessionID
+  /** True once the run ended. A revoked credential still names the run it was issued for. */
+  readonly revoked: boolean
+}
 
 /** Who asked for the run. PR1 registers task owners only; DAG nodes arrive with PR4. */
 export type ChildOwner =
@@ -70,6 +98,9 @@ export interface ChildRunView {
   readonly reportedAt?: number
   readonly timeCreated: number
   readonly timeEnded?: number
+  /** The child session's title and agent, on the reads that join the session (`listByParent`). */
+  readonly title?: string
+  readonly agent?: string
 }
 
 /**
@@ -103,6 +134,14 @@ export interface ChildRunHandle {
    * reported by the foreground rule.
    */
   readonly detach: Effect.Effect<boolean>
+  /**
+   * True once the child's own loop skipped its main-agent `Stop` for this run
+   * because the run is a foreground task's and its tool call delivers
+   * `SubagentStop` instead (`ChildRegistry.delegateStop`). It stays readable
+   * after the run is detached or ended: a task promoted to the background
+   * after that exit can still deliver the stop event.
+   */
+  readonly stopDelegated: Effect.Effect<boolean>
   /** Resolves with the outcome that won, whoever settled or cancelled the run. */
   readonly settled: Effect.Effect<ChildRunOutcome>
   /** Resolves when the run is cancelled; never resolves for any other ending. */
@@ -133,9 +172,31 @@ export type ChildRunError = NotOwner | ActiveRunExists
 /** What happened to a cancellation request. */
 export type ChildRunCancelResult = "cancelled" | "not_active"
 
+/** What a driver may set on a prompt it sends to a child session. That it is a delegation is not its to choose. */
+export interface ChildPromptOptions {
+  /** A follow-up inside the same input keeps the tool budget the input already has. */
+  readonly continueToolBudget?: boolean
+}
+
 /** Child-run operations a tool sees for one parent session; the parent is fixed and cannot be named by the caller. */
 export interface ChildRunsScoped {
   readonly parentSessionID: SessionID
+  /**
+   * Prompts a child session of this parent and resolves with the last message
+   * of the turn it ran. The prompt is admitted as the delegation it is, under
+   * the credential of the session's active run: the run the driver registered
+   * with `start` / `adopt`, or the one it appended input to. A session without
+   * an active run of this parent is prompted without a credential for now
+   * (PR5 refuses it).
+   */
+  readonly prompt: (input: PromptInput, options?: ChildPromptOptions) => Effect.Effect<SessionV1.WithParts>
+  /**
+   * Cancels the turn a child session of this parent is running. The run is not
+   * touched: it ends with its driver, or through `cancel`.
+   */
+  readonly interrupt: (childSessionID: SessionID) => Effect.Effect<void>
+  /** The parts a task prompt template expands to (file references and the like). */
+  readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
   /** Registers the first run of a child session the parent just created. */
   readonly start: (spec: Omit<ChildRunSpec, "parentSessionID">) => Effect.Effect<ChildRunHandle>
   /**
@@ -160,7 +221,24 @@ export interface ChildRunsInterface {
   readonly adopt: (spec: ChildRunSpec) => Effect.Effect<ChildRunHandle, ChildRunError>
   readonly inspect: (runID: string) => Effect.Effect<Option.Option<ChildRunView>>
   readonly latest: (childSessionID: SessionID) => Effect.Effect<Option.Option<ChildRunView>>
-  readonly listByParent: (parentSessionID: SessionID) => Effect.Effect<ReadonlyArray<ChildRunView>>
+  /**
+   * The runs of one parent, newest first, with the title and agent of their
+   * child sessions. `limit` bounds how many are read (the newest ones); without
+   * it every run is.
+   */
+  readonly listByParent: (
+    parentSessionID: SessionID,
+    options?: { readonly limit?: number },
+  ) => Effect.Effect<ReadonlyArray<ChildRunView>>
+  /** `ChildRunsScoped.prompt` for a named parent. */
+  readonly prompt: (
+    parentSessionID: SessionID,
+    input: PromptInput,
+    options?: ChildPromptOptions,
+  ) => Effect.Effect<SessionV1.WithParts>
+  /** `ChildRunsScoped.interrupt` for a named parent. */
+  readonly interrupt: (parentSessionID: SessionID, childSessionID: SessionID) => Effect.Effect<void>
+  readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
   /**
    * Signal-and-return cancellation: the run ends `cancelled` synchronously
    * (compare-and-swap, credential revoked, row written), then the child

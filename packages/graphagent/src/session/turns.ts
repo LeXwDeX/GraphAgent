@@ -12,6 +12,8 @@ import type { Goal } from "@/goal/goal"
 import type { RewakeToken, SettingsHook } from "@/hook"
 import { SessionAbortReason } from "./abort-reason"
 import { SessionCancellation } from "./cancellation"
+import { ChildAdmission } from "./child/admission"
+import type { ChildRunCredential } from "./child/types"
 import { EngineProcess, runnerAlive } from "./engine-process"
 import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
 import { MessageV2 } from "./message-v2"
@@ -42,7 +44,11 @@ export { runnerAlive }
 export type TurnOrigin =
   | { readonly kind: "user"; readonly via: "prompt" | "command" | "shell" | "resume" }
   | { readonly kind: "inbox"; readonly source: string; readonly key: string }
-  /** Equivalent to today's `internalDelegation`; H3 owns the durable ChildRunID. */
+  /**
+   * Equivalent to today's `internalDelegation`. `childRunID` is the run whose
+   * credential the driver carried (Issue #1026, PR3b); a driver that carries
+   * none, the DAG until PR4, leaves it out.
+   */
   | { readonly kind: "child_run"; readonly childRunID?: string }
   /** Hook re-entries. The draft union omitted them; Issue #1019 maps tokens here. */
   | { readonly kind: "hook"; readonly via: "rewake" | "followup" }
@@ -158,14 +164,22 @@ export interface TurnStartOptions {
    * admission before anything is committed. The caller releases it.
    */
   readonly request?: ReturnType<typeof SessionCancellation.request>
+  /**
+   * The credential of the child run that drives the session (Issue #1026,
+   * PR3b). Admission records it at its two junctions, the admitted prompt and
+   * the start of its turn; the turn's origin names the run. It refuses nothing
+   * until PR5.
+   */
+  readonly credential?: ChildRunCredential
 }
 
 /**
  * What an immediate admission carries beyond its options: the origin an inbox
  * source stamps on the turn it starts (otherwise `originFor` derives one from
- * the options), and a cancellation request the caller already holds.
+ * the options), a cancellation request the caller already holds, and the
+ * credential of the child run a driver prompts under.
  */
-export type AdmissionExtras = Partial<Pick<TurnStartOptions, "origin" | "request">>
+export type AdmissionExtras = Partial<Pick<TurnStartOptions, "origin" | "request" | "credential">>
 
 /** What the loop machine reports at its exit; `Turns` persists it. */
 export interface TurnExecution {
@@ -211,6 +225,7 @@ export interface TurnDeps {
     options?: AdmissionOptions,
     commitAdmission?: AdmissionCommit,
     modelBaseline?: ModelBaseline,
+    credential?: ChildRunCredential,
   ) => Effect.Effect<Admission, PromptError | SessionAdmission.Blocked>
   readonly fenceRewake: (
     sessionID: SessionID,
@@ -261,9 +276,10 @@ export interface Interface {
   readonly begin: (sessionID: SessionID, origin: TurnOrigin, userMessageID?: MessageID) => TurnHandle
 }
 
-/** Map current admission options onto the turn origin vocabulary. */
-export function originFor(options?: AdmissionOptions): TurnOrigin {
-  if (options?.internalDelegation === true) return { kind: "child_run" }
+/** Map current admission options onto the turn origin vocabulary; a delegation names the run it carried. */
+export function originFor(options?: AdmissionOptions, credential?: ChildRunCredential): TurnOrigin {
+  if (options?.internalDelegation === true)
+    return { kind: "child_run", ...(credential ? { childRunID: credential.runID } : {}) }
   if (options?.rewakeToken !== undefined) return { kind: "hook", via: "rewake" }
   return { kind: "user", via: "prompt" }
 }
@@ -719,6 +735,7 @@ export function makeTurns(deps: TurnDeps): Interface {
             options.admissionOptions,
             options.commitAdmission,
             options.modelBaseline,
+            options.credential,
           )
           if (!admitted.run) {
             return {
@@ -736,6 +753,7 @@ export function makeTurns(deps: TurnDeps): Interface {
             Effect.gen(function* () {
               if (!(yield* deps.fenceRewake(input.sessionID, options.admissionOptions, admitted.message)))
                 return blockedExecution(admitted.message)
+              yield* ChildAdmission.observe("loop", { id: input.sessionID }, options.credential)
               return yield* deps.runLoop(input.sessionID)
             }),
           )

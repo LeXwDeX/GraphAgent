@@ -14,7 +14,6 @@ import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SettingsHook } from "@/hook"
 import { HookToolBatch } from "@/hook/tool-batch"
-import { TaskSubagents } from "@/hook/task-subagents"
 import { Permission } from "@/permission"
 import type { Provider } from "@/provider/provider"
 import { ToolRegistry } from "@/tool/registry"
@@ -23,6 +22,7 @@ import type { TaskPromptOps } from "@/tool/task"
 import { Token } from "@/util/token"
 import type { Agent } from "../../agent/agent"
 import { MCP } from "../../mcp"
+import { ChildRegistry } from "../child/registry"
 import type { SessionCompaction } from "../compaction"
 import type { Instruction } from "../instruction"
 import { MessageV2 } from "../message-v2"
@@ -1132,7 +1132,7 @@ function makeScopedAgentCleanup(deps: LoopDeps) {
   return (sessionID: SessionID) =>
     Effect.gen(function* () {
       const session = yield* sessions.get(sessionID).pipe(Effect.option)
-      if (Option.isNone(session) || !session.value.parentID || TaskSubagents.delegateStop(sessionID)) return
+      if (Option.isNone(session) || !session.value.parentID || ChildRegistry.delegateStop(sessionID)) return
       const active = yield* readScopedAgents()
       const origin = active.get(sessionID)
       if (origin && settingsHook?.unregisterScoped) yield* settingsHook.unregisterScoped(sessionID, origin)

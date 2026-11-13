@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Deferred, Effect } from "effect"
-import { EngineProcess, type ActiveChildRun, type ChildReport } from "../engine-process"
-import type { ChildCancelBy, ChildRunOutcome } from "./types"
+import { EngineProcess, type ActiveChildRun, type ChildReport, type IssuedCredential } from "../engine-process"
+import type { ChildCancelBy, ChildRunCredential, ChildRunOutcome } from "./types"
 
 /**
  * Zero-dependency access to the active child runs of this process (Issue
@@ -20,10 +20,18 @@ import type { ChildCancelBy, ChildRunOutcome } from "./types"
 
 const registry = EngineProcess.children
 
+/** The one place a credential is issued: with the run it belongs to, by nothing else. */
+function issue(runID: string, childSessionID: ActiveChildRun["childSessionID"]): IssuedCredential {
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the brand has no runtime value: issuing is the cast
+  return { runID, childSessionID, revoked: false } as IssuedCredential
+}
+
 export function create(input: {
   readonly id: string
   readonly childSessionID: ActiveChildRun["childSessionID"]
   readonly parentSessionID: ActiveChildRun["parentSessionID"]
+  readonly ownerKind: ActiveChildRun["ownerKind"]
+  readonly detached: boolean
   readonly directory: string | undefined
   readonly owner: object
 }): ActiveChildRun {
@@ -31,7 +39,8 @@ export function create(input: {
     ...input,
     phase: "queued",
     outcome: undefined,
-    credential: { runID: input.id, revoked: false },
+    stopDelegated: false,
+    credential: issue(input.id, input.childSessionID),
     held: false,
     stopped: false,
     written: false,
@@ -46,7 +55,22 @@ export function register(entry: ActiveChildRun): boolean {
   if (registry.bySession.has(entry.childSessionID)) return false
   registry.bySession.set(entry.childSessionID, entry.id)
   registry.byRun.set(entry.id, entry)
+  registry.parents.add(entry.parentSessionID)
   return true
+}
+
+/**
+ * Whether this process registered a run for `parentSessionID`. The delegations
+ * slot reads the database only for such parents: a session that never
+ * delegated costs no read.
+ */
+export function delegated(parentSessionID: string): boolean {
+  return registry.parents.has(parentSessionID)
+}
+
+/** A deleted parent no longer carries a slot. */
+export function forgetParent(parentSessionID: string): void {
+  registry.parents.delete(parentSessionID)
 }
 
 export function get(runID: string): ActiveChildRun | undefined {
@@ -67,9 +91,38 @@ export function activeWhere(predicate: (entry: ActiveChildRun) => boolean): Acti
  * The credential of a child session's active run. Admission and the loop of
  * later PRs call this instead of reading the process state themselves.
  */
-export function credentialOf(childSessionID: string): ActiveChildRun["credential"] | undefined {
+export function credentialOf(childSessionID: string): ChildRunCredential | undefined {
   const entry = activeFor(childSessionID)
   return entry && !entry.credential.revoked ? entry.credential : undefined
+}
+
+/** Whether `credential` is the live credential of its child session's active run: the check PR5 refuses on. */
+export function live(credential: ChildRunCredential): boolean {
+  return credentialOf(credential.childSessionID) === credential
+}
+
+/**
+ * The child's own loop calls this when it exits cleanly: true while the run
+ * that drives the child session is a foreground task's, whose tool call
+ * delivers `SubagentStop` (and drives its continuation) itself, so the loop
+ * must not also fire the main-agent `Stop`. Every other child session (SDK
+ * created, DAG nodes, background tasks) keeps firing its own. The delegation is
+ * recorded on the run, so a task promoted after that exit can still deliver
+ * the stop event.
+ */
+export function delegateStop(childSessionID: string): boolean {
+  const entry = activeFor(childSessionID)
+  if (!entry || entry.phase === "ended" || entry.ownerKind !== "task" || entry.detached) return false
+  entry.stopDelegated = true
+  return true
+}
+
+/**
+ * The run becomes detached: its result goes to the parent through the ledger,
+ * and the child's own loop fires its own `Stop` from here on. Idempotent.
+ */
+export function detach(entry: ActiveChildRun): void {
+  entry.detached = true
 }
 
 /** queued -> running. False when the run already ended. */

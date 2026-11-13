@@ -79,7 +79,7 @@ describe("RuntimeSlots.Slots", () => {
 
   test("rejects keys owned by the request builder", () => {
     const slots = RuntimeSlots.make()
-    for (const key of ["goal", "memory", "env", "date"]) {
+    for (const key of ["goal", "memory", "env", "date", "delegations"]) {
       expect(() => slots.set(sessionID, key, { parts: [], cleared: "cleared" })).toThrow(
         `Runtime slot "${key}" is owned by the request builder`,
       )

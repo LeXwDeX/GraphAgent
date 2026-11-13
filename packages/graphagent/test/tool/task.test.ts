@@ -14,7 +14,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
-import { SettingsHook, type TriggerResult } from "@/hook"
+import { SettingsHook, type HookPayload, type TriggerResult } from "@/hook"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { WorkflowTool } from "../../src/tool/workflow"
 import { GoalLoop } from "@/goal/loop"
@@ -25,7 +25,7 @@ import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { disposeAllInstances } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
-import { initTaskTool } from "../lib/child-runs"
+import { initTaskTool, type Drive } from "../lib/child-runs"
 import { resultDelivery, type Admitted } from "../lib/child-results"
 import { ChildBindingTable, ChildRunTable } from "@graphagent/core/session/child.sql"
 import { SessionTable } from "@graphagent/core/session/sql"
@@ -94,6 +94,21 @@ const stopped = testEffect(
               }
             : { additionalContexts: [], systemMessages: [] },
         ),
+      unregisterScoped: () => Effect.void,
+    }),
+  ),
+)
+// Records every hook the tool fires, answering none of them.
+const hookPayloads: HookPayload[] = []
+const hooked = testEffect(
+  Layer.mergeAll(
+    layer(),
+    Layer.mock(SettingsHook.Service, {
+      trigger: (payload): Effect.Effect<TriggerResult> =>
+        Effect.sync(() => {
+          hookPayloads.push(payload)
+          return { additionalContexts: [], systemMessages: [] }
+        }),
       unregisterScoped: () => Effect.void,
     }),
   ),
@@ -3060,6 +3075,209 @@ describe("tool.task child runs", () => {
       const exit = yield* def.execute(general, taskCtx(chat, assistant, stubOps())).pipe(Effect.exit)
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("requires ctx.children")
+    }),
+  )
+})
+
+// Issue #1026 PR3b: every prompt the task sends to its child goes through the child's run, as a delegation, under the
+// credential of the run the child session has at that moment, and the main-agent Stop of a foreground child belongs to
+// the tool call for as long as its run is foreground and active.
+describe("tool.task child driving", () => {
+  /** Every drive carried the live credential of the child's active run: the one it had to carry. */
+  const expectCarried = (drives: ReadonlyArray<Drive>, runID: string) => {
+    expect(drives.length).toBeGreaterThan(0)
+    for (const drive of drives) {
+      expect(drive.options.internalDelegation).toBe(true)
+      expect(drive.credential).toBeDefined()
+      expect(drive.credential).toBe(drive.active)
+      expect(drive.credential?.runID).toBe(runID)
+    }
+  }
+
+  it.instance("the first prompt of a foreground task carries the credential of its run", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+
+      const result = yield* def.execute(general, taskCtx(chat, assistant, stubOps()))
+
+      const child = SessionID.make(result.metadata.sessionID)
+      const [run] = yield* runsOf(child)
+      expect(def.drives).toHaveLength(1)
+      expect(def.drives[0]?.input.sessionID).toBe(child)
+      expect(def.drives[0]?.options).toEqual({ internalDelegation: true })
+      expectCarried(def.drives, run?.id ?? "")
+    }),
+  )
+
+  it.instance("the continuation of a child truncated at the output cap carries it too", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Effect.sync(() => {
+            prompts += 1
+            return prompts === 1 ? assistantReply(input, TRUNCATED) : assistantReply(input, { text: "CONTINUED ANSWER" })
+          }),
+      }
+
+      const result = yield* def.execute(general, taskCtx(chat, assistant, promptOps))
+
+      const [run] = yield* runsOf(SessionID.make(result.metadata.sessionID))
+      expect(def.drives.map((drive) => drive.options)).toEqual([
+        { internalDelegation: true },
+        { internalDelegation: true, continueToolBudget: true },
+      ])
+      expectCarried(def.drives, run?.id ?? "")
+    }),
+  )
+
+  stopped.instance("the continuation a blocked SubagentStop asks for carries it too", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const promptOps = stubOps({ text: "answer" })
+
+      const result = yield* def.execute(general, taskCtx(chat, assistant, promptOps))
+
+      const [run] = yield* runsOf(SessionID.make(result.metadata.sessionID))
+      // The first answer, then the continuation the hook blocked the stop for.
+      expect(def.drives.map((drive) => drive.options)).toEqual([
+        { internalDelegation: true },
+        { internalDelegation: true, continueToolBudget: true },
+      ])
+      expect(def.drives[1]?.input.parts[0]).toMatchObject({ type: "text", text: "verify the continuation" })
+      expectCarried(def.drives, run?.id ?? "")
+    }),
+  )
+
+  it.instance("a resumed task carries the credential of its new run, not the old one", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const first = yield* def.execute(general, taskCtx(chat, assistant, stubOps(), { callID: "call_first" }))
+      const child = SessionID.make(first.metadata.sessionID)
+      yield* endedRun(child)
+      const old = def.drives[0]?.credential
+
+      yield* def.execute({ ...general, task_id: child }, taskCtx(chat, assistant, stubOps(), { callID: "call_resume" }))
+
+      const runs = yield* runsOf(child)
+      expect(def.drives).toHaveLength(2)
+      expectCarried(def.drives.slice(0, 1), runs.find((row) => row.attempt === 1)?.id ?? "")
+      expectCarried(def.drives.slice(1), runs.find((row) => row.attempt === 2)?.id ?? "")
+      expect(def.drives[1]?.credential).not.toBe(old)
+      expect(old?.revoked).toBe(true)
+    }),
+  )
+
+  background.instance("input appended to a running background task is sent under the credential of its run", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const first = defer<void>()
+      const second = defer<void>()
+      let prompts = 0
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => {
+          prompts += 1
+          return prompts === 1
+            ? Effect.promise(() => first.promise).pipe(Effect.as(reply(input, "first done")))
+            : Effect.promise(() => second.promise).pipe(Effect.as(reply(input, "second done")))
+        },
+      }
+      const ctx = taskCtx(chat, assistant, promptOps)
+
+      const started = yield* def.execute({ ...general, background: true }, ctx)
+      const child = SessionID.make(started.metadata.sessionID)
+      yield* def.execute({ ...general, prompt: "also inspect cancellation", task_id: child }, ctx)
+      // The appended input registered no run of its own, and its prompt is the second one the child received.
+      first.resolve()
+      yield* pollWithTimeout(Effect.sync(() => (def.drives.length === 2 ? true : undefined)), "the appended input was never sent")
+      second.resolve()
+      expect((yield* jobs.wait({ id: child, timeout: 2_000 })).info?.status).toBe("completed")
+
+      const rows = yield* runsOf(child)
+      expect(rows).toHaveLength(1)
+      expectCarried(def.drives, rows[0]?.id ?? "")
+    }),
+  )
+
+  // The tool call delivers SubagentStop for the child of a foreground run, so the child's own loop leaves its Stop to
+  // it (`ChildRegistry.delegateStop`). A promotion hands the child's Stop back, but a stop the loop already skipped is
+  // still owed: the tool call delivers it once.
+  hooked.instance("a promotion after the child skipped its own Stop delivers SubagentStop once", () =>
+    Effect.gen(function* () {
+      hookPayloads.length = 0
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Effect.gen(function* () {
+            // The child's loop reached a clean exit while its run was a foreground task's.
+            expect(ChildRegistry.delegateStop(input.sessionID)).toBe(true)
+            yield* Deferred.succeed(ready, undefined)
+            yield* Deferred.await(done)
+            return reply(input, "finished")
+          }),
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      if (!job) throw new Error("task job not found")
+      yield* jobs.promote(job.id)
+      const result = yield* Fiber.join(fiber)
+
+      expect(result.metadata.background).toBe(true)
+      const child = SessionID.make(result.metadata.sessionID)
+      expect(hookPayloads.filter((payload) => payload.event === "SubagentStop")).toHaveLength(1)
+      // From the promotion on, the child is a background task and fires its own Stop.
+      expect(ChildRegistry.delegateStop(child)).toBe(false)
+      yield* Deferred.succeed(done, undefined)
+      yield* endedRun(child)
+    }),
+  )
+
+  hooked.instance("a promotion before the child's exit hands its Stop back: the tool call delivers none", () =>
+    Effect.gen(function* () {
+      hookPayloads.length = 0
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Deferred.succeed(ready, undefined).pipe(
+            Effect.andThen(Deferred.await(done)),
+            Effect.map(() => reply(input, "finished")),
+          ),
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      if (!job) throw new Error("task job not found")
+      yield* jobs.promote(job.id)
+      const result = yield* Fiber.join(fiber)
+      const child = SessionID.make(result.metadata.sessionID)
+
+      // The child exits after the promotion: its run is detached, so its loop does not leave its Stop to anyone.
+      expect(ChildRegistry.delegateStop(child)).toBe(false)
+      expect(hookPayloads.filter((payload) => payload.event === "SubagentStop")).toEqual([])
+      yield* Deferred.succeed(done, undefined)
+      yield* endedRun(child)
     }),
   )
 })

@@ -7,7 +7,7 @@
     "src/session/llm.ts#run": 368,
     "src/session/processor.ts#create": 898,
     "src/session/processor.ts#handleEvent": 324,
-    "src/session/turn/admit.ts#admitPrompt": 166,
+    "src/session/turn/admit.ts#admitPrompt": 165,
     "src/session/turn/admit.ts#makeAdmit": 546,
     "src/session/turn/prepare.ts#buildTurnRequest": 213,
     "src/session/turn/prepare.ts#createUserMessage": 381,

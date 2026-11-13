@@ -9,7 +9,21 @@ import { eq, sql } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FetchHttpClient } from "effect/http"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } from "effect"
+import {
+  Cause,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  Option,
+  References,
+  Schema,
+  Scope,
+  Stream,
+} from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@graphagent/core/util/error"
@@ -32,6 +46,7 @@ import { TodoReminders } from "../../src/session/todo-reminders"
 import { Session } from "@/session/session"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
+import { ChildRunTable } from "@graphagent/core/session/child.sql"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -3063,6 +3078,170 @@ unix(
       for (let i = 1; i < max; i++) expect(subStops[i].stopHookActive).toBe(true)
     }),
   30_000,
+)
+
+// Issue #1026 PR3b: a task drives its child through the child's run. The prompt is admitted under the run's
+// credential, and the turn it starts names that run: the turn row is the durable record of who drove it.
+unix(
+  "a task drives its child under its run's credential, and the child's turn records the run",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { general: { model: "test/test-model" } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      const chat = yield* sessions.create({
+        title: "task-credential",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("task", { description: "credential probe", prompt: "say ok", subagent_type: "general" })
+      yield* llm.text("sub answer")
+      yield* llm.text("parent done")
+
+      yield* prompt.prompt({ sessionID: chat.id, agent: "build", parts: [{ type: "text", text: "delegate" }] })
+
+      const child = (yield* sessions.children(chat.id))[0]
+      if (!child) throw new Error("the task created no child session")
+      const runs = yield* db
+        .select()
+        .from(ChildRunTable)
+        .where(eq(ChildRunTable.child_session_id, child.id))
+        .all()
+        .pipe(Effect.orDie)
+      const turns = yield* db
+        .select()
+        .from(SessionTurnTable)
+        .where(eq(SessionTurnTable.session_id, child.id))
+        .all()
+        .pipe(Effect.orDie)
+      expect(runs).toHaveLength(1)
+      expect(turns).toHaveLength(1)
+      expect(turns[0]).toMatchObject({
+        state: "ended",
+        origin: JSON.stringify({ kind: "child_run", childRunID: runs[0]?.id }),
+        origin_ref: runs[0]?.id,
+      })
+    }),
+  30_000,
+)
+
+// The credential reaches admission at two junctions, the admitted prompt and the start of its turn, and both only
+// record it (PR5 refuses on it): the child's prompt still runs, with or without one.
+it.instance("admission records the credential a child is prompted under at both junctions, and refuses nothing", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    const child = yield* sessions.create({ parentID: chat.id, title: "probe (@general subagent)", agent: "general" })
+    const children = (yield* prompt.children).forParent(chat.id)
+    const run = yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "task", toolCallID: "call_junctions" },
+      detached: false,
+    })
+    yield* run.markRunning
+    const lines: string[] = []
+    const record = Logger.make((entry) => {
+      lines.push(JSON.stringify(entry.message))
+    })
+    const drive = (text: string) =>
+      children
+        .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text }] })
+        .pipe(
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
+          Effect.provide(Logger.layer([record])),
+        )
+
+    yield* llm.text("child done")
+    const answered = yield* drive("under the credential")
+    expect(answered.info.role).toBe("assistant")
+    const presented = lines.filter((line) => line.includes("child run credential presented"))
+    expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual(["admit", "loop"])
+    for (const line of presented) expect(line).toContain(`"runID":"${run.id}"`)
+
+    // A prompt that carries none is recorded as the gap it is, and still runs.
+    lines.length = 0
+    yield* run.settle({ type: "completed" })
+    yield* llm.text("child done again")
+    const bare = yield* prompt
+      .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "no credential" }] })
+      .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
+    expect(bare.info.role).toBe("assistant")
+    expect(lines.filter((line) => line.includes("without a run credential"))).toHaveLength(1)
+    expect(lines.filter((line) => line.includes("child run credential presented"))).toEqual([])
+  }),
+)
+
+// A child with a queued initial hook message (SessionStart `initialUserMessage`) is not started by the task's prompt
+// alone: `resume` admits the hook message as the first turn, and finishes with the task prompt it saved as a followup.
+// Both turns are the run's, so both name it in their origin and carry its credential through both junctions.
+it.instance(
+  "a child with an initial hook message carries its run's credential on the initial turn and on the saved followup",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      const lifecycle = yield* HookLifecycle.Service
+      const { db } = yield* Database.Service
+      const child = yield* sessions.create({ parentID: chat.id, title: "probe (@general subagent)", agent: "general" })
+      const children = (yield* prompt.children).forParent(chat.id)
+      const run = yield* children.start({
+        childSessionID: child.id,
+        owner: { kind: "task", toolCallID: "call_initial_hook" },
+        detached: false,
+      })
+      yield* run.markRunning
+      yield* lifecycle.queueInitial(child.id, "HOOK_INITIAL_MESSAGE")
+      yield* llm.text("initial answer")
+      yield* llm.text("followup answer")
+      const lines: string[] = []
+      const record = Logger.make((entry) => {
+        lines.push(JSON.stringify(entry.message))
+      })
+
+      const answered = yield* children
+        .prompt({ sessionID: child.id, agent: "build", parts: [{ type: "text", text: "TASK_PROMPT" }] })
+        .pipe(Effect.provideService(References.MinimumLogLevel, "Debug"), Effect.provide(Logger.layer([record])))
+
+      // The task prompt ran as the followup, after the hook message's turn.
+      expect(answered.parts.some((part) => part.type === "text" && part.text === "followup answer")).toBe(true)
+      const requests = yield* llm.inputs
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[0]?.messages)).toContain("HOOK_INITIAL_MESSAGE")
+      expect(JSON.stringify(requests[0]?.messages)).not.toContain("TASK_PROMPT")
+      expect(JSON.stringify(requests[1]?.messages)).toContain("TASK_PROMPT")
+      expect((yield* sessions.get(child.id)).metadata?.hookPendingInput).toBeUndefined()
+
+      // Both turns name the run that drove them.
+      const turns = yield* db
+        .select()
+        .from(SessionTurnTable)
+        .where(eq(SessionTurnTable.session_id, child.id))
+        .all()
+        .pipe(Effect.orDie)
+      expect(turns).toHaveLength(2)
+      for (const turn of turns) {
+        expect(turn).toMatchObject({
+          state: "ended",
+          origin: JSON.stringify({ kind: "child_run", childRunID: run.id }),
+          origin_ref: run.id,
+        })
+      }
+      // Both junctions saw the live credential, on both turns: the admitted message, then the start of its turn.
+      const presented = lines.filter((line) => line.includes("child run credential presented"))
+      expect(presented.map((line) => line.match(/"junction":"(\w+)"/)?.[1])).toEqual([
+        "admit",
+        "loop",
+        "admit",
+        "loop",
+      ])
+      for (const line of presented) expect(line).toContain(`"runID":"${run.id}"`)
+      expect(lines.filter((line) => line.includes("without a run credential"))).toEqual([])
+      expect(lines.filter((line) => line.includes("does not belong"))).toEqual([])
+      yield* run.settle({ type: "completed" })
+    }),
 )
 
 backgroundUnix(
@@ -7517,6 +7696,63 @@ it.instance("an owner runtime slot adds a block without changing the system pref
     expect(JSON.stringify(inputs[1]?.tools)).toBe(JSON.stringify(inputs[0]?.tools))
     expect(JSON.stringify(inputs[0]?.messages)).not.toContain("<dag_mode>on</dag_mode>")
     expect(JSON.stringify(inputs[1]?.messages)).toContain("<dag_mode>on</dag_mode>")
+  }),
+)
+
+// Issue #1026 PR3b: what a parent delegated travels in the runtime context. A parent that never delegated carries
+// nothing; one that did gets a block when its runs change, and every block already sent stays where it was.
+it.instance("a parent that delegated carries its runs in the runtime context, and the cached prefix stays put", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    const children = (yield* prompt.children).forParent(chat.id)
+    const ask = Effect.fn("test.ask")(function* (text: string) {
+      yield* prompt.prompt({ sessionID: chat.id, agent: "build", noReply: true, parts: [{ type: "text", text }] })
+      yield* llm.text(`${text} done`)
+      yield* prompt.loop({ sessionID: chat.id })
+    })
+
+    yield* ask("one")
+    const worker = yield* sessions.create({
+      parentID: chat.id,
+      title: "audit the cache (@general subagent)",
+      agent: "general",
+    })
+    const run = yield* children.start({
+      childSessionID: worker.id,
+      owner: { kind: "task", toolCallID: "call_delegations" },
+      detached: true,
+    })
+    yield* run.markRunning
+    yield* ask("two")
+    // The same runs again: no second block.
+    yield* ask("three")
+    yield* run.settle({ type: "completed" }, { title: "audit the cache", text: "clean" })
+    yield* ask("four")
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(4)
+    const requests = inputs.map(requestMessages)
+    const messages = inputs.map((input) => JSON.stringify(input.messages))
+    const blocks = (text: string) => (text.match(/<delegations>/g) ?? []).length
+    expect(messages.map(blocks)).toEqual([0, 1, 1, 2])
+    expect(messages[1]).toContain(
+      `id=\\"${worker.id}\\" agent=\\"general\\" state=\\"running\\" background=\\"true\\">audit the cache`,
+    )
+    expect(messages[3]).toContain('state=\\"completed\\" background=\\"true\\" delivery=\\"pending\\"')
+    // The block is runtime context, never the system prompt or the tool list.
+    for (const [index, input] of inputs.entries()) {
+      expect(requests[index]?.system).toBe(requests[0]?.system)
+      expect(JSON.stringify(input.tools)).toBe(JSON.stringify(inputs[0]?.tools))
+    }
+    expect(requests[0]?.system).toContain("runtime_context")
+    expect(requests[0]?.system).not.toContain("delegations")
+    // Each request extends the one before it: what it sent earlier is still there, at the same positions.
+    for (const [index, request] of requests.entries()) {
+      if (index === 0) continue
+      const before = requests[index - 1]?.conversation ?? []
+      expect(request.conversation.slice(0, before.length)).toEqual(before)
+    }
   }),
 )
 

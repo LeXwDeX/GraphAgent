@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto"
 import { makeSessionRuntimes, type SessionRuntimes } from "./runtime"
 import { SessionID } from "./schema"
 import { AgentSchedulerState } from "./agent-scheduler-state"
-import type { ChildCancelBy, ChildRunOutcome } from "./child/types"
+import type { ChildCancelBy, ChildOwnerKind, ChildRunCredential, ChildRunOutcome } from "./child/types"
 
 /**
  * Process-wide engine state (Issue #1019, PR9).
@@ -196,27 +196,30 @@ export interface RunnerIdentity {
 export type ChildRunPhase = "queued" | "running" | "ended"
 
 /**
- * Placeholder for the run credential (Issue #1026, PR1): issued with a run and
- * revoked when it ends. PR3/PR5 carry a module-private brand of it on
- * admission; PR1 only issues and revokes it.
+ * The registry's own view of a run's credential (Issue #1026): it alone flips
+ * `revoked`, when the run ends. Everyone else sees the readonly
+ * `ChildRunCredential` it hands out.
  */
-export interface ChildRunCredential {
-  readonly runID: string
-  revoked: boolean
-}
+export type IssuedCredential = ChildRunCredential & { revoked: boolean }
 
 /** One active child run of this process. The durable `child_run` row stays authoritative across processes. */
 export interface ActiveChildRun {
   readonly id: string
   readonly childSessionID: SessionID
   readonly parentSessionID: SessionID
+  /** Who owns the run. A foreground task's tool call delivers the child's `SubagentStop` (`ChildRegistry.delegateStop`). */
+  readonly ownerKind: ChildOwnerKind
   /** Instance directory that started the run; disposing the instance ends its runs. */
   readonly directory: string | undefined
   /** The `ChildRuns` instance that started the run; closing it ends the runs it started. */
   readonly owner: object
   phase: ChildRunPhase
   outcome: ChildRunOutcome | undefined
-  readonly credential: ChildRunCredential
+  /** Its result goes to the parent through the result ledger. Starts as registered; a promotion makes it true. */
+  detached: boolean
+  /** The child's own loop skipped its main-agent `Stop` for this run (`ChildRegistry.delegateStop`). */
+  stopDelegated: boolean
+  readonly credential: IssuedCredential
   /**
    * An ended run's child session stays reserved while its driver may still be
    * running: set by a cancellation, cleared once the driver reports it stopped.
@@ -254,6 +257,12 @@ export interface ChildRunRegistryState {
    * over from before a restart, and which cancellation epoch it ended in.
    */
   readonly reports: Map<string, ChildReport>
+  /**
+   * The parents that registered a child run in this process (Issue #1026,
+   * PR3b), until the session is deleted. Only their requests can carry a
+   * delegations slot, so a session that never delegated costs no read.
+   */
+  readonly parents: Set<string>
 }
 
 /**
@@ -309,7 +318,7 @@ export const EngineProcess: EngineProcess = {
   },
   scheduler: AgentSchedulerState.makeState(),
   runner: makeRunnerIdentity(),
-  children: { byRun: new Map(), bySession: new Map(), reports: new Map() },
+  children: { byRun: new Map(), bySession: new Map(), reports: new Map(), parents: new Set() },
 }
 
 /**
