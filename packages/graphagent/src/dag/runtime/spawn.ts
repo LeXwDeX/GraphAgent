@@ -1623,10 +1623,16 @@ export function spawnNode(
             // A control op that abandons the attempt (replan, pause-replace,
             // deletion) breaks the continuation loop without a durable
             // settlement; the run must not stay active for the next adopt.
-            Effect.ensuring(
-              Effect.suspend(() =>
-                run === undefined ? Effect.void : run.settle({ type: "interrupted", reason: "attempt-abandoned" }),
-              ),
+            // A non-interrupt failure is left to the outer catchCause, which
+            // settles the run with the real error *after* nodeFailed accepts
+            // it; settling "interrupted" here would win the first-writer-wins
+            // swap and hide that error.
+            Effect.onExit((exit) =>
+              Effect.suspend(() => {
+                if (run === undefined) return Effect.void
+                if (Exit.isFailure(exit) && !Cause.hasInterrupts(exit.cause)) return Effect.void
+                return run.settle({ type: "interrupted", reason: "attempt-abandoned" })
+              }),
             ),
           )
         }).pipe(Effect.ensuring(Effect.suspend(() => (slot ? slot.release : Effect.void))))

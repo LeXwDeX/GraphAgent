@@ -946,6 +946,21 @@ describe("spawnNode child run", () => {
     expect(created[0]?.permission ?? []).toContainEqual({ permission: "bash", pattern: "*", action: "deny" })
   })
 
+  it("settles an unexpected prompt failure as an error, never as an abandoned interrupt", async () => {
+    const { dagLayer } = makeEventTracker()
+    const { layer, stub } = mockSessionPromptWithStub({
+      prompt: () => Effect.die(new Error("provider crashed")),
+    })
+
+    await runSpawn(dagLayer, layer)
+
+    expect(stub.settled[0]?.outcome).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("provider crashed"),
+    })
+    expect(stub.settled.some((entry) => entry.outcome.type === "interrupted")).toBe(false)
+  })
+
   it("cancels the registered run when nodeStarted rejects the attempt", async () => {
     const events: TrackedEvent[] = []
     const dagLayer = Layer.mock(Dag.Service, {
