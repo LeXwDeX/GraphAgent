@@ -274,13 +274,19 @@ const handleOf = (ctx: Ctx, entry: ActiveChildRun, attempt: number): ChildRunHan
       }),
     ),
   detach: detach(ctx)(entry.id),
+  stopDelegated: Effect.sync(() => entry.stopDelegated),
   settled: Deferred.await(entry.done),
   cancelled: Deferred.await(entry.cancelled),
 })
 
-// A failed write is logged, not raised: a promotion must not fail because the row could not follow it.
+// The registry flips first and synchronously: from the moment the promotion is seen, the child's own loop fires its
+// own Stop. A failed write is logged, not raised: a promotion must not fail because the row could not follow it.
 const detach = (ctx: Ctx) => (runID: string) =>
-  Effect.suspend(() => Store.detachRun(ctx.db, runID)).pipe(
+  Effect.suspend(() => {
+    const entry = Registry.get(runID)
+    if (entry) Registry.detach(entry)
+    return Store.detachRun(ctx.db, runID)
+  }).pipe(
     Effect.catchCause((cause) =>
       Cause.hasInterrupts(cause)
         ? Effect.interrupt
@@ -298,6 +304,8 @@ const newEntry = (ctx: Ctx, spec: ChildRunSpec) =>
       id: `crun_${randomUUID()}`,
       childSessionID: spec.childSessionID,
       parentSessionID: spec.parentSessionID,
+      ownerKind: spec.owner.kind,
+      detached: spec.detached,
       directory: instance?.directory,
       owner: ctx.owner,
     })

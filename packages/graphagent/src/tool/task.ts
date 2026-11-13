@@ -19,7 +19,6 @@ import { Database } from "@graphagent/core/database/database"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { SettingsHook, type TriggerResult } from "@/hook"
 import { HookStartContext } from "@/hook/start-context"
-import { TaskSubagents } from "@/hook/task-subagents"
 import { HookTurnContext } from "@/hook/turn-context"
 
 /**
@@ -711,11 +710,9 @@ export const TaskTool = Tool.define(
       if (!handle) return yield* Effect.die(new Error("The task run was not registered"))
       const registered = handle
 
-      // Foreground task call: this tool fires SubagentStop for the child, so the
-      // child's own prompt loop must skip the main-agent Stop (see TaskSubagents).
-      // Released at promotion to background or when the foreground wait ends.
-      const subagent = runInBackground ? undefined : yield* TaskSubagents.register(nextSession.id)
-      const releaseSubagent = subagent?.release ?? Effect.void
+      // A foreground run is this call's: it fires SubagentStop for the child, so the child's own prompt loop skips
+      // the main-agent Stop for as long as the run is foreground and active (`ChildRegistry.delegateStop`). A
+      // promotion detaches the run, and from then on the child is a background task and fires its own Stop.
       const info = yield* background
         .start({
           id: nextSession.id,
@@ -735,8 +732,6 @@ export const TaskTool = Tool.define(
               metadata: { ...metadata, background: true, jobId: nextSession.id },
             }),
             notify(nextSession.id, registered),
-            // From here the child is a background task and fires its own Stop.
-            releaseSubagent,
           ]),
           // A background run is watched from the job's own start; a foreground
           // run is settled by this call once it has seen the whole task through.
@@ -753,7 +748,6 @@ export const TaskTool = Tool.define(
             (started) => started.metadata?.childRunID === registered.id,
             () => new Error(`Task ${nextSession.id} is still finishing its previous run; try again in a moment.`),
           ),
-          Effect.onError(() => releaseSubagent),
         )
 
       function backgroundResult() {
@@ -779,7 +773,7 @@ export const TaskTool = Tool.define(
         return backgroundResult()
       }
 
-      const runCancel = yield* EffectBridge.make().pipe(Effect.onError(() => releaseSubagent))
+      const runCancel = yield* EffectBridge.make()
       const cancel = children.interrupt(nextSession.id)
 
       function onAbort() {
@@ -829,14 +823,14 @@ export const TaskTool = Tool.define(
         // subagent for another turn; the next SubagentStop then carries
         // stop_hook_active=true so a well-behaved hook stops blocking (anti-loop,
         // mirroring the prompt.ts Stop path). Skipped when promoted to background
-        // (the subagent is still running, not stopped); promotion released the
-        // TaskSubagents registration, so the child's own loop fires Stop.
+        // (the subagent is still running, not stopped); promotion detached the
+        // run, so the child's own loop fires Stop.
         const promoted = Boolean((output.metadata as { background?: boolean } | undefined)?.background)
         retainScopedAgent = promoted
         // Promotion raced a clean child exit that had already skipped its own
         // Stop for this call: deliver SubagentStop once (no continuation, the
         // task now runs in the background).
-        if (settingsHook && promoted && subagent && (yield* subagent.stopDelegated)) {
+        if (settingsHook && promoted && (yield* registered.stopDelegated)) {
           const stopResult = yield* settingsHook
             .trigger(yield* stopPayload(false), { sessionID: ctx.sessionID })
             .pipe(Effect.catch(() => Effect.succeed({ additionalContexts: [], systemMessages: [] } as TriggerResult)))
@@ -952,7 +946,6 @@ export const TaskTool = Tool.define(
         }
         return output
       }).pipe(
-        Effect.ensuring(releaseSubagent),
         Effect.ensuring(
           Effect.suspend(() =>
             !retainScopedAgent && settingsHook?.unregisterScoped

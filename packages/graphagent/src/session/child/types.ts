@@ -134,6 +134,14 @@ export interface ChildRunHandle {
    * reported by the foreground rule.
    */
   readonly detach: Effect.Effect<boolean>
+  /**
+   * True once the child's own loop skipped its main-agent `Stop` for this run
+   * because the run is a foreground task's and its tool call delivers
+   * `SubagentStop` instead (`ChildRegistry.delegateStop`). It stays readable
+   * after the run is detached or ended: a task promoted to the background
+   * after that exit can still deliver the stop event.
+   */
+  readonly stopDelegated: Effect.Effect<boolean>
   /** Resolves with the outcome that won, whoever settled or cancelled the run. */
   readonly settled: Effect.Effect<ChildRunOutcome>
   /** Resolves when the run is cancelled; never resolves for any other ending. */

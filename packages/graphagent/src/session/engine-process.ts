@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto"
 import { makeSessionRuntimes, type SessionRuntimes } from "./runtime"
 import { SessionID } from "./schema"
 import { AgentSchedulerState } from "./agent-scheduler-state"
-import type { ChildCancelBy, ChildRunCredential, ChildRunOutcome } from "./child/types"
+import type { ChildCancelBy, ChildOwnerKind, ChildRunCredential, ChildRunOutcome } from "./child/types"
 
 /**
  * Process-wide engine state (Issue #1019, PR9).
@@ -207,12 +207,18 @@ export interface ActiveChildRun {
   readonly id: string
   readonly childSessionID: SessionID
   readonly parentSessionID: SessionID
+  /** Who owns the run. A foreground task's tool call delivers the child's `SubagentStop` (`ChildRegistry.delegateStop`). */
+  readonly ownerKind: ChildOwnerKind
   /** Instance directory that started the run; disposing the instance ends its runs. */
   readonly directory: string | undefined
   /** The `ChildRuns` instance that started the run; closing it ends the runs it started. */
   readonly owner: object
   phase: ChildRunPhase
   outcome: ChildRunOutcome | undefined
+  /** Its result goes to the parent through the result ledger. Starts as registered; a promotion makes it true. */
+  detached: boolean
+  /** The child's own loop skipped its main-agent `Stop` for this run (`ChildRegistry.delegateStop`). */
+  stopDelegated: boolean
   readonly credential: IssuedCredential
   /**
    * An ended run's child session stays reserved while its driver may still be

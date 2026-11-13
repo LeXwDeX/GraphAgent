@@ -488,6 +488,8 @@ describe("registry hold", () => {
       id: `crun_hold_${name}_${Math.random().toString(36).slice(2)}`,
       childSessionID: childID(name),
       parentSessionID: parentID(name),
+      ownerKind: "task",
+      detached: false,
       directory: undefined,
       owner: {},
     })
@@ -699,6 +701,8 @@ describe("ChildRuns.adopt", () => {
         id: runID,
         childSessionID: elsewhere,
         parentSessionID: parent,
+        ownerKind: "task",
+        detached: false,
         directory: undefined,
         owner: {},
       })

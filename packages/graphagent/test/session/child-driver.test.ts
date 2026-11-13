@@ -308,6 +308,101 @@ describe("ChildRuns.interrupt", () => {
   )
 })
 
+describe("ChildRegistry.delegateStop", () => {
+  it.effect("is true only while the session's active run is a foreground task's, and records the delegation", () =>
+    Effect.gen(function* () {
+      const { scoped, newChild } = yield* setup("stop")
+      const child = yield* newChild()
+      expect(ChildRegistry.delegateStop(child)).toBe(false)
+
+      const handle = yield* scoped.start({ childSessionID: child, owner: task("call_1"), detached: false })
+      expect(yield* handle.stopDelegated).toBe(false)
+      expect(ChildRegistry.delegateStop(child)).toBe(true)
+      expect(yield* handle.stopDelegated).toBe(true)
+
+      yield* handle.settle({ type: "completed" })
+      // The run is over: the child's loop keeps its own Stop, and the record stays readable.
+      expect(ChildRegistry.delegateStop(child)).toBe(false)
+      expect(yield* handle.stopDelegated).toBe(true)
+    }),
+  )
+
+  it.effect("a promotion hands Stop back to the child, and a delegation made before it stays on record", () =>
+    Effect.gen(function* () {
+      const { scoped, newChild } = yield* setup("promoted")
+      const early = yield* newChild("early")
+      const late = yield* newChild("late")
+      const promotedEarly = yield* scoped.start({ childSessionID: early, owner: task("call_1"), detached: false })
+      const promotedLate = yield* scoped.start({ childSessionID: late, owner: task("call_2"), detached: false })
+
+      // Promoted before the child exits: the child fires its own Stop and nothing was delegated.
+      yield* promotedEarly.detach
+      yield* promotedEarly.detach
+      expect(ChildRegistry.delegateStop(early)).toBe(false)
+      expect(yield* promotedEarly.stopDelegated).toBe(false)
+
+      // Promoted after a clean exit that skipped its Stop: the tool call can still deliver it.
+      expect(ChildRegistry.delegateStop(late)).toBe(true)
+      yield* promotedLate.detach
+      expect(ChildRegistry.delegateStop(late)).toBe(false)
+      expect(yield* promotedLate.stopDelegated).toBe(true)
+
+      yield* promotedEarly.settle({ type: "completed" })
+      yield* promotedLate.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("never delegates for a background run, a DAG node's run, or a session with no run", () =>
+    Effect.gen(function* () {
+      const { children, scoped, parent, newChild } = yield* setup("others")
+      const background = yield* newChild("background")
+      const node = yield* newChild("node")
+      const loose = yield* newChild("loose")
+      const detached = yield* scoped.start({ childSessionID: background, owner: task("call_1"), detached: true })
+      const dag = yield* children.start({
+        parentSessionID: parent,
+        childSessionID: node,
+        owner: { kind: "dag_node", workflowID: "wf", nodeID: "n01", attempt: 1 },
+        detached: false,
+      })
+
+      expect(ChildRegistry.delegateStop(background)).toBe(false)
+      expect(ChildRegistry.delegateStop(node)).toBe(false)
+      expect(ChildRegistry.delegateStop(loose)).toBe(false)
+      yield* detached.settle({ type: "completed" })
+      yield* dag.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("a run that ended delegates nothing, even while its session is still held for its driver", () =>
+    Effect.gen(function* () {
+      const { children, scoped, newChild } = yield* setup("ended")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({ childSessionID: child, owner: task("call_1"), detached: false })
+
+      yield* children.cancel(handle.id, { kind: "engine", reason: "test" })
+      expect(ChildRegistry.activeFor(child)?.phase).toBe("ended")
+      expect(ChildRegistry.delegateStop(child)).toBe(false)
+      expect(yield* handle.stopDelegated).toBe(false)
+      yield* handle.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("a later run of the session starts with nothing delegated", () =>
+    Effect.gen(function* () {
+      const { scoped, newChild } = yield* setup("fresh")
+      const child = yield* newChild()
+      const first = yield* scoped.start({ childSessionID: child, owner: task("call_1"), detached: false })
+      expect(ChildRegistry.delegateStop(child)).toBe(true)
+      yield* first.settle({ type: "completed" })
+
+      const second = yield* scoped.adopt({ childSessionID: child, owner: task("call_2"), detached: false })
+      expect(yield* second.stopDelegated).toBe(false)
+      yield* second.settle({ type: "completed" })
+    }),
+  )
+})
+
 describe("ChildAdmission.observe", () => {
   const record = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {

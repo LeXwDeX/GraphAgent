@@ -7,9 +7,9 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { BackgroundJob } from "@/background/job"
 import { SettingsHook, type TriggerResult } from "@/hook"
 import type { HookLifecycle } from "@/hook/lifecycle"
-import { TaskSubagents } from "@/hook/task-subagents"
 import { HookTurnContext } from "@/hook/turn-context"
 import { Effect } from "effect"
+import { ChildRegistry } from "../child/registry"
 import { MessageID, PartID, type SessionID } from "../schema"
 import type { Session } from "../session"
 import type { Decide } from "./decide"
@@ -78,12 +78,13 @@ function makePolicyResolver(deps: StopDeps) {
     // Main-agent Stop does not fire for a foreground task-tool subagent's clean
     // exit: task.ts fires SubagentStop (and drives its continuation) for it.
     // task.ts fails a child that ended in error or was cancelled without
-    // SubagentStop, so StopFailure still fires for those. Only positively
-    // registered sessions are skipped; any other child still fires Stop. DAG
-    // owners defer their one notification until the whole attempt settles.
+    // SubagentStop, so StopFailure still fires for those. Only a session whose
+    // active run is a foreground task's is skipped (`ChildRegistry.delegateStop`);
+    // any other child still fires Stop. DAG owners defer their one notification
+    // until the whole attempt settles.
     const ownerDefersStop =
       !input.error &&
-      (TaskSubagents.delegateStop(input.sessionID) ||
+      (ChildRegistry.delegateStop(input.sessionID) ||
         (hookLifecycle !== undefined && (yield* hookLifecycle.isChildStopDelegated(input.sessionID))))
     return { policy: { event, enabled: settingsHook !== undefined }, ownerDefersStop }
   })

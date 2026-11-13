@@ -14,7 +14,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
-import { SettingsHook, type TriggerResult } from "@/hook"
+import { SettingsHook, type HookPayload, type TriggerResult } from "@/hook"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { WorkflowTool } from "../../src/tool/workflow"
 import { GoalLoop } from "@/goal/loop"
@@ -94,6 +94,21 @@ const stopped = testEffect(
               }
             : { additionalContexts: [], systemMessages: [] },
         ),
+      unregisterScoped: () => Effect.void,
+    }),
+  ),
+)
+// Records every hook the tool fires, answering none of them.
+const hookPayloads: HookPayload[] = []
+const hooked = testEffect(
+  Layer.mergeAll(
+    layer(),
+    Layer.mock(SettingsHook.Service, {
+      trigger: (payload): Effect.Effect<TriggerResult> =>
+        Effect.sync(() => {
+          hookPayloads.push(payload)
+          return { additionalContexts: [], systemMessages: [] }
+        }),
       unregisterScoped: () => Effect.void,
     }),
   ),
@@ -3190,6 +3205,79 @@ describe("tool.task child driving", () => {
       const rows = yield* runsOf(child)
       expect(rows).toHaveLength(1)
       expectCarried(def.drives, rows[0]?.id ?? "")
+    }),
+  )
+
+  // The tool call delivers SubagentStop for the child of a foreground run, so the child's own loop leaves its Stop to
+  // it (`ChildRegistry.delegateStop`). A promotion hands the child's Stop back, but a stop the loop already skipped is
+  // still owed: the tool call delivers it once.
+  hooked.instance("a promotion after the child skipped its own Stop delivers SubagentStop once", () =>
+    Effect.gen(function* () {
+      hookPayloads.length = 0
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Effect.gen(function* () {
+            // The child's loop reached a clean exit while its run was a foreground task's.
+            expect(ChildRegistry.delegateStop(input.sessionID)).toBe(true)
+            yield* Deferred.succeed(ready, undefined)
+            yield* Deferred.await(done)
+            return reply(input, "finished")
+          }),
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      if (!job) throw new Error("task job not found")
+      yield* jobs.promote(job.id)
+      const result = yield* Fiber.join(fiber)
+
+      expect(result.metadata.background).toBe(true)
+      const child = SessionID.make(result.metadata.sessionID)
+      expect(hookPayloads.filter((payload) => payload.event === "SubagentStop")).toHaveLength(1)
+      // From the promotion on, the child is a background task and fires its own Stop.
+      expect(ChildRegistry.delegateStop(child)).toBe(false)
+      yield* Deferred.succeed(done, undefined)
+      yield* endedRun(child)
+    }),
+  )
+
+  hooked.instance("a promotion before the child's exit hands its Stop back: the tool call delivers none", () =>
+    Effect.gen(function* () {
+      hookPayloads.length = 0
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTaskTool(yield* TaskTool)
+      const ready = yield* Deferred.make<void>()
+      const done = yield* Deferred.make<void>()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Deferred.succeed(ready, undefined).pipe(
+            Effect.andThen(Deferred.await(done)),
+            Effect.map(() => reply(input, "finished")),
+          ),
+      }
+
+      const fiber = yield* def.execute(general, taskCtx(chat, assistant, promptOps)).pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+      const job = (yield* jobs.list())[0]
+      if (!job) throw new Error("task job not found")
+      yield* jobs.promote(job.id)
+      const result = yield* Fiber.join(fiber)
+      const child = SessionID.make(result.metadata.sessionID)
+
+      // The child exits after the promotion: its run is detached, so its loop does not leave its Stop to anyone.
+      expect(ChildRegistry.delegateStop(child)).toBe(false)
+      expect(hookPayloads.filter((payload) => payload.event === "SubagentStop")).toEqual([])
+      yield* Deferred.succeed(done, undefined)
+      yield* endedRun(child)
     }),
   )
 })
