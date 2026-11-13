@@ -246,6 +246,29 @@ export interface ActiveChildRun {
 export interface ChildRunRegistryState {
   readonly byRun: Map<string, ActiveChildRun>
   readonly bySession: Map<string, string>
+  /**
+   * Results this process saw a detached run produce and has not delivered yet
+   * (Issue #1026, PR3a), by run id. The row is the durable ledger; this is the
+   * live side of it: it tells the delivery that the result is fresh, not left
+   * over from before a restart, and which cancellation epoch it ended in.
+   */
+  readonly reports: Map<string, ChildReport>
+}
+
+/**
+ * A detached run's result that ended in this process and still waits for its
+ * delivery. `epoch` is the parent's cancellation epoch at the moment the run
+ * ended: a delivery that finds a different epoch knows an ESC came in between
+ * and only writes the result to the transcript.
+ */
+export interface ChildReport {
+  readonly runID: string
+  readonly parentSessionID: SessionID
+  /** Canonical directory of the instance that started the run; only its inbox delivers. */
+  readonly directory: string | undefined
+  readonly epoch: number
+  /** The `ChildRuns` instance that ended the run; closing it drops the reports it left. */
+  readonly owner: object
 }
 
 export interface EngineProcess {
@@ -285,7 +308,7 @@ export const EngineProcess: EngineProcess = {
   },
   scheduler: AgentSchedulerState.makeState(),
   runner: makeRunnerIdentity(),
-  children: { byRun: new Map(), bySession: new Map() },
+  children: { byRun: new Map(), bySession: new Map(), reports: new Map() },
 }
 
 const entry = (state: ExclusiveState, sessionID: SessionID) => {

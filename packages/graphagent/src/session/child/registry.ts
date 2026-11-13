@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Deferred, Effect } from "effect"
-import { EngineProcess, type ActiveChildRun } from "../engine-process"
+import { EngineProcess, type ActiveChildRun, type ChildReport } from "../engine-process"
 import type { ChildCancelBy, ChildRunOutcome } from "./types"
 
 /**
@@ -125,6 +125,35 @@ export function release(entry: ActiveChildRun): void {
   registry.byRun.delete(entry.id)
   if (registry.bySession.get(entry.childSessionID) === entry.id) registry.bySession.delete(entry.childSessionID)
   Deferred.doneUnsafe(entry.released, Effect.void)
+}
+
+/**
+ * The reports of detached runs that ended in this process and wait for their
+ * delivery (`EngineProcess.children.reports`). Like the entries above they
+ * are only memory: the row is the ledger, and a report that is lost with the
+ * process leaves a row the next process delivers without a turn.
+ */
+export function record(report: ChildReport): void {
+  registry.reports.set(report.runID, report)
+}
+
+export function reportOf(runID: string): ChildReport | undefined {
+  return registry.reports.get(runID)
+}
+
+/** Whether a run of `parentSessionID` ended here and still waits for its delivery in `directory`. */
+export function hasReport(parentSessionID: string, directory: string): boolean {
+  for (const report of registry.reports.values())
+    if (report.parentSessionID === parentSessionID && report.directory === directory) return true
+  return false
+}
+
+export function dropReport(runID: string): void {
+  registry.reports.delete(runID)
+}
+
+export function dropReportsWhere(predicate: (report: ChildReport) => boolean): void {
+  for (const [runID, report] of registry.reports) if (predicate(report)) registry.reports.delete(runID)
 }
 
 export * as ChildRegistry from "./registry"

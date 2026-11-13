@@ -141,8 +141,8 @@ describe("ChildRuns.start", () => {
       expect(ended?.state).toBe("ended")
       expect(ended?.outcome).toEqual({ type: "completed" })
       expect(ended?.time_ended).not.toBeNull()
-      // A finished run counts as reported the moment it ends.
-      expect(ended?.reported_at).toBe(ended?.time_ended ?? -1)
+      // A detached run that finished is owed to the result ledger (`child.result`): the parent has not been told yet.
+      expect(ended?.reported_at).toBeNull()
       expect(ChildRegistry.activeFor(child)).toBeUndefined()
       expect(EngineProcess.children.byRun.has(handle.id)).toBe(false)
       expect(yield* handle.settled).toEqual({ type: "completed" })
