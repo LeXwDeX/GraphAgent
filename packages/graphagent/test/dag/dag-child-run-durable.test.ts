@@ -232,3 +232,29 @@ it.effect("cancels the queued run when the durable start rejects the attempt", (
     expect(cancelled).toEqual([{ sessionID: child, reason: "admission-rejected", actor: "dag-loop" }])
   }),
 )
+
+it.effect("records a denied workspace-write policy on the node's run (#1030 D9-h)", () =>
+  Effect.gen(function* () {
+    const dagID = `wf-${crypto.randomUUID()}`
+    const input = spawnInput(dagID, "n3", "ses_durable_parent")
+    const { db, created } = yield* runSpawn({ ...input, workspaceWrites: "deny" })
+    const child = created[0]
+    if (!child) throw new Error("spawn did not create a child session")
+    const rows = yield* runRows(db, child)
+    expect(rows[0]).toMatchObject({
+      policy: { ask: "auto", workspaceWrites: "deny" },
+    })
+  }),
+)
+
+it.effect("keeps the agent permission when the node allows workspace writes", () =>
+  Effect.gen(function* () {
+    const dagID = `wf-${crypto.randomUUID()}`
+    const input = spawnInput(dagID, "n4", "ses_durable_parent")
+    const { db, created } = yield* runSpawn({ ...input, workspaceWrites: "allow" })
+    const child = created[0]
+    if (!child) throw new Error("spawn did not create a child session")
+    const rows = yield* runRows(db, child)
+    expect(rows[0]?.policy).toEqual({ ask: "auto" })
+  }),
+)

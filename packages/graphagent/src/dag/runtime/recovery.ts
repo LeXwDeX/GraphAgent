@@ -32,7 +32,7 @@ import { SessionID } from "@/session/schema"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { isTransitionRejection } from "@graphagent/core/dag/core/types"
-import { reviewImplementationFingerprint } from "../review-lifecycle"
+import { reviewImplementationFingerprint, workspaceWritesOf } from "../review-lifecycle"
 import { DagLocation } from "../location"
 import { InstanceRef } from "@/effect/instance-ref"
 import { resolveInputMapping } from "./eval"
@@ -606,7 +606,10 @@ export function continueRecoveredMessageNode(
   nodeID: string,
   config:
     | {
-        nodes: Pick<NodeConfig, "id" | "output_schema" | "review" | "input_mapping" | "workspace">[]
+        nodes: Pick<
+          NodeConfig,
+          "id" | "output_schema" | "review" | "input_mapping" | "workspace" | "workspace_writes"
+        >[]
       }
     | null
     | undefined,
@@ -857,6 +860,13 @@ export function continueRecoveredMessageNode(
         const childRuns = yield* prompt.children
         const scoped = childRuns.forParent(SessionID.make(workflow.sessionId))
         const owner = { kind: "dag_node" as const, workflowID: dagID, nodeID, attempt: node.replanAttempts }
+        const permission = {
+          ask: "auto" as const,
+          // #1030 D9-h: keep the node's workspace-write policy across recovery.
+          ...(workspaceWritesOf(nodeConfig, node.workerType) === "deny"
+            ? { workspaceWrites: "deny" as const }
+            : {}),
+        }
         const latestRun = yield* scoped.latest(SessionID.make(childSessionID))
         run = yield* (
           Option.isNone(latestRun)
@@ -864,13 +874,13 @@ export function continueRecoveredMessageNode(
                 childSessionID: SessionID.make(childSessionID),
                 owner,
                 detached: false,
-                permission: { ask: "auto" },
+                permission,
               })
             : scoped.adopt({
                 childSessionID: SessionID.make(childSessionID),
                 owner,
                 detached: false,
-                permission: { ask: "auto" },
+                permission,
               })
         ).pipe(
           // Another driver owns the session (or won the check-then-act race

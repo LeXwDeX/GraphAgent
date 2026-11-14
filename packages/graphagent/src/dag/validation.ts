@@ -223,7 +223,7 @@ export const NodeSchema = Schema.Struct({
     }),
   ).annotate({
     description:
-      "{ timeout_ms } — bounds the node from permit acquisition to completion; time spent queued does not count, but a permit wait longer than timeout_ms fails the node without spawning. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Inherits config.node_defaults.worker_config",
+      "{ timeout_ms } — bounds the node from concurrency-slot acquisition to completion; time spent queued for a global/workflow slot does not count, but a permit wait longer than timeout_ms fails the node without spawning. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Inherits config.node_defaults.worker_config",
   }),
   input_mapping: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description:
@@ -266,6 +266,10 @@ export const NodeSchema = Schema.Struct({
   isolation: Schema.optional(Schema.Literal("worktree")).annotate({
     description:
       'Run this writer-capable node in a fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Review and verify workers cannot isolate.',
+  }),
+  workspace_writes: Schema.optional(Schema.Literals(["allow", "deny"])).annotate({
+    description:
+      '"deny" withholds edit, write, and apply_patch from this node while shell commands keep the agent permission (reviewers can still run tests). Defaults to deny for review/review-* and auditor workers, allow otherwise. Independent of workspace/isolation.',
   }),
 })
 

@@ -91,8 +91,12 @@ export interface StubChildren {
   readonly prompts: Array<{ readonly input: PromptInput; readonly options?: AdmissionOptions }>
   readonly settled: Array<{ readonly id: string; readonly outcome: ChildRunOutcome }>
   readonly cancelled: Array<{ readonly id: string | undefined; readonly by: ChildCancelBy }>
+  /** The run ids `inspect` was called with, in order. */
+  readonly inspected: string[]
   /** What `latest(childSessionID)` answers; set it to make a path adopt instead of start. */
   latest?: ChildRunView
+  /** What `inspect(runID)` answers; defaults to `latest` when set. */
+  inspectView?: ChildRunView
   /** Makes the next adopt fail with the matching ownership error. */
   adoptError?: "not-owner" | "active"
   /** Makes `cancelActive` report no run, exercising the caller's session-cancel fallback. */
@@ -108,8 +112,14 @@ export const stubChildren = (
   const prompts: StubChildren["prompts"] = []
   const settled: StubChildren["settled"] = []
   const cancelled: StubChildren["cancelled"] = []
+  const inspected: string[] = []
   const runSessions = new Map<string, SessionID>()
-  const stub: StubChildren = { runs, prompts, settled, cancelled }
+  const stub: StubChildren = { runs, prompts, settled, cancelled, inspected }
+  const inspect = (runID: string) =>
+    Effect.suspend(() => {
+      inspected.push(runID)
+      return Effect.succeed(Option.fromNullishOr(stub.inspectView ?? stub.latest))
+    })
   let sequence = 0
   // A cancelled run's session cancellation is what the engine-side tests
   // watched for before runs existed; the stub forwards it to the prompt mock.
@@ -175,6 +185,7 @@ export const stubChildren = (
     start: (spec) => register(spec, "start").pipe(Effect.orDie),
     adopt: (spec) => register(spec, "adopt"),
     latest: () => Effect.succeed(Option.fromNullishOr(stub.latest)),
+    inspect,
     list: () => Effect.succeed([]),
     cancel: (id, by) =>
       Effect.suspend(() => {
@@ -188,7 +199,7 @@ export const stubChildren = (
   const children: ChildRuns.Interface = {
     start: (spec) => register(spec, "start").pipe(Effect.orDie),
     adopt: (spec) => register(spec, "adopt"),
-    inspect: () => Effect.succeed(Option.none()),
+    inspect,
     latest: () => Effect.succeed(Option.fromNullishOr(stub.latest)),
     listByParent: () => Effect.succeed([]),
     prompt: (parentSessionID, input, options) => scoped(parentSessionID).prompt(input, options),

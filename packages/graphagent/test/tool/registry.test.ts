@@ -13,6 +13,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { ProjectV2 } from "@graphagent/core/project"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
+import { ChildRegistry } from "@/session/child/registry"
 
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ModelV2 } from "@graphagent/core/model"
@@ -164,6 +165,71 @@ describe("tool.registry", () => {
         rebuilt.push(...(yield* registry.tools({ providerID: model.providerID, modelID: model.id, agent: build })))
       }
       for (const definition of rebuilt) expect(definition.effects).toBeDefined()
+    }),
+  )
+
+  it.instance("hides workspace-writing tools from a run that denies workspace writes", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const build = yield* agents.get("build")
+      if (!build) throw new Error("build agent not found")
+      const directory = yield* InstanceState.directory
+      const parentID = SessionID.make(`ses_registry_ws_parent_${crypto.randomUUID()}`)
+      const childID = SessionID.make(`ses_registry_ws_child_${crypto.randomUUID()}`)
+      const session = {
+        id: childID,
+        parentID,
+        slug: "registry-workspace-writes",
+        projectID: ProjectV2.ID.global,
+        directory,
+        title: "registry workspace writes",
+        version: "1.0.0",
+        time: { created: 1, updated: 1 },
+      } as Session.Info
+      const entry = ChildRegistry.create({
+        id: `crun_${crypto.randomUUID()}`,
+        childSessionID: childID,
+        parentSessionID: parentID,
+        ownerKind: "dag_node",
+        ownerKey: { kind: "dag_node", workflowID: "wf_registry", nodeID: "review", attempt: 0 },
+        permission: { ask: "auto", workspaceWrites: "deny" },
+        detached: false,
+        directory: undefined,
+        owner: {},
+      })
+      expect(ChildRegistry.register(entry)).toBe(true)
+
+      yield* Effect.gen(function* () {
+        // gpt-oss edits through edit/write, gpt-5 through apply_patch.
+        for (const model of [
+          ProviderTest.model({ id: ModelV2.ID.make("gpt-oss-120b") }),
+          ProviderTest.model({ id: ModelV2.ID.make("gpt-5") }),
+        ]) {
+          const entries = yield* registry.resolve({ model, agent: build, session })
+          const ids = entries.map((resolved) => resolved.id)
+          expect(ids).toContain("bash")
+          expect(ids).not.toContain("edit")
+          expect(ids).not.toContain("write")
+          expect(ids).not.toContain("apply_patch")
+          expect(entries.filter((resolved) => resolved.effects === "workspace_write")).toHaveLength(0)
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            ChildRegistry.end(entry, { type: "completed" })
+            ChildRegistry.release(entry)
+          }),
+        ),
+      )
+
+      // The same session without an active run sees the agent's editing tools again.
+      const allowed = yield* registry.resolve({
+        model: ProviderTest.model({ id: ModelV2.ID.make("gpt-oss-120b") }),
+        agent: build,
+        session,
+      })
+      expect(allowed.map((resolved) => resolved.id)).toContain("edit")
     }),
   )
 

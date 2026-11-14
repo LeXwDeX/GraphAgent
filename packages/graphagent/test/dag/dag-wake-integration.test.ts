@@ -46,7 +46,7 @@ import { WorkflowParameters, WorkflowTool } from "@/tool/workflow"
 import { ProviderTest } from "../fake/provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
-import { mockSessionPrompt } from "../lib/child-runs"
+import { mockSessionPrompt, mockSessionPromptWithStub, type StubChildren } from "../lib/child-runs"
 
 const integration = testEffect(Layer.empty)
 
@@ -202,7 +202,7 @@ function wakeLayer(input: {
     })
     return reply(sessionID, yield* Deferred.await(release))
   })
-  const prompt = mockSessionPrompt(
+  const { layer: prompt, stub: childRunStub } = mockSessionPromptWithStub(
     withIdleAdmission({
       cancel: () => Effect.void,
       prompt: deliver,
@@ -243,7 +243,10 @@ function wakeLayer(input: {
     Layer.provide(agent),
     Layer.provide(inbox),
   )
-  return Layer.mergeAll(base, loop, session, agent, provider, truncate, inbox)
+  return {
+    layer: Layer.mergeAll(base, loop, session, agent, provider, truncate, inbox),
+    childRunStub,
+  }
 }
 
 function runWakeTest<A>(
@@ -255,6 +258,7 @@ function runWakeTest<A>(
     readonly childPrompts: Queue.Queue<PromptGate>
     readonly parentPrompts: Queue.Queue<ParentPromptGate>
     readonly parentSettled: Queue.Queue<void>
+    readonly childRunStub: StubChildren
     readonly workflow: Tool.InferDef<typeof WorkflowTool>
   }) => Effect.Effect<A, Error>,
   beforeInit?: (services: { readonly database: Database.Interface }) => Effect.Effect<void>,
@@ -264,6 +268,7 @@ function runWakeTest<A>(
     const childPrompts = yield* Queue.unbounded<PromptGate>()
     const parentPrompts = yield* Queue.unbounded<ParentPromptGate>()
     const parentSettled = yield* Queue.unbounded<void>()
+    const wake = wakeLayer({ childPrompts, parentPrompts, parentSettled, agentPermissions })
     return yield* Effect.gen(function* () {
       const dag = yield* Dag.Service
       const loop = yield* DagLoop.Service
@@ -296,9 +301,19 @@ function runWakeTest<A>(
       yield* loop.init()
       const inbox = yield* SessionInbox.Service
       yield* inbox.init()
-      return yield* test({ dag, loop, store, status, childPrompts, parentPrompts, parentSettled, workflow })
+      return yield* test({
+        dag,
+        loop,
+        store,
+        status,
+        childPrompts,
+        parentPrompts,
+        parentSettled,
+        childRunStub: wake.childRunStub,
+        workflow,
+      })
     }).pipe(
-      Effect.provide(wakeLayer({ childPrompts, parentPrompts, parentSettled, agentPermissions })),
+      Effect.provide(wake.layer),
       Effect.provideService(InstanceRef, {
         directory: process.cwd(),
         worktree: process.cwd(),
@@ -2775,7 +2790,7 @@ describe("DagLoop atomic wake integration", () => {
 
   it("control-cancelling a required running node aborts its child, fails the workflow, and keeps it current", async () => {
     await Effect.runPromise(
-      runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
+      runWakeTest(({ dag, store, childPrompts, parentPrompts, childRunStub }) =>
         Effect.gen(function* () {
           const dagID = yield* dag.create({
             projectID: "project-1",
@@ -2805,6 +2820,13 @@ describe("DagLoop atomic wake integration", () => {
             "required control cancellation did not fail the workflow",
           )
           expect(status).toBe(true)
+          // #1030 D9-h: the control cancellation reaches the node's run
+          // through ChildRuns (cancelActive is the engine-side variant of
+          // cancel), attributed to the cancelling parent.
+          expect(childRunStub.cancelled).toContainEqual({
+            id: childRunStub.runs[0]?.childSessionID,
+            by: { kind: "engine", reason: "control-cancel", actor: "parent-control" },
+          })
 
           const parent = yield* takeWithin(parentPrompts, "workflow failure did not wake the parent")
           expect(promptText(parent.input)).toContain("[DAG Workflow failed]")

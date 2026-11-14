@@ -27,12 +27,12 @@ task-local YAML file, then start that path. `read` never starts a workflow. A
 name that resolves nowhere fails with the searched locations.
 
 After choosing a DAG, a saved workflow can be a useful starting point; a small
-task-local graph needs no library search. Keep one primary reference so the
-objective stays clear, and borrow secondary checks where they add evidence
-rather than concatenating whole workflows. `lite` and `full` are reference
-shapes, not mandatory tiers. Uncertainty, irreversibility, public contracts,
-concurrency, persistence, authorization, or upstream executable dependencies
-can warrant more evidence; choose checks that address the actual risk. A risk
+task-local graph needs no library search. Keep one primary reference; borrow
+secondary checks where they add evidence rather than concatenating whole
+workflows. `lite` and `full` are reference shapes, not mandatory tiers.
+Uncertainty, irreversibility, public contracts, concurrency, persistence,
+authorization, or upstream executable dependencies warrant evidence that
+addresses the actual risk. A risk
 label or non-`ACCEPT` verdict alone never requires a full graph or a fixed
 reviewer count. Retarget a matching custom workflow and reuse valid results;
 the Verdict Disposal Contract (skill dag-recovery) describes follow-up options.
@@ -43,8 +43,8 @@ Every node receives its direct `depends_on` outputs:
 
 - The exact dependency ID is the default template variable. A node with
   `depends_on: [node-a, node-b]` can use `{{node-a}}` and `{{node-b}}` directly.
-- Values not interpolated into the prompt are appended as structured context,
-  so a downstream node can aggregate them without interpolation.
+- Values not interpolated into the prompt are appended as structured context
+  for downstream nodes.
 - Use `input_mapping` only to rename a variable or select a field. Its direction
   is **template variable → upstream source**:
 
@@ -87,8 +87,8 @@ prompt IDs have no bundled fallback, and bundled YAML does not install
 fragments. Confirm a referenced ID exists before use; missing assets are
 rejected during environment validation. Supply required `{{variable}}` inputs
 through static `prompt_template.input` or `input_mapping`; validation checks
-bindings and spawn resolves actual values. These example assets require
-separate installation; inspect each for its current contract:
+bindings and spawn resolves actual values. Example assets (install separately;
+check each contract):
 
 - `code-explore` / `test-explore` / `config-explore` (each requires `target`):
   structure searches
@@ -96,9 +96,8 @@ separate installation; inspect each for its current contract:
   `integration-test`, `patcher-assemble`, `review-arch`, `review-logic`,
   `review-style`
 
-Dependency outputs not interpolated into a prompt are appended as structured
-context. For review prompts, request an `unverified_claims` section a
-downstream verification wave can check against the code.
+For review prompts, request an `unverified_claims` section a downstream
+verification wave can check against the code.
 
 For ad-hoc prompts, use `prompt_template: { inline: "...", input: {...} }`.
 Static `prompt_template.input` supplies literal, local values; it does not read
@@ -109,22 +108,23 @@ indented JSON; they must never appear as `[object Object]`.
 
 ## Budget Declaration
 
-The engine enforces declared budgets without adaptive increases. Defaults can
-be sufficient; adjust when expected tool time, resource limits, or evidence
-volume warrants it, rather than because a task is labelled large. Higher
-concurrency only helps genuinely independent work:
+The engine enforces declared budgets without adaptive increases; adjust only
+when expected tool time, resource limits, or evidence volume warrants it.
+Higher concurrency helps only genuinely independent work:
 
 - `max_concurrency`: default 5. Balance independent work against host and
   provider capacity.
 - `max_node_replan_attempts`: default 5. Increase only for iterative
   quality-driven convergence (review → revise → review on one artifact).
 - `max_total_nodes`: default and minimum 100 (lower values are raised to 100).
-- `worker_config.timeout_ms`: default 10 minutes. Increase for long-running
-  nodes (compilation, large test suites). Verifiers and aggregators are the
-  most common timeout victims: consuming several parallel reports and
-  re-checking their claims runs sequentially and routinely needs 20–30 minutes
-  (for example `timeout_ms: 1800000`). Declaring the fan-out lanes' budget for
-  the fan-in lane is a recurring failure pattern.
+- `worker_config.timeout_ms`: default 10 minutes. The clock starts at
+  global/workflow concurrency-slot acquisition, so queue time is free; a
+  running node that exceeds the budget escalates before failing. Increase for
+  long-running nodes (compilation, large test suites). Verifiers and
+  aggregators are the most common timeout victims: consuming several parallel
+  reports and re-checking their claims runs sequentially and routinely needs
+  20–30 minutes (for example `timeout_ms: 1800000`). Declaring the fan-out
+  lanes' budget for the fan-in lane is a recurring failure pattern.
 
 ## Single-Workspace Discipline
 
@@ -153,18 +153,18 @@ changes sequentially; review converges on its diff, not scattered edits.
 | `condition`        | no       | One comparison `<dep-id>.output.<field> <op> <value>` over a direct dependency, evaluated before spawn; the node is skipped if false. `op` is `==`, `!=`, `>`, `<`, `>=`, or `<=`; `value` is a number, `true`/`false`/`null`, a bare word, or a quoted string. Other syntax (`===`, `!==`, `&&`, `\|\|`) is rejected |
 | `input_mapping`    | no       | Map upstream node outputs into template variables |
 | `report_to_parent` | no       | If true, the parent wakes when this node completes or fails. Terminal status always wakes the parent regardless |
-| `worker_config`    | no       | `{ timeout_ms }` — bounds the node from permit acquisition to completion (default 10 minutes); queued time does not count, but a permit wait longer than `timeout_ms` fails the node without spawning, and a running node that exceeds it escalates before failing |
-| `output_schema`    | no       | JSON Schema for the node result. The final answer must be exactly one matching JSON value; validation/capture happen before the node settles, and a near-miss on a present field gets one bounded correction turn |
+| `worker_config`    | no       | `{ timeout_ms }` — bounds the node from concurrency-slot acquisition to completion (default 10 minutes); time spent queued for a global/workflow slot does not count, but a permit wait longer than `timeout_ms` fails the node without spawning, and a running node that exceeds it escalates before failing |
+| `workspace_writes` | no       | `"allow"`/`"deny"`. Deny withholds edit, write, apply_patch; shell keeps agent permission, so reviewers can run tests. Default deny for `review`/`review-*` and `auditor`, else allow |
+| `output_schema`    | no       | JSON Schema for the node result. The final answer must be exactly one matching JSON value; validation/capture run before settlement, and a near-miss on a present field gets one bounded correction turn |
 | `restart`          | no       | (replan only) Re-spawn this running node with the new prompt |
 | `cancel`           | no       | (replan only) Cancel this node |
-| `review`           | no       | (deep review workers) `{ phase: "design" \| "diff" }`; a `diff` review must declare `implementation_node_id` / `verification_node_id` and wire transitive review→verification→implementation dependencies, `input_mapping` for the diff artifact + fingerprint + verification output, a PASS-gated `condition`, and a `verdict` + `implementation_fingerprint` `output_schema`. Authoring rejects violations in deep mode and warns in standard |
+| `review`           | no       | (deep review workers) `{ phase: "design" \| "diff" }`; a `diff` review must declare `implementation_node_id` / `verification_node_id` and wire transitive review→verification→implementation dependencies, `input_mapping` for the diff artifact + fingerprint + verification output, a PASS-gated `condition`, and a `verdict` + `implementation_fingerprint` `output_schema`. Deep mode rejects violations; standard warns |
 
 A node that declares `output_schema` must end with exactly one JSON value
-matching the schema, without Markdown fences or surrounding prose; the runtime
-validates and captures that final answer. A node without `output_schema`
-returns its complete final answer as plain text. The final answer is the only
-result path; the child must not send the same result through `agent.send`.
-Use `agent.send` for questions, decisions, and collaboration.
+matching the schema, without Markdown fences or surrounding prose; a node
+without it returns its complete final answer as plain text. The final answer is
+the only result path — use `agent.send` for questions, decisions, and
+collaboration, never for the result.
 
 ### Result delivery
 

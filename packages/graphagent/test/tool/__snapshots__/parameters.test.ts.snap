@@ -951,6 +951,13 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                       "workspace": {
                         "type": "string",
                       },
+                      "workspace_writes": {
+                        "enum": [
+                          "allow",
+                          "deny",
+                        ],
+                        "type": "string",
+                      },
                     },
                     "required": [
                       "id",

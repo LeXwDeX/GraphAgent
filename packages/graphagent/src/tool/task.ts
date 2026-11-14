@@ -33,8 +33,9 @@ export interface TaskPromptOps {
   prompt(input: SessionPrompt.PromptInput, options?: SessionPrompt.AdmissionOptions): Effect.Effect<SessionV1.WithParts>
   /**
    * Child runs (Issue #1026). Carried here only because this bag already
-   * reaches every place that resolves tools; `SessionTools` hands the task
-   * tool a view narrowed to its own session and no other tool sees it.
+   * reaches every place that resolves tools; `SessionTools` hands the task tool
+   * (drive) and the workflow tool (read `inspect.status`) a view narrowed to
+   * their own session and no other tool sees it.
    */
   readonly children?: ChildRuns.Interface
 }

@@ -8,6 +8,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { DagValidation } from "@/dag/validation"
+import { DagReviewLifecycle } from "@/dag/review-lifecycle"
 import type { NodeConfig } from "@/dag/dag"
 import { tmpdir } from "../fixture/fixture"
 
@@ -348,5 +349,36 @@ describe("workflow validate: isolation", () => {
         isolation: "container",
       }),
     ).toThrow()
+  })
+})
+
+describe("workflow validate: node workspace_writes (#1030 D9-h)", () => {
+  const node = (overrides: Partial<NodeConfig> = {}): NodeConfig => ({
+    id: "n1",
+    name: "N1",
+    worker_type: "build",
+    depends_on: [],
+    prompt_template: { inline: "do work" },
+    ...overrides,
+  })
+
+  it("decodes allow and deny and rejects any other value", () => {
+    const decode = Schema.decodeUnknownSync(DagValidation.NodeSchema)
+    expect(decode(node({ workspace_writes: "deny" })).workspace_writes).toBe("deny")
+    expect(decode(node({ workspace_writes: "allow" })).workspace_writes).toBe("allow")
+    expect(() => decode({ ...node(), workspace_writes: "sometimes" })).toThrow()
+  })
+
+  it("defaults review workers and the built-in auditor to deny, others to allow", () => {
+    expect(DagReviewLifecycle.workspaceWritesOf(undefined, "review")).toBe("deny")
+    expect(DagReviewLifecycle.workspaceWritesOf(undefined, "review-security")).toBe("deny")
+    expect(DagReviewLifecycle.workspaceWritesOf(undefined, "auditor")).toBe("deny")
+    expect(DagReviewLifecycle.workspaceWritesOf(undefined, "build")).toBe("allow")
+    expect(DagReviewLifecycle.workspaceWritesOf(undefined, "verify")).toBe("allow")
+  })
+
+  it("lets an explicit value override the worker-type default", () => {
+    expect(DagReviewLifecycle.workspaceWritesOf({ workspace_writes: "allow" }, "review")).toBe("allow")
+    expect(DagReviewLifecycle.workspaceWritesOf({ workspace_writes: "deny" }, "verify")).toBe("deny")
   })
 })

@@ -158,6 +158,10 @@ export interface NodeConfig {
   /** #946: run this writer-capable node in a fresh worktree of the workflow
    * target. Mutually exclusive with `workspace`. */
   isolation?: "worktree"
+  /** #1030 D9-h: whether the node's child may use tools that write the
+   * workspace. Defaults to `deny` for review workers and the built-in auditor,
+   * `allow` otherwise; shell commands keep their agent permission either way. */
+  workspace_writes?: "allow" | "deny"
   /** #944: block compilation marks nodes that judge the current working tree
    * (review lanes, verify, synthesize). Their attempts record a target
    * fingerprint and a stale result cannot settle completion. */

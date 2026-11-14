@@ -144,7 +144,7 @@ export const WorkflowTool = Tool.define<
             case "run":
               return yield* runWorkflow({ dag, control, authoring, sessionID: ctx.sessionID, session, ctx }, params)
             case "inspect":
-              return yield* inspectWorkflow({ dag, sessionID: ctx.sessionID }, params)
+              return yield* inspectWorkflow({ dag, sessionID: ctx.sessionID, children: ctx.children }, params)
             case "control":
               return yield* controlWorkflow({ dag, control, authoring, sessionID: ctx.sessionID, session, ctx }, params)
             default:

@@ -5,6 +5,7 @@ import { Effect, Option } from "effect"
 import type { NodeRow, RetargetRecord, WorkflowRow } from "@graphagent/core/dag/store"
 import { displayState } from "@graphagent/core/dag/core/types"
 import type { DagEvent } from "@graphagent/schema/dag-event"
+import type { ChildRunView } from "@/session/child/run"
 import { Dag } from "@/dag/dag"
 import { DagIsolation } from "@/dag/isolation"
 import { DagLocation } from "@/dag/location"
@@ -60,6 +61,21 @@ export function worktreeResultFields(node: {
       },
     }
   return node.touchedPaths?.length ? { touched_paths: node.touchedPaths } : {}
+}
+
+/** #1030 D9-h: the durable child-run state of one node attempt, read through
+ * `ChildRuns.inspect` rather than assembled from separate reads. */
+function childRunFields(view: ChildRunView | undefined) {
+  if (!view) return {}
+  return {
+    child_run: {
+      id: view.id,
+      state: view.state,
+      attempt: view.attempt,
+      ...(view.outcome ? { outcome: view.outcome } : {}),
+      ...(view.timeEnded !== undefined ? { ended_at: view.timeEnded } : {}),
+    },
+  }
 }
 
 function resultPageEnd(content: string, offset: number, limit: number) {
@@ -149,8 +165,11 @@ export function renderStatus(input: {
   allNodes: readonly NodeRow[]
   failureReason?: string
   latestRetarget?: RetargetRecord
+  /** #1030 D9-h: each node's child run, keyed by child session, as read
+   * through ChildRuns.inspect. Absent when the caller has no child-run view. */
+  childRuns?: ReadonlyMap<string, ChildRunView>
 }): Tool.ExecuteResult {
-  const { workflow, nodes, allNodes, failureReason, latestRetarget } = input
+  const { workflow, nodes, allNodes, failureReason, latestRetarget, childRuns } = input
   const config = Dag.parseWorkflowConfig(workflow.config)
   // A completed graph can still carry an unresolved review verdict
   // (REJECT checkpoint, issue #294); surface it explicitly instead
@@ -270,6 +289,7 @@ export function renderStatus(input: {
           required: node.required,
           depends_on: node.dependsOn,
           ...(node.childSessionId ? { child_session_id: node.childSessionId } : {}),
+          ...(node.childSessionId ? childRunFields(childRuns?.get(node.childSessionId)) : {}),
           ...DagLocation.nodeLocationView(node),
           ...(node.errorReason ? { error_reason: node.errorReason } : {}),
           ...(node.errorClass ? { error_class: node.errorClass } : {}),

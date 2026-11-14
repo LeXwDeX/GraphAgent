@@ -521,6 +521,8 @@ const scoped = (api: Omit<ChildRunsInterface, "forParent">, parentSessionID: Ses
   adopt: (spec) => api.adopt({ ...spec, parentSessionID }),
   latest: (childSessionID) =>
     api.latest(childSessionID).pipe(Effect.map(Option.filter((view) => view.parentSessionID === parentSessionID))),
+  inspect: (runID) =>
+    api.inspect(runID).pipe(Effect.map(Option.filter((view) => view.parentSessionID === parentSessionID))),
   list: () => api.listByParent(parentSessionID),
   cancel: (runID, by) => {
     const entry = Registry.get(runID)

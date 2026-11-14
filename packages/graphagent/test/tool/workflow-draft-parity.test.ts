@@ -59,6 +59,7 @@ describe("workflow draft wire schema parity", () => {
       fan_out: "plan",
       workspace: "/worktree",
       isolation: "worktree",
+      workspace_writes: "deny",
     }
     const block = {
       id: "build",

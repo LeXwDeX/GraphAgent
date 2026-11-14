@@ -43,9 +43,10 @@ export class InvalidArgumentsError extends Schema.TaggedError<InvalidArgumentsEr
  * Typed child-run capability (H3 #1026). The concrete types live in
  * `src/session/child/run.ts`; this module re-exports the ones a tool sees.
  * `ChildRuns` is the view narrowed to the calling session: the parent is fixed
- * by the engine and cannot be named by the tool. Only the task tool receives
- * it, and it drives its child sessions through it: every prompt goes out as a
- * delegation under the credential of the child's run.
+ * by the engine and cannot be named by the tool. The task tool drives its child
+ * sessions through it: every prompt goes out as a delegation under the
+ * credential of the child's run. The workflow tool only reads run state
+ * (`inspect.status`).
  */
 export type { ChildRunHandle, ChildRunView } from "@/session/child/run"
 export type ChildRunCancelOrigin = ChildRunsModule.ChildCancelBy

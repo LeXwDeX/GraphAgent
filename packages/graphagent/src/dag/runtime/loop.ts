@@ -45,6 +45,7 @@ import {
   validateReviewExecutionInput,
   reviewEvidenceKeys,
   targetSensitiveNode,
+  workspaceWritesOf,
 } from "../review-lifecycle"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -733,6 +734,9 @@ const serviceLayer = Layer.effect(
                 // lanes, verify, synthesize, or conventional review nodes) record
                 // a target fingerprint so a mid-run change marks them stale.
                 targetSensitive: targetSensitiveNode(nodeConfig, node.workerType),
+                // #1030 D9-h: the node's effective workspace-write policy,
+                // defaulted from its worker type when the spec does not say.
+                workspaceWrites: workspaceWritesOf(nodeConfig, node.workerType),
                 verdictEvidence: nodesSnapshot
                   .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
                   .map((source) => ({ nodeID: source.id, output: source.output })),
