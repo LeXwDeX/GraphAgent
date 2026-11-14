@@ -57,9 +57,17 @@ function bodyIncludes(marker: string) {
 
 const wakeCompleted = bodyIncludes("[DAG Workflow completed]")
 
+/**
+ * A durable workflow id is `dag_` + a 26-character identifier: 12 lowercase
+ * hex timestamp digits + 14 mixed-case base62 random chars (DagID.create in
+ * schema/dag-event.ts). Anchoring on the full shape keeps runtime-context keys
+ * such as `dag_mode` / `dag_budget` from being read as a workflow id.
+ */
+const WORKFLOW_ID_RE = /dag_[0-9a-f]{12}[0-9A-Za-z]{14}/g
+
 /** The durable workflow id is random per run; compare stdout modulo that id. */
 function normalizeWorkflowIDs(stdout: string) {
-  return stdout.replace(/dag_[a-z0-9]+/gi, "dag_TEST")
+  return stdout.replace(WORKFLOW_ID_RE, "dag_TEST")
 }
 
 // Two-node chain, the last node reporting to the parent: the s4 shape —
@@ -591,7 +599,7 @@ describe("opencode run DAG hold (issue 614)", () => {
         // start tool result and the wake summary both embed it) — exactly one
         // workflow exists in this project.
         const inputs = yield* llm.inputs
-        const ids = new Set(JSON.stringify(inputs).match(/dag_[a-z0-9]+/gi) ?? [])
+        const ids = new Set(JSON.stringify(inputs).match(WORKFLOW_ID_RE) ?? [])
         expect(ids.size).toBe(1)
         const workflowID = [...ids][0]
 
