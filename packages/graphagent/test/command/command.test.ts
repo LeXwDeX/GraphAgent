@@ -2,15 +2,40 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect } from "bun:test"
-import { CommandPlugin } from "@graphagent/core/plugin/command"
+import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Effect, Layer } from "effect"
 import { Command } from "@/command"
 import { Config } from "@/config/config"
 import { MCP } from "@/mcp"
 import { Skill } from "@/skill"
+import { BUILTIN_SKILLS } from "@/skill/builtin"
 import { SessionPrompt } from "@/session/prompt"
-import { testInstanceStoreLayer } from "../fixture/fixture"
+import { provideTmpdirInstance, testInstanceStoreLayer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+
+const dagAuto = BUILTIN_SKILLS.find((skill) => skill.name === "dag-auto")
+if (!dagAuto) throw new Error("missing dag-auto built-in skill")
+
+const dagAutoSkill: Skill.Info = {
+  name: "dag-auto",
+  description: dagAuto.description,
+  location: "/builtin/dag-auto.md",
+  content: dagAuto.content,
+  hookSource: "builtin",
+}
+
+/** Real Skill + Command layers: /dag-auto is promoted from the built-in
+ * skill registry rather than registered explicitly. */
+const realLayers = Layer.mergeAll(
+  Command.layer.pipe(
+    Layer.provide(Layer.mock(Config.Service, { get: () => Effect.succeed({ command: {} } as never) })),
+    Layer.provide(Layer.mock(MCP.Service, { prompts: () => Effect.succeed({}) })),
+    Layer.provide(Skill.defaultLayer),
+  ),
+  CrossSpawnSpawner.defaultLayer,
+  testInstanceStoreLayer,
+)
+const real = testEffect(realLayers)
 
 function commandLayer(
   commands: Record<
@@ -43,12 +68,15 @@ function commandLayer(
 
 const it = testEffect(commandLayer())
 const overridden = testEffect(
-  commandLayer({
-    "dag-auto": {
-      description: "Custom DAG auto",
-      template: "Custom task:\n$ARGUMENTS",
+  commandLayer(
+    {
+      "dag-auto": {
+        description: "Custom DAG auto",
+        template: "Custom task:\n$ARGUMENTS",
+      },
     },
-  }),
+    [dagAutoSkill],
+  ),
 )
 const withBackgroundCommand = testEffect(
   commandLayer({
@@ -61,6 +89,7 @@ const withBackgroundCommand = testEffect(
 )
 const withSkillCommands = testEffect(
   commandLayer({}, [
+    dagAutoSkill,
     {
       name: "visible-skill",
       description: "Visible skill.",
@@ -148,20 +177,44 @@ describe("legacy command registry", () => {
     }),
   )
 
-  it.instance("registers the canonical dag-auto command", () =>
+  withSkillCommands.instance("promotes the dag-auto skill into its own command", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service
       const command = yield* commands.get("dag-auto")
 
       expect(command).toMatchObject({
         name: "dag-auto",
-        description: CommandPlugin.DagAutoDescription,
-        source: "command",
-        template: CommandPlugin.DagAutoContent,
-        hints: ["$ARGUMENTS"],
+        description: dagAuto.description,
+        source: "skill",
+        hints: [],
       })
+      expect(command?.template).toBe(dagAuto.content)
+      for (const name of ["dag-blocks", "dag-nodes", "dag-recovery", "dag-patterns", "dag-policy"]) {
+        expect(yield* commands.get(name)).toBeUndefined()
+      }
       expect(yield* commands.get("workflow")).toBeUndefined()
     }),
+  )
+
+  real.live("loads dag-auto through the real built-in skill registry", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const commands = yield* Command.Service
+          const command = yield* commands.get("dag-auto")
+          expect(command).toMatchObject({
+            name: "dag-auto",
+            description: dagAuto.description,
+            source: "skill",
+            hints: [],
+          })
+          expect(command?.template).toBe(dagAuto.content)
+          for (const name of ["dag-blocks", "dag-nodes", "dag-recovery", "dag-patterns", "dag-policy"]) {
+            expect(yield* commands.get(name)).toBeUndefined()
+          }
+        }),
+      { git: true },
+    ),
   )
 
   withSkillCommands.instance("registers visible skills as commands but keeps hidden skills reference-only", () =>
@@ -229,12 +282,13 @@ describe("legacy command registry", () => {
     }),
   )
 
-  it.effect("preserves complete multi-line command arguments", () =>
+  it.effect("appends complete multi-line command arguments to the skill body", () =>
     Effect.sync(() => {
       const input = "Investigate auth\nThen run the focused tests"
-      const expanded = SessionPrompt.expandCommandTemplate(CommandPlugin.DagAutoContent, input)
+      const expanded = SessionPrompt.expandCommandTemplate(dagAuto.content, input)
 
-      expect(expanded).toContain(`Arguments: ${input}`)
+      expect(expanded).toContain(input)
+      expect(expanded.endsWith(input)).toBe(true)
       expect(expanded).not.toContain("$ARGUMENTS")
     }),
   )
@@ -242,7 +296,7 @@ describe("legacy command registry", () => {
   it.effect("offers optional DAG references while preserving requested scope", () =>
     Effect.sync(() => {
       const expanded = SessionPrompt.expandCommandTemplate(
-        CommandPlugin.DagAutoContent,
+        dagAuto.content,
         "Use @security-reviewer to review this project. Do not modify files.",
       )
 
@@ -251,7 +305,9 @@ describe("legacy command registry", () => {
       expect(expanded).toContain("ultra-flow-route")
       expect(expanded).toContain("not the default")
       expect(expanded).toContain("Use @security-reviewer to review this project. Do not modify files.")
-      expect(expanded).toContain("explicit request for direct work or no DAG takes precedence")
+      expect(expanded.replace(/\s+/g, " ")).toContain(
+        "explicit request for direct work or no DAG takes precedence",
+      )
       expect(expanded).not.toContain("Template-first for every route")
       expect(expanded).not.toContain("dag-init")
       expect(expanded).not.toContain("`gh ")
@@ -261,9 +317,9 @@ describe("legacy command registry", () => {
 
   it.effect("keeps the blank-arguments form valid", () =>
     Effect.sync(() => {
-      const expanded = SessionPrompt.expandCommandTemplate(CommandPlugin.DagAutoContent, "")
+      const expanded = SessionPrompt.expandCommandTemplate(dagAuto.content, "")
 
-      expect(expanded).toContain("Arguments:")
+      expect(expanded).toBe(dagAuto.content)
       expect(expanded).not.toContain("$ARGUMENTS")
     }),
   )

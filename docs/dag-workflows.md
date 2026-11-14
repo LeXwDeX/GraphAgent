@@ -16,7 +16,7 @@ Three terms worth knowing:
 
 - Composable blocks (`explore`, `plan`, `prototype`, `debug`, `coding`, `verify`, `review`, `synthesize`) compile into the node graph; low-level node fields remain available for anything blocks cannot express.
 - `workflow(action="draft")` renders a structured graph through the tool schema into a validated YAML spec — field-name mistakes are rejected by the provider, not discovered at validation time.
-- Saved workflow libraries at three scopes (project / global / builtin), startable by name; the `/dag-auto` command routes a requirement to a curated reference topology and retargets it to the task at hand.
+- Saved workflow libraries at three scopes (project / global / builtin), startable by name; the `/dag-auto` command (backed by the non-hidden `dag-auto` built-in skill) routes a requirement to a curated reference topology and retargets it to the task at hand. Five hidden `dag-*` reference skills — `dag-blocks`, `dag-nodes`, `dag-recovery`, `dag-patterns`, and `dag-policy` — carry the authoring, recovery, pattern, and policy contracts and load on demand.
 - The agent promotes to a workflow on its own judgment — the user need not ask — and declares the graph structure up front, mutating it at runtime only for structure that depends on results. When later work depends on items a node produces (for example one verifier per finding), the parent turns that node into a checkpoint, deduplicates and ranks the reported items, and adds only the needed item nodes with a bounded `extend`; `fan_out` is for writers from a plan's `packages`, not general per-item expansion.
 - Model tiers in `dag.model` separate decisions from volume: critical nodes on the `advanced` model, fan-out work on `standard`.
 
@@ -40,9 +40,9 @@ Three terms worth knowing:
 ## Using workflows
 
 Nothing has to be configured to try it: ask for work that has stages, parallel
-parts, or a review gate in the middle (`/dag-auto <task>`), and the agent
-designs a graph and runs it. Three things turn that into a repeatable setup of
-your own.
+parts, or a review gate in the middle (`/dag-auto <task>`, which loads the
+`dag-auto` skill), and the agent designs a graph and runs it. Three things turn
+that into a repeatable setup of your own.
 
 ### 1. Choose the model tiers — `dag.model` in `.agents/settings.json`
 

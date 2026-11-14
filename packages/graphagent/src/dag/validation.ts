@@ -953,7 +953,7 @@ export function redundantDependencyDiagnostics(
  * removes verdict gating for the whole downstream graph; name that cost and the
  * block form that keeps the gate whenever the hint offers it. */
 const CHECKPOINT_WEAKENING =
-  'Setting report_to_parent: false removes verdict gating for every downstream node; for review/decision pipelines prefer the blocks form (workflow guide topic "blocks"), whose compiled graphs gate dependents on verdicts.'
+  'Setting report_to_parent: false removes verdict gating for every downstream node; for review/decision pipelines prefer the blocks form (skill dag-blocks), whose compiled graphs gate dependents on verdicts.'
 
 function plural(count: number): string {
   return count === 1 ? "" : "s"

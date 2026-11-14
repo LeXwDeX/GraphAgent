@@ -7,6 +7,7 @@ import { Effect } from "effect"
 import { createHash } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
+import { BUILTIN_SKILLS } from "../../../src/skill/builtin"
 import { reply } from "../../lib/llm-server"
 import {
   artifactCliTarget,
@@ -64,6 +65,14 @@ function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex")
 }
 
+const DAG_SKILLS = ["dag-auto", "dag-blocks", "dag-nodes", "dag-recovery", "dag-patterns", "dag-policy"] as const
+const dagSkills = DAG_SKILLS.map((name) => {
+  const item = BUILTIN_SKILLS.find((skill) => skill.name === name)
+  if (!item) throw new Error(`missing built-in skill ${name}`)
+  return item
+})
+const dagAuto = dagSkills[0]!
+
 function recordEvidence(
   name: string,
   input: {
@@ -86,8 +95,9 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
     ({ llm, opencode, target: resolvedTarget }) =>
       Effect.gen(function* () {
         const argumentsText = "DAG_PROMPT_ROUTE_SENTINEL inspect this bounded request"
-        const commandArguments = `"${argumentsText}"`
-        const expanded = CommandPlugin.DagAutoContent.replaceAll("$ARGUMENTS", commandArguments).trim()
+        // The skill body has no $ARGUMENTS placeholder; expandCommandTemplate
+        // appends the invocation arguments after the body and trims.
+        const expanded = `${dagAuto.content}\n\n${argumentsText}`.trim()
         yield* llm.text("dag-auto prompt loaded")
 
         const result = yield* opencode.run(argumentsText, { command: "dag-auto" })
@@ -97,7 +107,7 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
           target: resolvedTarget,
           result,
           requests,
-          expected: { dagAutoSha256: sha256(CommandPlugin.DagAutoContent), argumentsText, commandArguments },
+          expected: { dagAutoSha256: sha256(dagAuto.content), argumentsText },
         })
         opencode.expectExit(result, 0)
         expect(result.target).toEqual(resolvedTarget)
@@ -105,6 +115,44 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
         expect(strings(requests).some((value) => value.includes(expanded))).toBe(true)
       }),
     120_000,
+  )
+
+  cliIt.concurrent(
+    "loads all six dag skills through the skill tool with exact content",
+    ({ llm, opencode, target: resolvedTarget }) =>
+      Effect.gen(function* () {
+        const marker = "DAG_SKILLS_LOAD_SENTINEL"
+        const escaped = (value: string) => JSON.stringify(value.trim()).slice(1, -1)
+        const call = dagSkills.reduce((item, skill, index) => item.toolAt(index, "skill", { name: skill.name }), reply())
+        yield* llm.pushMatch(turnIncludes(marker), call.item())
+        yield* llm.pushMatch(
+          (hit) => {
+            const body = JSON.stringify(hit.body)
+            return dagSkills.every(
+              (skill) =>
+                body.includes(`<skill_content name=\\"${skill.name}\\">`) && body.includes(escaped(skill.content)),
+            )
+          },
+          reply().text("skills loaded").stop().item(),
+        )
+
+        const result = yield* opencode.run(marker, { extraArgs: ["--dangerously-skip-permissions"] })
+        const requests = yield* llm.inputs
+        const serialized = JSON.stringify(requests)
+
+        yield* recordEvidence("dag-skills-load", {
+          target: resolvedTarget,
+          result,
+          requests,
+          expected: Object.fromEntries(dagSkills.map((skill) => [`${skill.name}Sha256`, sha256(skill.content)])),
+        })
+        opencode.expectExit(result, 0)
+        expect(result.stdout).toBe("skills loaded\n")
+        for (const skill of dagSkills) {
+          expect(serialized).toContain(escaped(skill.content))
+        }
+      }),
+    180_000,
   )
 
   cliIt.concurrent(

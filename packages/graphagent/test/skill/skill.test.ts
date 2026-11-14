@@ -92,16 +92,37 @@ const writeSkill = (file: string, name: string, extra: Record<string, unknown> =
   })
 
 describe("skill", () => {
-  it.live("does not register workflow as a built-in skill", () =>
+  it.live("registers the nine built-in skills and keeps five dag references hidden", () =>
     provideTmpdirInstance(
       () =>
         Effect.gen(function* () {
           const skill = yield* Skill.Service
           expect(yield* skill.get("workflow")).toBeUndefined()
-          expect(
-            (yield* skill.all()).filter((item) => item.location.startsWith("/builtin/")).map((item) => item.name),
-          ).toEqual(["customize-graphagent", "configure-hooks", "git-workflow"])
+          const builtin = (yield* skill.all()).filter((item) => item.location.startsWith("/builtin/"))
+          expect(builtin.map((item) => item.name)).toEqual([
+            "customize-graphagent",
+            "configure-hooks",
+            "git-workflow",
+            "dag-auto",
+            "dag-blocks",
+            "dag-nodes",
+            "dag-recovery",
+            "dag-patterns",
+            "dag-policy",
+          ])
+          expect(builtin.filter((item) => item.hidden).map((item) => item.name)).toEqual([
+            "dag-blocks",
+            "dag-nodes",
+            "dag-recovery",
+            "dag-patterns",
+            "dag-policy",
+          ])
           expect(yield* skill.get("orchestration-router")).toBeUndefined()
+          // hidden means "no same-name slash command", not "invisible": the
+          // reference skills still appear in available_skills.
+          const available = Skill.fmt(yield* skill.all(), { verbose: true })
+          expect(available).toContain("<name>dag-blocks</name>")
+          expect(available).toContain("<name>dag-policy</name>")
         }),
       { git: true },
     ),
