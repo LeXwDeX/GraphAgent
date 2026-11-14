@@ -1309,6 +1309,31 @@
         "dag": {
           "type": "object",
           "properties": {
+            "model": {
+              "type": "object",
+              "properties": {
+                "advanced": {
+                  "type": "string",
+                  "description": "Model (\"provider/model\") for critical nodes: required: true and review/arbiter workers. A project setting overrides the user-level value."
+                },
+                "standard": {
+                  "type": "string",
+                  "description": "Model (\"provider/model\") for every other worker node. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value."
+                }
+              },
+              "additionalProperties": true,
+              "description": "DAG model tiers. Project configuration (<root>/.agents/settings.json) overrides the user-level configuration; nodes do not pin models."
+            },
+            "thinking_depth": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "max"
+              ],
+              "description": "Reasoning variant for DAG child sessions; applied only when the resolved model defines a variant with this name. A project setting overrides the user-level value."
+            },
             "mode": {
               "type": "string",
               "enum": [
@@ -1393,7 +1418,7 @@
             }
           },
           "additionalProperties": true,
-          "description": "DAG workflow settings. Every key in this object is read from the global layer only: the global config directory (graphagent.json/graphagent.jsonc), managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR. Values from project-level configuration are ignored with a warning."
+          "description": "DAG workflow settings. model and thinking_depth merge per directory: a project's <root>/.agents/settings.json overrides the user-level config directory (graphagent.json/graphagent.jsonc). Every other key is read from the global layer only — the global config directory, managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR; values from project-level configuration are ignored with a warning."
         }
       },
       "additionalProperties": true

@@ -10,14 +10,16 @@
  * the original session-relative behavior.
  *
  * Lookup order (first match wins):
- * - project: `.agents/workflows/<name>.yaml` / `.yml`
+ * - project: `<root>/.agents/workflows/<name>.yaml` / `.yml`
  * - global:  `<config dir>/workflows/<name>.yaml` / `.yml`
  * - builtin:  templates compiled into the binary from opencode-dag-config
  *   (the release pipeline injects the snapshot via DAG_TEMPLATES_DIR, so
  *   air-gapped installs still ship the curated templates)
  *
- * Mirrors config.ts: same two-level scope, same GRAPHAGENT_CONFIG_DIR redirect,
- * read lazily so edits apply on the next call and startup stays untouched.
+ * The project root resolves per directory (`dag/paths.ts`), so a nested
+ * directory or a linked worktree reads its own `.agents/workflows`. The global
+ * scope is `Global.Path.config`, which already honors GRAPHAGENT_CONFIG_DIR.
+ * Read lazily so edits apply on the next call and startup stays untouched.
  */
 
 export * as DagWorkflows from "./workflows"
@@ -25,15 +27,12 @@ export * as DagWorkflows from "./workflows"
 import { Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
-import { Global } from "@graphagent/core/global"
-import { Flag } from "@graphagent/core/flag/flag"
-import { PROJECT_DIR } from "@graphagent/core/brand"
+import { DagPaths } from "./paths"
 import { isRecord } from "@/util/record"
 
 // Injected by the build (build.ts define), mirrors GRAPHAGENT_MODELS_DEV.
 declare const GRAPHAGENT_DAG_TEMPLATES: Record<string, string> | undefined
 
-const DIRECTORY = "workflows"
 const EXTENSIONS = [".yaml", ".yml"]
 
 export type Scope = "project" | "global" | "builtin"
@@ -144,13 +143,14 @@ async function builtinEntry(name: string, content: string): Promise<Entry> {
   return { name, scope: "builtin", path: `${BUILTIN_PREFIX}${name}`, content, ...(await parseMeta(content)) }
 }
 
-// Resolution order, project first. The global directory applies the same
-// GRAPHAGENT_CONFIG_DIR redirect the Global service applies in make(), so managed
-// setups pointing the config dir elsewhere are honored here too.
-function scopes(projectDir: string) {
+// Resolution order, project first. Both scopes resolve per directory: the
+// project root comes from `dag/paths.ts` (git toplevel + `.agents` marker;
+// `$HOME` has no project layer), the global root is the XDG config directory.
+function scopes(directory: string) {
+  const root = DagPaths.projectLayer(directory)
   return [
-    { scope: "project" as const, dir: path.join(projectDir, PROJECT_DIR, DIRECTORY) },
-    { scope: "global" as const, dir: path.join(Flag.GRAPHAGENT_CONFIG_DIR ?? Global.Path.config, DIRECTORY) },
+    ...(root ? [{ scope: "project" as const, dir: DagPaths.projectWorkflows(root) }] : []),
+    { scope: "global" as const, dir: DagPaths.globalWorkflows() },
   ]
 }
 

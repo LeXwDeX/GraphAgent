@@ -194,7 +194,7 @@ export const PromptTemplateSource = Schema.Union([
   }),
   Schema.Struct({
     id: Schema.String.annotate({
-      description: "Prompt asset id resolved from .agents/dag-prompts (project, then global)",
+      description: "Prompt asset id resolved from .agents/workflows/prompts (project, then global)",
     }),
     input: PromptInput,
   }),
@@ -1429,7 +1429,7 @@ export interface EnvironmentCatalogs {
   /** #946: worker types whose agent can write files. Worktree isolation is a
    * write-capable feature; undefined falls back to the static builtin check. */
   writer_types?: ReadonlySet<string>
-  /** Resolves a node's model against this environment (dag.jsonc tiers,
+  /** Resolves a node's model against this environment (DAG model tiers,
    * worker agent model, parent session). undefined skips the check. */
   resolveModel?: (
     node: {
@@ -1496,7 +1496,7 @@ export function environmentDiagnostics(input: {
               code: DIAGNOSTIC_CODES.modelUnavailable,
               path: `nodes[${node.id}]`,
               message: `no model resolves for node "${node.id}"`,
-              hint: "Configure dag.jsonc tiers, the worker agent model, or a parent-session model",
+              hint: "Configure dag.model tiers in .agents/settings.json, the worker agent model, or a parent-session model",
             }),
           )
         }
@@ -1705,7 +1705,7 @@ function promptIdDiagnostics(node: NodeConfig, directory: string | undefined): E
           code: DIAGNOSTIC_CODES.promptMissingAsset,
           path: `nodes[${node.id}].prompt_template.id`,
           message: `prompt id "${prompt.id}" cannot be resolved without a project directory`,
-          hint: "Inline the prompt content or validate from a project with dag-prompts",
+          hint: "Inline the prompt content or validate from a project with .agents/workflows/prompts",
         }),
       ]
     }
@@ -1716,8 +1716,8 @@ function promptIdDiagnostics(node: NodeConfig, directory: string | undefined): E
         diagnostic({
           code: DIAGNOSTIC_CODES.promptMissingAsset,
           path: `nodes[${node.id}].prompt_template.id`,
-          message: `prompt id "${prompt.id}" does not resolve in project or global dag-prompts`,
-          hint: "Add <id>.md to .agents/dag-prompts (project or global) or switch to an inline template",
+          message: `prompt id "${prompt.id}" does not resolve in project or global workflow prompts`,
+          hint: "Add <id>.md to .agents/workflows/prompts (project or global) or switch to an inline template",
         }),
       ]
     }

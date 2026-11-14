@@ -30,11 +30,32 @@ const LogLevelRef = Schema.Literals(["DEBUG", "INFO", "WARN", "ERROR"]).annotate
 })
 
 /**
- * DAG workflow settings declared by #884. The values are read from the global
- * layer only; `packages/graphagent/src/config/config.ts` strips the same keys
- * from project-level sources before merging and warns once per file and key.
+ * DAG workflow settings declared by #884. `model` and `thinking_depth` resolve
+ * per directory with project over user precedence
+ * (`packages/graphagent/src/config/dag-section.ts`); every other key is global
+ * policy, so `packages/graphagent/src/config/config.ts` strips those keys from
+ * project-level sources before merging and warns once per file and key.
  */
 export const Dag = Schema.Struct({
+  model: Schema.optional(
+    Schema.Struct({
+      advanced: Schema.optional(Schema.String).annotate({
+        description:
+          'Model ("provider/model") for critical nodes: required: true and review/arbiter workers. A project setting overrides the user-level value.',
+      }),
+      standard: Schema.optional(Schema.String).annotate({
+        description:
+          'Model ("provider/model") for every other worker node. With only one tier configured, it serves as the unified default. A project setting overrides the user-level value.',
+      }),
+    }),
+  ).annotate({
+    description:
+      "DAG model tiers. Project configuration (<root>/.agents/settings.json) overrides the user-level configuration; nodes do not pin models.",
+  }),
+  thinking_depth: Schema.optional(Schema.Literals(["low", "medium", "high", "max"])).annotate({
+    description:
+      "Reasoning variant for DAG child sessions; applied only when the resolved model defines a variant with this name. A project setting overrides the user-level value.",
+  }),
   mode: Schema.optional(Schema.Literals(["on", "off"])).annotate({
     description:
       "Default DAG mode for new sessions. Global config only: values from project-level configuration are ignored.",
@@ -85,7 +106,7 @@ export const Dag = Schema.Struct({
   }),
 }).annotate({
   description:
-    "DAG workflow settings. Every key in this object is read from the global layer only: the global config directory (graphagent.json/graphagent.jsonc), managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR. Values from project-level configuration are ignored with a warning.",
+    "DAG workflow settings. model and thinking_depth merge per directory: a project's <root>/.agents/settings.json overrides the user-level config directory (graphagent.json/graphagent.jsonc). Every other key is read from the global layer only — the global config directory, managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR; values from project-level configuration are ignored with a warning.",
 })
 
 /** Message used when an unrecognized key appears under `engine`. */

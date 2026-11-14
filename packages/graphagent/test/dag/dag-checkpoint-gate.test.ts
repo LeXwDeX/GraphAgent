@@ -547,7 +547,7 @@ it.effect("does not repeat the binding repair when a static input or explicit ma
 
 it.effect("repairs named-template bindings when a redundant edge is removed", () =>
   Effect.gen(function* () {
-    const directory = yield* projectDir({ ".agents/dag-prompts/shared.md": "Compare {{a}} with {{b}}" })
+    const directory = yield* projectDir({ ".agents/workflows/prompts/shared.md": "Compare {{a}} with {{b}}" })
     const before = yield* validate(
       spec({
         name: "named-template-bindings",
@@ -599,7 +599,7 @@ it.effect("repairs named-template bindings when a redundant edge is removed", ()
 
 it.effect("repairs named-template bindings in the checkpoint fix without overriding static input", () =>
   Effect.gen(function* () {
-    const directory = yield* projectDir({ ".agents/dag-prompts/shared.md": "Compare {{a}} with {{b}}" })
+    const directory = yield* projectDir({ ".agents/workflows/prompts/shared.md": "Compare {{a}} with {{b}}" })
     const before = yield* validate(
       spec({
         name: "named-template-checkpoint",

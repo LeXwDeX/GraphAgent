@@ -5,8 +5,9 @@
  * DAG prompt-template resolver.
  *
  * Resolves a node's `prompt_template` declaration into a final prompt string:
- * - `id` reference → reads the `.md` file from project (`.agents/dag-prompts/`)
- *   or global (`<config dir>/dag-prompts/`) directory
+ * - `id` reference → reads the `.md` file from project
+ *   (`<root>/.agents/workflows/prompts/`) or global
+ *   (`<config dir>/workflows/prompts/`)
  * - `inline` → used directly as the template source (no filesystem round-trip)
  *
  * Both paths go through `{{var}}` interpolation and `sanitize()`.
@@ -18,9 +19,7 @@
 import { Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
-import { Global } from "@graphagent/core/global"
-import { Flag } from "@graphagent/core/flag/flag"
-import { PROJECT_DIR } from "@graphagent/core/brand"
+import { DagPaths } from "../paths"
 import { sanitizeInput } from "./sanitize"
 
 export interface TemplateRef {
@@ -40,7 +39,7 @@ export function placeholderKeys(template: string): string[] {
 }
 
 /** A template id must be a single path segment (no separators, no parent refs)
- * so it cannot escape the dag-prompts directory via path traversal. */
+ * so it cannot escape the prompts directory via path traversal. */
 function isSafeTemplateId(id: string): boolean {
   return id.length > 0 && !id.includes("/") && !id.includes("\\") && id !== "." && id !== ".."
 }
@@ -49,7 +48,7 @@ function isSafeTemplateId(id: string): boolean {
  * Resolve a template reference into a final prompt string.
  *
  * @param ref         The prompt_template declaration from the node config
- * @param projectDir  The project root (for `.agents/dag-prompts/` lookup)
+ * @param projectDir  The project directory (for `.agents/workflows/prompts/` lookup)
  */
 export function resolveTemplate(ref: TemplateRef, projectDir: string): Effect.Effect<string, Error> {
   return renderTemplate(ref, projectDir).pipe(Effect.map((result) => result.text))
@@ -97,22 +96,23 @@ function readTemplateSource(ref: TemplateRef, projectDir: string): Effect.Effect
 function readById(id: string, projectDir: string): Effect.Effect<string, Error> {
   return Effect.gen(function* () {
     // Reject path traversal: a template id must be a single path segment so it
-    // cannot escape the dag-prompts directory. "\" is rejected for Windows,
+    // cannot escape the prompts directory. "\" is rejected for Windows,
     // where it is a path separator.
     if (!isSafeTemplateId(id)) {
       return yield* Effect.fail(new Error(`Invalid template id: ${id}`))
     }
-    const projectPath = path.join(projectDir, PROJECT_DIR, "dag-prompts", `${id}.md`)
-    // Same GRAPHAGENT_CONFIG_DIR redirect the Global service applies (siblings:
-    // dag/workflows.ts, dag/config.ts) so redirected setups resolve their
-    // globally installed prompts.
-    const globalPath = path.join(Flag.GRAPHAGENT_CONFIG_DIR ?? Global.Path.config, "dag-prompts", `${id}.md`)
+    const root = DagPaths.projectLayer(projectDir)
+    const projectPath = root ? path.join(DagPaths.projectPrompts(root), `${id}.md`) : undefined
+    const globalPath = path.join(DagPaths.globalPrompts(), `${id}.md`)
 
     // Try project first (overrides global), then global. A missing asset is a
     // typed failure, not a defect: the spawn path fails the node through
     // Effect.catch, which never sees the defect channel.
     return yield* Effect.tryPromise({
-      try: () => fs.readFile(projectPath, "utf-8").catch(() => fs.readFile(globalPath, "utf-8")),
+      try: () =>
+        projectPath === undefined
+          ? fs.readFile(globalPath, "utf-8")
+          : fs.readFile(projectPath, "utf-8").catch(() => fs.readFile(globalPath, "utf-8")),
       catch: () => new Error(`Template not found: ${id} (checked project and global dirs)`),
     })
   })

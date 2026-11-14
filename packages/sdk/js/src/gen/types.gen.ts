@@ -1477,9 +1477,14 @@ export type Config = {
     policies?: Array<ConfigV2ExperimentalPolicy>
   }
   /**
-   * DAG workflow settings. Every key in this object is read from the global layer only: the global config directory (graphagent.json/graphagent.jsonc), managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR. Values from project-level configuration are ignored with a warning.
+   * DAG workflow settings. model and thinking_depth merge per directory: a project's <root>/.agents/settings.json overrides the user-level config directory (graphagent.json/graphagent.jsonc). Every other key is read from the global layer only — the global config directory, managed configuration, and GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT and GRAPHAGENT_CONFIG_DIR; values from project-level configuration are ignored with a warning.
    */
   dag?: {
+    model?: {
+      advanced?: string
+      standard?: string
+    }
+    thinking_depth?: "low" | "medium" | "high" | "max"
     mode?: "on" | "off"
     concurrency?: number
     max_total_nodes?: number

@@ -1467,7 +1467,7 @@ function resolveSpecPath(specPath: string, directory: string, projectID: string,
     // way: strip the scheme and resolve by name instead of letting the path
     // branch reject it with a cwd-joined extension error. Its project/global
     // scopes are curated assets the user placed under `.agents/` or the
-    // config dir — the same trust level as dag.jsonc — so a resolved name
+    // config dir — the same trust level as DAG settings — so a resolved name
     // needs no external-directory prompt even when the global scope lands
     // outside the session directory. Arbitrary paths below keep the prompt.
     const name = DagWorkflows.isBuiltinPath(specPath) ? DagWorkflows.builtinName(specPath) : specPath

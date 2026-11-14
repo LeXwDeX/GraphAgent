@@ -3,7 +3,9 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { Effect } from "effect"
+import { DagSection } from "@/config/dag-section"
 import { DagConfig } from "@/dag/config"
+import { execFileSync } from "node:child_process"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
@@ -12,89 +14,180 @@ let dir: string
 let projectDir: string
 let globalDir: string
 const originalConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
+const originalHome = process.env.GRAPHAGENT_TEST_HOME
+const originalDisableProjectConfig = process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-config-"))
+  // realpath keeps the resolved root comparable with git's real toplevel on
+  // macOS, where /var is a symlink to /private/var.
+  dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "dag-config-")))
   projectDir = path.join(dir, "project")
   globalDir = path.join(dir, "global")
   await fs.mkdir(projectDir, { recursive: true })
-  // Redirect the global config dir (Flag.GRAPHAGENT_CONFIG_DIR reads the env)
-  // so seeding never touches the real one.
+  // Redirect the user-level config dir (Global.Path.config reads the env) so
+  // the tests never touch the real one.
   process.env.GRAPHAGENT_CONFIG_DIR = globalDir
 })
 
 afterEach(async () => {
   if (originalConfigDir === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
   else process.env.GRAPHAGENT_CONFIG_DIR = originalConfigDir
+  if (originalHome === undefined) delete process.env.GRAPHAGENT_TEST_HOME
+  else process.env.GRAPHAGENT_TEST_HOME = originalHome
+  if (originalDisableProjectConfig === undefined) delete process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG
+  else process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG = originalDisableProjectConfig
   await fs.rm(dir, { recursive: true, force: true })
 })
 
-describe("DagConfig.load", () => {
-  it("does not write anything by default when no config exists (pure read path)", async () => {
-    const info = await Effect.runPromise(DagConfig.load(projectDir))
-    expect(info).toEqual({})
-    // The scheduling hot path must never seed — the global dir stays absent.
-    expect(fs.access(path.join(globalDir, "dag.jsonc"))).rejects.toThrow()
-  })
+const writeFile = async (file: string, text: string) => {
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, text)
+}
 
-  it("seeds a commented default dag.jsonc into the global config dir with autoSeed", async () => {
-    const info = await Effect.runPromise(DagConfig.load(projectDir, { autoSeed: true }))
-    expect(info).toEqual({})
-    const seeded = await fs.readFile(path.join(globalDir, "dag.jsonc"), "utf-8")
-    expect(seeded).toContain("thinking_depth")
-    expect(seeded).toContain("advanced")
-    // The seeded file keeps every value commented out — a subsequent load
-    // yields an empty model block and no thinking depth.
-    const reloaded = await Effect.runPromise(DagConfig.load(projectDir))
-    expect(reloaded).toEqual({ model: {} })
-    expect(reloaded.thinking_depth).toBeUndefined()
-    expect(DagConfig.tierModel(reloaded, { required: true, workerType: "build" })).toBeUndefined()
-  })
+const writeProjectSettings = (root: string, value: unknown, name = "settings.json") =>
+  writeFile(path.join(root, ".agents", name), JSON.stringify(value, null, 2))
 
-  it("returns empty config when seeding fails for non-EEXIST reasons", async () => {
-    // Point the global dir AT A FILE so mkdir/writeFile fail with ENOTDIR —
-    // load must swallow it (warning only) and still return {}.
-    await fs.writeFile(path.join(dir, "not-a-dir"), "")
-    process.env.GRAPHAGENT_CONFIG_DIR = path.join(dir, "not-a-dir")
-    const info = await Effect.runPromise(DagConfig.load(projectDir, { autoSeed: true }))
-    expect(info).toEqual({})
-  })
+const section = (directory: string) => Effect.runPromise(DagSection.dagSection(directory))
 
-  it("reads the global dag.jsonc with comments and trailing commas", async () => {
-    await fs.mkdir(globalDir, { recursive: true })
-    await fs.writeFile(
-      path.join(globalDir, "dag.jsonc"),
+function git(cwd: string, ...args: string[]) {
+  execFileSync("git", args, { cwd, stdio: "ignore" })
+}
+
+describe("DagSection.dagSection", () => {
+  it("reads the user-level dag section from graphagent.jsonc with comments and trailing commas", async () => {
+    await writeFile(
+      path.join(globalDir, "graphagent.jsonc"),
       `{
-        // tiered defaults
-        "model": { "advanced": "prov/big", "standard": "prov/small", },
-        "thinking_depth": "high",
+        // model tiers
+        "dag": {
+          "model": { "advanced": "prov/big", "standard": "prov/small", },
+          "thinking_depth": "high",
+        },
       }`,
     )
-    const info = await Effect.runPromise(DagConfig.load(projectDir))
-    expect(info.model?.advanced).toBe("prov/big")
-    expect(info.model?.standard).toBe("prov/small")
-    expect(info.thinking_depth).toBe("high")
+    expect(await section(projectDir)).toEqual({
+      model: { advanced: "prov/big", standard: "prov/small" },
+      thinking_depth: "high",
+    })
   })
 
-  it("prefers the project .agents/dag.jsonc over the global file", async () => {
-    await fs.mkdir(globalDir, { recursive: true })
-    await fs.writeFile(path.join(globalDir, "dag.jsonc"), `{ "thinking_depth": "low" }`)
-    await fs.mkdir(path.join(projectDir, ".agents"), { recursive: true })
-    await fs.writeFile(path.join(projectDir, ".agents", "dag.jsonc"), `{ "thinking_depth": "max" }`)
-    const info = await Effect.runPromise(DagConfig.load(projectDir))
-    expect(info.thinking_depth).toBe("max")
+  it("lets project settings override user values field by field", async () => {
+    await writeFile(
+      path.join(globalDir, "graphagent.json"),
+      JSON.stringify({
+        dag: { model: { advanced: "user/big", standard: "user/small" }, thinking_depth: "low" },
+      }),
+    )
+    await writeProjectSettings(projectDir, { dag: { model: { standard: "project/small" } } })
+    expect(await section(projectDir)).toEqual({
+      model: { advanced: "user/big", standard: "project/small" },
+      thinking_depth: "low",
+    })
   })
 
-  it("ignores a config with an invalid shape instead of failing the round", async () => {
+  it("expands {env:} variables in dag values like the main config loader", async () => {
+    process.env.DAG_SECTION_TEST_MODEL = "prov/env-model"
+    try {
+      await writeFile(
+        path.join(globalDir, "graphagent.json"),
+        JSON.stringify({ dag: { model: { standard: "{env:DAG_SECTION_TEST_MODEL}" } } }),
+      )
+      expect(await section(projectDir)).toEqual({ model: { standard: "prov/env-model" } })
+    } finally {
+      delete process.env.DAG_SECTION_TEST_MODEL
+    }
+  })
+
+  it("ignores project settings when GRAPHAGENT_DISABLE_PROJECT_CONFIG is set", async () => {
+    await writeFile(
+      path.join(globalDir, "graphagent.json"),
+      JSON.stringify({ dag: { model: { advanced: "user/big", standard: "user/small" } } }),
+    )
+    await writeProjectSettings(projectDir, {
+      dag: { model: { standard: "project/small" }, thinking_depth: "high" },
+    })
+    process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG = "1"
+    // The user layer survives; no project value leaks through.
+    expect(await section(projectDir)).toEqual({ model: { advanced: "user/big", standard: "user/small" } })
+  })
+
+  it("applies settings.local.json over settings.json", async () => {
+    await writeProjectSettings(projectDir, { dag: { thinking_depth: "low" } })
+    await writeProjectSettings(projectDir, { dag: { thinking_depth: "max" } }, "settings.local.json")
+    expect(await section(projectDir)).toEqual({ thinking_depth: "max" })
+  })
+
+  it("resolves the project root from a nested directory", async () => {
+    await writeProjectSettings(projectDir, { dag: { model: { standard: "root/model" } } })
+    const nested = path.join(projectDir, "packages", "app")
+    await fs.mkdir(nested, { recursive: true })
+    expect(await section(nested)).toEqual({ model: { standard: "root/model" } })
+  })
+
+  it("stops at a linked worktree's own toplevel instead of reading the main checkout", async () => {
+    const main = path.join(dir, "repo")
+    const linked = path.join(dir, "linked")
+    await fs.mkdir(main, { recursive: true })
+    git(main, "init")
+    git(main, "config", "user.email", "test@opencode.test")
+    git(main, "config", "user.name", "Test")
+    git(main, "commit", "--allow-empty", "-m", "init")
+    git(main, "worktree", "add", "--detach", linked, "HEAD")
+    await writeProjectSettings(main, { dag: { model: { standard: "main/model" } } })
+
+    expect(await section(main)).toEqual({ model: { standard: "main/model" } })
+
+    const nested = path.join(linked, "packages", "app")
+    await fs.mkdir(nested, { recursive: true })
+    expect(await section(nested)).toEqual({})
+
+    await writeProjectSettings(linked, { dag: { model: { advanced: "worktree/model" } } })
+    expect(await section(nested)).toEqual({ model: { advanced: "worktree/model" } })
+  })
+
+  it("never treats $HOME as a project root", async () => {
+    const home = path.join(dir, "home")
+    process.env.GRAPHAGENT_TEST_HOME = home
+    await writeProjectSettings(home, { dag: { model: { standard: "home/model" } } })
+    const nested = path.join(home, "work")
+    await fs.mkdir(nested, { recursive: true })
+    try {
+      expect(await section(home)).toEqual({})
+      expect(await section(nested)).toEqual({})
+    } finally {
+      if (originalHome === undefined) delete process.env.GRAPHAGENT_TEST_HOME
+      else process.env.GRAPHAGENT_TEST_HOME = originalHome
+    }
+  })
+
+  it("ignores an invalid section without failing the round", async () => {
+    await writeFile(
+      path.join(globalDir, "graphagent.json"),
+      JSON.stringify({ dag: { model: { standard: "user/model" } } }),
+    )
+    await writeProjectSettings(projectDir, { dag: { thinking_depth: "ultra" } })
+    // The invalid project layer is skipped; the valid user layer survives.
+    expect(await section(projectDir)).toEqual({ model: { standard: "user/model" } })
+
+    await fs.rm(path.join(projectDir, ".agents"), { recursive: true })
+    await writeFile(path.join(globalDir, "graphagent.json"), JSON.stringify({ dag: { thinking_depth: "ultra" } }))
+    expect(await section(projectDir)).toEqual({})
+  })
+
+  it("is a pure read: no file is created in the config or project directories", async () => {
     await fs.mkdir(globalDir, { recursive: true })
-    await fs.writeFile(path.join(globalDir, "dag.jsonc"), `{ "thinking_depth": "ultra" }`)
-    const info = await Effect.runPromise(DagConfig.load(projectDir))
-    expect(info).toEqual({})
+    await writeProjectSettings(projectDir, { dag: { model: { standard: "project/model" } } })
+
+    expect(await section(projectDir)).toEqual({ model: { standard: "project/model" } })
+    expect(await fs.readdir(globalDir)).toEqual([])
+    expect(await fs.readdir(path.join(projectDir, ".agents"))).toEqual(["settings.json"])
+    // No legacy dag.jsonc is seeded anywhere.
+    expect((await fs.readdir(projectDir)).sort()).toEqual([".agents"])
   })
 })
 
 describe("DagConfig.tierModel", () => {
-  const info: DagConfig.Info = { model: { advanced: "prov/big", standard: "prov/small" } }
+  const info: DagConfig.Dag = { model: { advanced: "prov/big", standard: "prov/small" } }
 
   it("routes required nodes to the advanced tier", () => {
     expect(DagConfig.tierModel(info, { required: true, workerType: "build" })).toEqual({
@@ -130,7 +223,7 @@ describe("DagConfig.tierModel", () => {
     })
   })
 
-  // An empty tier (what uncommenting the seeded `// "advanced": ""` line
+  // An empty tier (what uncommenting a placeholder `"advanced": ""` line
   // produces) is unconfigured: the other tier remains the unified default
   // instead of critical/required nodes silently falling through to the
   // worker-agent or parent-session model.

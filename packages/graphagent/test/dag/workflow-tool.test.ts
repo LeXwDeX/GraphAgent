@@ -818,7 +818,7 @@ function missingModelProject() {
     init: (directory) =>
       Effect.promise(async () => {
         await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
-        await Bun.write(path.join(directory, ".agents", "dag.jsonc"), '{ "model": {} }\n')
+        await Bun.write(path.join(directory, ".agents", "settings.json"), '{ "dag": { "model": {} } }\n')
         await Bun.write(
           path.join(directory, "missing-model.yaml"),
           JSON.stringify({
@@ -845,7 +845,10 @@ function missingCatalogModelProject() {
     init: (directory) =>
       Effect.promise(async () => {
         await fs.mkdir(path.join(directory, ".agents"), { recursive: true })
-        await Bun.write(path.join(directory, ".agents", "dag.jsonc"), '{ "model": { "advanced": "ghost/ghost" } }\n')
+        await Bun.write(
+          path.join(directory, ".agents", "settings.json"),
+          '{ "dag": { "model": { "advanced": "ghost/ghost" } } }\n',
+        )
         await Bun.write(
           path.join(directory, "missing-catalog-model.yaml"),
           JSON.stringify({

@@ -206,7 +206,7 @@ describe("resolveTemplate", () => {
   it("resolves template by id from project dir", async () => {
     // Create a temp project dir with a template
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-test-"))
-    const promptsDir = path.join(tmpDir, ".agents", "dag-prompts")
+    const promptsDir = path.join(tmpDir, ".agents", "workflows", "prompts")
     await fs.mkdir(promptsDir, { recursive: true })
     await fs.writeFile(path.join(promptsDir, "test-tmpl.md"), "Hello {{name}} from template!", "utf-8")
 
@@ -221,11 +221,11 @@ describe("resolveTemplate", () => {
   })
 
   it("resolves a global template from a redirected GRAPHAGENT_CONFIG_DIR", async () => {
-    // #380: the global dag-prompts lookup must honor the same
+    // #380: the global workflow-prompts lookup must honor the same
     // GRAPHAGENT_CONFIG_DIR redirect the Global service applies, not a
     // hardcoded ~/.config/graphagent path.
     const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-global-"))
-    const promptsDir = path.join(globalDir, "dag-prompts")
+    const promptsDir = path.join(globalDir, "workflows", "prompts")
     await fs.mkdir(promptsDir, { recursive: true })
     await fs.writeFile(path.join(promptsDir, "redirected-tmpl.md"), "Global {{scope}} template!", "utf-8")
     const previous = process.env.GRAPHAGENT_CONFIG_DIR
@@ -247,6 +247,37 @@ describe("resolveTemplate", () => {
   it("fails for non-existent template id", async () => {
     const program = resolveTemplate({ id: "non-existent-template" }, "/tmp")
     await expect(Effect.runPromise(program)).rejects.toThrow("not found")
+  })
+
+  it("lets the project prompt shadow a global asset and resolves it from a nested directory", async () => {
+    const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-shadow-global-"))
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-shadow-project-"))
+    const previous = process.env.GRAPHAGENT_CONFIG_DIR
+    process.env.GRAPHAGENT_CONFIG_DIR = globalDir
+    try {
+      const globalPrompts = path.join(globalDir, "workflows", "prompts")
+      const projectPrompts = path.join(projectDir, ".agents", "workflows", "prompts")
+      await fs.mkdir(globalPrompts, { recursive: true })
+      await fs.mkdir(projectPrompts, { recursive: true })
+      await fs.writeFile(path.join(globalPrompts, "shadow-tmpl.md"), "Global {{scope}}")
+      await fs.writeFile(path.join(projectPrompts, "shadow-tmpl.md"), "Project {{scope}}")
+      const nested = path.join(projectDir, "packages", "app")
+      await fs.mkdir(nested, { recursive: true })
+      expect(await Effect.runPromise(resolveTemplate({ id: "shadow-tmpl", input: { scope: "x" } }, nested))).toBe(
+        "Project x",
+      )
+      // From a directory outside the project, the global asset remains reachable.
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "dag-shadow-outside-"))
+      expect(await Effect.runPromise(resolveTemplate({ id: "shadow-tmpl", input: { scope: "y" } }, outside))).toBe(
+        "Global y",
+      )
+      await fs.rm(outside, { recursive: true })
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
+      else process.env.GRAPHAGENT_CONFIG_DIR = previous
+      await fs.rm(globalDir, { recursive: true, force: true })
+      await fs.rm(projectDir, { recursive: true, force: true })
+    }
   })
 
   // The spawn path (DagLoop) fails the node via Effect.catch, which only sees

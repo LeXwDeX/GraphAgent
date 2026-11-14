@@ -51,13 +51,20 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { CONFIG_BASENAME, PROJECT_DIR } from "@graphagent/core/brand"
 
+// Per-directory DAG settings (`dag.model` tiers and `thinking_depth`). The
+// loader below merges the reserved DAG policy keys; runtime readers resolve
+// the tier/depth section from the execution directory instead.
+export { dagSection } from "./dag-section"
+
 // Written into user config files so editors resolve the schema published from
 // this repository instead of the upstream URL.
 const CONFIG_SCHEMA_URL = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/main/schema/config.json"
 
-// #884: DAG settings that only the global layer may set. Project-level values
-// are stripped before merging. The warning is deduplicated per process because
-// every directory instance re-reads the same project files.
+// #884: DAG policy settings that only the global layer may set. Project-level
+// values are stripped before merging; dag.model and dag.thinking_depth are
+// deliberately absent (they resolve per directory in config/dag-section.ts).
+// The warning is deduplicated per process because every directory instance
+// re-reads the same project files.
 const PROJECT_SCOPED_DAG_KEYS = ["mode", "concurrency", "max_total_nodes", "budget", "safety"] as const
 const warnedProjectDagKeys = new Set<string>()
 

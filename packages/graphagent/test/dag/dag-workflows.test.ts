@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { Effect, Layer } from "effect"
 import { DagWorkflows } from "@/dag/workflows"
+import { execFileSync } from "node:child_process"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
@@ -36,14 +37,18 @@ const writeGlobal = (file: string, content: string) =>
     .then(() => fs.writeFile(path.join(globalDir, "workflows", file), content))
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "dag-workflows-"))
+  dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "dag-workflows-")))
   projectDir = path.join(dir, "project")
   globalDir = path.join(dir, "global")
   await fs.mkdir(projectDir, { recursive: true })
-  // Flag.GRAPHAGENT_CONFIG_DIR reads the env — redirect the global scope so the
-  // real user config dir is never read or written.
+  // The user-level config dir comes from Global.Path.config, which reads the
+  // env — redirect it so the real one is never read or written.
   process.env.GRAPHAGENT_CONFIG_DIR = globalDir
 })
+
+function git(cwd: string, ...args: string[]) {
+  execFileSync("git", args, { cwd, stdio: "ignore" })
+}
 
 afterEach(async () => {
   if (originalConfigDir === undefined) delete process.env.GRAPHAGENT_CONFIG_DIR
@@ -152,6 +157,55 @@ describe("DagWorkflows.resolve", () => {
     expect(entry?.scope).toBe("project")
     expect(entry?.title).toBeUndefined()
     expect(entry?.nodes).toBeUndefined()
+  })
+
+  it("resolves the library from the project root of a nested directory", async () => {
+    await writeProject("root-level.yaml", spec("root-level", 1))
+    const nested = path.join(projectDir, "packages", "app")
+    await fs.mkdir(nested, { recursive: true })
+    const entry = await Effect.runPromise(DagWorkflows.resolve("root-level", nested))
+    expect(entry?.scope).toBe("project")
+    expect(entry?.path).toBe(path.join(projectDir, ".agents", "workflows", "root-level.yaml"))
+  })
+
+  it("does not treat $HOME/.agents as a project library", async () => {
+    const home = path.join(dir, "home")
+    await fs.mkdir(path.join(home, ".agents", "workflows"), { recursive: true })
+    await fs.writeFile(path.join(home, ".agents", "workflows", "home-only.yaml"), spec("home-only", 1))
+    const previous = process.env.GRAPHAGENT_TEST_HOME
+    process.env.GRAPHAGENT_TEST_HOME = home
+    try {
+      expect(await Effect.runPromise(DagWorkflows.resolve("home-only", home))).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.GRAPHAGENT_TEST_HOME
+      else process.env.GRAPHAGENT_TEST_HOME = previous
+    }
+  })
+
+  it("keeps a linked worktree's library separate from the main checkout", async () => {
+    const main = path.join(dir, "repo")
+    const linked = path.join(dir, "linked")
+    await fs.mkdir(main, { recursive: true })
+    git(main, "init")
+    git(main, "config", "user.email", "test@opencode.test")
+    git(main, "config", "user.name", "Test")
+    git(main, "commit", "--allow-empty", "-m", "init")
+    git(main, "worktree", "add", "--detach", linked, "HEAD")
+    await fs.mkdir(path.join(main, ".agents", "workflows"), { recursive: true })
+    await fs.writeFile(path.join(main, ".agents", "workflows", "main-only.yaml"), spec("main-only", 1))
+
+    // The linked worktree's toplevel bounds resolution: the main checkout's
+    // library is not visible from it.
+    expect(await Effect.runPromise(DagWorkflows.resolve("main-only", linked))).toBeUndefined()
+
+    const linkedRoot = await fs.realpath(linked)
+    await fs.mkdir(path.join(linkedRoot, ".agents", "workflows"), { recursive: true })
+    await fs.writeFile(path.join(linkedRoot, ".agents", "workflows", "linked-only.yaml"), spec("linked-only", 1))
+    const nested = path.join(linkedRoot, "packages", "app")
+    await fs.mkdir(nested, { recursive: true })
+    const entry = await Effect.runPromise(DagWorkflows.resolve("linked-only", nested))
+    expect(entry?.scope).toBe("project")
+    expect(entry?.path).toBe(path.join(linkedRoot, ".agents", "workflows", "linked-only.yaml"))
   })
 })
 

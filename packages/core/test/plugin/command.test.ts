@@ -247,7 +247,7 @@ describe("CommandPlugin", () => {
     Effect.sync(() => {
       expect(CommandPlugin.OrchestrationPolicyContent).toContain("Workflow YAML has no model-selection field")
       expect(CommandPlugin.OrchestrationPolicyContent).toContain(
-        "`dag.jsonc` tier → configured agent model → parent session model",
+        "`dag` tier in `settings.json` → configured agent model → parent session model",
       )
       expect(CommandPlugin.OrchestrationPolicyContent).toContain("workflow tool returns a blocked diagnostic")
       expect(CommandPlugin.OrchestrationPolicyContent).toContain("does not create the\nworkflow")
@@ -493,7 +493,7 @@ describe("CommandPlugin", () => {
       expect(CommandPlugin.WorkflowFactsContent).toContain("it must\nnever appear as `[object Object]`")
       expect(CommandPlugin.WorkflowFactsContent).toContain("Workflow YAML has no model-selection field")
       expect(CommandPlugin.WorkflowFactsContent).toMatch(
-        /`dag\.jsonc`\s+tier, then the\s+configured agent model, then the parent-session model/,
+        /`dag` tier\s+in `settings\.json`, then the\s+configured agent model, then the parent-session model/,
       )
       expect(CommandPlugin.WorkflowFactsContent).toContain("Propose-then-assemble")
       const reviewExample = CommandPlugin.WorkflowFactsContent.slice(

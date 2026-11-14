@@ -1684,9 +1684,11 @@ describe("GRAPHAGENT_CONFIG_CONTENT token substitution", () => {
   )
 })
 
-// #884: DAG settings are machine-wide policy. Only the global layer may set
-// them; project files are stripped before the merge and reported once.
-describe("DAG settings are read from the global layer only", () => {
+// #884: DAG policy keys (mode/concurrency/budget/safety) are machine-wide.
+// Only the global layer may set them; project files are stripped before the
+// merge and reported once. dag.model and dag.thinking_depth are project-scoped
+// and merge with project-over-user precedence.
+describe("DAG settings: policy keys are global-only, model tiers are project-scoped", () => {
   const dagConfig = {
     mode: "on" as const,
     concurrency: 7,
@@ -1703,6 +1705,22 @@ describe("DAG settings are read from the global layer only", () => {
       { global: { dag: dagConfig } },
       Effect.gen(function* () {
         expect((yield* Config.use.get()).dag).toEqual(dagConfig)
+      }),
+    ),
+  )
+
+  it.effect("lets project settings set dag.model and dag.thinking_depth, with local overrides winning", () =>
+    withConfigTree(
+      {
+        global: { dag: { model: { advanced: "user/big", standard: "user/small" }, thinking_depth: "low" } },
+        project: { dag: { model: { standard: "project/small" }, thinking_depth: "high" } },
+        local: { dag: { thinking_depth: "max" } },
+      },
+      Effect.gen(function* () {
+        expect((yield* Config.use.get()).dag).toEqual({
+          model: { advanced: "user/big", standard: "project/small" },
+          thinking_depth: "max",
+        })
       }),
     ),
   )
