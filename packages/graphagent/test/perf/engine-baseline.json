@@ -159,7 +159,7 @@
     },
     "S5": {
       "perTurn": {
-        "sql.read": 3207,
+        "sql.read": 3205,
         "sql.write": 1674,
         "commits": 685,
         "json.parseBytes": 498656,
@@ -809,5 +809,13 @@
       ]
     }
   },
-  "declared": []
+  "declared": [
+    {
+      "pr": "#1307",
+      "metric": "sql.read",
+      "scenario": "S5",
+      "delta": 2,
+      "reason": "pr_watch inbox source adds one directory-filtered scan per tick (Issue #1071 turn_boundary delivery)."
+    }
+  ]
 }
