@@ -2030,28 +2030,6 @@ const scenarios: Scenario[] = [
     ),
 
   http.protected
-    .get("/dag/{dagID}", "dag.detail")
-    .seeded((ctx) =>
-      ctx.session({ title: "DAG detail owner" }).pipe(
-        Effect.flatMap((s) =>
-          ctx.dag({
-            sessionID: s.id,
-            nodes: [{ id: "n1", name: "N1", worker_type: "general", depends_on: [], required: true }],
-          }),
-        ),
-      ),
-    )
-    .at((ctx) => ({ path: route("/dag/{dagID}", { dagID: ctx.state.dagID }), headers: ctx.headers() }))
-    .jsonEffect(200, (body) =>
-      Effect.sync(() => {
-        object(body)
-        check(typeof body.id === "string", "detail should return workflow id")
-        check(typeof body.status === "string", "detail should return status")
-        check(typeof body.title === "string", "detail should return title")
-      }),
-    ),
-
-  http.protected
     .get("/dag/{dagID}/nodes", "dag.nodes")
     .seeded((ctx) =>
       ctx.session({ title: "DAG nodes owner" }).pipe(
@@ -2108,29 +2086,6 @@ const scenarios: Scenario[] = [
       }),
     ),
 
-  http.protected
-    .get("/dag/{dagID}/nodes/{nodeID}", "dag.nodeDetail")
-    .seeded((ctx) =>
-      ctx.session({ title: "DAG nodeDetail owner" }).pipe(
-        Effect.flatMap((s) =>
-          ctx.dag({
-            sessionID: s.id,
-            nodes: [{ id: "n1", name: "N1", worker_type: "general", depends_on: [], required: true }],
-          }),
-        ),
-      ),
-    )
-    .at((ctx) => ({
-      path: route("/dag/{dagID}/nodes/{nodeID}", { dagID: ctx.state.dagID, nodeID: "n1" }),
-      headers: ctx.headers(),
-    }))
-    .jsonEffect(200, (body) =>
-      Effect.sync(() => {
-        object(body)
-        check(body.id === "n1", "nodeDetail should return the requested node")
-      }),
-    ),
-
   // Project-isolation regressions: the instance API must treat foreign
   // sessions/workflows as nonexistent even though they share the same DB.
   http.protected
@@ -2150,20 +2105,6 @@ const scenarios: Scenario[] = [
         )
       }),
     ),
-
-  http.protected
-    .get("/dag/{dagID}", "dag.detail.isolation")
-    .seeded((ctx) =>
-      ctx.foreignDag({
-        title: "Foreign detail workflow",
-        nodes: [{ id: "foreign", name: "Foreign", worker_type: "general", depends_on: [], required: true }],
-      }),
-    )
-    .at((ctx) => ({
-      path: route("/dag/{dagID}", { dagID: ctx.state.dagID }),
-      headers: ctx.headers(),
-    }))
-    .status(404),
 
   http.protected
     .get("/dag/session/{sessionID}", "dag.bySession.isolation")
@@ -2207,36 +2148,11 @@ const scenarios: Scenario[] = [
     }))
     .status(404),
 
-  http.protected
-    .get("/dag/{dagID}/nodes/{nodeID}", "dag.nodeDetail.isolation")
-    .seeded((ctx) =>
-      ctx.foreignDag({
-        title: "Foreign workflow node detail",
-        nodes: [{ id: "foreign", name: "Foreign", worker_type: "general", depends_on: [], required: true }],
-      }),
-    )
-    .at((ctx) => ({
-      path: route("/dag/{dagID}/nodes/{nodeID}", { dagID: ctx.state.dagID, nodeID: "foreign" }),
-      headers: ctx.headers(),
-    }))
-    .status(404),
-
   // 404 scenarios (pre-existing, retained)
-  http.protected
-    .get("/dag/{dagID}", "dag.detail")
-    .at(() => ({ path: route("/dag/{dagID}", { dagID: "dag_nonexistent" }), headers: {} as Record<string, string> }))
-    .status(404),
   http.protected
     .get("/dag/{dagID}/nodes", "dag.nodes")
     .at(() => ({
       path: route("/dag/{dagID}/nodes", { dagID: "dag_nonexistent" }),
-      headers: {} as Record<string, string>,
-    }))
-    .status(404),
-  http.protected
-    .get("/dag/{dagID}/nodes/{nodeID}", "dag.nodeDetail")
-    .at(() => ({
-      path: route("/dag/{dagID}/nodes/{nodeID}", { dagID: "dag_nonexistent", nodeID: "n1" }),
       headers: {} as Record<string, string>,
     }))
     .status(404),

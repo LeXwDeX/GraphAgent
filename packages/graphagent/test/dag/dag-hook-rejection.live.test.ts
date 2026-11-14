@@ -143,7 +143,9 @@ test.skipIf(!setting)(
                 detail: any
               const end = Date.now() + 240000
               do {
-                detail = await req("/dag/" + start.id)
+                const workflows: any[] = await req(`/dag/session/${parent.id}`)
+                detail = workflows.find((workflow) => workflow.id === start.id)
+                if (!detail) throw Error(`workflow ${start.id} disappeared from the session list`)
                 nodes = await req("/dag/" + start.id + "/nodes")
                 if (["completed", "failed", "cancelled"].includes(detail.status)) break
                 await new Promise((r) => setTimeout(r, 1000))
