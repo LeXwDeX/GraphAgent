@@ -5,7 +5,7 @@ import { Effect } from "effect"
 import { Dag } from "@/dag/dag"
 import { verifyOutputFileRef } from "@/dag/runtime/output-ref"
 import type { Tool } from "../tool"
-import { requireOwnedWorkflow } from "./control"
+import { requireOwnedWorkflow } from "./mutation"
 import { renderResult, renderStatus } from "./render"
 import type { InspectParams, Metadata } from "./schema"
 

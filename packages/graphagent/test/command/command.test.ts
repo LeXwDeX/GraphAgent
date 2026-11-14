@@ -246,7 +246,7 @@ describe("legacy command registry", () => {
         "Use @security-reviewer to review this project. Do not modify files.",
       )
 
-      expect(expanded).toContain('workflow(action="list")')
+      expect(expanded).toContain('workflow({params:{action:"spec",operation:"list"}})')
       expect(expanded).toContain("Saved workflows are optional references")
       expect(expanded).toContain("ultra-flow-route")
       expect(expanded).toContain("not the default")

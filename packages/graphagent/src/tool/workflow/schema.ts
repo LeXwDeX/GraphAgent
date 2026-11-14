@@ -80,7 +80,9 @@ const CompactPrompt = Schema.Struct({
   id: Schema.optional(Schema.String),
   input: PromptInput,
 })
-const CompactBlock = Schema.Struct({
+// Exported for the drift guard in test/tool/workflow-draft-parity.test.ts:
+// every authoring schema field must be representable on the wire.
+export const CompactBlock = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(["explore", "plan", "prototype", "debug", "coding", "verify", "review", "synthesize"]),
   depends_on: Schema.optional(Schema.Array(Schema.String)),
@@ -91,7 +93,7 @@ const CompactBlock = Schema.Struct({
   report_to_parent: Schema.optional(Schema.Boolean),
   fan_out: Schema.optional(Schema.String),
 })
-const CompactNode = Schema.Struct({
+export const CompactNode = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   worker_type: Schema.String,
@@ -117,7 +119,7 @@ const CompactNode = Schema.Struct({
   workspace: Schema.optional(Schema.String),
   isolation: Schema.optional(Schema.Literal("worktree")),
 })
-const CompactNodeDefaults = Schema.Struct({
+export const CompactNodeDefaults = Schema.Struct({
   required: Schema.optional(Schema.Boolean),
   worker_config: Schema.optional(Schema.Struct({ timeout_ms: Schema.optional(Schema.Number) })),
   report_to_parent: Schema.optional(Schema.Boolean),
@@ -130,7 +132,7 @@ const GraphBudgetFields = {
   max_total_nodes: Schema.optional(Schema.Number),
   workspace: Schema.optional(Schema.String),
 }
-const DraftGraph = Schema.Struct({
+export const DraftGraph = Schema.Struct({
   name: Schema.String,
   objective: Schema.optional(Schema.String),
   blocks: Schema.optional(Schema.Array(CompactBlock)),

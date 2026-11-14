@@ -1848,14 +1848,16 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const workflow = yield* (yield* WorkflowTool).init()
       const cases = [
-        { params: { action: "spec", operation: "list" }, group: "spec" },
+        { params: { action: "spec", operation: "list" }, group: "spec", legacy: "list" },
         {
           params: { action: "inspect", operation: "status", workflow_id: Dag.ID.make("dag_status") },
           group: "inspect",
+          legacy: "status",
         },
         {
           params: { action: "run", operation: "start", spec_path: "saved-project" },
           group: "run",
+          legacy: "start",
         },
       ] as const
       for (const item of cases) {
@@ -1873,8 +1875,45 @@ describe("workflow tool execution", () => {
           )
           .pipe(Effect.exit)
         expect(asked, item.group).toHaveLength(1)
-        expect(asked[0]?.patterns, item.group).toEqual([item.group, `${item.group}:${item.params.operation}`])
+        // The legacy bare action pattern keeps pre-convergence deny rules
+        // effective (see the legacy-deny regression below).
+        expect(asked[0]?.patterns, item.group).toEqual([
+          item.group,
+          `${item.group}:${item.params.operation}`,
+          item.legacy,
+        ])
       }
+    }),
+  )
+
+  runtime.effect("legacy action deny rules still reject the converged run action", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      const rules = Permission.fromConfig({ workflow: { "*": "allow", start: "deny" } })
+      const checked: string[] = []
+      const exit = yield* workflow
+        .execute(
+          { params: { action: "run", operation: "start", spec_path: "saved-project" } },
+          {
+            ...toolContext(),
+            ask: (request) =>
+              Effect.gen(function* () {
+                for (const pattern of request.patterns) {
+                  const rule = Permission.evaluate(request.permission, pattern, rules)
+                  checked.push(`${pattern}:${rule.action}`)
+                  if (rule.action === "deny") return yield* Effect.die(new Error("permission denied"))
+                }
+              }),
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      // The old bare action name is asked alongside the new group patterns,
+      // so a configured `workflow: { start: "deny" }` cannot silently allow
+      // run:start through the `*` allow.
+      expect(checked).toEqual(["run:allow", "run:start:allow", "start:deny"])
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("permission denied")
     }),
   )
 
@@ -4089,7 +4128,9 @@ describe("workflow tool saved workflows", () => {
           },
         })
         expect(payload.validation.valid).toBe(true)
-        expect(asked).toEqual([expect.objectContaining({ permission: "workflow", patterns: ["spec", "spec:read"] })])
+        expect(asked).toEqual([
+          expect.objectContaining({ permission: "workflow", patterns: ["spec", "spec:read", "read"] }),
+        ])
         expect(published).toHaveLength(0)
       }),
     ),
@@ -4116,7 +4157,9 @@ describe("workflow tool saved workflows", () => {
 
         expect(result.output).toContain('state="running"')
         expect(result.title).toBe("Workflow started: saved-project")
-        expect(asked).toEqual([expect.objectContaining({ permission: "workflow", patterns: ["run", "run:start"] })])
+        expect(asked).toEqual([
+          expect.objectContaining({ permission: "workflow", patterns: ["run", "run:start", "start"] }),
+        ])
       }),
     ),
   )
@@ -4140,7 +4183,9 @@ describe("workflow tool saved workflows", () => {
         expect(result.title).toBe("Workflow started: saved-global")
         // The library's two scopes are curated config, so a resolved name never
         // asks for external-directory permission.
-        expect(asked).toEqual([expect.objectContaining({ permission: "workflow", patterns: ["run", "run:start"] })])
+        expect(asked).toEqual([
+          expect.objectContaining({ permission: "workflow", patterns: ["run", "run:start", "start"] }),
+        ])
       }),
     ),
   )

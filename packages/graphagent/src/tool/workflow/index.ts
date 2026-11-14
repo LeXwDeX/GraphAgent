@@ -46,6 +46,16 @@ const LEGACY_ACTIONS: Record<string, string> = {
 const ACTIONS_SUMMARY =
   "spec {list|read|draft|validate}; run {start|extend}; inspect {status|result}; control {pause|resume|step|cancel|complete|cancel_node|replan|recover|extend_timeout|retarget}. Put graph content in a spec file or draft config."
 
+/** Permission patterns from the pre-convergence schema. It asked for the bare
+ * action name (control also for `control:<operation>`), so a configured deny
+ * such as workflow:{"start":"deny"} must keep matching after actions gained
+ * operation groups. Control patterns are unchanged and need no mapping beyond
+ * the legacy extend_timeout action. */
+const legacyPermissionPattern = (action: string, operation: string): string | undefined => {
+  if (action !== "control") return operation
+  return operation === "extend_timeout" ? "extend_timeout" : undefined
+}
+
 export const WorkflowTool = Tool.define<
   typeof Parameters,
   Metadata,
@@ -92,11 +102,18 @@ export const WorkflowTool = Tool.define<
               new Error("Workflow orchestration is available only to the main conversation, not child agents"),
             )
           }
+          const legacyPermission = legacyPermissionPattern(params.action, params.operation)
           yield* ctx.ask({
             permission: id,
             // Both checks apply: a fine-grained allow must never bypass a
-            // pre-existing group deny or approval requirement.
-            patterns: [params.action, `${params.action}:${params.operation}`],
+            // pre-existing group deny or approval requirement. The legacy
+            // pattern keeps a deny configured against the old bare action
+            // name (e.g. start/extend/status) effective after convergence.
+            patterns: [
+              params.action,
+              `${params.action}:${params.operation}`,
+              ...(legacyPermission ? [legacyPermission] : []),
+            ],
             always: ["*"],
             metadata: {
               action: params.action,

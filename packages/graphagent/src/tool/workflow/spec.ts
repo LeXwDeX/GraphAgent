@@ -197,7 +197,7 @@ export const draftSpec = (
         `spec_path: ${specPath}`,
         `nodes: ${result.nodes.length}`,
         "This draft is a start document only — an extend or control(replan) mutation needs its own file envelope (extend: top-level { objective, blocks } or { nodes }; replan: fragment).",
-        'Next: workflow(action="start", spec_path) — or edit the file first for low-level fields, then start.',
+        'Next: workflow({params:{action:"run",operation:"start",spec_path}}) — or edit the file first for low-level fields, then start.',
       ].join("\n"),
       metadata: {},
     }

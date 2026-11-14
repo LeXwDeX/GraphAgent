@@ -16,17 +16,22 @@ narrow request does not need several reviewers merely to qualify as a DAG.
 If orchestration adds little value, explain that briefly and offer direct
 execution rather than manufacture stages.
 
-Saved workflows are optional references. Use `workflow(action="list")` and
-`read` when a reference would help, then retarget it; names come from tool
-results, not guesses. `ultra-flow-route`, when available, is one possible
+Saved workflows are optional references. Use
+`workflow({params:{action:"spec",operation:"list"}})` and
+`workflow({params:{action:"spec",operation:"read",spec_path}})` when a reference
+would help, then retarget it; names come from tool results, not guesses.
+`ultra-flow-route`, when available, is one possible
 reference for genuinely end-to-end work, not the default for "finish this".
 Custom task-local graphs are equally valid. Keep only phases that add evidence
 or advance the requested result. A review request does not authorize repairs
 or a release phase.
 
-For a selected DAG, draft the spec or write it to a task-local path such as
-`${dag_specs}/<task>.yaml`, use `workflow(action="validate")`, and then
-`workflow(action="start")`. A draft or validation response is not execution.
+For a selected DAG, draft the spec with
+`workflow({params:{action:"spec",operation:"draft",config}})`, or write it to a
+task-local path such as `${dag_specs}/<task>.yaml`, pre-flight it with
+`workflow({params:{action:"spec",operation:"validate",spec_path}})`, and then
+run `workflow({params:{action:"run",operation:"start",spec_path}})`. A draft or
+validation response is not execution.
 
 ## Adapt to results
 

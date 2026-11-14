@@ -388,8 +388,10 @@ export const NodeCancelled = Event.define({
     nodeID: NodeID,
     /** Who cancelled the node: a replan fragment (the row leaves the current
      * graph revision) or an agent control call (the row stays in the current
-     * revision and only its execution attempt ends). */
-    source: Schema.Literals(["replan", "control"]),
+     * revision and only its execution attempt ends). Optional so rows written
+     * before #1030 keep decoding; an absent source is a replan cancellation,
+     * the only producer at the time. */
+    source: Schema.optional(Schema.Literals(["replan", "control"])),
     /** Optional audit text for a control cancellation. */
     reason: Schema.optional(Schema.String),
   },

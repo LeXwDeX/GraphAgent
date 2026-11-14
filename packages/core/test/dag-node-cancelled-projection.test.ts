@@ -165,4 +165,39 @@ describe("NodeCancelled projection (no phantom node-level cancelled status)", ()
       }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
     )
   })
+
+  test("a legacy payload without source decodes and projects as a replan cancellation", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed()
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+
+        // Rows written before #1030 carry no `source`. Optional decoding must
+        // keep them replayable, and the absent source keeps its old meaning:
+        // a replan cancellation that leaves the current graph revision.
+        const replayed = yield* events.replayAll([
+          {
+            id: EventV2.ID.create(),
+            type: EventV2.versionedType(DagEvent.NodeCancelled.type, DagEvent.NodeCancelled.durable!.version),
+            seq: 0,
+            aggregateID: "dag_cancel",
+            data: {
+              dagID: "dag_cancel",
+              nodeID: "n1",
+              timestamp: Date.now(),
+            },
+          },
+        ])
+        expect(replayed).toBe("dag_cancel")
+
+        const legacy = yield* store.getNode("dag_cancel", "n1")
+        expect(legacy?.status).toBe("failed")
+        expect(legacy?.errorClass).toBe("cancelled")
+        expect(legacy?.errorReason).toBe("cancelled via replan")
+        expect(legacy?.superseded).toBe(true)
+        expect(legacy?.escalationPending).toBe(false)
+      }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
+    )
+  })
 })

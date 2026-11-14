@@ -269,7 +269,7 @@ export const NodeSchema = Schema.Struct({
   }),
 })
 
-const NodeDefaults = Schema.Struct({
+export const NodeDefaults = Schema.Struct({
   required: Schema.optional(Schema.Boolean),
   worker_config: Schema.optional(
     Schema.Struct({

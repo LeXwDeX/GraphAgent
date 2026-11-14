@@ -11,7 +11,8 @@ import { createAdmissionRecord } from "@/dag/admission"
 import type { Tool } from "../tool"
 import { authoringWarnings, blockedMetadata, validationOutput } from "./render"
 import { loadAuthoringSource } from "./files"
-import { requireOwnedWorkflow, rejectDiagnostics, runMutation } from "./control"
+import { prepareMutation } from "./prepare"
+import { requireOwnedWorkflow, rejectDiagnostics, runMutation } from "./mutation"
 import type { Metadata, RunParams } from "./schema"
 
 type Authoring = ReturnType<typeof WorkflowAuthoring.make>
@@ -79,20 +80,12 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
     }
 
     const workflow = yield* requireOwnedWorkflow(dag, params.workflow_id, sessionID)
-    const workflowConfig = Dag.parseWorkflowConfig(workflow.config)
-    const workflowDefaults = workflowConfig?.node_defaults
-    const knownDependencies = (yield* dag.store.getNodes(params.workflow_id).pipe(Effect.orDie)).map((node) => node.id)
-    const source = yield* loadAuthoringSource(params.spec_path, session.directory, session.projectID, ctx).pipe(
-      Effect.orDie,
-    )
-    const result = yield* authoring.prepare({
+    const result = yield* prepareMutation(dag, authoring, {
       action: "extend",
-      source,
-      profile: "environment",
-      environment: { directory: session.directory, parent: session.model },
-      executionWorkspace: workflowConfig?.workspace,
-      known_dependencies: knownDependencies,
-      node_defaults: workflowDefaults,
+      workflow,
+      specPath: params.spec_path,
+      session,
+      ctx,
     })
     if (!result.valid || !result.prepared || result.prepared.action !== "extend")
       return yield* rejectDiagnostics(control, result.errors, "Workflow extend", {

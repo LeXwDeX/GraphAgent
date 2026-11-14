@@ -629,14 +629,17 @@ export const layer = Layer.effectDiscard(
     // hold status="cancelled"; see NodeStatusProjection.cancelled above and the
     // canonical proof in
     // packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148.
-    yield* project(DagEvent.NodeCancelled, (event) =>
-      db
+    yield* project(DagEvent.NodeCancelled, (event) => {
+      // #1030: rows written before the source field existed decode with an
+      // absent source; a replan was the only producer then.
+      const source = event.data.source ?? "replan"
+      return db
         .update(WorkflowNodeTable)
         .set({
           status: "failed",
-          superseded: event.data.source === "replan",
+          superseded: source === "replan",
           error_reason:
-            event.data.source === "replan"
+            source === "replan"
               ? "cancelled via replan"
               : `cancelled by agent${event.data.reason ? `: ${event.data.reason}` : ""}`,
           error_class: ERROR_CLASS_CANCELLED,
@@ -650,8 +653,8 @@ export const layer = Layer.effectDiscard(
           inArray(WorkflowNodeTable.status, [...NodeStatusProjection.cancelled.from]),
         ))
         .run()
-        .pipe(Effect.orDie),
-    )
+        .pipe(Effect.orDie)
+    })
 
     yield* project(DagEvent.NodeRestarted, (event) =>
       db

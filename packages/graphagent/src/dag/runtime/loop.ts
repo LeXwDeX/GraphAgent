@@ -1480,6 +1480,12 @@ const serviceLayer = Layer.effect(
                   if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
                   entry.watchers.delete(nodeID)
                   entry.runtime.markUnsatisfied(nodeID)
+                  // A control cancellation can ready an optional node's
+                  // dependents. Without a scheduling round they would stay
+                  // pending and the workflow would remain running forever;
+                  // mirror the NodeFailed handler (spawnReady also converges
+                  // skip cascades before dispatching).
+                  if (!entry.runtime.isStepMode()) yield* spawnReady(dagID)
                   yield* checkCompletion(dagID)
                 }),
               )

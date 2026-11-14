@@ -85,9 +85,9 @@ describe("CommandPlugin", () => {
       expect(content).not.toContain("rebase")
       expect(content).not.toContain("release brief")
       expect(content).toContain("routing and workflow-composition")
-      expect(content).toContain('workflow(action="list")')
-      expect(content).toContain('workflow(action="validate")')
-      expect(content).toContain('workflow(action="start")')
+      expect(content).toContain('workflow({params:{action:"spec",operation:"list"}})')
+      expect(content).toContain('workflow({params:{action:"spec",operation:"validate",spec_path}})')
+      expect(content).toContain('workflow({params:{action:"run",operation:"start",spec_path}})')
     }),
   )
 
@@ -103,7 +103,7 @@ describe("CommandPlugin", () => {
       expect(CommandPlugin.WorkflowFactsContent).not.toContain("## When to start a workflow")
       expect(CommandPlugin.WorkflowFactsContent).not.toContain("when ANY")
       expect(CommandPlugin.WorkflowFactsContent).not.toContain("- **Multi-model**:")
-      expect(CommandPlugin.DagAutoContent).toContain('workflow(action="start")')
+      expect(CommandPlugin.DagAutoContent).toContain('workflow({params:{action:"run",operation:"start",spec_path}})')
     }),
   )
 

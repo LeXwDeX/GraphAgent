@@ -103,6 +103,8 @@ export async function runDagCoreCoverageGate() {
         // single-file floor (88% lines / 75% functions) or tighter.
         { file: "src/tool/workflow/index.ts", lines: 90, functions: 90 },
         { file: "src/tool/workflow/control.ts", lines: 90, functions: 85 },
+        { file: "src/tool/workflow/mutation.ts", lines: 88, functions: 75 },
+        { file: "src/tool/workflow/prepare.ts", lines: 90, functions: 90 },
         { file: "src/tool/workflow/files.ts", lines: 85, functions: 75 },
         { file: "src/tool/workflow/inspect.ts", lines: 85, functions: 90 },
         { file: "src/tool/workflow/render.ts", lines: 78, functions: 88 },
