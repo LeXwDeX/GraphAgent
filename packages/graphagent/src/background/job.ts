@@ -113,6 +113,9 @@ export const layer = Layer.effect(
                     changed = false
                     for (const [job, current] of data.active) {
                       if (selected.has(job)) continue
+                      // Same semantics as `cancelSessionJobs`: a job marked to
+                      // survive a session cancel is left alone here too.
+                      if (current.metadata?.survivesSessionCancel === true) continue
                       const session = sessionIDOf(current.metadata)
                       const parent = parentSessionIDOf(current.metadata)
                       if (
@@ -134,7 +137,11 @@ export const layer = Layer.effect(
                 }, directory)
                 return off ? [off] : []
               })
-              if (requests.some(({ id, request }) => matches.has(id) && !request.current())) yield* captured.cancel
+              if (
+                info.metadata?.survivesSessionCancel !== true &&
+                requests.some(({ id, request }) => matches.has(id) && !request.current())
+              )
+                yield* captured.cancel
               if (unregister.length > 0) {
                 coordinated.add(captured.identity)
                 const dispose = () => {

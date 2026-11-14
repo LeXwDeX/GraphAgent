@@ -9,5 +9,6 @@ export const Info = Schema.Struct({
   model: Schema.optional(Schema.String),
   variant: Schema.optional(Schema.String),
   subtask: Schema.optional(Schema.Boolean),
+  background: Schema.optional(Schema.Boolean),
 })
 export type Info = Schema.Schema.Type<typeof Info>

@@ -8,6 +8,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Logging } from "@graphagent/core/observability/logging"
 import type { Agent } from "@/agent/agent"
+import type { TaskOrigin } from "@/tool/task"
 import type { EffectBridge } from "@/effect/bridge"
 import { SessionContext } from "@/effect/session-context"
 import { applyPreHookDecision, classifyPermissionAsk, withoutUnusableDefer } from "@/hook/pre-hook-decision"
@@ -146,6 +147,8 @@ export type WrapInput = ToolSelection & {
   permission?: PermissionV1.Ruleset
   processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "previewToolCall" | "completeToolCall">
   bypassAgentCheck: boolean
+  /** Who drives the task calls of this step; only a command-driven subtask sets it (#1057). */
+  taskOrigin?: TaskOrigin
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
   hooks?: SettingsHook.Interface

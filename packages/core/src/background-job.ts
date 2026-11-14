@@ -428,7 +428,7 @@ export const makeWith = (options: MakeOptions = {}) =>
             onPromote: undefined,
             info: {
               ...job.info,
-              metadata: { ...job.info.metadata, background: true },
+              metadata: { ...job.info.metadata, background: true, promoted: true },
             },
           }
           return [

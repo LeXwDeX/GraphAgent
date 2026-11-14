@@ -3444,6 +3444,117 @@ backgroundUnix(
   30_000,
 )
 
+backgroundUnix(
+  "a user background command runs its subtask detached and presents the result as findings (#1057)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const jobs = yield* BackgroundJob.Service
+      yield* ChildResults.init({
+        inbox: yield* SessionInbox.Service,
+        database: yield* Database.Service,
+        scope: yield* Scope.Scope,
+      })
+      const chat = yield* sessions.create({
+        title: "review-background",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const childRequest = (hit: { body: Record<string, unknown> }) =>
+        decodeRecords(hit.body.messages)
+          .filter((message) => message.role === "user")
+          .some((message) => JSON.stringify(message.content).includes("You are a code reviewer"))
+      yield* llm.textMatch(childRequest, "FINDING: the retry path drops the last error")
+      yield* llm.textMatch((hit) => !childRequest(hit), "review started")
+      yield* llm.text("findings presented")
+
+      // No hookMode: the command comes from the user.
+      yield* prompt.command({ sessionID: chat.id, command: "review", arguments: "" })
+
+      const kids = yield* sessions.children(chat.id)
+      expect(kids).toHaveLength(1)
+      const childID = kids[0]?.id
+      if (!childID) throw new Error("review child session missing")
+      const job = yield* jobs.wait({ id: childID, timeout: 30_000 })
+      expect(job.info?.status).toBe("completed")
+      expect(job.info?.metadata).toMatchObject({
+        background: true,
+        initiator: "user",
+        command: "review",
+        survivesSessionCancel: true,
+      })
+
+      const delivered = yield* pollWithTimeout(
+        sessions.messages({ sessionID: chat.id }).pipe(
+          Effect.orDie,
+          Effect.map((messages) =>
+            messages
+              .flatMap((message) => message.parts)
+              .find(
+                (part): part is SessionV1.TextPart =>
+                  part.type === "text" && part.metadata?.backgroundResult?.command === "review",
+              ),
+          ),
+        ),
+        "background command report",
+        "10 seconds",
+      )
+      expect(delivered.text.startsWith("The user ran /review in the background and it has finished.")).toBe(true)
+      expect(delivered.text).toContain("FINDING: the retry path drops the last error")
+      expect(delivered.metadata?.backgroundResult).toMatchObject({
+        childSessionID: childID,
+        initiator: "user",
+        command: "review",
+        status: "completed",
+      })
+    }),
+  30_000,
+)
+
+backgroundUnix(
+  "a noninteractive slash command keeps its background-enabled subtask in the foreground (#1057)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "review-noninteractive",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const childRequest = (hit: { body: Record<string, unknown> }) =>
+        decodeRecords(hit.body.messages)
+          .filter((message) => message.role === "user")
+          .some((message) => JSON.stringify(message.content).includes("You are a code reviewer"))
+      yield* llm.textMatch(childRequest, "FINDING: the retry path drops the last error")
+      yield* llm.textMatch((hit) => !childRequest(hit), "review summarized")
+
+      yield* prompt.command({ sessionID: chat.id, command: "review", arguments: "", hookMode: "noninteractive" })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const tool = messages
+        .filter((message) => message.info.role === "assistant")
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "task")
+      if (tool?.type !== "tool") throw new Error("task tool part missing")
+      expect(tool.state.status).toBe("completed")
+      if (tool.state.status !== "completed") return
+      expect(tool.state.output).toContain("FINDING: the retry path drops the last error")
+      // The run was awaited by the tool call: no background job, and the
+      // hook-followup caller is not the user.
+      expect(tool.state.metadata).toMatchObject({ initiator: "agent" })
+      expect(tool.state.metadata?.background).toBeUndefined()
+      expect(tool.state.metadata?.survivesSessionCancel).toBeUndefined()
+      expect(
+        messages.some((message) =>
+          message.parts.some((part) => part.type === "text" && part.metadata?.backgroundResult !== undefined),
+        ),
+      ).toBe(false)
+    }),
+  30_000,
+)
+
 it.instance("static loop returns assistant text through local provider", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

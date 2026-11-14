@@ -16,6 +16,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { Session } from "../session"
 import type { Agent } from "../../agent/agent"
+import type { Command } from "@/command"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { Permission } from "@/permission"
@@ -52,7 +53,7 @@ import { TodoReminders } from "../todo-reminders"
 import { RuntimeContext } from "../runtime-context"
 import { MAX_STEPS_PROMPT } from "../max-steps"
 import { FINAL_STEP_INSTRUCTION, type FinalPolicy } from "./final-policy"
-import { TaskTool, type TaskPromptOps } from "@/tool/task"
+import { TaskTool, type TaskOrigin, type TaskPromptOps } from "@/tool/task"
 import { decodeDataUrl } from "@/util/data-url"
 import { estimateOverhead } from "../overflow"
 import type { ToolSourceLedger } from "../tool-source-ledger"
@@ -250,6 +251,8 @@ export interface PrepareDeps {
   }>
   readonly dropPendingBudget: (sessionID: SessionID, messageID: MessageID) => Effect.Effect<void>
   readonly hookQuestions: Question.Interface | undefined
+  /** Command definitions, for the settings a command-driven subtask carries (#1057). */
+  readonly commands: Command.Interface
   /** The parent's delegations travel in the request's runtime context (`ChildSlot`). */
   readonly children: ChildRuns.Interface
   readonly ops: () => Effect.Effect<TaskPromptOps>
@@ -546,6 +549,35 @@ function resolveTurnTools(
   )
 }
 
+/**
+ * The task call one command-driven subtask makes (#1057). Only a user-issued
+ * command whose definition sets `background` runs detached; a headless turn or
+ * a hook followup delivers its command inline, whatever the command declares.
+ */
+const resolveSubtaskRun = Effect.fnUntraced(function* (
+  commands: Command.Interface,
+  task: SessionV1.SubtaskPart,
+  lastUser: SessionV1.User,
+) {
+  const command = task.command === undefined ? undefined : yield* commands.get(task.command)
+  const initiator: TaskOrigin["initiator"] = lastUser.hookMode === "noninteractive" ? "agent" : "user"
+  const runInBackground =
+    command?.background === true && initiator === "user" && lastUser.hookMode !== "noninteractive"
+  return {
+    taskInput: {
+      prompt: task.prompt,
+      description: task.description,
+      subagent_type: task.agent,
+      command: task.command,
+      ...(runInBackground ? { background: true } : {}),
+    },
+    taskOrigin: {
+      initiator,
+      ...(initiator === "user" && task.command !== undefined ? { command: task.command } : {}),
+    } satisfies TaskOrigin,
+  }
+})
+
 export function makePrepare(deps: PrepareDeps) {
   const {
     sessions,
@@ -579,6 +611,7 @@ export function makePrepare(deps: PrepareDeps) {
     budgetState,
     dropPendingBudget,
     hookQuestions,
+    commands,
     ops,
   } = deps
 
@@ -816,6 +849,7 @@ export function makePrepare(deps: PrepareDeps) {
     const { task, model, lastUser, sessionID, session, msgs } = input
     const ctx = yield* InstanceState.context
     const promptOps = yield* ops()
+    const { taskInput, taskOrigin } = yield* resolveSubtaskRun(commands, task, lastUser)
     const taskModel = task.model ? yield* getModel(task.model.providerID, task.model.modelID, sessionID) : model
     const assistantMessage: SessionV1.Assistant = yield* sessions.updateMessage({
       id: MessageID.ascending(),
@@ -841,21 +875,11 @@ export function makePrepare(deps: PrepareDeps) {
       tool: TaskTool.id,
       state: {
         status: "running",
-        input: {
-          prompt: task.prompt,
-          description: task.description,
-          subagent_type: task.agent,
-          command: task.command,
-        },
+        input: taskInput,
         time: { start: Date.now() },
       },
     })
-    const taskArgs = {
-      prompt: task.prompt,
-      description: task.description,
-      subagent_type: task.agent,
-      command: task.command,
-    }
+    const taskArgs = taskInput
     const parentAgent = yield* agents.get(lastUser.agent)
     if (!parentAgent) throw new Error(`Agent not found: "${lastUser.agent}"`)
     const tools = yield* SessionTools.resolve({
@@ -866,6 +890,7 @@ export function makePrepare(deps: PrepareDeps) {
       messages: msgs,
       promptOps,
       bypassAgentCheck: true,
+      taskOrigin,
       hooks: settingsHook,
       sourceLedger: toolSources,
       processor: {

@@ -65,7 +65,7 @@ const truncate = (text: string) => (text.length > MAX_ERROR_CHARS ? `${text.slic
 const boundedReport = (report: ChildRunReport): ChildRunReport =>
   report.text.length > MAX_REPORT_CHARS
     ? {
-        title: report.title,
+        ...report,
         text: `${report.text.slice(0, MAX_REPORT_CHARS)}\n[truncated ${report.text.length - MAX_REPORT_CHARS} characters]`,
       }
     : report
@@ -84,9 +84,13 @@ export const outcomeJson = (outcome: ChildRunOutcome, report?: ChildRunReport): 
 export function parseReport(value: Record<string, unknown> | null | undefined): ChildRunReport | undefined {
   const report = value?.report
   if (!isRecord(report)) return undefined
-  return typeof report.title === "string" && typeof report.text === "string"
-    ? { title: report.title, text: report.text }
-    : undefined
+  if (typeof report.title !== "string" || typeof report.text !== "string") return undefined
+  return {
+    title: report.title,
+    text: report.text,
+    ...(report.initiator === "user" || report.initiator === "agent" ? { initiator: report.initiator } : {}),
+    ...(typeof report.command === "string" ? { command: report.command } : {}),
+  }
 }
 
 function cancelBy(value: unknown): ChildCancelBy | undefined {

@@ -166,6 +166,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     extra: {
       model: input.model,
       bypassAgentCheck: input.bypassAgentCheck,
+      ...(input.taskOrigin === undefined ? {} : { taskOrigin: input.taskOrigin }),
       promptOps: input.promptOps,
       ...(questionHookAnswers.has(options) ? { hookAnswers: questionHookAnswers.get(options) } : {}),
     },

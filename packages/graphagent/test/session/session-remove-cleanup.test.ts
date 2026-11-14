@@ -13,6 +13,7 @@ import { GoalOutcomeTable, GoalStateTable } from "@graphagent/core/goal/sql"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session as SessionNs } from "@/session/session"
+import { BackgroundJob } from "@/background/job"
 import { SessionAttention } from "@/notification/attention"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { Goal } from "@/goal/goal"
@@ -34,6 +35,7 @@ import { testInstanceStoreLayer } from "../fixture/fixture"
 // its cleanup dependencies.
 const testLayer = Layer.mergeAll(
   SessionNs.defaultLayer,
+  BackgroundJob.defaultLayer,
   Goal.defaultLayer,
   Dag.defaultLayer,
   ExclusiveRegistry.defaultLayer,
@@ -84,6 +86,31 @@ describe("Session.remove goal cleanup (GOAL-FP-01-05/-16)", () => {
         .get()
         .pipe(Effect.orDie)
       expect(outcomeRow).toBeUndefined()
+    }),
+  )
+})
+
+describe("Session.remove background job cleanup (#1057)", () => {
+  it.instance("cancels background jobs marked to survive session cancel", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const jobs = yield* BackgroundJob.Service
+
+      const info = yield* session.create({})
+      const sessionID = info.id
+      yield* jobs.start({
+        id: "remove-survivor",
+        type: "test",
+        metadata: { sessionID, survivesSessionCancel: true },
+        run: Effect.never,
+      })
+      expect((yield* jobs.get("remove-survivor"))?.status).toBe("running")
+
+      yield* session.remove(sessionID)
+
+      // Removal is terminal: a job that survives an interrupt (Esc) may not
+      // outlive the session it reports into.
+      expect((yield* jobs.get("remove-survivor"))?.status).toBe("cancelled")
     }),
   )
 })

@@ -101,6 +101,14 @@ const deliver = (ctx: Ctx, parent: Store.ParentSession, row: Store.RunRow, claim
       report !== undefined &&
       report.epoch === SessionCancellation.epoch(parentSessionID)
     const now = yield* Clock.currentTimeMillis
+    // #1057: the durable report says who asked for the run. A user-issued
+    // background command returns as findings to present; anything else is
+    // ordinary background work.
+    const childSessionID = SessionID.make(row.child_session_id)
+    const result = Store.parseReport(row.outcome)
+    const initiator = result?.initiator ?? "agent"
+    const notice = ChildNotice.resultNotice({ childSessionID, outcome, report: result })
+    const text = initiator === "user" ? `${ChildNotice.userBackgroundNotice(result?.command)}\n\n${notice}` : notice
     // The mark rides the transaction that commits the message: of two deliveries racing for one row, the
     // second finds it reported, fails here and rolls its message back.
     const mark = Effect.suspend(() => Store.markReported(ctx.db, row.id, now)).pipe(
@@ -113,11 +121,18 @@ const deliver = (ctx: Ctx, parent: Store.ParentSession, row: Store.RunRow, claim
         {
           type: "text" as const,
           synthetic: true,
-          text: ChildNotice.resultNotice({
-            childSessionID: SessionID.make(row.child_session_id),
-            outcome,
-            report: Store.parseReport(row.outcome),
-          }),
+          text,
+          metadata: {
+            backgroundResult: {
+              childSessionID,
+              initiator,
+              ...(initiator === "user" && result?.command !== undefined ? { command: result.command } : {}),
+              title: result?.title ?? "background task",
+              status: outcome.type,
+              startedAt: row.time_created,
+              endedAt: row.time_ended ?? now,
+            },
+          },
         },
       ],
     }

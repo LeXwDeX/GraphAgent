@@ -81,10 +81,11 @@ Use best judgement when processing input.
 
 ## Tools
 
-Use these to inform your review:
+Use these to inform your review (read-only; you cannot edit files or spawn sub-tasks):
 
-- **Explore agent** - Find how existing code handles similar problems. Check patterns, conventions, and prior art before claiming something doesn't fit.
-- **Web Search** - Research best practices if you're unsure about a pattern.
+- **Read / Grep / Glob** - Find how existing code handles similar problems. Check patterns, conventions, and prior art before claiming something doesn't fit.
+- **LSP** - Verify types, references, and definitions when assessing correctness.
+- **Git (read-only)** - Use git diff, git show, git log, git blame to understand the change history and context.
 
 If you're uncertain about something and can't verify it with these tools, say "I'm not sure about X" rather than flagging it as a definite issue.
 

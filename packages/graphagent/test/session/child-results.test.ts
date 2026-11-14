@@ -97,10 +97,12 @@ const setup = (name: string, options: { readonly directory?: string } = {}) =>
 const rowOf = (db: Database.Interface["db"], runID: string) =>
   db.select().from(ChildRunTable).where(eq(ChildRunTable.id, runID)).get().pipe(Effect.orDie)
 
-const textOf = (admitted: Admitted) => {
+const textPartOf = (admitted: Admitted) => {
   const part = admitted.input.parts[0]
-  return part?.type === "text" ? part.text : ""
+  return part?.type === "text" ? part : undefined
 }
+
+const textOf = (admitted: Admitted) => textPartOf(admitted)?.text ?? ""
 
 describe("the ledger of a detached run", () => {
   it.effect("keeps a finished run owed, with its report in the row, until the parent has been told", () =>
@@ -139,10 +141,59 @@ describe("the ledger of a detached run", () => {
       expect(textOf(admitted)).toContain(`<task id="${child}" state="completed">`)
       expect(textOf(admitted)).toContain("<summary>Background task completed: inspect bug</summary>")
       expect(textOf(admitted)).toContain("found the cause")
+      // An agent-started run reads as ordinary background work, and the
+      // synthetic part says so for consumers (#1057).
+      expect(textOf(admitted).startsWith("<task ")).toBe(true)
+      expect(textPartOf(admitted)).toMatchObject({
+        metadata: {
+          backgroundResult: {
+            childSessionID: child,
+            initiator: "agent",
+            title: "inspect bug",
+            status: "completed",
+          },
+        },
+      })
       // The mark committed with the message, and the report left memory.
       expect((yield* rowOf(db, run.id))?.reported_at).not.toBeNull()
       expect(ChildRegistry.reportOf(run.id)).toBeUndefined()
       expect(yield* ChildStore.unreportedParents(db, DIRECTORY)).toEqual([])
+    }),
+  )
+
+  it.effect("presents a user background command result as findings and carries the run in the part metadata", () =>
+    Effect.gen(function* () {
+      const { parent, delivery, scoped, newChild } = yield* setup("user-command")
+      const child = yield* newChild()
+      const run = yield* scoped.start({ childSessionID: child, owner: { kind: "task" }, detached: true })
+      yield* run.markRunning
+      yield* run.settle(
+        { type: "completed" },
+        {
+          title: "review changes",
+          text: "FINDING: the retry path drops the last error",
+          initiator: "user",
+          command: "review",
+        },
+      )
+
+      expect(yield* delivery.claim(parent)).toBe(true)
+
+      const admitted = delivery.admitted[0]
+      if (!admitted) throw new Error("the user background result was not admitted")
+      const text = textOf(admitted)
+      expect(text.startsWith("The user ran /review in the background and it has finished.")).toBe(true)
+      expect(text).toContain("FINDING: the retry path drops the last error")
+      const backgroundResult = textPartOf(admitted)?.metadata?.backgroundResult
+      expect(backgroundResult).toMatchObject({
+        childSessionID: child,
+        initiator: "user",
+        command: "review",
+        title: "review changes",
+        status: "completed",
+      })
+      expect(typeof backgroundResult?.startedAt).toBe("number")
+      expect(typeof backgroundResult?.endedAt).toBe("number")
     }),
   )
 
