@@ -5,6 +5,7 @@ import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
 import { TaskTool } from "@/tool/task"
+import { WorkflowTool } from "@/tool/workflow"
 import { Truncate } from "@/tool/truncate"
 import { ToolPipeline, toRecord } from "@/tool/pipeline"
 import type { DirectToolContext, ToolEntry, WrapInput } from "@/tool/pipeline"
@@ -170,9 +171,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
       promptOps: input.promptOps,
       ...(questionHookAnswers.has(options) ? { hookAnswers: questionHookAnswers.get(options) } : {}),
     },
-    // Only the task tool delegates work, and only for its own session: the
+    // The task tool drives child runs and the workflow tool reads their state
+    // (inspect.status). Both get a view narrowed to the calling session: the
     // parent is fixed here, never taken from the tool's arguments.
-    ...(toolName === TaskTool.id && input.promptOps.children
+    ...(input.promptOps.children && (toolName === TaskTool.id || toolName === WorkflowTool.id)
       ? { children: input.promptOps.children.forParent(input.session.id) }
       : {}),
     agent: input.agent.name,

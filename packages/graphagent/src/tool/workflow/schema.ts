@@ -118,6 +118,9 @@ export const CompactNode = Schema.Struct({
   fan_out: Schema.optional(Schema.String),
   workspace: Schema.optional(Schema.String),
   isolation: Schema.optional(Schema.Literal("worktree")),
+  // #1030 D9-h: per-node workspace-write policy; the semantic default lives in
+  // the authoring layer (review workers default to deny).
+  workspace_writes: Schema.optional(Schema.Literals(["allow", "deny"])),
 })
 export const CompactNodeDefaults = Schema.Struct({
   required: Schema.optional(Schema.Boolean),

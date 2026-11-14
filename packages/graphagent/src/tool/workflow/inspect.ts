@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
+import type { NodeRow } from "@graphagent/core/dag/store"
 import { Dag } from "@/dag/dag"
 import { verifyOutputFileRef } from "@/dag/runtime/output-ref"
+import type { ChildRunView } from "@/session/child/run"
+import { SessionID } from "@/session/schema"
 import type { Tool } from "../tool"
 import { requireOwnedWorkflow } from "./mutation"
 import { renderResult, renderStatus } from "./render"
@@ -12,7 +15,30 @@ import type { InspectParams, Metadata } from "./schema"
 export interface InspectContext {
   readonly dag: Dag.Interface
   readonly sessionID: string
+  /** #1030 D9-h: the calling session's child runs, read-only. */
+  readonly children?: Tool.ChildRuns
 }
+
+/** #1030 D9-h: every node's current attempt run, read through
+ * `ChildRuns.inspect`. The durable node row names the child session; the
+ * session's latest run names the run id, and `inspect` is the one read that
+ * returns the run's state. */
+const nodeChildRuns = (
+  children: Tool.ChildRuns | undefined,
+  nodes: readonly NodeRow[],
+): Effect.Effect<ReadonlyMap<string, ChildRunView>> =>
+  Effect.gen(function* () {
+    const views = new Map<string, ChildRunView>()
+    if (!children) return views
+    for (const node of nodes) {
+      if (!node.childSessionId) continue
+      const latest = yield* children.latest(SessionID.make(node.childSessionId))
+      if (Option.isNone(latest)) continue
+      const view = yield* children.inspect(latest.value.id)
+      if (Option.isSome(view)) views.set(node.childSessionId, view.value)
+    }
+    return views
+  })
 
 export const inspectWorkflow = (context: InspectContext, params: InspectParams): Effect.Effect<Tool.ExecuteResult> =>
   Effect.gen(function* () {
@@ -37,7 +63,8 @@ export const inspectWorkflow = (context: InspectContext, params: InspectParams):
       // #945: the latest durable retarget is the audit pointer; event
       // history keeps the full record.
       const latestRetarget = dag.store.getLatestRetarget ? yield* dag.store.getLatestRetarget(workflow.id) : undefined
-      return renderStatus({ workflow, nodes, allNodes, failureReason, latestRetarget })
+      const childRuns = yield* nodeChildRuns(context.children, nodes)
+      return renderStatus({ workflow, nodes, allNodes, failureReason, latestRetarget, childRuns })
     }
 
     yield* requireOwnedWorkflow(dag, params.workflow_id, sessionID)

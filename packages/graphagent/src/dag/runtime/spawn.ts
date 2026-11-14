@@ -149,6 +149,9 @@ export interface NodeSpawnInput {
   /** #944: the node judges the working tree (review worker or review block).
    * Omitted callers fall back to the review-worker check. */
   targetSensitive?: boolean
+  /** #1030 D9-h: whether this node's child may use workspace-writing tools.
+   * Omitted callers keep the agent's own permission. */
+  workspaceWrites?: "allow" | "deny"
   /** Completed direct dependency outputs an ACCEPT verdict must account for. */
   verdictEvidence?: readonly VerdictEvidence[]
   /** DAG tier default — authoritative unless a persisted node model pin exists. */
@@ -978,7 +981,10 @@ export function spawnNode(
               attempt: input.node.replanAttempts,
             },
             detached: false,
-            permission: { ask: "auto" },
+            permission: {
+              ask: "auto",
+              ...(input.workspaceWrites === "deny" ? { workspaceWrites: "deny" as const } : {}),
+            },
           })
           // A concurrent replan(cancel/restart) may have terminalized the node
           // while it waited for the permit. nodeStarted's guard rejects; cancel

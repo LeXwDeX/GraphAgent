@@ -240,6 +240,8 @@ export interface ChildRunsScoped {
   readonly adopt: (spec: Omit<ChildRunSpec, "parentSessionID">) => Effect.Effect<ChildRunHandle, ChildRunError>
   /** The latest run of one of this parent's child sessions. */
   readonly latest: (childSessionID: SessionID) => Effect.Effect<Option.Option<ChildRunView>>
+  /** Reads one run of this parent by id; a run of any other parent reads as absent. */
+  readonly inspect: (runID: string) => Effect.Effect<Option.Option<ChildRunView>>
   readonly list: () => Effect.Effect<ReadonlyArray<ChildRunView>>
   /** Cancels an active run of this parent; any other run id is `not_active`. */
   readonly cancel: (runID: string, by: ChildCancelBy) => Effect.Effect<ChildRunCancelResult>

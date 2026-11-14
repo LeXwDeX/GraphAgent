@@ -428,6 +428,23 @@ export function isReviewWorker(workerType: string) {
   return workerType === "review" || workerType.startsWith("review-")
 }
 
+/** #1030 D9-h: worker types whose job is to judge the workspace, never to
+ * change it. The built-in `auditor` arrives with E4; until then the name is
+ * only a convention and does not resolve to a catalog agent. */
+export function isReadOnlyWorker(workerType: string) {
+  return isReviewWorker(workerType) || workerType === "auditor"
+}
+
+/** #1030 D9-h: the effective workspace-write policy of a node. An explicit
+ * `workspace_writes` wins; otherwise read-only workers deny writes and every
+ * other worker keeps its agent permission. */
+export function workspaceWritesOf(
+  node: Pick<NodeConfig, "workspace_writes"> | undefined,
+  workerType: string,
+): "allow" | "deny" {
+  return node?.workspace_writes ?? (isReadOnlyWorker(workerType) ? "deny" : "allow")
+}
+
 /**
  * #944: a node judges the working tree when block compilation marks it
  * target-sensitive (review lanes, verify, synthesize) or when it follows the

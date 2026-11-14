@@ -472,6 +472,13 @@ export const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       const nativePermission = (yield* agents.permissionPolicy(input.agent.name)).native
       const configuredPermission = Permission.merge(input.agent.permission, input.permission ?? [])
+      // #1030 D9-h: a run whose owner withheld workspace writes (review nodes)
+      // never sees the tools that declare that effect. Shell and other
+      // `unknown` tools keep the agent's own permission, so a reviewer can
+      // still run tests. Read per request: the policy belongs to the active
+      // child run of this process, not to the cached definitions.
+      const workspaceWritesDenied =
+        ChildRegistry.subjectOf(input.session.id)?.permission.workspaceWrites === "deny"
       const usePatch = usesApplyPatch(ModelV2.ID.make(model.api.id))
       const entries = new Map<string, ToolEntry>()
 
@@ -527,6 +534,7 @@ RequestCache.set(
 
       for (const builtin of builtins) {
         if (input.session.parentID && ROOT_ONLY_TOOLS.has(builtin.id)) continue
+        if (workspaceWritesDenied && builtin.effects === "workspace_write") continue
         if (builtin.id === AgentTool.id) {
           const turnID = input.turnID
           const cached = turnID === undefined ? undefined : s.agentUsable.get(input.session.id)
