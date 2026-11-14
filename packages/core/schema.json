@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "56f55cf6-98b4-4619-b6a9-086040b0b053",
+  "id": "57fbc0b8-e21b-4c79-900d-4e244c4bd410",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -2773,6 +2773,16 @@
       "default": null,
       "generated": null,
       "name": "dag_budget_tokens",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "dag_budget_unlimited",
       "entityType": "columns",
       "table": "session"
     },

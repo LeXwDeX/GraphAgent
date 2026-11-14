@@ -1043,7 +1043,7 @@ function makeTurnLoop(deps: LoopDeps) {
       let snapshot: ClaimedSnapshot = yield* prepareFns.claimSnapshot(sessionID)
       let msgs = snapshot.messages
       let budget = snapshot.budget
-      const previous = MessageV2.latest(msgs)
+      const previous = MessageV2.latest(msgs, { skipLocalCommand: true })
       if (!turnUserID && previous.user) turnUserID = previous.user.id
       const previousParts = msgs.findLast((message) => message.info.id === previous.assistant?.id)?.parts
       const gate = yield* agentInputGate({
@@ -1067,7 +1067,9 @@ function makeTurnLoop(deps: LoopDeps) {
       budget = snapshot.budget
       const agentSnapshot = gate.agentSnapshot
 
-      const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
+      const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs, {
+        skipLocalCommand: true,
+      })
       if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
       const lastAssistantMsg = msgs.findLast(
         (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
@@ -1167,11 +1169,11 @@ function makeErrorRecorder(deps: LoopDeps) {
               messageID: MessageID.make(input.logicalTurnID),
             }).pipe(Effect.provideService(Database.Service, database), Effect.orDie)
             if (recorded) return
-            const users = yield* MessageV2.recentUsers({ sessionID, limit: 1 }).pipe(
+            const users = yield* MessageV2.recentUsers({ sessionID, limit: 32 }).pipe(
               Effect.provideService(Database.Service, database),
               Effect.orDie,
             )
-            const user = users.at(-1)?.info
+            const user = MessageV2.latestUser(users)?.info
             if (!user || user.role !== "user") return
             const now = Date.now()
             // Earlier preparation failures precede processor creation. Record

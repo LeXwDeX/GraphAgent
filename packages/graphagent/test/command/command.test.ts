@@ -272,6 +272,33 @@ describe("legacy command registry", () => {
     }),
   )
 
+  // #1031 M1: dispatch uses entry identity to tell the built-in `/dag-mode`
+  // behaviour from a user template registered under the same name.
+  it.instance("marks built-in registry entries", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      for (const name of [Command.Default.DAG_MODE, Command.Default.MEMORY, Command.Default.REVIEW]) {
+        const entry = yield* commands.get(name)
+        if (!entry) throw new Error(`expected built-in command: ${name}`)
+        expect(Command.isBuiltin(entry)).toBe(true)
+      }
+    }),
+  )
+
+  overridden.instance("leaves a user override of a built-in name unmarked", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      const override = yield* commands.get("dag-auto")
+      if (!override) throw new Error("expected configured dag-auto command")
+      expect(override.template).toBe("Custom task:\n$ARGUMENTS")
+      expect(Command.isBuiltin(override)).toBe(false)
+
+      const builtin = yield* commands.get(Command.Default.DAG_MODE)
+      if (!builtin) throw new Error("expected built-in dag-mode command")
+      expect(Command.isBuiltin(builtin)).toBe(true)
+    }),
+  )
+
   overridden.instance("allows configured dag-auto commands to override the built-in", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service

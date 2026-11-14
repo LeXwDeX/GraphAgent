@@ -10,15 +10,18 @@ import { EventV2 } from "@graphagent/core/event"
 import { EventTable } from "@graphagent/core/event/sql"
 import { eq } from "drizzle-orm"
 import { SessionProjector } from "@graphagent/core/session/projector"
-import { Schema, Deferred, Effect, Exit, Layer } from "effect"
+import { Cause, Schema, Deferred, Effect, Exit, Layer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
-import { ExclusiveRegistry } from "@/session/engine-process"
+import { EngineProcess, ExclusiveRegistry } from "@/session/engine-process"
+import { DagMode } from "@/dag/mode"
+import { DagModeReader } from "@/dag/mode-read"
 import { Dag } from "@/dag/dag"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import { TestConfig } from "../fixture/config"
 import { testEffect } from "../lib/effect"
 import { Storage } from "@/storage/storage"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -38,6 +41,27 @@ const it = testEffect(
       Layer.provide(Goal.defaultLayer),
       Layer.provide(ExclusiveRegistry.defaultLayer),
       Layer.provide(Dag.defaultLayer),
+    ),
+    Database.defaultLayer,
+    CrossSpawnSpawner.defaultLayer,
+    testInstanceStoreLayer,
+  ),
+)
+
+// #1031 M1: Session.create reads its default from the global dag section.
+const globalDefaultIt = testEffect(
+  Layer.mergeAll(
+    SessionNs.layer.pipe(
+      Layer.provide(Storage.defaultLayer),
+      Layer.provide(Database.defaultLayer),
+      Layer.provideMerge(EventV2Bridge.defaultLayer),
+      Layer.provide(SessionProjector.defaultLayer),
+      Layer.provide(RuntimeFlags.layer({ experimentalWorkspaces: false })),
+      Layer.provide(BackgroundJob.defaultLayer),
+      Layer.provide(Goal.defaultLayer),
+      Layer.provide(ExclusiveRegistry.defaultLayer),
+      Layer.provide(Dag.defaultLayer),
+      Layer.provide(TestConfig.layer({ dagGlobal: () => Effect.succeed({ mode: "on" }) })),
     ),
     Database.defaultLayer,
     CrossSpawnSpawner.defaultLayer,
@@ -377,8 +401,10 @@ describe("Session", () => {
 
       expect(created.dagMode).toBe("on")
       expect(created.dagBudgetTokens).toBeNull()
+      expect(created.dagBudgetUnlimited).toBe(false)
       expect(saved.dagMode).toBe("on")
       expect(saved.dagBudgetTokens).toBeNull()
+      expect(saved.dagBudgetUnlimited).toBe(false)
 
       const updated = yield* session.applyUpdate({ sessionID: created.id, title: "dag-on-renamed" })
       expect(updated.title).toBe("dag-on-renamed")
@@ -389,6 +415,98 @@ describe("Session", () => {
       )
       expect(defaulted.dagMode).toBe("off")
       expect(defaulted.dagBudgetTokens).toBeNull()
+    }),
+  )
+
+  it.instance("setDagMode and setDagBudget update the row and the runtime slot", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({ title: "dag-toggle" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      yield* session.setDagMode({ sessionID: created.id, mode: "on" })
+      expect((yield* session.get(created.id)).dagMode).toBe("on")
+      expect(EngineProcess.runtimes.runtimeSlots.list(created.id).some((slot) => slot.key === "dag_mode")).toBe(true)
+
+      yield* session.setDagBudget({ sessionID: created.id, tokens: 500 })
+      expect((yield* session.get(created.id)).dagBudgetTokens).toBe(500)
+      expect((yield* session.get(created.id)).dagBudgetUnlimited).toBe(false)
+      // #1031 M1: budget off is an explicit unlimited choice, not "no override".
+      yield* session.setDagBudget({ sessionID: created.id, tokens: null })
+      expect((yield* session.get(created.id)).dagBudgetTokens).toBeNull()
+      expect((yield* session.get(created.id)).dagBudgetUnlimited).toBe(true)
+
+      const fork = yield* Effect.acquireRelease(session.fork({ sessionID: created.id }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      expect(fork.dagBudgetTokens).toBeNull()
+      expect(fork.dagBudgetUnlimited).toBe(true)
+
+      yield* session.setDagMode({ sessionID: created.id, mode: "off" })
+      expect((yield* session.get(created.id)).dagMode).toBe("off")
+    }),
+  )
+
+  it.instance("reconciles the DAG slot from the durable row, not a stale turn snapshot", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({ title: "dag-live" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      // A turn loop reads this snapshot before it starts; `/dag-mode on` then
+      // lands inside the active turn (commandTurn allows local commands).
+      const stale = yield* session.get(created.id)
+      yield* session.setDagMode({ sessionID: created.id, mode: "on" })
+      DagMode.ensure(stale)
+      expect(EngineProcess.runtimes.runtimeSlots.list(created.id).find((slot) => slot.key === "dag_mode")?.parts).toEqual(
+        [],
+      )
+
+      // The request builder re-reads the row, so the next request sees the new mode.
+      DagMode.set(created.id, yield* DagModeReader.durableMode(session, created.id))
+      const parts = EngineProcess.runtimes.runtimeSlots
+        .list(created.id)
+        .find((slot) => slot.key === "dag_mode")?.parts
+      expect(parts?.join("\n")).toContain("DAG mode is on")
+    }),
+  )
+
+  it.instance("rejects DAG changes on child sessions and invalid budgets", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const parent = yield* Effect.acquireRelease(session.create({ title: "dag-parent" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const child = yield* Effect.acquireRelease(session.create({ parentID: parent.id, title: "dag-child" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      const childMode = yield* Effect.exit(session.setDagMode({ sessionID: child.id, mode: "on" }))
+      expect(Exit.isFailure(childMode) && Cause.pretty(childMode.cause)).toContain("SessionDagModeError")
+
+      const top = yield* Effect.acquireRelease(session.create({ title: "dag-budget" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const invalid = yield* Effect.exit(session.setDagBudget({ sessionID: top.id, tokens: 0 }))
+      expect(Exit.isFailure(invalid) && Cause.pretty(invalid.cause)).toContain("SessionDagModeError")
+      expect((yield* session.get(top.id)).dagBudgetTokens).toBeNull()
+    }),
+  )
+
+  globalDefaultIt.instance("uses the global dag.mode default when creation omits one", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const defaulted = yield* Effect.acquireRelease(session.create({ title: "dag-global-default" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      expect(defaulted.dagMode).toBe("on")
+
+      const explicit = yield* Effect.acquireRelease(session.create({ title: "dag-explicit", dagMode: "off" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      expect(explicit.dagMode).toBe("off")
     }),
   )
 })

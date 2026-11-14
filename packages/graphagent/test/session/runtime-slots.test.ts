@@ -12,7 +12,7 @@ import { it } from "../lib/effect"
 const environment = { directory: "/work/project", root: "/work", git: true }
 
 describe("RuntimeSlots.state", () => {
-  test("keeps goal and memory first and in their original order", () => {
+  test("keeps goal and memory first and follows them with owner slots", () => {
     const slots = RuntimeSlots.state({
       goal: ["goal-progress"],
       memory: ["memory-data"],
@@ -20,7 +20,7 @@ describe("RuntimeSlots.state", () => {
       now: new Date(0),
       custom: [{ key: "dag_mode", parts: ["dag-mode"], cleared: "DAG mode is off." }],
     })
-    expect(slots.map((slot) => slot.key)).toEqual(["goal", "memory", "env", "date", "dag_mode"])
+    expect(slots.map((slot) => slot.key)).toEqual(["goal", "memory", "dag_mode", "env", "date"])
     expect(slots[0]?.parts).toEqual(["goal-progress"])
     expect(slots[1]?.parts).toEqual(["memory-data"])
   })

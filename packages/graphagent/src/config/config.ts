@@ -163,6 +163,8 @@ type State = {
 export interface Interface {
   readonly get: () => Effect.Effect<Info>
   readonly getGlobal: () => Effect.Effect<Info>
+  /** The `dag` section merged from the global layer only (see ConfigV1.Dag). */
+  readonly dagGlobal: () => Effect.Effect<typeof ConfigV1.Dag.Type>
   readonly updateHookPermissions: (
     updates: readonly PermissionUpdate[],
   ) => Effect.Effect<Info, HookConfigChange.ConfigChangeBlocked>
@@ -444,8 +446,51 @@ export const layer = Layer.effect(
       return result
     })
 
+    // Every source that belongs to the global layer, in the same precedence
+    // order the instance loader uses: user config directory, GRAPHAGENT_CONFIG_DIR
+    // extras, GRAPHAGENT_CONFIG, GRAPHAGENT_CONFIG_CONTENT, managed directory,
+    // and the macOS MDM profile. Process-wide readers (the scheduler, DAG mode
+    // defaults, the read-only status endpoint) must not observe a project file,
+    // and must not silently drop managed or env-provided settings.
+    const loadGlobalLayer = Effect.fnUntraced(function* (env?: Record<string, string>) {
+      let result: Info = yield* loadGlobal(env)
+
+      if (
+        Flag.GRAPHAGENT_CONFIG_DIR &&
+        path.resolve(Flag.GRAPHAGENT_CONFIG_DIR) !== path.resolve(Global.Path.config)
+      ) {
+        for (const name of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
+          const source = path.join(Flag.GRAPHAGENT_CONFIG_DIR, name)
+          result = mergeConfig(result, yield* loadFile(source, env))
+        }
+      }
+      if (Flag.GRAPHAGENT_CONFIG) {
+        result = mergeConfig(result, yield* loadFile(Flag.GRAPHAGENT_CONFIG, env))
+      }
+      if (process.env.GRAPHAGENT_CONFIG_CONTENT) {
+        const next = yield* loadConfig(process.env.GRAPHAGENT_CONFIG_CONTENT, {
+          dir: process.cwd(),
+          source: "GRAPHAGENT_CONFIG_CONTENT",
+        })
+        result = mergeConfigConcatArrays(result, next)
+      }
+      const managedDir = ConfigManaged.managedConfigDir()
+      if (existsSync(managedDir)) {
+        for (const file of [`${CONFIG_BASENAME}.json`, `${CONFIG_BASENAME}.jsonc`]) {
+          const source = path.join(managedDir, file)
+          result = mergeConfig(result, yield* loadFile(source))
+        }
+      }
+      const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
+      if (managed) {
+        const next = yield* loadConfig(managed.text, { dir: path.dirname(managed.source), source: managed.source })
+        result = mergeConfigConcatArrays(result, next)
+      }
+      return result
+    })
+
     const [cachedGlobal, invalidateGlobal] = yield* Effect.cachedInvalidateWithTTL(
-      loadGlobal().pipe(
+      loadGlobalLayer().pipe(
         Effect.tapError((error) =>
           Effect.logError("failed to load global config, using defaults", { error: String(error) }),
         ),
@@ -456,6 +501,11 @@ export const layer = Layer.effect(
 
     const getGlobal = Effect.fn("Config.getGlobal")(function* () {
       return yield* cachedGlobal
+    })
+
+    /** The global-only `dag` section shared by creation defaults, status and the scheduler. */
+    const dagGlobal = Effect.fn("Config.dagGlobal")(function* () {
+      return (yield* cachedGlobal).dag ?? {}
     })
 
     const loadInstanceState = Effect.fn("Config.loadInstanceState")(
@@ -600,7 +650,10 @@ export const layer = Layer.effect(
           }
         }
 
-        const global = Object.keys(authEnv).length ? yield* loadGlobal(authEnv) : yield* getGlobal()
+        // The global layer is merged source by source below (managed/MDM keep
+        // their origin for hook and skill attribution), so start from the base
+        // files rather than the cached global-only snapshot.
+        const global = yield* loadGlobal(authEnv)
         yield* merge(Global.Path.config, global, "global")
 
         // GRAPHAGENT_CONFIG_DIR names an explicit user-level directory. It is
@@ -894,6 +947,7 @@ export const layer = Layer.effect(
     return Service.of({
       get,
       getGlobal,
+      dagGlobal,
       update,
       updateGlobal,
       updateHookPermissions,

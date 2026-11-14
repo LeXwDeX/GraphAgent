@@ -23,7 +23,7 @@ import {
 } from "./output-ref"
 import { finalAssistantText, parseFinalResponse } from "./final-response"
 import { isRecord } from "@/util/record"
-import { before } from "@/session/message-v2"
+import { before, isLocalCommand } from "@/session/message-v2"
 import { reportIdentity } from "../report-identity"
 import { workflowWorktreeSettlementPending } from "./worktree-completion"
 import type { DagEvent } from "@graphagent/schema/dag-event"
@@ -121,6 +121,28 @@ function latestUser(history: readonly SessionV1.WithParts[]) {
     .toSorted(newestFirst)[0]
 }
 
+/**
+ * Local command exchanges persisted before #1031 (the `/memory` swap did not
+ * mark its parts `ignored`) have no assistant turn: the visible response sits
+ * on the same user message next to the command part. Keep recognizing them so
+ * a resumed session still receives a finished workflow's report instead of
+ * leaving it pending until the next user turn.
+ */
+function legacyLocalExchange(user: SessionV1.WithParts) {
+  const command = user.parts.find(
+    (part) => part.type === "text" && ["memory", "trust", "goal", "subgoal"].includes(String(part.metadata?.command)),
+  )
+  if (!command) return false
+  return user.parts.some(
+    (part) =>
+      part.type === "text" &&
+      part.id !== command.id &&
+      !part.synthetic &&
+      part.metadata?.command === undefined &&
+      part.time?.end !== undefined,
+  )
+}
+
 function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
   const user = latestUser(history)
   if (!user) return true
@@ -136,22 +158,16 @@ function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
     )
   )
     return true
-  // Local commands store their ended response on the user message, without an assistant.
-  const command = user.parts.find(
-    (part) => part.type === "text" && ["memory", "trust", "goal", "subgoal"].includes(String(part.metadata?.command)),
-  )
+  // Local commands (/memory, /goal status, /subgoal, /dag-mode) record their
+  // exchange as ignored parts; the receipt carries `time.end` once the command
+  // finished. The old table required a response part without metadata.command,
+  // but receipts now carry the command name too, so check completion instead.
   if (
-    command &&
-    user.parts.some(
-      (part) =>
-        part.type === "text" &&
-        part.id !== command.id &&
-        !part.synthetic &&
-        part.metadata?.command === undefined &&
-        part.time?.end !== undefined,
-    )
+    isLocalCommand(user) &&
+    user.parts.some((part) => part.type === "text" && part.time?.end !== undefined)
   )
     return true
+  if (legacyLocalExchange(user)) return true
   const assistant = history
     .filter(
       (item) =>

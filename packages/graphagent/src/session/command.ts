@@ -5,10 +5,14 @@ import { SessionAdmission } from "@graphagent/core/session/admission"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { NamedError } from "@graphagent/core/util/error"
 import type { SessionV1 } from "@graphagent/core/v1/session"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { fileURLToPath } from "url"
 import { Effect, Option } from "effect"
 import type { Context } from "effect"
 import { ConfigMarkdown } from "@/config/markdown"
+import { DagMode } from "@/dag/mode"
+import { DagModeReader, type Snapshot as DagModeSnapshot } from "@/dag/mode-read"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SettingsHook } from "@/hook"
@@ -21,13 +25,17 @@ import { Shell } from "@graphagent/core/shell"
 import { Command } from "../command"
 import type { Agent } from "../agent/agent"
 import type { Config } from "@/config/config"
+import type { DagStore } from "@graphagent/core/dag/store"
 import type { Goal } from "@/goal/goal"
 import type { HookStartContext } from "@/hook/start-context"
 import type { SessionAttention } from "@/notification/attention"
 import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
+import { MessageV2 } from "./message-v2"
 import { MessageID, PartID, type SessionID } from "./schema"
+import type { AgentScheduler } from "./agent-scheduler"
 import { Session } from "./session"
+import type { Info as SessionInfo } from "./session"
 import type { SessionRunState } from "./run-state"
 import type { Admit } from "./turn/admit"
 import { ModelSwitchBlocked } from "./turn/prepare"
@@ -66,6 +74,9 @@ export interface CommandDeps {
     use: (witness: PromptLockWitness) => Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E, R>
   readonly state: SessionRunState.Interface
+  readonly providers: Provider.Interface
+  readonly dagStore: DagStore.Interface
+  readonly scheduler: AgentScheduler.Interface
   readonly lastAssistant: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts>
   readonly modelWriteBegin: (sessionID: SessionID) => { epoch: number; release: () => void }
   readonly followupAdmissions: ReturnType<typeof SessionAdmission.make>
@@ -158,6 +169,7 @@ function memoryCommandMessage(deps: Pick<CommandDeps, "sessions" | "agents" | "p
       messageID: userMsg.id,
       sessionID: input.sessionID,
       type: "text",
+      ignored: true,
       text: `/memory ${input.arguments}`.trim(),
       metadata: { command: "memory" },
     }
@@ -170,12 +182,197 @@ function memoryCommandMessage(deps: Pick<CommandDeps, "sessions" | "agents" | "p
       messageID: userMsg.id,
       sessionID: input.sessionID,
       type: "text",
+      ignored: true,
       text: result,
       time: { start: now, end: now },
     }
     yield* sessions.updatePart(responsePart)
     yield* sessions.touch(input.sessionID)
     return { info: userMsg, parts: [commandPart, responsePart] }
+  })
+}
+
+/**
+ * `/dag-mode` argument grammar (#1031 M1): on, off, status, `budget <tokens>`
+ * and `budget off`. Anything else — including a malformed budget — reports the
+ * current state instead of inventing a third error channel.
+ */
+export type DagModeCommandArgs =
+  | { readonly kind: "on" | "off" | "status" }
+  | { readonly kind: "budget"; readonly tokens: number | null }
+
+/** @internal Exported for command regression tests. */
+export function parseDagModeCommand(raw: string): DagModeCommandArgs {
+  const [head, ...rest] = raw.trim().split(/\s+/).filter(Boolean)
+  const name = head?.toLowerCase()
+  if (name === "on" && rest.length === 0) return { kind: "on" }
+  if (name === "off" && rest.length === 0) return { kind: "off" }
+  if (name === "budget") {
+    const value = rest.join(" ").trim()
+    if (value === "off") return { kind: "budget", tokens: null }
+    const tokens = Number(value)
+    if (/^[1-9]\d*$/.test(value) && Number.isSafeInteger(tokens)) return { kind: "budget", tokens }
+  }
+  return { kind: "status" }
+}
+
+/**
+ * A user-defined `dag-mode` command (config, MCP prompt or skill) replaces the
+ * built-in registry entry wholesale; only the built-in entry maps onto the
+ * local mode operation. A missing entry keeps the historical local path.
+ */
+const runsBuiltinDagMode = (entry: Command.Info | undefined) => !entry || Command.isBuiltin(entry)
+
+function dagModeReceipt(
+  parsed: DagModeCommandArgs,
+  snapshot: DagModeSnapshot,
+): { kind: DagMode.ReceiptKind; values: DagMode.ReceiptValues } {
+  const status = snapshot.status
+  const budget = status.budget.tokens ?? undefined
+  switch (parsed.kind) {
+    case "on":
+      return {
+        kind: "on",
+        values: {
+          cap: snapshot.cap,
+          nodes: status.limits.maxTotalNodes,
+          budget,
+          noBudget: status.budget.tokens === null,
+          unavailable: status.unavailableReason ?? undefined,
+        },
+      }
+    case "off":
+      return { kind: "off", values: { n: snapshot.runningWorkflows } }
+    case "budget":
+      return { kind: "budget", values: { N: parsed.tokens ?? "off", k: 0 } }
+    default:
+      return {
+        kind: "status",
+        values: {
+          state: status.mode,
+          default: status.defaultMode,
+          running: snapshot.running,
+          cap: snapshot.cap,
+          nodes: status.limits.maxTotalNodes,
+          used: status.budget.used,
+          budget,
+        },
+      }
+  }
+}
+
+/**
+ * Model stamped on the command message. `SessionV1.User.model` is required
+ * even in a fresh session with no provider; the receipt is ignored
+ * presentation state, so an unresolved placeholder never reaches a request
+ * (and `currentModel` skips local command exchanges when it scans history).
+ */
+const UNRESOLVED_MODEL = {
+  providerID: ProviderV2.ID.make("unknown"),
+  modelID: ModelV2.ID.make("unknown"),
+}
+
+const dagModeMessageModel = (deps: CommandDeps, info: SessionInfo) =>
+  Effect.gen(function* () {
+    if (info.model) return { providerID: info.model.providerID, modelID: info.model.id }
+    // A fork copies the messages but not the source row's saved model, so the
+    // newest user turn is the only record of the model the user was on. The
+    // agent/global default is not a substitute: stamping it here would make
+    // the ignored receipt the latest user message model, and the TUI restores
+    // that message model when the session is reopened.
+    const match = yield* deps.sessions
+      .findMessage(
+        info.id,
+        (message) => message.info.role === "user" && !!message.info.model && !MessageV2.isLocalCommand(message),
+      )
+      .pipe(Effect.orDie)
+    if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
+    return UNRESOLVED_MODEL
+  })
+
+/**
+ * Local `/dag-mode` dispatch: change the row (top-level sessions only), then
+ * record the exchange as a command message whose receipt part is ignored but
+ * still carries `metadata.receipt` for the TUI renderer.
+ */
+function dagModeCommand(deps: CommandDeps, input: CommandInput) {
+  return Effect.gen(function* () {
+    const info: SessionInfo = yield* deps.sessions.get(input.sessionID).pipe(Effect.orDie)
+    const parsed = parseDagModeCommand(input.arguments)
+    const agentName = input.agent ?? (yield* deps.agents.defaultAgent())
+    const model = yield* dagModeMessageModel(deps, info)
+    const userMsg: SessionV1.User = {
+      id: input.messageID ?? MessageID.ascending(),
+      role: "user",
+      sessionID: input.sessionID,
+      time: { created: Date.now() },
+      agent: agentName,
+      model: { providerID: model.providerID, modelID: model.modelID },
+    }
+    yield* deps.sessions.updateMessage(userMsg)
+    const commandPart: SessionV1.TextPart = {
+      id: PartID.ascending(),
+      messageID: userMsg.id,
+      sessionID: input.sessionID,
+      type: "text",
+      ignored: true,
+      text: `/dag-mode ${input.arguments}`.trim(),
+      metadata: { command: "dag-mode" },
+    }
+    yield* deps.sessions.updatePart(commandPart)
+    const now = Date.now()
+    let receiptPart: SessionV1.TextPart
+    if (info.parentID) {
+      receiptPart = {
+        id: PartID.ascending(),
+        messageID: userMsg.id,
+        sessionID: input.sessionID,
+        type: "text",
+        ignored: true,
+        text: "DAG 模式只适用于主会话。",
+        time: { start: now, end: now },
+      }
+    } else {
+      let mode = DagMode.get(info)
+      if (parsed.kind === "on" || parsed.kind === "off") {
+        yield* deps.sessions.setDagMode({ sessionID: input.sessionID, mode: parsed.kind }).pipe(Effect.orDie)
+        mode = parsed.kind
+      }
+      if (parsed.kind === "budget") {
+        yield* deps.sessions.setDagBudget({ sessionID: input.sessionID, tokens: parsed.tokens }).pipe(Effect.orDie)
+      }
+      const snapshot = yield* DagModeReader.read(
+        {
+          sessions: deps.sessions,
+          agents: deps.agents,
+          providers: deps.providers,
+          config: deps.config,
+          dagStore: deps.dagStore,
+          scheduler: deps.scheduler,
+        },
+        {
+          ...info,
+          dagMode: mode,
+          ...(parsed.kind === "budget"
+            ? { dagBudgetTokens: parsed.tokens, dagBudgetUnlimited: parsed.tokens === null }
+            : {}),
+        },
+      ).pipe(Effect.orDie)
+      const receipt = dagModeReceipt(parsed, snapshot)
+      receiptPart = {
+        id: PartID.ascending(),
+        messageID: userMsg.id,
+        sessionID: input.sessionID,
+        type: "text",
+        ignored: true,
+        text: DagMode.text(receipt.kind, receipt.values),
+        metadata: DagMode.receipt(receipt.kind, receipt.values),
+        time: { start: now, end: now },
+      }
+    }
+    yield* deps.sessions.updatePart(receiptPart)
+    yield* deps.sessions.touch(input.sessionID)
+    return { info: userMsg, parts: [commandPart, receiptPart] }
   })
 }
 
@@ -270,12 +467,10 @@ export function makeCommand(deps: CommandDeps) {
       })
       if (initial) return initial
     }
-    yield* Effect.logInfo("command", {
-      "session.id": input.sessionID,
-      command: input.command,
-      agent: input.agent,
-    })
+    yield* Effect.logInfo("command", { "session.id": input.sessionID, command: input.command, agent: input.agent })
     if (input.command === "memory") return yield* commandTurn(input.sessionID, memoryCommandMessage(deps, input))
+    if (input.command === Command.Default.DAG_MODE && runsBuiltinDagMode(yield* commands.get(input.command)))
+      return yield* commandTurn(input.sessionID, dagModeCommand(deps, input))
     // Goal/Subgoal command dispatch — early return BEFORE command registry lookup
     if (goal && (input.command === "goal" || input.command === "subgoal")) {
       const dispatch = input.command === "goal" ? goal.dispatch : goal.dispatchSubgoal

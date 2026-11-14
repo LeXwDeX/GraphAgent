@@ -809,5 +809,55 @@
       ]
     }
   },
-  "declared": []
+  "declared": [
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S1",
+      "delta": 1,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S2",
+      "delta": 1,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S3",
+      "delta": 1,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S4",
+      "delta": 21,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S5",
+      "delta": 38,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S6",
+      "delta": 2,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S7",
+      "delta": 2,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    }
+  ]
 }

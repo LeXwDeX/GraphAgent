@@ -38,6 +38,7 @@ import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
+import { Config } from "@/config/config"
 import { ProjectV2 } from "@graphagent/core/project"
 import { WorkspaceV2 } from "@graphagent/core/workspace"
 import { SessionID, MessageID, PartID } from "./schema"
@@ -52,6 +53,7 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionMessageID } from "@graphagent/schema/session-message-id"
 import { DagBudgetTokens, DagMode } from "@graphagent/schema/dag-mode"
+import { DagMode as DagModeState } from "@/dag/mode"
 import { Goal } from "@/goal/goal"
 import { ExclusiveRegistry } from "./engine-process"
 import { SessionStatus } from "./status"
@@ -150,6 +152,7 @@ export function fromRow(row: SessionRow): Info {
     },
     dagMode: row.dag_mode,
     dagBudgetTokens: row.dag_budget_tokens,
+    dagBudgetUnlimited: row.dag_budget_unlimited,
   }
 }
 
@@ -191,6 +194,7 @@ export function toRow(info: Info) {
     time_archived: info.time.archived,
     dag_mode: info.dagMode,
     dag_budget_tokens: info.dagBudgetTokens,
+    dag_budget_unlimited: info.dagBudgetUnlimited ?? false,
   }
 }
 
@@ -289,6 +293,7 @@ export const Info = Schema.Struct({
   revert: optionalOmitUndefined(Revert),
   dagMode: optionalOmitUndefined(DagMode),
   dagBudgetTokens: optionalOmitUndefined(DagBudgetTokens),
+  dagBudgetUnlimited: optionalOmitUndefined(Schema.Boolean),
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -461,6 +466,12 @@ export class BusyError extends Schema.TaggedError<BusyError>()("SessionBusyError
   sessionID: SessionID,
 }) {}
 
+/** #1031 M1: only a top-level session owns a DAG mode; the budget must be a positive integer or null. */
+export class DagModeError extends Schema.TaggedError<DagModeError>()("SessionDagModeError", {
+  sessionID: SessionID,
+  reason: Schema.Literals(["child_session", "invalid_budget"]),
+}) {}
+
 export type NotFound = NotFoundError
 
 export interface Interface {
@@ -483,6 +494,11 @@ export interface Interface {
   }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type, guard?: (current: Info) => boolean) => Effect.Effect<void>
   readonly setPermission: (input: { sessionID: SessionID; permission: PermissionV1.Ruleset }) => Effect.Effect<void>
+  readonly setDagMode: (input: { sessionID: SessionID; mode: DagMode }) => Effect.Effect<void, NotFound | DagModeError>
+  readonly setDagBudget: (input: {
+    sessionID: SessionID
+    tokens: number | null
+  }) => Effect.Effect<void, NotFound | DagModeError>
   readonly setRevert: (input: {
     sessionID: SessionID
     revert: Info["revert"]
@@ -616,6 +632,9 @@ export const layer: Layer.Layer<
     const dag = yield* Dag.Service
     const automation = yield* ExclusiveRegistry.Service
     const toolSources = Option.getOrUndefined(yield* Effect.serviceOption(ToolSourceLedger.Service))
+    // Optional so unit compositions keep working; Session.defaultLayer provides
+    // Config, where the global `dag.mode` default for new sessions comes from.
+    const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
@@ -631,8 +650,14 @@ export const layer: Layer.Layer<
       permission?: PermissionV1.Ruleset
       dagMode?: "on" | "off"
       dagBudgetTokens?: number | null
+      dagBudgetUnlimited?: boolean
     }) {
       const ctx = yield* InstanceState.context
+      // #1031 M1: explicit creation value, then the global `dag.mode` default.
+      // A child session never inherits a mode; it has no workflow budget.
+      const dagMode: DagMode = input.parentID
+        ? "off"
+        : (input.dagMode ?? (config ? ((yield* config.dagGlobal()).mode ?? "off") : "off"))
       const result: Info = {
         id: SessionID.descending(input.id),
         slug: Slug.create(),
@@ -657,8 +682,9 @@ export const layer: Layer.Layer<
           created: Date.now(),
           updated: Date.now(),
         },
-        dagMode: input.dagMode ?? "off",
+        dagMode,
         dagBudgetTokens: input.dagBudgetTokens ?? null,
+        dagBudgetUnlimited: input.dagBudgetUnlimited ?? false,
       }
       yield* Effect.logInfo("created", result)
 
@@ -964,8 +990,9 @@ export const layer: Layer.Layer<
         titleSource: original.metadata?.hookTitleSource === "custom" ? "custom" : "generated",
         // #1010 (E0): a fork keeps the DAG mode and budget of its source;
         // usage counters still start from zero.
-        dagMode: original.dagMode,
+        dagMode: original.dagMode ?? "off",
         dagBudgetTokens: original.dagBudgetTokens,
+        dagBudgetUnlimited: original.dagBudgetUnlimited ?? false,
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const cutoff = input.messageID ? msgs.find((msg) => msg.info.id === input.messageID) : undefined
@@ -1135,6 +1162,41 @@ export const layer: Layer.Layer<
       yield* patch(input.sessionID, { permission: [...input.permission], time: { updated: Date.now() } }).pipe(
         Effect.orDie,
       )
+    })
+
+    // #1031 M1: the /dag-mode command changes a top-level session only. The
+    // durable row is the source of truth; the runtime slot is refreshed here so
+    // the next request sees the new mode without a restart.
+    const setDagMode = Effect.fn("Session.setDagMode")(function* (input: {
+      sessionID: SessionID
+      mode: DagMode
+    }) {
+      const current = yield* get(input.sessionID)
+      yield* current.parentID
+        ? Effect.fail(new DagModeError({ sessionID: input.sessionID, reason: "child_session" }))
+        : Effect.void
+      yield* patch(input.sessionID, { dagMode: input.mode, time: { updated: Date.now() } }).pipe(Effect.orDie)
+      DagModeState.set(input.sessionID, input.mode)
+    })
+
+    const setDagBudget = Effect.fn("Session.setDagBudget")(function* (input: {
+      sessionID: SessionID
+      tokens: number | null
+    }) {
+      const current = yield* get(input.sessionID)
+      yield* current.parentID
+        ? Effect.fail(new DagModeError({ sessionID: input.sessionID, reason: "child_session" }))
+        : Effect.void
+      yield* input.tokens !== null && (!Number.isSafeInteger(input.tokens) || input.tokens <= 0)
+        ? Effect.fail(new DagModeError({ sessionID: input.sessionID, reason: "invalid_budget" }))
+        : Effect.void
+      yield* patch(input.sessionID, {
+        // #1031 M1: `null` is an explicit unlimited choice, not "no override";
+        // the flag keeps the global `dag.budget.tokens` from reappearing.
+        dagBudgetTokens: input.tokens,
+        dagBudgetUnlimited: input.tokens === null,
+        time: { updated: Date.now() },
+      }).pipe(Effect.orDie)
     })
 
     const setRevert = Effect.fn("Session.setRevert")(function* (input: {
@@ -1349,6 +1411,8 @@ export const layer: Layer.Layer<
       setModelSelection,
       setMetadata,
       setPermission,
+      setDagMode,
+      setDagBudget,
       setRevert,
       clearRevert,
       setSummary,
@@ -1381,6 +1445,10 @@ export const layer: Layer.Layer<
 export const defaultLayer = layer.pipe(
   Layer.provide(BackgroundJob.defaultLayer),
   Layer.provide(Database.defaultLayer),
+  // #1031 M1: Session.create reads the global `dag.mode` default. Provided here
+  // so the production composition sees the same Config instance as its siblings;
+  // a direct `Session.layer` composition without Config falls back to off.
+  Layer.provide(Config.defaultLayer),
   // Session.create/update/remove publish SessionV1 events and read the rows
   // back through Session.get/list, so the projector that writes those rows is
   // part of this layer (same shape as Dag.defaultLayer → DagProjector). It used
@@ -1465,6 +1533,9 @@ function listByProject(
 
 export const node = LayerNode.make(layer, [
   Skill.node,
+  // #1031 M1: the global `dag.mode` default for Session.create. The defaultLayer
+  // provides the same service; a node graph must list it explicitly.
+  Config.node,
   HookLifecycle.node,
   HookFileWatch.node,
   HookConfigChange.node,

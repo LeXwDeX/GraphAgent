@@ -50,6 +50,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionBtw } from "@/session/btw"
 import { SessionRunState } from "@/session/run-state"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
@@ -218,6 +219,10 @@ export const app = LayerNode.group([
   Dag.node,
   DagMessages.node,
   SessionRunState.node,
+  // #1031 M1: the DAG mode status/receipt reads the live DAG-wide counters.
+  // SessionPrompt.node consumes the scheduler, but a dependency is not an
+  // ambient service in this graph, so the HTTP handlers need it listed.
+  AgentScheduler.node,
   SessionProcessor.node,
   SessionCompaction.node,
   SessionRevert.node,

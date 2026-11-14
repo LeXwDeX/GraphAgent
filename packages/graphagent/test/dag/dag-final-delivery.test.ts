@@ -593,7 +593,7 @@ for (const state of ["error", "unfinished", "wrong-parent", "dag-report"] as con
     ))
 }
 
-for (const command of ["memory", "trust", "goal", "subgoal"])
+for (const command of ["memory", "goal", "subgoal", "dag-mode"])
   it(`delivers after a completed local /${command} without an assistant response`, () =>
     fixture(({ sessions, store, deliver }) =>
       Effect.gen(function* () {
@@ -613,6 +613,7 @@ for (const command of ["memory", "trust", "goal", "subgoal"])
           type: "text",
           text: `/${command} status`,
           metadata: { command },
+          ignored: true,
         })
         expect(yield* deliver()).toBe(false)
         yield* sessions.updatePart({
@@ -621,13 +622,49 @@ for (const command of ["memory", "trust", "goal", "subgoal"])
           sessionID: user.sessionID,
           type: "text",
           text: "Command completed",
-          ignored: command === "goal" || command === "subgoal",
+          ignored: true,
           time: { start: 60, end: 60 },
         })
         expect(yield* deliver()).toBe(true)
         expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
       }),
     ))
+
+// #1031 M1: before command parts were persisted as `ignored`, a /memory swap
+// left its visible response on the user message. A resumed session whose
+// newest user message is such an exchange must still receive a finished
+// workflow's report.
+it("delivers behind a historical /memory exchange persisted before ignored command parts", () =>
+  fixture(({ sessions, store, deliver }) =>
+    Effect.gen(function* () {
+      yield* sessions.updateMessage({
+        id: "msg_legacy_memory" as never,
+        sessionID: "ses_parent" as never,
+        role: "user",
+        time: { created: 50 },
+        agent: "build",
+        model: { providerID: "test" as never, modelID: "test" as never },
+      })
+      yield* sessions.updatePart({
+        id: "prt_legacy_command" as never,
+        messageID: "msg_legacy_memory" as never,
+        sessionID: "ses_parent" as never,
+        type: "text",
+        text: "/memory",
+        metadata: { command: "memory" },
+      })
+      yield* sessions.updatePart({
+        id: "prt_legacy_response" as never,
+        messageID: "msg_legacy_memory" as never,
+        sessionID: "ses_parent" as never,
+        type: "text",
+        text: "Memory is on",
+        time: { start: 50, end: 50 },
+      })
+      expect(yield* deliver()).toBe(true)
+      expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+    }),
+  ))
 
 for (const command of ["goal", "subgoal"])
   it(`delivers behind a historical /${command} dispatch failure persisted without metadata or assistant`, () =>

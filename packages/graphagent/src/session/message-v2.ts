@@ -1230,6 +1230,41 @@ export function isIgnoredUser(message: {
   )
 }
 
+/**
+ * Commands the server answers without a model turn (#1031 M1): /memory,
+ * /goal status, /subgoal and /dag-mode. Their whole exchange is ignored
+ * presentation state, so they must not become the `lastUser` a turn or the
+ * report-delivery check is measured against.
+ */
+const LOCAL_COMMANDS = new Set(["memory", "goal", "subgoal", "dag-mode"])
+
+export function isLocalCommand(message: { info: { role: string }; parts?: readonly unknown[] }) {
+  if (message.info.role !== "user" || !message.parts?.length) return false
+  const parts = message.parts.filter(
+    (part): part is { type: string; ignored?: boolean; metadata?: Record<string, unknown> } =>
+      typeof part === "object" && part !== null,
+  )
+  if (parts.length !== message.parts.length) return false
+  if (!parts.every((part) => part.type === "text" && part.ignored === true)) return false
+  return parts.some(
+    (part) =>
+      part.type === "text" &&
+      typeof part.metadata?.command === "string" &&
+      LOCAL_COMMANDS.has(part.metadata.command),
+  )
+}
+
+/** Newest user message that is not a local command exchange (findLast semantics). */
+export function latestUser<M extends { info: { role: string }; parts?: readonly unknown[] }>(
+  messages: Iterable<M>,
+): M | undefined {
+  let found: M | undefined
+  for (const message of messages) {
+    if (message.info.role === "user" && !isLocalCommand(message)) found = message
+  }
+  return found
+}
+
 // filterCompacted reorders messages for model consumption
 // ([compaction-user, summary, ...retained tail..., continue-user]), so array
 // position is not chronological. Derive each binding by max (time.created, id)
@@ -1238,13 +1273,15 @@ export function isIgnoredUser(message: {
 // pre-wrap ids sort above new ids); the id tiebreak only resolves
 // same-millisecond bursts. tasks are compaction/subtask parts attached to user
 // messages newer than the latest finished assistant — i.e. unprocessed work.
-export function latest(msgs: WithParts[]) {
+export function latest(msgs: WithParts[], options?: { readonly skipLocalCommand?: boolean }) {
   let user: User | undefined
   let assistant: Assistant | undefined
   let finished: Assistant | undefined
   for (const msg of msgs) {
     const info = msg.info
-    if (info.role === "user" && (!user || before(user, info))) user = info
+    if (info.role === "user" && (!user || before(user, info))) {
+      if (!options?.skipLocalCommand || !isLocalCommand(msg)) user = info
+    }
     if (info.role === "assistant" && (!assistant || before(assistant, info))) assistant = info
     if (info.role === "assistant" && info.finish && (!finished || before(finished, info))) finished = info
   }

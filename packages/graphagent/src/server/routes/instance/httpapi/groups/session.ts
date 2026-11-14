@@ -68,6 +68,7 @@ export const UpdatePayload = Schema.Struct({
   // BadRequest instead of silently stripping them.
   dagMode: Schema.optional(Schema.Never),
   dagBudgetTokens: Schema.optional(Schema.Never),
+  dagBudgetUnlimited: Schema.optional(Schema.Never),
 })
 export const ForkPayload = Schema.Struct(Struct.omit(Session.ForkInput.fields, ["sessionID"]))
 export const InitPayload = Schema.Struct({

@@ -149,6 +149,7 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
           if (properties) {
             delete properties.dagMode
             delete properties.dagBudgetTokens
+            delete properties.dagBudgetUnlimited
           }
         }
       }
