@@ -65,6 +65,7 @@ afterEach(() => {
 
 interface Harness {
   published: DagEvent.WorkflowWorktree[]
+  episodes: DagEvent.WorkflowWorktreeEpisode[]
   removals: { directory: string; keepBranch: boolean }[]
 }
 
@@ -75,8 +76,12 @@ function settle(input: {
   config: WorkflowConfig
   failRemoval?: boolean
   failPublish?: boolean
+  /** Runs before the projection fold, so a test can commit a recovery while
+   * the settlement is in flight. */
+  beforePublish?: () => void
 }) {
-  const harness: Harness = { published: [], removals: [] }
+  const harness: Harness = { published: [], episodes: [], removals: [] }
+  let failPublish = input.failPublish === true
   let row = makeWorkflowRow({
     id: input.dagID,
     projectId: "proj-settle",
@@ -102,19 +107,27 @@ function settle(input: {
           execFileSync("git", ["-C", input.repository, "worktree", "remove", "--force", directory])
           return true
         }),
-      publish: (worktree) =>
-        input.failPublish
-          ? Effect.die(new Error("settlement publish exploded"))
-          : Effect.sync(() => {
-              harness.published.push(worktree)
-              // The real projector folds workflow.worktree in the publish transaction.
-              row = { ...row, worktree }
-            }),
+      publish: (worktree, episode) =>
+        Effect.suspend(() => {
+          if (failPublish) return Effect.die(new Error("settlement publish exploded"))
+          return Effect.sync(() => {
+            input.beforePublish?.()
+            // Mirror the projector: only a NULL pointer for the SAME episode
+            // folds; a settlement from a reopened episode is a 0-row update.
+            if (row.worktree != null || row.graphRev !== episode.graphRev || row.seq !== episode.seq) return
+            harness.published.push(worktree)
+            harness.episodes.push(episode)
+            row = { ...row, worktree }
+          })
+        }),
     })
   return {
     harness,
     effect: settleAs(input.status),
     settleAs,
+    setFailPublish: (value: boolean) => {
+      failPublish = value
+    },
     getRow: () => row,
     /** Simulate the WorkflowReplanned recovery projection: new status and
      * graph revision, settlement pointer cleared for the next episode. */
@@ -227,6 +240,58 @@ describe("workflow-level worktree settlement (#1030)", () => {
     rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
   })
 
+  it("does not settle a reopened episode with the failed attempt's evidence (#1030)", async () => {
+    const repository = repo()
+    const dagID = "dag_settle_stale_inflight"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "attempt.txt"), "attempt\n")
+    let commitRecovery: (() => void) | undefined
+    let recoveryCommitted = false
+    const { harness, effect, settleAs, reopen, getRow } = settle({
+      repository,
+      dagID,
+      status: "failed",
+      config: cfg,
+      // Recovery commits while the settlement's filesystem work is in flight.
+      beforePublish: () => {
+        if (!commitRecovery || recoveryCommitted) return
+        recoveryCommitted = true
+        commitRecovery()
+      },
+    })
+    commitRecovery = () => reopen("failed")
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    // The stale settlement event folds to a 0-row update: the reopened
+    // episode's terminal record is NOT claimed by the old attempt's evidence.
+    expect(harness.published).toEqual([])
+    expect(getRow().worktree ?? null).toBeNull()
+
+    // The reopened episode settles with its own episode fence.
+    expect(await Effect.runPromise(settleAs("failed"))).toBe("settled")
+    expect(harness.episodes).toEqual([{ graphRev: 2, seq: 2 }])
+    expect(getRow().worktree?.state).toBe("kept")
+    rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
+  })
+
+  it("returns superseded without touching disk when a recovery reopened the workflow first (#1030)", async () => {
+    const repository = repo()
+    const dagID = "dag_settle_superseded"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "attempt.txt"), "attempt\n")
+    const { harness, effect, reopen } = settle({ repository, dagID, status: "failed", config: cfg })
+    reopen("running")
+
+    expect(await Effect.runPromise(effect)).toBe("superseded")
+    expect(harness.published).toEqual([])
+    expect(existsSync(pointer.directory)).toBe(true)
+    // No commit ran: the reopened episode owns the working tree.
+    expect(git(pointer.directory, ["status", "--porcelain"])).toContain("attempt.txt")
+    expect(git(pointer.directory, ["rev-parse", "HEAD"])).toBe(pointer.baseHead)
+    rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
+  })
+
   it("reports settle_failed instead of settled when the settlement projection cannot commit", async () => {
     const repository = repo()
     const dagID = "dag_settle_publish_fails"
@@ -273,6 +338,47 @@ describe("workflow-level worktree settlement (#1030)", () => {
     expect(harness.published[0]).toEqual(
       expect.objectContaining({ state: "removed", reason: "worktree directory is missing" }),
     )
+  })
+
+  it("republishes full evidence after a crash between removal and publish (#1030)", async () => {
+    const repository = repo()
+    const dagID = "dag_settle_crash_after_remove"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "final.txt"), "final\n")
+    const { harness, effect, setFailPublish, getRow } = settle({
+      repository,
+      dagID,
+      status: "completed",
+      config: cfg,
+      failPublish: true,
+    })
+
+    // The process "crashes" after the directory was removed but before the
+    // settlement event committed: the evidence must not be lost.
+    expect(await Effect.runPromise(effect)).toBe("settle_failed")
+    expect(existsSync(pointer.directory)).toBe(false)
+    expect(getRow().worktree ?? null).toBeNull()
+
+    // Startup retry lands on the missing-directory branch and republishes the
+    // persisted head/patch/checksum/touched paths.
+    setFailPublish(false)
+    expect(await Effect.runPromise(effect)).toBe("settled")
+
+    const settled = harness.published[0]
+    expect(settled).toEqual(
+      expect.objectContaining({
+        directory: pointer.directory,
+        branch: pointer.branch,
+        baseHead: pointer.baseHead,
+        state: "removed",
+        touchedPaths: ["final.txt"],
+      }),
+    )
+    expect(settled?.head).toBeDefined()
+    expect(settled?.patchPath).toBeDefined()
+    expect(settled?.patchSha256).toBeDefined()
+    expect(readFileSync(settled?.patchPath ?? "", "utf8")).toContain("final.txt")
+    rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
   })
 
   it("does nothing for a workflow without workflow-level isolation", async () => {

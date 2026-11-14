@@ -346,39 +346,65 @@ export const layer: Layer.Layer<
     ) {
       const directory = yield* canonical(info.directory)
       const ctx = yield* InstanceState.context
+      // Which resources belong to this call, not to an earlier one. Callers
+      // also retry with SUPPLIED worktree metadata (the control-plane worktree
+      // adapter passes a directory/branch from the workspace info), so setup
+      // may fail because that checkout, its branch and its sandbox
+      // registration already exist. Rollback must only undo what this call
+      // created — never an existing checkout with uncommitted work.
+      const existing = Effect.gen(function* () {
+        const currentProject = yield* project.get(ctx.project.id)
+        return {
+          directory: yield* fs.exists(directory).pipe(Effect.orDie),
+          branch: info.branch
+            ? (yield* git(["show-ref", "--verify", "--quiet", `refs/heads/${info.branch}`], { cwd: ctx.worktree }))
+                .code === 0
+            : false,
+          // A missing identity row means no registration can be proven ours;
+          // fail closed and leave registrations to the caller/operator.
+          sandbox: currentProject ? (yield* registeredSandboxes(currentProject.sandboxes, info.directory)).length > 0 : true,
+        }
+      })
       // #1030 F3: setup registers the directory with Project, creates the
       // branch ref and only then populates the tree. A reset failure — or an
       // interrupt between those steps — must not leave an empty checkout, a
       // dangling branch ref and a sandbox registration behind. Roll back
       // best-effort inside the same lifecycle lock that owns creation (raw git
       // here, not `remove`, which would deadlock on the keyed lock).
-      const rollback = Effect.gen(function* () {
-        yield* git(["worktree", "remove", "--force", info.directory], { cwd: ctx.worktree })
-        if (info.branch) yield* git(["branch", "-D", info.branch], { cwd: ctx.worktree })
-        yield* project.removeSandbox(ctx.project.id, info.directory).pipe(Effect.catch(() => Effect.void))
-      }).pipe(
-        Effect.uninterruptible,
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.void
-            : Effect.logWarning("worktree creation rollback failed", { directory: info.directory, cause }),
-        ),
-      )
+      const rollback = (baseline: { directory: boolean; branch: boolean; sandbox: boolean }) =>
+        Effect.gen(function* () {
+          if (!baseline.directory) yield* git(["worktree", "remove", "--force", info.directory], { cwd: ctx.worktree })
+          if (info.branch && !baseline.branch) yield* git(["branch", "-D", info.branch], { cwd: ctx.worktree })
+          if (!baseline.sandbox)
+            yield* project.removeSandbox(ctx.project.id, info.directory).pipe(Effect.catch(() => Effect.void))
+        }).pipe(
+          Effect.uninterruptible,
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.void
+              : Effect.logWarning("worktree creation rollback failed", { directory: info.directory, cause }),
+          ),
+        )
       yield* lifecycle.withLock(directory)(
         Effect.gen(function* () {
-          yield* setup(info, base)
-          yield* FiberMap.run(
-            bootFibers,
-            directory,
-            boot(info, startCommand).pipe(
-              Effect.catchCause((cause) => Effect.logError("worktree bootstrap failed", { cause })),
-            ),
+          // Capture the baseline inside the lock: only this critical section
+          // can create or remove the same directory/branch.
+          const baseline = yield* existing
+          yield* Effect.gen(function* () {
+            yield* setup(info, base)
+            yield* FiberMap.run(
+              bootFibers,
+              directory,
+              boot(info, startCommand).pipe(
+                Effect.catchCause((cause) => Effect.logError("worktree bootstrap failed", { cause })),
+              ),
+            )
+          }).pipe(
+            // Success returns the fully created worktree to the caller; every
+            // other exit (setup failure, interrupt) owns the cleanup.
+            Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : rollback(baseline))),
           )
-        }).pipe(
-          // Success returns the fully created worktree to the caller; every
-          // other exit (setup failure, interrupt) owns the cleanup.
-          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : rollback)),
-        ),
+        }),
       )
     })
 

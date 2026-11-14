@@ -3,7 +3,7 @@
 
 import { describe, expect } from "bun:test"
 import { and, eq } from "drizzle-orm"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -142,6 +142,39 @@ describe("DAG baseline branch coverage", () => {
       const verdict = yield* dag.failUnrecoverable(dagID, "workspace_missing: pending")
       expect(verdict).toBe("failed")
       expect((yield* dag.store.getWorkflow(dagID))?.status).toBe("failed")
+    }),
+  )
+
+  it.effect("exclusive serializes an external critical section with guarded commands", () =>
+    Effect.gen(function* () {
+      const sessionID = "ses_baseline_exclusive"
+      yield* setup(sessionID)
+      const dag = yield* Dag.Service
+      const dagID = yield* create(dag, sessionID, [node("n")])
+
+      const entered = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const exclusive = yield* dag
+        .exclusive(
+          dagID,
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined)
+            yield* Deferred.await(release)
+          }),
+        )
+        .pipe(Effect.forkScoped)
+      yield* Deferred.await(entered)
+
+      // A guarded command on the same workflow waits for the external section
+      // to release the per-workflow mutex.
+      const paused = yield* dag.pause(dagID, "budget_exhausted").pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
+      expect((yield* dag.store.getWorkflow(dagID))?.status).toBe("running")
+
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(exclusive)
+      yield* Fiber.join(paused)
+      expect((yield* dag.store.getWorkflow(dagID))?.status).toBe("paused")
     }),
   )
 

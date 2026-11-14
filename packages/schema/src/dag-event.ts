@@ -130,6 +130,16 @@ export const WorkflowWorktree = Schema.Struct({
 })
 export type WorkflowWorktree = typeof WorkflowWorktree.Type
 
+/** #1030 D9-g: the terminal episode a settlement was computed against. Every
+ * recovery reopen bumps `graphRev` and `seq`, so the projector can reject a
+ * settlement whose episode was reopened while its filesystem work was still
+ * in flight — the next episode must settle with its own evidence. */
+export const WorkflowWorktreeEpisode = Schema.Struct({
+  graphRev: NonNegativeInt,
+  seq: NonNegativeInt,
+})
+export type WorkflowWorktreeEpisode = typeof WorkflowWorktreeEpisode.Type
+
 // ============================================================================
 // Workflow lifecycle events
 // ============================================================================
@@ -285,6 +295,10 @@ export const WorkflowWorktreeSettled = Event.define({
   schema: {
     ...Base,
     worktree: WorkflowWorktree,
+    /** The terminal episode the evidence was produced for. The projection only
+     * writes the row when it still matches; a settlement from a reopened
+     * episode therefore folds to a no-op instead of claiming the new one. */
+    episode: WorkflowWorktreeEpisode,
   },
 })
 export type WorkflowWorktreeSettled = typeof WorkflowWorktreeSettled.Type

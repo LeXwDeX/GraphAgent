@@ -1,5 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import { Database } from "@graphagent/core/database/database"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import path from "path"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -806,6 +807,34 @@ describe("Worktree", () => {
 
           yield* Fiber.join(ready)
           yield* removeCreatedWorktree(info.directory)
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "retrying with supplied worktree info keeps the existing checkout and branch (#1030)",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const project = yield* Project.Service
+          const ctx = yield* InstanceState.context
+          const info = yield* svc.create({ name: "retry-existing-info" })
+          yield* Effect.addFinalizer(() => svc.remove({ directory: info.directory }).pipe(Effect.ignore))
+
+          // Resources this retry never created: an uncommitted change in the
+          // existing checkout and its branch. createFromInfo must fail (the
+          // checkout/branch already exist) without touching either.
+          writeFileSync(path.join(info.directory, "keep.txt"), "keep\n")
+          const branchBefore = yield* git(test.directory, ["rev-parse", "--verify", `refs/heads/${info.branch}`])
+
+          const exit = yield* Effect.exit(svc.createFromInfo(info))
+          expect(Exit.isFailure(exit)).toBe(true)
+
+          expect(existsSync(info.directory)).toBe(true)
+          expect(readFileSync(path.join(info.directory, "keep.txt"), "utf8")).toBe("keep\n")
+          expect(yield* git(test.directory, ["rev-parse", "--verify", `refs/heads/${info.branch}`])).toBe(branchBefore)
+          expect(yield* project.sandboxes(ctx.project.id)).toContain(info.directory)
         }),
       { git: true },
     )

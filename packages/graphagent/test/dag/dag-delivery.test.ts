@@ -383,9 +383,11 @@ describe("DagDelivery drain", () => {
             expect(admissions).toBe(0)
             expect((yield* store.getWorkflow("dag_delivery"))?.wakeReported).toBe(false)
 
+            const workflow = yield* store.getWorkflow("dag_delivery")
             yield* bridge.publish(DagEvent.WorkflowWorktreeSettled, {
               dagID: DagEvent.DagID.make("dag_delivery"),
               worktree: settled,
+              episode: { graphRev: workflow?.graphRev ?? 0, seq: workflow?.seq ?? 0 },
               timestamp: yield* DateTime.now,
             })
             yield* delivery.drain(PARENT)

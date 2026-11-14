@@ -79,21 +79,26 @@ const settled: DagEvent.WorkflowWorktree = {
 }
 
 describe("workflow worktree settlement projection (#1030)", () => {
+  const episodeOf = (store: DagStore.Interface, dagID: DagEvent.DagID) =>
+    Effect.map(store.getWorkflow(dagID), (row) => ({ graphRev: row?.graphRev ?? 0, seq: row?.seq ?? 0 }))
+
   test("settlement writes the read-model pointer without advancing seq or time_updated", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         yield* seed()
         const events = yield* EventV2.Service
         const store = yield* DagStore.Service
-        const before = yield* store.getWorkflow("dag_worktree")
+        const dagID = DagEvent.DagID.make("dag_worktree")
+        const before = yield* store.getWorkflow(dagID)
 
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
-          dagID: DagEvent.DagID.make("dag_worktree"),
+          dagID,
           worktree: settled,
+          episode: yield* episodeOf(store, dagID),
           timestamp: yield* DateTime.now,
         })
 
-        expect(yield* store.getWorkflow("dag_worktree")).toEqual(
+        expect(yield* store.getWorkflow(dagID)).toEqual(
           expect.objectContaining({ worktree: settled, seq: before?.seq, timeUpdated: before?.timeUpdated }),
         )
       }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
@@ -111,15 +116,67 @@ describe("workflow worktree settlement projection (#1030)", () => {
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID,
           worktree: settled,
+          episode: yield* episodeOf(store, dagID),
           timestamp: yield* DateTime.now,
         })
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID,
           worktree: { ...settled, state: "kept", reason: "later settlement" },
+          episode: yield* episodeOf(store, dagID),
           timestamp: yield* DateTime.now,
         })
 
-        expect((yield* store.getWorkflow("dag_worktree"))?.worktree).toEqual(settled)
+        expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(settled)
+      }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
+    )
+  })
+
+  test("a settlement from a superseded episode folds to a no-op; the next episode settles", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed({ status: "failed" })
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+        const dagID = DagEvent.DagID.make("dag_worktree")
+        const staleEpisode = yield* episodeOf(store, dagID)
+
+        // Recovery reopens the workflow and clears the settlement pointer while
+        // the failed episode's settlement is still in flight.
+        yield* events.publish(DagEvent.WorkflowReplanned, {
+          dagID,
+          added: 0,
+          removed: 0,
+          replaced: 0,
+          restarted: 0,
+          recovery: { expectedGraphRev: staleEpisode.graphRev, expectedSeq: staleEpisode.seq, nodeSeqs: [], resumeCancelled: false },
+          timestamp: yield* DateTime.now,
+        })
+        expect((yield* store.getWorkflow(dagID))?.worktree ?? null).toBeNull()
+
+        // The late settlement carries the OLD episode identity: it must not
+        // claim the reopened workflow for the old attempt's evidence.
+        yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
+          dagID,
+          worktree: { ...settled, head: "stale-head", state: "kept" },
+          episode: staleEpisode,
+          timestamp: yield* DateTime.now,
+        })
+        expect((yield* store.getWorkflow(dagID))?.worktree ?? null).toBeNull()
+
+        // The new terminal episode settles with its own fence.
+        yield* events.publish(DagEvent.WorkflowCompleted, {
+          dagID,
+          durationMs: 1,
+          timestamp: yield* DateTime.now,
+        })
+        const next = { ...settled, head: "next-head", state: "removed" as const }
+        yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
+          dagID,
+          worktree: next,
+          episode: yield* episodeOf(store, dagID),
+          timestamp: yield* DateTime.now,
+        })
+        expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(next)
       }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
     )
   })
@@ -135,6 +192,7 @@ describe("workflow worktree settlement projection (#1030)", () => {
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID,
           worktree: settled,
+          episode: { graphRev: 1, seq: 7 },
           timestamp: yield* DateTime.now,
         })
         expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(settled)
@@ -163,6 +221,7 @@ describe("workflow worktree settlement projection (#1030)", () => {
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID,
           worktree: next,
+          episode: yield* episodeOf(store, dagID),
           timestamp: yield* DateTime.now,
         })
         expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(next)
@@ -181,6 +240,7 @@ describe("workflow worktree settlement projection (#1030)", () => {
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID,
           worktree: settled,
+          episode: { graphRev: 1, seq: 7 },
           timestamp: yield* DateTime.now,
         })
 
@@ -206,6 +266,7 @@ describe("workflow worktree settlement projection (#1030)", () => {
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID,
           worktree: next,
+          episode: yield* episodeOf(store, dagID),
           timestamp: yield* DateTime.now,
         })
         expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(next)
@@ -225,6 +286,7 @@ describe("workflow worktree settlement projection (#1030)", () => {
         yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID: DagEvent.DagID.make("dag_other"),
           worktree: settled,
+          episode: { graphRev: 1, seq: 7 },
           timestamp: yield* DateTime.now,
         })
 

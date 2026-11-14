@@ -1905,7 +1905,16 @@ const serviceLayer = Layer.effect(
         // process-level reconciler); a host sweep that terminalizes without a
         // loop entry still has no settlement here until that reconciler exists.
         const settleWorkflowTerminal = (dagID: string) =>
-          settleTerminalWorkflowWorktree({ dagID, store, publish: events.publish, ambient: ctx })
+          settleTerminalWorkflowWorktree({
+            dagID,
+            store,
+            publish: events.publish,
+            ambient: ctx,
+            // #1030 D9-g: settlement and recovery/replan share one
+            // per-workflow critical section, so a settlement computed for the
+            // old terminal episode cannot commit the reopened episode's work.
+            exclusive: (effect) => dag.exclusive(dagID, effect),
+          })
 
         for (const def of [DagEvent.WorkflowCompleted, DagEvent.WorkflowFailed, DagEvent.WorkflowCancelled]) {
           const terminalAbort =

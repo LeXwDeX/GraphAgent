@@ -9,8 +9,9 @@
  * instance-aware remove operation in.
  */
 
-import { existsSync } from "node:fs"
-import { DateTime, Effect, Cause, Option, Schedule } from "effect"
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { DateTime, Effect, Cause, Option, Schedule, Schema } from "effect"
 import type { EventV2 } from "@graphagent/core/event"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
@@ -95,7 +96,15 @@ export function workflowWorktreeSettlementPending(
   return workflow.worktree == null && config?.isolation === "worktree" && config.worktree != null
 }
 
-export type WorkflowWorktreeSettlement = "settled" | "already_settled" | "not_isolated" | "settle_failed"
+export type WorkflowWorktreeSettlement =
+  | "settled"
+  | "already_settled"
+  | "not_isolated"
+  | "settle_failed"
+  /** The read model already belongs to a newer episode (a recovery reopened
+   * the workflow while this settlement was still queued). Nothing is touched:
+   * the new episode settles with its own evidence. */
+  | "superseded"
 
 export interface SettleWorkflowWorktreeInput {
   dagID: string
@@ -109,7 +118,13 @@ export interface SettleWorkflowWorktreeInput {
    * checkout. `keepBranch` is always true at settlement — the branch is the
    * durable pointer to the final commit. */
   remove: (directory: string, options: { keepBranch: boolean }) => Effect.Effect<boolean, unknown>
-  publish: (worktree: DagEvent.WorkflowWorktree) => Effect.Effect<void, unknown>
+  publish: (worktree: DagEvent.WorkflowWorktree, episode: DagEvent.WorkflowWorktreeEpisode) => Effect.Effect<void, unknown>
+  /** #1030 D9-g: runs the whole settlement (durable read, filesystem work,
+   * publish) under the same per-workflow mutex that serializes recovery and
+   * replan. Without it the durable projection fence still rejects a stale
+   * episode, but the git commit could interleave with the reopened episode's
+   * writes. The live DagLoop passes `Dag.exclusive`. */
+  exclusive?: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
 /** Commit pending workflow-level work, persist its patch, then remove (completed)
@@ -125,7 +140,7 @@ export interface SettleWorkflowWorktreeInput {
 export function settleWorkflowWorktree(
   input: SettleWorkflowWorktreeInput,
 ): Effect.Effect<WorkflowWorktreeSettlement> {
-  return Effect.gen(function* () {
+  const settleEpisode = Effect.gen(function* () {
     const configured = input.config.worktree
     if (input.config.isolation !== "worktree" || !configured) return "not_isolated" as const
     // Idempotency gate: the projection writes `workflow.worktree` inside the
@@ -133,9 +148,17 @@ export function settleWorkflowWorktree(
     // duplicate call (or a second terminal observer) a pure no-op.
     const current = yield* input.store.getWorkflow(input.dagID).pipe(Effect.orDie)
     if (!current || current.worktree != null) return "already_settled" as const
+    // #1030 D9-g: the caller observed a terminal event, but a recovery may
+    // have reopened the workflow before this read or while the filesystem work
+    // runs. A reopened row is `running` (or a later terminal episode); settling
+    // it would commit the next episode's in-flight work and mark it settled.
+    // The captured episode fences the durable write; this status check also
+    // avoids touching the disk at all.
+    if (current.status !== input.status) return "superseded" as const
+    const episode: DagEvent.WorkflowWorktreeEpisode = { graphRev: current.graphRev, seq: current.seq }
 
     const settle = (worktree: DagEvent.WorkflowWorktree) =>
-      input.publish(worktree).pipe(
+      input.publish(worktree, episode).pipe(
         Effect.retry({ times: 2, schedule: Schedule.spaced("200 millis") }),
         Effect.as("settled" as const),
         // A failed metadata publish must not break terminal cleanup, but it
@@ -161,6 +184,13 @@ export function settleWorkflowWorktree(
       touchedPaths: [] as string[],
     }
     if (!existsSync(configured.directory)) {
+      // #1030 D9-g: a completed settlement removes the directory after
+      // persisting its evidence but before publishing. A process that stops in
+      // that window retries here with the checkout gone — publish the saved
+      // head/patch/checksum/touched paths instead of an empty tombstone (the
+      // write-once projection would make that loss permanent).
+      const evidence = readSettlementEvidence(input.projectID, input.dagID, configured.directory)
+      if (evidence) return yield* settle(evidence)
       return yield* settle({ ...base, state: "removed", reason: "worktree directory is missing" })
     }
 
@@ -208,6 +238,22 @@ export function settleWorkflowWorktree(
     // inspect the attempt; only a completed workflow removes the directory.
     if (input.status !== "completed") return yield* settle({ ...settledBase, state: "kept" })
 
+    // Persist the settlement evidence BEFORE removing the checkout: head,
+    // touched paths and the patch can no longer be recomputed once the
+    // directory is gone (only the kept branch and patch artifact survive).
+    // Failing to persist it is treated like a failed removal — keep the
+    // worktree, publish the evidence we have, never remove without a recovery
+    // record.
+    try {
+      persistSettlementEvidence(input.projectID, input.dagID, { ...settledBase, state: "removed" })
+    } catch (error) {
+      return yield* settle({
+        ...settledBase,
+        state: "kept",
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
+
     const removed = yield* input.remove(configured.directory, { keepBranch: true }).pipe(
       Effect.result,
       Effect.catchCause((cause) =>
@@ -224,6 +270,54 @@ export function settleWorkflowWorktree(
           : "worktree remove returned false",
     })
   })
+  // #1030 D9-g: recovery/replan take the same per-workflow mutex. Holding
+  // it here makes "terminal read → commit/patch/remove → fenced publish" one
+  // critical section with them, so the reopened episode cannot write into the
+  // checkout while the settlement is committing it.
+  return input.exclusive ? input.exclusive(settleEpisode) : settleEpisode
+}
+
+/** Where the pre-removal settlement evidence lives. The patch artifact already
+ * uses `<reportsArea>/<dagID>/` and survives the checkout, so the settlement
+ * record belongs next to it. */
+function settlementEvidencePath(projectID: string, dagID: string): string | undefined {
+  if (!dagID || dagID === "." || dagID === ".." || /[\\/\0]/.test(dagID)) return undefined
+  return join(workflowReportsArea(projectID), dagID, "_workflow.settlement.json")
+}
+
+/** Atomically persist the evidence a completed settlement is about to publish.
+ * A torn write must not make the retry publish half-decoded metadata. */
+function persistSettlementEvidence(projectID: string, dagID: string, worktree: DagEvent.WorkflowWorktree): void {
+  const file = settlementEvidencePath(projectID, dagID)
+  if (!file) throw new Error(`invalid workflow ID for settlement evidence: ${JSON.stringify(dagID)}`)
+  mkdirSync(dirname(file), { recursive: true })
+  const temporary = `${file}.tmp-${process.pid}`
+  try {
+    writeFileSync(temporary, JSON.stringify(worktree))
+    renameSync(temporary, file)
+  } catch (error) {
+    rmSync(temporary, { force: true })
+    throw error
+  }
+}
+
+/** Read back the evidence persisted before removal. Anything unreadable or
+ * scoped to a different worktree is discarded: an empty tombstone is worse
+ * than the reason-bearing fallback but better than foreign evidence. */
+function readSettlementEvidence(
+  projectID: string,
+  dagID: string,
+  directory: string,
+): DagEvent.WorkflowWorktree | undefined {
+  const file = settlementEvidencePath(projectID, dagID)
+  if (!file || !existsSync(file)) return undefined
+  try {
+    const evidence = Schema.decodeUnknownSync(DagEvent.WorkflowWorktree)(JSON.parse(readFileSync(file, "utf8")))
+    if (evidence.directory !== directory) return undefined
+    return { ...evidence, state: "removed" }
+  } catch {
+    return undefined
+  }
 }
 
 export interface SettleTerminalWorkflowInput {
@@ -232,6 +326,10 @@ export interface SettleTerminalWorkflowInput {
   publish: EventV2.Interface["publish"]
   /** Ambient instance context of the observer (the DagLoop). */
   ambient: { readonly directory: string; readonly trustProject?: boolean }
+  /** #1030 D9-g: the per-workflow mutex shared with recovery/replan
+   * (`Dag.exclusive`). The live loop always passes it; a standalone observer
+   * degrades to the durable episode fence. */
+  exclusive?: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
 /** The terminal-event entry point used by `DagLoop` (and reusable by E1b's
@@ -273,12 +371,14 @@ export function settleTerminalWorkflowWorktree(
         worktreeSvc
           ? inOwner(worktreeSvc.remove({ directory, keepBranch: options.keepBranch }))
           : Effect.succeed(false),
-      publish: (worktree) =>
+      publish: (worktree, episode) =>
         input.publish(DagEvent.WorkflowWorktreeSettled, {
           dagID: DagEvent.DagID.make(input.dagID),
           worktree,
+          episode,
           timestamp,
         }).pipe(Effect.asVoid),
+      exclusive: input.exclusive,
     })
     // `settle_failed` means the disk outcome happened but the durable pointer
     // did not commit. Delivery stays gated on that pointer; log loudly so the

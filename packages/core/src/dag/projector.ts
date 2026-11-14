@@ -352,14 +352,24 @@ export const layer = Layer.effectDiscard(
     //     the terminal wake would let an acknowledged completion re-wake.
     // The NULL guard makes settlement write-once: a replayed or duplicated
     // settlement event folds to a 0-row update instead of overwriting the
-    // first outcome.
+    // first outcome. The episode fence closes the other write-once hole: a
+    // settlement computed for a failed/cancelled episode can reach the log
+    // after `WorkflowReplanned` recovery reopened the workflow (which clears
+    // the pointer and bumps graph_rev/seq). Without the fence that stale
+    // settlement would claim the NEW episode — its completion would skip
+    // commit/remove and deliver the previous attempt's evidence.
     yield* project(DagEvent.WorkflowWorktreeSettled, (event) =>
       db
         .update(WorkflowTable)
         // Drizzle's `$onUpdate` would move time_updated on any write; settle the
         // metadata without perturbing the terminal episode's timestamps either.
         .set({ worktree: event.data.worktree, time_updated: sql`${WorkflowTable.time_updated}` })
-        .where(and(eq(WorkflowTable.id, event.data.dagID), isNull(WorkflowTable.worktree)))
+        .where(and(
+          eq(WorkflowTable.id, event.data.dagID),
+          isNull(WorkflowTable.worktree),
+          eq(WorkflowTable.graph_rev, event.data.episode.graphRev),
+          eq(WorkflowTable.seq, event.data.episode.seq),
+        ))
         .run()
         .pipe(Effect.orDie),
     )

@@ -595,6 +595,12 @@ export interface Interface {
       readonly owner?: WorkflowOwner
     },
   ) => Effect.Effect<{ readonly status: "completed" | "failed" | "stale" | "ignored" }, Error>
+  /** #1030 D9-g: run an external workflow-scoped critical section — workflow
+   * worktree settlement — under the same per-workflow mutex that serializes
+   * recovery and every guarded command. The body must not call a guarded Dag
+   * command (the mutex is not reentrant); a lock timeout surfaces as a defect
+   * because a stuck holder already means the workflow is broken. */
+  readonly exclusive: <A, E, R>(dagID: string, body: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly replan: (
     dagID: string,
     fragment: { nodes: NodeConfig[] },
@@ -2460,6 +2466,13 @@ export const layer = Layer.effect(
         ),
       settleCompletion: (dagID, options) =>
         withWorkflowLock(dagID)((lock) => settleCompletion(lock, dagID, options)),
+      // The witness convention exists to type-proof internal guarded calls;
+      // external critical sections (worktree settlement) cannot hold a witness,
+      // so the timeout is folded into a defect here instead.
+      exclusive: (dagID, body) =>
+        withWorkflowLock(dagID)(() => body).pipe(
+          Effect.catchTag("TimeoutError", (error) => Effect.die(error)),
+        ),
       replan: (dagID, fragment) =>
         withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, _replan(lock, dagID, fragment))),
       extend: (dagID, nodes, fence) =>
