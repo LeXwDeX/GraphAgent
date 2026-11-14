@@ -479,7 +479,7 @@ export const layer = Layer.effectDiscard(
           output: event.data.output,
           ...(event.data.capturedOutput !== undefined ? { captured_output: event.data.capturedOutput, captured_output_present: true } : {}),
           ...(event.data.targetFingerprint !== undefined ? { target_fingerprint: event.data.targetFingerprint } : {}),
-          // #944: legacy events omit the flag; completed rows read as not stale.
+          // #944: earlier durable events omit the flag; completed rows read as not stale.
           stale_target: event.data.staleTarget ?? false,
           ...(event.data.worktree !== undefined
             ? {

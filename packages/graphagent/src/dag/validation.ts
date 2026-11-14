@@ -512,8 +512,9 @@ export function schemaDiagnostics(error: unknown, basePath = "", action: SchemaA
  * need name+nodes" error that hides the real mistake — the absent envelope key.
  * Surface the envelope error directly, with a targeted hint keyed on the
  * top-level keys that ARE present. An `undefined`/`null` fragment counts as
- * missing: legacy file normalization rewrites a fragment-less replan doc to
- * `{ ...originalKeys, fragment: undefined }`, so the key can exist yet be empty.
+ * missing: file-only compatibility normalization rewrites a fragment-less
+ * replan doc to `{ ...originalKeys, fragment: undefined }`, so the key can
+ * exist yet be empty.
  * Returns `undefined` when the envelope is present, letting normal decode run.
  */
 export function replanEnvelopeDiagnostic(value: unknown): Diagnostic | undefined {

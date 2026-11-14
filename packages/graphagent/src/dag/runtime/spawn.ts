@@ -141,7 +141,7 @@ export interface NodeSpawnInput {
   targetSensitive?: boolean
   /** Completed direct dependency outputs an ACCEPT verdict must account for. */
   verdictEvidence?: readonly VerdictEvidence[]
-  /** dag.jsonc tier default — authoritative unless a persisted legacy node model exists. */
+  /** dag.jsonc tier default — authoritative unless a persisted node model pin exists. */
   fallbackModel?: { modelID: string; providerID: string }
   /** dag.jsonc thinking_depth — forwarded as the prompt variant (no-op unless the model defines it). */
   variant?: string

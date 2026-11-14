@@ -1209,7 +1209,8 @@ export const WorkflowTool = Tool.define<
 // ============================================================================
 
 /** #944: the target identity a result is bound to, shared by both result
- * branches. Absent for legacy nodes and non-target-sensitive results. */
+ * branches. Absent for nodes without a recorded target fingerprint and
+ * non-target-sensitive results. */
 export function resultTargetFields(node: {
   readonly targetFingerprint?: DagEvent.TargetFingerprint | null
   readonly staleTarget?: boolean | null
