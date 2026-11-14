@@ -44,7 +44,7 @@ export type Info = typeof Info.Type
 
 const DEFAULT_CONTENT = `{
   // DAG workflow defaults — applies to every DAG child session.
-  // Model resolution per node: persisted legacy node model
+  // Model resolution per node: persisted node model pin
   //   → this file's tier → worker agent model → parent session model.
   // Format: "provider/model", e.g. "anthropic/claude-sonnet-4-5".
   "model": {

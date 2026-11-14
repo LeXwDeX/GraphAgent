@@ -346,8 +346,8 @@ function normalizeNodeConfig(node: NodeConfig, defaults: NodeDefaults): Normaliz
     },
     report_to_parent: node.report_to_parent ?? defaults.report_to_parent ?? DEFAULT_WORKFLOW_CONFIG.reportToParent,
     // New required work is strict by default. Only historical persisted
-    // definitions (which bypass normalization) keep the accepted-skip legacy
-    // path; blocks mark their intentional conditional branches explicitly.
+    // definitions (which bypass normalization) keep the accepted-skip
+    // behavior; blocks mark their intentional conditional branches explicitly.
     ...(required && node.skip_ok === undefined ? { skip_ok: false } : {}),
     ...(model ? { model } : {}),
   }
@@ -520,8 +520,9 @@ export function parseWorkflowConfig(raw: string): WorkflowConfig | undefined {
   if (candidate.delivery_node !== undefined && typeof candidate.delivery_node !== "string") return undefined
   // Guard the invariants every caller relies on (config.nodes.map, node.id,
   // depends_on iteration) instead of trusting the persisted row blindly. Kept
-  // structural rather than a full strict schema: rejecting a legacy row that
-  // callers could still consume would break recovery of in-flight workflows.
+  // structural rather than a full strict schema: rejecting a row persisted by
+  // an older version that callers could still consume would break recovery of
+  // in-flight workflows.
   if (!Array.isArray(candidate.nodes)) return undefined
   const nodesValid = candidate.nodes.every(
     (node) => isRecord(node) && typeof node.id === "string" && Array.isArray(node.depends_on),
@@ -1893,9 +1894,9 @@ export const layer = Layer.effect(
       const node = yield* guardNode(dagID, nodeID, NodeStatus.COMPLETED, attempt)
       const workflow = yield* store.getWorkflow(dagID)
       // #944: recompute the target identity for a node that recorded a start
-      // fingerprint. Legacy and target-insensitive nodes carry none and are
-      // never stale. The computation is synchronous inside the workflow lock;
-      // it is the bounded git fingerprint from DagLocation.
+      // fingerprint. Nodes persisted before #944 and target-insensitive nodes
+      // carry none and are never stale. The computation is synchronous inside
+      // the workflow lock; it is the bounded git fingerprint from DagLocation.
       const startFingerprint = node.targetFingerprint ?? undefined
       const executionDirectory =
         node.directory || workflow?.executionDirectory || workflow?.directory || undefined

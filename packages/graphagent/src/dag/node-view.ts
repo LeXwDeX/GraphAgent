@@ -25,8 +25,8 @@ export function base(row: DagStore.NodeRow): DagSummary.NodeView {
     ...(row.modelId !== null ? { model_id: row.modelId } : {}),
     ...(row.modelProviderId !== null ? { model_provider_id: row.modelProviderId } : {}),
     ...(row.childSessionId !== null ? { child_session_id: row.childSessionId } : {}),
-    // #949: per-attempt execution location. Optional so legacy rows and
-    // pre-#949 clients decode exactly as before.
+    // #949: per-attempt execution location. Optional so rows persisted before
+    // #949 and pre-#949 clients decode exactly as before.
     ...DagLocation.nodeLocationView(row),
     ...(row.output !== null || row.status === "completed" ? { output: row.output } : {}),
     ...(row.errorReason !== null ? { error_reason: row.errorReason } : {}),
