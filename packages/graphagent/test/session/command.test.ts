@@ -33,12 +33,16 @@ function harness(overrides: {
   /** Registry entry under the `dag-mode` name; a different object means a user override. */
   command?: Record<string, unknown>
   noModel?: boolean
+  /** Clears the row's saved model while provider defaults stay resolvable. */
+  noSavedModel?: boolean
+  /** Model of the newest real user turn, as a fork copies it from the source session. */
+  historyModel?: { providerID: string; modelID: string }
 }) {
   const info = {
     id: sessionID,
     parentID: overrides.parentID,
     agent: "build",
-    model: overrides.noModel ? undefined : model,
+    model: overrides.noModel || overrides.noSavedModel ? undefined : model,
     dagMode: overrides.mode ?? "off",
     dagBudgetTokens: overrides.budget ?? null,
     dagBudgetUnlimited: overrides.unlimited ?? false,
@@ -52,9 +56,42 @@ function harness(overrides: {
     unlimited: info.dagBudgetUnlimited,
     prompts,
   }
+  // Newest first, like `Session.findMessage`. The newer exchange is a local
+  // command: its stamped model must not shadow the real turn below it.
+  const history = overrides.historyModel
+    ? [
+        {
+          info: { id: "msg_dag_mode", role: "user", sessionID, time: { created: 2 }, agent: "build", model },
+          parts: [
+            {
+              id: "prt_dag_mode",
+              messageID: "msg_dag_mode",
+              sessionID,
+              type: "text",
+              ignored: true,
+              text: "/dag-mode status",
+              metadata: { command: "dag-mode" },
+            },
+          ],
+        },
+        {
+          info: {
+            id: "msg_user",
+            role: "user",
+            sessionID,
+            time: { created: 1 },
+            agent: "build",
+            model: overrides.historyModel,
+          },
+          parts: [{ id: "prt_user", messageID: "msg_user", sessionID, type: "text", text: "hello" }],
+        },
+      ]
+    : []
   const deps = asDeps({
     sessions: {
       get: () => Effect.succeed(info),
+      findMessage: (_sessionID: unknown, predicate: (message: (typeof history)[number]) => boolean) =>
+        Effect.succeed(Option.fromNullishOr(history.find(predicate))),
       updateMessage: (message: SessionV1.Info) => Effect.succeed(message),
       updatePart: (part: SessionV1.Part) => {
         parts.push(part)
@@ -287,5 +324,21 @@ describe("/dag-mode exchange", () => {
     if (info.role !== "user") throw new Error("expected a user command message")
     expect(String(info.model.providerID)).toBe("unknown")
     expect(String(info.model.modelID)).toBe("unknown")
+  })
+
+  test("a forked session without a saved model keeps the history's model", async () => {
+    // `Session.fork` copies the messages but not the source row's saved model.
+    // The receipt must not stamp the provider default there: it would become
+    // the latest user message model, and the TUI restores it on reopen.
+    const test = harness({
+      arguments: "status",
+      noSavedModel: true,
+      historyModel: { providerID: "history", modelID: "history-model" },
+    })
+    const result = await test.run()
+    const info = result.info
+    if (info.role !== "user") throw new Error("expected a user command message")
+    expect(String(info.model.providerID)).toBe("history")
+    expect(String(info.model.modelID)).toBe("history-model")
   })
 })

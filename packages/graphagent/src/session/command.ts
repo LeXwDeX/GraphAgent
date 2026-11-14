@@ -31,6 +31,7 @@ import type { HookStartContext } from "@/hook/start-context"
 import type { SessionAttention } from "@/notification/attention"
 import type { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import type { PromptLockWitness, Request, RunRequestWitness } from "./locks"
+import { MessageV2 } from "./message-v2"
 import { MessageID, PartID, type SessionID } from "./schema"
 import type { AgentScheduler } from "./agent-scheduler"
 import { Session } from "./session"
@@ -271,13 +272,22 @@ const UNRESOLVED_MODEL = {
   modelID: ModelV2.ID.make("unknown"),
 }
 
-const dagModeMessageModel = (deps: CommandDeps, info: SessionInfo, agentName: string) =>
+const dagModeMessageModel = (deps: CommandDeps, info: SessionInfo) =>
   Effect.gen(function* () {
     if (info.model) return { providerID: info.model.providerID, modelID: info.model.id }
-    const agent = yield* deps.agents.get(agentName).pipe(Effect.catch(() => Effect.succeed(undefined)))
-    if (agent?.model) return { providerID: agent.model.providerID, modelID: agent.model.modelID }
-    const fallback = yield* deps.providers.defaultModel().pipe(Effect.option)
-    return Option.getOrUndefined(fallback) ?? UNRESOLVED_MODEL
+    // A fork copies the messages but not the source row's saved model, so the
+    // newest user turn is the only record of the model the user was on. The
+    // agent/global default is not a substitute: stamping it here would make
+    // the ignored receipt the latest user message model, and the TUI restores
+    // that message model when the session is reopened.
+    const match = yield* deps.sessions
+      .findMessage(
+        info.id,
+        (message) => message.info.role === "user" && !!message.info.model && !MessageV2.isLocalCommand(message),
+      )
+      .pipe(Effect.orDie)
+    if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
+    return UNRESOLVED_MODEL
   })
 
 /**
@@ -290,7 +300,7 @@ function dagModeCommand(deps: CommandDeps, input: CommandInput) {
     const info: SessionInfo = yield* deps.sessions.get(input.sessionID).pipe(Effect.orDie)
     const parsed = parseDagModeCommand(input.arguments)
     const agentName = input.agent ?? (yield* deps.agents.defaultAgent())
-    const model = yield* dagModeMessageModel(deps, info, agentName)
+    const model = yield* dagModeMessageModel(deps, info)
     const userMsg: SessionV1.User = {
       id: input.messageID ?? MessageID.ascending(),
       role: "user",
