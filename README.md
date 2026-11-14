@@ -41,7 +41,7 @@ v2.0 开发中，即将发布。发布进度在[里程碑](https://github.com/Le
 
 主智能体觉得任务值得拆，就自己建图，不用你开口；你也可以用 `/dag-auto <任务>` 直接要求。边只表示“下游要读上游的产出”，没有这层关系的节点就并行。负责审查和仲裁的节点叫门禁，输出 ACCEPT、REVISE、REJECT 或 BLOCKED，下游可以按裁定决定跑不跑。TUI 里有 DAG 检查器，能看各波次和节点的实时状态，也能进入任何一个节点的子会话。
 
-模型分层写在 `.agents/dag.jsonc`（关键节点用 advanced，跑量的用 standard），常用的图存进 `.agents/workflows/`，之后按名字就能启动。精选模板在 [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config)。节点的 `timeout_ms` 从拿到执行槽位开始计时，排队时间不计。崩溃恢复只认持久化的记录。引擎不假设有跨进程的锁，也不保证节点恰好执行一次。用法和引擎细节见 [docs/dag-workflows.md](./docs/dag-workflows.md)。
+模型分层写在 `.agents/settings.json` 的 `dag.model`（关键节点用 advanced，跑量的用 standard），常用的图存进 `.agents/workflows/`，之后按名字就能启动。精选模板在 [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config)。节点的 `timeout_ms` 从拿到执行槽位开始计时，排队时间不计。崩溃恢复只认持久化的记录。引擎不假设有跨进程的锁，也不保证节点恰好执行一次。用法和引擎细节见 [docs/dag-workflows.md](./docs/dag-workflows.md)。
 
 ### 子运行与通信
 

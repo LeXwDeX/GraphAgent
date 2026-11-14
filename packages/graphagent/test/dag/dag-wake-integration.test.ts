@@ -31,6 +31,7 @@ import { DagBlocks } from "@/dag/blocks"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagControl } from "@/dag/control"
 import { DagLoop, isPausedReminderDue } from "@/dag/runtime/loop"
+import { DagPaths } from "@/dag/paths"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -1357,7 +1358,8 @@ describe("DagLoop atomic wake integration", () => {
     // templates are read lazily from disk, so the spawn-time guard (and its
     // failure wake) stays live for them. Exercise that path with a real
     // template file carrying an unbound placeholder.
-    const templateDir = path.join(process.cwd(), ".agents", "dag-prompts")
+    const templateRoot = DagPaths.projectLayer(process.cwd()) ?? process.cwd()
+    const templateDir = path.join(DagPaths.projectPrompts(templateRoot))
     const templateFile = path.join(templateDir, "wake-unbound-fixture.md")
     await fs.mkdir(templateDir, { recursive: true })
     await fs.writeFile(templateFile, "汇总结果：{{never-bound}}")

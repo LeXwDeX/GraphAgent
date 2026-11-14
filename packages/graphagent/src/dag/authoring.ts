@@ -237,7 +237,7 @@ function legacyModelWarnings(action: Action, models: LegacyModels): DagValidatio
       code: DagValidation.DIAGNOSTIC_CODES.modelLegacyPin,
       path,
       message: "Legacy YAML model pin retained for compatibility; it overrides DAG tier model selection.",
-      hint: "Do not pin models in new workflow specs. Remove model and configure the DAG tiers in dag.jsonc instead.",
+      hint: "Do not pin models in new workflow specs. Remove model and configure the DAG tiers in .agents/settings.json instead.",
     }),
   )
 }

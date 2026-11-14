@@ -18,7 +18,7 @@ Three terms worth knowing:
 - `workflow(action="draft")` renders a structured graph through the tool schema into a validated YAML spec — field-name mistakes are rejected by the provider, not discovered at validation time.
 - Saved workflow libraries at three scopes (project / global / builtin), startable by name; the `/dag-auto` command routes a requirement to a curated reference topology and retargets it to the task at hand.
 - The agent promotes to a workflow on its own judgment — the user need not ask — and declares the graph structure up front, mutating it at runtime only for structure that depends on results. When later work depends on items a node produces (for example one verifier per finding), the parent turns that node into a checkpoint, deduplicates and ranks the reported items, and adds only the needed item nodes with a bounded `extend`; `fan_out` is for writers from a plan's `packages`, not general per-item expansion.
-- Model tiers in `dag.jsonc` separate decisions from volume: critical nodes on the `advanced` model, fan-out work on `standard`.
+- Model tiers in `dag.model` separate decisions from volume: critical nodes on the `advanced` model, fan-out work on `standard`.
 
 **Reliability**
 
@@ -44,26 +44,30 @@ parts, or a review gate in the middle (`/dag-auto <task>`), and the agent
 designs a graph and runs it. Three things turn that into a repeatable setup of
 your own.
 
-### 1. Choose the model tiers — `.agents/dag.jsonc`
+### 1. Choose the model tiers — `dag.model` in `.agents/settings.json`
 
 Nodes never name their own model. The graph declares _which nodes are critical_
 and configuration decides _what runs them_:
 
 ```jsonc
 {
-  // Critical nodes: required: true, plus review/arbiter workers.
-  "model": {
-    "advanced": "anthropic/claude-sonnet-4-5",
-    "standard": "anthropic/claude-haiku-4-5",
-  },
-  // Reasoning variant for DAG child sessions, when the model defines one.
-  "thinking_depth": "medium",
+  "dag": {
+    // Critical nodes: required: true, plus review/arbiter workers.
+    "model": {
+      "advanced": "anthropic/claude-sonnet-4-5",
+      "standard": "anthropic/claude-haiku-4-5"
+    },
+    // Reasoning variant for DAG child sessions, when the model defines one.
+    "thinking_depth": "medium"
+  }
 }
 ```
 
-A project `.agents/dag.jsonc` overrides the global one in the config
-dir; a commented default is seeded there on first use. With only one tier
-configured, it serves as the unified default. Resolution order per node is
+A project `.agents/settings.json` overrides the user-level
+`graphagent.json`/`graphagent.jsonc` in the config dir, field by field; the
+rest of the `dag` section (`mode`, `concurrency`, budgets, safety rules) stays
+user-level policy. With only one tier configured, it serves as the unified
+default. Resolution order per node is
 tier → worker agent model → parent session model; when none of them yields a
 model, the workflow is not created and you are asked to configure one.
 
@@ -120,10 +124,10 @@ tool parameters and hands back a validated `spec_path`, so field drift never
 reaches the file.
 
 Node prompts referenced by `prompt_template.id` resolve from the project's
-`.agents/dag-prompts/<id>.md`, then the global `<config dir>/dag-prompts/`.
-Add your own `.md` file there to make a new template available; a global
-workflow should prefer `inline` prompts so it does not depend on a repo-local
-template.
+`.agents/workflows/prompts/<id>.md`, then the global
+`<config dir>/workflows/prompts/`. Add your own `.md` file there to make a new
+template available; a global workflow should prefer `inline` prompts so it does
+not depend on a repo-local template.
 
 ## The engine
 
@@ -137,7 +141,7 @@ Each node declares:
 | ------------------ | --------------------------------------------------------------------------------------------------- |
 | `depends_on`       | Dependency edges; cycle detection and dangling-reference validation at creation                     |
 | `worker_type`      | Which agent runs the node (`explore`, `build`, `general`, or any configured agent)                  |
-| `prompt_template`  | Prompt by `id` (from project, then global `dag-prompts/`) or `inline`, with `{{var}}` interpolation |
+| `prompt_template`  | Prompt by `id` (from project, then global `.agents/workflows/prompts/`) or `inline`, with `{{var}}` interpolation |
 | `input_mapping`    | Map upstream node outputs into template variables (`"count": "node-b.output.count"`)                |
 | `condition`        | Expression over upstream outputs; false → node skipped, pure descendants cascade-skip               |
 | `output_schema`    | JSON Schema; the child agent's final answer must be exactly one JSON value matching it              |
@@ -197,11 +201,11 @@ Everything DAG-specific lives under `.agents/`, with a global counterpart in
 the config dir (`GRAPHAGENT_CONFIG_DIR`, else `~/.config/graphagent`).
 Everything else inherits the main GraphAgent configuration.
 
-| Path                         | Purpose                                                                       | Global counterpart                                          |
-| ---------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `.agents/dag.jsonc`          | Model tiers (`advanced` / `standard`) and `thinking_depth` for child sessions | `<config dir>/dag.jsonc`, seeded with comments on first use |
-| `.agents/workflows/*.yaml`   | Saved workflow specs, startable by name                                       | `<config dir>/workflows/*.yaml`                             |
-| `.agents/dag-prompts/*.md`   | Node prompt templates referenced by `prompt_template.id` (project first)      | `<config dir>/dag-prompts/*.md`                             |
+| Path                                | Purpose                                                                       | User-level counterpart                                             |
+| ----------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `.agents/settings.json` `dag.model` | Model tiers (`advanced` / `standard`) and `thinking_depth` for child sessions | `graphagent.json(c)` `dag`, overridden by the project              |
+| `.agents/workflows/*.yaml`          | Saved workflow specs, startable by name                                       | `<config dir>/workflows/*.yaml`                                    |
+| `.agents/workflows/prompts/*.md`    | Node prompt templates referenced by `prompt_template.id` (project first)      | `<config dir>/workflows/prompts/*.md`                              |
 
-Both `dag.jsonc` and the workflow library are read lazily, so an edit applies to
+Both the DAG settings and the workflow library are read lazily, so an edit applies to
 the next workflow start without a restart.

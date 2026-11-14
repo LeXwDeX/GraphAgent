@@ -1309,7 +1309,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                               {
                                 "properties": {
                                   "id": {
-                                    "description": "Prompt asset id resolved from .agents/dag-prompts (project, then global)",
+                                    "description": "Prompt asset id resolved from .agents/workflows/prompts (project, then global)",
                                     "type": "string",
                                   },
                                   "input": {

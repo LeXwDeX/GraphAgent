@@ -7,6 +7,7 @@ import { Effect } from "effect"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import type { Provider } from "@/provider/provider"
+import { DagSection } from "@/config/dag-section"
 import { Dag } from "./dag"
 import { DagConfig } from "./config"
 import { DagModel } from "./model"
@@ -15,7 +16,7 @@ import { DagValidation } from "./validation"
 /**
  * The environment-profile catalog loader shared by the workflow tool's
  * authoring and start paths: agent names, model availability, and tier
- * resolution from the project's dag.jsonc. Passing the services in keeps
+ * resolution from the project's DAG settings. Passing the services in keeps
  * this module layer-free — callers resolve Agent/Provider from their own
  * composition context.
  */
@@ -32,7 +33,7 @@ export const makeCatalogLoader =
       if (!context.directory) return {}
       const agentCatalog = yield* agents.list().pipe(Effect.orDie)
       const providerCatalog = yield* provider.list()
-      const config = yield* DagConfig.load(context.directory)
+      const config = yield* DagSection.dagSection(context.directory)
       const agentsByName = new Map(agentCatalog.map((agent) => [agent.name, agent]))
       const availableModels = new Set(
         Object.values(providerCatalog).flatMap((info) =>

@@ -141,9 +141,9 @@ export interface NodeSpawnInput {
   targetSensitive?: boolean
   /** Completed direct dependency outputs an ACCEPT verdict must account for. */
   verdictEvidence?: readonly VerdictEvidence[]
-  /** dag.jsonc tier default — authoritative unless a persisted node model pin exists. */
+  /** DAG tier default — authoritative unless a persisted node model pin exists. */
   fallbackModel?: { modelID: string; providerID: string }
-  /** dag.jsonc thinking_depth — forwarded as the prompt variant (no-op unless the model defines it). */
+  /** DAG thinking_depth — forwarded as the prompt variant (no-op unless the model defines it). */
   variant?: string
   /** Workflow-level timeout extension cap (defaults to DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions). */
   maxTimeoutExtensions?: number

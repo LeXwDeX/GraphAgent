@@ -57,6 +57,7 @@ import { AgentScheduler } from "@/session/agent-scheduler"
 import { renderTemplate } from "../templates/resolve"
 import { sanitizeInput } from "../templates/sanitize"
 import { DagConfig } from "../config"
+import { DagSection } from "@/config/dag-section"
 import { spawnNode, makeDeadlineWatcher } from "./spawn"
 import { evaluateCondition, resolveInputMapping, resolveInputMappingChecked, parseInputMappingReference } from "./eval"
 import {
@@ -173,11 +174,6 @@ const serviceLayer = Layer.effect(
         // DagDelivery. This forward reference is assigned below, before any
         // event or recovery path can trigger it; every call site only nudges.
         let delivery: DagDelivery.Interface = DagDelivery.unavailable
-
-        // Seed the commented global dag.jsonc once per instance init — the
-        // per-round DagConfig.load below stays a pure read so the spawn
-        // scheduling hot path never writes to the user's config dir.
-        yield* DagConfig.load(ctx.directory, { autoSeed: true }).pipe(Effect.ignore)
 
         const checkpointDisposition = Effect.fn("DagLoop.checkpointDisposition")(function* (
           dagID: string,
@@ -371,17 +367,17 @@ const serviceLayer = Layer.effect(
           // owner directory. Cache per directory so a node-level override does
           // not re-read the file for every spawn in this round.
           const executionBase = entry.executionDirectory ?? ctx.directory
-          const dagConfigs = new Map<string, DagConfig.Info>()
+          const dagConfigs = new Map<string, DagConfig.Dag>()
           const loadDagConfig = (directory: string) => {
             const cached = dagConfigs.get(directory)
             if (cached) return Effect.succeed(cached)
-            return DagConfig.load(directory).pipe(
+            return DagSection.dagSection(directory).pipe(
               Effect.tap((loaded) => Effect.sync(() => dagConfigs.set(directory, loaded))),
             )
           }
-          // dag.jsonc defaults are read once per scheduling round (lazy, like
+          // DAG settings are read once per scheduling round (lazy, like
           // templates) so edits apply to the next round without a restart.
-          const dagConfig: DagConfig.Info = ready.length > 0 ? yield* loadDagConfig(executionBase) : {}
+          const dagConfig: DagConfig.Dag = ready.length > 0 ? yield* loadDagConfig(executionBase) : {}
           // A condition_false skip settles a node inside this round, after the
           // ready set was computed. Its NodeSkipped handler sees the node
           // already settled and does not reschedule, so a mixed fan-in it just
@@ -599,7 +595,7 @@ const serviceLayer = Layer.effect(
             }
 
             // #943: a node workspace overrides the workflow workspace for
-            // prompt assets, dag.jsonc defaults and the child session.
+            // prompt assets, DAG settings and the child session.
             const nodeDirectory = nodeConfig.workspace ?? executionBase
             const nodeDagConfig = nodeDirectory === executionBase ? dagConfig : yield* loadDagConfig(nodeDirectory)
             const resolved = yield* nodeConfig?.prompt_template
