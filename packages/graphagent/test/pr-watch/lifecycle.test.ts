@@ -6,6 +6,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Lifecycle } from "@/lifecycle/service"
 import { PrWatchLifecycle } from "@/pr-watch/lifecycle"
+import { EngineProcess } from "@/session/engine-process"
 import type { InstanceContext } from "@/project/instance-context"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
@@ -165,6 +166,54 @@ describe("pr_watch lifecycle resolver", () => {
       expect(
         Option.isNone(yield* lifecycle.get(ref("pr_watch", "watch_missing")).pipe(Effect.provideService(InstanceRef, own))),
       ).toBe(true)
+    }),
+  )
+
+  it.live("prefers the live poller phase and applies the same directory ownership", () =>
+    Effect.gen(function* () {
+      yield* insertSession("ses_watch_live", "/own")
+      yield* insertSession("ses_watch_live_foreign", "/other")
+      yield* insertWatch({ id: "watch_live_owned", session_id: "ses_watch_live", phase: "watching" })
+      yield* insertWatch({ id: "watch_live_foreign", session_id: "ses_watch_live_foreign", phase: "watching" })
+      EngineProcess.prWatch.watches.set("watch_live_owned", {
+        phase: "delivering",
+        sessionID: "ses_watch_live",
+        observedAt: 123,
+      })
+      EngineProcess.prWatch.watches.set("watch_live_foreign", {
+        phase: "delivering",
+        sessionID: "ses_watch_live_foreign",
+        observedAt: 123,
+      })
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const lifecycle = yield* Lifecycle.Service
+          const live = Option.getOrUndefined(
+            yield* lifecycle
+              .get(ref("pr_watch", "watch_live_owned"))
+              .pipe(Effect.provideService(InstanceRef, own)),
+          )
+          // The live entry wins over the persisted `watching` row.
+          expect(live).toMatchObject({
+            value: "delivering",
+            phase: "settling",
+            terminal: false,
+            source: "live",
+            observedAt: 123,
+          })
+          expect(
+            Option.isNone(
+              yield* lifecycle
+                .get(ref("pr_watch", "watch_live_foreign"))
+                .pipe(Effect.provideService(InstanceRef, own)),
+            ),
+          ).toBe(true)
+        }),
+        Effect.sync(() => {
+          EngineProcess.prWatch.watches.delete("watch_live_owned")
+          EngineProcess.prWatch.watches.delete("watch_live_foreign")
+        }),
+      )
     }),
   )
 })
