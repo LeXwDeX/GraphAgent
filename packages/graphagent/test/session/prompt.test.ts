@@ -44,6 +44,7 @@ import { Image } from "../../src/image/image"
 import { Question } from "../../src/question"
 import { Todo } from "../../src/session/todo"
 import { TodoReminders } from "../../src/session/todo-reminders"
+import { DagModeReminder } from "../../src/session/dag-mode-reminder"
 import { Session } from "@/session/session"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { SessionTurnTable } from "@graphagent/core/session/turn.sql"
@@ -73,6 +74,7 @@ import { Shell } from "@graphagent/core/shell"
 import { Snapshot } from "../../src/snapshot"
 import { ToolRegistry } from "@/tool/registry"
 import { Dag } from "@/dag/dag"
+import { DagMode } from "@/dag/mode"
 import { DagControl } from "@/dag/control"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -467,6 +469,7 @@ function makePrompt(input?: PromptLayerOptions) {
     DagStore.defaultLayer,
     EventV2Bridge.defaultLayer,
     TodoReminders.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
+    DagModeReminder.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
     ToolSourceLedger.defaultLayer,
     AgentScheduler.defaultLayer,
   ).pipe(Layer.provideMerge(infra))
@@ -7982,6 +7985,129 @@ it.instance("a parent that delegated carries its runs in the runtime context, an
       const before = requests[index - 1]?.conversation ?? []
       expect(request.conversation.slice(0, before.length)).toEqual(before)
     }
+  }),
+)
+
+// #1031 M2: the three notice layers. L1 is the constant mechanism block for a
+// main session whose workflow tool is published; L2 follows the live switch in
+// the runtime context; L3 is the one-per-turn tail note.
+it.instance("carries the DAG mechanism (L1) only for a main session with the workflow tool", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "main session" }],
+    })
+    yield* llm.text("main done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const parent = yield* Effect.acquireRelease(sessions.create({ title: "DAG L1 parent" }), (info) =>
+      sessions.remove(info.id).pipe(Effect.ignore),
+    )
+    const child = yield* Effect.acquireRelease(sessions.create({ title: "DAG L1 child", parentID: parent.id }), (info) =>
+      sessions.remove(info.id).pipe(Effect.ignore),
+    )
+    const children = (yield* prompt.children).forParent(parent.id)
+    yield* children.start({
+      childSessionID: child.id,
+      owner: { kind: "dag_node", workflowID: "wf-l1", nodeID: "child", attempt: 0 },
+      detached: false,
+      permission: { ask: "auto" },
+    })
+    yield* children.prompt({
+      sessionID: child.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "child session" }],
+    })
+    yield* llm.text("child done")
+    yield* prompt.loop({ sessionID: child.id }, { kind: "child_run" })
+
+    const requests = (yield* llm.inputs).map(requestMessages)
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.system).toContain("# DAG workflows")
+    expect(requests[0]?.system).toContain("Never change DAG mode or the DAG budget yourself")
+    expect(requests[1]?.system).not.toContain("# DAG workflows")
+  }),
+)
+
+it.instance("publishes DAG mode state (L2) and the tail note (L3), then clears it when switched off", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    const todo = yield* Todo.Service
+    yield* todo.update({
+      sessionID: chat.id,
+      todos: [{ content: "pending item", status: "in_progress", priority: "high" }],
+    })
+    yield* sessions.setDagMode({ sessionID: chat.id, mode: "on" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "orchestrate this request" }],
+    })
+    yield* llm.text("on done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    yield* sessions.setDagMode({ sessionID: chat.id, mode: "off" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "answer directly" }],
+    })
+    yield* llm.text("off done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const requests = (yield* llm.inputs).map((input) => requestMessages(input))
+    expect(requests).toHaveLength(2)
+    const onTurn = requests[0]?.conversation.find((message) => JSON.stringify(message).includes("orchestrate this request"))
+    expect(onTurn).toBeDefined()
+    const onText = JSON.stringify(onTurn)
+    // L2 is a runtime-context block of its own; L3 rides the persisted user turn.
+    const onConversation = JSON.stringify(requests[0]?.conversation)
+    expect(onConversation).toContain("DAG mode: ON (set by the user for this session).")
+    expect(onConversation).toContain("concurrency 12 shared by all sessions")
+    expect(onConversation).toContain("100 nodes per workflow")
+    expect(onConversation).toContain("DAG token budget unlimited")
+    // L3 follows the todo reminder on the same user turn.
+    expect(onText).toContain("[todo reminder]")
+    expect(onText).toContain(DagMode.REMINDER)
+    expect(onText.indexOf("[todo reminder]")).toBeLessThan(onText.indexOf(DagMode.REMINDER))
+
+    const offTurn = requests[1]?.conversation.find((message) =>
+      JSON.stringify(message).includes("answer directly"),
+    )
+    expect(offTurn).toBeDefined()
+    expect(JSON.stringify(offTurn)).not.toContain(DagMode.REMINDER)
+    // The clearance block is appended when the mode changes; the on block stays before it.
+    expect(JSON.stringify(requests[1]?.conversation)).toContain("DAG mode: OFF.")
+  }),
+)
+
+it.instance("marks DAG mode unavailable when the message switches the workflow tool off", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    yield* sessions.setDagMode({ sessionID: chat.id, mode: "on" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      tools: { workflow: false },
+      parts: [{ type: "text", text: "work directly" }],
+    })
+    yield* llm.text("done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const request = requestMessages((yield* llm.inputs)[0])
+    expect(request.system).not.toContain("# DAG workflows")
+    expect(JSON.stringify(request.conversation)).toContain("DAG mode: ON but unavailable (start_denied)")
+    expect(JSON.stringify(request.conversation)).not.toContain(DagMode.REMINDER)
   }),
 )
 

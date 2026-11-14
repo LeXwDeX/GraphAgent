@@ -427,7 +427,9 @@ describe("Session", () => {
 
       yield* session.setDagMode({ sessionID: created.id, mode: "on" })
       expect((yield* session.get(created.id)).dagMode).toBe("on")
-      expect(EngineProcess.runtimes.runtimeSlots.list(created.id).some((slot) => slot.key === "dag_mode")).toBe(true)
+      // #1031 M2: the request builder publishes L2 from the durable row; a
+      // mode change needs no process-local slot write here.
+      expect(yield* DagModeReader.durableMode(session, created.id)).toBe("on")
 
       yield* session.setDagBudget({ sessionID: created.id, tokens: 500 })
       expect((yield* session.get(created.id)).dagBudgetTokens).toBe(500)
@@ -459,17 +461,22 @@ describe("Session", () => {
       // lands inside the active turn (commandTurn allows local commands).
       const stale = yield* session.get(created.id)
       yield* session.setDagMode({ sessionID: created.id, mode: "on" })
-      DagMode.ensure(stale)
+      DagMode.set(stale.id, { mode: DagMode.get(stale), budget: null, concurrency: 12, maxTotalNodes: 100 })
       expect(EngineProcess.runtimes.runtimeSlots.list(created.id).find((slot) => slot.key === "dag_mode")?.parts).toEqual(
         [],
       )
 
       // The request builder re-reads the row, so the next request sees the new mode.
-      DagMode.set(created.id, yield* DagModeReader.durableMode(session, created.id))
+      DagMode.set(created.id, {
+        mode: yield* DagModeReader.durableMode(session, created.id),
+        budget: null,
+        concurrency: 12,
+        maxTotalNodes: 100,
+      })
       const parts = EngineProcess.runtimes.runtimeSlots
         .list(created.id)
         .find((slot) => slot.key === "dag_mode")?.parts
-      expect(parts?.join("\n")).toContain("DAG mode is on")
+      expect(parts?.join("\n")).toContain("DAG mode: ON")
     }),
   )
 

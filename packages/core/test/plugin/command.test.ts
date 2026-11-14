@@ -9,15 +9,23 @@ const it = testEffect(Layer.empty)
 // authoring, recovery, patterns, and policy text lives in the dag-* built-in
 // skills (packages/graphagent/test/skill/dag-skills.test.ts).
 describe("CommandPlugin routing", () => {
-  it.effect("lets the model choose orchestration by benefit rather than task category", () =>
+  it.effect("makes the default follow DAG mode instead of the model's own judgment", () =>
     Effect.sync(() => {
       const content = CommandPlugin.WorkflowContent.replace(/\s+/g, " ")
+      expect(content).toContain("Whether orchestration is the default follows DAG mode")
+      expect(content).toContain("the latest `dag_mode` runtime-context block reports")
+      expect(content).toContain("When it is ON, substantive requests default to workflows")
+      expect(content).toContain("when it is OFF, start one only when the user explicitly asks")
+      expect(content).toContain("applies only to that request")
       expect(content).toContain("Choose direct execution, a `task` child, or a `workflow` DAG")
-      expect(content).toContain("Small edits, bounded debugging, and read-only questions")
+      expect(content).toContain("small edits, bounded debugging, and read-only questions")
       expect(content).toContain("coordination cost")
       expect(content).toContain("Explicit user instructions take precedence")
-      expect(content).toContain("No routing checklist is needed for routine direct work")
-      expect(content).toContain("Promote to a DAG on your own judgment; the user need not ask.")
+      // #1031 M3: the old "judge for yourself" and "file count" retreats are gone.
+      expect(content).not.toContain("Promote to a DAG on your own judgment")
+      expect(content).not.toContain("the user need not ask")
+      expect(content).not.toContain("File count")
+      expect(content).not.toContain("Risk can justify stronger verification without adding agents")
     }),
   )
 
@@ -39,7 +47,6 @@ describe("CommandPlugin routing", () => {
       expect(routing).toContain("Direct execution:")
       expect(routing).toContain("One `task` child")
       expect(routing).toContain("One `workflow` DAG")
-      expect(routing).toContain("including project source and tests")
       expect(routing).toContain("not a task-category rule")
       expect(routing).toContain("one agent, direct work, or no DAG")
       expect(routing).toContain("A read-only request")

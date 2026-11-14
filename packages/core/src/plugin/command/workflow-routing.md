@@ -1,26 +1,27 @@
 # Orchestration Router
 
-The workflow tool is available when orchestration helps; its availability is
-not a reason to use it. The parent owns execution choices and workflow controls.
-Children stay within their assigned scope and do not start nested workflows.
+Whether orchestration is the default follows DAG mode, which the latest
+`dag_mode` runtime-context block reports. When it is ON, substantive requests
+default to workflows; when it is OFF, start one only when the user explicitly
+asks, in a message or with /dag-auto. A direct-work or workflow instruction in
+the current message applies only to that request. The parent owns execution
+choices and workflow controls. Children stay within their assigned scope and do
+not start nested workflows.
 
 ## Execution mode
 
 Choose direct execution, a `task` child, or a `workflow` DAG according to the
-expected benefit and coordination cost, not a task-category rule.
+evidence needed, the assurance the request requires, and the coordination cost —
+not a task-category rule.
 
-- Direct execution: useful when the work fits the current context and can be
-  checked without delegation. Small edits, bounded debugging, and read-only
-  questions often fit here, including project source and tests.
-- One `task` child: useful for a bounded question or work package when
-  isolation or specialist attention helps without a durable graph.
-- One `workflow` DAG: useful when parallel work, isolated contexts, dependent
-  stages, independent assurance, or recoverable execution justify orchestration.
+- Direct execution: small edits, bounded debugging, and read-only questions the
+  current context can verify without delegation often fit here.
+- One `task` child: a bounded question or work package that benefits from
+  isolation or specialist attention without a durable graph.
+- One `workflow` DAG: parallel work, isolated contexts, dependent stages,
+  independent assurance, or recoverable execution.
 
-These are examples, not thresholds. File count, module boundaries, CI/release,
-or the word "review" alone do not require a DAG. Risk can justify stronger
-verification without adding agents. No routing checklist is needed for routine
-direct work. Promote to a DAG on your own judgment; the user need not ask.
+Size the graph by the evidence and assurance it must produce.
 
 Explicit user instructions take precedence: one agent, direct work, or no DAG
 means no delegation; an explicit DAG request calls for an appropriately scoped

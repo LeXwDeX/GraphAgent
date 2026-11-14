@@ -1,28 +1,30 @@
 # Orchestration Policy
 
-Composition choices and runtime contracts after a DAG is selected. The model
-can reconsider execution mode as evidence changes; profiles below are examples,
-not prerequisites. Load skill dag-recovery for replanning, verdict disposal,
-checkpoints, and repair; load skill dag-blocks and skill dag-nodes for YAML and
-node fields.
+Composition choices and runtime contracts after a DAG is selected. Whether
+orchestration is the default follows the latest `dag_mode` block; the economy
+guidance below applies when it is OFF. Profiles are examples, not
+prerequisites; reconsider as evidence changes. Load skill dag-recovery for
+replanning and repair, skill dag-blocks and skill dag-nodes for YAML and node
+fields.
 
 ## Model tiers and evidence
 
 Tier placement is mechanical: `required: true` nodes and `review`/`review-*`
 workers prefer the advanced tier of the `dag` section in `settings.json`; every
-other node prefers standard. One configured tier serves both. This mapping does
-not prescribe who may analyze, implement, or summarize. Set `required` according
-to whether execution failure should stop the workflow, not to manufacture roles.
-Either tier's claims need evidence; repeated opinions are not a substitute for
-source or tests.
+other node prefers standard. One configured tier serves both. Set `required`
+according to whether execution failure should stop the workflow, not to
+manufacture roles. Either tier's claims need evidence; repeated opinions are not
+a substitute for source or tests.
 
 ## Choosing depth
 
 Add depth when a material uncertainty remains, not to meet a phase count.
 Independent perspectives can expose blind spots; targeted verification resolves
-conflicting claims. A short task may need neither an extra reviewer nor a
-synthesis node. Reuse sound evidence and stop expanding when acceptance is
-supported, or report what cannot be verified within scope and budget.
+conflicting claims. With the mode OFF, a short task may need neither an extra
+reviewer nor a synthesis node; with it ON, depth follows the evidence and
+assurance the request needs. Reuse sound evidence and stop expanding when
+acceptance is supported, or report what cannot be verified within scope and
+budget.
 
 ## Parent and child ownership
 
@@ -69,8 +71,7 @@ never expand scope alone.
 `standard` remains the compatibility default and may start without admission.
 Consider `deep` when its explicit admission and review contracts help manage
 uncertainty or consequences; there is no signal quota. Explicit `deep` intent
-still requires admission: it selects the mode, not a bypass. These fields are
-not a planning ritual for standard DAGs.
+still requires admission: it selects the mode, not a bypass.
 
 Run admission before constructing the graph. The start document carries
 top-level `mode: deep` and `admission`; `draft` renders only `title` and
@@ -132,11 +133,11 @@ not replay QA from a consumed record after recovery.
 
 ## Role resolution
 
-Profiles describe possible capabilities, not mandatory roles. Honor an eligible
-explicit `@agent` assignment. Other matches, in order: a configured agent whose
-name/description matches the work; a compatible documented builtin role; an
-`explore`, `build`, or `general` fallback. If a required capability has no
-eligible role, report it and do not start. Do NOT invent a `worker_type`.
+Honor an eligible explicit `@agent` assignment. Other matches, in order: a
+configured agent whose name/description matches the work; a compatible
+documented builtin role; an `explore`, `build`, or `general` fallback. If a
+required capability has no eligible role, report it and do not start. Do NOT
+invent a `worker_type`.
 
 ## Model assignment
 

@@ -27,6 +27,7 @@ import { Question } from "@/question"
 import { Permission } from "@/permission"
 import { Todo } from "@/session/todo"
 import { TodoReminders } from "@/session/todo-reminders"
+import { DagModeReminder } from "@/session/dag-mode-reminder"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionRunState } from "@/session/run-state"
@@ -105,6 +106,7 @@ const BaseAppLayer = Layer.mergeAll(
     Permission.defaultLayer,
     Todo.defaultLayer,
     TodoReminders.layer.pipe(Layer.provide(EventV2Bridge.defaultLayer)),
+    DagModeReminder.defaultLayer,
     Goal.defaultLayer,
     Memory.defaultLayer,
     ToolSourceLedger.defaultLayer,

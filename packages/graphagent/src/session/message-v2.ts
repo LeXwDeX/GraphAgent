@@ -1254,6 +1254,39 @@ export function isLocalCommand(message: { info: { role: string }; parts?: readon
   )
 }
 
+/**
+ * Markers of user-role messages an automation admitted (#1031 M2): DAG result
+ * deliveries, workflow wakes, node mailbox messages, goal continuations, and
+ * background results or PR-watch notices. Each carries synthetic text only, so
+ * a genuine user message cannot match even if it quotes a marker. L3 reminders
+ * must not attach to these.
+ */
+const AUTOMATION_MARKERS = [
+  "[DAG Workflow ",
+  "[Continuing toward your standing goal]",
+  "Automatically delivered DAG result.",
+]
+const AUTOMATION_METADATA = ["backgroundResult", "prWatch"]
+const AGENT_MESSAGE_PREFIX = '{"kind":"dag_agent_message"'
+
+export function isAutomationMessage(message: { info: { role: string }; parts?: readonly unknown[] }) {
+  if (message.info.role !== "user" || !message.parts?.length) return false
+  let automated = false
+  for (const part of message.parts) {
+    if (!isRecord(part) || part.type !== "text" || part.synthetic !== true || typeof part.text !== "string")
+      return false
+    const text = part.text
+    const metadata = isRecord(part.metadata) ? part.metadata : undefined
+    if (
+      AUTOMATION_MARKERS.some((marker) => text.startsWith(marker)) ||
+      text.startsWith(AGENT_MESSAGE_PREFIX) ||
+      AUTOMATION_METADATA.some((key) => metadata?.[key] !== undefined)
+    )
+      automated = true
+  }
+  return automated
+}
+
 /** Newest user message that is not a local command exchange (findLast semantics). */
 export function latestUser<M extends { info: { role: string }; parts?: readonly unknown[] }>(
   messages: Iterable<M>,

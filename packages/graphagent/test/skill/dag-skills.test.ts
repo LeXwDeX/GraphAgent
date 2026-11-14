@@ -416,3 +416,31 @@ describe("dag-patterns", () => {
     expect(patterns).toContain("does not reset budgets or authorize new work")
   })
 })
+
+// #1031 M3: the mode is the routing default, not the model's own judgment.
+describe("DAG mode guidance", () => {
+  test("dag-auto makes orchestration the default while the mode is on", () => {
+    const auto = flat(content("dag-auto"))
+    expect(auto).toContain("## DAG mode")
+    expect(auto).toContain("a substantive request defaults to orchestration")
+    expect(auto).toContain("`/dag-auto` always orchestrates")
+    expect(auto).toContain("the user asked to work directly for this request")
+    expect(auto).toContain("When the block says OFF or is absent")
+    expect(auto).not.toContain("If orchestration adds little value")
+    expect(auto).not.toContain("offer direct execution")
+  })
+
+  test("dag-policy conditions its economy guidance on the mode", () => {
+    const policy = flat(content("dag-policy"))
+    expect(policy).toContain("latest `dag_mode` block")
+    expect(policy).toContain("With the mode OFF")
+    expect(policy).toContain("with it ON, depth follows the evidence")
+  })
+
+  test("dag-recovery lets the mode govern successor work past a terminal graph", () => {
+    const recovery = flat(content("dag-recovery"))
+    expect(recovery).toContain("with DAG mode ON, start a bounded successor workflow")
+    expect(recovery).toContain("with it OFF, start a successor only within a workflow request")
+    expect(recovery).toContain("Never raise a user limit")
+  })
+})
