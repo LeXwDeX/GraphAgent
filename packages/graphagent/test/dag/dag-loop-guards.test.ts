@@ -1031,8 +1031,42 @@ describe("DagLoop settled Stop notification", () => {
           )
           const cancelled = yield* store.getNode(dagID, "n1")
           expect(cancelled?.status).toBe("failed")
-          expect(cancelled?.superseded).toBe(true)
+          // A user control cancellation keeps the row in the current revision.
+          expect(cancelled?.superseded).toBe(false)
           expect(observed).toEqual(["SubagentStart"])
+        }),
+      ),
+    )
+  })
+})
+
+describe("DagLoop control cancel scheduling", () => {
+  it("spawns ready downstream nodes after an optional node is cancelled", async () => {
+    await Effect.runPromise(
+      runGuardTest({ instanceProject: "project-1" }, ({ dag, childPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_project-1",
+            title: "Optional cancel",
+            config: {
+              name: "optional-cancel",
+              nodes: [
+                node({ id: "a", name: "a", required: false }),
+                node({ id: "b", name: "b", depends_on: ["a"], required: false }),
+              ],
+            },
+          })
+          const upstream = yield* takeWithin(childPrompts, "upstream node did not start")
+          expect(upstream.title).toBe("a")
+          // A control cancel of an optional node must reschedule: its
+          // dependent becomes ready, and without a scheduling round the
+          // workflow would stay running forever with a pending ready node.
+          yield* dag.nodeCancelled(dagID, "a", "route changed")
+          const downstream = yield* takeWithin(childPrompts, "downstream node did not start after the cancel")
+          expect(downstream.title).toBe("b")
+          yield* Deferred.succeed(upstream.release, "late")
+          yield* Deferred.succeed(downstream.release, "done")
         }),
       ),
     )

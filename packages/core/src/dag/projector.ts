@@ -61,8 +61,8 @@ export const NodeStatusProjection = {
   // vocabulary has no CANCELLED and getValidNextNodeStatuses never returns it.
   // A cancelled node lands on `failed` with the cancellation carried
   // structurally by `error_class="cancelled"` (D11; `error_reason` keeps the
-  // human-readable "cancelled via replan" text), never on a phantom
-  // node-level "cancelled" status. Workflow-level cancelled
+  // human-readable "cancelled via replan" / "cancelled by agent[: reason]"
+  // text), never on a phantom node-level "cancelled" status. Workflow-level cancelled
   // (WorkflowStatusProjection.cancelled below) is a legitimate, separate
   // terminal — this entry is node-scoped only.
   cancelled: { to: "failed", from: ["pending", "queued", "running"] },
@@ -619,25 +619,29 @@ export const layer = Layer.effectDiscard(
 
     // NodeCancelled carries no independent terminal status: it projects to
     // status="failed" with a STRUCTURED cancellation marker in
-    // error_class="cancelled" (D11) and keeps the human-readable
-    // error_reason "cancelled via replan". It also clears the adjudication
+    // error_class="cancelled" (D11). A replan cancellation is terminal for the
+    // row and leaves the current graph revision (error_reason "cancelled via
+    // replan", superseded=true). An agent control cancellation only ends the
+    // execution attempt: the row stays in the current revision (superseded
+    // stays false, error_reason "cancelled by agent[: reason]") so status and
+    // graph reads still show the cancelled node. Both clear the adjudication
     // flag (cancel is itself an adjudication). A node row can therefore never
-    // hold status="cancelled"; see NodeStatusProjection.cancelled above and
-    // the canonical proof in
+    // hold status="cancelled"; see NodeStatusProjection.cancelled above and the
+    // canonical proof in
     // packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148.
-    //
-    // Rev-view (v1.0.15 Train A): a cancelled node leaves the current graph
-    // revision — the projection also sets the superseded marker so view and
-    // aggregation reads (summaries, status, node lists, rebuild input, wake
-    // attribution) show only the current rev. This covers both plan.cancel
-    // rows and explicit dag.nodeCancelled publishes (U1: shared semantics).
-    yield* project(DagEvent.NodeCancelled, (event) =>
-      db
+    yield* project(DagEvent.NodeCancelled, (event) => {
+      // #1030: rows written before the source field existed decode with an
+      // absent source; a replan was the only producer then.
+      const source = event.data.source ?? "replan"
+      return db
         .update(WorkflowNodeTable)
         .set({
           status: "failed",
-          superseded: true,
-          error_reason: "cancelled via replan",
+          superseded: source === "replan",
+          error_reason:
+            source === "replan"
+              ? "cancelled via replan"
+              : `cancelled by agent${event.data.reason ? `: ${event.data.reason}` : ""}`,
           error_class: ERROR_CLASS_CANCELLED,
           escalation_pending: false,
           seq: event.durable!.seq,
@@ -649,8 +653,8 @@ export const layer = Layer.effectDiscard(
           inArray(WorkflowNodeTable.status, [...NodeStatusProjection.cancelled.from]),
         ))
         .run()
-        .pipe(Effect.orDie),
-    )
+        .pipe(Effect.orDie)
+    })
 
     yield* project(DagEvent.NodeRestarted, (event) =>
       db

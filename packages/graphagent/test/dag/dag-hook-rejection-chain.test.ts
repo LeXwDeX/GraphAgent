@@ -101,7 +101,7 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
         const verifyMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("ISSUE777_VERIFY")
         const reviewMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("ISSUE777_REVIEW")
         yield* llm.toolMatch(({ body }) => JSON.stringify(body).includes("ISSUE777-START"), "workflow", {
-          params: { action: "start", spec_path: spec },
+          params: { action: "run", operation: "start", spec_path: spec },
         })
         yield* llm.pushMatch(
           verifyMatch,
@@ -327,7 +327,7 @@ cliIt.live(
       // /project/trust, so the worker must run with an empty hook chain.
       const workerMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("ISSUE1040_UNTRUSTED")
       yield* llm.toolMatch(({ body }) => JSON.stringify(body).includes("ISSUE1040-START"), "workflow", {
-        params: { action: "start", spec_path: spec },
+        params: { action: "run", operation: "start", spec_path: spec },
       })
       yield* llm.pushMatch(
         workerMatch,

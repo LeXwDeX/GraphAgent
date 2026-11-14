@@ -1458,17 +1458,20 @@ const serviceLayer = Layer.effect(
               const entry = runtimes.get(dagID)
               if (!entry) return
               const nodeID = evt.data.nodeID as string
+              // Attribute the child interruption to the canceller: a replan
+              // owns graph rewrites, an agent control call owns a single
+              // attempt. The projection already distinguishes the two rows.
+              const origin =
+                evt.data.source === "control"
+                  ? childAbort("control-cancel", "parent-control")
+                  : childAbort("replan", "dag-replan")
               yield* entry.evalLock.withPermits(1)(
                 Effect.gen(function* () {
                   const fiber = entry.fibers.get(nodeID)
                   const node = yield* store.getNode(dagID, nodeID)
-                  yield* abortChild(
-                    dagID,
-                    nodeID,
-                    node?.childSessionId ?? null,
-                    "dag.loop.nodeCancelled",
-                    childAbort("replan", "dag-replan"),
-                  ).pipe(Effect.ignore)
+                  yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.nodeCancelled", origin).pipe(
+                    Effect.ignore,
+                  )
                   if (fiber) {
                     yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                     entry.fibers.delete(nodeID)
@@ -1477,6 +1480,12 @@ const serviceLayer = Layer.effect(
                   if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
                   entry.watchers.delete(nodeID)
                   entry.runtime.markUnsatisfied(nodeID)
+                  // A control cancellation can ready an optional node's
+                  // dependents. Without a scheduling round they would stay
+                  // pending and the workflow would remain running forever;
+                  // mirror the NodeFailed handler (spawnReady also converges
+                  // skip cascades before dispatching).
+                  if (!entry.runtime.isStepMode()) yield* spawnReady(dagID)
                   yield* checkCompletion(dagID)
                 }),
               )

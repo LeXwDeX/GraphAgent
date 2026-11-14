@@ -127,7 +127,7 @@ const mixedPlanText = "The workflows are underway."
 const mixedDecisionText = "The checkpoint remains paused pending human approval."
 const mixedFinalMarker = "DAG_MIXED_FINAL_REPORT"
 const mixedFinalAnswer = "DAG_MIXED_FINAL_REPORT_RAW_779D"
-const policyGuideMarker = "blocks: compose explore/plan/prototype/debug/coding/verify/review/synthesize blocks"
+const policyGuideMarker = "wf-mixed-decision.yaml"
 const mixedFinalSpec = `title: cli-mixed-final-report
 config:
   name: cli-mixed-final-report
@@ -274,7 +274,7 @@ describe("opencode run DAG hold (issue 614)", () => {
           yield* llm.pushMatch(
             bodyIncludes(parentPlanMarker),
             reply()
-              .tool("workflow", { params: { action: "start", spec_path: spec } })
+              .tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
               .item(),
           )
           yield* llm.pushMatch(bodyIncludes(parentPlanMarker), reply().text(parentPlanText).stop().item())
@@ -334,7 +334,7 @@ describe("opencode run DAG hold (issue 614)", () => {
             yield* llm.pushMatch(
               bodyIncludes(multiParentMarker),
               reply()
-                .tool("workflow", { params: { action: "start", spec_path: workflow.path } })
+                .tool("workflow", { params: { action: "run", operation: "start", spec_path: workflow.path } })
                 .item(),
             )
           }
@@ -377,13 +377,13 @@ describe("opencode run DAG hold (issue 614)", () => {
         yield* llm.pushMatch(
           bodyIncludes(mixedParentMarker),
           reply()
-            .tool("workflow", { params: { action: "start", spec_path: finalPath } })
+            .tool("workflow", { params: { action: "run", operation: "start", spec_path: finalPath } })
             .item(),
         )
         yield* llm.pushMatch(
           bodyIncludes(mixedParentMarker),
           reply()
-            .tool("workflow", { params: { action: "start", spec_path: decisionPath } })
+            .tool("workflow", { params: { action: "run", operation: "start", spec_path: decisionPath } })
             .item(),
         )
         yield* llm.pushMatch((hit) => {
@@ -393,7 +393,7 @@ describe("opencode run DAG hold (issue 614)", () => {
         yield* llm.pushMatch(
           bodyIncludes("[DAG Node Result"),
           reply()
-            .tool("workflow", { params: { action: "guide" } })
+            .tool("workflow", { params: { action: "spec", operation: "list" } })
             .item(),
         )
         let releaseFinal = () => {}
@@ -463,7 +463,7 @@ describe("opencode run DAG hold (issue 614)", () => {
       Effect.gen(function* () {
         const spec = path.join(home, "wf-s4.yaml")
         yield* writeSpec(home, "wf-s4.yaml", chainSpec)
-        yield* llm.tool("workflow", { params: { action: "start", spec_path: spec } })
+        yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(wakeCompleted, reply().text("wake handled").stop().item())
 
         const result = yield* opencode.run("S4 run the two node chain", { extraArgs: SKIP_PERMISSIONS })
@@ -502,7 +502,7 @@ describe("opencode run DAG hold (issue 614)", () => {
         const released = new Promise<void>((resolve) => {
           release = resolve
         })
-        yield* llm.tool("workflow", { params: { action: "start", spec_path: spec } })
+        yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(bodyIncludes("EARLY-TOKEN"), reply().wait(released).text("turn one done").stop().item())
         yield* llm.pushMatch(wakeCompleted, reply().text("wake handled").stop().item())
 
@@ -537,7 +537,7 @@ describe("opencode run DAG hold (issue 614)", () => {
       Effect.gen(function* () {
         const spec = path.join(home, "wf-fail.yaml")
         yield* writeSpec(home, "wf-fail.yaml", failSpec)
-        yield* llm.tool("workflow", { params: { action: "start", spec_path: spec } })
+        yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(bodyIncludes("[DAG Workflow failed]"), reply().text("failure acknowledged").stop().item())
 
         const result = yield* opencode.run("FAIL-BOUND start the required verdict node", {
@@ -573,7 +573,7 @@ describe("opencode run DAG hold (issue 614)", () => {
         yield* writeSpec(home, "wf-adopt.yaml", checkpointSpec)
         const dbEnv = { GRAPHAGENT_DB: path.join(home, "opencode-adopt-test.db") }
 
-        yield* llm.tool("workflow", { params: { action: "start", spec_path: spec } })
+        yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(
           bodyIncludes("ADOPT-GATE"),
           reply()

@@ -141,6 +141,7 @@ describe("Train A rev-view — projector marking", () => {
         yield* events.publish(DagEvent.NodeCancelled, {
           dagID: DagEvent.DagID.make("dag_rev"),
           nodeID: DagEvent.NodeID.make("n3"),
+          source: "replan",
           timestamp: yield* DateTime.now,
         })
         expect((yield* store.getNode("dag_rev", "n3"))?.superseded).toBe(true)

@@ -546,7 +546,7 @@ describe("spawn worktree isolation", () => {
             const info = yield* WorkflowTool
             const workflow = yield* info.init()
             return yield* workflow.execute(
-              { params: { action: "status", workflow_id: Dag.ID.make("dag_1") } },
+              { params: { action: "inspect", operation: "status", workflow_id: Dag.ID.make("dag_1") } },
               {
                 sessionID: SessionID.make("ses_parent"),
                 messageID: MessageID.ascending(),

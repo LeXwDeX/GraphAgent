@@ -537,7 +537,24 @@ const store = Layer.mock(DagStore.Service, {
   // same rows (none superseded) so legacy expectations stay intact.
   getCurrentNodes: (id: string) => Effect.succeed(mockNodes(id)),
   getNode: (workflowID: string, nodeID: string) =>
-    Effect.succeed(resultNodes.find((node) => node.workflowId === workflowID && node.id === nodeID)),
+    Effect.succeed(
+      resultNodes.find((node) => node.workflowId === workflowID && node.id === nodeID) ??
+        mockNodes(workflowID).find((node) => node.id === nodeID) ??
+        (workflowID === "dag_status" && nodeID === "node_orphan"
+          ? makeNodeRow({
+              id: "node_orphan",
+              workflowId: workflowID,
+              name: "Orphaned writer",
+              status: "failed",
+              required: false,
+              superseded: true,
+              worktreeDirectory: "/repo/.worktrees/status-node-orphan",
+              worktreeBranch: "opencode/dag-status-node-orphan",
+              worktreeState: "active",
+              touchedPaths: ["src/orphan.ts"],
+            })
+          : undefined),
+    ),
 })
 const events = Layer.mock(EventV2Bridge.Service, {
   publishMany: (entries) =>
@@ -604,6 +621,7 @@ const dag = Layer.effect(
       recover: recordingDagMethod("recover", real.recover),
       retarget: recordingDagMethod("retarget", real.retarget),
       extendTimeout: recordingDagMethod("extendTimeout", real.extendTimeout),
+      nodeCancelled: recordingDagMethod("nodeCancelled", real.nodeCancelled),
     })
   }),
 ).pipe(Layer.provide(dagBase))
@@ -871,21 +889,35 @@ function missingCatalogModelProject() {
 }
 
 describe("workflow tool schema (negative tests)", () => {
-  it("action field accepts start/extend/control/status/result/list/read/guide", () => {
+  it("action field accepts the four action groups and their operations", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "start", spec_path: ".agents/workflows/test.yaml" } })).not.toThrow()
     expect(() =>
-      decode({ params: { action: "extend", workflow_id: "dag_wf_1", spec_path: ".agents/workflows/extend.yaml" } }),
+      decode({ params: { action: "run", operation: "start", spec_path: ".agents/workflows/test.yaml" } }),
+    ).not.toThrow()
+    expect(() =>
+      decode({
+        params: {
+          action: "run",
+          operation: "extend",
+          workflow_id: "dag_wf_1",
+          spec_path: ".agents/workflows/extend.yaml",
+        },
+      }),
     ).not.toThrow()
     expect(() => decode({ params: { action: "control", workflow_id: "dag_wf_1", operation: "pause" } })).not.toThrow()
-    expect(() => decode({ params: { action: "status", workflow_id: "dag_wf_1" } })).not.toThrow()
+    expect(() => decode({ params: { action: "inspect", operation: "status", workflow_id: "dag_wf_1" } })).not.toThrow()
     expect(() =>
-      decode({ params: { action: "result", workflow_id: "dag_wf_1", node_id: "node-1", limit: 600 } }),
+      decode({
+        params: { action: "inspect", operation: "result", workflow_id: "dag_wf_1", node_id: "node-1", limit: 600 },
+      }),
     ).not.toThrow()
     // list browses the saved-spec library and needs no workflow_id.
-    expect(() => decode({ params: { action: "list" } })).not.toThrow()
-    expect(() => decode({ params: { action: "read", spec_path: "project-change-route" } })).not.toThrow()
-    expect(() => decode({ params: { action: "guide", topic: "blocks" } })).not.toThrow()
+    expect(() => decode({ params: { action: "spec", operation: "list" } })).not.toThrow()
+    expect(() =>
+      decode({ params: { action: "spec", operation: "read", spec_path: "project-change-route" } }),
+    ).not.toThrow()
+    // The removed guide action no longer decodes.
+    expect(() => decode({ params: { action: "guide", topic: "blocks" } })).toThrow()
   })
 
   it("rejects inline structured specs and JSON-stringified specs", () => {
@@ -897,8 +929,8 @@ describe("workflow tool schema (negative tests)", () => {
       },
     }
 
-    expect(() => decode({ params: { action: "start", spec } })).toThrow()
-    expect(() => decode({ params: { action: "start", spec: JSON.stringify(spec) } })).toThrow()
+    expect(() => decode({ params: { action: "run", operation: "start", spec } })).toThrow()
+    expect(() => decode({ params: { action: "run", operation: "start", spec: JSON.stringify(spec) } })).toThrow()
   })
 
   it("action field rejects unknown actions", () => {
@@ -908,10 +940,12 @@ describe("workflow tool schema (negative tests)", () => {
 
   it("workflow IDs use the durable DAG identity schema", () => {
     const decode = Schema.decodeUnknownSync(Parameters)
-    expect(() => decode({ params: { action: "status", workflow_id: "workflow-1" } })).toThrow()
-    expect(decode({ params: { action: "status", workflow_id: "dag_workflow_1" } })).toMatchObject({
-      params: { workflow_id: "dag_workflow_1" },
-    })
+    expect(() => decode({ params: { action: "inspect", operation: "status", workflow_id: "workflow-1" } })).toThrow()
+    expect(decode({ params: { action: "inspect", operation: "status", workflow_id: "dag_workflow_1" } })).toMatchObject(
+      {
+        params: { workflow_id: "dag_workflow_1" },
+      },
+    )
   })
 
   it("no node_complete action exists", () => {
@@ -1021,7 +1055,8 @@ describe("workflow tool schema (negative tests)", () => {
     expect(() =>
       decode({
         params: {
-          action: "start",
+          action: "run",
+          operation: "start",
           spec_path: ".agents/workflows/deep.yaml",
           mode: "deep",
           admission: admissionFor("READY", "CONSUMED"),
@@ -1032,15 +1067,18 @@ describe("workflow tool schema (negative tests)", () => {
         },
       }),
     ).toThrow()
-    expect(decode({ params: { action: "start", spec_path: ".agents/workflows/deep.yaml" } })).toEqual({
-      params: { action: "start", spec_path: ".agents/workflows/deep.yaml" },
-    })
+    expect(decode({ params: { action: "run", operation: "start", spec_path: ".agents/workflows/deep.yaml" } })).toEqual(
+      {
+        params: { action: "run", operation: "start", spec_path: ".agents/workflows/deep.yaml" },
+      },
+    )
   })
 
   it("draft accepts a structured graph and rejects unknown fields", () => {
     const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
     const draft = {
-      action: "draft",
+      action: "spec",
+      operation: "draft",
       title: "Structured draft",
       config: {
         name: "structured-draft",
@@ -1051,12 +1089,13 @@ describe("workflow tool schema (negative tests)", () => {
         ],
       },
     }
-    expect(decode({ params: draft })).toMatchObject({ params: { action: "draft" } })
+    expect(decode({ params: draft })).toMatchObject({ params: { action: "spec", operation: "draft" } })
     // The high-frequency drift shapes die at the schema boundary.
     expect(() =>
       decode({
         params: {
-          action: "draft",
+          action: "spec",
+          operation: "draft",
           config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker: "general" }] },
         },
       }),
@@ -1064,7 +1103,8 @@ describe("workflow tool schema (negative tests)", () => {
     expect(() =>
       decode({
         params: {
-          action: "draft",
+          action: "spec",
+          operation: "draft",
           config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker_timeout: 5000 }] },
         },
       }),
@@ -1072,13 +1112,14 @@ describe("workflow tool schema (negative tests)", () => {
     expect(() =>
       decode({
         params: {
-          action: "draft",
+          action: "spec",
+          operation: "draft",
           config: { ...draft.config, blocks: [{ id: "x", kind: "coding", worker_config: { foo: 1 } }] },
         },
       }),
     ).toThrow()
-    expect(() => decode({ params: { action: "draft", objective: "top level" } })).toThrow()
-    expect(() => decode({ params: { action: "draft" } })).toThrow()
+    expect(() => decode({ params: { action: "spec", operation: "draft", objective: "top level" } })).toThrow()
+    expect(() => decode({ params: { action: "spec", operation: "draft" } })).toThrow()
   })
 
   it("draft passes mixed blocks+nodes through the schema; the authoring layer rejects them", () => {
@@ -1089,7 +1130,8 @@ describe("workflow tool schema (negative tests)", () => {
     expect(() =>
       decode({
         params: {
-          action: "draft",
+          action: "spec",
+          operation: "draft",
           config: {
             name: "mixed",
             objective: "Both sources at once.",
@@ -1109,7 +1151,10 @@ describe("workflow tool execution", () => {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const exit = yield* workflow
-        .execute({ params: { action: "list" } }, { ...toolContext(), sessionID: SessionID.make("ses_workflow_child") })
+        .execute(
+          { params: { action: "spec", operation: "list" } },
+          { ...toolContext(), sessionID: SessionID.make("ses_workflow_child") },
+        )
         .pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
@@ -1118,7 +1163,7 @@ describe("workflow tool execution", () => {
     }),
   )
 
-  runtime.effect("description keeps tool selection and the guide index; action fields live in the schema", () =>
+  runtime.effect("description keeps tool selection and self-contained routing; action fields live in the schema", () =>
     Effect.gen(function* () {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
@@ -1126,11 +1171,10 @@ describe("workflow tool execution", () => {
       // The resident description no longer carries the per-action field
       // manual — the discriminated parameter schema owns those fields
       // (change repair-workflow-authoring-validation, §7.1).
-      expect(workflow.description).toContain('guide(topic="blocks")')
+      expect(workflow.description).not.toContain('guide(topic="blocks")')
       expect(workflow.description).not.toContain("**start** creates")
       expect(workflow.description).not.toContain("**result** reads")
       expect(workflow.description).toContain("parameter schema")
-      expect(workflow.description).toContain("admission, verdicts and recovery")
       expect(workflow.description).toContain("not a task-category rule")
       expect(workflow.description).toContain("Explicit user instructions take precedence")
       expect(workflow.description).not.toMatch(/even one project\s+file/)
@@ -1138,20 +1182,22 @@ describe("workflow tool execution", () => {
     }),
   )
 
-  runtime.effect("loads detailed workflow guidance by topic instead of in the always-on description", () =>
+  runtime.effect("routing stays self-contained when skills are denied and guide is removed", () =>
     Effect.gen(function* () {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
-      const index = yield* workflow.execute({ params: { action: "guide" } }, toolContext())
-      const blocks = yield* workflow.execute({ params: { action: "guide", topic: "blocks" } }, toolContext())
-
-      // The description is the routing guide alone. Keep a tight entry-form
-      // budget so removed manuals and inline examples cannot creep back in.
-      expect(workflow.description.length).toBeLessThan(2_700)
-      expect(index.output).toContain("blocks: compose")
-      expect(index.output).not.toContain("# Composable Workflow Blocks")
-      expect(blocks.output).toContain("# Composable Workflow Blocks")
-      expect(blocks.output).toContain("kind: coding")
+      // The guide action is gone and the dag-* skills arrive in a later
+      // change: the always-on description alone must carry the minimum route.
+      expect(workflow.description).toContain("`spec`")
+      expect(workflow.description).toContain("`run`")
+      expect(workflow.description).toContain("`inspect`")
+      expect(workflow.description).toContain("`control`")
+      expect(workflow.description).toContain("spec_path")
+      expect(workflow.description).toContain("checkpoints are gates")
+      expect(workflow.description).toContain("parks the workflow paused")
+      expect(workflow.description).toContain("one live DAG")
+      expect(workflow.description).toContain("`agent` tool")
+      expect(workflow.description).not.toMatch(/load .*skill/i)
     }),
   )
 
@@ -1162,7 +1208,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         {
           params: {
-            action: "draft",
+            action: "spec",
+            operation: "draft",
             title: "Draft round trip",
             config: {
               name: "draft-round-trip",
@@ -1185,7 +1232,10 @@ describe("workflow tool execution", () => {
 
       // The rendered file round-trips through the same authoring path start
       // uses, and read returns the authored document with draft content.
-      const read = yield* workflow.execute({ params: { action: "read", spec_path: draftPath } }, toolContext())
+      const read = yield* workflow.execute(
+        { params: { action: "spec", operation: "read", spec_path: draftPath } },
+        toolContext(),
+      )
       const parsed = JSON.parse(read.output)
       expect(parsed.validation.valid).toBe(true)
       expect(parsed.spec.config.name).toBe("draft-round-trip")
@@ -1213,7 +1263,10 @@ describe("workflow tool execution", () => {
           ],
         },
       })
-      const result = yield* workflow.execute({ params: { action: "start", spec_path: specPath } }, toolContext())
+      const result = yield* workflow.execute(
+        { params: { action: "run", operation: "start", spec_path: specPath } },
+        toolContext(),
+      )
       expect(result.title).toContain("Workflow started")
       expect(result.output).toContain("Warning [model.legacy_pin] config.nodes[worker].model")
       expect(published.find((event) => event.type === DagEvent.NodeRegistered.type)?.data).toMatchObject({
@@ -1233,7 +1286,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         decode({
           params: {
-            action: "draft",
+            action: "spec",
+            operation: "draft",
             config: {
               name: "draft-bad-edge",
               objective: "Broken dependency.",
@@ -1261,7 +1315,8 @@ describe("workflow tool execution", () => {
           .execute(
             {
               params: {
-                action: "draft",
+                action: "spec",
+                operation: "draft",
                 config: { name: "protected", nodes: [] },
               },
             },
@@ -1296,7 +1351,7 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const workflow = yield* workflowToolAt(directory)
-      const params = { action: "draft", config: { name: "exclusive", nodes: [] } } as const
+      const params = { action: "spec", operation: "draft", config: { name: "exclusive", nodes: [] } } as const
       const draftArea = workflowDraftsArea(draftProjectID(directory))
       yield* workflow.execute({ params }, toolContext())
       const file = path.join(draftArea, "exclusive.yaml")
@@ -1348,7 +1403,7 @@ describe("workflow tool execution", () => {
         ),
         (mock) => Effect.sync(() => mock.mockRestore()),
       )
-      const params = { action: "draft", config: { name: "recoverable", nodes: [] } } as const
+      const params = { action: "spec", operation: "draft", config: { name: "recoverable", nodes: [] } } as const
       const failed = yield* workflow.execute({ params }, toolContext())
       expect(failed.hookFailure).toContain("disk full while writing")
       expect(failed.title).toContain("not written")
@@ -1395,7 +1450,8 @@ describe("workflow tool execution", () => {
         .execute(
           {
             params: {
-              action: "draft",
+              action: "spec",
+              operation: "draft",
               config: { name: "cancelled-acquisition", nodes: [] },
             },
           },
@@ -1455,7 +1511,8 @@ describe("workflow tool execution", () => {
         .execute(
           {
             params: {
-              action: "draft",
+              action: "spec",
+              operation: "draft",
               config: { name: "cancelled-write", nodes: [] },
             },
           },
@@ -1482,7 +1539,8 @@ describe("workflow tool execution", () => {
         .execute(
           decode({
             params: {
-              action: "draft",
+              action: "spec",
+              operation: "draft",
               config: { name: "../escape", objective: "x", blocks: [{ id: "a", kind: "coding" }] },
             },
           }),
@@ -1491,7 +1549,7 @@ describe("workflow tool execution", () => {
         .pipe(Effect.exit)
       expect(Exit.isFailure(exit)).toBe(true)
 
-      const list = yield* workflow.execute({ params: { action: "list" } }, toolContext())
+      const list = yield* workflow.execute({ params: { action: "spec", operation: "list" } }, toolContext())
       expect(list.output).not.toContain("draft-round-trip")
       expect(list.output).not.toContain("workflow-drafts")
     }),
@@ -1504,7 +1562,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         {
           params: {
-            action: "status",
+            action: "inspect",
+            operation: "status",
             workflow_id: Dag.ID.make("dag_status"),
           },
         },
@@ -1554,7 +1613,7 @@ describe("workflow tool execution", () => {
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
         {
-          params: { action: "status", workflow_id: Dag.ID.make("dag_display") },
+          params: { action: "inspect", operation: "status", workflow_id: Dag.ID.make("dag_display") },
         },
         {
           sessionID: SessionID.make("ses_workflow_parent"),
@@ -1586,7 +1645,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         {
           params: {
-            action: "status",
+            action: "inspect",
+            operation: "status",
             workflow_id: Dag.ID.make("dag_workspace_failed"),
           },
         },
@@ -1612,7 +1672,15 @@ describe("workflow tool execution", () => {
       const decode = Schema.decodeUnknownSync(Parameters)
       const first = JSON.parse(
         (yield* workflow.execute(
-          decode({ params: { action: "result", workflow_id: "dag_result", node_id: "node_result", limit: 600 } }),
+          decode({
+            params: {
+              action: "inspect",
+              operation: "result",
+              workflow_id: "dag_result",
+              node_id: "node_result",
+              limit: 600,
+            },
+          }),
           toolContext(),
         )).output,
       )
@@ -1620,7 +1688,8 @@ describe("workflow tool execution", () => {
         (yield* workflow.execute(
           decode({
             params: {
-              action: "result",
+              action: "inspect",
+              operation: "result",
               workflow_id: "dag_result",
               node_id: "node_result",
               cursor: first.next_cursor,
@@ -1634,7 +1703,8 @@ describe("workflow tool execution", () => {
         (yield* workflow.execute(
           decode({
             params: {
-              action: "result",
+              action: "inspect",
+              operation: "result",
               workflow_id: "dag_result",
               node_id: "node_result",
               cursor: second.next_cursor,
@@ -1663,7 +1733,8 @@ describe("workflow tool execution", () => {
         .execute(
           decode({
             params: {
-              action: "result",
+              action: "inspect",
+              operation: "result",
               workflow_id: "dag_result",
               node_id: "node_other",
               cursor: first.next_cursor,
@@ -1676,7 +1747,8 @@ describe("workflow tool execution", () => {
         .execute(
           decode({
             params: {
-              action: "result",
+              action: "inspect",
+              operation: "result",
               workflow_id: "dag_result",
               node_id: "node_result",
               cursor: "not-a-result-cursor",
@@ -1772,6 +1844,79 @@ describe("workflow tool execution", () => {
     }),
   )
 
+  runtime.effect("checks both group and operation permissions for spec, run, and inspect", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      const cases = [
+        { params: { action: "spec", operation: "list" }, group: "spec", legacy: "list" },
+        {
+          params: { action: "inspect", operation: "status", workflow_id: Dag.ID.make("dag_status") },
+          group: "inspect",
+          legacy: "status",
+        },
+        {
+          params: { action: "run", operation: "start", spec_path: "saved-project" },
+          group: "run",
+          legacy: "start",
+        },
+      ] as const
+      for (const item of cases) {
+        const asked: Array<{ patterns: readonly string[] }> = []
+        yield* workflow
+          .execute(
+            { params: item.params },
+            {
+              ...toolContext(),
+              ask: (request) =>
+                Effect.sync(() => {
+                  asked.push(request)
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+        expect(asked, item.group).toHaveLength(1)
+        // The legacy bare action pattern keeps pre-convergence deny rules
+        // effective (see the legacy-deny regression below).
+        expect(asked[0]?.patterns, item.group).toEqual([
+          item.group,
+          `${item.group}:${item.params.operation}`,
+          item.legacy,
+        ])
+      }
+    }),
+  )
+
+  runtime.effect("legacy action deny rules still reject the converged run action", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      const rules = Permission.fromConfig({ workflow: { "*": "allow", start: "deny" } })
+      const checked: string[] = []
+      const exit = yield* workflow
+        .execute(
+          { params: { action: "run", operation: "start", spec_path: "saved-project" } },
+          {
+            ...toolContext(),
+            ask: (request) =>
+              Effect.gen(function* () {
+                for (const pattern of request.patterns) {
+                  const rule = Permission.evaluate(request.permission, pattern, rules)
+                  checked.push(`${pattern}:${rule.action}`)
+                  if (rule.action === "deny") return yield* Effect.die(new Error("permission denied"))
+                }
+              }),
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      // The old bare action name is asked alongside the new group patterns,
+      // so a configured `workflow: { start: "deny" }` cannot silently allow
+      // run:start through the `*` allow.
+      expect(checked).toEqual(["run:allow", "run:start:allow", "start:deny"])
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("permission denied")
+    }),
+  )
+
   // A spec path is a file read: read/validate echo the parsed document (even
   // for non-workflow YAML) and start/extend/replan consume it, so read deny
   // rules must apply before the file is opened — not only external_directory.
@@ -1780,11 +1925,16 @@ describe("workflow tool execution", () => {
       const specPath = yield* writeWorkflowSpec("read-permission-secret", { secret: "do-not-echo" })
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
-      for (const action of ["read", "validate", "start"] as const) {
+      for (const action of [
+        { action: "spec", operation: "read" },
+        { action: "spec", operation: "validate" },
+        { action: "run", operation: "start" },
+      ] as const) {
+        const label = `${action.action}:${action.operation}`
         const requests: Array<{ permission: string; patterns: readonly string[] }> = []
         const exit = yield* workflow
           .execute(
-            { params: { action, spec_path: specPath } },
+            { params: { ...action, spec_path: specPath } },
             {
               ...toolContext(),
               ask: (request) => {
@@ -1795,14 +1945,14 @@ describe("workflow tool execution", () => {
           )
           .pipe(Effect.exit)
 
-        expect(Exit.isFailure(exit), action).toBe(true)
+        expect(Exit.isFailure(exit), label).toBe(true)
         if (Exit.isFailure(exit)) {
-          expect(Cause.pretty(exit.cause), action).toContain("read denied")
-          expect(Cause.pretty(exit.cause), action).not.toContain("do-not-echo")
+          expect(Cause.pretty(exit.cause), label).toContain("read denied")
+          expect(Cause.pretty(exit.cause), label).not.toContain("do-not-echo")
         }
         expect(
           requests.filter((request) => request.permission === "read"),
-          action,
+          label,
         ).toEqual([expect.objectContaining({ permission: "read", patterns: ["read-permission-secret.yaml"] })])
       }
     }),
@@ -1819,13 +1969,17 @@ describe("workflow tool execution", () => {
       } satisfies Tool.Context
 
       const statusExit = yield* Effect.exit(
-        workflow.execute({ params: { action: "status", workflow_id: Dag.ID.make("dag_status") } }, foreignContext),
+        workflow.execute(
+          { params: { action: "inspect", operation: "status", workflow_id: Dag.ID.make("dag_status") } },
+          foreignContext,
+        ),
       )
       const resultExit = yield* Effect.exit(
         workflow.execute(
           Schema.decodeUnknownSync(Parameters)({
             params: {
-              action: "result",
+              action: "inspect",
+              operation: "result",
               workflow_id: "dag_result",
               node_id: "node_result",
             },
@@ -1835,7 +1989,14 @@ describe("workflow tool execution", () => {
       )
       const extendExit = yield* Effect.exit(
         workflow.execute(
-          { params: { action: "extend", workflow_id: Dag.ID.make("dag_defaults"), spec_path: "foreign.yaml" } },
+          {
+            params: {
+              action: "run",
+              operation: "extend",
+              workflow_id: Dag.ID.make("dag_defaults"),
+              spec_path: "foreign.yaml",
+            },
+          },
           foreignContext,
         ),
       )
@@ -1894,12 +2055,27 @@ describe("workflow tool execution", () => {
         }),
       )
 
+      published.length = 0
+      yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            operation: "cancel_node",
+            workflow_id: Dag.ID.make("dag_status"),
+            node_id: Dag.NodeID.make("node_running"),
+          },
+        },
+        toolContext(),
+      )
+      routed.push(published.find((event) => event.type === DagEvent.NodeCancelled.type)?.type ?? "missing")
+
       expect(routed).toEqual([
         DagEvent.WorkflowPaused.type,
         DagEvent.WorkflowResumed.type,
         DagEvent.WorkflowCancelled.type,
         DagEvent.WorkflowCompleted.type,
         DagEvent.WorkflowStepped.type,
+        DagEvent.NodeCancelled.type,
       ])
     }),
   )
@@ -1961,6 +2137,18 @@ describe("workflow tool execution", () => {
         {
           params: {
             action: "control",
+            workflow_id: Dag.ID.make("dag_status"),
+            operation: "cancel_node",
+            node_id: Dag.NodeID.make("node_running"),
+            reason: "recording",
+          },
+        },
+        toolContext(),
+      )
+      yield* workflow.execute(
+        {
+          params: {
+            action: "control",
             workflow_id: Dag.ID.make("dag_paused"),
             operation: "recover",
             node_ids: [DagEvent.NodeID.make("retry")],
@@ -2005,7 +2193,9 @@ describe("workflow tool execution", () => {
         toolContext(),
       )
       yield* workflow.execute(
-        { params: { action: "extend", workflow_id: Dag.ID.make("dag_status"), spec_path: extendSpec } },
+        {
+          params: { action: "run", operation: "extend", workflow_id: Dag.ID.make("dag_status"), spec_path: extendSpec },
+        },
         toolContext(),
       )
 
@@ -2015,6 +2205,7 @@ describe("workflow tool execution", () => {
         "cancel",
         "complete",
         "step",
+        "cancel_node",
         "recover",
         "retarget",
         "extend_timeout",
@@ -2028,6 +2219,7 @@ describe("workflow tool execution", () => {
         "complete",
         "extend",
         "extendTimeout",
+        "nodeCancelled",
         "pause",
         "recover",
         "replan",
@@ -2207,7 +2399,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         Schema.decodeUnknownSync(Parameters)({
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path,
           },
         }),
@@ -2239,7 +2432,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         Schema.decodeUnknownSync(Parameters)({
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path,
           },
         }),
@@ -2283,7 +2477,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         Schema.decodeUnknownSync(Parameters)({
           params: {
-            action: "extend",
+            action: "run",
+            operation: "extend",
             workflow_id: "dag_defaults",
             spec_path,
           },
@@ -2310,7 +2505,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         Schema.decodeUnknownSync(Parameters)({
           params: {
-            action: "extend",
+            action: "run",
+            operation: "extend",
             workflow_id: "dag_status",
             spec_path,
           },
@@ -2422,7 +2618,8 @@ describe("workflow tool execution", () => {
         .execute(
           Schema.decodeUnknownSync(Parameters)({
             params: {
-              action: "extend",
+              action: "run",
+              operation: "extend",
               workflow_id: "dag_runtime_extend_failure",
               spec_path,
             },
@@ -2525,7 +2722,8 @@ describe("workflow tool execution", () => {
         .execute(
           {
             params: {
-              action: "extend",
+              action: "run",
+              operation: "extend",
               workflow_id: Dag.ID.make("dag_completed"),
               spec_path: specPath,
             },
@@ -2550,9 +2748,8 @@ describe("workflow tool execution", () => {
   runtime.effect("accepts a flat { action } call without the params wrapper", () =>
     Effect.gen(function* () {
       const workflow = yield* (yield* WorkflowTool).init()
-      const result = yield* workflow.execute({ action: "guide", topic: "blocks" } as never, toolContext())
-      expect(result.title).toBe("Workflow guide: blocks")
-      expect(result.output.length).toBeGreaterThan(0)
+      const result = yield* workflow.execute({ action: "spec", operation: "list" } as never, toolContext())
+      expect(result.title.length).toBeGreaterThan(0)
     }),
   )
 
@@ -2583,6 +2780,50 @@ describe("workflow tool execution", () => {
       expect(result.output).toContain('status="not_running"')
       expect(result.metadata.nodeId).toBe(DagEvent.NodeID.make("node_missing"))
       expect(published).toHaveLength(0)
+    }),
+  )
+
+  runtime.effect("cancel_node forwards the reason and warns when a required node is cancelled", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      const workflow = yield* (yield* WorkflowTool).init()
+      const result = yield* workflow.execute(
+        {
+          params: {
+            action: "control",
+            operation: "cancel_node",
+            workflow_id: Dag.ID.make("dag_status"),
+            node_id: Dag.NodeID.make("node_running"),
+            reason: "route changed",
+          },
+        },
+        toolContext(),
+      )
+      expect(result.title).toBe("Workflow node cancelled: node_running")
+      // node_running is required, so the output explains the follow-on failure.
+      expect(result.output).toContain("required")
+      expect(result.output).toContain("workflow fails")
+      const cancelled = published.find((event) => event.type === DagEvent.NodeCancelled.type)
+      expect(cancelled?.data).toMatchObject({ source: "control", reason: "route changed" })
+
+      // A terminal node cannot be cancelled again.
+      const exit = yield* workflow
+        .execute(
+          {
+            params: {
+              action: "control",
+              operation: "cancel_node",
+              workflow_id: Dag.ID.make("dag_status"),
+              node_id: Dag.NodeID.make("node_failed"),
+            },
+          },
+          toolContext(),
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("Cannot transition from terminal state")
+      }
     }),
   )
 
@@ -2642,7 +2883,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         Schema.decodeUnknownSync(Parameters)({
           params: {
-            action: "extend",
+            action: "run",
+            operation: "extend",
             workflow_id: "dag_paused",
             spec_path,
           },
@@ -2663,13 +2905,14 @@ describe("workflow tool execution", () => {
       const cases = [
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec: { config: { name: "ambiguous", nodes: [] } },
             spec_path: "saved-workflow",
           },
         },
         {
-          params: { action: "start" },
+          params: { action: "run", operation: "start" },
         },
       ]
 
@@ -2686,12 +2929,37 @@ describe("workflow tool execution", () => {
         expect(published).toHaveLength(0)
       }
 
-      // Recovery guidance tells the model to move graph content into draft
-      // or a YAML file — never an inline spec field.
+      // Recovery guidance tells the model to move graph content into a spec
+      // file — never an inline spec field.
       const guidance = workflow.formatValidationError?.(new Error("no branch matched")) ?? ""
-      expect(guidance).toContain("start {spec_path}")
-      expect(guidance).toContain("draft {title?, config}")
-      expect(guidance).toContain(".yaml/.yml file")
+      expect(guidance).toContain("run {start|extend}")
+      expect(guidance).toContain("spec {list|read|draft|validate}")
+      expect(guidance).toContain("Put graph content in a spec file")
+    }),
+  )
+
+  runtime.effect("maps legacy action names to the converged call shapes", () =>
+    Effect.gen(function* () {
+      const workflow = yield* (yield* WorkflowTool).init()
+      const cases = [
+        { action: "start", expected: 'action:"run",operation:"start"' },
+        { action: "extend", expected: 'action:"run",operation:"extend"' },
+        { action: "status", expected: 'action:"inspect",operation:"status"' },
+        { action: "result", expected: 'action:"inspect",operation:"result"' },
+        { action: "list", expected: 'action:"spec",operation:"list"' },
+        { action: "read", expected: 'action:"spec",operation:"read"' },
+        { action: "draft", expected: 'action:"spec",operation:"draft"' },
+        { action: "validate", expected: 'action:"spec",operation:"validate"' },
+        { action: "guide", expected: "guide action was removed" },
+        { action: "extend_timeout", expected: 'operation:"extend_timeout"' },
+      ]
+      for (const item of cases) {
+        const input = { params: { action: item.action, workflow_id: "dag_wf_1" } }
+        const text = workflow.formatValidationError?.(new Error("no branch matched"), input) ?? ""
+        expect(text, item.action).toContain(`workflow no longer has a ${item.action} action`)
+        expect(text, item.action).toContain(item.expected)
+        expect(text.length, item.action).toBeLessThan(600)
+      }
     }),
   )
 
@@ -2706,24 +2974,16 @@ describe("workflow tool execution", () => {
         {
           input: {
             params: {
-              action: "draft",
+              action: "spec",
+              operation: "draft",
               config: {
                 name: "large-draft",
                 objective: "prove bounded schema output",
-                nodes: [
-                  {
-                    id: "a",
-                    name: long,
-                    worker_type: "general",
-                    depends_on: [],
-                    prompt_template: { inline: long },
-                  },
-                ],
-                blocks: [{ id: "b", kind: "explore" }],
+                blocks: [{ id: "b", kind: "explore", worker: long }],
               },
             },
           },
-          expected: "draft config expects",
+          expected: "workflow call rejected",
         },
         {
           input: {
@@ -2771,7 +3031,8 @@ describe("workflow tool execution", () => {
         ask: () => Effect.void,
       }
       const params = {
-        action: "draft",
+        action: "spec",
+        operation: "draft",
         config: {
           name: "test",
           nodes: [
@@ -2811,10 +3072,11 @@ describe("workflow tool execution", () => {
       expect(decoded._tag).toBe("Success")
       if (
         decoded._tag === "Success" &&
-        decoded.success.params.action === "draft" &&
+        decoded.success.params.action === "spec" &&
+        decoded.success.params.operation === "draft" &&
         "nodes" in decoded.success.params.config
       )
-        expect(decoded.success.params.config.nodes[0].input_mapping).toEqual({ source: "value" })
+        expect(decoded.success.params.config.nodes?.[0].input_mapping).toEqual({ source: "value" })
     }),
   )
 
@@ -2835,7 +3097,8 @@ describe("workflow tool execution", () => {
       const result = yield* workflow.execute(
         {
           params: {
-            action: "status",
+            action: "inspect",
+            operation: "status",
             workflow_id: Dag.ID.make("dag_deep_status"),
           },
         },
@@ -2904,7 +3167,8 @@ config:
         .execute(
           {
             params: {
-              action: "start",
+              action: "run",
+              operation: "start",
               spec_path: "deep.yaml",
             },
           },
@@ -2953,7 +3217,8 @@ config:
       const result = yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: "deep.yaml",
           },
         },
@@ -2989,7 +3254,8 @@ config:
         .execute(
           {
             params: {
-              action: "start",
+              action: "run",
+              operation: "start",
               spec_path: specPath,
             },
           },
@@ -3029,7 +3295,8 @@ config:
       const result = yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: specPath,
           },
         },
@@ -3068,7 +3335,8 @@ config:
       const result = yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: "missing-model.yaml",
           },
         },
@@ -3104,7 +3372,8 @@ config:
       const result = yield* workflow.execute(
         {
           params: {
-            action: "validate",
+            action: "spec",
+            operation: "validate",
             spec_path: "missing-model.yaml",
             profile: "environment",
           },
@@ -3134,7 +3403,8 @@ config:
       const result = yield* workflow.execute(
         {
           params: {
-            action: "validate",
+            action: "spec",
+            operation: "validate",
             spec_path: "missing-catalog-model.yaml",
             profile: "environment",
           },
@@ -3148,7 +3418,7 @@ config:
         expect.objectContaining({ code: "model.unavailable", path: "nodes[worker]" }),
       )
       const started = yield* workflow.execute(
-        { params: { action: "start", spec_path: "missing-catalog-model.yaml" } },
+        { params: { action: "run", operation: "start", spec_path: "missing-catalog-model.yaml" } },
         toolContext(),
       )
       expect(started.title).toBe("Workflow not started: model required")
@@ -3179,7 +3449,14 @@ config:
 
       const extendExit = yield* workflow
         .execute(
-          { params: { action: "extend", workflow_id: Dag.ID.make("dag_paused"), spec_path: extendPath } },
+          {
+            params: {
+              action: "run",
+              operation: "extend",
+              workflow_id: Dag.ID.make("dag_paused"),
+              spec_path: extendPath,
+            },
+          },
           toolContext(),
         )
         .pipe(Effect.exit)
@@ -3222,7 +3499,14 @@ config:
       yield* Effect.promise(() => Bun.write(extendPath, JSON.stringify({ nodes: [node] })))
 
       const extended = yield* workflow.execute(
-        { params: { action: "extend", workflow_id: Dag.ID.make("dag_defaults"), spec_path: extendPath } },
+        {
+          params: {
+            action: "run",
+            operation: "extend",
+            workflow_id: Dag.ID.make("dag_defaults"),
+            spec_path: extendPath,
+          },
+        },
         toolContext(),
       )
       const replanned = yield* workflow.execute(
@@ -3276,7 +3560,8 @@ config:
       yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: specPath,
           },
         },
@@ -3329,7 +3614,8 @@ config:
       yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: specPath,
           },
         },
@@ -3405,7 +3691,8 @@ config:
           .execute(
             {
               params: {
-                action: "start",
+                action: "run",
+                operation: "start",
                 spec_path: specPath,
               },
             },
@@ -3450,7 +3737,8 @@ config:
       yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: specPath,
           },
         },
@@ -3509,7 +3797,8 @@ config:
       yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: specPath,
           },
         },
@@ -3577,7 +3866,8 @@ config:
       yield* workflow.execute(
         {
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             spec_path: specPath,
           },
         },
@@ -3627,7 +3917,8 @@ config:
       yield* workflow.execute(
         {
           params: {
-            action: "extend",
+            action: "run",
+            operation: "extend",
             workflow_id: Dag.ID.make("dag_defaults"),
             spec_path: specPath,
           },
@@ -3736,7 +4027,8 @@ config:
       expect(() =>
         decode({
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             project_id: "project_other",
             spec_path: "project-id-mismatch.yaml",
           },
@@ -3751,7 +4043,8 @@ config:
       expect(() =>
         decode({
           params: {
-            action: "start",
+            action: "run",
+            operation: "start",
             session_id: "ses_other_parent",
             spec_path: "foreign-parent.yaml",
           },
@@ -3821,7 +4114,7 @@ describe("workflow tool saved workflows", () => {
         const asked: unknown[] = []
 
         const result = yield* workflow.execute(
-          { params: { action: "read", spec_path: "saved-readable" } },
+          { params: { action: "spec", operation: "read", spec_path: "saved-readable" } },
           contextWith(asked),
         )
 
@@ -3835,7 +4128,9 @@ describe("workflow tool saved workflows", () => {
           },
         })
         expect(payload.validation.valid).toBe(true)
-        expect(asked).toEqual([expect.objectContaining({ permission: "workflow", patterns: ["read"] })])
+        expect(asked).toEqual([
+          expect.objectContaining({ permission: "workflow", patterns: ["spec", "spec:read", "read"] }),
+        ])
         expect(published).toHaveLength(0)
       }),
     ),
@@ -3856,13 +4151,15 @@ describe("workflow tool saved workflows", () => {
         const asked: unknown[] = []
 
         const result = yield* workflow.execute(
-          { params: { action: "start", spec_path: "saved-project" } },
+          { params: { action: "run", operation: "start", spec_path: "saved-project" } },
           contextWith(asked),
         )
 
         expect(result.output).toContain('state="running"')
         expect(result.title).toBe("Workflow started: saved-project")
-        expect(asked).toEqual([expect.objectContaining({ permission: "workflow", patterns: ["start"] })])
+        expect(asked).toEqual([
+          expect.objectContaining({ permission: "workflow", patterns: ["run", "run:start", "start"] }),
+        ])
       }),
     ),
   )
@@ -3879,14 +4176,16 @@ describe("workflow tool saved workflows", () => {
         const asked: unknown[] = []
 
         const result = yield* workflow.execute(
-          { params: { action: "start", spec_path: "saved-global" } },
+          { params: { action: "run", operation: "start", spec_path: "saved-global" } },
           contextWith(asked),
         )
 
         expect(result.title).toBe("Workflow started: saved-global")
         // The library's two scopes are curated config, so a resolved name never
         // asks for external-directory permission.
-        expect(asked).toEqual([expect.objectContaining({ permission: "workflow", patterns: ["start"] })])
+        expect(asked).toEqual([
+          expect.objectContaining({ permission: "workflow", patterns: ["run", "run:start", "start"] }),
+        ])
       }),
     ),
   )
@@ -3898,7 +4197,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
         const exit = yield* workflow
-          .execute({ params: { action: "start", spec_path: "not-saved" } }, contextWith([]))
+          .execute({ params: { action: "run", operation: "start", spec_path: "not-saved" } }, contextWith([]))
           .pipe(Effect.exit)
 
         expect(Exit.isFailure(exit)).toBe(true)
@@ -3933,7 +4232,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "spec", operation: "list" } }, contextWith([]))
 
         expect(result.output).toContain("shared [project] — project-shared title")
         expect(result.output).toContain("global-only [global] — global-only title")
@@ -3954,7 +4253,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "spec", operation: "list" } }, contextWith([]))
 
         expect(result.title).toBe("No saved workflows")
         expect(result.output).toContain(path.join(workflowSpecDirectory, ".agents", "workflows"))
@@ -3976,7 +4275,8 @@ describe("workflow tool saved workflows", () => {
       const result = yield* workflow.execute(
         {
           params: {
-            action: "validate",
+            action: "spec",
+            operation: "validate",
             profile: "portable",
             spec_path,
           },
@@ -4023,7 +4323,8 @@ describe("workflow tool saved workflows", () => {
       const result = yield* workflow.execute(
         {
           params: {
-            action: "validate",
+            action: "spec",
+            operation: "validate",
             profile: "environment",
             spec_path,
           },
@@ -4069,21 +4370,21 @@ describe("workflow tool saved workflows", () => {
 
           // project beats global
           const projectRead = yield* workflow.execute(
-            { params: { action: "read", spec_path: "shared-route" } },
+            { params: { action: "spec", operation: "read", spec_path: "shared-route" } },
             contextWith([]),
           )
           expect(JSON.parse(projectRead.output).spec.title).toContain("project-route")
 
           // global fills names the project scope does not own
           const globalRead = yield* workflow.execute(
-            { params: { action: "read", spec_path: "builtin-shadowed" } },
+            { params: { action: "spec", operation: "read", spec_path: "builtin-shadowed" } },
             contextWith([]),
           )
           expect(JSON.parse(globalRead.output).spec.title).toContain("file-route")
 
           // builtin fills names no file scope owns
           const builtinValidate = yield* workflow.execute(
-            { params: { action: "validate", spec_path: "builtin-only-route" } },
+            { params: { action: "spec", operation: "validate", spec_path: "builtin-only-route" } },
             contextWith([]),
           )
           const builtinResult = JSON.parse(builtinValidate.output)
@@ -4095,7 +4396,8 @@ describe("workflow tool saved workflows", () => {
           const pathValidate = yield* workflow.execute(
             {
               params: {
-                action: "validate",
+                action: "spec",
+                operation: "validate",
                 spec_path: "path-route.yaml",
               },
             },
@@ -4110,12 +4412,12 @@ describe("workflow tool saved workflows", () => {
           // start succeeds from the same name, and mutating the file changes
           // both views consistently.
           const beforeStart = yield* workflow.execute(
-            { params: { action: "validate", spec_path: "shared-route" } },
+            { params: { action: "spec", operation: "validate", spec_path: "shared-route" } },
             contextWith([]),
           )
           expect(JSON.parse(beforeStart.output).valid).toBe(true)
           const started = yield* workflow.execute(
-            { params: { action: "start", spec_path: "shared-route" } },
+            { params: { action: "run", operation: "start", spec_path: "shared-route" } },
             contextWith([]),
           )
           expect(started.title).toBe("Workflow started: project-route")
@@ -4146,21 +4448,24 @@ describe("workflow tool saved workflows", () => {
 
           // the synthetic builtin:// marker resolves by name through the library
           const builtinRead = yield* workflow.execute(
-            { params: { action: "read", spec_path: "builtin://marker-builtin" } },
+            { params: { action: "spec", operation: "read", spec_path: "builtin://marker-builtin" } },
             contextWith([]),
           )
           expect(JSON.parse(builtinRead.output).spec.title).toContain("marker-builtin-route")
 
           // the marker resolves through the same shadowing chain as a bare name
           const shadowed = yield* workflow.execute(
-            { params: { action: "validate", spec_path: "builtin://marker-route" } },
+            { params: { action: "spec", operation: "validate", spec_path: "builtin://marker-route" } },
             contextWith([]),
           )
           expect(JSON.parse(shadowed.output).source).toBe(path.join(globalDir, "workflows", "marker-route.yaml"))
 
           // unknown builtin names fail as a library lookup, not a path extension error
           const missingExit = yield* Effect.exit(
-            workflow.execute({ params: { action: "read", spec_path: "builtin://missing-route" } }, contextWith([])),
+            workflow.execute(
+              { params: { action: "spec", operation: "read", spec_path: "builtin://missing-route" } },
+              contextWith([]),
+            ),
           )
           expect(Exit.isFailure(missingExit)).toBe(true)
           if (Exit.isFailure(missingExit)) {
@@ -4189,7 +4494,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "spec", operation: "list" } }, contextWith([]))
 
         expect(result.output).toContain("broken-route [global] [invalid — not startable]")
         expect(result.output).toContain("block.compile_failed")
@@ -4213,7 +4518,7 @@ describe("workflow tool saved workflows", () => {
         const workflow = yield* info.init()
 
         const result = yield* workflow.execute(
-          { params: { action: "read", spec_path: "uncompilable-route" } },
+          { params: { action: "spec", operation: "read", spec_path: "uncompilable-route" } },
           contextWith([]),
         )
 
@@ -4245,7 +4550,7 @@ describe("workflow tool saved workflows", () => {
         const info = yield* WorkflowTool
         const workflow = yield* info.init()
 
-        const result = yield* workflow.execute({ params: { action: "list" } }, contextWith([]))
+        const result = yield* workflow.execute({ params: { action: "spec", operation: "list" } }, contextWith([]))
 
         expect(result.output).toContain("broken-syntax [global] [invalid — not startable]")
         expect(result.output).toContain("[schema.invalid]")
@@ -4264,7 +4569,7 @@ describe("workflow tool saved workflows", () => {
         const workflow = yield* info.init()
 
         const result = yield* workflow.execute(
-          { params: { action: "validate", spec_path: "broken-validate", profile: "portable" } },
+          { params: { action: "spec", operation: "validate", spec_path: "broken-validate", profile: "portable" } },
           contextWith([]),
         )
 

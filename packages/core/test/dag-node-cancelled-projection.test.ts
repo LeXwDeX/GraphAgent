@@ -7,13 +7,15 @@
  *
  * NodeCancelled has NO independent terminal status. It projects to
  * `status="failed"` carrying the cancellation marker in `error_reason`
- * ("cancelled via replan") and clears `escalation_pending` (cancel is an
- * adjudication). The NodeStatus enum has no CANCELLED value and
- * getValidNextNodeStatuses never returns cancelled, so a node row can never
- * hold status="cancelled". This test exercises the real projector SQL
- * (projector.ts NodeCancelled handler) end-to-end at the core layer so the
- * semantic cannot silently drift back to a phantom node-level "cancelled"
- * status.
+ * ("cancelled via replan" or "cancelled by agent[: reason]") and clears
+ * `escalation_pending` (cancel is an adjudication). The NodeStatus enum has no
+ * CANCELLED value and getValidNextNodeStatuses never returns cancelled, so a
+ * node row can never hold status="cancelled". The `source` payload decides
+ * revision membership: replan cancellations are superseded (they leave the
+ * current graph revision), control cancellations stay current so status and
+ * graph reads still show the cancelled node. This test exercises the real
+ * projector SQL (projector.ts NodeCancelled handler) end-to-end at the core
+ * layer so neither semantic can silently drift.
  *
  * The end-to-end canonical proof lives in
  * packages/graphagent/test/dag/dag-escalation-clear-flag.test.ts:130-148; this
@@ -42,75 +44,159 @@ function projectorLayer() {
 function seed() {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
-    yield* db.insert(ProjectTable).values({
-      id: "project-1" as never,
-      worktree: process.cwd() as never,
-      sandboxes: [],
-    }).run().pipe(Effect.orDie)
-    yield* db.insert(SessionTable).values({
-      id: "ses_parent" as never,
-      project_id: "project-1" as never,
-      slug: "parent",
-      directory: process.cwd() as never,
-      title: "Parent",
-      version: "test",
-    }).run().pipe(Effect.orDie)
-    yield* db.insert(WorkflowTable).values({
-      id: "dag_cancel",
-      project_id: "project-1" as never,
-      session_id: "ses_parent" as never,
-      title: "Cancel projection",
-      status: "running",
-      config: "{}",
-      seq: 1,
-      wake_reported: false,
-      directory: "/project",
-      target_fingerprint: { kind: "none" },
-    }).run().pipe(Effect.orDie)
-    yield* db.insert(WorkflowNodeTable).values({
-      id: "n1",
-      workflow_id: "dag_cancel",
-      name: "N1",
-      worker_type: "build",
-      status: "running",
-      required: true,
-      depends_on: [],
-      wake_eligible: false,
-      wake_reported: false,
-      // Pre-set an adjudication flag so the projection's clear is observable.
-      escalation_pending: true,
-      seq: 1,
-    }).run().pipe(Effect.orDie)
+    yield* db
+      .insert(ProjectTable)
+      .values({
+        id: "project-1" as never,
+        worktree: process.cwd() as never,
+        sandboxes: [],
+      })
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id: "ses_parent" as never,
+        project_id: "project-1" as never,
+        slug: "parent",
+        directory: process.cwd() as never,
+        title: "Parent",
+        version: "test",
+      })
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(WorkflowTable)
+      .values({
+        id: "dag_cancel",
+        project_id: "project-1" as never,
+        session_id: "ses_parent" as never,
+        title: "Cancel projection",
+        status: "running",
+        config: "{}",
+        seq: 1,
+        wake_reported: false,
+        directory: "/project",
+        target_fingerprint: { kind: "none" },
+      })
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(WorkflowNodeTable)
+      .values([
+        {
+          id: "n1",
+          workflow_id: "dag_cancel",
+          name: "N1",
+          worker_type: "build",
+          status: "running",
+          required: true,
+          depends_on: [],
+          wake_eligible: false,
+          wake_reported: false,
+          // Pre-set an adjudication flag so the projection's clear is observable.
+          escalation_pending: true,
+          seq: 1,
+        },
+        {
+          id: "n2",
+          workflow_id: "dag_cancel",
+          name: "N2",
+          worker_type: "build",
+          status: "running",
+          required: true,
+          depends_on: [],
+          wake_eligible: false,
+          wake_reported: false,
+          escalation_pending: true,
+          seq: 1,
+        },
+      ])
+      .run()
+      .pipe(Effect.orDie)
   })
 }
 
 describe("NodeCancelled projection (no phantom node-level cancelled status)", () => {
-  test("projects NodeCancelled to status=failed + error_class='cancelled' and clears escalation_pending", async () => {
+  test("replan and control cancels share failed+error_class and differ on revision membership", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         yield* seed()
         const events = yield* EventV2.Service
         const store = yield* DagStore.Service
 
+        // Replan cancellation: leaves the current graph revision.
         yield* events.publish(DagEvent.NodeCancelled, {
           dagID: DagEvent.DagID.make("dag_cancel"),
           nodeID: DagEvent.NodeID.make("n1"),
+          source: "replan",
+          timestamp: yield* DateTime.now,
+        })
+        // Agent control cancellation: keeps the row in the current revision
+        // and records the audit reason.
+        yield* events.publish(DagEvent.NodeCancelled, {
+          dagID: DagEvent.DagID.make("dag_cancel"),
+          nodeID: DagEvent.NodeID.make("n2"),
+          source: "control",
+          reason: "route changed",
           timestamp: yield* DateTime.now,
         })
 
-        const row = yield* store.getNode("dag_cancel", "n1")
+        const replanned = yield* store.getNode("dag_cancel", "n1")
         // NodeCancelled has no independent terminal status: it lands on failed
         // with the cancellation carried by the structured error_class marker
         // (D12), never status="cancelled".
-        expect(row?.status).toBe("failed")
-        expect(row?.errorClass).toBe("cancelled")
-        expect(row?.errorReason).toBe("cancelled via replan")
-        // Cancel is an adjudication — the pending-escalation flag must clear.
-        expect(row?.escalationPending).toBe(false)
-        // The cancelled row is superseded, so the current-revision view (and
-        // therefore wake attribution) never sees it.
-        expect(row?.superseded).toBe(true)
-        expect((yield* store.getCurrentNodes("dag_cancel")).map((node) => node.id)).toEqual([])
+        expect(replanned?.status).toBe("failed")
+        expect(replanned?.errorClass).toBe("cancelled")
+        expect(replanned?.errorReason).toBe("cancelled via replan")
+        expect(replanned?.superseded).toBe(true)
+        expect(replanned?.escalationPending).toBe(false)
+
+        const controlled = yield* store.getNode("dag_cancel", "n2")
+        expect(controlled?.status).toBe("failed")
+        expect(controlled?.errorClass).toBe("cancelled")
+        expect(controlled?.errorReason).toBe("cancelled by agent: route changed")
+        expect(controlled?.superseded).toBe(false)
+        expect(controlled?.escalationPending).toBe(false)
+
+        // The current-revision view drops the replan row and keeps the
+        // control-cancelled one.
+        expect((yield* store.getCurrentNodes("dag_cancel")).map((node) => node.id)).toEqual(["n2"])
+      }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
+    )
+  })
+
+  test("a legacy payload without source decodes and projects as a replan cancellation", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed()
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+
+        // Rows written before #1030 carry no `source`. Optional decoding must
+        // keep them replayable, and the absent source keeps its old meaning:
+        // a replan cancellation that leaves the current graph revision.
+        const replayed = yield* events.replayAll([
+          {
+            id: EventV2.ID.create(),
+            type: EventV2.versionedType(DagEvent.NodeCancelled.type, DagEvent.NodeCancelled.durable!.version),
+            seq: 0,
+            aggregateID: "dag_cancel",
+            data: {
+              dagID: "dag_cancel",
+              nodeID: "n1",
+              timestamp: Date.now(),
+            },
+          },
+        ])
+        expect(replayed).toBe("dag_cancel")
+
+        const legacy = yield* store.getNode("dag_cancel", "n1")
+        expect(legacy?.status).toBe("failed")
+        expect(legacy?.errorClass).toBe("cancelled")
+        expect(legacy?.errorReason).toBe("cancelled via replan")
+        expect(legacy?.superseded).toBe(true)
+        expect(legacy?.escalationPending).toBe(false)
       }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
     )
   })

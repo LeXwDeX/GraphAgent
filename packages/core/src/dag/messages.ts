@@ -189,7 +189,14 @@ type Node = {
   status: string
   superseded: number
   replan_attempts: number
+  /** Present for full node rows; the endpoint query selects it for
+   * cancellation settlement. */
+  error_class?: string | null
 }
+/** NodeCancelled marks both replan (superseded) and control (current-rev)
+ * cancellations; queued input for either attempt is closed as "cancelled". */
+const cancelledNode = (node: Node | undefined) =>
+  !!node && (!!node.superseded || node.error_class === "cancelled")
 type Session = { id: string; project_id: string; directory: string; time_created: number; parent_id: string | null }
 /** The node columns needed to derive a node mailbox endpoint. */
 export type NodeRef = {
@@ -713,7 +720,7 @@ export const layer = Layer.effect(
                         finalReason ??
                           (n && attempt(n) !== box.attempt_id
                             ? "attempt_replaced"
-                            : n?.superseded
+                            : cancelledNode(n)
                               ? "cancelled"
                               : "closed"),
                         changes,
@@ -1161,7 +1168,7 @@ export const layer = Layer.effect(
                   [b],
                   n && attempt(n) !== b.attempt_id
                     ? "attempt_replaced"
-                    : wf?.status === "cancelled" || n?.superseded
+                    : wf?.status === "cancelled" || cancelledNode(n)
                       ? "cancelled"
                       : "closed",
                   changes,

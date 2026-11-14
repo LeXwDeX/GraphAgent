@@ -53,10 +53,6 @@ function workflowDescriptions(inputs: readonly Record<string, unknown>[]) {
   return descriptions
 }
 
-function includesExactContent(value: string) {
-  return (hit: { body: unknown }) => strings(hit.body).some((item) => item.includes(value))
-}
-
 function turnIncludes(value: string) {
   return (hit: { body: unknown }) => {
     const body = JSON.stringify(hit.body)
@@ -112,65 +108,29 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
   )
 
   cliIt.concurrent(
-    "loads the exact workflow routing description and all resident guides",
+    "sends the exact workflow routing description and the converged action schema",
     ({ llm, opencode, target: resolvedTarget }) =>
       Effect.gen(function* () {
         const marker = "DAG_GUIDES_ROUTE_SENTINEL"
-        const guides = [
-          ["blocks", CommandPlugin.WorkflowBlocksContent],
-          ["interface", CommandPlugin.WorkflowFactsContent],
-          ["policy", CommandPlugin.OrchestrationPolicyContent],
-          ["patterns", CommandPlugin.OrchestrationDomainsContent],
-        ] as const
 
-        yield* llm.pushMatch(
-          turnIncludes(marker),
-          reply()
-            .tool("workflow", { params: { action: "guide", topic: "blocks" } })
-            .item(),
-        )
-        yield* llm.pushMatch(
-          includesExactContent(CommandPlugin.WorkflowBlocksContent),
-          reply()
-            .tool("workflow", { params: { action: "guide", topic: "interface" } })
-            .item(),
-        )
-        yield* llm.pushMatch(
-          includesExactContent(CommandPlugin.WorkflowFactsContent),
-          reply()
-            .tool("workflow", { params: { action: "guide", topic: "policy" } })
-            .item(),
-        )
-        yield* llm.pushMatch(
-          includesExactContent(CommandPlugin.OrchestrationPolicyContent),
-          reply()
-            .tool("workflow", { params: { action: "guide", topic: "patterns" } })
-            .item(),
-        )
-        yield* llm.pushMatch(
-          includesExactContent(CommandPlugin.OrchestrationDomainsContent),
-          reply().text("workflow guides loaded").stop().item(),
-        )
+        // The guide action is gone: the resident routing description alone
+        // carries the four action groups, and the tool schema carries the
+        // per-operation branches.
+        yield* llm.pushMatch(turnIncludes(marker), reply().text("workflow routing loaded").stop().item())
 
         const result = yield* opencode.run(marker, { extraArgs: ["--dangerously-skip-permissions"] })
         const requests = yield* llm.inputs
-        const requestStrings = strings(requests)
+        const serialized = JSON.stringify(requests)
 
-        yield* recordEvidence("workflow-guides", {
+        yield* recordEvidence("workflow-routing", {
           target: resolvedTarget,
           result,
           requests,
-          expected: {
-            workflowRoutingSha256: sha256(CommandPlugin.WorkflowContent),
-            workflowBlocksSha256: sha256(CommandPlugin.WorkflowBlocksContent),
-            workflowInterfaceSha256: sha256(CommandPlugin.WorkflowFactsContent),
-            orchestrationPolicySha256: sha256(CommandPlugin.OrchestrationPolicyContent),
-            orchestrationDomainsSha256: sha256(CommandPlugin.OrchestrationDomainsContent),
-          },
+          expected: { workflowRoutingSha256: sha256(CommandPlugin.WorkflowContent) },
         })
         opencode.expectExit(result, 0)
         expect(result.target).toEqual(resolvedTarget)
-        expect(result.stdout).toBe("workflow guides loaded\n")
+        expect(result.stdout).toBe("workflow routing loaded\n")
         expect(
           workflowDescriptions(requests).some((description) => {
             if (!description.startsWith(CommandPlugin.WorkflowContent)) return false
@@ -179,9 +139,11 @@ describe.skipIf(!enabled)("DAG resident prompts in a CLI target", () => {
             return suffix === "" || suffix.startsWith(`${separator}Available workflow worker_type values:\n`)
           }),
         ).toBe(true)
-        for (const [, content] of guides) {
-          expect(requestStrings.some((value) => value.includes(content))).toBe(true)
+        for (const action of ["spec", "run", "inspect", "control"]) {
+          expect(serialized).toContain(`"enum":["${action}"]`)
         }
+        expect(serialized).toContain('"operation"')
+        expect(serialized).not.toContain('"enum":["guide"]')
       }),
     180_000,
   )

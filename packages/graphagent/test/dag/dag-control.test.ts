@@ -109,6 +109,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       record("complete", args)
       return options.complete?.(args[0] as string) ?? Effect.void
     }) as Dag.Interface["complete"],
+    nodeCancelled: ((...args: unknown[]) => {
+      record("nodeCancelled", args)
+      return Effect.void
+    }) as Dag.Interface["nodeCancelled"],
     replan: ((...args: unknown[]) => {
       record("replan", args)
       const [dagID, fragment] = args as [string, { nodes: NodeConfig[] }]
@@ -232,6 +236,15 @@ describe("DagControl.apply — request mapping", () => {
         yield* control.apply(workflowID, { op: "complete" }, caller)
         // `complete` must not expose or forward options from this boundary.
         expect(harness.calls[1]).toEqual({ method: "complete", args: [workflowID] })
+
+        reset(harness)
+        const cancelNodeOutcome = yield* control.apply(
+          workflowID,
+          { op: "cancel_node", nodeID: "a", reason: "route changed" },
+          caller,
+        )
+        expect(cancelNodeOutcome).toEqual({ op: "cancel_node", workflowID, nodeID: "a" })
+        expect(harness.calls[1]).toEqual({ method: "nodeCancelled", args: [workflowID, "a", "route changed"] })
       }),
     )
   })
