@@ -16,6 +16,12 @@
  * gating (the workflow tool). A request only describes an operation; prepared
  * graphs are authoring's output, passed through unchanged.
  *
+ * Workflow-level worktree isolation (#1030 D9-g) is a create-time binding:
+ * `Dag.retarget` and the additive reopen of a completed isolated workflow are
+ * rejected by `Dag` and surface through the normal rejection/park protocol.
+ * Terminal settlement (commit/patch/remove-or-keep) is owned by `DagLoop`'s
+ * terminal handler; E1b (#1029) reuses the same `settleWorkflowWorktree` seam.
+ *
  * Lock discipline: `Dag` commands acquire the non-reentrant per-workflow
  * KeyedMutex themselves. This service never calls `Dag` while a mutation is
  * still in flight; the parking readback and the post-mutation resume run only

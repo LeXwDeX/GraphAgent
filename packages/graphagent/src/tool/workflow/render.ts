@@ -201,6 +201,29 @@ export function renderStatus(input: {
       isolated: node.worktreeState != null,
     })),
   )
+  // #1030 D9-g: the workflow-level worktree. Before settlement the durable
+  // config carries the live pointer; after settlement the read-model row
+  // carries the final commit/patch evidence.
+  const workflowWorktree = workflow.worktree
+    ? {
+        directory: workflow.worktree.directory,
+        ...(workflow.worktree.branch ? { branch: workflow.worktree.branch } : {}),
+        ...(workflow.worktree.baseHead ? { base: workflow.worktree.baseHead } : {}),
+        ...(workflow.worktree.head ? { head: workflow.worktree.head } : {}),
+        ...(workflow.worktree.patchPath ? { patch: workflow.worktree.patchPath } : {}),
+        ...(workflow.worktree.patchSha256 ? { patch_sha256: workflow.worktree.patchSha256 } : {}),
+        ...(workflow.worktree.touchedPaths.length > 0 ? { touched_paths: workflow.worktree.touchedPaths } : {}),
+        state: workflow.worktree.state,
+        ...(workflow.worktree.reason ? { reason: workflow.worktree.reason } : {}),
+      }
+    : config?.worktree
+      ? {
+          directory: config.worktree.directory,
+          ...(config.worktree.branch ? { branch: config.worktree.branch } : {}),
+          ...(config.worktree.baseHead ? { base: config.worktree.baseHead } : {}),
+          state: "active" as const,
+        }
+      : undefined
   return {
     title: `Workflow status: ${workflow.title}`,
     output: JSON.stringify(
@@ -212,6 +235,8 @@ export function renderStatus(input: {
         ...(workflow.pauseReason ? { pause_reason: workflow.pauseReason } : {}),
         ...(failureReason ? { failure_reason: failureReason } : {}),
         ...(workflow.targetFingerprint ? { target_fingerprint: workflow.targetFingerprint } : {}),
+        ...(config?.isolation ? { isolation: config.isolation } : {}),
+        ...(workflowWorktree ? { worktree: workflowWorktree } : {}),
         ...(latestRetarget ? { latest_retarget: { seq: latestRetarget.seq, ...latestRetarget.retarget } } : {}),
         graph_rev: workflow.graphRev,
         session_id: workflow.sessionId,

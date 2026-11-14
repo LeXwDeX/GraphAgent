@@ -48,6 +48,9 @@ const NODE_TRIGGER_EVENTS = [
   DagEvent.WorkflowCancelled,
   DagEvent.WorkflowReplanned,
   DagEvent.WorkflowConfigUpdated,
+  // #1030 D9-g: metadata-only for the node table, but every durable workflow
+  // event refreshes the push so consumers observe the settled worktree.
+  DagEvent.WorkflowWorktreeSettled,
   DagEvent.NodeRegistered,
   DagEvent.NodeQueued,
   DagEvent.NodeStarted,

@@ -78,6 +78,7 @@ import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { DagDelivery } from "./delivery"
+import { settleTerminalWorkflowWorktree, workflowWorktreeSettlementPending } from "./worktree-completion"
 import { Logging } from "@graphagent/core/observability/logging"
 
 export { PAUSED_REMINDER_DELAY_MS, isPausedReminderDue, wakeBatchIdentity } from "./delivery"
@@ -719,6 +720,7 @@ const serviceLayer = Layer.effect(
                 directory: ctx.directory,
                 executionDirectory: nodeDirectory,
                 ...(nodeConfig?.isolation ? { isolation: nodeConfig.isolation } : {}),
+                ...(entry.config?.isolation === "worktree" ? { workflowIsolation: "worktree" as const } : {}),
                 inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
                 promptParts,
                 outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,
@@ -1897,6 +1899,23 @@ const serviceLayer = Layer.effect(
           Effect.forkScoped({ startImmediately: true }),
         )
 
+        // #1030 D9-g: settlement runs on the terminal transition, before the
+        // wake nudge, so the report/status read model carries its evidence. The
+        // seam lives in worktree-completion (reused by E1b #1029 and a future
+        // process-level reconciler); a host sweep that terminalizes without a
+        // loop entry still has no settlement here until that reconciler exists.
+        const settleWorkflowTerminal = (dagID: string) =>
+          settleTerminalWorkflowWorktree({
+            dagID,
+            store,
+            publish: events.publish,
+            ambient: ctx,
+            // #1030 D9-g: settlement and recovery/replan share one
+            // per-workflow critical section, so a settlement computed for the
+            // old terminal episode cannot commit the reopened episode's work.
+            exclusive: (effect) => dag.exclusive(dagID, effect),
+          })
+
         for (const def of [DagEvent.WorkflowCompleted, DagEvent.WorkflowFailed, DagEvent.WorkflowCancelled]) {
           const terminalAbort =
             def === DagEvent.WorkflowCompleted
@@ -1962,6 +1981,9 @@ const serviceLayer = Layer.effect(
                   )
                   if (!cleaned) return
                 }
+                // #1030 D9-g: settle (commit + patch + remove/keep) before the
+                // terminal wake reads the read model.
+                yield* settleWorkflowTerminal(dagID)
                 // P1-6: trigger wake on workflow terminal so the parent
                 // learns the final outcome even if no idle event fires.
                 if (parentSessionID) {
@@ -2038,6 +2060,13 @@ const serviceLayer = Layer.effect(
         // longer exists durably. Mirror the workflow-terminal cleanup
         // pattern: evalLock-serialized fiber + watcher interrupts, then drop
         // the entry.
+        //
+        // #1030 D9-g: this teardown does NOT settle a workflow-level worktree.
+        // The FK cascade removes the rows without publishing a terminal event,
+        // so there is no durable row left to settle against; the worktree is
+        // intentionally left for the process-level reconciler (deterministic
+        // `dag-<dagID>-` name). Recorded as a known limitation in
+        // dag/CONTEXT.md.
         yield* events.subscribe(SessionV1.Event.Deleted).pipe(
           Stream.runForEach((evt) =>
             Effect.gen(function* () {
@@ -2212,6 +2241,15 @@ const serviceLayer = Layer.effect(
               ),
             )
           if (!snapshot.workflows.some((wf) => wf.projectId === ctx.project.id)) continue
+          // #1030 D9-g: a crash can land between the terminal transition and
+          // the settlement projection. Delivery is gated on that pointer, so
+          // settle the durable terminal rows before the first wake scan (the
+          // seam is idempotent and owner-gated; a not-owned row is a no-op).
+          for (const workflow of snapshot.workflows) {
+            if (!isTerminalWorkflowStatusValue(workflow.status)) continue
+            if (!workflowWorktreeSettlementPending(workflow, parseWorkflowConfig(workflow.config))) continue
+            yield* settleWorkflowTerminal(workflow.id)
+          }
           // GOAL-FP-01-01: register only NON-terminal workflows. Terminal
           // workflows with wake_reported=true would otherwise be re-registered
           // on every restart and never unregistered (the only unregister for

@@ -35,17 +35,18 @@ function fixture(
     store: DagStore.Interface
     sessions: Session.Interface
     workflow: DagStore.WorkflowRow
-    deliver: () => Effect.Effect<boolean, never, Database.Service>
+    deliver: (row?: DagStore.WorkflowRow) => Effect.Effect<boolean, never, Database.Service>
     crash: (value: boolean) => void
     wakeCrash: (value: boolean) => void
     visibleReports: EventV2.Payload[]
     flush: () => Effect.Effect<void>
   }) => Effect.Effect<unknown, unknown, Database.Service>,
   options?: {
-    output: unknown
-    schema: Record<string, unknown>
+    output?: unknown
+    schema?: Record<string, unknown>
     source?: SessionV1.WithParts
     acknowledge?: boolean
+    config?: Record<string, unknown>
   },
 ) {
   const database = Database.layerFromPath(":memory:")
@@ -93,10 +94,10 @@ function fixture(
         })
       const db = database.db
       const text = "  Exact final report\n\nwith **formatting** and trailing space.  "
-      const config = {
+      const config = options?.config ?? {
         name: "delivery",
         delivery_node: "final",
-        nodes: [{ id: "final", depends_on: [], ...(options ? { output_schema: options.schema } : {}) }],
+        nodes: [{ id: "final", depends_on: [], ...(options?.schema ? { output_schema: options.schema } : {}) }],
       }
       yield* db
         .insert(ProjectTable)
@@ -142,7 +143,7 @@ function fixture(
           worker_type: "general",
           status: "completed",
           depends_on: [],
-          output: options ? options.output : text,
+          output: options?.output !== undefined ? options.output : text,
           seq: 6,
           child_session_id: "ses_child",
           time_created: 1,
@@ -197,17 +198,17 @@ function fixture(
             .publish(SessionV1.Event.PartUpdated, { sessionID: part.sessionID, part, time: 100 })
             .pipe(Effect.as(part)),
       } as unknown as Session.Interface
-      const deliver = () =>
+      const deliver = (row: DagStore.WorkflowRow = workflow) =>
         Effect.gen(function* () {
           const nodes = yield* store.getCurrentNodes("wf-1")
           return yield* deliverReport({
-            workflow,
+            workflow: row,
             events,
             source: options?.source,
             store,
             sessions,
             directory: "/tmp",
-            batch: { nodes, workflows: [workflow] },
+            batch: { nodes, workflows: [row] },
             acknowledge: options?.acknowledge,
           })
         }).pipe(Effect.orDie)
@@ -255,6 +256,56 @@ it("copies the answer verbatim with source metadata and adopts the same receipt 
       expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
     }),
   ))
+
+it("waits for the worktree settlement before writing a receipt, then adopts the settled receipt", () => {
+  const pointer = {
+    directory: "/repo/.agents/worktree/dag-wf-1-workflow",
+    branch: "opencode/dag-wf-1-workflow",
+    baseHead: "base",
+  }
+  const settled = { ...pointer, head: "head", touchedPaths: [], state: "kept" as const }
+  return fixture(
+    ({ database, store, deliver }) =>
+      Effect.gen(function* () {
+        // F1: the answer body embeds settlement evidence, but its identity is
+        // pinned to (seq, graphRev), which settlement does not advance. No
+        // receipt may commit before the settlement projection does.
+        expect(yield* deliver()).toBe(false)
+        expect(yield* database.db.select().from(PartTable)).toHaveLength(0)
+
+        yield* database.db
+          .update(WorkflowTable)
+          .set({ worktree: settled })
+          .where(eq(WorkflowTable.id, "wf-1"))
+          .run()
+        const current = (yield* store.getWorkflow("wf-1"))!
+
+        expect(yield* deliver(current)).toBe(true)
+        const parts = yield* database.db.select().from(PartTable)
+        const answers = parts.filter(
+          (part) =>
+            part.data.type === "text" && (part.data as SessionV1.TextPart).metadata?.dag_delivery?.kind === "answer",
+        )
+        expect(answers).toHaveLength(1)
+        expect((answers[0].data as SessionV1.TextPart).text).toContain("[workflow worktree]")
+        expect((answers[0].data as SessionV1.TextPart).text).toContain(`directory=${pointer.directory}`)
+
+        // A retry reads the same settled row and adopts its receipt instead of
+        // dying on a body mismatch (the pre-settlement receipt path did).
+        expect(yield* deliver(current)).toBe(true)
+        expect(yield* database.db.select().from(PartTable)).toHaveLength(parts.length)
+      }),
+    {
+      config: {
+        name: "delivery",
+        delivery_node: "final",
+        isolation: "worktree",
+        worktree: pointer,
+        nodes: [{ id: "final", depends_on: [] }],
+      },
+    },
+  )
+})
 
 it("marks only the workflow completion row and never consumes a node wake", () =>
   fixture(({ store, deliver }) =>

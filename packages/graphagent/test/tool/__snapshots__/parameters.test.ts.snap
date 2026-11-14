@@ -814,6 +814,12 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                 "delivery_node": {
                   "type": "string",
                 },
+                "isolation": {
+                  "enum": [
+                    "worktree",
+                  ],
+                  "type": "string",
+                },
                 "max_concurrency": {
                   "type": "number",
                 },

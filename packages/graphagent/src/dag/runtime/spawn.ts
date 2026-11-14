@@ -94,17 +94,24 @@ export function dagExecutionContext(
   directory: string | undefined,
   head: string | undefined,
   targetFingerprint?: TargetFingerprint,
+  options?: { branch?: string; workflowIsolation?: boolean },
 ) {
   if (!directory) return undefined
   return [
     "<dag-execution-context>",
     `  Execution directory: ${directory}`,
+    `  Branch: ${options?.branch ?? "unknown (detached HEAD or not a git repository)"}`,
     `  HEAD at start: ${head ?? "unknown (not a git repository, or no commit yet)"}`,
     ...(targetFingerprint
       ? [
           `  Target fingerprint: ${
             targetFingerprint.kind === "none" ? "none (not a git repository)" : targetFingerprint.value
           }`,
+        ]
+      : []),
+    ...(options?.workflowIsolation
+      ? [
+          "  Workflow worktree: every child of this workflow shares this checkout. Stay on this branch; do not create nested git worktrees, switch branches, or commit outside the workflow's completion step.",
         ]
       : []),
     "</dag-execution-context>",
@@ -130,6 +137,9 @@ export interface NodeSpawnInput {
   /** #946: create a fresh worktree of the execution target for this attempt.
    * Validation guarantees a clean git target and a writer-capable worker. */
   isolation?: "worktree"
+  /** #1030: the workflow owns one worktree shared by every child; the system
+   * context tells the child not to create nested worktrees or switch branches. */
+  workflowIsolation?: "worktree"
   /** Verified completed dependency artifacts, scoped to this child session. */
   inputArtifacts?: ManagedOutputFileRef[]
   outputSchema?: Record<string, unknown>
@@ -1236,7 +1246,10 @@ export function spawnNode(
           // #949: the child must be able to tell where it runs and which HEAD
           // it started from. Only the DAG path injects this; the shared
           // environment prompt keeps its existing content.
-          const executionContext = dagExecutionContext(nodeDirectory, baseHead, targetFingerprint)
+          const executionContext = dagExecutionContext(nodeDirectory, baseHead, targetFingerprint, {
+            branch: nodeDirectory ? DagLocation.gitBranch(nodeDirectory) : undefined,
+            workflowIsolation: input.workflowIsolation === "worktree",
+          })
           // Every prompt to the child goes through its run: it is admitted as
           // the delegation it is, under the run's credential.
           let result = yield* nodeExecution(

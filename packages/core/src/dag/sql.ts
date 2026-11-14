@@ -61,10 +61,11 @@ export const WorkflowTable = sqliteTable(
     // predicate is the per-node `superseded` marker below. Default 1 is the
     // first graph revision.
     graph_rev: integer().notNull().default(1),
-    // #1010 (E0): workflow-level worktree settlement, written by the E3
-    // projection from `WorkflowWorktreeSettled`. NULL means the workflow has
-    // no workflow-level worktree (all isolation is per node).
-    worktree: text({ mode: "json" }).$type<DagEvent.NodeWorktree>(),
+    // #1010 (E0) / #1030 (D9-g): workflow-level worktree settlement, written
+    // by the projection from `WorkflowWorktreeSettled`. NULL means the
+    // workflow has no workflow-level worktree (all isolation is per node) or
+    // no terminal settlement has run yet.
+    worktree: text({ mode: "json" }).$type<DagEvent.WorkflowWorktree>(),
     started_at: integer(),
     completed_at: integer(),
     ...Timestamps,

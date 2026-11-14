@@ -466,6 +466,34 @@ describe("WorkflowAuthoring action-specific recovery hints (#775)", () => {
     }),
   )
 
+  it.effect("a replan fragment cannot introduce workflow-level worktree isolation (#1030)", () =>
+    Effect.gen(function* () {
+      const result = yield* prepareInline("replan", {
+        fragment: {
+          name: "replan-isolation",
+          isolation: "worktree",
+          nodes: [
+            {
+              id: "work",
+              name: "work",
+              worker_type: "general",
+              depends_on: [],
+              prompt_template: { inline: "Do the work" },
+            },
+          ],
+        },
+      })
+      expect(result.valid).toBe(false)
+      expect(result.errors).toEqual([
+        expect.objectContaining({
+          path: "fragment.isolation",
+          message: expect.stringContaining("only applies to start"),
+        }),
+      ])
+      expect(result.errors[0]?.hint).toContain('Remove "isolation"')
+    }),
+  )
+
   it.effect("keeps every block-skill YAML envelope executable, including added extend examples", () =>
     Effect.gen(function* () {
       const blocks = BUILTIN_SKILLS.find((skill) => skill.name === "dag-blocks")

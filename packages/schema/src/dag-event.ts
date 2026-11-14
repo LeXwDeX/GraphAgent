@@ -112,6 +112,34 @@ export const NodeWorktree = Schema.Struct({
 })
 export type NodeWorktree = typeof NodeWorktree.Type
 
+/** #1030 D9-g: the workflow-level worktree a workflow runs all children in.
+ * Create records the live pointer in the persisted config; settlement records
+ * what remained after the terminal transition. `head` is the final commit,
+ * `baseHead` the commit the worktree started from, and `reason` explains a
+ * `kept` state that came from a failed commit/patch/removal. */
+export const WorkflowWorktree = Schema.Struct({
+  directory: Schema.String,
+  branch: Schema.optional(Schema.String),
+  baseHead: Schema.optional(Schema.String),
+  head: Schema.optional(Schema.String),
+  patchPath: Schema.optional(Schema.String),
+  patchSha256: Schema.optional(Schema.String),
+  touchedPaths: Schema.Array(Schema.String),
+  state: WorktreeState,
+  reason: Schema.optional(Schema.String),
+})
+export type WorkflowWorktree = typeof WorkflowWorktree.Type
+
+/** #1030 D9-g: the terminal episode a settlement was computed against. Every
+ * recovery reopen bumps `graphRev` and `seq`, so the projector can reject a
+ * settlement whose episode was reopened while its filesystem work was still
+ * in flight — the next episode must settle with its own evidence. */
+export const WorkflowWorktreeEpisode = Schema.Struct({
+  graphRev: NonNegativeInt,
+  seq: NonNegativeInt,
+})
+export type WorkflowWorktreeEpisode = typeof WorkflowWorktreeEpisode.Type
+
 // ============================================================================
 // Workflow lifecycle events
 // ============================================================================
@@ -254,6 +282,26 @@ export const WorkflowConfigUpdated = Event.define({
   },
 })
 export type WorkflowConfigUpdated = typeof WorkflowConfigUpdated.Type
+
+/** #1030 D9-g: durable settlement of a workflow-level worktree. Published
+ * after the terminal transition, once at most (the projection only writes a
+ * row whose worktree is still NULL). It carries no status transition and the
+ * projector deliberately does NOT advance `seq`: report identity and
+ * `completion_seq` are pinned to the terminal event, so a metadata bump would
+ * make delivery and receipt disagree. */
+export const WorkflowWorktreeSettled = Event.define({
+  type: "dag.workflow.worktree_settled",
+  ...options,
+  schema: {
+    ...Base,
+    worktree: WorkflowWorktree,
+    /** The terminal episode the evidence was produced for. The projection only
+     * writes the row when it still matches; a settlement from a reopened
+     * episode therefore folds to a no-op instead of claiming the new one. */
+    episode: WorkflowWorktreeEpisode,
+  },
+})
+export type WorkflowWorktreeSettled = typeof WorkflowWorktreeSettled.Type
 
 // ============================================================================
 // Node lifecycle events
@@ -459,6 +507,7 @@ export const DurableDefinitions = Event.inventory(
   WorkflowCancelled,
   WorkflowReplanned,
   WorkflowConfigUpdated,
+  WorkflowWorktreeSettled,
   NodeRegistered,
   NodeQueued,
   NodeStarted,

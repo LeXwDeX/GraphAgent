@@ -295,6 +295,10 @@ const GraphBudgetFields = {
     description:
       "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
   }),
+  isolation: Schema.optional(Schema.Literal("worktree")).annotate({
+    description:
+      'Run the whole workflow in one fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Created at start and settled at the terminal transition (completed removes the directory but keeps its branch; failed/cancelled keep both).',
+  }),
 } as const
 
 /** High-level graph: objective + composable blocks compiled into nodes. */
@@ -1358,6 +1362,9 @@ export interface ReplanStructuralInput {
    * graph budget; extend/replan/recover hints must not suggest raising it. */
   action?: Exclude<CeilingAction, "start">
   config: { mode?: ExecutionMode; max_total_nodes?: number }
+  /** #1030 D9-g: the durable workflow-level isolation. Fragments cannot set
+   * it, but they must not rebind a node away from the shared worktree. */
+  isolation?: "worktree"
 }
 
 /** Replan structural validation through the same helper functions as create —
@@ -1380,6 +1387,21 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
     ...conditionDiagnostics(input.rerunNodes, input.grandfatheredNodeIds),
     ...fanOutDiagnostics(input.rerunNodes, input.merged.nodes),
     ...bindingDiagnostics(input.rerunNodes),
+    // #1030 D9-g: a fragment cannot rebind a node away from the workflow's
+    // shared worktree (config.isolation is start-only, but node workspace /
+    // node isolation are accepted in fragments).
+    ...(input.isolation === "worktree"
+      ? input.rerunNodes
+          .filter((node) => node.workspace !== undefined || node.isolation !== undefined)
+          .map((node) =>
+            diagnostic({
+              code: DIAGNOSTIC_CODES.isolationInvalid,
+              path: node.workspace !== undefined ? `nodes[${node.id}].workspace` : `nodes[${node.id}].isolation`,
+              message: `workflow-level worktree isolation owns the shared checkout; node "${node.id}" cannot set workspace or isolation`,
+              hint: "Remove workspace/isolation from the fragment node; every child runs in the workflow worktree.",
+            }),
+          )
+      : []),
     ...ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes, input.action ?? "replan"),
     ...review.errors,
     ...review.warnings,
@@ -1666,6 +1688,59 @@ export function isolationDiagnostics(input: {
     })
 }
 
+/**
+ * #1030 D9-g: workflow-level worktree isolation. Unlike per-node isolation,
+ * every child runs in the same worktree, created from the owner checkout at
+ * start. The owner must therefore be a clean git target: a dirty checkout
+ * would leak unrelated edits into the workflow's commit and its final patch.
+ * Fragment actions cannot introduce or change this binding.
+ */
+export function workflowIsolationDiagnostics(input: {
+  isolation?: "worktree"
+  workspace?: string
+  nodes?: readonly NodeConfig[]
+  ownerDirectory?: string
+  profile: Profile
+}): Diagnostic[] {
+  if (input.isolation !== "worktree") return []
+  const path = "config.isolation"
+  const problems: string[] = []
+  if (input.workspace !== undefined)
+    problems.push("config.isolation and config.workspace are mutually exclusive")
+  // #1030 D9-g: every child of a workflow-isolated workflow runs in the one
+  // workflow worktree. A node workspace or per-node worktree would contradict
+  // its execution-context prompt ("every child shares this checkout") and its
+  // changes would never reach the workflow completion commit/patch.
+  for (const node of input.nodes ?? []) {
+    if (node.workspace !== undefined)
+      problems.push(
+        `config.isolation and node workspace are mutually exclusive; node "${node.id}" already runs in the shared workflow worktree`,
+      )
+    if (node.isolation !== undefined)
+      problems.push(
+        `config.isolation and node isolation are mutually exclusive; the workflow owns the only worktree (node "${node.id}")`,
+      )
+  }
+  if (input.profile === "environment" && input.ownerDirectory) {
+    if (!DagLocation.isGitWorktree(input.ownerDirectory))
+      problems.push(
+        `workflow worktree isolation requires a git target, but "${input.ownerDirectory}" is not a git repository`,
+      )
+    else if (!DagLocation.isCleanWorktree(input.ownerDirectory))
+      problems.push(
+        `workflow worktree isolation requires a clean target; commit or stash changes in "${input.ownerDirectory}" before starting`,
+      )
+  }
+  return problems.map((message) =>
+    diagnostic({
+      code: DIAGNOSTIC_CODES.isolationInvalid,
+      path,
+      message,
+      hint: "Remove config.isolation, config.workspace, or node-level workspace/isolation, and start from a clean git checkout.",
+    }),
+  )
+}
+
 /** A path mention must start at a path boundary and end at a separator or
  * token boundary, so `/repo/wt-a` never matches `/repo/wt-ab`. */
 function mentionsAbsolutePath(text: string, target: string) {
@@ -1746,6 +1821,7 @@ export function validatePostCompile(input: {
     delivery_node?: string
     max_total_nodes?: number
     workspace?: string
+    isolation?: "worktree"
     node_defaults?: { required?: boolean; report_to_parent?: boolean; model?: { modelID: string; providerID: string } }
   }
   nodes: readonly NodeConfig[]
@@ -1798,6 +1874,13 @@ export function validatePostCompile(input: {
         workspace,
         profile: input.profile,
         catalogs: input.catalogs,
+      }),
+      ...workflowIsolationDiagnostics({
+        isolation: input.config.isolation,
+        workspace: input.config.workspace,
+        nodes: input.nodes,
+        ownerDirectory: input.directory,
+        profile: input.profile,
       }),
     )
     if (input.profile === "portable") diagnostics.push(...nonportablePromptDiagnostics(input.nodes))

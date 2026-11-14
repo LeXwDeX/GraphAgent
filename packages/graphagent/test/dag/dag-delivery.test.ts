@@ -9,13 +9,14 @@
 // wake, and the fixed wake-before-mailbox order.
 import { describe, expect, it } from "bun:test"
 import { and, eq } from "drizzle-orm"
-import { Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Stream, type Context } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Option, Queue, Scope, Stream, DateTime, type Context } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { EventV2 } from "@graphagent/core/event"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { ModelV2 } from "@graphagent/core/model"
 import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
@@ -309,6 +310,103 @@ describe("DagDelivery drain", () => {
             const deps = yield* services()
             const delivery = yield* startDelivery({ ...deps, messages: undefined })
             for (let index = 0; index < 100; index++) yield* delivery.drain(PARENT)
+            expect(admissions).toBe(1)
+            yield* expectReported
+          }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))
+        }),
+      ).pipe(Effect.provideService(InstanceRef, instanceRef)),
+    )
+  })
+
+  it("delivers a workflow-isolated completion only after its settlement commits", async () => {
+    let admissions = 0
+    const settled = {
+      directory: "/repo/.agents/worktree/dag-dag_delivery-workflow",
+      branch: "opencode/dag-dag_delivery-workflow",
+      baseHead: "base-sha",
+      head: "head-sha",
+      touchedPaths: ["src/a.ts"],
+      state: "kept" as const,
+    }
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const base = baseLayers()
+          const session = Layer.mock(Session.Service, {
+            get: () => Effect.succeed(sessionInfo),
+            messages: () => Effect.succeed([]),
+            getPart: () => Effect.succeed(undefined),
+          })
+          const prompt = mockSessionPrompt({
+            // The completion report commits its receipt under the idle fence.
+            withIdle: <A, E, R>(_sessionID: SessionID, work: Effect.Effect<A, E, R>) => Effect.map(work, Option.some),
+            prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
+              Effect.gen(function* () {
+                admissions += 1
+                yield* persistAdmission ?? Effect.void
+                return Option.some({
+                  activate: Effect.void,
+                  result: Effect.succeed(reply(input.sessionID as string, "wake handled")),
+                  abort: Effect.void,
+                })
+              })) as never,
+          })
+          yield* Effect.gen(function* () {
+            yield* seedWake
+            const { db } = yield* Database.Service
+            const store = yield* DagStore.Service
+            const bridge = yield* EventV2Bridge.Service
+            // F1: a terminal workflow-isolated workflow is not deliverable
+            // until its settlement projection commits. Its wake text embeds
+            // worktree evidence that the pinned receipt identity cannot
+            // reproduce after the settlement write.
+            yield* db
+              .update(WorkflowTable)
+              .set({
+                config: JSON.stringify({
+                  name: "Delivery",
+                  isolation: "worktree",
+                  worktree: {
+                    directory: settled.directory,
+                    branch: settled.branch,
+                    baseHead: settled.baseHead,
+                  },
+                  nodes: [{ id: "node", depends_on: [] }],
+                }),
+              })
+              .where(eq(WorkflowTable.id, "dag_delivery"))
+              .run()
+            const deps = yield* services()
+            const delivery = yield* startDelivery({ ...deps, messages: undefined })
+
+            yield* delivery.drain(PARENT)
+            expect(admissions).toBe(0)
+            expect((yield* store.getWorkflow("dag_delivery"))?.wakeReported).toBe(false)
+
+            const workflow = yield* store.getWorkflow("dag_delivery")
+            yield* bridge.publish(DagEvent.WorkflowWorktreeSettled, {
+              dagID: DagEvent.DagID.make("dag_delivery"),
+              worktree: settled,
+              episode: { graphRev: workflow?.graphRev ?? 0, seq: workflow?.seq ?? 0 },
+              timestamp: yield* DateTime.now,
+            })
+            yield* delivery.drain(PARENT)
+            expect(admissions).toBe(1)
+            yield* expectReported
+
+            // Retry over the durable receipts: their text already carries the
+            // settled evidence, so the content check must not die.
+            yield* db
+              .update(WorkflowTable)
+              .set({ wake_reported: false })
+              .where(eq(WorkflowTable.id, "dag_delivery"))
+              .run()
+            yield* db
+              .update(WorkflowNodeTable)
+              .set({ wake_reported: false })
+              .where(eq(WorkflowNodeTable.workflow_id, "dag_delivery"))
+              .run()
+            yield* delivery.drain(PARENT)
             expect(admissions).toBe(1)
             yield* expectReported
           }).pipe(Effect.provide(Layer.mergeAll(base.all, session, prompt)))

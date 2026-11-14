@@ -140,6 +140,31 @@ describe("Dag.create structural validation", () => {
     )
   })
 
+  it("rejects workflow isolation combined with a workflow workspace (#1030)", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const error = yield* createExpectingError({
+          isolation: "worktree",
+          workspace: "/project/wt",
+          nodes: [node("a")],
+        })
+        expect(error.message).toContain("config.isolation and config.workspace are mutually exclusive")
+      }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
+    )
+  })
+
+  it("fails closed when workflow isolation has no usable git target (#1030)", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        // No durable session row: create falls back to the ambient stamp, which
+        // is empty without an instance. The isolation gate must reject before
+        // any worktree or event exists.
+        const error = yield* createExpectingError({ isolation: "worktree", nodes: [node("a")] })
+        expect(error.message).toContain("workflow worktree isolation requires a git target")
+      }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
+    )
+  })
+
   it("rejects a condition referencing a node outside depends_on", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {

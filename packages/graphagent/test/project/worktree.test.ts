@@ -1,5 +1,6 @@
 import { afterEach, describe, expect } from "bun:test"
 import { Database } from "@graphagent/core/database/database"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import path from "path"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -150,6 +151,55 @@ const createIt = testEffect(
     Layer.provide(FSUtil.defaultLayer),
     Layer.provide(NodePath.layer),
     Layer.provide(InstanceLayer.layer),
+  ),
+)
+
+/** Fails only the tree-population step so the partial create path is exercised:
+ * `worktree add`/`branch`/`addSandbox` succeeded, `reset --hard` did not. */
+const resetFailureProcessLayer = Layer.effect(
+  AppProcess.Service,
+  Effect.gen(function* () {
+    const process = yield* AppProcess.Service
+    return AppProcess.Service.of({
+      ...process,
+      run: (command, options) =>
+        command._tag === "StandardCommand" && command.args.includes("reset")
+          ? Effect.succeed({
+              command: "git reset --hard",
+              exitCode: 1,
+              stdout: Buffer.alloc(0),
+              stderr: Buffer.from("simulated reset failure"),
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            })
+          : process.run(command, options),
+    })
+  }),
+).pipe(Layer.provide(AppProcess.defaultLayer))
+
+const resetFailureProjectLayer = Layer.effect(
+  Project.Service,
+  Effect.gen(function* () {
+    const project = yield* Project.Service
+    return Project.Service.of({ ...project })
+  }),
+).pipe(Layer.provideMerge(Project.defaultLayer))
+
+const resetFailureIt = testEffect(
+  Layer.mergeAll(
+    Worktree.layer.pipe(
+      Layer.provide(Git.defaultLayer),
+      Layer.provide(resetFailureProcessLayer),
+      Layer.provideMerge(resetFailureProjectLayer),
+      Layer.provide(Database.defaultLayer),
+      Layer.provide(FSUtil.defaultLayer),
+      Layer.provide(NodePath.layer),
+      Layer.provide(InstanceLayer.layer),
+    ),
+    // Read-only views of the same memoized layers the Worktree graph uses.
+    FSUtil.defaultLayer,
+    Git.defaultLayer,
+    Project.defaultLayer,
   ),
 )
 
@@ -487,6 +537,109 @@ describe("Worktree", () => {
       { git: true },
     )
 
+    resetFailureIt.instance(
+      "rolls back the directory, branch ref and sandbox registration when setup fails",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const fs = yield* FSUtil.Service
+          const project = yield* Project.Service
+          const ctx = yield* InstanceState.context
+
+          const exit = yield* Effect.exit(svc.create({ name: "reset-fails" }))
+          expect(exit._tag).toBe("Failure")
+          expect(exit._tag === "Failure" ? Cause.pretty(exit.cause) : "").toContain("simulated reset failure")
+
+          const main = yield* fs.realPath(test.directory)
+          const directory = path.join(main, ".agents", "worktree", "reset-fails")
+          expect(yield* fs.exists(directory).pipe(Effect.orDie)).toBe(false)
+          const branches = yield* gitResult(test.directory, ["branch", "--list", "opencode/reset-fails"])
+          expect(branches.text().trim()).toBe("")
+          const current = yield* project.get(ctx.project.id)
+          expect(current?.sandboxes ?? []).not.toContain(directory)
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "create starts the branch from an explicit base commit",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const base = (yield* git(test.directory, ["rev-parse", "HEAD"])).trim()
+          yield* Effect.promise(() => Bun.write(path.join(test.directory, "later.txt"), "later\n"))
+          yield* git(test.directory, ["add", "-A"])
+          yield* git(test.directory, ["commit", "-m", "later"])
+          const info = yield* svc.create({ name: "based-worktree", base })
+
+          expect((yield* git(info.directory, ["rev-parse", "HEAD"])).trim()).toBe(base)
+          expect((yield* gitResult(info.directory, ["cat-file", "-e", "HEAD:later.txt"])).exitCode).not.toBe(0)
+
+          yield* svc.remove({ directory: info.directory })
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "create honors base when invoked from a linked worktree",
+      () =>
+        withCreatedWorktree({ name: "base-source" }, ({ info: source }) =>
+          Effect.gen(function* () {
+            const svc = yield* Worktree.Service
+            const base = (yield* git(source.directory, ["rev-parse", "HEAD"])).trim()
+            const created = yield* svc
+              .create({ name: "base-nested", base })
+              .pipe(provideInstance(source.directory))
+            yield* Effect.addFinalizer(() =>
+              svc.remove({ directory: created.directory }).pipe(Effect.ignore),
+            )
+
+            expect((yield* git(created.directory, ["rev-parse", "HEAD"])).trim()).toBe(base)
+          }),
+        ),
+      { git: true },
+    )
+
+    it.instance(
+      "remove with keepBranch drops the worktree but keeps its branch",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const info = yield* svc.create({ name: "keep-branch" })
+          const branch = info.branch ?? ""
+
+          expect(yield* svc.remove({ directory: info.directory, keepBranch: true })).toBe(true)
+
+          expect(yield* git(test.directory, ["branch", "--list", branch])).toContain(branch)
+          yield* git(test.directory, ["branch", "-D", branch])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "remove with keepBranch on a prunable worktree keeps its branch",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const fs = yield* FSUtil.Service
+          const svc = yield* Worktree.Service
+          const info = yield* svc.create({ name: "keep-prunable-branch" })
+          const branch = info.branch ?? ""
+          // A missing directory makes the git admin entry prunable; the
+          // explicit removal path owns the branch decision there too.
+          yield* fs.remove(info.directory, { recursive: true })
+
+          expect(yield* svc.remove({ directory: info.directory, keepBranch: true })).toBe(true)
+
+          expect(yield* git(test.directory, ["branch", "--list", branch])).toContain(branch)
+          yield* git(test.directory, ["branch", "-D", branch])
+        }),
+      { git: true },
+    )
+
     wintest(
       "reset coordinates with asynchronous bootstrap",
       () =>
@@ -654,6 +807,34 @@ describe("Worktree", () => {
 
           yield* Fiber.join(ready)
           yield* removeCreatedWorktree(info.directory)
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "retrying with supplied worktree info keeps the existing checkout and branch (#1030)",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const project = yield* Project.Service
+          const ctx = yield* InstanceState.context
+          const info = yield* svc.create({ name: "retry-existing-info" })
+          yield* Effect.addFinalizer(() => svc.remove({ directory: info.directory }).pipe(Effect.ignore))
+
+          // Resources this retry never created: an uncommitted change in the
+          // existing checkout and its branch. createFromInfo must fail (the
+          // checkout/branch already exist) without touching either.
+          writeFileSync(path.join(info.directory, "keep.txt"), "keep\n")
+          const branchBefore = yield* git(test.directory, ["rev-parse", "--verify", `refs/heads/${info.branch}`])
+
+          const exit = yield* Effect.exit(svc.createFromInfo(info))
+          expect(Exit.isFailure(exit)).toBe(true)
+
+          expect(existsSync(info.directory)).toBe(true)
+          expect(readFileSync(path.join(info.directory, "keep.txt"), "utf8")).toBe("keep\n")
+          expect(yield* git(test.directory, ["rev-parse", "--verify", `refs/heads/${info.branch}`])).toBe(branchBefore)
+          expect(yield* project.sandboxes(ctx.project.id)).toContain(info.directory)
         }),
       { git: true },
     )

@@ -37,6 +37,9 @@ export interface WorkflowRow {
   wakeReported: boolean
   /** Rev-view (v1.0.15 Train A): current graph-revision counter (audit/telemetry). */
   graphRev: number
+  /** #1030 D9-g: workflow-level worktree settlement evidence. NULL/absent
+   * means no workflow-level worktree (or no settlement yet). */
+  worktree?: DagEvent.WorkflowWorktree | null
   startedAt: number | null
   completedAt: number | null
   timeCreated: number
@@ -170,6 +173,7 @@ const mapWorkflow = (r: typeof WorkflowTable.$inferSelect): WorkflowRow => ({
   seq: r.seq,
   wakeReported: r.wake_reported,
   graphRev: r.graph_rev,
+  worktree: r.worktree,
   startedAt: r.started_at,
   completedAt: r.completed_at,
   timeCreated: r.time_created,

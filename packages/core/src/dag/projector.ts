@@ -3,7 +3,7 @@
 
 export * as DagProjector from "./projector"
 
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray, isNull, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer } from "effect"
 import { Database } from "../database/database"
 import { EventV2, type Definition, type Subscriber } from "../event"
@@ -249,7 +249,22 @@ export const layer = Layer.effectDiscard(
         yield* db
           .update(WorkflowTable)
           .set({
-            ...(recovery ? { status: ws("running"), wake_reported: false, completed_at: null, pause_reason: null } : {}),
+            // #1030: recovery opens a NEW terminal episode. Clearing the
+            // settlement pointer is what lets the next terminal transition
+            // settle again — the write-once settlement projection
+            // (`worktree IS NULL`) and the settlement idempotency gate both
+            // key on this column. Without it, a failed attempt's `kept`
+            // evidence would suppress the completed attempt's commit/patch/
+            // removal forever.
+            ...(recovery
+              ? {
+                  status: ws("running"),
+                  wake_reported: false,
+                  completed_at: null,
+                  pause_reason: null,
+                  worktree: null,
+                }
+              : {}),
             // #945: a retarget also rebinds the execution directory and the
             // target identity in the same revision bump.
             ...(event.data.retarget?.toDirectory !== undefined
@@ -279,6 +294,10 @@ export const layer = Layer.effectDiscard(
             completed_at: null,
             // D12: reopen leaves any previous pause episode behind.
             pause_reason: null,
+            // #1030: a recovery from failed/cancelled reopens this leg (paused
+            // recovery matches the seq-bump leg above); both clear the
+            // settlement pointer so the new terminal episode settles again.
+            ...(recovery ? { worktree: null } : {}),
             graph_rev: sql`${WorkflowTable.graph_rev} + 1`,
             seq: event.durable!.seq,
             time_updated: toMillis(event.data.timestamp),
@@ -318,6 +337,38 @@ export const layer = Layer.effectDiscard(
         .where(and(
           eq(WorkflowTable.id, event.data.dagID),
           inArray(WorkflowTable.status, ["pending", "running", "paused", "stepping", "completed"]),
+        ))
+        .run()
+        .pipe(Effect.orDie),
+    )
+
+    // #1030 D9-g: settlement is METADATA about an already-terminal workflow,
+    // not a status transition. It deliberately does NOT advance `seq` (and
+    // leaves `time_updated` alone):
+    //   - reportIdentity() hashes (session, id, seq) and delivery pins the
+    //     receipt to completion_seq; a bump would make a redelivered report
+    //     look like a new completion and fail the receipt match.
+    //   - wakeBatchIdentity() also carries the workflow seq, so a bump after
+    //     the terminal wake would let an acknowledged completion re-wake.
+    // The NULL guard makes settlement write-once: a replayed or duplicated
+    // settlement event folds to a 0-row update instead of overwriting the
+    // first outcome. The episode fence closes the other write-once hole: a
+    // settlement computed for a failed/cancelled episode can reach the log
+    // after `WorkflowReplanned` recovery reopened the workflow (which clears
+    // the pointer and bumps graph_rev/seq). Without the fence that stale
+    // settlement would claim the NEW episode — its completion would skip
+    // commit/remove and deliver the previous attempt's evidence.
+    yield* project(DagEvent.WorkflowWorktreeSettled, (event) =>
+      db
+        .update(WorkflowTable)
+        // Drizzle's `$onUpdate` would move time_updated on any write; settle the
+        // metadata without perturbing the terminal episode's timestamps either.
+        .set({ worktree: event.data.worktree, time_updated: sql`${WorkflowTable.time_updated}` })
+        .where(and(
+          eq(WorkflowTable.id, event.data.dagID),
+          isNull(WorkflowTable.worktree),
+          eq(WorkflowTable.graph_rev, event.data.episode.graphRev),
+          eq(WorkflowTable.seq, event.data.episode.seq),
         ))
         .run()
         .pipe(Effect.orDie),

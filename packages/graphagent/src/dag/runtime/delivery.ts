@@ -30,7 +30,8 @@ import * as MessageV2 from "@/session/message-v2"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Dag, parseWorkflowConfig } from "../dag"
 import { DagLocation } from "../location"
-import { deliverReport, reportingCheckpoints, selectReportNode } from "./report-delivery"
+import { deliverReport, reportingCheckpoints, selectReportNode, workflowWorktreeText } from "./report-delivery"
+import { workflowWorktreeSettlementPending } from "./worktree-completion"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
@@ -201,6 +202,26 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
         !workflow.wakeReported &&
         (isTerminalWorkflowStatusValue(workflow.status) || isPausedReminderDue(workflow, now)),
     )
+    // #1030 D9-g: a terminal workflow isolated in a workflow-level worktree is
+    // deliverable only after its settlement projection commits. The wake
+    // summary embeds the settlement evidence while its receipt identity is
+    // pinned to (workflow id, graphRev, seq), which settlement deliberately
+    // does not advance — a pre-settlement receipt could never match a retry
+    // and the receipt check would die. The terminal handler nudges delivery
+    // after settling; DagLoop.init settles terminal rows left by a crash
+    // before its first wake scan.
+    const settlementPending = new Set(
+      snapshot.workflows
+        .filter((workflow) => {
+          if (!isTerminalWorkflowStatusValue(workflow.status)) return false
+          return workflowWorktreeSettlementPending(workflow, parseWorkflowConfig(workflow.config))
+        })
+        .map((workflow) => workflow.id),
+    )
+    const wakeNodes =
+      settlementPending.size === 0
+        ? snapshot.nodes
+        : snapshot.nodes.filter((node) => !settlementPending.has(node.workflowId))
     // Timeout-escalated nodes must reach the main agent for
     // adjudication — their workflow is a delivery boundary even though
     // the runtime still reports a running node. F11: a non-eligible node
@@ -212,7 +233,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     // extension count alone, or an already-adjudicated running node would
     // override the delivery boundary for the rest of the attempt.
     const escalatedWorkflowIDs = new Set(
-      snapshot.nodes
+      wakeNodes
         .filter(
           (node) =>
             node.escalationPending || (node.timeoutExtensions > 0 && isNodeTerminalStatus(node.status as never)),
@@ -221,8 +242,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     )
     const workflowIDs = [
       ...new Set([
-        ...snapshot.nodes.map((node) => node.workflowId),
-        ...reportableWorkflows.map((workflow) => workflow.id),
+        ...wakeNodes.map((node) => node.workflowId),
+        ...reportableWorkflows.filter((workflow) => !settlementPending.has(workflow.id)).map((workflow) => workflow.id),
       ]),
     ]
     const workflowsByID = new Map(snapshot.workflows.map((workflow) => [workflow.id, workflow]))
@@ -253,7 +274,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     // boundary. It must reach the parent as its own coalesced batch
     // without entering the orchestrator-unresponsive net.
     const runningReportWorkflowIDs = new Set(
-      snapshot.nodes
+      wakeNodes
         // The snapshot predicate already limits wake-eligible rows to
         // completed/failed; escalation-only rows have wakeEligible=false.
         .filter((node) => node.wakeEligible)
@@ -289,7 +310,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       // Display-only completion reports never consume node wakes. Their
       // delivery leaf is the report itself; leave every node row to its
       // own durable lifecycle instead of acking it under the display path.
-      nodes: snapshot.nodes.filter(
+      nodes: wakeNodes.filter(
         (node) => atBoundary.has(node.workflowId) && finalResponseCompletions.get(node.workflowId) !== false,
       ),
       workflows: reportableWorkflows.filter((workflow) => atBoundary.has(workflow.id)),
@@ -629,7 +650,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
                 : ""
             return workflow.status === "paused"
               ? `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
-              : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
+              : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${workflow.worktree ? `\n${workflowWorktreeText(workflow.worktree)}` : ""}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
           }),
         ]
         const summary = [
