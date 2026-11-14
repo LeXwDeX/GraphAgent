@@ -249,7 +249,22 @@ export const layer = Layer.effectDiscard(
         yield* db
           .update(WorkflowTable)
           .set({
-            ...(recovery ? { status: ws("running"), wake_reported: false, completed_at: null, pause_reason: null } : {}),
+            // #1030: recovery opens a NEW terminal episode. Clearing the
+            // settlement pointer is what lets the next terminal transition
+            // settle again — the write-once settlement projection
+            // (`worktree IS NULL`) and the settlement idempotency gate both
+            // key on this column. Without it, a failed attempt's `kept`
+            // evidence would suppress the completed attempt's commit/patch/
+            // removal forever.
+            ...(recovery
+              ? {
+                  status: ws("running"),
+                  wake_reported: false,
+                  completed_at: null,
+                  pause_reason: null,
+                  worktree: null,
+                }
+              : {}),
             // #945: a retarget also rebinds the execution directory and the
             // target identity in the same revision bump.
             ...(event.data.retarget?.toDirectory !== undefined
@@ -279,6 +294,10 @@ export const layer = Layer.effectDiscard(
             completed_at: null,
             // D12: reopen leaves any previous pause episode behind.
             pause_reason: null,
+            // #1030: a recovery from failed/cancelled reopens this leg (paused
+            // recovery matches the seq-bump leg above); both clear the
+            // settlement pointer so the new terminal episode settles again.
+            ...(recovery ? { worktree: null } : {}),
             graph_rev: sql`${WorkflowTable.graph_rev} + 1`,
             seq: event.durable!.seq,
             time_updated: toMillis(event.data.timestamp),

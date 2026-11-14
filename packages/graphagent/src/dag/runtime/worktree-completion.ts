@@ -10,7 +10,7 @@
  */
 
 import { existsSync } from "node:fs"
-import { DateTime, Effect, Cause, Option } from "effect"
+import { DateTime, Effect, Cause, Option, Schedule } from "effect"
 import type { EventV2 } from "@graphagent/core/event"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
@@ -80,7 +80,22 @@ export function completeIsolatedNode(input: CompleteIsolatedNodeInput): Effect.E
 // #1030 D9-g: workflow-level worktree settlement
 // ---------------------------------------------------------------------------
 
-export type WorkflowWorktreeSettlement = "settled" | "already_settled" | "not_isolated"
+/** #1030 D9-g: a terminal isolated workflow's durable read model is final only
+ * after its settlement projection commits. Delivery text (final report body and
+ * the wake summary) embeds this evidence, while its receipt identity is pinned
+ * to the terminal `(seq, graphRev)` — settlement deliberately does NOT advance
+ * either. A receipt written from the unsettled row could therefore never match
+ * a retry that reads the settled row: the delivery seams die permanently. Both
+ * the delivery planner and `deliverReport` treat this state as "not ready" and
+ * let the settlement nudge (or the startup sweep) retry. */
+export function workflowWorktreeSettlementPending(
+  workflow: Pick<DagStore.WorkflowRow, "worktree">,
+  config: Pick<WorkflowConfig, "isolation" | "worktree"> | undefined,
+): boolean {
+  return workflow.worktree == null && config?.isolation === "worktree" && config.worktree != null
+}
+
+export type WorkflowWorktreeSettlement = "settled" | "already_settled" | "not_isolated" | "settle_failed"
 
 export interface SettleWorkflowWorktreeInput {
   dagID: string
@@ -99,8 +114,10 @@ export interface SettleWorkflowWorktreeInput {
 
 /** Commit pending workflow-level work, persist its patch, then remove (completed)
  * or keep (failed/cancelled) the worktree. Strictly idempotent via the durable
- * `workflow.worktree` pointer: once any settlement projection has committed,
- * later calls return `already_settled` without touching disk.
+ * `workflow.worktree` pointer: once a settlement projection has committed for
+ * the CURRENT terminal episode, later calls return `already_settled` without
+ * touching disk. Recovery clears that pointer in the same projection that
+ * reopens the workflow, so each terminal episode settles exactly once.
  *
  * Both the live DagLoop terminal handler and a future process-level reconciler
  * must call THIS function (E1b #1029 terminal branch reuses it too), so the
@@ -119,17 +136,21 @@ export function settleWorkflowWorktree(
 
     const settle = (worktree: DagEvent.WorkflowWorktree) =>
       input.publish(worktree).pipe(
+        Effect.retry({ times: 2, schedule: Schedule.spaced("200 millis") }),
         Effect.as("settled" as const),
-        // A failed metadata publish must not break terminal cleanup: the
-        // worktree on disk is already settled, and a reconciler retry reads
-        // the same durable terminal row.
+        // A failed metadata publish must not break terminal cleanup, but it
+        // must NOT claim "settled": the durable row still has worktree=NULL,
+        // and delivery readiness treats that as "settlement not committed yet".
+        // Report a distinct status so callers can annotate/retry; the startup
+        // sweep (DagLoop init) and a process-level reconciler retry the same
+        // durable terminal row.
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.interrupt
             : Effect.logWarning("workflow worktree settlement publish failed", {
                 dagID: input.dagID,
                 cause,
-              }).pipe(Effect.as("settled" as const)),
+              }).pipe(Effect.as("settle_failed" as const)),
         ),
       )
 
@@ -242,7 +263,7 @@ export function settleTerminalWorkflowWorktree(
       instanceStore && ownerReal !== DagLocation.canonicalDirectory(input.ambient.directory)
         ? instanceStore.provide({ directory: ownerReal, trustProject: input.ambient.trustProject === true }, effect)
         : effect
-    yield* settleWorkflowWorktree({
+    const outcome = yield* settleWorkflowWorktree({
       dagID: input.dagID,
       status,
       config,
@@ -259,6 +280,13 @@ export function settleTerminalWorkflowWorktree(
           timestamp,
         }).pipe(Effect.asVoid),
     })
+    // `settle_failed` means the disk outcome happened but the durable pointer
+    // did not commit. Delivery stays gated on that pointer; log loudly so the
+    // startup sweep / reconciler retry is attributable.
+    if (outcome === "settle_failed")
+      yield* Effect.logWarning("workflow worktree settlement is not durable; delivery will retry after settlement", {
+        dagID: input.dagID,
+      })
   }).pipe(
     Effect.catchCause((cause) =>
       Cause.hasInterrupts(cause)

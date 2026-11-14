@@ -25,6 +25,7 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionSchema } from "@graphagent/core/session/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { Dag, parseWorkflowConfig, type NodeConfig } from "@/dag/dag"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { DagLocation } from "@/dag/location"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceStore } from "@/project/instance-store"
@@ -211,7 +212,7 @@ describe("Dag.create workflow-level worktree isolation (#1030)", () => {
     const repository = repo()
     const probe = newProbe()
     const failingBridge = Layer.mock(EventV2Bridge.Service, {
-      publish: () => Effect.die(new Error("publish failed")),
+      publishMany: () => Effect.die(new Error("batch publish failed")),
     })
     await Effect.runPromise(
       Effect.scoped(
@@ -228,12 +229,75 @@ describe("Dag.create workflow-level worktree isolation (#1030)", () => {
             }),
           )
           expect(exit._tag).toBe("Failure")
-          expect(exit._tag === "Failure" ? Cause.pretty(exit.cause) : "").toContain("publish failed")
+          expect(exit._tag === "Failure" ? Cause.pretty(exit.cause) : "").toContain("batch publish failed")
           expect(probe.creates).toHaveLength(1)
           expect(probe.removals).toEqual([{ directory: probe.created[0], keepBranch: false }])
           expect(yield* db.select().from(WorkflowTable).all()).toEqual([])
         }),
       ).pipe(Effect.provide(baseLayer(probe, failingBridge))) as Effect.Effect<never>,
+    )
+  })
+
+  it("commits the whole creation sequence atomically: a mid-batch projector failure leaves zero durable rows", async () => {
+    const repository = repo()
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          const events = yield* EventV2.Service
+          const { db } = yield* Database.Service
+          // F4: WorkflowCreated/NodeRegistered/WorkflowStarted share one
+          // transaction. A failure on a LATER event must roll back the earlier
+          // projections too, so the worktree rollback cannot orphan a durable
+          // WorkflowCreated row that points at the removed directory.
+          yield* events.project(DagEvent.NodeRegistered, () => Effect.die(new Error("mid-batch projection failure")))
+          const exit = yield* Effect.exit(
+            dag.create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            }),
+          )
+          expect(exit._tag).toBe("Failure")
+          expect(exit._tag === "Failure" ? Cause.pretty(exit.cause) : "").toContain("mid-batch projection failure")
+          expect(yield* db.select().from(WorkflowTable).all()).toEqual([])
+          expect(yield* db.select().from(WorkflowNodeTable).all()).toEqual([])
+          expect(yield* db.select().from(EventTable).all()).toEqual([])
+          expect(probe.removals).toEqual([{ directory: probe.created[0], keepBranch: false }])
+        }),
+      ).pipe(Effect.provide(baseLayer(probe))) as Effect.Effect<never>,
+    )
+  })
+
+  it("rejects node workspace under workflow isolation before creating a worktree", async () => {
+    const repository = repo()
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          const { db } = yield* Database.Service
+          const error = yield* dag
+            .create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: {
+                name: "isolated",
+                isolation: "worktree",
+                nodes: [{ ...node("a"), workspace: repository }],
+              },
+            })
+            .pipe(Effect.catch((cause: Error) => Effect.succeed(cause)))
+          expect((error as Error).message).toContain("node-level workspace/isolation are mutually exclusive")
+          expect(probe.creates).toEqual([])
+          expect(yield* db.select().from(WorkflowTable).all()).toEqual([])
+        }),
+      ).pipe(Effect.provide(baseLayer(probe))) as Effect.Effect<never>,
     )
   })
 

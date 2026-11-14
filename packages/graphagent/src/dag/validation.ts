@@ -1362,6 +1362,9 @@ export interface ReplanStructuralInput {
    * graph budget; extend/replan/recover hints must not suggest raising it. */
   action?: Exclude<CeilingAction, "start">
   config: { mode?: ExecutionMode; max_total_nodes?: number }
+  /** #1030 D9-g: the durable workflow-level isolation. Fragments cannot set
+   * it, but they must not rebind a node away from the shared worktree. */
+  isolation?: "worktree"
 }
 
 /** Replan structural validation through the same helper functions as create —
@@ -1384,6 +1387,21 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
     ...conditionDiagnostics(input.rerunNodes, input.grandfatheredNodeIds),
     ...fanOutDiagnostics(input.rerunNodes, input.merged.nodes),
     ...bindingDiagnostics(input.rerunNodes),
+    // #1030 D9-g: a fragment cannot rebind a node away from the workflow's
+    // shared worktree (config.isolation is start-only, but node workspace /
+    // node isolation are accepted in fragments).
+    ...(input.isolation === "worktree"
+      ? input.rerunNodes
+          .filter((node) => node.workspace !== undefined || node.isolation !== undefined)
+          .map((node) =>
+            diagnostic({
+              code: DIAGNOSTIC_CODES.isolationInvalid,
+              path: node.workspace !== undefined ? `nodes[${node.id}].workspace` : `nodes[${node.id}].isolation`,
+              message: `workflow-level worktree isolation owns the shared checkout; node "${node.id}" cannot set workspace or isolation`,
+              hint: "Remove workspace/isolation from the fragment node; every child runs in the workflow worktree.",
+            }),
+          )
+      : []),
     ...ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes, input.action ?? "replan"),
     ...review.errors,
     ...review.warnings,
@@ -1680,6 +1698,7 @@ export function isolationDiagnostics(input: {
 export function workflowIsolationDiagnostics(input: {
   isolation?: "worktree"
   workspace?: string
+  nodes?: readonly NodeConfig[]
   ownerDirectory?: string
   profile: Profile
 }): Diagnostic[] {
@@ -1688,6 +1707,20 @@ export function workflowIsolationDiagnostics(input: {
   const problems: string[] = []
   if (input.workspace !== undefined)
     problems.push("config.isolation and config.workspace are mutually exclusive")
+  // #1030 D9-g: every child of a workflow-isolated workflow runs in the one
+  // workflow worktree. A node workspace or per-node worktree would contradict
+  // its execution-context prompt ("every child shares this checkout") and its
+  // changes would never reach the workflow completion commit/patch.
+  for (const node of input.nodes ?? []) {
+    if (node.workspace !== undefined)
+      problems.push(
+        `config.isolation and node workspace are mutually exclusive; node "${node.id}" already runs in the shared workflow worktree`,
+      )
+    if (node.isolation !== undefined)
+      problems.push(
+        `config.isolation and node isolation are mutually exclusive; the workflow owns the only worktree (node "${node.id}")`,
+      )
+  }
   if (input.profile === "environment" && input.ownerDirectory) {
     if (!DagLocation.isGitWorktree(input.ownerDirectory))
       problems.push(
@@ -1703,7 +1736,7 @@ export function workflowIsolationDiagnostics(input: {
       code: DIAGNOSTIC_CODES.isolationInvalid,
       path,
       message,
-      hint: "Remove config.isolation or config.workspace, and start from a clean git checkout.",
+      hint: "Remove config.isolation, config.workspace, or node-level workspace/isolation, and start from a clean git checkout.",
     }),
   )
 }
@@ -1845,6 +1878,7 @@ export function validatePostCompile(input: {
       ...workflowIsolationDiagnostics({
         isolation: input.config.isolation,
         workspace: input.config.workspace,
+        nodes: input.nodes,
         ownerDirectory: input.directory,
         profile: input.profile,
       }),

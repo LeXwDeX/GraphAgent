@@ -4,7 +4,7 @@
 export * as Dag from "./dag"
 
 import { LayerNode } from "@graphagent/core/effect/layer-node"
-import { DateTime, Effect, Layer, Context, Schema, Option, Clock } from "effect"
+import { DateTime, Effect, Layer, Context, Schema, Option, Clock, Exit } from "effect"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -827,6 +827,21 @@ export const layer = Layer.effect(
           new Error("Invalid workflow config: config.isolation and config.workspace are mutually exclusive"),
         )
       }
+      // #1030 D9-g: workflow-level isolation owns the single checkout every
+      // child shares. A node bound to its own workspace or nested worktree
+      // would contradict its execution-context prompt and its changes would
+      // never reach the workflow's completion commit/patch. Authoring reports
+      // the diagnostic; this repeats the check for direct Dag.create callers.
+      if (
+        config.isolation === "worktree" &&
+        config.nodes.some((node) => node.workspace !== undefined || node.isolation !== undefined)
+      ) {
+        return yield* Effect.fail(
+          new Error(
+            "Invalid workflow config: config.isolation and node-level workspace/isolation are mutually exclusive",
+          ),
+        )
+      }
       if (config.mode === "deep") {
         if (!config.admission) {
           return yield* Effect.fail(
@@ -959,9 +974,13 @@ export const layer = Layer.effect(
             }
           : boundConfig
 
-      // Roll back the created worktree (directory and branch) when any event
-      // publication fails. Creation itself publishes nothing, so a create
-      // failure leaves zero events.
+      // Roll back the created worktree (directory and branch) when the creation
+      // batch fails before committing. The whole create sequence is published in
+      // ONE durable transaction, so a failure of any projector/handler leaves
+      // zero events: there can be no durable WorkflowCreated row pointing at a
+      // removed directory. A crash between the transaction commit and this
+      // effect returning is covered by the orphan-pending sweep (event log has
+      // all three events) instead.
       const removeWorkflowWorktree = () =>
         workflowWorktree && worktreeSvc
           ? inOwnerInstance(
@@ -971,41 +990,57 @@ export const layer = Layer.effect(
           : Effect.void
       return yield* Effect.gen(function* () {
         const ts = yield* DateTime.now
-        yield* events.publish(DagEvent.WorkflowCreated, {
-          dagID,
-          projectID: input.projectID as never,
-          sessionID: input.sessionID as never,
-          title: input.title,
-          config: JSON.stringify(durableConfig),
-          status: "pending",
-          timestamp: ts,
-          // DAG-LOC-01 stamp (P2-F): the execution-location key is the TARGET
-          // SESSION's durable directory — the single source of truth. Stamping
-          // the ambient request instance's directory would let a request on
-          // directory A create a workflow for B's session stamped A, orphaning
-          // it from B's loops. Fall back to the ambient instance only when the
-          // session has no durable row (the workflow insert would fail its
-          // session FK anyway).
-          directory: ownerDirectory,
-          ...(bound.workspace !== undefined ? { executionDirectory: bound.workspace } : {}),
-          targetFingerprint,
-        })
-        for (const node of durableConfig.nodes) {
-          yield* events.publish(DagEvent.NodeRegistered, {
-            dagID,
-            nodeID: node.id as never,
-            name: node.name,
-            workerType: node.worker_type,
-            dependsOn: node.depends_on.map((d) => d as never),
-            required: node.required ?? false,
-            model: node.model as never,
-            timestamp: ts,
-          })
-        }
         const startTs = yield* DateTime.now
-        yield* events.publish(DagEvent.WorkflowStarted, { dagID, timestamp: startTs })
+        // Same aggregate → one transaction with contiguous seqs (replan uses
+        // the same publishMany contract). Per-event publishes would commit
+        // WorkflowCreated/NodeRegistered independently: a later failure would
+        // roll the worktree back while durable rows still reference it.
+        const batch: BatchEvent[] = [
+          {
+            definition: DagEvent.WorkflowCreated,
+            data: {
+              dagID,
+              projectID: input.projectID as never,
+              sessionID: input.sessionID as never,
+              title: input.title,
+              config: JSON.stringify(durableConfig),
+              status: "pending",
+              timestamp: ts,
+              // DAG-LOC-01 stamp (P2-F): the execution-location key is the
+              // TARGET SESSION's durable directory — the single source of
+              // truth. Stamping the ambient request instance's directory would
+              // let a request on directory A create a workflow for B's session
+              // stamped A, orphaning it from B's loops. Fall back to the
+              // ambient instance only when the session has no durable row (the
+              // workflow insert would fail its session FK anyway).
+              directory: ownerDirectory,
+              ...(bound.workspace !== undefined ? { executionDirectory: bound.workspace } : {}),
+              targetFingerprint,
+            },
+          },
+          ...durableConfig.nodes.map((node) => ({
+            definition: DagEvent.NodeRegistered,
+            data: {
+              dagID,
+              nodeID: node.id as never,
+              name: node.name,
+              workerType: node.worker_type,
+              dependsOn: node.depends_on.map((d) => d as never),
+              required: node.required ?? false,
+              model: node.model as never,
+              timestamp: ts,
+            },
+          })),
+          { definition: DagEvent.WorkflowStarted, data: { dagID, timestamp: startTs } },
+        ]
+        yield* events.publishMany(batch)
         return dagID
-      }).pipe(Effect.onError(() => removeWorkflowWorktree()))
+      }).pipe(
+        // onExit (not onError): an interruption before the uninterruptible
+        // commit must also remove the worktree; after a successful commit the
+        // exit is success and the directory stays.
+        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Effect.uninterruptible(removeWorkflowWorktree()))),
+      )
     })
 
     const pause = Effect.fn("Dag.pause")(function* (lock: WorkflowLock, dagID: string, reason?: PauseReason) {
@@ -1412,6 +1447,7 @@ export const layer = Layer.effect(
         merged,
         action,
         config: { mode: wfConfig.mode, max_total_nodes: wfConfig.max_total_nodes },
+        isolation: wfConfig.isolation,
         terminalNodeIds,
         grandfatheredNodeIds: persistedGateNodeIds(merged.nodes, cfgById),
       })
@@ -1752,6 +1788,7 @@ export const layer = Layer.effect(
         grandfatheredNodeIds: new Set(plan.config.nodes.map((node) => node.id)),
         action: "recover",
         config,
+        isolation: config.isolation,
       }).filter((diagnostic) => diagnostic.severity === "error")
       if (diagnostics.length > 0) return yield* Effect.fail(new StructuralValidationError({ diagnostics }))
 

@@ -153,6 +153,55 @@ const createIt = testEffect(
   ),
 )
 
+/** Fails only the tree-population step so the partial create path is exercised:
+ * `worktree add`/`branch`/`addSandbox` succeeded, `reset --hard` did not. */
+const resetFailureProcessLayer = Layer.effect(
+  AppProcess.Service,
+  Effect.gen(function* () {
+    const process = yield* AppProcess.Service
+    return AppProcess.Service.of({
+      ...process,
+      run: (command, options) =>
+        command._tag === "StandardCommand" && command.args.includes("reset")
+          ? Effect.succeed({
+              command: "git reset --hard",
+              exitCode: 1,
+              stdout: Buffer.alloc(0),
+              stderr: Buffer.from("simulated reset failure"),
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            })
+          : process.run(command, options),
+    })
+  }),
+).pipe(Layer.provide(AppProcess.defaultLayer))
+
+const resetFailureProjectLayer = Layer.effect(
+  Project.Service,
+  Effect.gen(function* () {
+    const project = yield* Project.Service
+    return Project.Service.of({ ...project })
+  }),
+).pipe(Layer.provideMerge(Project.defaultLayer))
+
+const resetFailureIt = testEffect(
+  Layer.mergeAll(
+    Worktree.layer.pipe(
+      Layer.provide(Git.defaultLayer),
+      Layer.provide(resetFailureProcessLayer),
+      Layer.provideMerge(resetFailureProjectLayer),
+      Layer.provide(Database.defaultLayer),
+      Layer.provide(FSUtil.defaultLayer),
+      Layer.provide(NodePath.layer),
+      Layer.provide(InstanceLayer.layer),
+    ),
+    // Read-only views of the same memoized layers the Worktree graph uses.
+    FSUtil.defaultLayer,
+    Git.defaultLayer,
+    Project.defaultLayer,
+  ),
+)
+
 function normalize(input: string) {
   return input.replace(/\\/g, "/").toLowerCase()
 }
@@ -484,6 +533,31 @@ describe("Worktree", () => {
             expect(info.branch).toBe("opencode/test-workspace")
           }),
         ),
+      { git: true },
+    )
+
+    resetFailureIt.instance(
+      "rolls back the directory, branch ref and sandbox registration when setup fails",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const fs = yield* FSUtil.Service
+          const project = yield* Project.Service
+          const ctx = yield* InstanceState.context
+
+          const exit = yield* Effect.exit(svc.create({ name: "reset-fails" }))
+          expect(exit._tag).toBe("Failure")
+          expect(exit._tag === "Failure" ? Cause.pretty(exit.cause) : "").toContain("simulated reset failure")
+
+          const main = yield* fs.realPath(test.directory)
+          const directory = path.join(main, ".agents", "worktree", "reset-fails")
+          expect(yield* fs.exists(directory).pipe(Effect.orDie)).toBe(false)
+          const branches = yield* gitResult(test.directory, ["branch", "--list", "opencode/reset-fails"])
+          expect(branches.text().trim()).toBe("")
+          const current = yield* project.get(ctx.project.id)
+          expect(current?.sandboxes ?? []).not.toContain(directory)
+        }),
       { git: true },
     )
 

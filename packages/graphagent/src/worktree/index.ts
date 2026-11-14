@@ -15,7 +15,7 @@ import { Slug } from "@graphagent/core/util/slug"
 import { errorMessage } from "../util/error"
 import { GlobalBus } from "@/bus/global"
 import { Git } from "@/git"
-import { Context, Cause, Effect, FiberMap, Layer, Path, Schema } from "effect"
+import { Context, Cause, Effect, Exit, FiberMap, Layer, Path, Schema } from "effect"
 import { ChildProcess } from "effect/process"
 import { NodePath } from "@effect/platform-node"
 import { FSUtil } from "@graphagent/core/fs-util"
@@ -345,6 +345,25 @@ export const layer: Layer.Layer<
       base?: string,
     ) {
       const directory = yield* canonical(info.directory)
+      const ctx = yield* InstanceState.context
+      // #1030 F3: setup registers the directory with Project, creates the
+      // branch ref and only then populates the tree. A reset failure — or an
+      // interrupt between those steps — must not leave an empty checkout, a
+      // dangling branch ref and a sandbox registration behind. Roll back
+      // best-effort inside the same lifecycle lock that owns creation (raw git
+      // here, not `remove`, which would deadlock on the keyed lock).
+      const rollback = Effect.gen(function* () {
+        yield* git(["worktree", "remove", "--force", info.directory], { cwd: ctx.worktree })
+        if (info.branch) yield* git(["branch", "-D", info.branch], { cwd: ctx.worktree })
+        yield* project.removeSandbox(ctx.project.id, info.directory).pipe(Effect.catch(() => Effect.void))
+      }).pipe(
+        Effect.uninterruptible,
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.void
+            : Effect.logWarning("worktree creation rollback failed", { directory: info.directory, cause }),
+        ),
+      )
       yield* lifecycle.withLock(directory)(
         Effect.gen(function* () {
           yield* setup(info, base)
@@ -355,7 +374,11 @@ export const layer: Layer.Layer<
               Effect.catchCause((cause) => Effect.logError("worktree bootstrap failed", { cause })),
             ),
           )
-        }),
+        }).pipe(
+          // Success returns the fully created worktree to the caller; every
+          // other exit (setup failure, interrupt) owns the cleanup.
+          Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : rollback)),
+        ),
       )
     })
 

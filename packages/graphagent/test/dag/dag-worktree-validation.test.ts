@@ -177,6 +177,43 @@ describe("workflow validate: workflow-level isolation (#1030)", () => {
     expect(workflowIsolationErrors(result)[0]?.message).toContain("mutually exclusive")
   })
 
+  it("rejects a node workspace under workflow isolation", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateWorkflow({
+      directory: tmp.path,
+      isolation: "worktree",
+      nodes: [isolationNode({ workspace: tmp.path })],
+    })
+    expect(workflowIsolationErrors(result)[0]?.message).toContain("node workspace")
+  })
+
+  it("rejects node-level isolation under workflow isolation", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateWorkflow({
+      directory: tmp.path,
+      isolation: "worktree",
+      nodes: [isolationNode({ isolation: "worktree" })],
+    })
+    expect(workflowIsolationErrors(result)[0]?.message).toContain("node isolation")
+  })
+
+  it("rejects a replan fragment that rebinds a node away from the shared worktree", () => {
+    const fragment = isolationNode({ workspace: "/elsewhere" })
+    const diagnostics = DagValidation.replanStructuralDiagnostics({
+      fragmentNodes: [fragment],
+      rerunNodes: [fragment],
+      existingNodeIds: new Set(),
+      existingNodeCount: 0,
+      addCount: 1,
+      merged: { name: "wf", nodes: [fragment] },
+      config: {},
+      isolation: "worktree",
+    })
+    expect(
+      diagnostics.filter((error) => error.code === DagValidation.DIAGNOSTIC_CODES.isolationInvalid)[0]?.message,
+    ).toContain("shared checkout")
+  })
+
   it("rejects a non-git target", async () => {
     await using tmp = await tmpdir()
     const result = await validateWorkflow({ directory: tmp.path, isolation: "worktree" })

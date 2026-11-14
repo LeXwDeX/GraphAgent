@@ -23,7 +23,7 @@ function layer(filename: string) {
   return Layer.mergeAll(database, events, store, projector)
 }
 
-function seed() {
+function seed(input?: { status?: string; config?: string }) {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
     yield* db
@@ -54,8 +54,8 @@ function seed() {
         project_id: Project.ID.make("project-1"),
         session_id: SessionSchema.ID.make("ses_parent"),
         title: "Workflow worktree",
-        status: "completed",
-        config: "{}",
+        status: input?.status ?? "completed",
+        config: input?.config ?? "{}",
         seq: 7,
         directory: "/project",
         target_fingerprint: { kind: "none" },
@@ -120,6 +120,95 @@ describe("workflow worktree settlement projection (#1030)", () => {
         })
 
         expect((yield* store.getWorkflow("dag_worktree"))?.worktree).toEqual(settled)
+      }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
+    )
+  })
+
+  test("recovery clears the settlement pointer so a later episode settles again (failed → recover → completed)", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed({ status: "failed" })
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+        const dagID = DagEvent.DagID.make("dag_worktree")
+
+        yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
+          dagID,
+          worktree: settled,
+          timestamp: yield* DateTime.now,
+        })
+        expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(settled)
+
+        yield* events.publish(DagEvent.WorkflowReplanned, {
+          dagID,
+          added: 0,
+          removed: 0,
+          replaced: 0,
+          restarted: 0,
+          recovery: { expectedGraphRev: 1, expectedSeq: 7, nodeSeqs: [], resumeCancelled: false },
+          timestamp: yield* DateTime.now,
+        })
+        // F2: the failed attempt's settlement must not suppress the completed
+        // attempt's settlement — recovery opens a new terminal episode.
+        expect(yield* store.getWorkflow(dagID)).toEqual(
+          expect.objectContaining({ status: "running", worktree: null, graphRev: 2 }),
+        )
+
+        const next = { ...settled, head: "next-head", state: "removed" as const }
+        yield* events.publish(DagEvent.WorkflowCompleted, {
+          dagID,
+          durationMs: 1,
+          timestamp: yield* DateTime.now,
+        })
+        yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
+          dagID,
+          worktree: next,
+          timestamp: yield* DateTime.now,
+        })
+        expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(next)
+      }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
+    )
+  })
+
+  test("resume_cancelled recovery also clears the settlement pointer (cancelled → recover → completed)", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed({ status: "cancelled" })
+        const events = yield* EventV2.Service
+        const store = yield* DagStore.Service
+        const dagID = DagEvent.DagID.make("dag_worktree")
+
+        yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
+          dagID,
+          worktree: settled,
+          timestamp: yield* DateTime.now,
+        })
+
+        yield* events.publish(DagEvent.WorkflowReplanned, {
+          dagID,
+          added: 0,
+          removed: 0,
+          replaced: 0,
+          restarted: 0,
+          recovery: { expectedGraphRev: 1, expectedSeq: 7, nodeSeqs: [], resumeCancelled: true },
+          timestamp: yield* DateTime.now,
+        })
+        expect(yield* store.getWorkflow(dagID)).toEqual(
+          expect.objectContaining({ status: "running", worktree: null, graphRev: 2 }),
+        )
+
+        const next = { ...settled, head: "next-head", state: "removed" as const }
+        yield* events.publish(DagEvent.WorkflowCompleted, {
+          dagID,
+          durationMs: 1,
+          timestamp: yield* DateTime.now,
+        })
+        yield* events.publish(DagEvent.WorkflowWorktreeSettled, {
+          dagID,
+          worktree: next,
+          timestamp: yield* DateTime.now,
+        })
+        expect((yield* store.getWorkflow(dagID))?.worktree).toEqual(next)
       }).pipe(Effect.provide(layer(":memory:")), Effect.scoped),
     )
   })

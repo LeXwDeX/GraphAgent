@@ -78,7 +78,7 @@ import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { DagDelivery } from "./delivery"
-import { settleTerminalWorkflowWorktree } from "./worktree-completion"
+import { settleTerminalWorkflowWorktree, workflowWorktreeSettlementPending } from "./worktree-completion"
 import { Logging } from "@graphagent/core/observability/logging"
 
 export { PAUSED_REMINDER_DELAY_MS, isPausedReminderDue, wakeBatchIdentity } from "./delivery"
@@ -2232,6 +2232,15 @@ const serviceLayer = Layer.effect(
               ),
             )
           if (!snapshot.workflows.some((wf) => wf.projectId === ctx.project.id)) continue
+          // #1030 D9-g: a crash can land between the terminal transition and
+          // the settlement projection. Delivery is gated on that pointer, so
+          // settle the durable terminal rows before the first wake scan (the
+          // seam is idempotent and owner-gated; a not-owned row is a no-op).
+          for (const workflow of snapshot.workflows) {
+            if (!isTerminalWorkflowStatusValue(workflow.status)) continue
+            if (!workflowWorktreeSettlementPending(workflow, parseWorkflowConfig(workflow.config))) continue
+            yield* settleWorkflowTerminal(workflow.id)
+          }
           // GOAL-FP-01-01: register only NON-terminal workflows. Terminal
           // workflows with wake_reported=true would otherwise be re-registered
           // on every restart and never unregistered (the only unregister for

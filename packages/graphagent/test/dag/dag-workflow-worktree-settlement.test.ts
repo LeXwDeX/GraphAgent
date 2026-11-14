@@ -74,6 +74,7 @@ function settle(input: {
   status: "completed" | "failed" | "cancelled"
   config: WorkflowConfig
   failRemoval?: boolean
+  failPublish?: boolean
 }) {
   const harness: Harness = { published: [], removals: [] }
   let row = makeWorkflowRow({
@@ -87,27 +88,40 @@ function settle(input: {
   const store = {
     getWorkflow: () => Effect.succeed(row),
   } as unknown as DagStore.Interface
-  const effect = settleWorkflowWorktree({
-    dagID: input.dagID,
-    status: input.status,
-    config: input.config,
-    store,
-    projectID: "proj-settle",
-    remove: (directory, options) =>
-      Effect.sync(() => {
-        harness.removals.push({ directory, ...options })
-        if (input.failRemoval) return false
-        execFileSync("git", ["-C", input.repository, "worktree", "remove", "--force", directory])
-        return true
-      }),
-    publish: (worktree) =>
-      Effect.sync(() => {
-        harness.published.push(worktree)
-        // The real projector folds workflow.worktree in the publish transaction.
-        row = { ...row, worktree }
-      }),
-  })
-  return { harness, effect, getRow: () => row }
+  const settleAs = (status: "completed" | "failed" | "cancelled") =>
+    settleWorkflowWorktree({
+      dagID: input.dagID,
+      status,
+      config: input.config,
+      store,
+      projectID: "proj-settle",
+      remove: (directory, options) =>
+        Effect.sync(() => {
+          harness.removals.push({ directory, ...options })
+          if (input.failRemoval) return false
+          execFileSync("git", ["-C", input.repository, "worktree", "remove", "--force", directory])
+          return true
+        }),
+      publish: (worktree) =>
+        input.failPublish
+          ? Effect.die(new Error("settlement publish exploded"))
+          : Effect.sync(() => {
+              harness.published.push(worktree)
+              // The real projector folds workflow.worktree in the publish transaction.
+              row = { ...row, worktree }
+            }),
+    })
+  return {
+    harness,
+    effect: settleAs(input.status),
+    settleAs,
+    getRow: () => row,
+    /** Simulate the WorkflowReplanned recovery projection: new status and
+     * graph revision, settlement pointer cleared for the next episode. */
+    reopen: (status: "running" | "completed" | "failed" | "cancelled") => {
+      row = { ...row, status, worktree: null, seq: row.seq + 1, graphRev: row.graphRev + 1 }
+    },
+  }
 }
 
 function config(repository: string, dagID: string): { config: WorkflowConfig; pointer: ReturnType<typeof worktree> } {
@@ -183,6 +197,53 @@ describe("workflow-level worktree settlement (#1030)", () => {
     expect(await Effect.runPromise(effect)).toBe("already_settled")
 
     expect(harness.published).toHaveLength(1)
+    rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
+  })
+
+  it("settles a recovered workflow in its next terminal episode instead of skipping forever (#1030 F2)", async () => {
+    const repository = repo()
+    const dagID = "dag_settle_recovered"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "attempt.txt"), "attempt\n")
+    const { harness, effect, settleAs, reopen, getRow } = settle({
+      repository,
+      dagID,
+      status: "failed",
+      config: cfg,
+    })
+
+    expect(await Effect.runPromise(effect)).toBe("settled")
+    expect(getRow().worktree?.state).toBe("kept")
+    expect(existsSync(pointer.directory)).toBe(true)
+
+    // WorkflowReplanned recovery reopens the workflow and clears the pointer.
+    reopen("completed")
+    expect(await Effect.runPromise(settleAs("completed"))).toBe("settled")
+
+    expect(harness.published).toHaveLength(2)
+    expect(harness.published[1]?.state).toBe("removed")
+    expect(existsSync(pointer.directory)).toBe(false)
+    expect(git(repository, ["branch", "--list", pointer.branch])).toContain(pointer.branch)
+    rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
+  })
+
+  it("reports settle_failed instead of settled when the settlement projection cannot commit", async () => {
+    const repository = repo()
+    const dagID = "dag_settle_publish_fails"
+    const { config: cfg, pointer } = config(repository, dagID)
+    writeFileSync(path.join(pointer.directory, "final.txt"), "final\n")
+    const { effect, getRow } = settle({
+      repository,
+      dagID,
+      status: "completed",
+      config: cfg,
+      failPublish: true,
+    })
+
+    // F1: a failed publish must not claim "settled" — delivery readiness keys
+    // on the durable pointer, so the caller/reconciler must be able to retry.
+    expect(await Effect.runPromise(effect)).toBe("settle_failed")
+    expect(getRow().worktree ?? null).toBeNull()
     rmSync(workflowArtifactsRoot("proj-settle"), { recursive: true, force: true })
   })
 

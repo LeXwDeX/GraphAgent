@@ -25,6 +25,7 @@ import { finalAssistantText, parseFinalResponse } from "./final-response"
 import { isRecord } from "@/util/record"
 import { before } from "@/session/message-v2"
 import { reportIdentity } from "../report-identity"
+import { workflowWorktreeSettlementPending } from "./worktree-completion"
 import type { DagEvent } from "@graphagent/schema/dag-event"
 
 export { reportIdentity } from "../report-identity"
@@ -222,6 +223,16 @@ export function deliverReport(input: {
       return current?.status === "completed" && current.seq === workflow.seq && current.graphRev === workflow.graphRev
     }).pipe(Effect.orDie)
     if (!(yield* currentEpisode)) return false
+    // #1030 D9-g: the answer part is a durable receipt whose body embeds the
+    // workflow-worktree evidence, but its identity is pinned to the terminal
+    // `(seq, graphRev)`. Settlement writes the evidence WITHOUT advancing
+    // either, so a receipt written from an unsettled row could never match a
+    // retry that reads the settled row — the mismatch below would `die` on
+    // every drain. Wait for the settlement projection instead; the terminal
+    // handler nudges delivery after settling, and DagLoop.init retries the
+    // settlement for terminal rows left behind by a crash.
+    const durable = yield* store.getWorkflow(workflow.id).pipe(Effect.orDie)
+    if (!durable || workflowWorktreeSettlementPending(durable, config)) return false
     const receipt = yield* getReceipt()
     const history = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
     if (!receipt && !userTurnAnswered(history)) return false
@@ -252,7 +263,8 @@ export function deliverReport(input: {
     const report = node ? reportText(node, structured, input.source, artifact) : resultIndex(workflow, nodes)
     // #1030 D9-g: the final report names the workflow-level worktree evidence
     // (directory/branch/base/head/patch) even when the body came from a node.
-    const worktreeEvidence = workflow.worktree ? `\n\n${workflowWorktreeText(workflow.worktree)}` : ""
+    // Read it from the durable row: the snapshot may predate the settlement.
+    const worktreeEvidence = durable?.worktree ? `\n\n${workflowWorktreeText(durable.worktree)}` : ""
     // #944: a delivered result whose target changed mid-run must say so in the
     // parent wake text, not only in the structured result view.
     const body = yield* boundReport(
