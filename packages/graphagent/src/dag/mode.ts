@@ -7,8 +7,9 @@
  * The mode lives on the session row (`dagMode`) so it survives a process
  * restart; the model-facing state lives in a runtime-context slot, which is
  * process memory only. `set` writes both, and the request builder re-derives
- * the slot from the row (`ensure`) because a restarted process starts with an
- * empty registry.
+ * the slot from the row because a restarted process starts with an empty
+ * registry. It reads the live row (`DagModeReader.durableMode`) rather than the
+ * turn loop's snapshot, since `/dag-mode` can run inside an active turn.
  */
 import type { DagMode as DagModeType } from "@graphagent/schema/dag-mode"
 import { EngineProcess } from "@/session/engine-process"
@@ -60,8 +61,9 @@ export function set(sessionID: SessionID, mode: DagModeType): void {
 }
 
 /**
- * Re-derive the slot from the session row on every request. Idempotent; it
- * costs one map write and keeps a restarted process in sync with the row.
+ * Re-derive the slot from a session snapshot. Idempotent and cheap, but a
+ * snapshot goes stale while a turn runs; request building reads the live row
+ * through `DagModeReader.durableMode` instead.
  */
 export function ensure(session: { readonly id: SessionID; readonly dagMode?: DagModeType }): void {
   set(session.id, get(session))

@@ -152,6 +152,7 @@ export function fromRow(row: SessionRow): Info {
     },
     dagMode: row.dag_mode,
     dagBudgetTokens: row.dag_budget_tokens,
+    dagBudgetUnlimited: row.dag_budget_unlimited,
   }
 }
 
@@ -193,6 +194,7 @@ export function toRow(info: Info) {
     time_archived: info.time.archived,
     dag_mode: info.dagMode,
     dag_budget_tokens: info.dagBudgetTokens,
+    dag_budget_unlimited: info.dagBudgetUnlimited ?? false,
   }
 }
 
@@ -291,6 +293,7 @@ export const Info = Schema.Struct({
   revert: optionalOmitUndefined(Revert),
   dagMode: optionalOmitUndefined(DagMode),
   dagBudgetTokens: optionalOmitUndefined(DagBudgetTokens),
+  dagBudgetUnlimited: optionalOmitUndefined(Schema.Boolean),
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -647,6 +650,7 @@ export const layer: Layer.Layer<
       permission?: PermissionV1.Ruleset
       dagMode?: "on" | "off"
       dagBudgetTokens?: number | null
+      dagBudgetUnlimited?: boolean
     }) {
       const ctx = yield* InstanceState.context
       // #1031 M1: explicit creation value, then the global `dag.mode` default.
@@ -680,6 +684,7 @@ export const layer: Layer.Layer<
         },
         dagMode,
         dagBudgetTokens: input.dagBudgetTokens ?? null,
+        dagBudgetUnlimited: input.dagBudgetUnlimited ?? false,
       }
       yield* Effect.logInfo("created", result)
 
@@ -987,6 +992,7 @@ export const layer: Layer.Layer<
         // usage counters still start from zero.
         dagMode: original.dagMode ?? "off",
         dagBudgetTokens: original.dagBudgetTokens,
+        dagBudgetUnlimited: original.dagBudgetUnlimited ?? false,
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const cutoff = input.messageID ? msgs.find((msg) => msg.info.id === input.messageID) : undefined
@@ -1184,7 +1190,13 @@ export const layer: Layer.Layer<
       yield* input.tokens !== null && (!Number.isSafeInteger(input.tokens) || input.tokens <= 0)
         ? Effect.fail(new DagModeError({ sessionID: input.sessionID, reason: "invalid_budget" }))
         : Effect.void
-      yield* patch(input.sessionID, { dagBudgetTokens: input.tokens, time: { updated: Date.now() } }).pipe(Effect.orDie)
+      yield* patch(input.sessionID, {
+        // #1031 M1: `null` is an explicit unlimited choice, not "no override";
+        // the flag keeps the global `dag.budget.tokens` from reappearing.
+        dagBudgetTokens: input.tokens,
+        dagBudgetUnlimited: input.tokens === null,
+        time: { updated: Date.now() },
+      }).pipe(Effect.orDie)
     })
 
     const setRevert = Effect.fn("Session.setRevert")(function* (input: {

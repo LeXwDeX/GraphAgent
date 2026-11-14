@@ -5,6 +5,8 @@ import { SessionAdmission } from "@graphagent/core/session/admission"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { NamedError } from "@graphagent/core/util/error"
 import type { SessionV1 } from "@graphagent/core/v1/session"
+import { ModelV2 } from "@graphagent/core/model"
+import { ProviderV2 } from "@graphagent/core/provider"
 import { fileURLToPath } from "url"
 import { Effect, Option } from "effect"
 import type { Context } from "effect"
@@ -213,6 +215,13 @@ export function parseDagModeCommand(raw: string): DagModeCommandArgs {
   return { kind: "status" }
 }
 
+/**
+ * A user-defined `dag-mode` command (config, MCP prompt or skill) replaces the
+ * built-in registry entry wholesale; only the built-in entry maps onto the
+ * local mode operation. A missing entry keeps the historical local path.
+ */
+const runsBuiltinDagMode = (entry: Command.Info | undefined) => !entry || Command.isBuiltin(entry)
+
 function dagModeReceipt(
   parsed: DagModeCommandArgs,
   snapshot: DagModeSnapshot,
@@ -252,6 +261,26 @@ function dagModeReceipt(
 }
 
 /**
+ * Model stamped on the command message. `SessionV1.User.model` is required
+ * even in a fresh session with no provider; the receipt is ignored
+ * presentation state, so an unresolved placeholder never reaches a request
+ * (and `currentModel` skips local command exchanges when it scans history).
+ */
+const UNRESOLVED_MODEL = {
+  providerID: ProviderV2.ID.make("unknown"),
+  modelID: ModelV2.ID.make("unknown"),
+}
+
+const dagModeMessageModel = (deps: CommandDeps, info: SessionInfo, agentName: string) =>
+  Effect.gen(function* () {
+    if (info.model) return { providerID: info.model.providerID, modelID: info.model.id }
+    const agent = yield* deps.agents.get(agentName).pipe(Effect.catch(() => Effect.succeed(undefined)))
+    if (agent?.model) return { providerID: agent.model.providerID, modelID: agent.model.modelID }
+    const fallback = yield* deps.providers.defaultModel().pipe(Effect.option)
+    return Option.getOrUndefined(fallback) ?? UNRESOLVED_MODEL
+  })
+
+/**
  * Local `/dag-mode` dispatch: change the row (top-level sessions only), then
  * record the exchange as a command message whose receipt part is ignored but
  * still carries `metadata.receipt` for the TUI renderer.
@@ -260,8 +289,8 @@ function dagModeCommand(deps: CommandDeps, input: CommandInput) {
   return Effect.gen(function* () {
     const info: SessionInfo = yield* deps.sessions.get(input.sessionID).pipe(Effect.orDie)
     const parsed = parseDagModeCommand(input.arguments)
-    const model = yield* deps.prepareFns.currentModel(input.sessionID)
     const agentName = input.agent ?? (yield* deps.agents.defaultAgent())
+    const model = yield* dagModeMessageModel(deps, info, agentName)
     const userMsg: SessionV1.User = {
       id: input.messageID ?? MessageID.ascending(),
       role: "user",
@@ -314,7 +343,9 @@ function dagModeCommand(deps: CommandDeps, input: CommandInput) {
         {
           ...info,
           dagMode: mode,
-          dagBudgetTokens: parsed.kind === "budget" ? parsed.tokens : info.dagBudgetTokens,
+          ...(parsed.kind === "budget"
+            ? { dagBudgetTokens: parsed.tokens, dagBudgetUnlimited: parsed.tokens === null }
+            : {}),
         },
       ).pipe(Effect.orDie)
       const receipt = dagModeReceipt(parsed, snapshot)
@@ -428,7 +459,7 @@ export function makeCommand(deps: CommandDeps) {
     }
     yield* Effect.logInfo("command", { "session.id": input.sessionID, command: input.command, agent: input.agent })
     if (input.command === "memory") return yield* commandTurn(input.sessionID, memoryCommandMessage(deps, input))
-    if (input.command === Command.Default.DAG_MODE)
+    if (input.command === Command.Default.DAG_MODE && runsBuiltinDagMode(yield* commands.get(input.command)))
       return yield* commandTurn(input.sessionID, dagModeCommand(deps, input))
     // Goal/Subgoal command dispatch — early return BEFORE command registry lookup
     if (goal && (input.command === "goal" || input.command === "subgoal")) {

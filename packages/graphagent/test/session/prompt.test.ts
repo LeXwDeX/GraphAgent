@@ -7900,7 +7900,7 @@ it.instance("an owner runtime slot adds a block without changing the system pref
     })
     yield* llm.text("first done")
     yield* prompt.loop({ sessionID: chat.id })
-    // `dag_mode` is owned by DagMode.ensure on every prepared request; use an
+    // `dag_mode` is owned by the request builder on every prepared request; use an
     // unrelated owner key to exercise the generic slot mechanism.
     EngineProcess.runtimes.runtimeSlots.set(chat.id, "owner_demo", {
       parts: ["<owner_demo>on</owner_demo>"],

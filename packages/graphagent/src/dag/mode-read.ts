@@ -22,6 +22,7 @@ import type { Config } from "@/config/config"
 import type { Provider } from "@/provider/provider"
 import type { AgentScheduler } from "@/session/agent-scheduler"
 import type { Session } from "@/session/session"
+import { DagMode } from "./mode"
 import { DagModeStatus } from "./mode-status"
 
 export interface Deps {
@@ -42,6 +43,19 @@ export interface Snapshot {
   /** Effective cap of those slots (`dag.concurrency` bounded by the child pool). */
   readonly cap: number
 }
+
+/**
+ * The mode the durable row currently holds. The request builder reconciles the
+ * runtime slot from this instead of the session snapshot a turn loop read
+ * before the loop started: a local `/dag-mode` command may land inside that
+ * turn (#1031 M1).
+ */
+export const durableMode = Effect.fn("DagModeReader.durableMode")(function* (
+  sessions: Pick<Session.Interface, "get">,
+  sessionID: SessionID,
+) {
+  return DagMode.get(yield* sessions.get(sessionID))
+})
 
 export const read = Effect.fn("DagModeReader.read")(function* (deps: Deps, info: Session.Info) {
   const [dag, merged, capacity] = yield* Effect.all([
@@ -107,7 +121,9 @@ export const read = Effect.fn("DagModeReader.read")(function* (deps: Deps, info:
       availability: unavailableReason ? ("unavailable" as const) : ("available" as const),
       unavailableReason,
       budget: {
-        tokens: info.dagBudgetTokens ?? dag.budget?.tokens ?? null,
+        // #1031 M1: an explicit `budget off` means unlimited, not "inherit the
+        // global `dag.budget.tokens`" — the flag keeps the two apart.
+        tokens: info.dagBudgetUnlimited ? null : (info.dagBudgetTokens ?? dag.budget?.tokens ?? null),
         used: usage.used,
         usedCacheRead: usage.usedCacheRead,
         warnRatio: dag.budget?.warn_ratio ?? DagModeStatus.DEFAULT_BUDGET_WARN_RATIO,

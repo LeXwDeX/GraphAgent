@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Option } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
+import { Command } from "@/command"
 import { makeCommand, parseDagModeCommand, type CommandDeps } from "@/session/command"
 import { SessionID } from "@/session/schema"
 
@@ -20,22 +21,37 @@ const model = { providerID: "test", modelID: "test-model" }
 // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- partial test double
 const asDeps = (value: Record<string, unknown>) => value as unknown as CommandDeps
 
+const buildAgent = { name: "build", mode: "primary" as const }
+
 function harness(overrides: {
   parentID?: string
   arguments: string
   mode?: "on" | "off"
   budget?: number | null
+  unlimited?: boolean
+  globalBudget?: number
+  /** Registry entry under the `dag-mode` name; a different object means a user override. */
+  command?: Record<string, unknown>
+  noModel?: boolean
 }) {
   const info = {
     id: sessionID,
     parentID: overrides.parentID,
     agent: "build",
+    model: overrides.noModel ? undefined : model,
     dagMode: overrides.mode ?? "off",
     dagBudgetTokens: overrides.budget ?? null,
+    dagBudgetUnlimited: overrides.unlimited ?? false,
     permission: [],
   }
   const parts: SessionV1.Part[] = []
-  const state = { mode: info.dagMode, budget: info.dagBudgetTokens }
+  const prompts: Array<{ parts: ReadonlyArray<Record<string, unknown>> }> = []
+  const state = {
+    mode: info.dagMode,
+    budget: info.dagBudgetTokens,
+    unlimited: info.dagBudgetUnlimited,
+    prompts,
+  }
   const deps = asDeps({
     sessions: {
       get: () => Effect.succeed(info),
@@ -47,32 +63,58 @@ function harness(overrides: {
       touch: () => Effect.void,
       setDagMode: (input: { mode: "on" | "off" }) => {
         state.mode = input.mode
+        info.dagMode = input.mode
         return Effect.void
       },
       setDagBudget: (input: { tokens: number | null }) => {
         state.budget = input.tokens
+        state.unlimited = input.tokens === null
+        info.dagBudgetTokens = input.tokens
+        info.dagBudgetUnlimited = input.tokens === null
         return Effect.void
       },
     },
     agents: {
       defaultAgent: () => Effect.succeed("build"),
-      get: () => Effect.succeed(undefined),
-      defaultInfo: () => Effect.succeed({ name: "build", mode: "primary" }),
+      get: () => Effect.succeed(buildAgent),
+      defaultInfo: () => Effect.succeed(buildAgent),
       list: () => Effect.succeed([{ name: "worker", mode: "subagent" }]),
       permissionPolicy: () => Effect.succeed({ native: [], rules: [] }),
     },
-    config: { get: () => Effect.succeed({}), dagGlobal: () => Effect.succeed({ concurrency: 3, max_total_nodes: 40 }) },
+    config: {
+      get: () => Effect.succeed({}),
+      dagGlobal: () =>
+        Effect.succeed({
+          concurrency: 3,
+          max_total_nodes: 40,
+          ...(overrides.globalBudget ? { budget: { tokens: overrides.globalBudget } } : {}),
+        }),
+    },
     events: { publish: () => Effect.void },
     commands: {
-      get: () => Effect.succeed({ name: "dag-mode", template: "", hints: ["$ARGUMENTS"] }),
+      // Undefined means "the built-in registry entry"; a template path is only
+      // entered when a user command replaced the name.
+      get: () => Effect.succeed(overrides.command),
       list: () => Effect.succeed([]),
     },
     prepareFns: {
-      currentModel: () => Effect.succeed(model),
+      currentModel: overrides.noModel
+        ? () => Effect.die(new Error("NoProvidersError"))
+        : () => Effect.succeed(model),
       modelSelection: () => Effect.succeed({}),
+      getModel: () => Effect.succeed({}),
+      resolvePromptParts: (template: string) => Effect.succeed([{ type: "text" as const, text: template }]),
+    },
+    admit: {
+      promptImpl: (input: { parts: ReadonlyArray<Record<string, unknown>> }) => {
+        prompts.push(input)
+        return Effect.succeed({ info: { id: "msg_prompt" }, parts: [] })
+      },
     },
     providers: {
-      defaultModel: () => Effect.succeed(model),
+      defaultModel: overrides.noModel
+        ? () => Effect.fail(new Error("NoProvidersError"))
+        : () => Effect.succeed(model),
       getModel: () => Effect.succeed({ capabilities: { toolcall: true } }),
     },
     dagStore: { listBySession: () => Effect.succeed([]), getNodes: () => Effect.succeed([]) },
@@ -100,9 +142,10 @@ function harness(overrides: {
   const command = makeCommand(deps).command
   return {
     state,
-    run: () =>
+    info,
+    run: (args = overrides.arguments) =>
       Effect.runPromise(
-        command({ sessionID, command: "dag-mode", arguments: overrides.arguments, agent: "build" }, { skipHookStart: true }),
+        command({ sessionID, command: "dag-mode", arguments: args, agent: "build" }, { skipHookStart: true }),
       ),
     parts,
   }
@@ -179,6 +222,25 @@ describe("/dag-mode exchange", () => {
     expect(metadata?.["receipt"]?.values?.running).toBe(1)
   })
 
+  test("budget off is unlimited even when the global config sets a budget", async () => {
+    const test = harness({ arguments: "budget off", globalBudget: 5000 })
+    await test.run()
+    expect(test.state.budget).toBeNull()
+    expect(test.state.unlimited).toBe(true)
+
+    const result = await test.run("status")
+    const receipt = textParts(result)[1]
+    // 5000 would mean the cleared override fell back to the global budget.
+    expect(receipt?.metadata?.["receipt"]?.values?.budget).toBeUndefined()
+  })
+
+  test("status keeps reporting the global budget while the session has no override", async () => {
+    const test = harness({ arguments: "status", globalBudget: 5000 })
+    const result = await test.run()
+    const receipt = textParts(result)[1]
+    expect(receipt?.metadata?.["receipt"]?.values?.budget).toBe(5000)
+  })
+
   test("a child session gets an ignored explanation and no receipt", async () => {
     const test = harness({ arguments: "on", parentID: "ses_parent" })
     const result = await test.run()
@@ -188,5 +250,42 @@ describe("/dag-mode exchange", () => {
     expect(receipt?.ignored).toBe(true)
     expect(receipt?.metadata).toBeUndefined()
     expect(receipt?.text).toContain("主会话")
+  })
+
+  test("a user-defined dag-mode command runs its template instead of the local operation", async () => {
+    const test = harness({
+      arguments: "on",
+      command: {
+        name: Command.Default.DAG_MODE,
+        description: "Custom DAG mode",
+        source: "command",
+        template: "Custom DAG prompt $ARGUMENTS",
+        hints: ["$ARGUMENTS"],
+      },
+    })
+    await test.run()
+
+    expect(test.state.mode).toBe("off")
+    expect(test.state.budget).toBeNull()
+    expect(test.state.prompts).toHaveLength(1)
+    expect(test.state.prompts[0]?.parts).toContainEqual({
+      type: "text",
+      text: "Custom DAG prompt on",
+      synthetic: true,
+    })
+  })
+
+  test("status still runs in a session with no resolvable model", async () => {
+    const test = harness({ arguments: "status", noModel: true })
+    const result = await test.run()
+    const [command, receipt] = textParts(result)
+    expect(command?.metadata).toEqual({ command: "dag-mode" })
+    expect(receipt?.metadata?.["receipt"]?.kind).toBe("status")
+    expect(receipt?.metadata?.["receipt"]?.values?.state).toBe("off")
+    // The required message model falls back to the unresolved placeholder.
+    const info = result.info
+    if (info.role !== "user") throw new Error("expected a user command message")
+    expect(String(info.model.providerID)).toBe("unknown")
+    expect(String(info.model.modelID)).toBe("unknown")
   })
 })

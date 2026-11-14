@@ -630,6 +630,42 @@ for (const command of ["memory", "goal", "subgoal", "dag-mode"])
       }),
     ))
 
+// #1031 M1: before command parts were persisted as `ignored`, a /memory swap
+// left its visible response on the user message. A resumed session whose
+// newest user message is such an exchange must still receive a finished
+// workflow's report.
+it("delivers behind a historical /memory exchange persisted before ignored command parts", () =>
+  fixture(({ sessions, store, deliver }) =>
+    Effect.gen(function* () {
+      yield* sessions.updateMessage({
+        id: "msg_legacy_memory" as never,
+        sessionID: "ses_parent" as never,
+        role: "user",
+        time: { created: 50 },
+        agent: "build",
+        model: { providerID: "test" as never, modelID: "test" as never },
+      })
+      yield* sessions.updatePart({
+        id: "prt_legacy_command" as never,
+        messageID: "msg_legacy_memory" as never,
+        sessionID: "ses_parent" as never,
+        type: "text",
+        text: "/memory",
+        metadata: { command: "memory" },
+      })
+      yield* sessions.updatePart({
+        id: "prt_legacy_response" as never,
+        messageID: "msg_legacy_memory" as never,
+        sessionID: "ses_parent" as never,
+        type: "text",
+        text: "Memory is on",
+        time: { start: 50, end: 50 },
+      })
+      expect(yield* deliver()).toBe(true)
+      expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+    }),
+  ))
+
 for (const command of ["goal", "subgoal"])
   it(`delivers behind a historical /${command} dispatch failure persisted without metadata or assistant`, () =>
     fixture(({ database, store, sessions, deliver }) =>

@@ -55,6 +55,10 @@ export const SessionTable = sqliteTable(
     // until the per-session value is resolved at creation time.
     dag_mode: text().notNull().default("off").$type<"on" | "off">(),
     dag_budget_tokens: integer(),
+    // #1031 M1: `dag_budget_tokens` alone cannot tell "no session override"
+    // from an explicit `/dag-mode budget off`; this flag keeps the explicit
+    // unlimited choice from falling back to `dag.budget.tokens` again.
+    dag_budget_unlimited: integer({ mode: "boolean" }).notNull().default(false),
   },
   (table) => [
     check("session_dag_mode_check", sql`${table.dag_mode} in ('on', 'off')`),

@@ -121,6 +121,28 @@ function latestUser(history: readonly SessionV1.WithParts[]) {
     .toSorted(newestFirst)[0]
 }
 
+/**
+ * Local command exchanges persisted before #1031 (the `/memory` swap did not
+ * mark its parts `ignored`) have no assistant turn: the visible response sits
+ * on the same user message next to the command part. Keep recognizing them so
+ * a resumed session still receives a finished workflow's report instead of
+ * leaving it pending until the next user turn.
+ */
+function legacyLocalExchange(user: SessionV1.WithParts) {
+  const command = user.parts.find(
+    (part) => part.type === "text" && ["memory", "trust", "goal", "subgoal"].includes(String(part.metadata?.command)),
+  )
+  if (!command) return false
+  return user.parts.some(
+    (part) =>
+      part.type === "text" &&
+      part.id !== command.id &&
+      !part.synthetic &&
+      part.metadata?.command === undefined &&
+      part.time?.end !== undefined,
+  )
+}
+
 function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
   const user = latestUser(history)
   if (!user) return true
@@ -145,6 +167,7 @@ function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
     user.parts.some((part) => part.type === "text" && part.time?.end !== undefined)
   )
     return true
+  if (legacyLocalExchange(user)) return true
   const assistant = history
     .filter(
       (item) =>

@@ -571,6 +571,8 @@ export const SessionInfo = Schema.Struct({
   revert: optionalOmitUndefined(SessionRevert),
   dagMode: optionalOmitUndefined(DagMode),
   dagBudgetTokens: optionalOmitUndefined(DagBudgetTokens),
+  /** #1031 M1: an explicit `/dag-mode budget off`, distinct from "no override". */
+  dagBudgetUnlimited: optionalOmitUndefined(Schema.Boolean),
 }).annotate({ identifier: "Session" })
 export type SessionInfo = typeof SessionInfo.Type
 

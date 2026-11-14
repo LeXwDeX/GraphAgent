@@ -32,6 +32,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { ChildSlot } from "../child/slot"
 import type { ChildRuns } from "../child/run"
 import { DagMode } from "@/dag/mode"
+import { DagModeReader } from "@/dag/mode-read"
 import { EngineProcess } from "../engine-process"
 import { RuntimeSlots } from "../runtime-slots"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -516,6 +517,27 @@ function rememberRequestPrefix(
     })
   }
 }
+
+/**
+ * Reconcile the model-facing DAG slot from the durable row (#1031 M1). The
+ * turn loop's session snapshot predates the loop, and a local `/dag-mode`
+ * command may run inside the active turn, so the row is the source of truth.
+ */
+const reconcileDagMode = Effect.fnUntraced(function* (
+  sessions: Session.Interface,
+  sessionID: SessionID,
+  fallback: SessionV1.SessionInfo["dagMode"],
+) {
+  const mode = yield* DagModeReader.durableMode(sessions, sessionID).pipe(
+    // A row deleted mid-turn falls back to the snapshot instead of failing the request.
+    Effect.catch(() => Effect.succeed(DagMode.get({ dagMode: fallback }))),
+  )
+  DagMode.set(sessionID, mode)
+})
+
+/** A local command exchange is presentation state, not a model request (#1031 M1). */
+const isModelSourceMessage = (message: SessionV1.WithParts) =>
+  message.info.role === "user" && !!message.info.model && !MessageV2.isLocalCommand(message)
 
 /**
  * The tool set this step advertises. Native and configured permission rules and
@@ -1039,7 +1061,7 @@ export function makePrepare(deps: PrepareDeps) {
       }
     }
     const match = yield* sessions
-      .findMessage(sessionID, (m) => m.info.role === "user" && !!m.info.model)
+      .findMessage(sessionID, isModelSourceMessage)
       .pipe(Effect.orDie)
     if (Option.isSome(match) && match.value.info.role === "user") return match.value.info.model
     const exit = yield* provider.defaultModel().pipe(Effect.exit)
@@ -1757,7 +1779,7 @@ export function makePrepare(deps: PrepareDeps) {
     // the cached prefix must not change when the directory or the day changes.
     // Owner-contributed slots (for example DAG mode) follow them.
     const ctx = yield* InstanceState.context
-    DagMode.ensure(session) // #1031 M1: slots are process memory only; reconcile with the row.
+    yield* reconcileDagMode(sessions, sessionID, session.dagMode)
     const runtimeState = RuntimeSlots.state({
       goal: goalDocs.context,
       memory: memoryDocs,

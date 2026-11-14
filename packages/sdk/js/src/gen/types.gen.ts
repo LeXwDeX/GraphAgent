@@ -789,6 +789,7 @@ export type Session = {
   }
   dagMode?: "on" | "off"
   dagBudgetTokens?: number | null
+  dagBudgetUnlimited?: boolean
 }
 
 export type SessionDagMode = {

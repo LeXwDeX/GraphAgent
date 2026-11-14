@@ -383,6 +383,7 @@ export default {
           \`time_archived\` integer,
           \`dag_mode\` text DEFAULT 'off' NOT NULL,
           \`dag_budget_tokens\` integer,
+          \`dag_budget_unlimited\` integer DEFAULT false NOT NULL,
           CONSTRAINT \`fk_session_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE,
           CONSTRAINT "session_dag_mode_check" CHECK("dag_mode" in ('on', 'off'))
         );

@@ -67,6 +67,7 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
     time_archived: info.time.archived,
     dag_mode: info.dagMode,
     dag_budget_tokens: info.dagBudgetTokens,
+    dag_budget_unlimited: info.dagBudgetUnlimited ?? false,
   }
 }
 

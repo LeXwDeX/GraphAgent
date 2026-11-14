@@ -38,6 +38,19 @@ export const Info = Schema.Struct({
 export type Info = Omit<Schema.Schema.Type<typeof Info>, "template"> & { template: Promise<string> | string }
 
 /**
+ * Registry entries the built-in table created. `get` returns the same object
+ * `init` stored, so identity survives a reload: a user command (config, MCP
+ * prompt or skill) replaces a built-in name with a different object, which is
+ * how dispatch tells "run the built-in behaviour" from "run the user's
+ * template" (#1031 M1).
+ */
+const builtinEntries = new WeakSet<object>()
+
+export function isBuiltin(entry: Info) {
+  return builtinEntries.has(entry)
+}
+
+/**
  * Provenance for a skill-promoted command (`source: "skill"`): the backing
  * skill's own trust classification and SKILL.md path. Kept out of `Info`'s
  * schema -- the public HTTP/SDK shape -- since the command-shell trust gate
@@ -159,6 +172,10 @@ export const layer = Layer.effect(
         subtask: true,
         hints: [],
       }
+
+      // Everything registered so far is built in; user configuration below
+      // replaces entries wholesale with new objects.
+      for (const command of Object.values(commands)) builtinEntries.add(command)
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {
         commands[name] = {

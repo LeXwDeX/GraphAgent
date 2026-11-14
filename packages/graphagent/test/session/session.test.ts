@@ -14,6 +14,8 @@ import { Cause, Schema, Deferred, Effect, Exit, Layer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { Goal } from "@/goal/goal"
 import { EngineProcess, ExclusiveRegistry } from "@/session/engine-process"
+import { DagMode } from "@/dag/mode"
+import { DagModeReader } from "@/dag/mode-read"
 import { Dag } from "@/dag/dag"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
@@ -399,8 +401,10 @@ describe("Session", () => {
 
       expect(created.dagMode).toBe("on")
       expect(created.dagBudgetTokens).toBeNull()
+      expect(created.dagBudgetUnlimited).toBe(false)
       expect(saved.dagMode).toBe("on")
       expect(saved.dagBudgetTokens).toBeNull()
+      expect(saved.dagBudgetUnlimited).toBe(false)
 
       const updated = yield* session.applyUpdate({ sessionID: created.id, title: "dag-on-renamed" })
       expect(updated.title).toBe("dag-on-renamed")
@@ -427,11 +431,45 @@ describe("Session", () => {
 
       yield* session.setDagBudget({ sessionID: created.id, tokens: 500 })
       expect((yield* session.get(created.id)).dagBudgetTokens).toBe(500)
+      expect((yield* session.get(created.id)).dagBudgetUnlimited).toBe(false)
+      // #1031 M1: budget off is an explicit unlimited choice, not "no override".
       yield* session.setDagBudget({ sessionID: created.id, tokens: null })
       expect((yield* session.get(created.id)).dagBudgetTokens).toBeNull()
+      expect((yield* session.get(created.id)).dagBudgetUnlimited).toBe(true)
+
+      const fork = yield* Effect.acquireRelease(session.fork({ sessionID: created.id }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      expect(fork.dagBudgetTokens).toBeNull()
+      expect(fork.dagBudgetUnlimited).toBe(true)
 
       yield* session.setDagMode({ sessionID: created.id, mode: "off" })
       expect((yield* session.get(created.id)).dagMode).toBe("off")
+    }),
+  )
+
+  it.instance("reconciles the DAG slot from the durable row, not a stale turn snapshot", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({ title: "dag-live" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      // A turn loop reads this snapshot before it starts; `/dag-mode on` then
+      // lands inside the active turn (commandTurn allows local commands).
+      const stale = yield* session.get(created.id)
+      yield* session.setDagMode({ sessionID: created.id, mode: "on" })
+      DagMode.ensure(stale)
+      expect(EngineProcess.runtimes.runtimeSlots.list(created.id).find((slot) => slot.key === "dag_mode")?.parts).toEqual(
+        [],
+      )
+
+      // The request builder re-reads the row, so the next request sees the new mode.
+      DagMode.set(created.id, yield* DagModeReader.durableMode(session, created.id))
+      const parts = EngineProcess.runtimes.runtimeSlots
+        .list(created.id)
+        .find((slot) => slot.key === "dag_mode")?.parts
+      expect(parts?.join("\n")).toContain("DAG mode is on")
     }),
   )
 
