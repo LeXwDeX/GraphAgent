@@ -1247,6 +1247,20 @@ it.instance(
   { config: { model: "user/model" } },
 )
 
+// #1031 M1: process-wide readers used to see the user config directory only.
+// The fixed getGlobal merges every global layer, and dagGlobal is its `dag`.
+it.instance("getGlobal and dagGlobal include the managed layer", () =>
+  Effect.gen(function* () {
+    yield* writeManagedSettingsEffect({ dag: { mode: "on", concurrency: 3 } })
+
+    const global = yield* Config.use.getGlobal()
+    expect(global.dag?.mode).toBe("on")
+    expect(global.dag?.concurrency).toBe(3)
+
+    expect(yield* Config.use.dagGlobal()).toEqual({ mode: "on", concurrency: 3 })
+  }),
+)
+
 it.instance("migrates legacy edit tool to edit permission", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

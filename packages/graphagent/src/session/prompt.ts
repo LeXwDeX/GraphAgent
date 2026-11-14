@@ -732,6 +732,9 @@ export const layer = Layer.effect(
       lastAssistant: (sessionID) => lastAssistant(sessionID),
       modelWriteBegin,
       followupAdmissions,
+      providers: provider,
+      dagStore: workflowStore,
+      scheduler,
     })
 
     const submit: Interface["submit"] = Effect.fn("SessionPrompt.submit")(function* (input, options) {

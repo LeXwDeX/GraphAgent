@@ -5,6 +5,7 @@ export function make(overrides: Partial<Config.Interface> = {}) {
   return Config.Service.of({
     get: () => Effect.succeed({}),
     getGlobal: () => Effect.succeed({}),
+    dagGlobal: () => Effect.succeed({}),
     update: () => Effect.void,
     updateHookPermissions: () => Effect.succeed({}),
     updateGlobal: (config) => Effect.succeed({ info: config, changed: false, changedKeys: [] }),

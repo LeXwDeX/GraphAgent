@@ -31,6 +31,7 @@ import type { SystemPrompt } from "../system"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ChildSlot } from "../child/slot"
 import type { ChildRuns } from "../child/run"
+import { DagMode } from "@/dag/mode"
 import { EngineProcess } from "../engine-process"
 import { RuntimeSlots } from "../runtime-slots"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -1078,7 +1079,7 @@ export function makePrepare(deps: PrepareDeps) {
             yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie),
           )
         : []
-    const agentName = history.findLast((message) => message.info.role === "user")?.info.agent ?? current?.agent
+    const agentName = MessageV2.latestUser(history)?.info.agent ?? current?.agent
     const activeAgent = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
     const configuration = yield* config.get()
     const priorModel = Option.getOrUndefined(
@@ -1635,10 +1636,9 @@ export function makePrepare(deps: PrepareDeps) {
       onStructured,
     } = input
     let msgs = input.messages
-    const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
+    const lastUserMsg = MessageV2.latestUser(msgs)
     const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
     const promptOps = yield* ops()
-
     // `closing` and `structuredTerminal` use an empty tool set and
     // `tool_choice: "none"`; `terminal` keeps the normal tool set and refuses
     // execution in the LLM layer instead. `terminal`/`closing` append the
@@ -1757,6 +1757,7 @@ export function makePrepare(deps: PrepareDeps) {
     // the cached prefix must not change when the directory or the day changes.
     // Owner-contributed slots (for example DAG mode) follow them.
     const ctx = yield* InstanceState.context
+    DagMode.ensure(session) // #1031 M1: slots are process memory only; reconcile with the row.
     const runtimeState = RuntimeSlots.state({
       goal: goalDocs.context,
       memory: memoryDocs,

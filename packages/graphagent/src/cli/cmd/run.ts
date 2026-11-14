@@ -183,6 +183,11 @@ export const RunCommand = effectCmd({
         describe: "fork the session before continuing (requires --continue or --session)",
         type: "boolean",
       })
+      .option("dag-mode", {
+        describe: "DAG mode for the new session (cannot be combined with --session)",
+        type: "string",
+        choices: ["on", "off"] as const,
+      })
       .option("model", {
         type: "string",
         alias: ["m"],
@@ -397,6 +402,11 @@ export const RunCommand = effectCmd({
         process.exit(1)
       }
 
+      if (args["dag-mode"] && args.session) {
+        UI.error("--dag-mode cannot be used with --session")
+        process.exit(1)
+      }
+
       const rules: PermissionV1.Ruleset = interactive
         ? []
         : [
@@ -488,12 +498,15 @@ export const RunCommand = effectCmd({
           ...(selectedModel
             ? { model: { providerID: selectedModel.providerID, id: selectedModel.modelID, variant: args.variant } }
             : {}),
+          ...(args["dag-mode"] ? { dagMode: args["dag-mode"] } : {}),
           permission: [...rules],
         })
         const id = result.data?.id
         if (!id) {
           return
         }
+        if (args["dag-mode"])
+          UI.println(UI.Style.TEXT_DIM + `DAG mode ${args["dag-mode"]} for this session` + UI.Style.TEXT_NORMAL)
 
         return {
           id,
@@ -516,12 +529,15 @@ export const RunCommand = effectCmd({
                 variant: input.variant,
               }
             : undefined,
+          ...(args["dag-mode"] ? { dagMode: args["dag-mode"] } : {}),
           permission: [...rules],
         })
         const id = result.data?.id
         if (!id) {
           throw new Error("Failed to create session")
         }
+        if (args["dag-mode"])
+          UI.println(UI.Style.TEXT_DIM + `DAG mode ${args["dag-mode"]} for this session` + UI.Style.TEXT_NORMAL)
 
         localSessionIDs.add(id)
         ClientSessions.touch({ sessionID: id, directory })
@@ -1015,6 +1031,8 @@ export async function runMini(input: MiniCommandInput) {
     continue: input.continue,
     session: input.session,
     fork: input.fork,
+    "dag-mode": undefined,
+    dagMode: undefined,
     model: input.model,
     agent: input.agent,
     format: "default",

@@ -593,7 +593,7 @@ for (const state of ["error", "unfinished", "wrong-parent", "dag-report"] as con
     ))
 }
 
-for (const command of ["memory", "trust", "goal", "subgoal"])
+for (const command of ["memory", "goal", "subgoal", "dag-mode"])
   it(`delivers after a completed local /${command} without an assistant response`, () =>
     fixture(({ sessions, store, deliver }) =>
       Effect.gen(function* () {
@@ -613,6 +613,7 @@ for (const command of ["memory", "trust", "goal", "subgoal"])
           type: "text",
           text: `/${command} status`,
           metadata: { command },
+          ignored: true,
         })
         expect(yield* deliver()).toBe(false)
         yield* sessions.updatePart({
@@ -621,7 +622,7 @@ for (const command of ["memory", "trust", "goal", "subgoal"])
           sessionID: user.sessionID,
           type: "text",
           text: "Command completed",
-          ignored: command === "goal" || command === "subgoal",
+          ignored: true,
           time: { start: 60, end: 60 },
         })
         expect(yield* deliver()).toBe(true)

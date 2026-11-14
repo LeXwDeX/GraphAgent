@@ -7900,9 +7900,11 @@ it.instance("an owner runtime slot adds a block without changing the system pref
     })
     yield* llm.text("first done")
     yield* prompt.loop({ sessionID: chat.id })
-    EngineProcess.runtimes.runtimeSlots.set(chat.id, "dag_mode", {
-      parts: ["<dag_mode>on</dag_mode>"],
-      cleared: "DAG mode is off.",
+    // `dag_mode` is owned by DagMode.ensure on every prepared request; use an
+    // unrelated owner key to exercise the generic slot mechanism.
+    EngineProcess.runtimes.runtimeSlots.set(chat.id, "owner_demo", {
+      parts: ["<owner_demo>on</owner_demo>"],
+      cleared: "Owner demo is off.",
     })
     try {
       yield* prompt.prompt({
@@ -7914,15 +7916,15 @@ it.instance("an owner runtime slot adds a block without changing the system pref
       yield* llm.text("second done")
       yield* prompt.loop({ sessionID: chat.id })
     } finally {
-      EngineProcess.runtimes.runtimeSlots.delete(chat.id, "dag_mode")
+      EngineProcess.runtimes.runtimeSlots.delete(chat.id, "owner_demo")
     }
 
     const inputs = yield* llm.inputs
     expect(inputs).toHaveLength(2)
     expect(JSON.stringify(inputs[1]?.system)).toBe(JSON.stringify(inputs[0]?.system))
     expect(JSON.stringify(inputs[1]?.tools)).toBe(JSON.stringify(inputs[0]?.tools))
-    expect(JSON.stringify(inputs[0]?.messages)).not.toContain("<dag_mode>on</dag_mode>")
-    expect(JSON.stringify(inputs[1]?.messages)).toContain("<dag_mode>on</dag_mode>")
+    expect(JSON.stringify(inputs[0]?.messages)).not.toContain("<owner_demo>on</owner_demo>")
+    expect(JSON.stringify(inputs[1]?.messages)).toContain("<owner_demo>on</owner_demo>")
   }),
 )
 

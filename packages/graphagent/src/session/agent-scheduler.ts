@@ -740,13 +740,13 @@ const liveLayer = Layer.effect(
     // `dag.concurrency` is already stripped from project files.
     const config = yield* Config.Service
     const readLimits = Effect.gen(function* () {
-      const info = yield* config.getGlobal()
+      const [info, dag] = yield* Effect.all([config.getGlobal(), config.dagGlobal()])
       return {
         global: info.engine?.concurrency?.global ?? DEFAULT_LIMITS.global,
         perProvider: info.engine?.concurrency?.perProvider ?? DEFAULT_LIMITS.perProvider,
         childGlobal: info.engine?.concurrency?.childGlobal ?? DEFAULT_LIMITS.childGlobal,
         taskReserve: info.engine?.concurrency?.taskReserve ?? DEFAULT_LIMITS.taskReserve,
-        dagConcurrency: info.dag?.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
+        dagConcurrency: dag.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
       }
     })
     return make(EngineProcess.scheduler, () => readLimits)

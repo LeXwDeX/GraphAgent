@@ -71,6 +71,7 @@ export const Default = {
   GOAL: "goal",
   SUBGOAL: "subgoal",
   MEMORY: "memory",
+  DAG_MODE: "dag-mode",
   IMPORT_CLAUDE: "import-claude",
   CREATE_HOOK: "create-hook",
 } as const
@@ -132,6 +133,13 @@ export const layer = Layer.effect(
       commands[Default.MEMORY] = {
         name: Default.MEMORY,
         description: "enable or disable project MEMORY [on|off]",
+        source: "command",
+        template: "",
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.DAG_MODE] = {
+        name: Default.DAG_MODE,
+        description: "DAG mode for this session [on|off|status|budget <tokens>|budget off]",
         source: "command",
         template: "",
         hints: ["$ARGUMENTS"],

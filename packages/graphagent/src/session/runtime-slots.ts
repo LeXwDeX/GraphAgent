@@ -69,7 +69,7 @@ export function date(now: Date): Slot {
   return { key: "date", parts: [`Today's date: ${now.toDateString()}`], cleared: cleared.date }
 }
 
-/** Ordered state array for one request. Goal and memory keep their original order. */
+/** Ordered state array for one request. Goal, memory and owner slots come first. */
 export function state(input: {
   readonly goal: readonly string[]
   readonly memory: readonly string[]
@@ -80,9 +80,9 @@ export function state(input: {
   return [
     goal(input.goal),
     memory(input.memory),
+    ...(input.custom ?? []),
     ...(input.environment ? [environment(input.environment)] : []),
     ...(input.now ? [date(input.now)] : []),
-    ...(input.custom ?? []),
   ]
 }
 
