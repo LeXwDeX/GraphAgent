@@ -7,6 +7,8 @@ import path from "path"
 import { Effect } from "effect"
 import { RuntimeAsset } from "@graphagent/core/runtime-asset"
 import { RipgrepAsset } from "@graphagent/core/runtime-asset/catalog/ripgrep"
+import { Script } from "@graphagent/script"
+import { derivePlatform, distDirectories } from "./prefetch-ripgrep-lib"
 
 const packageDirectory = path.resolve(import.meta.dir, "..")
 const arguments_ = process.argv.slice(2)
@@ -25,13 +27,14 @@ if (!fs.existsSync(distDirectory)) {
   process.exit(2)
 }
 
-const directories = fs
+const prefix = Script.artifactPrefix
+const names = fs
   .readdirSync(distDirectory, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory() && entry.name.startsWith("opencode-"))
+  .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)
-  .filter((name) => !only || name === only)
+const directories = distDirectories(names, prefix, only)
 if (!directories.length) {
-  console.error(`[prefetch-ripgrep] no opencode-* directories under ${distDirectory}.`)
+  console.error(`[prefetch-ripgrep] no ${prefix}-* directories under ${distDirectory}.`)
   process.exit(2)
 }
 
@@ -71,14 +74,3 @@ const injected = results.filter((result) => result.status === "injected")
 const skipped = results.filter((result) => result.status === "skipped")
 console.log(`[prefetch-ripgrep] done: ${injected.length} directory(ies) injected, ${skipped.length} skipped.`)
 skipped.forEach((result) => console.log(`  - skip ${result.directory} (unsupported platform)`))
-
-function derivePlatform(directory: string): RuntimeAsset.Platform | undefined {
-  const parts = directory.split("-")
-  const os = parts[1] === "windows" ? "win32" : parts[1]
-  const arch = parts[2]
-  if (os !== "darwin" && os !== "linux" && os !== "win32") return undefined
-  if (!arch || !RipgrepAsset.descriptor.targets.some((target) => target.os === os && target.arch === arch)) {
-    return undefined
-  }
-  return { os, arch }
-}
