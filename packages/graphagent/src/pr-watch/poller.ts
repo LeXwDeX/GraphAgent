@@ -456,11 +456,15 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.orDie)
     for (const { id } of due) {
       // The CAS claim is the only ownership test: whichever process flips
-      // next_poll_at to NULL first owns this poll.
+      // next_poll_at to NULL first owns this poll. Stamp the claim with a
+      // fresh clock read, not the batch timestamp: earlier forge reads in this
+      // pass can outlast the claim lease, and a stale updated_at would let a
+      // sibling poller's recoverOnce reclaim this actively-running claim.
+      const claimNow = yield* Clock.currentTimeMillis
       const claimed = yield* db
         .update(PrWatchTable)
-        .set({ process_id: owner, next_poll_at: null, updated_at: now })
-        .where(and(eq(PrWatchTable.id, id), eq(PrWatchTable.phase, "watching"), lte(PrWatchTable.next_poll_at, now)))
+        .set({ process_id: owner, next_poll_at: null, updated_at: claimNow })
+        .where(and(eq(PrWatchTable.id, id), eq(PrWatchTable.phase, "watching"), lte(PrWatchTable.next_poll_at, claimNow)))
         .returning()
         .get()
         .pipe(Effect.orDie)
