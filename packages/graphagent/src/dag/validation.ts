@@ -295,6 +295,10 @@ const GraphBudgetFields = {
     description:
       "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
   }),
+  isolation: Schema.optional(Schema.Literal("worktree")).annotate({
+    description:
+      'Run the whole workflow in one fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Created at start and settled at the terminal transition (completed removes the directory but keeps its branch; failed/cancelled keep both).',
+  }),
 } as const
 
 /** High-level graph: objective + composable blocks compiled into nodes. */
@@ -1666,6 +1670,44 @@ export function isolationDiagnostics(input: {
     })
 }
 
+/**
+ * #1030 D9-g: workflow-level worktree isolation. Unlike per-node isolation,
+ * every child runs in the same worktree, created from the owner checkout at
+ * start. The owner must therefore be a clean git target: a dirty checkout
+ * would leak unrelated edits into the workflow's commit and its final patch.
+ * Fragment actions cannot introduce or change this binding.
+ */
+export function workflowIsolationDiagnostics(input: {
+  isolation?: "worktree"
+  workspace?: string
+  ownerDirectory?: string
+  profile: Profile
+}): Diagnostic[] {
+  if (input.isolation !== "worktree") return []
+  const path = "config.isolation"
+  const problems: string[] = []
+  if (input.workspace !== undefined)
+    problems.push("config.isolation and config.workspace are mutually exclusive")
+  if (input.profile === "environment" && input.ownerDirectory) {
+    if (!DagLocation.isGitWorktree(input.ownerDirectory))
+      problems.push(
+        `workflow worktree isolation requires a git target, but "${input.ownerDirectory}" is not a git repository`,
+      )
+    else if (!DagLocation.isCleanWorktree(input.ownerDirectory))
+      problems.push(
+        `workflow worktree isolation requires a clean target; commit or stash changes in "${input.ownerDirectory}" before starting`,
+      )
+  }
+  return problems.map((message) =>
+    diagnostic({
+      code: DIAGNOSTIC_CODES.isolationInvalid,
+      path,
+      message,
+      hint: "Remove config.isolation or config.workspace, and start from a clean git checkout.",
+    }),
+  )
+}
+
 /** A path mention must start at a path boundary and end at a separator or
  * token boundary, so `/repo/wt-a` never matches `/repo/wt-ab`. */
 function mentionsAbsolutePath(text: string, target: string) {
@@ -1746,6 +1788,7 @@ export function validatePostCompile(input: {
     delivery_node?: string
     max_total_nodes?: number
     workspace?: string
+    isolation?: "worktree"
     node_defaults?: { required?: boolean; report_to_parent?: boolean; model?: { modelID: string; providerID: string } }
   }
   nodes: readonly NodeConfig[]
@@ -1798,6 +1841,12 @@ export function validatePostCompile(input: {
         workspace,
         profile: input.profile,
         catalogs: input.catalogs,
+      }),
+      ...workflowIsolationDiagnostics({
+        isolation: input.config.isolation,
+        workspace: input.config.workspace,
+        ownerDirectory: input.directory,
+        profile: input.profile,
       }),
     )
     if (input.profile === "portable") diagnostics.push(...nonportablePromptDiagnostics(input.nodes))

@@ -133,6 +133,94 @@ function isolationErrors(result: Awaited<ReturnType<typeof validateNodes>>) {
   return result.errors.filter((error) => error.code === DagValidation.DIAGNOSTIC_CODES.isolationInvalid)
 }
 
+describe("workflow validate: workflow-level isolation (#1030)", () => {
+  function validateWorkflow(input: {
+    directory: string
+    nodes?: NodeConfig[]
+    profile?: "environment" | "portable"
+    isolation?: "worktree"
+    workspace?: string
+  }) {
+    return Effect.runPromise(
+      DagValidation.validatePostCompile({
+        source: "test",
+        profile: input.profile ?? "environment",
+        config: {
+          ...(input.isolation ? { isolation: input.isolation } : {}),
+          ...(input.workspace ? { workspace: input.workspace } : {}),
+        },
+        nodes: input.nodes ?? [isolationNode()],
+        directory: input.directory,
+        structural: false,
+      }),
+    )
+  }
+
+  function workflowIsolationErrors(result: Awaited<ReturnType<typeof validateWorkflow>>) {
+    return result.errors.filter((error) => error.path === "config.isolation")
+  }
+
+  it("accepts a clean git target", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateWorkflow({ directory: tmp.path, isolation: "worktree" })
+    expect(workflowIsolationErrors(result)).toEqual([])
+    expect(result.valid).toBe(true)
+  })
+
+  it("rejects isolation combined with a workflow workspace", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const result = await validateWorkflow({
+      directory: tmp.path,
+      isolation: "worktree",
+      workspace: tmp.path,
+    })
+    expect(workflowIsolationErrors(result)[0]?.message).toContain("mutually exclusive")
+  })
+
+  it("rejects a non-git target", async () => {
+    await using tmp = await tmpdir()
+    const result = await validateWorkflow({ directory: tmp.path, isolation: "worktree" })
+    expect(workflowIsolationErrors(result)[0]?.message).toContain("requires a git target")
+  })
+
+  it("rejects a dirty target", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await fs.writeFile(path.join(tmp.path, "dirty.txt"), "dirty")
+    const result = await validateWorkflow({ directory: tmp.path, isolation: "worktree" })
+    expect(workflowIsolationErrors(result)[0]?.message).toContain("requires a clean target")
+  })
+
+  it("keeps git facts out of the portable profile", async () => {
+    await using tmp = await tmpdir()
+    const result = await validateWorkflow({
+      directory: tmp.path,
+      profile: "portable",
+      isolation: "worktree",
+    })
+    expect(workflowIsolationErrors(result)).toEqual([])
+  })
+
+  it("decodes isolation on the start graph and only the worktree literal", () => {
+    const decode = Schema.decodeUnknownSync(DagValidation.WorkflowGraphSchema)
+    expect(
+      decode({
+        name: "wf",
+        objective: "objective",
+        blocks: [],
+        isolation: "worktree",
+      }).isolation,
+    ).toBe("worktree")
+    expect(() =>
+      decode({
+        name: "wf",
+        objective: "objective",
+        blocks: [],
+        isolation: "container",
+      }),
+    ).toThrow()
+  })
+})
+
 describe("workflow validate: isolation", () => {
   it("accepts a writer in a clean git target", async () => {
     await using tmp = await tmpdir({ git: true })

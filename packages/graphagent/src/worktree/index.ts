@@ -40,6 +40,8 @@ export type Info = Schema.Schema.Type<typeof Info>
 
 export const CreateInput = Schema.Struct({
   name: Schema.optional(Schema.String),
+  /** Commit-ish the new branch starts from. Absent keeps Git's default (HEAD). */
+  base: Schema.optional(Schema.String),
   startCommand: Schema.optional(
     Schema.String.annotate({ description: "Additional startup script to run after the project's start command" }),
   ),
@@ -48,6 +50,9 @@ export type CreateInput = Schema.Schema.Type<typeof CreateInput>
 
 export const RemoveInput = Schema.Struct({
   directory: Schema.String,
+  /** Keep the worktree branch after removing the directory. A kept branch is
+   * the durable pointer a workflow-level settlement leaves behind. */
+  keepBranch: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "WorktreeRemoveInput" })
 export type RemoveInput = Schema.Schema.Type<typeof RemoveInput>
 
@@ -129,7 +134,7 @@ function failedRemoves(...chunks: string[]) {
 
 export interface Interface {
   readonly makeWorktreeInfo: (options?: { name?: string; detached?: boolean }) => Effect.Effect<Info, Error>
-  readonly createFromInfo: (info: Info, startCommand?: string) => Effect.Effect<void, Error>
+  readonly createFromInfo: (info: Info, startCommand?: string, base?: string) => Effect.Effect<void, Error>
   readonly create: (input?: CreateInput) => Effect.Effect<Info, Error>
   readonly list: () => Effect.Effect<(Omit<Info, "branch"> & { branch?: string })[], Error>
   readonly remove: (input: RemoveInput) => Effect.Effect<boolean, Error>
@@ -255,19 +260,22 @@ export const layer: Layer.Layer<
       return yield* candidate({ root, name: input?.name ? slugify(input.name) : "", detached: input?.detached })
     })
 
-    const setup = Effect.fnUntraced(function* (info: Info) {
+    const setup = Effect.fnUntraced(function* (info: Info, base?: string) {
       const ctx = yield* InstanceState.context
       const workspaceID = yield* InstanceState.workspaceID
+      const start = base ? [base] : []
       const created = yield* git(
         info.branch
-          ? ["worktree", "add", "--no-checkout", "-b", info.branch, info.directory]
-          : ["worktree", "add", "--no-checkout", "--detach", info.directory, "HEAD"],
+          ? ["worktree", "add", "--no-checkout", "-b", info.branch, info.directory, ...start]
+          : ["worktree", "add", "--no-checkout", "--detach", info.directory, ...(start.length > 0 ? start : ["HEAD"])],
         { cwd: ctx.worktree },
       )
       if (created.code !== 0) {
-        yield* new CreateFailedError({
-          message: created.stderr || created.text || "Failed to create git worktree",
-        })
+        yield* Effect.fail(
+          new CreateFailedError({
+            message: created.stderr || created.text || "Failed to create git worktree",
+          }),
+        )
       }
 
       yield* project.addSandbox(ctx.project.id, info.directory).pipe(Effect.catch(() => Effect.void))
@@ -286,9 +294,12 @@ export const layer: Layer.Layer<
           workspace: workspaceID,
           payload: { type: Event.Failed.type, properties: { message } },
         })
-        return false
+        // The directory and branch ref already exist but hold no materialized
+        // tree. A caller that cannot observe this failure would publish a
+        // workflow bound to an empty checkout, so fail closed; create's caller
+        // removes the partial worktree.
+        yield* Effect.fail(new CreateFailedError({ message }))
       }
-      return true
     })
 
     const boot = Effect.fnUntraced(function* (info: Info, startCommand?: string) {
@@ -328,11 +339,15 @@ export const layer: Layer.Layer<
       yield* runStartScripts(info.directory, { projectID, extra })
     })
 
-    const createFromInfo = Effect.fn("Worktree.createFromInfo")(function* (info: Info, startCommand?: string) {
+    const createFromInfo = Effect.fn("Worktree.createFromInfo")(function* (
+      info: Info,
+      startCommand?: string,
+      base?: string,
+    ) {
       const directory = yield* canonical(info.directory)
       yield* lifecycle.withLock(directory)(
         Effect.gen(function* () {
-          if (!(yield* setup(info))) return
+          yield* setup(info, base)
           yield* FiberMap.run(
             bootFibers,
             directory,
@@ -462,7 +477,7 @@ export const layer: Layer.Layer<
         )
         return created
       }
-      yield* createFromInfo(info, input?.startCommand)
+      yield* createFromInfo(info, input?.startCommand, input?.base)
       return info
     })
 
@@ -728,7 +743,7 @@ export const layer: Layer.Layer<
         }
         if (yield* fs.existsSafe(entry.path)) yield* cleanDirectory(entry.path)
         const prunedBranch = entry.branch?.replace(/^refs\/heads\//, "")
-        if (prunedBranch) {
+        if (prunedBranch && input.keepBranch !== true) {
           const deleted = yield* git(["branch", "-D", prunedBranch], { cwd: ctx.worktree })
           if (deleted.code !== 0) {
             const restored = yield* git(["worktree", "add", entry.path, prunedBranch], { cwd: ctx.worktree })
@@ -770,7 +785,7 @@ export const layer: Layer.Layer<
       yield* cleanDirectory(entry.path)
 
       const branch = entry.branch?.replace(/^refs\/heads\//, "")
-      if (branch && !owned) {
+      if (branch && !owned && input.keepBranch !== true) {
         const deleted = yield* git(["branch", "-D", branch], { cwd: ctx.worktree })
         if (deleted.code !== 0) {
           const restored = yield* git(["worktree", "add", entry.path, branch], { cwd: ctx.worktree })

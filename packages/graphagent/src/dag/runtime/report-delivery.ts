@@ -25,6 +25,7 @@ import { finalAssistantText, parseFinalResponse } from "./final-response"
 import { isRecord } from "@/util/record"
 import { before } from "@/session/message-v2"
 import { reportIdentity } from "../report-identity"
+import type { DagEvent } from "@graphagent/schema/dag-event"
 
 export { reportIdentity } from "../report-identity"
 
@@ -75,6 +76,19 @@ export function resultIndex(workflow: DagStore.WorkflowRow, nodes: readonly DagS
           `- ${node.name} (${node.status})${node.staleTarget ? " [stale target]" : ""}: workflow result workflow_id="${workflow.id}" node_id="${node.id}"`,
       ),
   ].join("\n")
+}
+
+/** #1030 D9-g: compact workflow-worktree evidence for parent-facing text. */
+export function workflowWorktreeText(worktree: DagEvent.WorkflowWorktree): string {
+  return `[workflow worktree] ${[
+    `directory=${worktree.directory}`,
+    ...(worktree.branch ? [`branch=${worktree.branch}`] : []),
+    ...(worktree.baseHead ? [`base=${worktree.baseHead.slice(0, 12)}`] : []),
+    ...(worktree.head ? [`head=${worktree.head.slice(0, 12)}`] : []),
+    ...(worktree.patchPath ? [`patch=${worktree.patchPath}`] : []),
+    `state=${worktree.state}`,
+    ...(worktree.reason ? [`reason=${worktree.reason}`] : []),
+  ].join(" ")}`
 }
 
 function reportText(
@@ -236,10 +250,13 @@ export function deliverReport(input: {
       artifact = node.capturedOutput
     }
     const report = node ? reportText(node, structured, input.source, artifact) : resultIndex(workflow, nodes)
+    // #1030 D9-g: the final report names the workflow-level worktree evidence
+    // (directory/branch/base/head/patch) even when the body came from a node.
+    const worktreeEvidence = workflow.worktree ? `\n\n${workflowWorktreeText(workflow.worktree)}` : ""
     // #944: a delivered result whose target changed mid-run must say so in the
     // parent wake text, not only in the structured result view.
     const body = yield* boundReport(
-      node?.staleTarget ? `${report}\n\n[stale target: this result was produced before the target changed]` : report,
+      `${node?.staleTarget ? `${report}\n\n[stale target: this result was produced before the target changed]` : report}${worktreeEvidence}`,
       workflow,
       node,
     ).pipe(Effect.orDie)

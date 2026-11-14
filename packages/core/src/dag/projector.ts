@@ -3,7 +3,7 @@
 
 export * as DagProjector from "./projector"
 
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray, isNull, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer } from "effect"
 import { Database } from "../database/database"
 import { EventV2, type Definition, type Subscriber } from "../event"
@@ -319,6 +319,28 @@ export const layer = Layer.effectDiscard(
           eq(WorkflowTable.id, event.data.dagID),
           inArray(WorkflowTable.status, ["pending", "running", "paused", "stepping", "completed"]),
         ))
+        .run()
+        .pipe(Effect.orDie),
+    )
+
+    // #1030 D9-g: settlement is METADATA about an already-terminal workflow,
+    // not a status transition. It deliberately does NOT advance `seq` (and
+    // leaves `time_updated` alone):
+    //   - reportIdentity() hashes (session, id, seq) and delivery pins the
+    //     receipt to completion_seq; a bump would make a redelivered report
+    //     look like a new completion and fail the receipt match.
+    //   - wakeBatchIdentity() also carries the workflow seq, so a bump after
+    //     the terminal wake would let an acknowledged completion re-wake.
+    // The NULL guard makes settlement write-once: a replayed or duplicated
+    // settlement event folds to a 0-row update instead of overwriting the
+    // first outcome.
+    yield* project(DagEvent.WorkflowWorktreeSettled, (event) =>
+      db
+        .update(WorkflowTable)
+        // Drizzle's `$onUpdate` would move time_updated on any write; settle the
+        // metadata without perturbing the terminal episode's timestamps either.
+        .set({ worktree: event.data.worktree, time_updated: sql`${WorkflowTable.time_updated}` })
+        .where(and(eq(WorkflowTable.id, event.data.dagID), isNull(WorkflowTable.worktree)))
         .run()
         .pipe(Effect.orDie),
     )

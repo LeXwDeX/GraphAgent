@@ -78,6 +78,7 @@ import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { DagDelivery } from "./delivery"
+import { settleTerminalWorkflowWorktree } from "./worktree-completion"
 import { Logging } from "@graphagent/core/observability/logging"
 
 export { PAUSED_REMINDER_DELAY_MS, isPausedReminderDue, wakeBatchIdentity } from "./delivery"
@@ -719,6 +720,7 @@ const serviceLayer = Layer.effect(
                 directory: ctx.directory,
                 executionDirectory: nodeDirectory,
                 ...(nodeConfig?.isolation ? { isolation: nodeConfig.isolation } : {}),
+                ...(entry.config?.isolation === "worktree" ? { workflowIsolation: "worktree" as const } : {}),
                 inputArtifacts: inputSources.map((source) => source.capturedOutput).filter(isManagedOutputFileRef),
                 promptParts,
                 outputSchema: nodeConfig?.output_schema as Record<string, unknown> | undefined,
@@ -1897,6 +1899,14 @@ const serviceLayer = Layer.effect(
           Effect.forkScoped({ startImmediately: true }),
         )
 
+        // #1030 D9-g: settlement runs on the terminal transition, before the
+        // wake nudge, so the report/status read model carries its evidence. The
+        // seam lives in worktree-completion (reused by E1b #1029 and a future
+        // process-level reconciler); a host sweep that terminalizes without a
+        // loop entry still has no settlement here until that reconciler exists.
+        const settleWorkflowTerminal = (dagID: string) =>
+          settleTerminalWorkflowWorktree({ dagID, store, publish: events.publish, ambient: ctx })
+
         for (const def of [DagEvent.WorkflowCompleted, DagEvent.WorkflowFailed, DagEvent.WorkflowCancelled]) {
           const terminalAbort =
             def === DagEvent.WorkflowCompleted
@@ -1962,6 +1972,9 @@ const serviceLayer = Layer.effect(
                   )
                   if (!cleaned) return
                 }
+                // #1030 D9-g: settle (commit + patch + remove/keep) before the
+                // terminal wake reads the read model.
+                yield* settleWorkflowTerminal(dagID)
                 // P1-6: trigger wake on workflow terminal so the parent
                 // learns the final outcome even if no idle event fires.
                 if (parentSessionID) {
@@ -2038,6 +2051,13 @@ const serviceLayer = Layer.effect(
         // longer exists durably. Mirror the workflow-terminal cleanup
         // pattern: evalLock-serialized fiber + watcher interrupts, then drop
         // the entry.
+        //
+        // #1030 D9-g: this teardown does NOT settle a workflow-level worktree.
+        // The FK cascade removes the rows without publishing a terminal event,
+        // so there is no durable row left to settle against; the worktree is
+        // intentionally left for the process-level reconciler (deterministic
+        // `dag-<dagID>-` name). Recorded as a known limitation in
+        // dag/CONTEXT.md.
         yield* events.subscribe(SessionV1.Event.Deleted).pipe(
           Stream.runForEach((evt) =>
             Effect.gen(function* () {

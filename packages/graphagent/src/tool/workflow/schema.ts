@@ -131,6 +131,9 @@ const GraphBudgetFields = {
   max_node_replan_attempts: Schema.optional(Schema.Number),
   max_total_nodes: Schema.optional(Schema.Number),
   workspace: Schema.optional(Schema.String),
+  // #1030 D9-g: workflow-level worktree. Start-only; the authoring boundary
+  // rejects it in replan fragments and validates it against config.workspace.
+  isolation: Schema.optional(Schema.Literal("worktree")),
 }
 export const DraftGraph = Schema.Struct({
   name: Schema.String,

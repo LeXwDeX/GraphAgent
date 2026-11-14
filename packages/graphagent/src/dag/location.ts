@@ -122,6 +122,20 @@ export const gitHead = (directory: string): string | undefined => {
   }
 }
 
+/** #1030: the worktree's current branch name, or undefined when detached or
+ * outside git. Settlement reports the branch next to the final commit. */
+export const gitBranch = (directory: string): string | undefined => {
+  try {
+    const text = execFileSync("git", ["-C", directory, "symbolic-ref", "--quiet", "--short", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim()
+    return text || undefined
+  } catch {
+    return undefined
+  }
+}
+
 // #944: fingerprint cost is bounded by these limits. A git diff or an
 // untracked-file hash that exceeds them degrades to a stable marker instead
 // of buffering an unbounded amount of data.
@@ -229,7 +243,9 @@ export const sameFingerprint = (
  * so validation fails before spawn.
  */
 export const isGitWorktree = (directory: string): boolean =>
-  gitOutput(directory, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true"
+  // An empty path must never fall back to the ambient process cwd: `git -C ""`
+  // does, which would report the test runner's own repository as the target.
+  directory !== "" && gitOutput(directory, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true"
 
 export const isCleanWorktree = (directory: string): boolean => {
   if (!isGitWorktree(directory)) return false

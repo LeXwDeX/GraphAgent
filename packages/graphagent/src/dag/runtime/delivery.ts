@@ -30,7 +30,7 @@ import * as MessageV2 from "@/session/message-v2"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Dag, parseWorkflowConfig } from "../dag"
 import { DagLocation } from "../location"
-import { deliverReport, reportingCheckpoints, selectReportNode } from "./report-delivery"
+import { deliverReport, reportingCheckpoints, selectReportNode, workflowWorktreeText } from "./report-delivery"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
@@ -629,7 +629,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
                 : ""
             return workflow.status === "paused"
               ? `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
-              : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
+              : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${workflow.worktree ? `\n${workflowWorktreeText(workflow.worktree)}` : ""}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
           }),
         ]
         const summary = [

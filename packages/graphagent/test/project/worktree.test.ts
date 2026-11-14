@@ -487,6 +487,84 @@ describe("Worktree", () => {
       { git: true },
     )
 
+    it.instance(
+      "create starts the branch from an explicit base commit",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const base = (yield* git(test.directory, ["rev-parse", "HEAD"])).trim()
+          yield* Effect.promise(() => Bun.write(path.join(test.directory, "later.txt"), "later\n"))
+          yield* git(test.directory, ["add", "-A"])
+          yield* git(test.directory, ["commit", "-m", "later"])
+          const info = yield* svc.create({ name: "based-worktree", base })
+
+          expect((yield* git(info.directory, ["rev-parse", "HEAD"])).trim()).toBe(base)
+          expect((yield* gitResult(info.directory, ["cat-file", "-e", "HEAD:later.txt"])).exitCode).not.toBe(0)
+
+          yield* svc.remove({ directory: info.directory })
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "create honors base when invoked from a linked worktree",
+      () =>
+        withCreatedWorktree({ name: "base-source" }, ({ info: source }) =>
+          Effect.gen(function* () {
+            const svc = yield* Worktree.Service
+            const base = (yield* git(source.directory, ["rev-parse", "HEAD"])).trim()
+            const created = yield* svc
+              .create({ name: "base-nested", base })
+              .pipe(provideInstance(source.directory))
+            yield* Effect.addFinalizer(() =>
+              svc.remove({ directory: created.directory }).pipe(Effect.ignore),
+            )
+
+            expect((yield* git(created.directory, ["rev-parse", "HEAD"])).trim()).toBe(base)
+          }),
+        ),
+      { git: true },
+    )
+
+    it.instance(
+      "remove with keepBranch drops the worktree but keeps its branch",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const svc = yield* Worktree.Service
+          const info = yield* svc.create({ name: "keep-branch" })
+          const branch = info.branch ?? ""
+
+          expect(yield* svc.remove({ directory: info.directory, keepBranch: true })).toBe(true)
+
+          expect(yield* git(test.directory, ["branch", "--list", branch])).toContain(branch)
+          yield* git(test.directory, ["branch", "-D", branch])
+        }),
+      { git: true },
+    )
+
+    it.instance(
+      "remove with keepBranch on a prunable worktree keeps its branch",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const fs = yield* FSUtil.Service
+          const svc = yield* Worktree.Service
+          const info = yield* svc.create({ name: "keep-prunable-branch" })
+          const branch = info.branch ?? ""
+          // A missing directory makes the git admin entry prunable; the
+          // explicit removal path owns the branch decision there too.
+          yield* fs.remove(info.directory, { recursive: true })
+
+          expect(yield* svc.remove({ directory: info.directory, keepBranch: true })).toBe(true)
+
+          expect(yield* git(test.directory, ["branch", "--list", branch])).toContain(branch)
+          yield* git(test.directory, ["branch", "-D", branch])
+        }),
+      { git: true },
+    )
+
     wintest(
       "reset coordinates with asynchronous bootstrap",
       () =>

@@ -101,7 +101,7 @@ export function make(options: Options = {}) {
       }
       if (decoded.value.action === "replan") {
         const fragment = decoded.value.spec.fragment
-        const rejected = (["delivery_node", "workspace"] as const)
+        const rejected = (["delivery_node", "workspace", "isolation"] as const)
           .filter((field) => fragment[field] !== undefined)
           .map((field) =>
             DagValidation.diagnostic({
@@ -110,11 +110,15 @@ export function make(options: Options = {}) {
               message:
                 field === "workspace"
                   ? "workspace only applies to start; set workspace on individual nodes instead"
-                  : `${field} only applies to start; replans preserve the existing capture and delivery configuration`,
+                  : field === "isolation"
+                    ? "isolation only applies to start; a workflow-level worktree cannot be introduced mid-run"
+                    : `${field} only applies to start; replans preserve the existing capture and delivery configuration`,
               hint:
                 field === "workspace"
                   ? 'Remove "workspace" from the fragment and set it on each node that needs a different checkout.'
-                  : `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
+                  : field === "isolation"
+                    ? 'Remove "isolation" from the fragment; node-level isolation stays available per node.'
+                    : `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
             }),
           )
         if (rejected.length > 0) {
@@ -209,6 +213,7 @@ function prepareGraph(decoded: DecodedAction, nodes: NodeConfig[], nodeDefaults?
         : {}),
       ...(spec.config.max_total_nodes !== undefined ? { max_total_nodes: spec.config.max_total_nodes } : {}),
       ...(spec.config.workspace !== undefined ? { workspace: spec.config.workspace } : {}),
+      ...(spec.config.isolation !== undefined ? { isolation: spec.config.isolation } : {}),
       ...(nodeDefaults ? { node_defaults: nodeDefaults } : {}),
       nodes,
     },
@@ -296,6 +301,7 @@ function compileAction(
     max_total_nodes?: number
     delivery_node?: string
     workspace?: string
+    isolation?: "worktree"
   }
 } {
   if (decoded.action === "extend") {

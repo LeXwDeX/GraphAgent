@@ -40,6 +40,7 @@ import { DagLocation } from "./location"
 import { DagIsolation } from "./isolation"
 import { SessionLocation } from "@/session/location"
 import { SessionID } from "@/session/schema"
+import { InstanceRef } from "@/effect/instance-ref"
 import { planRecovery, type RecoveryPlan } from "./recovery-plan"
 import { verifyOutputFileRef } from "./runtime/output-ref"
 import { failingGateVerdict, verdictField } from "./runtime/verdict"
@@ -185,8 +186,22 @@ export interface WorkflowConfig {
   max_timeout_extensions?: number
   /** #943: absolute path to a linked worktree where child sessions run. */
   workspace?: string
+  /** #1030 D9-g: run the entire workflow in one fresh worktree of the target.
+   * Mutually exclusive with `workspace`; start-only (fragments cannot set it). */
+  isolation?: "worktree"
+  /** #1030 D9-g: runtime-owned pointer to the workflow worktree created at
+   * start. Authoring never sets it; `Dag.create` records it after creation so
+   * spawn, recovery, status and settlement agree on one directory/branch. */
+  worktree?: WorkflowWorktreeConfig
   node_defaults?: NodeDefaults
   nodes: NodeConfig[]
+}
+
+/** #1030 D9-g: the persisted identity of a workflow-level worktree. */
+export interface WorkflowWorktreeConfig {
+  directory: string
+  branch?: string
+  baseHead?: string
 }
 
 export class ReviewGateError extends Error {
@@ -803,6 +818,15 @@ export const layer = Layer.effect(
       if (structuralErrors.length > 0) {
         return yield* Effect.fail(new StructuralValidationError({ diagnostics: structuralErrors }))
       }
+      // #1030 D9-g: the workflow-level worktree and a bound workspace are two
+      // different execution bindings. Authoring reports the diagnostic; this
+      // repeats the check for direct Dag.create callers and fail-closes
+      // before any worktree or event exists.
+      if (config.isolation !== undefined && config.workspace !== undefined) {
+        return yield* Effect.fail(
+          new Error("Invalid workflow config: config.isolation and config.workspace are mutually exclusive"),
+        )
+      }
       if (config.mode === "deep") {
         if (!config.admission) {
           return yield* Effect.fail(
@@ -839,61 +863,149 @@ export const layer = Layer.effect(
             ? Effect.succeed(DagLocation.canonicalDirectory(durable.value))
             : DagLocation.stampDirectory(),
       )
+      // #1030 D9-g: fail closed before creating the workflow worktree. A
+      // non-git or dirty owner checkout cannot produce a clean isolated tree;
+      // the environment-profile diagnostics already reported the same facts to
+      // authoring callers.
+      if (config.isolation === "worktree") {
+        if (!DagLocation.isGitWorktree(ownerDirectory)) {
+          return yield* Effect.fail(
+            new Error(
+              `Invalid workflow config: workflow worktree isolation requires a git target, but "${ownerDirectory}" is not a git repository`,
+            ),
+          )
+        }
+        if (!DagLocation.isCleanWorktree(ownerDirectory)) {
+          return yield* Effect.fail(
+            new Error(
+              `Invalid workflow config: workflow worktree isolation requires a clean target; commit or stash changes in "${ownerDirectory}" before starting`,
+            ),
+          )
+        }
+      }
+      // #1030 D9-g: the workflow-level worktree is created BEFORE any event, so a
+      // creation failure leaves zero durable trace. Both services are lazy for
+      // the same bootstrap-cycle reason as spawn.ts/recovery.ts; tests without
+      // them keep the pre-#1030 path unless config.isolation is set (then
+      // create fail-closes).
+      const dagID = DagEvent.DagID.create()
+      const { Worktree } = yield* Effect.promise(() => import("@/worktree"))
+      const worktreeSvc = Option.getOrUndefined(yield* Effect.serviceOption(Worktree.Service))
+      const { InstanceStore } = yield* Effect.promise(() => import("@/project/instance-store"))
+      const instanceStore = Option.getOrUndefined(yield* Effect.serviceOption(InstanceStore.Service))
+      const instance = yield* Effect.serviceOption(InstanceRef)
+      const ambient = Option.isSome(instance) ? instance.value : undefined
+      const ambientReal = ambient?.directory ? DagLocation.canonicalDirectory(ambient.directory) : undefined
+      const inOwnerInstance = <A, E, R>(
+        directory: string | undefined,
+        effect: Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E, R> => {
+        const real = directory ? DagLocation.canonicalDirectory(directory) : undefined
+        return instanceStore && real && real !== ambientReal
+          ? instanceStore.provide({ directory: real, trustProject: ambient?.trustProject === true }, effect)
+          : effect
+      }
+
+      let workflowWorktree: WorkflowWorktreeConfig | undefined
+      if (config.isolation === "worktree") {
+        if (!worktreeSvc) {
+          return yield* Effect.fail(new Error("Invalid workflow config: workflow worktree isolation requires the Worktree service"))
+        }
+        // Deterministic name prefix (dag-<dagID>-) lets a future reconciler find
+        // an orphaned worktree after a crash between creation and the first
+        // event. The Worktree service slugifies and appends a suffix on
+        // collision, so the durable pointer always comes from its return value.
+        const created = yield* inOwnerInstance(
+          ownerDirectory,
+          worktreeSvc.create({ name: `dag-${dagID}-workflow` }),
+        ).pipe(Effect.result)
+        if (created._tag === "Failure") {
+          return yield* Effect.fail(new Error(`workflow worktree create failed: ${created.failure.message}`))
+        }
+        const directory = DagLocation.canonicalDirectory(created.success.directory)
+        const baseHead = DagLocation.gitHead(directory)
+        const branch = DagLocation.gitBranch(directory) ?? created.success.branch
+        workflowWorktree = {
+          directory,
+          ...(branch ? { branch } : {}),
+          ...(baseHead ? { baseHead } : {}),
+        }
+      }
+
+      // A bound workspace and a workflow-level worktree are alternative
+      // execution bindings; isolation skips workspace resolution entirely.
       const bound = yield* Effect.try({
-        try: () => bindWorkspace(config, ownerDirectory),
+        try: () =>
+          workflowWorktree
+            ? { config, workspace: workflowWorktree.directory }
+            : bindWorkspace(config, ownerDirectory),
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       })
+      const boundConfig: WorkflowConfig = workflowWorktree
+        ? { ...bound.config, worktree: workflowWorktree }
+        : bound.config
       // #944: the target identity is captured from the bound execution
       // directory (the owner directory when no workspace is bound). Non-git
       // directories get the stable `none` marker.
       const targetFingerprint = DagLocation.fingerprintTarget(bound.workspace ?? ownerDirectory)
       const durableConfig =
-        bound.config.mode === "deep" && bound.config.admission
+        boundConfig.mode === "deep" && boundConfig.admission
           ? {
-              ...bound.config,
+              ...boundConfig,
               admission: {
-                ...bound.config.admission,
-                state: transitionAdmission(bound.config.admission.state, "CONSUMED"),
+                ...boundConfig.admission,
+                state: transitionAdmission(boundConfig.admission.state, "CONSUMED"),
               },
             }
-          : bound.config
+          : boundConfig
 
-      const dagID = DagEvent.DagID.create()
-      const ts = yield* DateTime.now
-      yield* events.publish(DagEvent.WorkflowCreated, {
-        dagID,
-        projectID: input.projectID as never,
-        sessionID: input.sessionID as never,
-        title: input.title,
-        config: JSON.stringify(durableConfig),
-        status: "pending",
-        timestamp: ts,
-        // DAG-LOC-01 stamp (P2-F): the execution-location key is the TARGET
-        // SESSION's durable directory — the single source of truth. Stamping
-        // the ambient request instance's directory would let a request on
-        // directory A create a workflow for B's session stamped A, orphaning
-        // it from B's loops. Fall back to the ambient instance only when the
-        // session has no durable row (the workflow insert would fail its
-        // session FK anyway).
-        directory: ownerDirectory,
-        ...(bound.workspace !== undefined ? { executionDirectory: bound.workspace } : {}),
-        targetFingerprint,
-      })
-      for (const node of durableConfig.nodes) {
-        yield* events.publish(DagEvent.NodeRegistered, {
+      // Roll back the created worktree (directory and branch) when any event
+      // publication fails. Creation itself publishes nothing, so a create
+      // failure leaves zero events.
+      const removeWorkflowWorktree = () =>
+        workflowWorktree && worktreeSvc
+          ? inOwnerInstance(
+              ownerDirectory,
+              worktreeSvc.remove({ directory: workflowWorktree.directory, keepBranch: false }),
+            ).pipe(Effect.ignore)
+          : Effect.void
+      return yield* Effect.gen(function* () {
+        const ts = yield* DateTime.now
+        yield* events.publish(DagEvent.WorkflowCreated, {
           dagID,
-          nodeID: node.id as never,
-          name: node.name,
-          workerType: node.worker_type,
-          dependsOn: node.depends_on.map((d) => d as never),
-          required: node.required ?? false,
-          model: node.model as never,
+          projectID: input.projectID as never,
+          sessionID: input.sessionID as never,
+          title: input.title,
+          config: JSON.stringify(durableConfig),
+          status: "pending",
           timestamp: ts,
+          // DAG-LOC-01 stamp (P2-F): the execution-location key is the TARGET
+          // SESSION's durable directory — the single source of truth. Stamping
+          // the ambient request instance's directory would let a request on
+          // directory A create a workflow for B's session stamped A, orphaning
+          // it from B's loops. Fall back to the ambient instance only when the
+          // session has no durable row (the workflow insert would fail its
+          // session FK anyway).
+          directory: ownerDirectory,
+          ...(bound.workspace !== undefined ? { executionDirectory: bound.workspace } : {}),
+          targetFingerprint,
         })
-      }
-      const startTs = yield* DateTime.now
-      yield* events.publish(DagEvent.WorkflowStarted, { dagID, timestamp: startTs })
-      return dagID
+        for (const node of durableConfig.nodes) {
+          yield* events.publish(DagEvent.NodeRegistered, {
+            dagID,
+            nodeID: node.id as never,
+            name: node.name,
+            workerType: node.worker_type,
+            dependsOn: node.depends_on.map((d) => d as never),
+            required: node.required ?? false,
+            model: node.model as never,
+            timestamp: ts,
+          })
+        }
+        const startTs = yield* DateTime.now
+        yield* events.publish(DagEvent.WorkflowStarted, { dagID, timestamp: startTs })
+        return dagID
+      }).pipe(Effect.onError(() => removeWorkflowWorktree()))
     })
 
     const pause = Effect.fn("Dag.pause")(function* (lock: WorkflowLock, dagID: string, reason?: PauseReason) {
@@ -1193,6 +1305,18 @@ export const layer = Layer.effect(
       const wfConfig = parseWorkflowConfig(workflow.config)
       if (!wfConfig) {
         return yield* Effect.fail(new Error(`Replan rejected: current workflow config is invalid: ${dagID}`))
+      }
+      // #1030 D9-g: completed settlement removes the workflow worktree while
+      // keeping its branch. Reopening the graph would spawn into a missing
+      // execution directory (workspace_missing) with no live worktree to
+      // restore. Failed/cancelled workflows keep their worktree, so recovery
+      // remains valid. Reject the reopen explicitly instead of failing later.
+      if (reopenCompleted && wfConfig.isolation === "worktree") {
+        return yield* Effect.fail(
+          new Error(
+            `Reopen rejected: workflow ${dagID} used workflow-level worktree isolation; completion settled its worktree and removed the directory (branch "${wfConfig.worktree?.branch ?? "<unknown>"}" is kept). Start a bounded successor workflow from the desired target instead`,
+          ),
+        )
       }
       const defaults = normalizeNodeDefaults(wfConfig.node_defaults)
       const cfgById = new Map(wfConfig.nodes.map((n) => [n.id, n]))
@@ -1719,6 +1843,19 @@ export const layer = Layer.effect(
       input: { workspace?: string; fingerprint?: string; nodeIDs?: readonly string[]; reason?: string },
     ) {
       const workflow = yield* guardWorkflowNotTerminal(dagID, "retarget")
+      const config = parseWorkflowConfig(workflow.config)
+      if (!config) return yield* Effect.fail(new Error(`Retarget rejected: workflow config is invalid: ${dagID}`))
+      // #1030 D9-g: the workflow-level worktree is a create-time binding.
+      // Retargeting would rebind the execution directory while the worktree
+      // pointer in config still names the old tree; reject instead of leaving
+      // two disagreeing targets.
+      if (config.isolation === "worktree") {
+        return yield* Effect.fail(
+          new Error(
+            "Retarget rejected: workflow-level worktree isolation cannot be retargeted; start a new workflow from the desired target",
+          ),
+        )
+      }
       if (input.workspace === undefined && input.fingerprint === undefined) {
         return yield* Effect.fail(new Error("Retarget rejected: provide workspace or fingerprint"))
       }
@@ -1744,8 +1881,6 @@ export const layer = Layer.effect(
           )
         }
       }
-      const config = parseWorkflowConfig(workflow.config)
-      if (!config) return yield* Effect.fail(new Error(`Retarget rejected: workflow config is invalid: ${dagID}`))
       const nodes = yield* store.getNodes(dagID)
       const configByID = new Map(config.nodes.map((node) => [node.id, node]))
       const fromDirectory = workflow.executionDirectory ?? workflow.directory
