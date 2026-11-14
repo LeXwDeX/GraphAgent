@@ -267,7 +267,7 @@ describe("tool.glob", () => {
       )
       expect(result._tag).toBe("Failure")
       expect(failureMessage(result)).toContain(`Filesystem permission denied for search path: ${test.directory}`)
-      expect(failureMessage(result)).toContain("not an OpenCode permission policy rejection")
+      expect(failureMessage(result)).toContain("not a GraphAgent permission policy rejection")
       expect(failureMessage(result)).not.toContain("does not exist")
     }),
   )

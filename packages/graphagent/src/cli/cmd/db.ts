@@ -76,7 +76,7 @@ const VacuumCommand = effectCmd({
         cause._tag === "VacuumRefused"
           ? fail(cause.message)
           : fail(
-              `vacuum failed for ${args.db} — close running opencode processes that use this file and retry (${cause.message})`,
+              `vacuum failed for ${args.db} — close running graphagent processes that use this file and retry (${cause.message})`,
             ),
       ),
     )

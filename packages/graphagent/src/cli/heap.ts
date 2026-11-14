@@ -28,7 +28,7 @@ export function pruneHeapSnapshots(directory: string, keep = RETAINED_SNAPSHOTS)
       return Promise.all(
         names.slice(0, Math.max(0, names.length - keep)).map((name) =>
           fs.rm(path.join(directory, name), { force: true }).catch((cause) => {
-            console.warn(`opencode: failed to prune heap snapshot ${name}: ${String(cause)}`)
+            console.warn(`graphagent: failed to prune heap snapshot ${name}: ${String(cause)}`)
           }),
         ),
       )
@@ -37,7 +37,7 @@ export function pruneHeapSnapshots(directory: string, keep = RETAINED_SNAPSHOTS)
       // A missing log directory is the normal first-run state; anything else
       // is a real prune failure and best-effort cleanup must still surface it.
       if ((cause as { code?: string }).code === "ENOENT") return
-      console.warn(`opencode: failed to list heap snapshots for pruning: ${String(cause)}`)
+      console.warn(`graphagent: failed to list heap snapshots for pruning: ${String(cause)}`)
     })
 }
 

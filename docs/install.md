@@ -2,7 +2,7 @@
 
 Prebuilt CLI binaries (Linux / macOS / Windows, with SHA256SUMS) are published on the [releases page](https://github.com/LeXwDeX/GraphAgent/releases). Stable releases are built from `main`; the `oc` installer selects and installs a release.
 
-Built-in application updating is disabled in CLI and TUI. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `opencode upgrade` and `POST /global/upgrade` report that updates are disabled.
+Built-in application updating is disabled in CLI and TUI. Install a new release manually with the installer or release artifacts. Legacy `autoupdate` settings are accepted but ignored; `graphagent upgrade` and `POST /global/upgrade` report that updates are disabled.
 
 Release acceptance enforces two distinct integrity boundaries:
 
@@ -20,4 +20,4 @@ bun dev serve        # headless API server (port 4096)
 ./packages/graphagent/script/build.ts --single
 ```
 
-> This fork is not published to npm/brew/scoop. The upstream `opencode-ai` package installs upstream opencode, not this fork.
+> GraphAgent is an independent project (originated from an early version of opencode) and is not published to npm/brew/scoop. The upstream `opencode-ai` package installs upstream opencode, not GraphAgent.

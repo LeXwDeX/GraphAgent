@@ -12,7 +12,7 @@
 flowchart LR
   clients["客户端<br/>CLI / TUI · SDK"]
 
-  subgraph host["OpenCode 服务进程"]
+  subgraph host["GraphAgent 服务进程"]
     api["HTTP 路由与事件出口"]
     subgraph appLayer["AppLayer：服务组合"]
       orchestrator["DagLoop + GoalLoop"]
@@ -89,7 +89,7 @@ Memory 以主题 YAML 和 manifest generation 文件保存。主 Session 将 Mem
 
 ## 源码与领域文档
 
-按依赖关系阅读时，可先看 core 的数据模型和调度机制，再看 OpenCode 的服务组合及循环，最后看 Session 与客户端边界。下面的源码入口补充行为约定和已记录的运行时规则。
+按依赖关系阅读时，可先看 core 的数据模型和调度机制，再看 GraphAgent 的服务组合及循环，最后看 Session 与客户端边界。下面的源码入口补充行为约定和已记录的运行时规则。
 
 - [DAG 核心](../packages/core/src/dag)：状态、调度、持久化与投影。
 - [DAG 运行时](../packages/graphagent/src/dag)：循环、节点执行、恢复和输出处理。
