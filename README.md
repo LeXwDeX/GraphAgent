@@ -8,12 +8,12 @@
 > 跑动态工作流的终端编码智能体：主智能体自己设计依赖图，子智能体按波次并行执行，状态持久化，崩溃后能恢复。
 
 [![release](https://img.shields.io/github/v/release/LeXwDeX/GraphAgent)](https://github.com/LeXwDeX/GraphAgent/releases)
-[![license](https://img.shields.io/badge/license-MIT%20%2B%20Apache--2.0-blue)](#与-opencode-的关系和许可)
+[![license](https://img.shields.io/badge/license-MIT%20%2B%20Apache--2.0-blue)](#起源与许可)
 [![stars](https://img.shields.io/github/stars/LeXwDeX/GraphAgent)](https://github.com/LeXwDeX/GraphAgent/stargazers)
 
 <!-- 这里将来放一张 DAG 运行的截图或 GIF：主对话建图、节点分波次并行、TUI 检查器里的实时状态。 -->
 
-GraphAgent 是 [opencode](https://github.com/anomalyco/opencode) 早期 v1 的非官方 fork，与 OpenCode 团队没有关系。我们在它上面加了一套 DAG 工作流引擎，外加几个围绕长任务的功能。
+GraphAgent 是独立的终端编码智能体，专注动态 DAG 工作流。它起源于 opencode 的早期版本，从 v2.0 起完全独立维护。
 
 单个智能体循环处理一步到位的任务没有问题。任务一旦有先后依赖、有能并行的部分、中途还要过一道审查，它就吃力了：本该并行的活被串着跑，中间结论也没人复核。进程一挂，只能从头来。GraphAgent 让主智能体先把任务画成一张依赖图，再按图执行。图不是预先写死的，是它按任务现设计的，所以 DAG 工作流基本上就是动态工作流。
 
@@ -21,24 +21,39 @@ GraphAgent 是 [opencode](https://github.com/anomalyco/opencode) 早期 v1 的�
 
 ## 项目状态
 
-v1 可用，目前发布的版本都是 v1。我们只修它的缺陷（可复现的问题请提 [Issue](https://github.com/LeXwDeX/GraphAgent/issues)），不再往里加新的平台能力。v2 正在重写，运行时会重新设计。下面表格里“v2 方向”一列是计划，不是现有功能。
+v2.0 开发中，即将发布。发布进度在[里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7)里跟踪；可复现的问题请提 [Issue](https://github.com/LeXwDeX/GraphAgent/issues)。
 
 ## 核心能力
 
-| 能力        | v1 现在                                                                              | v2 方向                                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| DAG 工作流  | 主智能体设计依赖图，每个节点是真实的子会话，按波次并行；持久化，可暂停、恢复、重规划 | agent 契约与 composer，在 DAG 内组合公共智能体（调研、架构设计、原型设计等）；DAG 模式开关（并发池、预算、审核） |
-| 思考塑形 🧪 | 实验性功能，默认关闭                                                                 | —                                                                                                                |
-| 项目记忆    | `/memory`，只保存用户确认过的内容                                                    | 项目内建一个指针文档，加载到前缀提示词区域                                                                       |
-| Goal / Loop | `/goal`、`/subgoal`，外部 judge 判断进度，有回合预算                                 | 更名为 loop，可配置自动更新 loop 提示词                                                                          |
-| Hooks       | 兼容 Claude Code hooks 协议                                                          | 完全重构：事件从规范的状态转换派生，单一派发器                                                                   |
-| 上下文管理  | 工具输出限制、工具调用上限、长会话压缩                                               | 删除                                                                                                             |
+| 能力        | 说明                                                                                                                               |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| DAG 工作流  | 主智能体设计依赖图，每个节点是真实的子会话，按波次并行；状态持久化，可暂停、恢复、重规划；节点超时从拿到执行槽位起算，排队时间不计 |
+| 统一子运行  | `task` 与 DAG 节点共用 ChildRun：每次委派一条持久记录，统一归属校验、取消和结果投递；子会话只接受主 agent 通信                     |
+| 前后台委派  | 提示词准则决定 `task` 在前台等待还是后台运行；后台结果完成时以一条消息回注，不打断主会话                                           |
+| 只读 review | 内置只读 `review` agent；`/review` 默认后台执行，结论由主会话转述                                                                  |
+| 思考塑形 🧪 | 实验性功能，默认关闭                                                                                                               |
+| 项目记忆    | `/memory`，只保存你确认过的内容，同一项目的所有 worktree 共用                                                                      |
+| Goal / Loop | `/goal`、`/subgoal`，外部 judge 判断进度，有回合预算                                                                               |
+| Hooks       | 兼容 Claude Code hooks 协议                                                                                                        |
+| 上下文管理  | 工具输出限制、工具调用上限、长会话压缩                                                                                             |
 
 ### DAG 工作流
 
 主智能体觉得任务值得拆，就自己建图，不用你开口；你也可以用 `/dag-auto <任务>` 直接要求。边只表示“下游要读上游的产出”，没有这层关系的节点就并行。负责审查和仲裁的节点叫门禁，输出 ACCEPT、REVISE、REJECT 或 BLOCKED，下游可以按裁定决定跑不跑。TUI 里有 DAG 检查器，能看各波次和节点的实时状态，也能进入任何一个节点的子会话。
 
-模型分层写在 `.agents/dag.jsonc`（关键节点用 advanced，跑量的用 standard），常用的图存进 `.agents/workflows/`，之后按名字就能启动。精选模板在 [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config)。崩溃恢复只认持久化的记录。引擎不假设有跨进程的锁，也不保证节点恰好执行一次。用法和引擎细节见 [docs/dag-workflows.md](./docs/dag-workflows.md)。
+模型分层写在 `.agents/dag.jsonc`（关键节点用 advanced，跑量的用 standard），常用的图存进 `.agents/workflows/`，之后按名字就能启动。精选模板在 [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config)。节点的 `timeout_ms` 从拿到执行槽位开始计时，排队时间不计。崩溃恢复只认持久化的记录。引擎不假设有跨进程的锁，也不保证节点恰好执行一次。用法和引擎细节见 [docs/dag-workflows.md](./docs/dag-workflows.md)。
+
+### 子运行与通信
+
+`task` 和 DAG 节点共用同一套 ChildRun。一次委派对应一条持久记录，记录归属、状态与结算结果；后台运行结束后结果只投递一次，重启或进程丢失的运行也会补投。子会话不接受自由输入：HTTP 操作层对子会话的写请求返回 409，只放行权限回复和只读旁问；引擎准入要求携带当前运行的 live 凭证。
+
+`agent` 工具负责主会话与 DAG 节点之间的观察和消息：`observe` 分页查看节点进度与尝试，`send` 向确切的活跃尝试投递，`receive` 读取邮箱。节点需要澄清时问父会话，不直接问用户。工具只在存在活跃 DAG 节点运行时出现，可见性由进程内注册表判定，不查数据库。
+
+### 只读 review 与前后台分类
+
+`/review` 使用内置的只读 `review` agent：它能读文件、搜索、查 LSP、跑只读的 git 和 forge 命令，不能编辑文件、起子任务或跑会改文件的命令。命令默认在后台运行，结束后把结论交回主会话，由主会话转述。
+
+`task` 的前台/后台由提示词里的准则判断，代码不做启发式分类：需要用户确认、会影响与主会话共享的状态、结果是下一步的直接输入、或几秒钟就能完成时走前台；不阻塞下一步、只读或只写主会话不碰的文件、耗时以分钟计、结果一条消息能说完时才走后台。
 
 ### 思考塑形
 
@@ -58,33 +73,32 @@ v1 可用，目前发布的版本都是 v1。我们只修它的缺陷（可复�
 
 ### 项目记忆
 
-`/memory on` 开启后，v1 按项目保存偏好、决策和术语，只保存经你确认的内容，同一项目的所有 worktree 共用一份。它不是代码索引，也不会压过你当前的输入和更高优先级的指令。v2 要大改：项目里内建一个指针文档，加载到前缀提示词区域。
+`/memory on` 开启后，GraphAgent 按项目保存偏好、决策和术语，只保存经你确认的内容，同一项目的所有 worktree 共用一份。它不是代码索引，也不会压过你当前的输入和更高优先级的指令。
 
 ### Goal 与 Loop
 
-`/goal <目标>` 让智能体在当前会话里跨回合自己推进一个目标，`/subgoal` 管子目标。每个回合结束后由外部 judge 判断进度：done 就收工，continue 就接着跑。总回合数有预算（默认 20），用尽后暂停，可以恢复。目标状态持久化，重启不丢。v2 里它更名为 loop，并支持配置自动更新 loop 提示词。
+`/goal <目标>` 让智能体在当前会话里跨回合自己推进一个目标，`/subgoal` 管子目标。每个回合结束后由外部 judge 判断进度：done 就收工，continue 就接着跑。总回合数有预算（默认 20），用尽后暂停，可以恢复。目标状态持久化，重启不丢。
 
 ### Hooks
 
-v1 兼容 Claude Code 的 hooks 协议。`hooks.json` 从全局配置目录和项目的 `.agents` 目录读取，执行类型有 command、HTTP、MCP 工具、prompt 和 agent 五种；项目里的 hooks 要先经过信任确认才会生效。`/import-claude` 把 `.claude/settings*.json` 审阅后转换进 `.agents/`，`/create-hook` 带你写新的 hook。
-
-v2 完全重构，不再用补丁式的写法：hook 事件从规范的状态转换派生，由单一派发器分发。v2 是否继续兼容 Claude Code 的协议，目前不做承诺。v1 的详细说明见 [hooks 指南](./packages/graphagent/src/skill/builtin/configure-hooks.md)。
+兼容 Claude Code 的 hooks 协议。`hooks.json` 从全局配置目录和项目的 `.agents` 目录读取，执行类型有 command、HTTP、MCP 工具、prompt 和 agent 五种；项目里的 hooks 要先经过信任确认才会生效。`/import-claude` 把 `.claude/settings*.json` 审阅后转换进 `.agents/`，`/create-hook` 带你写新的 hook。详细说明见 [hooks 指南](./packages/graphagent/src/skill/builtin/configure-hooks.md)。
 
 ### 上下文管理
 
-v1 里有一组管上下文的功能：限制工具输出的长度、限制每次输入的工具调用次数、自动压缩长会话。v2 把它们删掉。我们的判断是，这些功能是为窗口更小、模型更弱的环境准备的；硬件环境和模型能力改善之后，它们已经没有价值，留着只是继续付维护成本。
+一组管上下文的功能：限制工具输出的长度、限制每次输入的工具调用次数、自动压缩长会话。截断输出时会给出可执行的续读方式。
 
 ## 其他改动
 
-- `task` 可以按 `task_id` 续接子智能体，也支持后台子智能体，完成时自动通知。
-- 所有模型共用一份系统提示词，工具的用法写在各自的描述里，不再按 Provider 挑提示词。
+- `task` 可以按 `task_id` 续接子智能体；后台子智能体完成时自动通知。
+- 所有模型共用一份系统提示词，工具的用法写在各自的描述里，不按 Provider 挑提示词。
 - 工具更严格，也更容易排错：`edit` 严格匹配（多处命中时列出候选行，找不到时给出最接近的片段），参数校验的报错带字段级提示。
 - 支持用独立的 git worktree 管理工作目录。工作流不会自动隔离，并发的工作流要用不同的 worktree，或者串行跑。
+- 会话创建时可指定 DAG 模式；TUI 页脚显示开关状态，状态接口返回可用性、并发与节点上限、token 预算用量。
 - `config_assistant`（命令 `ocfg`）是一个用 Go 写的独立 TUI，用来定位、校验和编辑配置。
 
 ## 快速开始
 
-预构建的二进制（Linux、macOS、Windows，附 SHA256SUMS）在 [Releases](https://github.com/LeXwDeX/GraphAgent/releases) 页，解压后把 `graphagent` 放进 PATH，在项目目录里运行。仓库里现有的 `oc` 安装脚本会在 v2.1 删除，安装和升级都并入主程序，见路线图。这个 fork 不发布到 npm、brew 和 scoop，上游的 `opencode-ai` 装的是上游 opencode，不是这个 fork。
+预构建的二进制（Linux、macOS、Windows，附 SHA256SUMS）在 [Releases](https://github.com/LeXwDeX/GraphAgent/releases) 页，解压后把 `graphagent` 放进 PATH，在项目目录里运行。仓库里现有的 `oc` 安装脚本会在 v2.1 删除，安装和升级都并入主程序，见路线图。GraphAgent 不发布到 npm、brew 和 scoop，上游的 `opencode-ai` 装的是上游 opencode，不是 GraphAgent。
 
 从源码运行需要 `package.json` 里 `packageManager` 固定的 Bun，以及 `.node-version` 指定的 Node：
 
@@ -142,23 +156,22 @@ config:
 
 ## 路线图
 
-v2 的进度在[里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7)里跟踪。除了上面表格里各项的变化，计划中的还有：
+v2.0 的剩余工作也在[里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7)里跟踪：
 
-- 统一子运行 ChildRun：`task` 和 DAG 节点共用同一套子运行模型。
-- TUI 重做：主题、骨架、状态带、侧边栏抽屉，以及子智能体的只读界面。
-- `/remind`：持久化的定时提醒。
-- PR 监听重做为事件源。
-- 后台任务的显示。
+- DAG 模式的行为面：并发池、预算与质量机制、节点权限自动裁决。
+- workflow 工具接口收敛、工作流级 worktree、事件驱动邮箱与持久对账。
+- agent 契约与 composer：内置调研、架构设计、原型设计 agent，并在 DAG 内组合公共 agent。
+- PR 监听改为事件源；`/remind` 持久提醒；后台任务显示与子 agent 只读界面。
+- v2.0.0 发布：版本推导、Breaking 清单、中英迁移指南与三平台冒烟。
 - v2.1：安装与升级并入主程序，直接从 GitHub 检索新版本并升级，不再需要 `oc` 脚本；release 打包随之调整，macOS 上安装不用再输密码；配置也可以从 GitHub 仓库读取（[#1281](https://github.com/LeXwDeX/GraphAgent/issues/1281)）。
-- v2.0.0 发布，附中英文迁移指南。
 
 这些都是计划，实际状态以里程碑为准。
 
-## 与 opencode 的关系和许可
+## 起源与许可
 
-GraphAgent 源自早期的 opencode v1（MIT，[anomalyco/opencode](https://github.com/anomalyco/opencode)），是非官方 fork，与 OpenCode 团队没有隶属或背书关系。多 Provider、LSP、客户端/服务器架构和 TUI 沿用自上游。
+GraphAgent 起源于早期的 opencode（MIT，[anomalyco/opencode](https://github.com/anomalyco/opencode)），从 v2.0 起作为独立项目维护。
 
-许可分两条：继承自上游的代码保持 MIT，包括被我们改过的上游文件，文本见 [LICENSE](./LICENSE)；本 fork 新写的代码是 Apache-2.0，文本见 [LICENSE-APACHE](./LICENSE-APACHE)。精确的文件边界在 [LICENSE-UPSTREAM.txt](./LICENSE-UPSTREAM.txt)，[NOTICE](./NOTICE) 有摘要。再分发时请保留 NOTICE 里的版权与归属声明。
+许可分两条：继承自上游的代码保持 MIT，包括被我们改过的上游文件，文本见 [LICENSE](./LICENSE)；GraphAgent 新写的代码是 Apache-2.0，文本见 [LICENSE-APACHE](./LICENSE-APACHE)。精确的文件边界在 [LICENSE-UPSTREAM.txt](./LICENSE-UPSTREAM.txt)，[NOTICE](./NOTICE) 有摘要。再分发时请保留 NOTICE 里的版权与归属声明。
 
 ## 文档
 
@@ -175,4 +188,4 @@ GraphAgent 源自早期的 opencode v1（MIT，[anomalyco/opencode](https://gith
 
 ## 链接
 
-[GitHub](https://github.com/LeXwDeX/GraphAgent) · [Issues](https://github.com/LeXwDeX/GraphAgent/issues) · [Releases](https://github.com/LeXwDeX/GraphAgent/releases) · [里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7) · [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config) · [上游 opencode](https://github.com/anomalyco/opencode)
+[GitHub](https://github.com/LeXwDeX/GraphAgent) · [Issues](https://github.com/LeXwDeX/GraphAgent/issues) · [Releases](https://github.com/LeXwDeX/GraphAgent/releases) · [里程碑](https://github.com/LeXwDeX/GraphAgent/milestone/7) · [opencode-dag-config](https://github.com/LeXwDeX/opencode-dag-config)
