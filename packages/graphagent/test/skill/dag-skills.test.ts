@@ -161,7 +161,7 @@ describe("dag-blocks", () => {
     expect(blocks).toContain(
       '{ action: "control", operation: "replan", workflow_id: "dag_...", spec_path: "replan.yaml" }',
     )
-    expect(blocks).toContain("`validate` decodes start only")
+    expect(blocks).toContain("`spec.validate` decodes start only")
     expect(blocks).toContain("`fan_out: <plan-block-id>`")
     expect(blocks).toContain("triple-disjoint")
   })

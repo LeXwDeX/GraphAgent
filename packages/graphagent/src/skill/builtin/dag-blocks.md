@@ -1,30 +1,29 @@
 # Composable Workflow Blocks
 
-Blocks are the high-level interface for assembling a one-off workflow YAML
-file. The tool compiles them into ordinary durable DAG nodes before validation
-and persistence; node-based YAML remains compatible.
+Blocks are the high-level interface for a one-off workflow YAML file. The tool
+compiles them into ordinary durable DAG nodes before validation and
+persistence; node-based YAML remains compatible.
 
 Use blocks when a DAG serves the task. Examples are optional, not a checklist or
-stage minimum; selecting a block opts into its compiler and output contracts
-below.
+stage minimum; selecting a block opts into its compiler and output contracts.
 
 Every live `extend` or `control(replan)` costs a parent turn, so declare known
-structure — parallel branches, dependencies, `condition` branches, `fan_out`
-writers — in the start graph, and mutate at runtime only for structure that
-depends on results.
+structure — parallel branches, dependencies, conditions, `fan_out` writers — in
+the start graph, and mutate at runtime only for structure that depends on
+results.
 
 ## Authoring contract
 
 Never infer or invent a YAML field. Copy the intended envelope and change
 values only. Unknown fields are errors; a field from a tool call, runtime
-result, or another action does not belong here unless listed.
+result, or other action does not belong here unless listed.
 
 ### Start file
 
 Author-written top-level fields: optional `title`, `mode`, `admission`, and
 required `config`. `objective` lives INSIDE `config`; the top level carries no
-graph fields. For the block route, `config` contains required `name`,
-`objective`, `blocks`; optional fields are `node_defaults`, `max_concurrency`,
+graph fields. For the block route, `config` requires `name`, `objective`,
+`blocks`; optional fields are `node_defaults`, `max_concurrency`,
 `max_node_replan_attempts`, `max_total_nodes`.
 
 ```yaml
@@ -59,7 +58,7 @@ blocks:
 
 A replan file contains only `fragment`. For the block route, `fragment` takes
 start's `config` fields: required `name`, `objective`, `blocks`, plus the four
-optional config fields.
+optional fields.
 
 ```yaml
 fragment:
@@ -86,11 +85,11 @@ fields from read/status output or persisted records. Deep admission is the only
 exception; load skill dag-policy.
 
 Exact calls: validate
-`{ action: "validate", spec_path: "workflow.yaml", profile: "portable" }`,
-start `{ action: "start", spec_path: "workflow.yaml" }`, extend
-`{ action: "extend", workflow_id: "dag_...", spec_path: "extend.yaml" }`,
+`{ action: "spec", operation: "validate", spec_path: "workflow.yaml", profile: "portable" }`,
+start `{ action: "run", operation: "start", spec_path: "workflow.yaml" }`, extend
+`{ action: "run", operation: "extend", workflow_id: "dag_...", spec_path: "extend.yaml" }`,
 replan `{ action: "control", operation: "replan", workflow_id: "dag_...", spec_path: "replan.yaml" }`.
-`validate` decodes start only; extend and replan validate their own envelopes,
+`spec.validate` decodes start only; extend and replan validate their own envelopes,
 and a `config` wrapper is not a valid extension file.
 
 `objective` is required and injected into every node; use blocks or nodes, never
@@ -103,9 +102,9 @@ replan.
 - `explore`: read-only repository mapping and evidence collection.
 - `plan`: decision- or implementation-ready options/work packages, checks,
   falsifiers, and risks.
-- `prototype`: the smallest throwaway experiment that resolves a runnable
+- `prototype`: the smallest throwaway experiment resolving a runnable
   uncertainty; it is not production code but publishes its changed files and
-  fingerprint for later verification or review.
+  fingerprint for verification or review.
 - `debug`: expands to reproduce/evidence followed by root-cause diagnosis.
 - `coding`: bounded production implementation plus focused tests and checks.
 - `verify`: deterministic acceptance checks with explicit PASS/FAIL evidence.
@@ -151,8 +150,8 @@ ceiling, run it serially with the reason in its prompt.
 
 ## When to use low-level nodes
 
-Drop to `nodes` for custom template bindings, conditional branches, special
-output schemas, exact retry/cancel/restart controls, or deep diff-review
-metadata. Load skill dag-nodes for the node interface and skill dag-recovery
-for gate and recovery contracts. Do not poll a running workflow; reporting
-blocks wake the parent when a decision is actionable.
+Drop to `nodes` for custom template bindings, conditional branches, output
+schemas, retry/cancel/restart controls, or deep diff-review metadata. Load
+skill dag-nodes for the node interface and skill dag-recovery for gates and
+recovery. Do not poll a running workflow; reporting blocks wake the parent
+when a decision is actionable.

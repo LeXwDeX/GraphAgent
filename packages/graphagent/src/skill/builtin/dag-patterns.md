@@ -1,16 +1,15 @@
 # DAG Patterns
 
-These patterns illustrate common cases; none is a required template or minimum
-node count, and real workflows can combine or simplify them. Every YAML block is
-start content: save, validate with
-`{ action: "validate", spec_path: "<file>.yaml" }`, then start with
-`{ action: "start", spec_path: "<file>.yaml" }`. Load skill dag-blocks for the
-field contract and skill dag-policy for gates and models.
+These patterns illustrate common cases; none is a required template or node
+minimum, and workflows can combine or simplify them. Every YAML block is start
+content: save, validate with
+`{ action: "spec", operation: "validate", spec_path: "<file>.yaml" }`, then start with
+`{ action: "run", operation: "start", spec_path: "<file>.yaml" }`. Load skill dag-blocks for
+fields and skill dag-policy for gates and models.
 
 ## 1. Staged pipeline with gate
 
-Sequential phases; a gate between them blocks downstream work until quality is
-confirmed.
+Sequential phases; a gate blocks downstream work until quality is confirmed.
 
 ```yaml
 config:
@@ -32,7 +31,7 @@ config:
 
 The gate is `required: true`, so execution or output-contract failure cancels
 the workflow. A successful non-ACCEPT verdict does not fail the node; the
-condition skips `implement`, and the verdict gives the parent an actionable
+condition skips `implement`, and the verdict gives the parent a
 replan or stop decision.
 
 ## 2. Parallel fan-out
@@ -49,7 +48,7 @@ config:
     - { id: assemble, name: assemble, worker_type: build, depends_on: [migrate-auth, migrate-server], prompt_template: { inline: "Run integration tests and assemble a summary." } }
 ```
 
-`migrate-*` nodes execute concurrently, bounded by `max_concurrency`; `assemble`
+`migrate-*` nodes run concurrently, bounded by `max_concurrency`; `assemble`
 waits for both. Non-required worker failures do not cancel the workflow —
 `assemble` still runs and reports which migrations failed.
 
@@ -57,7 +56,7 @@ waits for both. Non-required worker failures do not cancel the workflow —
 
 Multiple reviewers help when distinct expertise or independent scrutiny adds
 evidence. An arbiter resolves conflicts; this example gates follow-up on its
-verdict, while a read-only review can finish with the parent's findings report.
+verdict, while a read-only review can finish with the parent's findings.
 See the Verdict Disposal Contract in skill dag-recovery.
 
 ```yaml
@@ -108,7 +107,7 @@ overlap does not itself require one.
 Match examples to the final artifact:
 
 - Product decision: keep product planning as the backbone; technical
-  feasibility is evidence, not a second design route.
+  feasibility is evidence, not a second route.
 - Implementation-ready design: keep technical design as the backbone; product
   context supplies constraints.
 - Changed code: keep project development as the backbone unless an unknown
@@ -118,14 +117,14 @@ Match examples to the final artifact:
 - Verdict: code review for a pinned change, security/performance audit for
   those evidence domains, technical design for a proposed system or migration.
 
-Security, performance, and review can add secondary assurance to an
-implementation or repair artifact; their checks may fit existing work without a
+Security, performance, and review can add secondary assurance to
+implementation or repair artifacts; their checks may fit existing work without a
 separate workflow. Address the evidence gap rather than attach every domain's
 process.
 
 Add the smallest assurance slice:
 
-- Keep a primary reference for objective clarity; let secondary references
+- Keep a primary reference for objective clarity; secondary references
   suggest a focused evidence lane or gate. Retarget borrowed instructions;
   never copy wholesale.
 - A security-sensitive feature keeps the development backbone and adds scoped
