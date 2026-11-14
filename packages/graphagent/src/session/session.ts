@@ -704,6 +704,21 @@ export const layer: Layer.Layer<
         // Removal is terminal: background jobs that survive an interrupt (Esc)
         // must not outlive the session they report into.
         if (hasInstance) yield* cancelSessionJobs(background, sessionID, false, true)
+        // A deleted session must not leave a durable PR watch behind: the
+        // process-level poller would keep reading the forge and the notice
+        // would stay owed to a session that no longer exists. Optional like the
+        // other cleanup ports: standalone graphs and unit fixtures have no
+        // poller, and the session removal must stay usable there.
+        const { PrWatchPoller } = yield* Effect.promise(() => import("@/pr-watch/poller"))
+        const prWatch = Option.getOrUndefined(yield* Effect.serviceOption(PrWatchPoller.Service))
+        if (prWatch)
+          yield* prWatch.retireSession(sessionID).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("pr watch retirement failed during session remove", { sessionID, cause }),
+            ),
+          )
         const kids = yield* children(sessionID)
         for (const child of kids) {
           yield* remove(child.id)

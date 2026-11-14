@@ -411,6 +411,9 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   messageID: input.processor.message.id,
                 })),
               }
+              // The shell tool registers a successful `gh pr create` itself (#1071),
+              // before a PostToolUse hook can replace either the command or its
+              // result; the generic pipeline carries no feature import for it.
               // PreToolUse feedback is attached after PostToolUse has seen and possibly replaced the
               // native result, so Post hooks never receive earlier hook text and a replacement keeps it.
               const preLines = preContexts.filter((line): line is string => Boolean(line))

@@ -102,3 +102,22 @@ export const JOB_TRANSITION_TABLE: TransitionTable = {
           ? ["completed", "error", "cancelled"]
           : [],
 }
+
+/**
+ * PR watches poll the forge while `watching`, deliver the observed notice
+ * while `delivering`, and settle with the delivery result (#1071). Delivery
+ * never re-enters polling: a new head after the notice is a new watch.
+ * Every live value can still be cancelled, and a watch that reaches its
+ * deadline without an outcome expires.
+ */
+export const PR_WATCH_TRANSITION_TABLE: TransitionTable = {
+  domain: "pr_watch",
+  next: (from) =>
+    from === null
+      ? ["watching"]
+      : from === "watching"
+        ? ["delivering", "cancelled", "expired"]
+        : from === "delivering"
+          ? ["succeeded", "failed", "cancelled", "expired"]
+          : [],
+}

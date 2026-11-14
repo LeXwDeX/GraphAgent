@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "fc902230-34ec-4b45-9c9c-6b0c7fe5c5e1",
+  "id": "56f55cf6-98b4-4619-b6a9-086040b0b053",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -20,6 +20,10 @@
     },
     {
       "name": "agent_message",
+      "entityType": "tables"
+    },
+    {
+      "name": "pr_watch",
       "entityType": "tables"
     },
     {
@@ -561,6 +565,176 @@
       "name": "time_delivered",
       "entityType": "columns",
       "table": "agent_message"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "forge",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "host",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "url",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "repo",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "number",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "head",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "baseline_review",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "phase",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "next_poll_at",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "deadline_at",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "outcome",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "delivery",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "process_id",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "pr_watch"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "pr_watch"
     },
     {
       "type": "text",
@@ -3009,6 +3183,15 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "pr_watch_pk",
+      "table": "pr_watch",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "runtime_job_pk",
       "table": "runtime_job",
       "entityType": "pks"
@@ -3255,6 +3438,74 @@
       "name": "agent_message_session_idx",
       "entityType": "indexes",
       "table": "agent_message"
+    },
+    {
+      "columns": [
+        {
+          "value": "phase",
+          "isExpression": false
+        },
+        {
+          "value": "next_poll_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "pr_watch_phase_next_poll_idx",
+      "entityType": "indexes",
+      "table": "pr_watch"
+    },
+    {
+      "columns": [
+        {
+          "value": "phase",
+          "isExpression": false
+        },
+        {
+          "value": "deadline_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "pr_watch_phase_deadline_idx",
+      "entityType": "indexes",
+      "table": "pr_watch"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "pr_watch_session_idx",
+      "entityType": "indexes",
+      "table": "pr_watch"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "url",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "pr_watch_session_url_idx",
+      "entityType": "indexes",
+      "table": "pr_watch"
     },
     {
       "columns": [

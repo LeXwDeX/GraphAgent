@@ -28,13 +28,13 @@ export const LIFECYCLE_MIRROR_MAX = 256
 
 /**
  * The domains whose owner registers a resolver with the server's lifecycle
- * service (`BackgroundLifecycle` for `job`, `GoalLifecycle` for `goal`). A ref
- * of any other domain, a `turn` for example, always comes back unknown, so
- * asking about it only costs a request per transition for an answer that is
- * always null. Add a domain here in the same change that registers its
- * resolver.
+ * service (`BackgroundLifecycle` for `job`, `GoalLifecycle` for `goal`,
+ * `PrWatchLifecycle` for `pr_watch`). A ref of any other domain, a `turn` for
+ * example, always comes back unknown, so asking about it only costs a request
+ * per transition for an answer that is always null. Add a domain here in the
+ * same change that registers its resolver.
  */
-const PULLABLE_DOMAINS: ReadonlySet<LifecycleDomain> = new Set<LifecycleDomain>(["job", "goal"])
+const PULLABLE_DOMAINS: ReadonlySet<LifecycleDomain> = new Set<LifecycleDomain>(["job", "goal", "pr_watch"])
 
 export interface LifecycleMirrorEntry {
   domain: LifecycleDomain

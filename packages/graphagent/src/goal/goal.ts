@@ -4,10 +4,11 @@
 export * as Goal from "./goal"
 
 import { Effect, Layer, Context, Schema, Fiber, Cause, Exit, Option } from "effect"
-import { desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, sql } from "drizzle-orm"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { isTerminalValue } from "@graphagent/core/lifecycle/vocabulary"
+import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { Database } from "@graphagent/core/database/database"
 import { BackgroundJob } from "@/background/job"
 import { readPersistedJob, type PersistedJob } from "@/background/persist"
@@ -88,8 +89,9 @@ export type WakeMatch = {
 }
 
 /**
- * A wait whose job can no longer wake the goal (#1069): the job the wait names
- * and the reason the agent will read in the review prompt.
+ * A wait whose target can no longer wake the goal (#1069): the StateRef id the
+ * wait names (a job id, or a #1071 watch id) and the reason the agent reads in
+ * the review prompt. The field keeps its pre-#1071 name for compatibility.
  */
 export type OrphanedWait = {
   readonly jobID: string
@@ -119,13 +121,15 @@ export interface Interface {
   readonly wake: (sessionID: SessionID, match: WakeMatch, payload?: string) => Effect.Effect<boolean>
   readonly expireWait: (sessionID: SessionID, now?: number) => Effect.Effect<GoalState.Info | undefined>
   /**
-   * #1069 startup reconciliation, read-only: the wait of this goal if its job
-   * can no longer wake it. A process restart drops the in-process registry that
-   * would have delivered the wake, so the durable `runtime_job` row is the only
-   * record left, and the job is gone when that row is terminal, was left
-   * running by another process, or was never recorded. A row owned by this
-   * process and still running is kept: its owner may be alive. Only a wait that
-   * names its job by StateRef is checked; any other keeps its deadline.
+   * #1069 startup reconciliation, read-only: the wait of this goal if its
+   * target can no longer wake it. A process restart drops the in-process
+   * registry that would have delivered the wake, so the durable record is the
+   * only source left: the `runtime_job` row for a `job` ref, the `pr_watch`
+   * row for a #1071 watch ref. A job row is gone when terminal, left running
+   * by another process, or never recorded. A watch row is gone when terminal
+   * or missing; the process-level poller resumes a live watch, so that wait is
+   * kept. Only a wait that names its target by StateRef is checked; any other
+   * keeps its deadline.
    *
    * Call it from a scan over a freshly built instance only: that is what makes
    * "no live registry entry" a fact rather than a guess.
@@ -298,41 +302,77 @@ const WATCH_AWAIT_MARGIN_MS = 60_000
 /**
  * #1067: a judge that says "blocked" while the session still has running work
  * is usually looking at an external wait (CI, a background task), not at a
- * real dead end. Prefer the newest running watch_pr job, then any running job
- * owned by the session, so the verdict can be downgraded to `await` instead of
- * pausing the goal.
+ * real dead end. Prefer the newest watching PR watch, then any running
+ * background job owned by the session, so the verdict can be downgraded to
+ * `await` instead of pausing the goal. A `delivering` watch is excluded: its
+ * outcome is already recorded and its wake is landing now, so a wait declared
+ * this late could not be woken by it.
  *
- * Resolved at call time: headless runtimes may omit the background registry,
- * in which case no downgrade is possible and the verdict behaves as before.
+ * Resolved at call time: headless runtimes may omit the database or the
+ * background registry, in which case no downgrade is possible and the verdict
+ * behaves as before.
  */
+type RunningWait =
+  | {
+      readonly source: "pr_watch"
+      readonly watch: { readonly id: string; readonly url: string; readonly deadline_at: number }
+    }
+  | { readonly source: "background_job"; readonly job: BackgroundJob.Info }
+
 const runningWaitTarget = (sessionID: SessionID) =>
   Effect.gen(function* () {
+    const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
+    if (database) {
+      const watches = yield* database.db
+        .select({ id: PrWatchTable.id, url: PrWatchTable.url, deadline_at: PrWatchTable.deadline_at })
+        .from(PrWatchTable)
+        .where(
+          and(
+            eq(PrWatchTable.session_id, sessionID),
+            eq(PrWatchTable.phase, "watching"),
+          ),
+        )
+        .orderBy(desc(PrWatchTable.created_at), desc(PrWatchTable.id))
+        .limit(1)
+        .all()
+        .pipe(Effect.catchCause(() => Effect.succeed([])))
+      const watch = watches[0]
+      if (watch) return { source: "pr_watch" as const, watch } satisfies RunningWait
+    }
     const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
     if (!background) return undefined
     const jobs = yield* background.list().pipe(Effect.catchCause(() => Effect.succeed([])))
     // The job's sessionID is the child session for a background task; the
     // caller is recorded as parentSessionID, so accept either as ownership.
+    // Legacy `watch_pr` job rows belong to the retired one-shot watch and
+    // never name a live watch any more.
     const owned = jobs.filter(
       (job) =>
         job.status === "running" &&
+        job.type !== "watch_pr" &&
         (sessionIDOf(job.metadata) === sessionID || parentSessionIDOf(job.metadata) === sessionID),
     )
-    const newestFirst = (values: ReadonlyArray<BackgroundJob.Info>) =>
-      [...values].toSorted((a, b) => b.started_at - a.started_at)
-    return newestFirst(owned.filter((job) => job.type === "watch_pr"))[0] ?? newestFirst(owned)[0]
+    const newest = [...owned].toSorted((a, b) => b.started_at - a.started_at)[0]
+    return newest ? ({ source: "background_job" as const, job: newest } satisfies RunningWait) : undefined
   })
 
-const awaitWaitFor = (job: BackgroundJob.Info, now: number): GoalState.Wait => {
-  const source = job.type === "watch_pr" ? ("watch_pr" as const) : ("background_job" as const)
-  const deadlineAt = job.metadata?.deadlineAt
+const awaitWaitFor = (target: RunningWait, now: number): GoalState.Wait => {
+  if (target.source === "pr_watch")
+    return {
+      source: "watch_pr",
+      wait_id: target.watch.id,
+      ref: { domain: "pr_watch", id: target.watch.id },
+      // The watch's own deadline is the meaningful bound; the margin keeps the
+      // wait alive through the terminal notice delivery.
+      deadline: Math.max(now, target.watch.deadline_at) + WATCH_AWAIT_MARGIN_MS,
+      max_wakes: GoalState.nni(1),
+      wakes: GoalState.nni(0),
+    }
   return {
-    source,
-    wait_id: job.id,
-    ref: { domain: "job", id: job.id },
-    deadline:
-      source === "watch_pr" && typeof deadlineAt === "number"
-        ? Math.max(now, deadlineAt) + WATCH_AWAIT_MARGIN_MS
-        : now + DEFAULT_AWAIT_DEADLINE_MS,
+    source: "background_job",
+    wait_id: target.job.id,
+    ref: { domain: "job", id: target.job.id },
+    deadline: now + DEFAULT_AWAIT_DEADLINE_MS,
     max_wakes: GoalState.nni(1),
     wakes: GoalState.nni(0),
   }
@@ -359,6 +399,25 @@ const orphanReason = (jobID: string, row: PersistedJob | undefined): string | un
       : `${subject} 已结束（状态 ${row.status}${row.error ? `：${row.error}` : ""}），唤醒因进程重启（process_restart）丢失，${decision}`
   if (!runnerAlive(row.process_id))
     return `${subject} 因进程重启已丢失（状态 ${row.status}，由已退出的进程留下；process_restart），${decision}`
+  return undefined
+}
+
+/**
+ * The same restart decision for a durable PR watch (#1071). Unlike a job, a
+ * live watch is resumed by the process-level poller, so it may still deliver
+ * its notice and wake; a terminal row already settled without the wake
+ * arriving, and a missing row leaves nothing to wait for. The text reaches the
+ * agent in the review prompt, so it names the watch, its state and decision.
+ */
+const prWatchOrphanReason = (
+  watchID: string,
+  row: { readonly phase: string; readonly outcome: string | null; readonly url: string } | undefined,
+): string | undefined => {
+  const subject = row ? `等待的 PR 监听 ${row.url}（${watchID}）` : `等待的 PR 监听 ${watchID}`
+  const decision = "请决定重跑或放弃"
+  if (!row) return `${subject} 因进程重启已丢失（没有持久记录；process_restart），${decision}`
+  if (isTerminalValue("pr_watch", row.phase))
+    return `${subject} 已结束（状态 ${row.phase}${row.outcome ? `：${row.outcome}` : ""}），唤醒因进程重启（process_restart）丢失，${decision}`
   return undefined
 }
 
@@ -1043,17 +1102,23 @@ const serviceLayer = Layer.effect(
     })
 
     // Wake a waiting goal only for the exact registered identity. A wait with
-    // a StateRef (#1069 P7) matches on `ref.id` and the job domain; a wait
-    // persisted before the field keeps matching by source plus `wait_id`.
-    // An exhausted wake budget is left to expireWait, which owns the visible
-    // pause.
+    // a StateRef (#1069 P7) matches on `ref.id`; a `pr_watch` ref is woken by
+    // the pr_watch source only, while a `job` ref keeps the pre-#1071 rule
+    // (either source may name it). A wait persisted before the field keeps
+    // matching by source plus `wait_id`. An exhausted wake budget is left to
+    // expireWait, which owns the visible pause.
     const wake = Effect.fn("Goal.wake")(function* (sessionID: SessionID, match: WakeMatch, payload?: string) {
       return yield* transition<boolean>(sessionID, (state) => {
         if (!state || state.status !== "waiting" || state.intent?.kind !== "await")
           return { tag: "noop", value: false }
         const wait = state.intent.wait
         const target = wait.ref?.id ?? wait.wait_id
-        const sourceMatches = wait.ref ? wait.ref.domain === "job" : wait.source === match.source
+        const sourceMatches =
+          wait.ref === undefined
+            ? wait.source === match.source
+            : wait.ref.domain === "pr_watch"
+              ? match.source === "watch_pr"
+              : true
         if (!sourceMatches || !match.ids.includes(target)) return { tag: "noop", value: false }
         if (wait.wakes >= wait.max_wakes) return { tag: "noop", value: false }
         const next = GoalState.advance(state, {
@@ -1095,10 +1160,20 @@ const serviceLayer = Layer.effect(
     const orphanedWait = Effect.fn("Goal.orphanedWait")(function* (sessionID: SessionID) {
       const state = yield* loadState(sessionID)
       if (!state || state.status !== "waiting" || state.intent?.kind !== "await") return undefined
-      const jobID = state.intent.wait.ref?.domain === "job" ? state.intent.wait.ref.id : undefined
-      if (jobID === undefined) return undefined
-      const reason = orphanReason(jobID, yield* readPersistedJob(db, jobID).pipe(Effect.orDie))
-      return reason === undefined ? undefined : { jobID, reason }
+      const ref = state.intent.wait.ref
+      if (ref === undefined) return undefined
+      if (ref.domain === "pr_watch") {
+        const row = yield* db
+          .select({ phase: PrWatchTable.phase, outcome: PrWatchTable.outcome, url: PrWatchTable.url })
+          .from(PrWatchTable)
+          .where(eq(PrWatchTable.id, ref.id))
+          .get()
+          .pipe(Effect.orDie)
+        const reason = prWatchOrphanReason(ref.id, row)
+        return reason === undefined ? undefined : { jobID: ref.id, reason }
+      }
+      const reason = orphanReason(ref.id, yield* readPersistedJob(db, ref.id).pipe(Effect.orDie))
+      return reason === undefined ? undefined : { jobID: ref.id, reason }
     })
 
     const expireOrphanedWait = Effect.fn("Goal.expireOrphanedWait")(function* (
@@ -1284,7 +1359,11 @@ const serviceLayer = Layer.effect(
               value: {
                 state: updated,
                 shouldContinue: false,
-                message: `⏳ 评审判定 blocked，但本会话仍有运行中的 ${waitTarget.type} 任务（${waitTarget.id}）；已改为等待该任务完成，不暂停。`,
+                message: `⏳ 评审判定 blocked，但本会话仍有运行中的 ${
+                  waitTarget.source === "pr_watch"
+                    ? `PR 监听（${waitTarget.watch.id}）`
+                    : `${waitTarget.job.type} 任务（${waitTarget.job.id}）`
+                }；已改为等待其完成，不暂停。`,
               },
             }
           }

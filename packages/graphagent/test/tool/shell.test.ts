@@ -21,6 +21,8 @@ import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
 import { BackgroundJob } from "@/background/job"
+import { PrWatchPoller } from "@/pr-watch/poller"
+import { Session } from "@/session/session"
 
 const shellLayer = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
@@ -194,6 +196,42 @@ describe("tool.shell", () => {
       }),
     ),
   )
+
+  it.live("auto-registers a successful gh pr create from its own result", () => {
+    if (process.platform === "win32") return Effect.void
+    const url = "https://github.com/acme/widgets/pull/42"
+    const registered: PrWatchPoller.RegisterInput[] = []
+    const poller = Layer.succeed(PrWatchPoller.Service, {
+      register: (input) =>
+        Effect.sync(() => {
+          registered.push(input)
+          return { id: "watch_auto", created: true }
+        }),
+      query: () => Effect.succeed([]),
+      cancel: () => Effect.succeed(undefined),
+      retireSession: () => Effect.succeed(0),
+      pollOnce: () => Effect.succeed(0),
+      recoverOnce: () => Effect.succeed(0),
+      init: () => Effect.void,
+    })
+    // Only the root marker is read; the shell result is what the subscriber uses.
+    const sessions = Layer.mock(Session.Service, { get: () => Effect.succeed({} as Session.Info) })
+    // The command really runs `gh pr create`: the function stands in for the
+    // CLI and prints the URL, so the subscriber sees the tool's native exit
+    // code and output rather than a synthesized pipeline payload.
+    const command = `gh() { echo '${url}'; }; gh pr create --fill`
+    return runIn(
+      projectRoot,
+      run({ command }).pipe(
+        Effect.provide(Layer.mergeAll(poller, sessions)),
+        Effect.map((result) => {
+          expect(result.metadata.exit).toBe(0)
+          expect(registered).toHaveLength(1)
+          expect(registered[0]).toMatchObject({ sessionID: ctx.sessionID, request: { url } })
+        }),
+      ),
+    )
+  })
 
   it.live("exports CLAUDE_EFFORT from the newest prompt's model variant", () => {
     if (process.platform === "win32") return Effect.void

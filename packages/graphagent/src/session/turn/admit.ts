@@ -100,8 +100,9 @@ function toolPermissions(tools: PromptInput["tools"]): PermissionV1.Rule[] {
  * return the turn classification without awaiting the turn itself. The
  * initial hook-resume branch belongs to `prompt`; a rewake carries
  * `continueToolBudget`, so skipping it matches the old path. `extras` names
- * what the options cannot: the origin an inbox source stamps on the turn, and
- * the cancellation request an epoch-fenced caller already holds.
+ * what the options cannot: the origin an inbox source stamps on the turn, the
+ * cancellation request an epoch-fenced caller already holds, and the boundary
+ * the caller requested (`turn_boundary` sources admit with `when: "idle"`).
  */
 function makeAdmitNow(deps: Pick<AdmitDeps, "attention" | "turns">): Interface["admit"] {
   const { attention, turns } = deps
@@ -115,7 +116,7 @@ function makeAdmitNow(deps: Pick<AdmitDeps, "attention" | "turns">): Interface["
     return yield* turns()
       .start(input, {
         origin: extras?.origin ?? originFor(options, extras?.credential),
-        when: "now",
+        when: extras?.when ?? "now",
         admissionOptions: options,
         persistAdmission,
         ...(extras?.request ? { request: extras.request } : {}),
@@ -734,8 +735,10 @@ export function admitIdleUnderFence(
 /**
  * How an immediate admission under the cancellation fence ended:
  *
- * - `admitted`: the message committed (with its ledger mark, if any) and
- *   `start` classifies the turn: started, joined to a running one, or none.
+ * - `admitted`: the admission ran and `start` classifies the turn: started,
+ *   joined to a running one, or none. With `when: "idle"`, `skipped_busy`
+ *   (and a missing `start.message`) means nothing was committed; the caller
+ *   keeps the item for the next boundary.
  * - `cancelled`: a cancellation advanced the session's epoch (ESC) after the
  *   caller's claim, before or during the admission. Nothing was committed;
  *   the caller decides whether to write the input without a turn.
@@ -744,11 +747,12 @@ export type FencedNowAdmission = { readonly tag: "admitted"; readonly start: Tur
 
 /**
  * `admitIdleUnderFence` for sources that join a running turn or start one
- * (`join_or_start`): no exclusive-registry token, only the cancellation fence.
- * A caller that observed the epoch at its claim (the inbox drain) gets a
- * request only while that epoch stands, so an ESC that lands after the claim
- * cannot be bypassed by binding a fresh request to the advanced epoch. The
- * request is released here once the admission ends, never later.
+ * (`join_or_start`, and `turn_boundary` with `when: "idle"`): no
+ * exclusive-registry token, only the cancellation fence. A caller that
+ * observed the epoch at its claim (the inbox drain) gets a request only while
+ * that epoch stands, so an ESC that lands after the claim cannot be bypassed
+ * by binding a fresh request to the advanced epoch. The request is released
+ * here once the admission ends, never later.
  */
 export function admitNowUnderFence(
   service: Pick<Interface, "admit">,
@@ -758,6 +762,7 @@ export function admitNowUnderFence(
   claimEpoch?: number,
   origin?: TurnOrigin,
   credential?: ChildRunCredential,
+  when?: "now" | "idle",
 ): Effect.Effect<FencedNowAdmission, PromptError> {
   return Effect.suspend(() => {
     const request =
@@ -774,6 +779,7 @@ export function admitNowUnderFence(
                 request,
                 ...(origin ? { origin } : {}),
                 ...(credential ? { credential } : {}),
+                ...(when ? { when } : {}),
               }).pipe(
                 Effect.exit,
                 Effect.flatMap((exit) =>

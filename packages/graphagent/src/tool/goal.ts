@@ -4,8 +4,10 @@
 import { Effect, Option, Schema } from "effect"
 import { ref } from "@graphagent/core/lifecycle/state"
 import type { LifecycleState } from "@graphagent/core/lifecycle/state"
+import { isTerminalValue } from "@graphagent/core/lifecycle/vocabulary"
 import { BackgroundJob } from "@/background/job"
 import { Lifecycle } from "@/lifecycle/service"
+import { PrWatchPoller } from "@/pr-watch/poller"
 import { parentSessionIDOf, sessionIDOf } from "@/background/session-metadata"
 import * as Tool from "./tool"
 import DESCRIPTION from "./goal.txt"
@@ -27,7 +29,7 @@ export const Parameters = Schema.Struct({
   }),
   wait_id: Schema.optional(Schema.String).annotate({
     description:
-      "Required for intent=await. The exact identity that will wake the goal. For watch_pr use the job ID from its start output or the watched PR/MR URL; for background_job use the background task id. An unmatched event does not wake the goal.",
+      "Required for intent=await. The exact identity that will wake the goal. For watch_pr use the watch ID from register output or the watched PR/MR URL; for background_job use the background task id. An unmatched event does not wake the goal.",
   }),
   deadline_ms: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))).annotate({
     description: "Optional for intent=await. Milliseconds until the wait expires (default 30 minutes).",
@@ -58,42 +60,32 @@ const DEFAULT_AWAIT_DEADLINE_MS = 30 * 60_000
 const WATCH_AWAIT_MARGIN_MS = 60_000
 
 type AwaitTarget =
-  { readonly ok: true; readonly job: BackgroundJob.Info } | { readonly ok: false; readonly detail: string }
+  | { readonly ok: true; readonly source: "background_job"; readonly job: BackgroundJob.Info }
+  | { readonly ok: true; readonly source: "pr_watch"; readonly watch: PrWatchPoller.WatchInfo }
+  | { readonly ok: false; readonly detail: string }
 
 /**
  * An `await` intent is only meaningful while its target can still wake the
- * goal. Validate existence, ownership, and a running status up front so a
- * typo or an already-finished job cannot silently park the goal until the
- * deadline. `watch_pr` accepts either the job ID or the watched URL.
+ * goal. Validate existence, ownership, and a live state up front so a typo or
+ * an already-finished target cannot silently park the goal until the deadline.
+ * A background job records the child session as `sessionID` and the caller as
+ * `parentSessionID`; accept either so a task started from this session can be
+ * awaited by its task id.
  */
-function findAwaitTarget(
+function findJobTarget(
   jobs: ReadonlyArray<BackgroundJob.Info>,
   sessionID: string,
-  source: "background_job" | "watch_pr",
   waitID: string,
 ): AwaitTarget {
-  const matches = jobs.filter((job) =>
-    source === "watch_pr"
-      ? job.type === "watch_pr" && (job.id === waitID || job.metadata?.url === waitID)
-      : job.id === waitID,
-  )
+  const matches = jobs.filter((job) => job.id === waitID)
   if (matches.length === 0)
-    return {
-      ok: false,
-      detail:
-        source === "watch_pr"
-          ? `no watch_pr job or watched URL matches \`${waitID}\` in this session; start a watch first.`
-          : `no background job with id \`${waitID}\` exists in this session.`,
-    }
-  // A background task's job carries the child session as `sessionID` and the
-  // caller as `parentSessionID`; accept either so a task started from this
-  // session can be awaited by its task id.
+    return { ok: false, detail: `no background job with id \`${waitID}\` exists in this session.` }
   const owned = matches.filter(
     (job) => sessionIDOf(job.metadata) === sessionID || parentSessionIDOf(job.metadata) === sessionID,
   )
   if (owned.length === 0) return { ok: false, detail: `the job matching \`${waitID}\` belongs to another session.` }
   const running = owned.find((job) => job.status === "running")
-  if (running) return { ok: true, job: running }
+  if (running) return { ok: true, source: "background_job", job: running }
   const finished = owned[owned.length - 1]
   // `settling` is not a failure: the result is final and the owner is
   // delivering the notice (and the goal wake) right now, so a wait declared at
@@ -113,6 +105,34 @@ function findAwaitTarget(
     ok: false,
     detail: `the job matching \`${waitID}\` ${status}; a terminal job cannot wake this wait. Declare progress and start a new operation if more waiting is needed.`,
   }
+}
+
+/**
+ * The #1071 counterpart over the durable PR watch rows the process-level
+ * poller drives. `delivering` is the watch's settling state: its outcome is
+ * already recorded and the notice (with the goal wake) is landing now.
+ */
+function findWatchTarget(
+  watches: ReadonlyArray<PrWatchPoller.WatchInfo>,
+  waitID: string,
+): AwaitTarget {
+  const watch = watches[0]
+  if (!watch)
+    return {
+      ok: false,
+      detail: `no watch with the id or URL \`${waitID}\` exists in this session; register one with the watch_pr tool first.`,
+    }
+  if (isTerminalValue("pr_watch", watch.phase))
+    return {
+      ok: false,
+      detail: `the watch matching \`${waitID}\` already ended (${watch.phase}); a terminal watch cannot wake this wait. Continue from its notice, or register a new watch if more waiting is needed.`,
+    }
+  if (watch.phase === "delivering")
+    return {
+      ok: false,
+      detail: `the watch matching \`${waitID}\` already observed its outcome (${watch.outcome ?? "unknown"}) and its notice is being delivered, so it can no longer wake a wait declared this late. Continue from the delivered notice, or declare progress and register a new watch if more waiting is needed.`,
+    }
+  return { ok: true, source: "pr_watch", watch }
 }
 
 type Metadata = {
@@ -221,30 +241,39 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
                 })
               }
               // Resolved at execute time: headless runtimes may omit the
-              // background registry, in which case the declaration is
-              // accepted without validation rather than failing the tool.
+              // poller or the background registry, in which case the
+              // declaration is accepted without validation rather than
+              // failing the tool.
               const background = Option.getOrUndefined(yield* Effect.serviceOption(BackgroundJob.Service))
-              let target: BackgroundJob.Info | undefined
-              if (background) {
+              const poller = Option.getOrUndefined(yield* Effect.serviceOption(PrWatchPoller.Service))
+              let target: AwaitTarget | undefined
+              if (params.wait_source === "watch_pr" && poller) {
+                // #1071: the durable `pr_watch` row is the authority; the tool
+                // may name the watch by id or by the watched URL.
+                const watches = yield* poller
+                  .query({ sessionID: ctx.sessionID, ref: params.wait_id })
+                  .pipe(Effect.catchCause(() => Effect.succeed([])))
+                target = findWatchTarget(watches, params.wait_id)
+              } else if (params.wait_source === "background_job" && background) {
                 const jobs = yield* background.list().pipe(Effect.catchCause(() => Effect.succeed([])))
-                const found = findAwaitTarget(jobs, ctx.sessionID, params.wait_source, params.wait_id)
-                if (!found.ok) {
-                  throw new Tool.InvalidArgumentsError({
-                    tool: "goal",
-                    detail: `Cannot await ${params.wait_source}:${params.wait_id}: ${found.detail}`,
-                  })
-                }
-                target = found.job
+                target = findJobTarget(jobs, ctx.sessionID, params.wait_id)
               }
+              if (target && !target.ok) {
+                throw new Tool.InvalidArgumentsError({
+                  tool: "goal",
+                  detail: `Cannot await ${params.wait_source}:${params.wait_id}: ${target.detail}`,
+                })
+              }
+              const job = target?.source === "background_job" ? target.job : undefined
               // #1069 P7: re-check the live value through the lifecycle
               // contract. The registry lookup above owns existence and
               // ownership; `Lifecycle.get` is the shared view a waiter must
               // trust, so a terminal state is rejected even if the two ever
               // disagree. Without the service (headless) the check degrades.
               const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
-              if (lifecycle && target) {
+              if (lifecycle && job) {
                 const observed = yield* lifecycle
-                  .get(ref("job", target.id))
+                  .get(ref("job", job.id))
                   .pipe(Effect.catchCause(() => Effect.succeed(Option.none<LifecycleState<"job">>())))
                 if (Option.isSome(observed) && observed.value.terminal) {
                   throw new Tool.InvalidArgumentsError({
@@ -255,7 +284,8 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
               }
               const now = Date.now()
               let deadlineMs = params.deadline_ms
-              const watchDeadline = target?.metadata?.deadlineAt
+              const watchDeadline =
+                target?.source === "pr_watch" ? target.watch.deadlineAt : job?.metadata?.deadlineAt
               if (params.wait_source === "watch_pr" && typeof watchDeadline === "number") {
                 const remaining = Math.max(0, watchDeadline - now)
                 // A watch's own deadline is the meaningful bound; the margin
@@ -264,14 +294,20 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, never>(
                 else if (deadlineMs < remaining)
                   awaitHint = `Note: deadline_ms=${deadlineMs} is shorter than the watch's remaining ${remaining} ms; the wait may expire (and ask for a bounded review) while the watch is still running.`
               }
+              // The resolved StateRef is the wait's unified identity; the
+              // caller's spelling (`wait_id`) stays for display.
+              const resolved =
+                target?.source === "pr_watch"
+                  ? ({ domain: "pr_watch" as const, id: target.watch.id } as const)
+                  : job
+                    ? ({ domain: "job" as const, id: job.id } as const)
+                    : undefined
               intent = {
                 kind: "await",
                 wait: {
                   source: params.wait_source,
                   wait_id: params.wait_id,
-                  // The resolved job id is the wait's unified identity; the
-                  // caller's spelling (`wait_id`) stays for display.
-                  ...(target ? { ref: { domain: "job" as const, id: target.id } } : {}),
+                  ...(resolved ? { ref: resolved } : {}),
                   deadline: now + (deadlineMs ?? DEFAULT_AWAIT_DEADLINE_MS),
                   max_wakes: GoalState.nni(params.max_wakes ?? 1),
                   wakes: GoalState.nni(0),

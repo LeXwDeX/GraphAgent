@@ -21,9 +21,13 @@ export type WaitSource = Schema.Schema.Type<typeof WaitSource>
  * this field and wake matching prefers it; `source` / `wait_id` stay required
  * because waits persisted before the field existed (and the human-readable
  * wake source) still have to decode and match.
+ *
+ * #1071: `pr_watch` names a durable PR/MR watch (the `pr_watch` table) instead
+ * of a `runtime_job`. A persisted wait from before the migration still carries
+ * `domain: "job"` with `source: "watch_pr"` and keeps matching the old way.
  */
 export const WaitRef = Schema.Struct({
-  domain: Schema.Literal("job"),
+  domain: Schema.Literals(["job", "pr_watch"]),
   id: Schema.String,
 })
 export type WaitRef = Schema.Schema.Type<typeof WaitRef>

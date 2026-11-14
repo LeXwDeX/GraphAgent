@@ -85,6 +85,29 @@ describe("goal intent and waiting", () => {
     }),
   )
 
+  it.effect("wakes a pr_watch ref only from the watch source and identity", () =>
+    Effect.gen(function* () {
+      const goal = yield* Goal.Service
+      const id = sessionID()
+      yield* goal.set(id, "wait for the PR", 5)
+      yield* goal.setIntent(
+        id,
+        awaitIntent({ source: "watch_pr", ref: { domain: "pr_watch", id: "watch_ref" } }),
+      )
+
+      // An unrelated job cannot consume a watch wait.
+      expect(yield* goal.wake(id, { source: "background_job", ids: ["watch_ref"] })).toBe(false)
+      expect(yield* goal.wake(id, { source: "watch_pr", ids: ["watch_other"] })).toBe(false)
+      // The pr_watch source names the watch id and URL; either matches.
+      expect(yield* goal.wake(id, { source: "watch_pr", ids: ["watch_ref", "https://x/pr/1"] }, "checks passed")).toBe(
+        true,
+      )
+      const loaded = yield* goal.load(id)
+      expect(loaded?.status).toBe("active")
+      expect(loaded?.last_reason).toBe("checks passed")
+    }),
+  )
+
   it.effect("expires a waiting goal past its deadline into a review marker", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service

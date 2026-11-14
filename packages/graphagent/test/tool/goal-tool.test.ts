@@ -10,6 +10,7 @@ import { Agent } from "../../src/agent/agent"
 import { Goal } from "../../src/goal/goal"
 import { GoalState } from "../../src/goal/state"
 import { Lifecycle } from "../../src/lifecycle/service"
+import { PrWatchPoller } from "../../src/pr-watch/poller"
 import { GoalTool } from "../../src/tool/goal"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { Truncate } from "@/tool/truncate"
@@ -171,21 +172,41 @@ const failureOf = (exit: Exit.Exit<unknown, unknown>) => {
   return undefined
 }
 
-const finishedJob = (id: string, status: BackgroundJob.Status): BackgroundJob.Info => ({
+const runningJob = (id: string): BackgroundJob.Info => ({
   id,
-  type: "watch_pr",
-  status,
+  type: "general",
+  status: "running",
   started_at: 0,
   metadata: { sessionID: "ses_goal_tool" },
 })
 
-const watchJob = (deadlineAt: number): BackgroundJob.Info => ({
-  id: "job_watch",
-  type: "watch_pr",
-  status: "running",
-  started_at: 0,
-  metadata: { sessionID: "ses_goal_tool", url: "https://github.com/acme/widgets/pull/42", deadlineAt },
+const watchInfo = (input: Partial<PrWatchPoller.WatchInfo> = {}): PrWatchPoller.WatchInfo => ({
+  id: "watch_goal",
+  url: "https://github.com/acme/widgets/pull/42",
+  phase: "watching",
+  head: "a",
+  outcome: null,
+  deadlineAt: Date.now() + 120_000,
+  delivery: null,
+  ...input,
 })
+
+const pollerLayer = (watches: ReadonlyArray<PrWatchPoller.WatchInfo>) =>
+  Layer.succeed(
+    PrWatchPoller.Service,
+    PrWatchPoller.Service.of({
+      register: () => Effect.die(new Error("register is not used by this test")),
+      query: () => Effect.succeed(watches),
+      cancel: () => Effect.succeed(undefined),
+      retireSession: () => Effect.succeed(0),
+      pollOnce: () => Effect.succeed(0),
+      recoverOnce: () => Effect.succeed(0),
+      init: () => Effect.void,
+    }),
+  )
+
+const jobLayer = (jobs: ReadonlyArray<BackgroundJob.Info>) =>
+  Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [...jobs]) })
 
 const waitingState = (intent: GoalState.Intent): GoalState.Info =>
   new GoalState.Info({
@@ -200,8 +221,8 @@ const waitingState = (intent: GoalState.Intent): GoalState.Info =>
     intent,
   })
 
-describe("tool.goal — await intent validation (#1067)", () => {
-  it.instance("rejects a missing or terminal job without changing goal state", () =>
+describe("tool.goal — await intent validation (#1067/#1071)", () => {
+  it.instance("rejects a missing or terminal watch without changing goal state", () =>
     Effect.gen(function* () {
       const info = yield* GoalTool
       const tool = yield* info.init()
@@ -214,52 +235,28 @@ describe("tool.goal — await intent validation (#1067)", () => {
           }),
       })
       const cases = [
+        { watches: [] as PrWatchPoller.WatchInfo[], detail: "no watch with the id or URL" },
         {
-          jobs: [] as BackgroundJob.Info[],
-          source: "background_job" as const,
-          id: "job_missing",
-          detail: "no background job with id",
+          watches: [watchInfo({ phase: "succeeded", outcome: "success" })],
+          detail: "already ended (succeeded)",
         },
         {
-          jobs: [finishedJob("job_done", "completed")],
-          source: "watch_pr" as const,
-          id: "job_done",
-          detail: "already completed",
-        },
-        {
-          jobs: [finishedJob("job_cancelled", "cancelled")],
-          source: "watch_pr" as const,
-          id: "job_cancelled",
-          detail: "was cancelled",
-        },
-        {
-          jobs: [finishedJob("job_error", "error")],
-          source: "watch_pr" as const,
-          id: "job_error",
-          detail: "failed",
-        },
-        // A settling job has already produced its final result and is
-        // delivering the notice (and the goal wake) now: it is neither failed
-        // nor able to wake a wait declared this late.
-        {
-          jobs: [finishedJob("job_settling", "settling")],
-          source: "watch_pr" as const,
-          id: "job_settling",
-          detail: "is settling",
-          absent: "failed",
+          watches: [watchInfo({ phase: "delivering", outcome: "failure" })],
+          detail: "already observed its outcome (failure)",
         },
       ]
       for (const entry of cases) {
-        const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => entry.jobs) })
         const exit = yield* tool
-          .execute({ action: "intent", intent: "await", wait_source: entry.source, wait_id: entry.id }, ctx())
-          .pipe(Effect.provide(Layer.merge(goalLayer, jobs)), Effect.exit)
+          .execute(
+            { action: "intent", intent: "await", wait_source: "watch_pr", wait_id: "watch_goal" },
+            ctx(),
+          )
+          .pipe(Effect.provide(Layer.merge(goalLayer, pollerLayer(entry.watches))), Effect.exit)
         expect(Exit.isFailure(exit)).toBe(true)
         const error = failureOf(exit)
         if (!(error instanceof Tool.InvalidArgumentsError))
           throw new Error(`expected InvalidArgumentsError, got ${String(error)}`)
         expect(error.message).toContain(entry.detail)
-        if ("absent" in entry) expect(error.message).not.toContain(entry.absent)
       }
       expect(intentCalls).toBe(0)
     }),
@@ -298,7 +295,7 @@ describe("tool.goal — await intent validation (#1067)", () => {
     }),
   )
 
-  it.instance("derives the default await deadline from the running watch's remaining time", () =>
+  it.instance("derives the default await deadline from the watch's remaining time", () =>
     Effect.gen(function* () {
       const info = yield* GoalTool
       const tool = yield* info.init()
@@ -311,7 +308,7 @@ describe("tool.goal — await intent validation (#1067)", () => {
             return waitingState(intent)
           }),
       })
-      const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [watchJob(deadlineAt)]) })
+      const poller = pollerLayer([watchInfo({ deadlineAt })])
 
       const result = yield* tool
         .execute(
@@ -319,18 +316,18 @@ describe("tool.goal — await intent validation (#1067)", () => {
             action: "intent",
             intent: "await",
             wait_source: "watch_pr",
-            // A watch_pr wait may name either the job id or the watched URL.
+            // A watch_pr wait may name either the watch id or the watched URL.
             wait_id: "https://github.com/acme/widgets/pull/42",
           },
           ctx(),
         )
-        .pipe(Effect.provide(Layer.merge(goalLayer, jobs)))
+        .pipe(Effect.provide(Layer.merge(goalLayer, poller)))
 
       expect(result.output).toContain("Waiting for: watch_pr:")
       const wait = captured?.kind === "await" ? captured.wait : undefined
       expect(wait?.wait_id).toBe("https://github.com/acme/widgets/pull/42")
-      // The resolved job id, not the caller's URL spelling, is the wait's identity.
-      expect(wait?.ref).toEqual({ domain: "job", id: "job_watch" })
+      // The resolved watch id, not the caller's URL spelling, is the identity.
+      expect(wait?.ref).toEqual({ domain: "pr_watch", id: "watch_goal" })
       // The watch's own deadline plus the delivery margin, not the fixed 30 min.
       expect(wait?.deadline).toBeGreaterThanOrEqual(deadlineAt + 59_000)
       expect(wait?.deadline).toBeLessThanOrEqual(deadlineAt + 61_000)
@@ -351,7 +348,7 @@ describe("tool.goal — await intent validation (#1067)", () => {
             return waitingState(intent)
           }),
       })
-      const jobs = Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [watchJob(deadlineAt)]) })
+      const poller = pollerLayer([watchInfo({ deadlineAt })])
 
       const result = yield* tool
         .execute(
@@ -359,12 +356,12 @@ describe("tool.goal — await intent validation (#1067)", () => {
             action: "intent",
             intent: "await",
             wait_source: "watch_pr",
-            wait_id: "job_watch",
+            wait_id: "watch_goal",
             deadline_ms: 10_000,
           },
           ctx(),
         )
-        .pipe(Effect.provide(Layer.merge(goalLayer, jobs)))
+        .pipe(Effect.provide(Layer.merge(goalLayer, poller)))
 
       expect(result.output).toContain("shorter than the watch's remaining")
       const wait = captured?.kind === "await" ? captured.wait : undefined
@@ -372,7 +369,8 @@ describe("tool.goal — await intent validation (#1067)", () => {
       expect(wait?.deadline).toBeLessThanOrEqual(Date.now() + 10_000)
     }),
   )
-  it.instance("rejects a job the lifecycle contract reports as terminal", () =>
+
+  it.instance("rejects a background job the lifecycle contract reports as terminal", () =>
     Effect.gen(function* () {
       const info = yield* GoalTool
       const tool = yield* info.init()
@@ -385,16 +383,17 @@ describe("tool.goal — await intent validation (#1067)", () => {
           }),
       })
       // The registry still lists the job as running; the contract disagrees.
-      const jobs = Layer.mock(BackgroundJob.Service, {
-        list: () => Effect.sync(() => [watchJob(Date.now() + 60_000)]),
-      })
+      const jobs = jobLayer([runningJob("job_running")])
       const lifecycle = Layer.mock(Lifecycle.Service, {
         get: <D extends Domain>(target: StateRef<D>) =>
           Effect.succeed(Option.some(stateOf({ ref: target, value: "completed", source: "live" }))),
       })
 
       const exit = yield* tool
-        .execute({ action: "intent", intent: "await", wait_source: "watch_pr", wait_id: "job_watch" }, ctx())
+        .execute(
+          { action: "intent", intent: "await", wait_source: "background_job", wait_id: "job_running" },
+          ctx(),
+        )
         .pipe(Effect.provide(Layer.mergeAll(goalLayer, jobs, lifecycle)), Effect.exit)
       expect(Exit.isFailure(exit)).toBe(true)
       const error = failureOf(exit)
@@ -402,6 +401,33 @@ describe("tool.goal — await intent validation (#1067)", () => {
         throw new Error(`expected InvalidArgumentsError, got ${String(error)}`)
       expect(error.message).toContain("terminal")
       expect(intentCalls).toBe(0)
+    }),
+  )
+
+  it.instance("accepts watch_pr without the poller service in a headless runtime", () =>
+    Effect.gen(function* () {
+      const info = yield* GoalTool
+      const tool = yield* info.init()
+      let captured: GoalState.Intent | undefined
+      const goalLayer = Layer.mock(Goal.Service, {
+        setIntent: (_sessionID: SessionID, intent: GoalState.Intent) =>
+          Effect.sync(() => {
+            captured = intent
+            return waitingState(intent)
+          }),
+      })
+
+      yield* tool
+        .execute(
+          { action: "intent", intent: "await", wait_source: "watch_pr", wait_id: "watch_missing" },
+          ctx(),
+        )
+        .pipe(Effect.provide(goalLayer))
+
+      // No validation target: the declaration is accepted and matches by the
+      // source plus the caller's spelling, exactly like the pre-#1071 degrade.
+      expect(captured?.kind).toBe("await")
+      expect(captured?.kind === "await" ? captured.wait.ref : undefined).toBeUndefined()
     }),
   )
 })

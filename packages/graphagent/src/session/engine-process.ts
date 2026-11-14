@@ -294,6 +294,17 @@ export interface ChildReport {
   readonly owner: object
 }
 
+/**
+ * The live side of a PR watch (#1071). A process-level poller owns polling and
+ * records the phase it is driving here, so any layer graph's lifecycle
+ * resolver can answer from memory; the durable `pr_watch` row stays the
+ * authority and the fallback. `sessionID` carries the directory-ownership
+ * check the resolver applies to persisted rows too.
+ */
+export interface PrWatchLiveState {
+  readonly watches: Map<string, { readonly phase: string; readonly sessionID: string; readonly observedAt: number }>
+}
+
 export interface EngineProcess {
   readonly runtimes: SessionRuntimes
   readonly cancellation: CancellationState
@@ -307,6 +318,8 @@ export interface EngineProcess {
   readonly runner: RunnerIdentity
   /** Active child runs registered by any layer graph of this process (Issue #1026). */
   readonly children: ChildRunRegistryState
+  /** Live phases of the PR watches a poller of this process is driving (#1071). */
+  readonly prWatch: PrWatchLiveState
 }
 
 const makeRunnerIdentity = (): RunnerIdentity => {
@@ -332,6 +345,7 @@ export const EngineProcess: EngineProcess = {
   scheduler: AgentSchedulerState.makeState(),
   runner: makeRunnerIdentity(),
   children: { byRun: new Map(), bySession: new Map(), reports: new Map(), parents: new Set() },
+  prWatch: { watches: new Map() },
 }
 
 /**

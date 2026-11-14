@@ -14,6 +14,8 @@ import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
 import { GoalLifecycle } from "@/goal/lifecycle"
+import { PrWatchLifecycle } from "@/pr-watch/lifecycle"
+import { PrWatchPoller } from "@/pr-watch/poller"
 import { Lifecycle } from "@/lifecycle/service"
 import { RuntimeJobRecovery } from "@/background/recovery"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -203,6 +205,16 @@ export const app = LayerNode.group([
   // #1069 scope 3: goal-domain resolver; reads the durable goal row and
   // enforces session-directory ownership.
   GoalLifecycle.node,
+  // #1071 PR1: pr_watch-domain resolver; needs the durable table and the
+  // lifecycle service in this graph, the same placement as the job and goal
+  // resolvers above.
+  PrWatchLifecycle.node,
+  // #1071 PR2: the process-level PR/MR poller. The sidecar and headless
+  // serving paths build this node graph without AppLayer, so the loop must be
+  // listed here too. A second instance in the same process shares the durable
+  // rows; the per-row CAS makes concurrent pollers convergent (one poll and
+  // one transition per observation), so the duplicate is safe.
+  PrWatchPoller.node,
   Dag.node,
   DagMessages.node,
   SessionRunState.node,

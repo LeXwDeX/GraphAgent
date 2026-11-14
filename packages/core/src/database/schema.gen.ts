@@ -68,6 +68,27 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`pr_watch\` (
+          \`id\` text PRIMARY KEY,
+          \`forge\` text NOT NULL,
+          \`host\` text NOT NULL,
+          \`url\` text NOT NULL,
+          \`repo\` text NOT NULL,
+          \`number\` integer NOT NULL,
+          \`session_id\` text NOT NULL,
+          \`head\` text,
+          \`baseline_review\` text,
+          \`phase\` text NOT NULL,
+          \`next_poll_at\` integer,
+          \`deadline_at\` integer NOT NULL,
+          \`outcome\` text,
+          \`delivery\` text,
+          \`process_id\` text,
+          \`created_at\` integer NOT NULL,
+          \`updated_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`runtime_job\` (
           \`id\` text PRIMARY KEY,
           \`type\` text NOT NULL,
@@ -395,6 +416,10 @@ export default {
       yield* tx.run(
         `CREATE INDEX \`agent_message_session_idx\` ON \`agent_message\` (\`recipient_session_id\`,\`state\`);`,
       )
+      yield* tx.run(`CREATE INDEX \`pr_watch_phase_next_poll_idx\` ON \`pr_watch\` (\`phase\`,\`next_poll_at\`);`)
+      yield* tx.run(`CREATE INDEX \`pr_watch_phase_deadline_idx\` ON \`pr_watch\` (\`phase\`,\`deadline_at\`);`)
+      yield* tx.run(`CREATE INDEX \`pr_watch_session_idx\` ON \`pr_watch\` (\`session_id\`);`)
+      yield* tx.run(`CREATE UNIQUE INDEX \`pr_watch_session_url_idx\` ON \`pr_watch\` (\`session_id\`,\`url\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_status_idx\` ON \`runtime_job\` (\`status\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_session_idx\` ON \`runtime_job\` (\`session_id\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_updated_at_idx\` ON \`runtime_job\` (\`updated_at\`);`)

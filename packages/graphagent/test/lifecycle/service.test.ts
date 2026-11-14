@@ -119,6 +119,30 @@ describe("lifecycle transition", () => {
     }),
   )
 
+  it.live("registers the pr_watch table with poll and delivery phases", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("pr_watch", "watch-1"), expect: null, to: "watching", sessionID: "ses_watch" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle.transition({ ref: ref("pr_watch", "watch-1"), expect: "watching", to: "delivering" }),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle.transition({ ref: ref("pr_watch", "watch-1"), expect: "delivering", to: "succeeded" }),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle.transition({ ref: ref("pr_watch", "watch-1"), expect: "succeeded", to: "watching" }),
+      ).toEqual({ published: false, reason: "invalid" })
+      expect(
+        yield* lifecycle.transition({ ref: ref("pr_watch", "watch-2"), expect: "watching", to: "expired" }),
+      ).toEqual({ published: true })
+    }),
+  )
+
   it.live("carries the declared from, phase, reason and session", () =>
     Effect.gen(function* () {
       const lifecycle = yield* Lifecycle.Service

@@ -19,6 +19,7 @@ import { SessionInbox } from "@/session/inbox"
 import { Turns } from "@/session/turns"
 import { ChildRuns } from "@/session/child/run"
 import { ChildResults } from "@/session/child/result-source"
+import { PrWatchSource } from "@/pr-watch/source"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -110,6 +111,13 @@ export const layer = Layer.effect(
         if (database._tag === "Some")
           yield* ChildResults.init({ inbox: inbox.value, database: database.value, scope }).pipe(
             Effect.catchCause((cause) => Effect.logWarning("child result source init failed", { cause })),
+          )
+        // Forge outcome notices (#1071 PR3): the deliverable half of the durable
+        // `pr_watch` rows the process-level poller writes. Registered before the
+        // inbox arms its tick so the startup scan's drains are backed by it.
+        if (database._tag === "Some")
+          yield* PrWatchSource.init({ inbox: inbox.value, database: database.value, scope }).pipe(
+            Effect.catchCause((cause) => Effect.logWarning("pr watch source init failed", { cause })),
           )
         yield* inbox.value
           .init()

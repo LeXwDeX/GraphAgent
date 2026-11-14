@@ -26,9 +26,10 @@ export * as SessionInbox from "./inbox"
  * caller never waits for the turn itself. A source with a ledger derives one
  * idempotency key, checks it before admission, and commits it inside the
  * admission transaction; a source without a ledger simply confirms at
- * admission time. `turn_boundary` has no implementation and reports
- * `UnsupportedDeliveryPolicy`; an `idle_only` source cannot skip its boundary
- * through `submit` either.
+ * admission time. `join_or_start` admits immediately; `turn_boundary` admits
+ * only while the session is idle and holds the item through its ledger when the
+ * session is busy (a ledger-less source cannot honor that boundary and is
+ * refused); an `idle_only` source cannot skip its boundary through `submit`.
  *
  * PR3 adds the hint-only step port: a `StepSource` answers whether it may
  * have input at the next model step boundary, without taking ownership of the
@@ -64,9 +65,9 @@ import type { TurnOrigin } from "./turns"
  * - `idle_only`: deliver only from an idle boundary; never joins a running
  *   turn (goal.continue, dag.delivery).
  * - `join_or_start`: join the running turn, or start one when idle
- *   (hook.rewake, watch_pr, child.result).
- * - `turn_boundary`: hold the item until the current turn ends. Declared so
- *   the policy vocabulary is frozen; not wired in PR1.
+ *   (hook.rewake, child.result).
+ * - `turn_boundary`: hold the item until the current turn ends, then deliver
+ *   it at the idle boundary (pr_watch outcomes).
  */
 export type DeliveryPolicy = "idle_only" | "join_or_start" | "turn_boundary"
 
@@ -78,7 +79,7 @@ export type InboxSourceID =
   | "hook.rewake"
   | "hook.async_context"
   | "goal.continue"
-  | "watch_pr"
+  | "pr_watch"
 
 /**
  * What happened to one submitted item. `pending` means the item is queued for
@@ -99,12 +100,18 @@ export type Admission =
 
 /** One deliverable item. Sources own the payload the admission port persists. */
 export interface InboxItem {
-  /** Write the user message without starting a turn (watch_pr outcome notices). */
+  /** Write the user message without starting a turn (a transcript-only result). */
   readonly noReply?: boolean
   /** The prompt content the admission port commits; `sessionID` comes from the call. */
   readonly prompt?: Omit<PromptInput, "sessionID">
   /** Admission options riding with the prompt (for example a rewake token). */
   readonly admissionOptions?: AdmissionOptions
+  /**
+   * The origin the source stamps on the turn it admits. A source that can name
+   * its delivery (an inbox source with a durable idempotency key) supplies one;
+   * otherwise `originForSource` derives what the source id alone proves.
+   */
+  readonly origin?: TurnOrigin
 }
 
 /** The durable identity of one delivery, derived by the source's ledger. */
@@ -120,13 +127,31 @@ export interface LedgerScope {
  * truth. A ledger source delivers through `submit`; the admission transaction
  * commits the key atomically with the message, and a failed admission re-checks
  * `seen` to classify a concurrent loser as `duplicate`.
+ *
+ * A `turn_boundary` source that is busy holds its item through `hold` instead
+ * of admitting it. `seen` covers both states — an item queued for a later
+ * boundary and an item already delivered suppress a redelivery — so a repeat
+ * submit while busy is a `duplicate`, never a second queue entry. Delivering a
+ * held item is the source's own claim: it owns the payload and calls `commit`
+ * (or an equivalent CAS) inside the admission transaction when it delivers.
  */
 export interface InboxLedger {
   /** Derive the stable key of one item for duplicate suppression. */
   readonly idempotencyKey: (item: InboxItem) => string
-  /** Whether this scope's key is already durably committed. */
+  /** Whether this scope's key is durably queued (`hold`) or delivered (`commit`). */
   readonly seen: (scope: LedgerScope) => Effect.Effect<boolean, unknown>
-  /** Commit the key; `submit` runs it inside the admission transaction. */
+  /**
+   * Durably queue the item for a later turn boundary. Idempotent: holding an
+   * already queued or delivered key changes nothing. `submit` calls it while
+   * the session is busy; the source's claim delivers what it held.
+   */
+  readonly hold: (scope: LedgerScope, item: InboxItem) => Effect.Effect<void, unknown>
+  /**
+   * Commit the key as delivered; `submit` runs it inside the admission
+   * transaction. A key that is already delivered fails the transaction so a
+   * concurrent loser rolls its message back; a held key transitions to
+   * delivered.
+   */
   readonly commit: (scope: LedgerScope) => Effect.Effect<void, unknown>
 }
 
@@ -318,18 +343,20 @@ export const layer = Layer.effect(
         // an epoch re-read after an ESC has already advanced it.
         const claimEpoch = SessionCancellation.epoch(sessionID)
         const sources = [...data.sources.values()].sort(byPriority)
-        // `idle_only` means exactly that: neither a nudge nor the forced tick
-        // may deliver into a running turn. The idle subscription itself is
-        // authoritative for its own drain: SessionStatus makes the new state
-        // observable before it publishes the idle event, so an event-driven
-        // read here already sees `idle` rather than the previous `busy`. Only
-        // the non-idle triggers (nudge, tick) read the live status, and a
-        // nudge can arrive mid-turn (release, report follow-up). The forced
-        // tick only bypasses the in-memory hint, not this gate.
+        // `idle_only` and `turn_boundary` mean exactly that: neither a nudge
+        // nor the forced tick may deliver into a running turn. The idle
+        // subscription itself is authoritative for its own drain: SessionStatus
+        // makes the new state observable before it publishes the idle event, so
+        // an event-driven read here already sees `idle` rather than the
+        // previous `busy`. Only the non-idle triggers (nudge, tick) read the
+        // live status, and a nudge can arrive mid-turn (release, report
+        // follow-up). The forced tick only bypasses the in-memory hint, not
+        // this gate. A `turn_boundary` source whose item is not claimed here
+        // keeps its durable row; the next idle boundary is its delivery point.
         let idleNow = options.idle === true ? true : undefined
         for (const source of sources) {
           if (!force && !source.hint(sessionID)) continue
-          if (source.mode === "idle_only") {
+          if (source.mode !== "join_or_start") {
             if (idleNow === undefined) idleNow = (yield* status.get(sessionID)).type === "idle"
             if (!idleNow) continue
           }
@@ -631,10 +658,10 @@ export const layer = Layer.effect(
       const data = yield* InstanceState.get(state)
       const source = data.sources.get(sourceID)
       if (!source) return yield* new InboxNotWired({ source: sourceID })
-      // `join_or_start` is the only policy submit can honor: an idle-only
-      // source must go through its drain boundary, and `turn_boundary` has no
-      // implementation.
-      if (source.mode !== "join_or_start") return yield* new UnsupportedDeliveryPolicy({ policy: source.mode })
+      // An `idle_only` source owns its boundary: submit would bypass it.
+      // `join_or_start` admits immediately; `turn_boundary` admits only while
+      // the session is idle and holds the item otherwise.
+      if (source.mode === "idle_only") return yield* new UnsupportedDeliveryPolicy({ policy: source.mode })
       if (!item.prompt)
         return yield* new InboxAdmissionFailed({ source: sourceID, sessionID, cause: "missing prompt payload" })
       // Resolve the admission port from the caller's context. Drain claims run
@@ -656,13 +683,40 @@ export const layer = Layer.effect(
         const committed = yield* ledger.seen(scope).pipe(Effect.mapError(failed))
         if (committed) return { state: "duplicate" } as const
       }
-      const origin = originForSource(sourceID)
+      // A turn boundary is an idle boundary. Holding is the only durable way to
+      // honor one: a busy session queues the item through the ledger, and the
+      // source's own claim delivers it at a later idle boundary. A source with
+      // nowhere to hold the item cannot honor the policy and is refused rather
+      // than admitted into the running turn.
+      const hold = () =>
+        ledger && scope
+          ? ledger.hold(scope, item).pipe(
+              Effect.mapError(failed),
+              Effect.as({ state: "pending" } as const),
+            )
+          : Effect.fail(
+              new InboxAdmissionFailed({
+                source: sourceID,
+                sessionID,
+                cause: "turn_boundary delivery requires a ledger to hold the item",
+              }),
+            )
+      let when: "now" | "idle" = "now"
+      if (source.mode === "turn_boundary") {
+        if ((yield* status.get(sessionID)).type !== "idle") return yield* hold()
+        // The idle request is re-checked under the admission lock (Turns.start
+        // `when: "idle"`): a turn that started between the read above and the
+        // admission reports `skipped_busy` without committing anything, and the
+        // item is held instead of injected into the running turn.
+        when = "idle"
+      }
+      const origin = item.origin ?? originForSource(sourceID)
       const admitted = yield* prompts
         .admit(
           { sessionID, ...item.prompt, ...(item.noReply === true ? { noReply: true } : {}) },
           item.admissionOptions,
           ledger && scope ? ledger.commit(scope) : undefined,
-          origin ? { origin } : undefined,
+          { ...(origin ? { origin } : {}), ...(when === "idle" ? { when } : {}) },
         )
         .pipe(
           Effect.map((value) => ({ tag: "admitted", value }) as const),
@@ -702,7 +756,13 @@ export const layer = Layer.effect(
         } as const
       if (message)
         return { state: "written", messageID: message.info.id, createdAt: message.info.time.created } as const
-      if (started.admission.kind === "skipped_busy") return { state: "skipped_busy" } as const
+      // An idle request that lost the race to a starting turn committed
+      // nothing; a turn_boundary source holds the item for the next boundary
+      // instead of reporting a busy skip the caller would have to retry.
+      if (started.admission.kind === "skipped_busy") {
+        if (source.mode === "turn_boundary") return yield* hold()
+        return { state: "skipped_busy" } as const
+      }
       return { state: "pending" } as const
     })
 

@@ -291,7 +291,7 @@ describe("session.system", () => {
           "For lifecycle-hook configuration, output protocols and async continuation, load the configure-hooks skill.",
           "- PreToolUse [project/command] echo hi",
           "- Stop [global/http] https://example.com/stop",
-          "For GitHub or GitLab PR/MR waits, start the watch_pr tool for the exact URL. For other long external waits (CI, reviews, deploys, long builds), set up an asyncRewake watcher through the configure-hooks skill with the user's agreement. Confirm the watch started; a callback is delivery, not evidence, so query the current head before reporting or merging.",
+          "For GitHub or GitLab PR/MR waits, a PR created with `gh pr create` is watched automatically and the notice arrives after the current turn ends; register, query, or cancel watches with the watch_pr tool. For other long external waits (CI, reviews, deploys, long builds), set up an asyncRewake watcher through the configure-hooks skill with the user's agreement. Confirm the watch started; a callback is delivery, not evidence, so query the current head before reporting or merging.",
           "For an end-of-turn check of a dirty worktree or unpushed commits, use the configure-hooks skill's stop-guard recipe.",
           "To reduce accidental force pushes or hard resets, use the configure-hooks skill's git-guard recipe.",
         ].join("\n"),

@@ -662,7 +662,18 @@ export type LifecyclePhase =
   "pending" | "running" | "waiting" | "settling" | "succeeded" | "failed" | "cancelled" | "skipped" | "paused"
 
 export type LifecycleDomain =
-  "session" | "job" | "goal" | "workflow" | "node" | "mailbox" | "inbox" | "hook" | "tool" | "turn" | "cancellation"
+  | "session"
+  | "job"
+  | "goal"
+  | "workflow"
+  | "node"
+  | "mailbox"
+  | "inbox"
+  | "hook"
+  | "tool"
+  | "turn"
+  | "cancellation"
+  | "pr_watch"
 
 export type LifecycleStateRef = {
   domain: LifecycleDomain
@@ -1910,7 +1921,18 @@ export type EventLifecycleTransitioned = {
   type: "lifecycle.transitioned"
   properties: {
     domain:
-      "session" | "job" | "goal" | "workflow" | "node" | "mailbox" | "inbox" | "hook" | "tool" | "turn" | "cancellation"
+      | "session"
+      | "job"
+      | "goal"
+      | "workflow"
+      | "node"
+      | "mailbox"
+      | "inbox"
+      | "hook"
+      | "tool"
+      | "turn"
+      | "cancellation"
+      | "pr_watch"
     stateID: string
     sessionID?: string
     from?: string
