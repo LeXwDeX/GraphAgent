@@ -7625,61 +7625,6 @@
         ]
       }
     },
-    "/dag/{dagID}": {
-      "get": {
-        "tags": ["dag"],
-        "operationId": "dag.detail",
-        "parameters": [
-          {
-            "name": "dagID",
-            "in": "path",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Workflow detail",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DagWorkflow"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BadRequestError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NotFoundError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotFoundError"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Get workflow by ID",
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.dag.detail({\n  ...\n})"
-          }
-        ]
-      }
-    },
     "/dag/{dagID}/nodes": {
       "get": {
         "tags": ["dag"],
@@ -7735,69 +7680,6 @@
           {
             "lang": "js",
             "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.dag.nodes({\n  ...\n})"
-          }
-        ]
-      }
-    },
-    "/dag/{dagID}/nodes/{nodeID}": {
-      "get": {
-        "tags": ["dag"],
-        "operationId": "dag.nodeDetail",
-        "parameters": [
-          {
-            "name": "dagID",
-            "in": "path",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          },
-          {
-            "name": "nodeID",
-            "in": "path",
-            "schema": {
-              "type": "string"
-            },
-            "required": true
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Node detail",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DagNode"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BadRequestError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NotFoundError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotFoundError"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Get node by ID",
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createClient } from \"@graphagent/sdk\"\n\nconst client = createClient()\nawait client.dag.nodeDetail({\n  ...\n})"
           }
         ]
       }

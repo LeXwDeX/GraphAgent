@@ -36,12 +36,8 @@ import type {
   ConfigUpdateResponses,
   DagBySessionErrors,
   DagBySessionResponses,
-  DagDetailErrors,
-  DagDetailResponses,
   DagListErrors,
   DagListResponses,
-  DagNodeDetailErrors,
-  DagNodeDetailResponses,
   DagNodesErrors,
   DagNodesResponses,
   DagSummaryErrors,
@@ -3486,23 +3482,6 @@ export class Dag extends HeyApiClient {
   }
 
   /**
-   * Get workflow by ID
-   */
-  public detail<ThrowOnError extends boolean = false>(
-    parameters: {
-      dagID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<DagDetailResponses, DagDetailErrors, ThrowOnError> {
-    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "dagID" }] }])
-    return (options?.client ?? this.client).get<DagDetailResponses, DagDetailErrors, ThrowOnError>({
-      url: "/dag/{dagID}",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
    * List nodes for a workflow
    */
   public nodes<ThrowOnError extends boolean = false>(
@@ -3514,34 +3493,6 @@ export class Dag extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "dagID" }] }])
     return (options?.client ?? this.client).get<DagNodesResponses, DagNodesErrors, ThrowOnError>({
       url: "/dag/{dagID}/nodes",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Get node by ID
-   */
-  public nodeDetail<ThrowOnError extends boolean = false>(
-    parameters: {
-      dagID: string
-      nodeID: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ): RequestResult<DagNodeDetailResponses, DagNodeDetailErrors, ThrowOnError> {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "dagID" },
-            { in: "path", key: "nodeID" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<DagNodeDetailResponses, DagNodeDetailErrors, ThrowOnError>({
-      url: "/dag/{dagID}/nodes/{nodeID}",
       ...options,
       ...params,
     })

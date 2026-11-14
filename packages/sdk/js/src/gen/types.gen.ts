@@ -6311,37 +6311,6 @@ export type DagSummaryResponses = {
 
 export type DagSummaryResponse = DagSummaryResponses[keyof DagSummaryResponses]
 
-export type DagDetailData = {
-  body?: never
-  path: {
-    dagID: string
-  }
-  query?: never
-  url: "/dag/{dagID}"
-}
-
-export type DagDetailErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * NotFoundError
-   */
-  404: NotFoundError
-}
-
-export type DagDetailError = DagDetailErrors[keyof DagDetailErrors]
-
-export type DagDetailResponses = {
-  /**
-   * Workflow detail
-   */
-  200: DagWorkflow
-}
-
-export type DagDetailResponse = DagDetailResponses[keyof DagDetailResponses]
-
 export type DagNodesData = {
   body?: never
   path: {
@@ -6372,38 +6341,6 @@ export type DagNodesResponses = {
 }
 
 export type DagNodesResponse = DagNodesResponses[keyof DagNodesResponses]
-
-export type DagNodeDetailData = {
-  body?: never
-  path: {
-    dagID: string
-    nodeID: string
-  }
-  query?: never
-  url: "/dag/{dagID}/nodes/{nodeID}"
-}
-
-export type DagNodeDetailErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * NotFoundError
-   */
-  404: NotFoundError
-}
-
-export type DagNodeDetailError = DagNodeDetailErrors[keyof DagNodeDetailErrors]
-
-export type DagNodeDetailResponses = {
-  /**
-   * Node detail
-   */
-  200: DagNode
-}
-
-export type DagNodeDetailResponse = DagNodeDetailResponses[keyof DagNodeDetailResponses]
 
 export type LifecycleGetData = {
   body?: never

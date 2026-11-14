@@ -49,9 +49,7 @@ export const DagPaths = {
   list: `${root}`,
   bySession: `${root}/session/:sessionID`,
   summary: `${root}/session/:sessionID/summary`,
-  detail: `${root}/:dagID`,
   nodes: `${root}/:dagID/nodes`,
-  nodeDetail: `${root}/:dagID/nodes/:nodeID`,
 } as const
 
 // ============================================================================
@@ -86,25 +84,11 @@ export const DagApi = HttpApi.make("dag").add(
       ),
     )
     .add(
-      HttpApiEndpoint.get("detail", DagPaths.detail, {
-        params: { dagID: Schema.String },
-        success: described(WorkflowResponse, "Workflow detail"),
-        error: [ApiNotFoundError],
-      }).annotateMerge(OpenApi.annotations({ identifier: "dag.detail", summary: "Get workflow by ID" })),
-    )
-    .add(
       HttpApiEndpoint.get("nodes", DagPaths.nodes, {
         params: { dagID: Schema.String },
         success: described(DagNodeListResponse, "Nodes for a workflow"),
         error: [ApiNotFoundError],
       }).annotateMerge(OpenApi.annotations({ identifier: "dag.nodes", summary: "List nodes for a workflow" })),
-    )
-    .add(
-      HttpApiEndpoint.get("nodeDetail", DagPaths.nodeDetail, {
-        params: { dagID: Schema.String, nodeID: Schema.String },
-        success: described(NodeResponse, "Node detail"),
-        error: [ApiNotFoundError],
-      }).annotateMerge(OpenApi.annotations({ identifier: "dag.nodeDetail", summary: "Get node by ID" })),
     )
     .annotateMerge(OpenApi.annotations({ title: "dag", description: "DAG workflow inspector routes" }))
     .middleware(InstanceContextMiddleware)

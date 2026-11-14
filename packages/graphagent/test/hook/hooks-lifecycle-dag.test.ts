@@ -114,10 +114,12 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
     let detail: any
     const deadline = Date.now() + 10_000
     do {
-      detail = yield* request(`/dag/${workflow.id}`)
-      if (["completed", "failed", "cancelled"].includes(detail.status)) break
+      const rows: any[] = yield* request(`/dag/session/${parent.id}`)
+      detail = rows.find((row) => row.id === workflow.id)
+      if (detail && ["completed", "failed", "cancelled"].includes(detail.status)) break
       yield* Effect.sleep("50 millis")
     } while (Date.now() < deadline)
+    if (!detail) throw new Error(`workflow ${workflow.id} disappeared from the session list`)
     const nodes = yield* request(`/dag/${workflow.id}/nodes`)
     expect({ status: detail.status, errors: nodes.map((node: any) => node.error_reason ?? null) }).toEqual({
       status: "completed",

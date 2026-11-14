@@ -40,23 +40,6 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
 
     const node = DagNodeView.base
 
-    const observedNode = Effect.fn("DagHttpApi.observedNode")(function* (
-      row: DagStore.NodeRow,
-      ownerSessionID: string,
-    ) {
-      const instance = yield* InstanceState.context
-      const metadata = yield* messages.metadata(
-        {
-          projectID: instance.project.id,
-          directory: instance.directory,
-          sessionID: ownerSessionID,
-        },
-        row.workflowId,
-        row.id,
-      )
-      return DagNodeView.observed(node(row), metadata.ok ? metadata.value : undefined)
-    })
-
     // One batch read for the whole list: four constant-cost statements instead
     // of four per node (D4).
     const observedNodes = Effect.fn("DagHttpApi.observedNodes")(function* (
@@ -147,35 +130,19 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
       }))
     })
 
-    const detail = Effect.fn("DagHttpApi.detail")(function* (ctx: { params: { dagID: string } }) {
-      return wf(yield* requireWorkflow(ctx.params.dagID))
-    })
-
     const nodes = Effect.fn("DagHttpApi.nodes")(function* (ctx: { params: { dagID: string } }) {
       const workflow = yield* requireWorkflow(ctx.params.dagID)
       // Rev-view (v1.0.15 Train A): the TUI node list is a view seam — it
       // renders the CURRENT graph revision only (zero TUI changes: the
-      // server filters). nodeDetail below keeps the unfiltered read so a
-      // superseded node's durable state stays auditable by id.
+      // server filters).
       const rows = yield* dag.store.getCurrentNodes(ctx.params.dagID).pipe(Effect.orDie)
       return yield* observedNodes(rows, workflow.sessionId)
-    })
-
-    const nodeDetail = Effect.fn("DagHttpApi.nodeDetail")(function* (ctx: {
-      params: { dagID: string; nodeID: string }
-    }) {
-      const workflow = yield* requireWorkflow(ctx.params.dagID)
-      const row = yield* dag.store.getNode(ctx.params.dagID, ctx.params.nodeID).pipe(Effect.orDie)
-      if (!row) return yield* Effect.fail(notFound(`Node not found: ${ctx.params.nodeID}`))
-      return yield* observedNode(row, workflow.sessionId)
     })
 
     return handlers
       .handle("list", list)
       .handle("bySession", bySession)
       .handle("summary", summary)
-      .handle("detail", detail)
       .handle("nodes", nodes)
-      .handle("nodeDetail", nodeDetail)
   }),
 )

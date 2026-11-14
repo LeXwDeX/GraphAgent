@@ -190,10 +190,12 @@ A node's final reply can be plain text, a structured payload (one final JSON val
   GET  /dag                              list workflows
   GET  /dag/session/:sessionID           workflows for a session
   GET  /dag/session/:sessionID/summary   progress summaries
-  GET  /dag/:dagID                       workflow detail
   GET  /dag/:dagID/nodes                 node list
-  GET  /dag/:dagID/nodes/:nodeID         node detail
   ```
+
+  There is deliberately no per-workflow or per-node detail endpoint: read
+  workflow status from the session-scoped list and node state from the node
+  list; mutations go through the `workflow` tool.
 
 ### Project configuration files
 

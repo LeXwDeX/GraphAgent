@@ -174,6 +174,12 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
           const workflow = workflows[0]
           if (!workflow) throw new Error("workflow tool did not start a workflow")
           const nodes = (): Promise<Row[]> => request(`/dag/${workflow.id}/nodes`)
+          const workflowRow = async (): Promise<Row> => {
+            const rows: Row[] = await request(`/dag/session/${parent.id}`)
+            const row = rows.find((candidate) => candidate.id === workflow.id)
+            if (!row) throw new Error(`workflow ${workflow.id} disappeared from the session list`)
+            return row
+          }
           const waitUntil = async <A>(read: () => Promise<A>, ready: (value: A) => boolean): Promise<A> => {
             const deadline = Date.now() + 60_000
             do {
@@ -204,9 +210,8 @@ console.log(JSON.stringify(denied ? {hookSpecificOutput: {hookEventName: 'PreToo
             // boundary that remains reachable without a workflow tool call.
             await request("/instance/dispose", {})
           }
-          const terminal = await waitUntil(
-            () => request(`/dag/${workflow.id}`),
-            (row) => ["completed", "failed", "cancelled"].includes(row.status),
+          const terminal = await waitUntil(workflowRow, (row) =>
+            ["completed", "failed", "cancelled"].includes(row.status),
           )
           const settled = await nodes()
           const verify = settled.find((row) => row.id === "verify")!
@@ -368,7 +373,12 @@ cliIt.live(
           }
         }
         const terminal = await waitUntil(
-          () => request(`/dag/${workflow.id}`),
+          async () => {
+            const rows: Row[] = await request(`/dag/session/${parent.id}`)
+            const row = rows.find((candidate) => candidate.id === workflow.id)
+            if (!row) throw new Error(`workflow ${workflow.id} disappeared from the session list`)
+            return row
+          },
           (row) => ["completed", "failed", "cancelled"].includes(row.status),
         )
         expect(terminal.status).toBe("completed")
