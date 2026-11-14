@@ -155,6 +155,7 @@ describe("isPullableDomain", () => {
   test("the domains whose owner registers a resolver can be asked about", () => {
     expect(isPullableDomain("job")).toBe(true)
     expect(isPullableDomain("goal")).toBe(true)
+    expect(isPullableDomain("pr_watch")).toBe(true)
   })
 
   test("every other domain would only come back unknown, so it is never asked", () => {

@@ -36,7 +36,7 @@ const sorted = (values: Iterable<string>) => [...values].sort()
 describe("lifecycle vocabulary", () => {
   it("covers every wire domain exactly once", () => {
     expect(sorted(Object.keys(VOCABULARY))).toEqual(sorted(DOMAINS))
-    expect(DOMAINS).toHaveLength(11)
+    expect(DOMAINS).toHaveLength(12)
   })
 
   it("maps every value to a phase except turn.ended, which the outcome decides", () => {
@@ -72,6 +72,14 @@ describe("lifecycle vocabulary", () => {
     expect(VOCABULARY.session.values).toEqual(["idle", "retry", "busy"])
     expect(VOCABULARY.job.values).toEqual(["running", "settling", "completed", "error", "cancelled"])
     expect(VOCABULARY.goal.values).toEqual(["active", "waiting", "paused", "done"])
+    expect(VOCABULARY.pr_watch.values).toEqual([
+      "watching",
+      "delivering",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "expired",
+    ])
   })
 
   it("splits terminal from settled: settled means terminal and successfully quiet", () => {
@@ -96,6 +104,7 @@ describe("lifecycle vocabulary", () => {
     expect(authorityOf("tool")).toBe("durable")
     expect(authorityOf("turn")).toBe("durable")
     expect(authorityOf("cancellation")).toBe("live")
+    expect(authorityOf("pr_watch")).toBe("mixed")
   })
 
   it("maps the ten turn outcomes and settles only completed", () => {

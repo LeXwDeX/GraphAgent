@@ -14,6 +14,7 @@ import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
 import { GoalLifecycle } from "@/goal/lifecycle"
+import { PrWatchLifecycle } from "@/pr-watch/lifecycle"
 import { Lifecycle } from "@/lifecycle/service"
 import { RuntimeJobRecovery } from "@/background/recovery"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -203,6 +204,10 @@ export const app = LayerNode.group([
   // #1069 scope 3: goal-domain resolver; reads the durable goal row and
   // enforces session-directory ownership.
   GoalLifecycle.node,
+  // #1071 PR1: pr_watch-domain resolver; needs the durable table and the
+  // lifecycle service in this graph, the same placement as the job and goal
+  // resolvers above.
+  PrWatchLifecycle.node,
   Dag.node,
   DagMessages.node,
   SessionRunState.node,

@@ -59,6 +59,7 @@ import { BackgroundJob } from "@/background/job"
 import { BackgroundLifecycle } from "@/background/lifecycle"
 import { RuntimeJobRecovery } from "@/background/recovery"
 import { GoalLifecycle } from "@/goal/lifecycle"
+import { PrWatchLifecycle } from "@/pr-watch/lifecycle"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookStartContext } from "@/hook/start-context"
@@ -195,6 +196,13 @@ const BaseAppLayer = Layer.mergeAll(
   // every query. Self-providing Goal + Lifecycle keeps it on the same
   // instances as the rest of the runtime.
   Layer.provideMerge(GoalLifecycle.defaultLayer),
+  // A second pipe: `pipe` takes at most 20 arguments and the chain above is full.
+).pipe(
+  // #1071 PR1: register the pr_watch domain with the lifecycle service. Until
+  // the process-level poller lands the durable row is the only record; the
+  // layer self-provides Lifecycle and Database, which memoMap dedups with the
+  // instances built above.
+  Layer.provideMerge(PrWatchLifecycle.defaultLayer),
 )
 
 export const AppLayer = Layer.mergeAll(HookCwd.layer, HookTodo.layer).pipe(Layer.provideMerge(BaseAppLayer))

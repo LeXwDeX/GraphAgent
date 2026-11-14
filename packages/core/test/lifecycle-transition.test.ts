@@ -7,6 +7,7 @@ import {
   checkTransition,
   GOAL_TRANSITION_TABLE,
   JOB_TRANSITION_TABLE,
+  PR_WATCH_TRANSITION_TABLE,
   TURN_TRANSITION_TABLE,
   type TransitionTable,
 } from "@graphagent/core/lifecycle/transition"
@@ -151,6 +152,50 @@ describe("goal transitions", () => {
 
   it("reports a repeated status as duplicate", () => {
     expect(checkTransition(GOAL_TRANSITION_TABLE, { expect: "active", to: "active" })).toEqual({ kind: "duplicate" })
+  })
+})
+
+describe("pr_watch transitions", () => {
+  it("creates into watching and moves through delivering to a delivery result", () => {
+    expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: null, to: "watching" })).toEqual({
+      kind: "allowed",
+      phase: "waiting",
+    })
+    expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: "watching", to: "delivering" })).toEqual({
+      kind: "allowed",
+      phase: "settling",
+    })
+    expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: "delivering", to: "succeeded" })).toEqual({
+      kind: "allowed",
+      phase: "succeeded",
+    })
+    expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: "delivering", to: "failed" })).toEqual({
+      kind: "allowed",
+      phase: "failed",
+    })
+  })
+
+  it("lets every live value stop as cancelled or expired", () => {
+    for (const from of ["watching", "delivering"])
+      for (const to of ["cancelled", "expired"])
+        expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: from, to }), `${from} -> ${to}`).toMatchObject({
+          kind: "allowed",
+        })
+  })
+
+  it("does not skip delivery and leaves terminal values empty", () => {
+    expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: "watching", to: "succeeded" })).toEqual({
+      kind: "invalid",
+      allowed: ["delivering", "cancelled", "expired"],
+    })
+    for (const terminal of VOCABULARY.pr_watch.terminal)
+      expect(PR_WATCH_TRANSITION_TABLE.next(terminal), terminal).toEqual([])
+  })
+
+  it("reports a repeated status as duplicate", () => {
+    expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: "watching", to: "watching" })).toEqual({
+      kind: "duplicate",
+    })
   })
 })
 

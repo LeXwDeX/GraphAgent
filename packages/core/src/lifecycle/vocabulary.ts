@@ -59,6 +59,24 @@ const TABLE = {
     // runtime_job row is the only record of it (#1069).
     authority: "mixed",
   },
+  pr_watch: {
+    values: ["watching", "delivering", "succeeded", "failed", "cancelled", "expired"],
+    phases: {
+      watching: "waiting",
+      delivering: "settling",
+      succeeded: "succeeded",
+      failed: "failed",
+      cancelled: "cancelled",
+      // A deadline the watch did not outlive is a failure to observe an
+      // outcome, the same projection hook `timeout` uses.
+      expired: "failed",
+    },
+    terminal: ["succeeded", "failed", "cancelled", "expired"],
+    settled: ["succeeded"],
+    // The process-level poller owns live watches; after a restart the durable
+    // pr_watch row is the only record of them (#1071).
+    authority: "mixed",
+  },
   goal: {
     values: ["active", "waiting", "paused", "done"],
     phases: { active: "running", waiting: "waiting", paused: "paused", done: "succeeded" },

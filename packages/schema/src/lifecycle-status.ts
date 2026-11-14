@@ -21,6 +21,7 @@ export const DOMAINS = [
   "tool",
   "turn",
   "cancellation",
+  "pr_watch",
 ] as const
 
 export type Domain = (typeof DOMAINS)[number]
