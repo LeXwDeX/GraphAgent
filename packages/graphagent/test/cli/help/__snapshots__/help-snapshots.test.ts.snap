@@ -37,6 +37,8 @@ Options:
   -s, --session                       session id to continue                                [string]
       --fork                          fork the session before continuing (requires --continue or
                                       --session)                                           [boolean]
+      --dag-mode                      DAG mode for the new session (cannot be combined with
+                                      --session)                     [string] [choices: "on", "off"]
   -m, --model                         model to use in the format of provider/model          [string]
       --agent                         agent to use                                          [string]
       --format                        format: default (formatted) or json (raw JSON events)
