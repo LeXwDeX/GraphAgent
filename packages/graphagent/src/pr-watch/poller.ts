@@ -8,7 +8,7 @@ import { Database } from "@graphagent/core/database/database"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { isTerminalValue } from "@graphagent/core/lifecycle/vocabulary"
-import { and, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm"
 import { Cause, Clock, Context, Deferred, Duration, Effect, Fiber, Layer, Option, Scope } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { randomUUID } from "node:crypto"
@@ -47,6 +47,13 @@ import {
  * interval inside the loop, because the owner can die long after startup and
  * its row would otherwise stay invisible to the due scan.
  *
+ * A claim that fails in this process is recovered too: `pollOnce` reschedules
+ * a claimed row whose poll failed before advancing it, and `recoverOnce` also
+ * takes over this process's own rows whose NULL claim is older than
+ * `CLAIM_LEASE_MS`. Two layer graphs of one process share the identity, so
+ * without both a defecting poll (or an `advance` broken by SQLITE_BUSY) would
+ * strand the row until its deadline even though its owner is alive.
+ *
  * Baseline rule (differs from the one-shot tool): a new head is not terminal.
  * `classifyPoll` rebaselines the row onto the new head and the watch keeps
  * running, so a push to the PR does not orphan the watch. An observed outcome
@@ -70,6 +77,13 @@ const IDLE_SLEEP_MS = 60_000
  * selects; without a periodic pass the watch would stall until its deadline.
  */
 export const RECOVER_INTERVAL_MS = 60_000
+/**
+ * How long a NULL `next_poll_at` claim may stay untouched before this process
+ * may take the row back. One claim is bounded by `READ_TIMEOUT` (30s), so a
+ * live poll always finishes inside the lease; a stale one belongs to a fiber
+ * that died between the claim and its reschedule.
+ */
+export const CLAIM_LEASE_MS = 60_000
 /** Upper bound for one loop sleep, so a clock jump or a far deadline cannot park the loop. */
 const MAX_SLEEP_MS = 60_000
 const BATCH_LIMIT = 32
@@ -196,11 +210,6 @@ const clampDeadline = (seconds: number | undefined) => {
   return Math.min(Math.max(value, MIN_DEADLINE_SECONDS), MAX_DEADLINE_SECONDS) * 1000
 }
 
-const logTickFailure = (cause: Cause.Cause<never>) =>
-  Cause.hasInterrupts(cause)
-    ? Effect.failCause(cause)
-    : Effect.logWarning("PrWatchPoller tick failed — retrying on the next interval", { cause })
-
 export const make = Effect.gen(function* () {
   const { db } = yield* Database.Service
   const lifecycle = yield* Lifecycle.Service
@@ -302,6 +311,37 @@ export const make = Effect.gen(function* () {
       .returning({ id: PrWatchTable.id })
       .get()
       .pipe(Effect.orDie)
+
+  /**
+   * Best-effort re-arm of a just-claimed row whose poll failed before it
+   * advanced the row. The claim cleared `next_poll_at`, so without this the
+   * due scan would never see the row again and the watch would stall until its
+   * deadline. A failure here (a lock, for example) is logged, not rethrown:
+   * the lease takeover in `recoverOnce` is the durable fallback.
+   */
+  const rescheduleClaim = (id: string) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis
+      yield* advance(id, { next_poll_at: now + POLL_INTERVAL_MS, updated_at: now })
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("PrWatchPoller could not reschedule a claimed row", {
+              watchID: id,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    )
+
+  /** A failed poll costs this row one tick, never the pass; interrupts still unwind. */
+  const rescuePoll = (id: string, cause: Cause.Cause<never>) =>
+    Cause.hasInterrupts(cause)
+      ? Effect.failCause(cause)
+      : Effect.logWarning("PrWatchPoller poll failed — rescheduling the claimed row", {
+          watchID: id,
+          cause,
+        }).pipe(Effect.andThen(rescheduleClaim(id)))
 
   const pollOne = Effect.fnUntraced(function* (row: typeof PrWatchTable.$inferSelect) {
     const claimedAt = yield* Clock.currentTimeMillis
@@ -425,33 +465,47 @@ export const make = Effect.gen(function* () {
         .get()
         .pipe(Effect.orDie)
       if (!claimed) continue
-      yield* pollOne(claimed).pipe(
-        // A single bad row must not stop the pass; interrupts still unwind.
-        Effect.catchCause(logTickFailure),
-      )
+      yield* pollOne(claimed).pipe(Effect.catchCause((cause) => rescuePoll(claimed.id, cause)))
       handled++
     }
     return handled
   })
 
   const recoverOnce = Effect.fn("PrWatchPoller.recoverOnce")(function* () {
+    const now = yield* Clock.currentTimeMillis
+    const staleBefore = now - CLAIM_LEASE_MS
     const rows = yield* db
       .select()
       .from(PrWatchTable)
       .where(
         and(
           inArray(PrWatchTable.phase, ["watching", "delivering"]),
-          or(isNull(PrWatchTable.process_id), ne(PrWatchTable.process_id, owner)),
+          or(
+            isNull(PrWatchTable.process_id),
+            ne(PrWatchTable.process_id, owner),
+            // A claim by this same process can die before it reschedules the
+            // row (a defect, a broken advance, a fiber interrupt). Its owner
+            // token stays alive, so only the lease marks it as abandoned; a
+            // fresh NULL claim belongs to another poller fiber of this
+            // process and must not be stolen.
+            and(
+              eq(PrWatchTable.process_id, owner),
+              eq(PrWatchTable.phase, "watching"),
+              isNull(PrWatchTable.next_poll_at),
+              lt(PrWatchTable.updated_at, staleBefore),
+            ),
+          ),
         ),
       )
       .all()
       .pipe(Effect.orDie)
-    const now = yield* Clock.currentTimeMillis
     let recovered = 0
     for (const row of rows) {
-      // This query only excludes this process; another live process keeps its
-      // rows. A `null` owner and an unparseable legacy token count as gone.
-      if (runnerAlive(row.process_id)) continue
+      // This query only excludes another live process; its rows stay theirs.
+      // A `null` owner and an unparseable legacy token count as gone. This
+      // process's own row is only here through the stale-claim branch above.
+      const mine = row.process_id === owner
+      if (!mine && runnerAlive(row.process_id)) continue
       const updated = yield* db
         .update(PrWatchTable)
         .set({
@@ -461,7 +515,17 @@ export const make = Effect.gen(function* () {
           ...(row.phase === "watching" ? { next_poll_at: row.next_poll_at ?? now } : {}),
           updated_at: now,
         })
-        .where(and(eq(PrWatchTable.id, row.id), eq(PrWatchTable.phase, row.phase), ownedBy(row.process_id)))
+        .where(
+          mine
+            ? and(
+                eq(PrWatchTable.id, row.id),
+                eq(PrWatchTable.phase, row.phase),
+                eq(PrWatchTable.process_id, owner),
+                isNull(PrWatchTable.next_poll_at),
+                lt(PrWatchTable.updated_at, staleBefore),
+              )
+            : and(eq(PrWatchTable.id, row.id), eq(PrWatchTable.phase, row.phase), ownedBy(row.process_id)),
+        )
         .returning({ id: PrWatchTable.id })
         .get()
         .pipe(Effect.orDie)
@@ -470,7 +534,7 @@ export const make = Effect.gen(function* () {
       recovered++
     }
     if (recovered > 0) {
-      yield* Effect.logInfo("PrWatchPoller took over watches left by a dead process", { recovered })
+      yield* Effect.logInfo("PrWatchPoller took over stranded watches", { recovered })
       yield* wakeLoop
     }
     return recovered

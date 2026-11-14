@@ -422,6 +422,29 @@ describe("pr_watch polling", () => {
       EngineProcess.prWatch.watches.delete(id)
     }),
   )
+
+  it.effect("reschedules a claimed row whose poll dies before advancing it", () =>
+    Effect.gen(function* () {
+      const source = yield* ForgeScript
+      // The forge runner itself defects: the claim was already written, so a
+      // poll that only caught and logged would strand the row with a NULL
+      // next_poll_at, invisible to the due scan until its deadline.
+      yield* source.use(() => Effect.die(new Error("forge runner exploded")))
+      yield* insertWatch({ id: "watch_defect", session_id: "ses_defect", next_poll_at: 0 })
+      const poller = yield* PrWatchPoller.Service
+
+      expect(yield* poller.pollOnce()).toBe(1)
+      expect(yield* readRow("watch_defect")).toMatchObject({
+        phase: "watching",
+        process_id: PrWatchPoller.prWatchProcessID,
+        next_poll_at: 15_000,
+      })
+      // The row is now due again at the ordinary cadence instead of stalling.
+      yield* TestClock.adjust(Duration.seconds(15))
+      expect(yield* poller.pollOnce()).toBe(1)
+      EngineProcess.prWatch.watches.delete("watch_defect")
+    }),
+  )
 })
 
 describe("pr_watch session retirement", () => {
@@ -546,12 +569,27 @@ describe("pr_watch restart takeover", () => {
     Effect.gen(function* () {
       yield* insertWatch({ id: "watch_dead", process_id: "proc_dead", next_poll_at: null })
       yield* insertWatch({ id: "watch_dead_future", process_id: "proc_dead", next_poll_at: 900_000 })
-      yield* insertWatch({ id: "watch_live_owner", process_id: PrWatchPoller.prWatchProcessID, next_poll_at: null })
+      // This process's own fresh claim belongs to a live poller fiber: the
+      // lease has not expired, so the takeover pass must leave it alone.
+      yield* insertWatch({
+        id: "watch_live_owner",
+        process_id: PrWatchPoller.prWatchProcessID,
+        next_poll_at: null,
+        updated_at: Date.now(),
+      })
+      // The same process's claim from before the lease: the fiber that made
+      // it died without rescheduling, so the pass is the only recovery.
+      yield* insertWatch({
+        id: "watch_own_stale",
+        process_id: PrWatchPoller.prWatchProcessID,
+        next_poll_at: null,
+        updated_at: Date.now() - PrWatchPoller.CLAIM_LEASE_MS - 1_000,
+      })
       yield* insertWatch({ id: "watch_done", process_id: "proc_dead", phase: "succeeded" })
       yield* insertWatch({ id: "watch_delivering", process_id: "proc_dead", phase: "delivering", next_poll_at: null })
 
       const poller = yield* PrWatchPoller.Service
-      expect(yield* poller.recoverOnce()).toBe(3)
+      expect(yield* poller.recoverOnce()).toBe(4)
       expect(yield* poller.recoverOnce()).toBe(0)
 
       const dead = yield* readRow("watch_dead")
@@ -565,6 +603,7 @@ describe("pr_watch restart takeover", () => {
         process_id: PrWatchPoller.prWatchProcessID,
         next_poll_at: null,
       })
+      expect((yield* readRow("watch_own_stale"))?.next_poll_at).not.toBeNull()
       expect(yield* readRow("watch_done")).toMatchObject({ process_id: "proc_dead", phase: "succeeded" })
       expect(yield* readRow("watch_delivering")).toMatchObject({
         process_id: PrWatchPoller.prWatchProcessID,
@@ -572,6 +611,7 @@ describe("pr_watch restart takeover", () => {
       })
       EngineProcess.prWatch.watches.delete("watch_dead")
       EngineProcess.prWatch.watches.delete("watch_dead_future")
+      EngineProcess.prWatch.watches.delete("watch_own_stale")
       EngineProcess.prWatch.watches.delete("watch_delivering")
     }),
   )

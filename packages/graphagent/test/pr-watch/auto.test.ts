@@ -4,12 +4,13 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import { PrWatchPoller } from "@/pr-watch/poller"
-import { afterTool, createdRequest } from "@/pr-watch/auto"
+import { afterShell, createdRequest } from "@/pr-watch/auto"
 import { it } from "../lib/effect"
 
 /**
  * #1071 PR4: a successful `gh pr create` registers a durable watch from the
- * tool pipeline's own PostToolUse seam — no user hook. Recognition uses the
+ * shell tool's own completion seam — no user hook and no feature import in the
+ * generic tool pipeline. Recognition uses the
  * completed command, its exit code, and the URL the command printed.
  */
 
@@ -65,8 +66,7 @@ describe("automatic watch registration", () => {
   it.effect("registers a successful create in a root session", () =>
     Effect.gen(function* () {
       const h = poller()
-      yield* afterTool({
-        toolID: "bash",
+      yield* afterShell({
         command: "gh pr create --fill",
         exit: 0,
         output: `${URL}\n`,
@@ -81,8 +81,7 @@ describe("automatic watch registration", () => {
   it.effect("does not register a failed create", () =>
     Effect.gen(function* () {
       const h = poller()
-      yield* afterTool({
-        toolID: "bash",
+      yield* afterShell({
         command: "gh pr create --fill",
         exit: 1,
         output: `${URL}\n`,
@@ -93,24 +92,15 @@ describe("automatic watch registration", () => {
     }),
   )
 
-  it.effect("never registers from a child session or another tool", () =>
+  it.effect("never registers from a child session", () =>
     Effect.gen(function* () {
       const h = poller()
-      yield* afterTool({
-        toolID: "bash",
+      yield* afterShell({
         command: "gh pr create --fill",
         exit: 0,
         output: `${URL}\n`,
         sessionID: "ses_child",
         parentID: "ses_parent",
-      }).pipe(Effect.provide(h.layer))
-      yield* afterTool({
-        toolID: "task",
-        command: "gh pr create --fill",
-        exit: 0,
-        output: `${URL}\n`,
-        sessionID: "ses_root",
-        parentID: undefined,
       }).pipe(Effect.provide(h.layer))
       expect(h.registered).toHaveLength(0)
     }),
@@ -118,8 +108,7 @@ describe("automatic watch registration", () => {
 
   it.effect("degrades to a no-op when the poller is absent", () =>
     Effect.gen(function* () {
-      yield* afterTool({
-        toolID: "bash",
+      yield* afterShell({
         command: "gh pr create --fill",
         exit: 0,
         output: `${URL}\n`,

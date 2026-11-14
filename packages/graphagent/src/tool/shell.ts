@@ -25,6 +25,8 @@ import { ChildProcess } from "effect/process"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { ShellPrompt, SHELL_TAIL_LINES, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { Session } from "@/session/session"
+import { PrWatchAuto } from "@/pr-watch/auto"
 
 export { Parameters } from "./shell/prompt"
 
@@ -896,6 +898,33 @@ export const ShellTool = Tool.define(
       }
     })
 
+    /**
+     * A completed foreground command may have created a PR/MR. The
+     * subscription lives here, not in the generic tool pipeline: the command,
+     * the native exit code and the command's own output are shell facts, and
+     * this is the last point before a PostToolUse hook can replace them. The
+     * session lookup is the same root check other ROOT_ONLY tools use; with no
+     * session service the subscription is skipped rather than guessing.
+     */
+    const autoWatch = Effect.fn("ShellTool.autoWatch")(function* (
+      command: string,
+      result: Tool.ExecuteResult,
+      ctx: Tool.Context,
+    ) {
+      if (result.metadata.exit !== 0) return
+      const sessions = Option.getOrUndefined(yield* Effect.serviceOption(Session.Service))
+      if (!sessions) return
+      const session = Option.getOrUndefined(yield* sessions.get(ctx.sessionID).pipe(Effect.option))
+      if (!session) return
+      yield* PrWatchAuto.afterShell({
+        command,
+        exit: 0,
+        output: result.output,
+        sessionID: ctx.sessionID,
+        parentID: session.parentID,
+      })
+    })
+
     return () =>
       Effect.gen(function* () {
         const cfg = yield* config.get()
@@ -1002,7 +1031,7 @@ export const ShellTool = Tool.define(
                   ].join("\n"),
                 }
               }
-              return yield* run(
+              const result = yield* run(
                 {
                   shell,
                   command: params.command,
@@ -1013,6 +1042,8 @@ export const ShellTool = Tool.define(
                 },
                 ctx,
               )
+              yield* autoWatch(params.command, result, ctx)
+              return result
             }),
         }
       })

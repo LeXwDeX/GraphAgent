@@ -11,17 +11,17 @@ import { parseRequest } from "./forge"
  * Auto-registration of PR watches (#1071 PR4).
  *
  * The retired design made users configure a PostToolUse hook that ran a
- * separate `pr-watch` script after `gh pr create`. The tool pipeline now calls
- * this built-in subscriber at its own PostToolUse seam, so the watch needs no
- * user hook and no extra process. It is deliberately narrow: one tool id
- * (`bash`), one successful command shape (`gh pr create`, exit 0), a URL in
- * the command's own output (never a replayed command), and a root session —
+ * separate `pr-watch` script after `gh pr create`. The shell tool now calls
+ * this subscriber with its own final command, native exit code and output —
+ * the values only the tool has, before a PostToolUse hook can replace them —
+ * so the generic tool pipeline carries no feature import. It is deliberately
+ * narrow: one successful command shape (`gh pr create`, exit 0), a URL in the
+ * command's own output (never a replayed command), and a root session —
  * `watch_pr` is ROOT_ONLY, so a child session must not create a durable watch.
  */
 
-/** The model-facing result fields the subscriber needs; no tool-layer types. */
-export interface ToolOutcome {
-  readonly toolID: string
+/** The completed shell invocation the subscriber needs; no tool-layer types. */
+export interface ShellOutcome {
   readonly command: string | undefined
   readonly exit: number | undefined
   readonly output: string | undefined
@@ -123,12 +123,13 @@ export function createdRequest(command: string | undefined, exit: number | undef
 }
 
 /**
- * The built-in PostToolUse subscriber: registers the created request durably
- * and returns. Registration failures are logged, never surfaced into the tool
- * result that already succeeded.
+ * The shell tool's completion subscriber: registers the created request
+ * durably and returns. Registration failures are logged, never surfaced into
+ * the tool result that already succeeded. The root check lives here, once:
+ * `watch_pr` is ROOT_ONLY, so a child session must not own a durable watch.
  */
-export const afterTool = Effect.fn("PrWatchAuto.afterTool")(function* (input: ToolOutcome) {
-  if (input.toolID !== "bash" || input.parentID !== undefined) return
+export const afterShell = Effect.fn("PrWatchAuto.afterShell")(function* (input: ShellOutcome) {
+  if (input.parentID !== undefined) return
   const request = createdRequest(input.command, input.exit, input.output)
   if (!request) return
   const poller = Option.getOrUndefined(yield* Effect.serviceOption(PrWatchPoller.Service))

@@ -17,6 +17,40 @@ import type { ChildProcessSpawner as Spawner } from "effect/process/ChildProcess
 export type Provider = "github" | "gitlab"
 export type Outcome = "success" | "failure" | "merged" | "closed" | "review" | "deadline"
 
+/** The terminal lifecycle phase a delivered notice settles the watch to. */
+export type SettledPhase = "succeeded" | "failed" | "expired"
+
+/**
+ * The outcome vocabulary in one place: every `Outcome` is deliverable, and the
+ * exhaustive map is what keeps the union and the inbox source in sync. Adding
+ * an `Outcome` member fails to compile until it names its terminal phase, and
+ * the same keys become the set a delivering row may carry; removing one is
+ * caught as an excess key. `store.ts` derives both from here instead of
+ * re-listing the values, so a poller-written outcome is always deliverable.
+ */
+const SETTLED_PHASE = {
+  success: "succeeded",
+  failure: "failed",
+  merged: "succeeded",
+  closed: "failed",
+  review: "succeeded",
+  deadline: "expired",
+} as const satisfies Record<Outcome, SettledPhase>
+
+/** The forge outcomes a delivering row can carry; the poller writes only these. */
+export const DELIVERABLE_OUTCOMES: ReadonlySet<string> = new Set(Object.keys(SETTLED_PHASE))
+
+export const isDeliverableOutcome = (value: string | null): value is Outcome =>
+  value !== null && DELIVERABLE_OUTCOMES.has(value)
+
+/**
+ * The terminal slice a delivered notice becomes. A merge is the request
+ * succeeding; a close without merge and failed checks are the watch reporting
+ * failure; a deadline is the watch ending without an observation; an observed
+ * review change is a settled outcome.
+ */
+export const terminalPhaseFor = (outcome: Outcome): SettledPhase => SETTLED_PHASE[outcome]
+
 export type Request = {
   provider: Provider
   host: string

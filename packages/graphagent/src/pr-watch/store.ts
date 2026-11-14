@@ -7,7 +7,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { and, asc, eq, exists, isNull, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { SessionID } from "@/session/schema"
-import type { Notice, Outcome, Request } from "./forge"
+import { isDeliverableOutcome, terminalPhaseFor, type Notice, type Outcome, type Request } from "./forge"
 
 /**
  * Durable reads and the delivery CAS of the `pr_watch` inbox source (#1071
@@ -22,28 +22,14 @@ type Db = Database.Interface["db"]
 
 export type Row = typeof PrWatchTable.$inferSelect
 
-/** The forge outcomes a delivering row can carry; the poller writes only these. */
-const DELIVERABLE: ReadonlySet<string> = new Set(["success", "failure", "merged", "closed", "review", "deadline"])
-
-const isDeliverable = (value: string | null): value is Outcome => value !== null && DELIVERABLE.has(value)
-
 /** The durable delivery key: one notice per watch, outcome and followed head. */
 export const idempotencyKey = (row: Row): string => `${row.id}:${row.outcome ?? "unknown"}:${row.head ?? ""}`
 
-export const outcomeOf = (row: Row): Outcome | undefined => (isDeliverable(row.outcome) ? row.outcome : undefined)
+export const outcomeOf = (row: Row): Outcome | undefined =>
+  isDeliverableOutcome(row.outcome) ? row.outcome : undefined
 
-/**
- * The terminal phase a delivered notice settles to. A merge is the request
- * succeeding; a close without merge and failed checks are the watch reporting
- * failure; a deadline is the watch ending without an observation; an observed
- * review change is a settled outcome.
- */
-export const settledPhase = (outcome: Outcome): "succeeded" | "failed" | "expired" =>
-  outcome === "failure" || outcome === "closed"
-    ? "failed"
-    : outcome === "deadline"
-      ? "expired"
-      : "succeeded"
+/** The terminal phase a delivered notice settles to; the vocabulary lives in `forge.ts`. */
+export const settledPhase = terminalPhaseFor
 
 export const noticeOf = (row: Row): Notice | undefined => {
   const outcome = outcomeOf(row)

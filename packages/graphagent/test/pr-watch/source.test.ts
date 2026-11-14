@@ -147,6 +147,7 @@ const harness = (
   directory: string,
   prompts: Pick<PromptInterface, "admit">,
   goal?: PrWatchSource.Deps["goal"],
+  lifecycle?: PrWatchSource.Deps["lifecycle"],
 ) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
@@ -167,6 +168,7 @@ const harness = (
       },
       prompts,
       ...(goal ? { goal } : {}),
+      ...(lifecycle ? { lifecycle } : {}),
       directory,
       scope,
     })
@@ -286,10 +288,12 @@ describe("pr_watch source", () => {
       })
       // The wake port is captured at init/make, not looked up from the claim's
       // context: the claim runs in the inbox's captured graph, which cannot
-      // contain GoalLoop (the inbox is GoalLoop's own dependency).
-      const source = yield* harness(DIRECTORY, recording.prompts, goalLoop)
+      // contain GoalLoop (the inbox is GoalLoop's own dependency). The settled
+      // lifecycle edge is captured the same way; nothing is provided at claim
+      // time, so an ambient-only lookup would silently lose the transition.
+      const source = yield* harness(DIRECTORY, recording.prompts, goalLoop, lifecycle)
 
-      expect(yield* source.claim(sessionID).pipe(Effect.provideService(Lifecycle.Service, lifecycle))).toBe(true)
+      expect(yield* source.claim(sessionID)).toBe(true)
       expect(transitions).toEqual([
         {
           ref: { domain: "pr_watch", id: "watch_settle" },
@@ -428,7 +432,26 @@ describe("pr_watch delivery boundary", () => {
       const sessionID = SessionID.descending()
       yield* seedSession(db, sessionID, directory)
       const recording = yield* recordingPrompts(db)
-      yield* PrWatchSource.make({ db, inbox, prompts: recording.prompts, directory, scope: yield* Scope.Scope })
+      // The settled edge is captured by the source at make: the idle-driven
+      // claim runs in the inbox's own graph, where this service is absent.
+      const transitions: Array<Parameters<Lifecycle.Interface["transition"]>[0]> = []
+      const lifecycle = Lifecycle.Service.of({
+        transition: (request) =>
+          Effect.sync(() => {
+            transitions.push(request)
+            return { published: true }
+          }),
+        get: () => Effect.succeed(Option.none()),
+        register: () => Effect.void,
+      })
+      yield* PrWatchSource.make({
+        db,
+        inbox,
+        prompts: recording.prompts,
+        lifecycle,
+        directory,
+        scope: yield* Scope.Scope,
+      })
       yield* inbox.init()
 
       // The poller observes an outcome mid-turn: the durable row plus the live
@@ -452,6 +475,11 @@ describe("pr_watch delivery boundary", () => {
       expect(recording.admitted).toHaveLength(1)
       expect((yield* rowOf(db, "watch_turn"))?.delivery).toBe("watch_turn:success:abc")
       expect(EngineProcess.prWatch.watches.has("watch_turn")).toBe(false)
+      // The busy->turn-end path must publish the same settled edge the idle
+      // path does; before the captured port this transition was dropped.
+      expect(transitions).toMatchObject([
+        { ref: { domain: "pr_watch", id: "watch_turn" }, expect: "delivering", to: "succeeded", reason: "success" },
+      ])
 
       // Exactly once: a later drain and tick find nothing owed.
       yield* inbox.drain(sessionID)

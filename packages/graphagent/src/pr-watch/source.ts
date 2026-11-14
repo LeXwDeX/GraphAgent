@@ -55,6 +55,13 @@ export interface Deps {
    * wake and leave the goal waiting until its deadline.
    */
   readonly goal?: Pick<GoalLoopInterface, "wake">
+  /**
+   * The lifecycle transition port, captured where the app layer provides it
+   * (init) for the same reason as `goal`: the inbox's captured graph has no
+   * Lifecycle, so resolving it from the claim's context would silently drop
+   * the settled edge on the turn-end delivery path.
+   */
+  readonly lifecycle?: Pick<Lifecycle.Interface, "transition">
   /** Directory of the instance this source serves; only the sessions it owns are delivered. */
   readonly directory: string
   /** Owns the startup deliveries (one fiber per session with an owed notice). */
@@ -114,12 +121,19 @@ const wakeGoal = (goal: Deps["goal"], row: Store.Row, notice: Notice) => {
 /**
  * Publishes the terminal lifecycle edge after the delivery transaction
  * committed. The durable row already carries the phase; the event is the
- * transient notification, so a failure here loses no state.
+ * transient notification, so a failure here loses no state. The port comes
+ * from `Deps` (captured at init) rather than the claim's ambient context: the
+ * inbox captures its own graph, which does not contain Lifecycle, so an
+ * ambient lookup succeeds on the idle path and silently fails on the
+ * turn-end one.
  */
-const publishSettled = (row: Store.Row, phase: "succeeded" | "failed" | "expired") =>
-  Effect.gen(function* () {
-    const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
-    if (!lifecycle) return
+const publishSettled = (
+  lifecycle: Deps["lifecycle"],
+  row: Store.Row,
+  phase: "succeeded" | "failed" | "expired",
+) => {
+  if (!lifecycle) return Effect.void
+  return Effect.gen(function* () {
     yield* lifecycle.transition({
       ref: { domain: "pr_watch", id: row.id },
       expect: "delivering",
@@ -137,6 +151,7 @@ const publishSettled = (row: Store.Row, phase: "succeeded" | "failed" | "expired
           }),
     ),
   )
+}
 
 interface Ctx extends Deps {
   /** Canonical directory of the instance: what an owning session's directory must equal. */
@@ -216,7 +231,7 @@ const deliver = (ctx: Ctx, session: Store.SessionInfo, row: Store.Row, claimEpoc
       // and the resolver stop treating it as live, then publish the settled
       // edge the durable row already records.
       EngineProcess.prWatch.watches.delete(row.id)
-      yield* publishSettled(row, phase)
+      yield* publishSettled(ctx.lifecycle, row, phase)
       return true
     }
     return false
@@ -319,11 +334,15 @@ export const init = Effect.fn("PrWatchSource.init")(function* (input: {
   // GoalLoop in this same context before it initializes the inbox.
   const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
   const goal = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
+  // Same capture rule for the settled edge: the inbox claim runs in this
+  // instance's captured graph, where Lifecycle is not visible.
+  const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
   yield* make({
     db: input.database.db,
     inbox: input.inbox,
     prompts,
     ...(goal ? { goal } : {}),
+    ...(lifecycle ? { lifecycle } : {}),
     directory: instance.directory,
     scope: input.scope,
   })
