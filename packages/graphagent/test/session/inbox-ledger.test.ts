@@ -30,7 +30,8 @@ const createLedgerTable = (db: Db) =>
     sql`CREATE TABLE IF NOT EXISTS inbox_ledger (
       source TEXT NOT NULL,
       session_id TEXT NOT NULL,
-      idempotency_key TEXT NOT NULL UNIQUE
+      idempotency_key TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL DEFAULT 'delivered'
     )`,
   )
 
@@ -51,6 +52,11 @@ const seedSession = (db: Db, sessionID: SessionID, directory: string) =>
 const count = (db: Db, table: "inbox_ledger" | "message" | "session_turn") =>
   db.get<{ n: number }>(sql.raw(`SELECT COUNT(*) AS n FROM ${table}`)).pipe(Effect.map((row) => row?.n ?? 0))
 
+const stateOf = (db: Db, key: string) =>
+  db
+    .get<{ state: string }>(sql`SELECT state FROM inbox_ledger WHERE idempotency_key = ${key}`)
+    .pipe(Effect.map((row) => row?.state))
+
 const item = (key: string, extra: Partial<InboxItem> = {}): InboxItem => ({
   prompt: { parts: [{ type: "text", text: key }] },
   ...extra,
@@ -62,6 +68,7 @@ const keyOf = (value: InboxItem) =>
 
 const makeLedger = (db: Db, commit?: InboxLedger["commit"]): InboxLedger => ({
   idempotencyKey: keyOf,
+  // A held key and a delivered key are both seen: the item is already owned.
   seen: (scope: LedgerScope) =>
     db
       .get<{ hit: number }>(
@@ -70,13 +77,30 @@ const makeLedger = (db: Db, commit?: InboxLedger["commit"]): InboxLedger => ({
               AND idempotency_key = ${scope.idempotencyKey}`,
       )
       .pipe(Effect.map((row) => row !== undefined)),
+  hold: (scope) =>
+    db.run(
+      sql`INSERT INTO inbox_ledger (source, session_id, idempotency_key, state)
+          VALUES (${scope.source}, ${scope.sessionID}, ${scope.idempotencyKey}, 'held')
+          ON CONFLICT(idempotency_key) DO NOTHING`,
+    ),
+  // Delivered once: a fresh key inserts, a held key transitions, and a
+  // second delivery of a delivered key fails so its message rolls back.
   commit:
     commit ??
     ((scope) =>
-      db.run(
-        sql`INSERT INTO inbox_ledger (source, session_id, idempotency_key)
-            VALUES (${scope.source}, ${scope.sessionID}, ${scope.idempotencyKey})`,
-      )),
+      db
+        .get<{ key: string }>(
+          sql`INSERT INTO inbox_ledger (source, session_id, idempotency_key, state)
+              VALUES (${scope.source}, ${scope.sessionID}, ${scope.idempotencyKey}, 'delivered')
+              ON CONFLICT(idempotency_key) DO UPDATE SET state = 'delivered'
+              WHERE inbox_ledger.state = 'held'
+              RETURNING idempotency_key AS key`,
+        )
+        .pipe(
+          Effect.flatMap((row) =>
+            row === undefined ? Effect.fail(new Error("inbox ledger key is already delivered")) : Effect.void,
+          ),
+        )),
 })
 
 const source = (ledger: InboxLedger) =>
@@ -218,6 +242,7 @@ describe("SessionInbox ledger", () => {
               yield* queried
               return committed
             }),
+          hold: base.hold,
           commit: base.commit,
         }),
       )
@@ -318,6 +343,70 @@ describe("SessionInbox ledger", () => {
       expect(second).toEqual({ state: "duplicate" })
       expect(admitCalls).toBe(1)
       expect(yield* count(db, "message")).toBe(1)
+    }),
+  )
+
+  it.instance("holds a busy turn_boundary item, suppresses redelivery, and survives a restart", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const status = yield* SessionStatus.Service
+      const { db } = yield* Database.Service
+      const directory = (yield* TestInstance).directory
+      yield* createLedgerTable(db)
+      const sessionID = SessionID.descending()
+      yield* seedSession(db, sessionID, directory)
+      admitCalls = 0
+      yield* inbox.register({ ...source(makeLedger(db)), mode: "turn_boundary" })
+
+      // A busy session holds: nothing is admitted and the key is durably queued.
+      yield* status.set(sessionID, { type: "busy" })
+      expect(yield* inbox.submit("child.result", sessionID, item("held-key"))).toEqual({ state: "pending" })
+      expect(admitCalls).toBe(0)
+      expect(yield* count(db, "inbox_ledger")).toBe(1)
+      expect(yield* stateOf(db, "held-key")).toBe("held")
+
+      // Held is seen: a repeat submit is a duplicate, not a second queue entry.
+      expect(yield* inbox.submit("child.result", sessionID, item("held-key"))).toEqual({ state: "duplicate" })
+      expect(yield* count(db, "inbox_ledger")).toBe(1)
+
+      // A rebuilt inbox (a restart) has no memory; the durable hold still
+      // suppresses the redelivery.
+      const afterRestart = yield* withInbox(
+        { db },
+        Effect.gen(function* () {
+          const next = yield* SessionInbox.Service
+          yield* next.register({ ...source(makeLedger(db)), mode: "turn_boundary" })
+          return yield* next.submit("child.result", sessionID, item("held-key"))
+        }),
+      )
+      expect(afterRestart).toEqual({ state: "duplicate" })
+      expect(admitCalls).toBe(0)
+    }),
+  )
+
+  it.instance("a held key commits once and a second commit is refused", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const directory = (yield* TestInstance).directory
+      yield* createLedgerTable(db)
+      const sessionID = SessionID.descending()
+      yield* seedSession(db, sessionID, directory)
+      const ledger = makeLedger(db)
+      const scope: LedgerScope = { source: "child.result", sessionID, idempotencyKey: "held-key" }
+
+      // Holding twice is idempotent and the key reads as seen while queued.
+      yield* ledger.hold(scope, item("held-key"))
+      yield* ledger.hold(scope, item("held-key"))
+      expect(yield* ledger.seen(scope)).toBe(true)
+      expect(yield* count(db, "inbox_ledger")).toBe(1)
+      expect(yield* stateOf(db, "held-key")).toBe("held")
+
+      // The source's claim delivers: held transitions to delivered once.
+      yield* ledger.commit(scope)
+      expect(yield* stateOf(db, "held-key")).toBe("delivered")
+      const second = yield* Effect.exit(ledger.commit(scope))
+      expect(second._tag).toBe("Failure")
+      expect(yield* count(db, "inbox_ledger")).toBe(1)
     }),
   )
 })

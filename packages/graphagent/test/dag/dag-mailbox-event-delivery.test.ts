@@ -409,7 +409,7 @@ describe("DagDelivery event-driven mailboxes (#1027 D5)", () => {
           // waits for its observable result.
           let passes = 0
           yield* (yield* SessionInbox.Service).register({
-            id: "watch_pr",
+            id: "pr_watch",
             priority: 100,
             mode: "idle_only",
             hint: () => false,

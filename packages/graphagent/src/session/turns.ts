@@ -179,10 +179,11 @@ export interface TurnStartOptions {
 /**
  * What an immediate admission carries beyond its options: the origin an inbox
  * source stamps on the turn it starts (otherwise `originFor` derives one from
- * the options), a cancellation request the caller already holds, and the
- * credential of the child run a driver prompts under.
+ * the options), a cancellation request the caller already holds, the credential
+ * of the child run a driver prompts under, and the boundary the admission was
+ * requested for (`turn_boundary` sources pass `when: "idle"`).
  */
-export type AdmissionExtras = Partial<Pick<TurnStartOptions, "origin" | "request" | "credential">>
+export type AdmissionExtras = Partial<Pick<TurnStartOptions, "origin" | "request" | "credential" | "when">>
 
 /** What the loop machine reports at its exit; `Turns` persists it. */
 export interface TurnExecution {
@@ -250,13 +251,19 @@ export interface Interface {
     input: PromptInput,
     options: TurnStartOptions,
   ) => Effect.Effect<TurnStart, PromptError | SessionAdmission.Blocked>
-  /** Idle two-phase admission; `admitIdleUnderFence` activates it under the exclusive registry. */
+  /**
+   * Idle two-phase admission; `admitIdleUnderFence` activates it under the
+   * exclusive registry. `origin` is the origin an inbox source stamps on the
+   * turn (a `turn_boundary` submit admits with `when: "idle"`); without it the
+   * origin is derived from the options.
+   */
   readonly prepare: (
     input: PromptInput,
     options?: AdmissionOptions,
     persistAdmission?: Effect.Effect<void, unknown>,
     request?: ReturnType<typeof SessionCancellation.request>,
     credential?: ChildRunCredential,
+    origin?: TurnOrigin,
   ) => Effect.Effect<Option.Option<IdleAdmission>, PromptError>
   readonly current: (sessionID: SessionID) => Effect.Effect<Option.Option<TurnHandle>>
   readonly lastOutcome: (sessionID: SessionID) => Effect.Effect<Option.Option<TurnOutcome>>
@@ -508,12 +515,13 @@ function makePrepareIdle(deps: TurnDeps, flow: TurnFlow) {
     persistAdmission: Effect.Effect<void, unknown> | undefined,
     request: ReturnType<typeof SessionCancellation.request> | undefined,
     credential: ChildRunCredential | undefined,
+    originOverride: TurnOrigin | undefined,
   ) {
     // A caller that already holds the run's credential passes it; otherwise the
     // process registry answers without a read (the idle admission path must
     // stay query-free). The admission guard still decides whether it is live.
     const active = credential ?? ChildRegistry.credentialOf(input.sessionID)
-    const origin = originFor(options, active)
+    const origin = originOverride ?? originFor(options, active)
     return yield* deps.withRunRequest(
       input.sessionID,
       (req, witness) =>
@@ -727,6 +735,7 @@ export function makeTurns(deps: TurnDeps): Interface {
         options.persistAdmission,
         options.request,
         options.credential,
+        options.origin,
       )
       if (Option.isNone(prepared)) {
         return {

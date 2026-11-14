@@ -13,6 +13,7 @@ import { Cause, Clock, Context, Deferred, Duration, Effect, Fiber, Layer, Option
 import { ChildProcessSpawner } from "effect/process"
 import { randomUUID } from "node:crypto"
 import { EngineProcess, runnerAlive } from "@/session/engine-process"
+import { SessionID } from "@/session/schema"
 import { Lifecycle } from "@/lifecycle/service"
 import {
   classifyPoll,
@@ -168,6 +169,26 @@ export const make = Effect.gen(function* () {
   )
 
   /**
+   * Wakes the inbox that owns the watch's session after an observation became
+   * deliverable (PR3). The inbox installs its own idle gate on this route, so a
+   * nudge that lands mid-turn is dropped and the turn-end idle event delivers
+   * the notice; no loaded instance only means the durable row waits for the
+   * startup scan or the 30s tick.
+   */
+  const nudgeDelivery = (sessionID: string) =>
+    Effect.suspend(() => {
+      const nudge = EngineProcess.inbox.nudge
+      if (!nudge) return Effect.void
+      return nudge(SessionID.make(sessionID)).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.void
+            : Effect.logWarning("PrWatchPoller delivery nudge failed", { sessionID, cause: Cause.pretty(cause) }),
+        ),
+      )
+    })
+
+  /**
    * Converge one watching row to `expired`. The deadline condition is the
    * guard, so two processes racing the same row publish one transition.
    */
@@ -256,6 +277,7 @@ export const make = Effect.gen(function* () {
         }
         observeLive(row.id, row.session_id, "delivering")
         yield* publish(row.id, "watching", "delivering", decision.outcome, row.session_id)
+        yield* nudgeDelivery(row.session_id)
         return
       }
       case "rebaseline": {

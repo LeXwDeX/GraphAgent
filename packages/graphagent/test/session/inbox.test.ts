@@ -10,8 +10,15 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { SessionCancellation } from "@/session/cancellation"
-import { SessionInbox, type InboxItem, type InboxSource, type InboxSourceContext } from "@/session/inbox"
+import {
+  SessionInbox,
+  type InboxItem,
+  type InboxLedger,
+  type InboxSource,
+  type InboxSourceContext,
+} from "@/session/inbox"
 import { MessageID, SessionID } from "@/session/schema"
+import { AdmissionPersistFailed } from "@/session/turn/prepare"
 import type { TurnStart } from "@/session/turns"
 import { SessionStatus } from "@/session/status"
 import type { InstanceContext } from "@/project/instance-context"
@@ -118,7 +125,7 @@ describe("SessionInbox", () => {
       const order = yield* Ref.make<ReadonlyArray<string>>([])
       const record = (label: string, claimed: boolean) => () =>
         Ref.updateAndGet(order, (seen) => [...seen, label]).pipe(Effect.as(claimed))
-      yield* inbox.register(source("watch_pr", 30, record("third", true)))
+      yield* inbox.register(source("dag.delivery", 30, record("third", true)))
       yield* inbox.register(source("goal.continue", 10, record("first", false)))
       yield* inbox.register(source("hook.rewake", 20, record("second", true)))
 
@@ -438,12 +445,6 @@ describe("SessionInbox", () => {
       const missing = yield* Effect.flip(inbox.submit("goal.continue", sessionID, {}))
       expect(missing._tag).toBe("SessionInboxNotWired")
 
-      // `turn_boundary` has no implementation; overriding the built-in rewake
-      // source proves the policy rejection.
-      yield* inbox.register(source("hook.rewake", 10, () => Effect.succeed(true), { mode: "turn_boundary" }))
-      const unsupported = yield* Effect.flip(inbox.submit("hook.rewake", sessionID, {}))
-      expect(unsupported._tag).toBe("SessionInboxUnsupportedDeliveryPolicy")
-
       // `idle_only` sources must go through their drain boundary instead.
       yield* inbox.register(source("goal.continue", 10, () => Effect.succeed(true)))
       const idleOnly = yield* Effect.flip(inbox.submit("goal.continue", sessionID, {}))
@@ -524,6 +525,80 @@ describe("SessionInbox", () => {
       expect(yield* submit()).toEqual({ state: "pending" })
     }),
   )
+
+  it.instance("turn_boundary submit holds a busy session and admits at an idle boundary", () =>
+    Effect.gen(function* () {
+      const inbox = yield* SessionInbox.Service
+      const status = yield* SessionStatus.Service
+      const sessionID = SessionID.descending()
+      // The ledger is a key set: `hold` and `commit` both make a key seen, so a
+      // held key is a duplicate while it waits and after it is delivered.
+      const queued = yield* Ref.make<ReadonlySet<string>>(new Set())
+      const ledger: InboxLedger = {
+        idempotencyKey: (value) =>
+          value.prompt?.parts.map((part) => (part.type === "text" ? part.text : "")).join("|") ?? "",
+        seen: (scope) => Ref.get(queued).pipe(Effect.map((keys) => keys.has(scope.idempotencyKey))),
+        hold: (scope) => Ref.update(queued, (keys) => new Set([...keys, scope.idempotencyKey])),
+        commit: (scope) => Ref.update(queued, (keys) => new Set([...keys, scope.idempotencyKey])),
+      }
+      yield* inbox.register({
+        id: "pr_watch",
+        priority: 10,
+        mode: "turn_boundary",
+        hint: () => true,
+        claim: () => Effect.succeed(false),
+        ledger,
+      })
+      const item = (key: string): InboxItem => ({ prompt: { parts: [{ type: "text", text: key }] } })
+
+      const createdAt = 1_700_000_000_000
+      const messageID = MessageID.make("msg_turn_boundary")
+      const message = {
+        info: { id: messageID, sessionID, role: "user", time: { created: createdAt } },
+        parts: [{ type: "text", text: "notice" }],
+      } as never as SessionV1.WithParts
+      const whens: Array<string | undefined> = []
+      let calls = 0
+      let outcome: TurnStart = {
+        admission: { kind: "not_started", reason: "test" },
+        message,
+        wait: Effect.never,
+      }
+      const promptMock = mockSessionPrompt({
+        admit: (_input, _options, persist, extras) =>
+          Effect.gen(function* () {
+            calls += 1
+            whens.push(extras?.when)
+            if (persist) yield* persist.pipe(Effect.mapError((cause) => new AdmissionPersistFailed({ cause: String(cause) })))
+            return outcome
+          }),
+      })
+      const submit = (key: string) => inbox.submit("pr_watch", sessionID, item(key)).pipe(Effect.provide(promptMock))
+
+      // Busy: the item is held, never admitted into the running turn.
+      yield* status.set(sessionID, { type: "busy" })
+      expect(yield* submit("busy-key")).toEqual({ state: "pending" })
+      expect(calls).toBe(0)
+      expect([...(yield* Ref.get(queued))].sort()).toEqual(["busy-key"])
+
+      // A held key is a duplicate: the caller cannot queue it twice.
+      expect(yield* submit("busy-key")).toEqual({ state: "duplicate" })
+      expect(calls).toBe(0)
+
+      // Idle: admitted for the idle boundary, and the ledger key commits.
+      yield* status.set(sessionID, { type: "idle" })
+      outcome = { admission: { kind: "started", turn: undefined as never }, message, wait: Effect.never }
+      expect(yield* submit("idle-key")).toEqual({ state: "started", messageID, createdAt })
+      expect(whens).toEqual(["idle"])
+      expect(calls).toBe(1)
+
+      // Lost the idle race to a starting turn: nothing committed, held instead.
+      outcome = { admission: { kind: "skipped_busy" }, wait: Effect.never }
+      expect(yield* submit("raced-key")).toEqual({ state: "pending" })
+      expect(whens).toEqual(["idle", "idle"])
+      expect([...(yield* Ref.get(queued))].sort()).toEqual(["busy-key", "idle-key", "raced-key"])
+    }),
+  )
 })
 
 describe("SessionInbox claim epoch", () => {
@@ -567,7 +642,7 @@ describe("SessionInbox claim epoch", () => {
           return true
         })
       yield* inbox.register(source("goal.continue", 10, attempt("first", true)))
-      yield* inbox.register(source("watch_pr", 20, attempt("second", false)))
+      yield* inbox.register(source("pr_watch", 20, attempt("second", false)))
 
       yield* inbox.drain(sessionID)
       expect(yield* Ref.get(delivered)).toEqual([])

@@ -49,6 +49,8 @@ export type Notice = {
   outcome: Outcome
   request: Request
   snapshot?: Snapshot
+  /** The followed head when the notice is rendered from a durable row that no longer carries the whole snapshot. */
+  head?: string
   detail?: string
 }
 
@@ -389,7 +391,7 @@ export function renderNotice(notice: Notice) {
     : "unknown"
   return [
     `watch_pr ${outcomeLabel(notice.outcome)} for ${notice.request.url}`,
-    `head: ${snapshot?.head ?? "unknown"}`,
+    `head: ${snapshot?.head ?? notice.head ?? "unknown"}`,
     `checks: ${checks}`,
     `review: ${safeReview(snapshot?.review)}`,
     ...(notice.detail ? [`detail: ${notice.detail}`] : []),
