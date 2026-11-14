@@ -13,10 +13,12 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { eq } from "drizzle-orm"
-import { Deferred, Effect, Layer, Scope } from "effect"
+import { Deferred, Effect, Layer, Option, Scope } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { GoalLoop } from "@/goal/loop"
+import { Lifecycle } from "@/lifecycle/service"
 import { PrWatchSource } from "@/pr-watch/source"
 import { SessionCancellation } from "@/session/cancellation"
 import { EngineProcess } from "@/session/engine-process"
@@ -196,11 +198,84 @@ describe("pr_watch source", () => {
         origin: { kind: "inbox", source: "pr_watch", key: "watch_success:success:abc" },
       })
       expect(admitted.options).toEqual({ continueToolBudget: true })
-      expect((yield* rowOf(db, "watch_success"))?.delivery).toBe("watch_success:success:abc")
+      // Delivery settles the ledger: the terminal phase commits with the mark,
+      // so a resolver or a restart reads a finished watch, not a live one.
+      expect((yield* rowOf(db, "watch_success"))).toMatchObject({
+        delivery: "watch_success:success:abc",
+        phase: "succeeded",
+      })
 
       // The durable mark is the delivery's identity: a second claim writes nothing.
       expect(yield* source.claim(sessionID)).toBe(false)
       expect(recording.admitted).toHaveLength(1)
+    }),
+  )
+
+  it.effect("settles failure and close outcomes as failed", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      for (const outcome of ["failure", "closed"] as const) {
+        const sessionID = SessionID.make(unique(`ses_prw_${outcome}`))
+        yield* seedSession(db, sessionID)
+        const id = `watch_${outcome}_${Math.random().toString(36).slice(2)}`
+        yield* insertWatch(db, { id, session_id: sessionID, outcome })
+        const recording = yield* recordingPrompts(db)
+        const source = yield* harness(DIRECTORY, recording.prompts)
+        expect(yield* source.claim(sessionID)).toBe(true)
+        expect((yield* rowOf(db, id))?.phase).toBe("failed")
+      }
+    }),
+  )
+
+  it.effect("publishes the terminal lifecycle edge and wakes only this watch's goal wait", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(unique("ses_prw_settle"))
+      yield* seedSession(db, sessionID)
+      yield* insertWatch(db, { id: "watch_settle", session_id: sessionID })
+      const recording = yield* recordingPrompts(db)
+      const source = yield* harness(DIRECTORY, recording.prompts)
+      const transitions: Array<Parameters<Lifecycle.Interface["transition"]>[0]> = []
+      const wakes: Array<{ match: Parameters<GoalLoop.Interface["wake"]>[1]; evaluate?: boolean }> = []
+      const lifecycle = Lifecycle.Service.of({
+        transition: (request) =>
+          Effect.sync(() => {
+            transitions.push(request)
+            return { published: true }
+          }),
+        get: () => Effect.succeed(Option.none()),
+        register: () => Effect.void,
+      })
+      const goalLoop = GoalLoop.Service.of({
+        init: () => Effect.void,
+        wake: (_sessionID, match, _payload, options) =>
+          Effect.sync(() => {
+            wakes.push({ match, evaluate: options?.evaluate })
+            return true
+          }),
+      })
+
+      expect(
+        yield* source
+          .claim(sessionID)
+          .pipe(Effect.provideService(Lifecycle.Service, lifecycle), Effect.provideService(GoalLoop.Service, goalLoop)),
+      ).toBe(true)
+      expect(transitions).toEqual([
+        {
+          ref: { domain: "pr_watch", id: "watch_settle" },
+          expect: "delivering",
+          to: "succeeded",
+          reason: "success",
+          sessionID,
+        },
+      ])
+      // The wake precedes the notice turn and does not evaluate on its own.
+      expect(wakes).toEqual([
+        {
+          match: { source: "watch_pr", ids: ["watch_settle", "https://github.com/acme/widgets/pull/42"] },
+          evaluate: false,
+        },
+      ])
     }),
   )
 

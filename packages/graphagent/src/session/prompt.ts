@@ -520,7 +520,7 @@ export const layer = Layer.effect(
         cancel: (sessionID: SessionID) => admit.cancel(sessionID),
         resolvePromptParts: (template: string) => prepareFns.resolvePromptParts(template),
         prompt: (input: PromptInput, options?: AdmissionOptions) => {
-          // The shell/watch_pr notice prompts its own session; a child session
+          // The shell background notice prompts its own session; a child session
           // carries the credential of its active run (zero reads). A run that
           // already ended leaves none: the notice is best-effort and must not
           // turn a successful background job into an error, so a refusal is

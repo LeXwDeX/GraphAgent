@@ -29,6 +29,7 @@ import type { ToolSourceLedger } from "@/session/tool-source-ledger"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { MemorySearch } from "@/tool/memory-search"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
+import { PrWatchAuto } from "@/pr-watch/auto"
 import type { Tool } from "@/tool/tool"
 import type { ToolEntry } from "./registry"
 import { isRecord } from "@/util/record"
@@ -411,6 +412,21 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   messageID: input.processor.message.id,
                 })),
               }
+              // Built-in PostToolUse subscriber (#1071): a successful
+              // `gh pr create` registers a durable PR watch without a user
+              // hook. It reads the executed command and the native result,
+              // before a PostToolUse hook can replace either.
+              yield* PrWatchAuto.afterTool({
+                toolID: item.id,
+                command: typeof args.command === "string" ? args.command : undefined,
+                exit:
+                  isRecord(output.metadata) && typeof output.metadata.exit === "number"
+                    ? output.metadata.exit
+                    : undefined,
+                output: output.output,
+                sessionID: ctx.sessionID,
+                parentID: input.session.parentID,
+              })
               // PreToolUse feedback is attached after PostToolUse has seen and possibly replaced the
               // native result, so Post hooks never receive earlier hook text and a replacement keeps it.
               const preLines = preContexts.filter((line): line is string => Boolean(line))

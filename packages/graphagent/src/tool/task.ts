@@ -23,10 +23,9 @@ import { HookTurnContext } from "@/hook/turn-context"
 import { isRecord } from "@/util/record"
 
 /**
- * What the shell tool's background mode and `watch_pr` prompt their own
- * session with (#1071 moves them off it). The task tool does not read it: it
- * drives its child session through `ctx.children`, under the credential of the
- * child's run.
+ * What the shell tool's background mode prompts its own session with. The
+ * task tool does not read it: it drives its child session through
+ * `ctx.children`, under the credential of the child's run.
  */
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>

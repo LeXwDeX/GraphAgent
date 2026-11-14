@@ -10,6 +10,7 @@ import { GoalState } from "@/goal/state"
 import { SessionID } from "@/session/schema"
 import { SessionStatus } from "@/session/status"
 import { Database } from "@graphagent/core/database/database"
+import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { RuntimeJobTable } from "@graphagent/core/lifecycle/runtime-job.sql"
 import { testEffect } from "../lib/effect"
 
@@ -69,6 +70,53 @@ const expireOrphaned = (sid: SessionID) =>
     const goal = yield* Goal.Service
     const orphan = yield* goal.orphanedWait(sid)
     return orphan ? yield* goal.expireOrphanedWait(sid, orphan) : undefined
+  })
+
+// #1071: a `pr_watch` StateRef reads the durable watch row instead of a runtime
+// job. A live watch is resumed by the process-level poller, so only a terminal
+// or missing row orphans the wait.
+const insertWatch = (row: Partial<typeof PrWatchTable.$inferInsert> & { id: string }) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(PrWatchTable)
+      .values({
+        forge: "github",
+        host: "github.com",
+        url: `https://github.com/acme/widgets/pull/${row.id.length}`,
+        repo: "acme/widgets",
+        number: row.id.length,
+        session_id: "ses_missing",
+        phase: "watching",
+        deadline_at: Date.now() + 60_000,
+        created_at: 1,
+        updated_at: 1,
+        ...row,
+      })
+      .run()
+      .pipe(Effect.orDie)
+  })
+
+const awaitWatch = (watchID: string): GoalState.Intent => ({
+  kind: "await",
+  wait: {
+    source: "watch_pr",
+    wait_id: watchID,
+    ref: { domain: "pr_watch", id: watchID },
+    deadline: Date.now() + 60_000,
+    max_wakes: GoalState.nni(1),
+    wakes: GoalState.nni(0),
+  },
+})
+
+/** A fresh waiting goal on `watchID`; the session id is unique per call. */
+const waitingWatchGoal = (watchID: string) =>
+  Effect.gen(function* () {
+    const goal = yield* Goal.Service
+    const sid = SessionID.descending()
+    yield* goal.set(sid, "merge the PR", 10)
+    yield* goal.setIntent(sid, awaitWatch(watchID))
+    return sid
   })
 
 /**
@@ -289,6 +337,42 @@ describe("Goal.orphanedWait and Goal.expireOrphanedWait", () => {
       const state = yield* goal.load(sid)
       expect(state?.status).toBe("active")
       expect(state?.intent).toEqual({ kind: "progress" })
+    }),
+  )
+})
+
+describe("Goal.orphanedWait — durable PR watches (#1071)", () => {
+  it.live("keeps a live watch: the process-level poller resumes it", () =>
+    Effect.gen(function* () {
+      yield* insertWatch({ id: "watch_live" })
+      const sid = yield* waitingWatchGoal("watch_live")
+      const goal = yield* Goal.Service
+
+      expect(yield* goal.orphanedWait(sid)).toBeUndefined()
+      expect((yield* goal.load(sid))?.status).toBe("waiting")
+    }),
+  )
+
+  it.live("ends the wait of a terminal watch whose wake never reached the goal", () =>
+    Effect.gen(function* () {
+      yield* insertWatch({ id: "watch_done", phase: "succeeded", outcome: "success" })
+      const sid = yield* waitingWatchGoal("watch_done")
+
+      expectReviewMarker(
+        yield* expireOrphaned(sid),
+        "等待的 PR 监听",
+        "watch_done",
+        "已结束（状态 succeeded：success）",
+      )
+      expect((yield* (yield* Goal.Service).load(sid))?.status).toBe("active")
+    }),
+  )
+
+  it.live("ends the wait of a watch the restart lost entirely", () =>
+    Effect.gen(function* () {
+      const sid = yield* waitingWatchGoal("watch_missing")
+
+      expectReviewMarker(yield* expireOrphaned(sid), "等待的 PR 监听 watch_missing", "没有持久记录")
     }),
   )
 })

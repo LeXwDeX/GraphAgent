@@ -31,7 +31,6 @@ const DECLARED_STATE = new Map<string, string>([
 const BACKGROUND_STARTERS = new Map<string, string>([
   ["src/tool/shell.ts", "bash"],
   ["src/tool/task.ts", "task"],
-  ["src/tool/watch_pr.ts", "watch_pr"],
 ])
 
 async function toolSources(): Promise<ReadonlyArray<{ readonly file: string; readonly source: string }>> {

@@ -234,6 +234,56 @@ describe("pr_watch registration", () => {
       EngineProcess.prWatch.watches.delete(id)
     }),
   )
+
+  it.effect("finds a watch by id or URL and lists only the session's live watches", () =>
+    Effect.gen(function* () {
+      const poller = yield* PrWatchPoller.Service
+      const { id } = yield* poller.register({ sessionID: "ses_lookup", request })
+      // A terminal row is still findable by its own identity, but not listed.
+      yield* insertWatch({ id: "watch_done", session_id: "ses_lookup", phase: "succeeded" })
+
+      expect(yield* poller.query({ sessionID: "ses_lookup", ref: id })).toMatchObject([
+        { id, url: request.url, phase: "watching", deadlineAt: expect.any(Number) },
+      ])
+      expect(yield* poller.query({ sessionID: "ses_lookup", ref: request.url })).toMatchObject([{ id }])
+      expect(yield* poller.query({ sessionID: "ses_lookup" })).toMatchObject([{ id, phase: "watching" }])
+      expect(yield* poller.query({ sessionID: "ses_lookup", ref: "watch_done" })).toMatchObject([
+        { id: "watch_done", phase: "succeeded" },
+      ])
+      // Another session never reads this watch.
+      expect(yield* poller.query({ sessionID: "ses_other" })).toEqual([])
+      EngineProcess.prWatch.watches.delete(id)
+    }),
+  )
+
+  it.effect("cancels a live watch with one lifecycle edge and refuses a terminal one", () =>
+    Effect.gen(function* () {
+      const seen = yield* watchLifecycle()
+      const poller = yield* PrWatchPoller.Service
+      const { id } = yield* poller.register({ sessionID: "ses_cancel", request })
+
+      expect(yield* poller.cancel({ sessionID: "ses_cancel", ref: id })).toMatchObject({
+        id,
+        phase: "cancelled",
+      })
+      expect(yield* readRow(id)).toMatchObject({ phase: "cancelled", next_poll_at: null })
+      // A second cancel has nothing live to stop and publishes nothing.
+      expect(yield* poller.cancel({ sessionID: "ses_cancel", ref: id })).toBeUndefined()
+      expect(EngineProcess.prWatch.watches.has(id)).toBe(false)
+
+      yield* insertWatch({ id: "watch_terminal", session_id: "ses_cancel", phase: "succeeded" })
+      expect(yield* poller.cancel({ sessionID: "ses_cancel", ref: "watch_terminal" })).toBeUndefined()
+
+      yield* eventually(
+        transitions(seen, id).pipe(Effect.map((list) => (list.length >= 2 ? list : undefined))),
+        "the cancellation transition",
+      )
+      expect(yield* transitions(seen, id)).toMatchObject([
+        { to: "watching", reason: "registered" },
+        { from: "watching", to: "cancelled", reason: "cancelled" },
+      ])
+    }),
+  )
 })
 
 describe("pr_watch polling", () => {

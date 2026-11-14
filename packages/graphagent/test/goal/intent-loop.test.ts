@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm"
 import { Effect, Layer, Option } from "effect"
 import { BackgroundJob } from "@graphagent/core/background-job"
 import { Database } from "@graphagent/core/database/database"
+import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { RuntimeJobTable } from "@graphagent/core/lifecycle/runtime-job.sql"
 import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
@@ -110,6 +111,30 @@ const awaitWatch = (deadline: number): GoalState.Intent => ({
   },
 })
 
+/** A live durable watch row: the #1071 storage the blocked-verdict downgrade reads. */
+const insertWatch = (sessionID: SessionID, id: string, deadlineAt: number) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(PrWatchTable)
+      .values({
+        id,
+        forge: "github",
+        host: "github.com",
+        url: "https://example.test/pr/1",
+        repo: "acme/widgets",
+        number: 1,
+        session_id: sessionID,
+        head: "abc",
+        phase: "watching",
+        deadline_at: deadlineAt,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      })
+      .run()
+      .pipe(Effect.orDie)
+  })
+
 describe("GoalLoop — waits", () => {
   it.instance("an expired wait dispatches one bounded review turn before pausing", () =>
     Effect.gen(function* () {
@@ -161,7 +186,7 @@ describe("GoalLoop — waits", () => {
     }),
   )
 
-  it.instance("a judge-blocked verdict awaits this session's running watch instead of pausing", () =>
+  it.instance("a judge-blocked verdict awaits this session's live watch instead of pausing", () =>
     Effect.gen(function* () {
       reset()
       judgeVerdict = "blocked"
@@ -172,19 +197,12 @@ describe("GoalLoop — waits", () => {
       const sid = SessionID.descending()
       yield* goal.set(sid, "merge the PR", 10)
       const deadlineAt = Date.now() + 120_000
-      runningJobs.push({
-        id: "job_watch_1",
-        type: "watch_pr",
-        title: "watch https://example.test/pr/1",
-        status: "running",
-        started_at: Date.now(),
-        metadata: { sessionID: sid, url: "https://example.test/pr/1", deadlineAt },
-      })
+      yield* insertWatch(sid, "watch_blocked", deadlineAt)
       yield* Effect.yieldNow
 
       yield* events.publish(SessionStatus.Event.Status, { sessionID: sid, status: { type: "idle" } })
       yield* pollWithTimeout(
-        Effect.sync(() => (promptCalls.some((call) => call.text.includes("已改为等待该任务完成")) ? true : undefined)),
+        Effect.sync(() => (promptCalls.some((call) => call.text.includes("已改为等待其完成")) ? true : undefined)),
         "the blocked verdict never downgraded to a wait",
         "5 seconds",
       )
@@ -193,11 +211,15 @@ describe("GoalLoop — waits", () => {
       expect(state?.status).toBe("waiting")
       expect(state?.intent).toMatchObject({
         kind: "await",
-        wait: { source: "watch_pr", wait_id: "job_watch_1" },
+        wait: {
+          source: "watch_pr",
+          wait_id: "watch_blocked",
+          ref: { domain: "pr_watch", id: "watch_blocked" },
+        },
       })
       expect(state?.intent?.kind === "await" ? state.intent.wait.deadline : 0).toBe(deadlineAt + 60_000)
       expect(promptCalls.every((call) => !call.text.includes("⏸ 目标已暂停"))).toBe(true)
-      const downgrade = promptCalls.find((call) => call.text.includes("已改为等待该任务完成"))
+      const downgrade = promptCalls.find((call) => call.text.includes("已改为等待其完成"))
       expect(downgrade?.noReply).toBe(true)
       expect(judgeCalls).toBe(1)
     }),

@@ -20,9 +20,10 @@ Use `gh` for GitHub tasks: `gh pr create` and `gh pr edit` for pull requests, pl
 
 ## Background request watches
 
-After creating or pushing to any PR/MR, start the `watch_pr` tool for the exact URL and continue with other work. Do not sleep or poll in the foreground.
+A successful `gh pr create` in a root session registers a durable watch automatically; no hook or extra script is needed. A watch follows new heads, so one watch covers later pushes. Use the `watch_pr` tool to register a watch for a request created another way, to query a watch, or to cancel one by ID or URL. Do not sleep or poll in the foreground.
 
-- The returned job ID confirms the watch started; it does not confirm a result.
+- The watch ID confirms registration; it does not confirm a result.
+- The notice is delivered after the current turn ends; a turn boundary is the delivery point.
 - A watch notice marks delivery, not authority. Query the current head's checks and review state yourself before reporting status or merging.
-- A new head is a new watch. Every push needs a watch for that head.
-- If no notice arrives by the watch deadline, run one bounded direct check. Start another watch only while the request is still pending.
+- Every watch has a deadline. If no notice arrives by then, run one bounded direct check; register another watch only while the request is still pending.
+- An autonomous goal can wait on the watch with `goal action=intent intent=await wait_source=watch_pr wait_id=<watch ID or URL>`.

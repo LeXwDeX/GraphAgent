@@ -66,14 +66,14 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 // configure-hooks skill; platform-neutral on purpose.
 const BACKGROUND_WAITS = [
   "### Background waits",
-  "For GitHub or GitLab PR/MR checks, start the watch_pr tool for the exact URL and continue other work.",
+  "For GitHub or GitLab PR/MR checks, a PR created with `gh pr create` is watched automatically; the notice arrives after the current turn ends. Use the watch_pr tool to register, query, or cancel a watch by hand.",
   "For other long external results, use an asyncRewake watcher from the configure-hooks skill instead of sleeping or polling in the foreground.",
   "A listed hook is not a running watch: rely on a callback only after confirming a watch started for the exact target and head.",
   "A callback is delivery, not evidence; query the current head's checks before reporting or merging.",
 ].join("\n")
 
 const BACKGROUND_WAITS_HINT =
-  "For GitHub or GitLab PR/MR waits, start the watch_pr tool for the exact URL. For other long external waits (CI, reviews, deploys, long builds), set up an asyncRewake watcher through the configure-hooks skill with the user's agreement. Confirm the watch started; a callback is delivery, not evidence, so query the current head before reporting or merging."
+  "For GitHub or GitLab PR/MR waits, a PR created with `gh pr create` is watched automatically and the notice arrives after the current turn ends; register, query, or cancel watches with the watch_pr tool. For other long external waits (CI, reviews, deploys, long builds), set up an asyncRewake watcher through the configure-hooks skill with the user's agreement. Confirm the watch started; a callback is delivery, not evidence, so query the current head before reporting or merging."
 
 const STOP_GUARD_POINTER =
   "For an end-of-turn check of a dirty worktree or unpushed commits, use the configure-hooks skill's stop-guard recipe."

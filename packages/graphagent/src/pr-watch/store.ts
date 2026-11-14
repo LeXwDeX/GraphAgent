@@ -32,6 +32,14 @@ export const idempotencyKey = (row: Row): string => `${row.id}:${row.outcome ?? 
 
 export const outcomeOf = (row: Row): Outcome | undefined => (isDeliverable(row.outcome) ? row.outcome : undefined)
 
+/**
+ * The terminal phase a delivered notice settles to. A merge is the request
+ * succeeding; a close without merge and failed checks are the watch reporting
+ * failure; an observed review change is a settled outcome.
+ */
+export const settledPhase = (outcome: Outcome): "succeeded" | "failed" =>
+  outcome === "failure" || outcome === "closed" ? "failed" : "succeeded"
+
 export const noticeOf = (row: Row): Notice | undefined => {
   const outcome = outcomeOf(row)
   if (!outcome) return undefined
@@ -122,15 +130,23 @@ export const rowOf = (db: Db, watchID: string): Effect.Effect<Row | undefined> =
     .pipe(Effect.orDie)
 
 /**
- * The delivery's compare-and-swap: marks one watch delivered. One write; false
- * when another delivery already marked it (or the row moved out of
- * `delivering`). It runs inside the transaction that commits the notice
- * message, so exactly one of two racing deliveries keeps its message.
+ * The delivery's compare-and-swap: marks one watch delivered and moves it to
+ * its terminal phase. One write; false when another delivery already marked it
+ * (or the row left `delivering`, for example by a cancellation). It runs inside
+ * the transaction that commits the notice message, so exactly one of two racing
+ * deliveries keeps its message, and a cancellation either wins before the
+ * notice or loses to it — never both.
  */
-export const markDelivered = (db: Db, watchID: string, key: string, now: number): Effect.Effect<boolean> =>
+export const markDelivered = (
+  db: Db,
+  watchID: string,
+  key: string,
+  now: number,
+  phase: "succeeded" | "failed",
+): Effect.Effect<boolean> =>
   db
     .update(PrWatchTable)
-    .set({ delivery: key, updated_at: now })
+    .set({ delivery: key, phase, updated_at: now })
     .where(and(eq(PrWatchTable.id, watchID), eq(PrWatchTable.phase, "delivering"), isNull(PrWatchTable.delivery)))
     .returning({ id: PrWatchTable.id })
     .get()

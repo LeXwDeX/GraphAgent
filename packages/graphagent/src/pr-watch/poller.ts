@@ -8,7 +8,7 @@ import { Database } from "@graphagent/core/database/database"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { isTerminalValue } from "@graphagent/core/lifecycle/vocabulary"
-import { and, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm"
 import { Cause, Clock, Context, Deferred, Duration, Effect, Fiber, Layer, Option, Scope } from "effect"
 import { ChildProcessSpawner } from "effect/process"
 import { randomUUID } from "node:crypto"
@@ -81,14 +81,55 @@ export interface RegisterResult {
   readonly created: boolean
 }
 
+/** One durable watch as the tool and the goal wait see it. */
+export interface WatchInfo {
+  readonly id: string
+  readonly url: string
+  readonly phase: string
+  readonly head: string | null
+  readonly outcome: string | null
+  readonly deadlineAt: number
+  readonly delivery: string | null
+}
+
+export interface QueryInput {
+  readonly sessionID: string
+  /** A watch id or the watched request URL. Absent lists the session's live watches. */
+  readonly ref?: string
+}
+
+const LIVE_PHASES = ["watching", "delivering"] as const
+
+const watchInfoOf = (row: typeof PrWatchTable.$inferSelect): WatchInfo => ({
+  id: row.id,
+  url: row.url,
+  phase: row.phase,
+  head: row.head,
+  outcome: row.outcome,
+  deadlineAt: row.deadline_at,
+  delivery: row.delivery,
+})
+
 export interface Interface {
   /**
    * Durably register a watch for one session+URL. Idempotent while a watch is
    * live; a terminal row for the same URL is replaced. Returns the watch id so
-   * the caller (the `watch_pr` tool rewrite and `gh pr create` auto-registration
-   * in PR4) can name it in a goal wait.
+   * the caller (the `watch_pr` tool and `gh pr create` auto-registration) can
+   * name it in a goal wait.
    */
   readonly register: (input: RegisterInput) => Effect.Effect<RegisterResult>
+  /**
+   * Looks one watch up by id or URL, or lists the session's live watches when
+   * `ref` is absent. The durable row is the authority; the caller decides from
+   * `phase` whether the watch can still wake anything.
+   */
+  readonly query: (input: QueryInput) => Effect.Effect<ReadonlyArray<WatchInfo>>
+  /**
+   * Cancels a live watch durably: a guarded write to `cancelled` plus the
+   * lifecycle edge. A terminal (or missing) watch is not cancellable and reads
+   * as undefined.
+   */
+  readonly cancel: (input: Required<QueryInput>) => Effect.Effect<WatchInfo | undefined>
   /** One scan pass over due rows. Exported for deterministic tests. */
   readonly pollOnce: () => Effect.Effect<number>
   /** One takeover pass for rows whose owner process is gone. Returns rows taken over. */
@@ -519,7 +560,62 @@ export const make = Effect.gen(function* () {
     return { id: winner.id, created: false } satisfies RegisterResult
   })
 
-  return Service.of({ register, pollOnce, recoverOnce, init })
+  const query = Effect.fn("PrWatchPoller.query")(function* (input: QueryInput) {
+    const rows = yield* Effect.suspend(() => {
+      if (input.ref !== undefined)
+        return db
+          .select()
+          .from(PrWatchTable)
+          .where(
+            and(
+              eq(PrWatchTable.session_id, input.sessionID),
+              or(eq(PrWatchTable.id, input.ref), eq(PrWatchTable.url, input.ref)),
+            ),
+          )
+          .limit(1)
+          .all()
+      return db
+        .select()
+        .from(PrWatchTable)
+        .where(and(eq(PrWatchTable.session_id, input.sessionID), inArray(PrWatchTable.phase, LIVE_PHASES)))
+        .orderBy(desc(PrWatchTable.created_at), desc(PrWatchTable.id))
+        .all()
+    }).pipe(Effect.orDie)
+    return rows.map(watchInfoOf)
+  })
+
+  const cancel = Effect.fn("PrWatchPoller.cancel")(function* (input: Required<QueryInput>) {
+    const row = yield* db
+      .select()
+      .from(PrWatchTable)
+      .where(
+        and(
+          eq(PrWatchTable.session_id, input.sessionID),
+          or(eq(PrWatchTable.id, input.ref), eq(PrWatchTable.url, input.ref)),
+        ),
+      )
+      .limit(1)
+      .get()
+      .pipe(Effect.orDie)
+    if (!row || isTerminalValue("pr_watch", row.phase)) return undefined
+    const now = yield* Clock.currentTimeMillis
+    // The phase guard is the CAS: a poller that observed an outcome first
+    // leaves a delivering row that this cancel still wins (the notice is
+    // never sent), and two cancels publish one edge.
+    const updated = yield* db
+      .update(PrWatchTable)
+      .set({ phase: "cancelled", next_poll_at: null, updated_at: now })
+      .where(and(eq(PrWatchTable.id, row.id), inArray(PrWatchTable.phase, LIVE_PHASES)))
+      .returning({ id: PrWatchTable.id })
+      .get()
+      .pipe(Effect.orDie)
+    forgetLive(row.id)
+    if (!updated) return undefined
+    yield* publish(row.id, row.phase, "cancelled", "cancelled", row.session_id)
+    return watchInfoOf({ ...row, phase: "cancelled", next_poll_at: null, updated_at: now })
+  })
+
+  return Service.of({ register, query, cancel, pollOnce, recoverOnce, init })
 })
 
 /** Bare service without process-start side effects; tests provide Database, Lifecycle and ForgeRunner. */

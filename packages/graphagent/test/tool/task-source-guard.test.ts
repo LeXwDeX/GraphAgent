@@ -9,8 +9,9 @@ import * as ts from "typescript"
 /**
  * Issue #1026 PR3b: the task tool and the DAG drive their child sessions
  * through child runs, not through the `promptOps` bag of a tool context. The
- * bag stays for the two consumers that prompt their own session (the shell
- * tool's background mode and `watch_pr`, #1071); nothing new may read it.
+ * bag stays for the shell tool's background mode, which prompts its own
+ * session; nothing new may read it. `watch_pr` left the list in #1071 PR4: it
+ * registers a durable watch instead of polling and prompting in-process.
  *
  * Source guards: they read the files, so a consumer that comes back fails
  * here whatever its tests say.
@@ -51,8 +52,8 @@ describe("promptOps source guard", () => {
   })
 
   // The consumers that remain: the plumbing that hands the bag to a tool (`SessionTools`, the loop, the request
-  // builder, the shell session) and the two tools that prompt their own session. A new file here needs a reason that is
-  // not "the task tool did it": drive a child session through `ctx.children`.
+  // builder, the shell session) and the shell tool that prompts its own session. A new file here needs a reason
+  // that is not "the task tool did it": drive a child session through `ctx.children`.
   const ALLOWED = new Set([
     "session/shell.ts",
     "session/tools.ts",
@@ -60,7 +61,6 @@ describe("promptOps source guard", () => {
     "session/turn/prepare.ts",
     "tool/pipeline.ts",
     "tool/shell.ts",
-    "tool/watch_pr.ts",
   ])
 
   test("no new consumer reads it", () => {

@@ -5,8 +5,8 @@ import { describe, expect, test } from "bun:test"
 import { classifyPoll, type Snapshot } from "@/pr-watch/forge"
 
 /**
- * #1071 PR2: the poller's classification keeps watching across a head change.
- * The one-shot tool still uses `classify`, which reports `superseded`.
+ * #1071: the poller's classification keeps watching across a head change. The
+ * retired one-shot watch treated a new head as `superseded` and terminal.
  */
 
 const snapshot = (input: Partial<Snapshot> & Pick<Snapshot, "head">): Snapshot => ({

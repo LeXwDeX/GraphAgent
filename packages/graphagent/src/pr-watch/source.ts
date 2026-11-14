@@ -5,6 +5,7 @@ import type { Database } from "@graphagent/core/database/database"
 import { Cause, Clock, Effect, Option, type Scope } from "effect"
 import { DagLocation } from "@/dag/location"
 import { InstanceRef } from "@/effect/instance-ref"
+import { Lifecycle } from "@/lifecycle/service"
 import { ChildRegistry } from "@/session/child/registry"
 import type { InboxSource, Interface as InboxInterface } from "@/session/inbox"
 import type { Interface as PromptInterface } from "@/session/prompt"
@@ -12,7 +13,7 @@ import { SessionID } from "@/session/schema"
 import { admitNowUnderFence } from "@/session/turn/admit"
 import type { AdmissionOptions, TurnOrigin } from "@/session/turns"
 import { EngineProcess } from "@/session/engine-process"
-import { renderNotice } from "./forge"
+import { renderNotice, type Notice } from "./forge"
 import { PrWatchStore as Store } from "./store"
 
 /**
@@ -21,8 +22,10 @@ import { PrWatchStore as Store } from "./store"
  *
  * The ledger is the `pr_watch` table. An observation moves its row to
  * `delivering` with the outcome; `delivery` stays empty until the notice
- * commits, and the mark is written inside the admission transaction. A row
- * whose mark is still empty is owed to the session and survives a restart.
+ * commits, and the mark — `delivery` plus the terminal phase — is written
+ * inside the admission transaction. A row whose mark is still empty is owed to
+ * the session and survives a restart; a marked row is settled and the resolver
+ * no longer reports it as live.
  *
  * Delivery is `turn_boundary`: a notice never enters a running turn. While the
  * session is busy the inbox's idle gate skips the claim and the row waits; the
@@ -72,6 +75,61 @@ const softly = (label: string, fields: Record<string, unknown>) =>
 /** A live entry means this process's poller may have a notice to deliver; a false positive only costs one claim. */
 const maybeDelivering = () => [...EngineProcess.prWatch.watches.values()].some((watch) => watch.phase === "delivering")
 
+/**
+ * Flips a goal waiting on this watch back to active before the notice turn.
+ * `evaluate: false`: the notice turn's own idle event drives the next goal
+ * evaluation, exactly like the retired in-tool watch did. A runtime without
+ * the goal loop (headless fixtures) simply skips it.
+ */
+const wakeGoal = (row: Store.Row, notice: Notice) =>
+  Effect.gen(function* () {
+    const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
+    const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
+    if (!loops) return
+    yield* loops.wake(
+      SessionID.make(row.session_id),
+      { source: "watch_pr", ids: [row.id, row.url] },
+      renderNotice(notice),
+      { evaluate: false },
+    )
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.interrupt
+        : Effect.logWarning("pr watch goal wake failed", {
+            watchID: row.id,
+            cause: Cause.pretty(cause),
+          }),
+    ),
+  )
+
+/**
+ * Publishes the terminal lifecycle edge after the delivery transaction
+ * committed. The durable row already carries the phase; the event is the
+ * transient notification, so a failure here loses no state.
+ */
+const publishSettled = (row: Store.Row, phase: "succeeded" | "failed") =>
+  Effect.gen(function* () {
+    const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
+    if (!lifecycle) return
+    yield* lifecycle.transition({
+      ref: { domain: "pr_watch", id: row.id },
+      expect: "delivering",
+      to: phase,
+      reason: row.outcome ?? "delivered",
+      sessionID: SessionID.make(row.session_id),
+    })
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.interrupt
+        : Effect.logWarning("pr watch lifecycle transition failed", {
+            watchID: row.id,
+            cause: Cause.pretty(cause),
+          }),
+    ),
+  )
+
 interface Ctx extends Deps {
   /** Canonical directory of the instance: what an owning session's directory must equal. */
   readonly here: string
@@ -94,8 +152,13 @@ const deliver = (ctx: Ctx, session: Store.SessionInfo, row: Store.Row, claimEpoc
     }
     const now = yield* Clock.currentTimeMillis
     const key = Store.idempotencyKey(row)
+    const phase = Store.settledPhase(notice.outcome)
     const text = renderNotice(notice)
     const sessionID = SessionID.make(row.session_id)
+    // Wake before the admission, like the retired in-tool watch: the notice
+    // turn's end-of-turn idle is what evaluates the goal. Waking afterwards
+    // would race a turn that can end before this fiber resumes.
+    yield* wakeGoal(row, notice)
     const input = {
       sessionID,
       ...(session.agent ? { agent: session.agent } : {}),
@@ -117,9 +180,10 @@ const deliver = (ctx: Ctx, session: Store.SessionInfo, row: Store.Row, claimEpoc
     }
     // The mark rides the transaction that commits the message: of two
     // deliveries racing for one row, the second finds it delivered, fails here
-    // and rolls its message back. A crash after the admission is safe for the
-    // same reason — the mark committed with the message.
-    const mark = Effect.suspend(() => Store.markDelivered(ctx.db, row.id, key, now)).pipe(
+    // and rolls its message back. The terminal phase commits with it, so a
+    // later resolver or restart reads a settled watch, not a delivering one.
+    // A crash after the admission is safe for the same reason.
+    const mark = Effect.suspend(() => Store.markDelivered(ctx.db, row.id, key, now, phase)).pipe(
       Effect.flatMap((won) => (won ? Effect.void : Effect.fail(new Error(`pr watch ${row.id} is already delivered`)))),
     )
     // The registering session is root-only (`watch_pr` is a ROOT_ONLY tool), so
@@ -141,8 +205,10 @@ const deliver = (ctx: Ctx, session: Store.SessionInfo, row: Store.Row, claimEpoc
     // message (started, joined, written) means the mark committed with it.
     if (fenced.tag === "admitted" && fenced.start.message !== undefined) {
       // The watch no longer owes anything: drop the live marker so the hint
-      // stops claiming it. The durable row keeps the phase and the mark.
+      // and the resolver stop treating it as live, then publish the settled
+      // edge the durable row already records.
       EngineProcess.prWatch.watches.delete(row.id)
+      yield* publishSettled(row, phase)
       return true
     }
     return false

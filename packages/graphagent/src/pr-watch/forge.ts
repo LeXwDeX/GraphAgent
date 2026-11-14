@@ -8,15 +8,14 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import type { ChildProcessSpawner as Spawner } from "effect/process/ChildProcessSpawner"
 
 /**
- * Forge access for PR/MR watches (#1071 PR2): URL parsing, bounded `gh`/`glab`
+ * Forge access for PR/MR watches (#1071): URL parsing, bounded `gh`/`glab`
  * reads, snapshot classification and notice rendering. Pure functions only —
- * the one-shot `watch_pr` job (tool/watch_pr.ts) and the process-level poller
- * (pr-watch/poller.ts) share them, so the two paths observe the same forge the
- * same way.
+ * the process-level poller (pr-watch/poller.ts) and the `watch_pr` tool's head
+ * check share them, so both observe the same forge the same way.
  */
 
 export type Provider = "github" | "gitlab"
-export type Outcome = "success" | "failure" | "merged" | "closed" | "review" | "superseded" | "deadline" | "unavailable"
+export type Outcome = "success" | "failure" | "merged" | "closed" | "review" | "deadline"
 
 export type Request = {
   provider: Provider
@@ -303,36 +302,18 @@ export function readSnapshot(runner: Runner, request: Request): Effect.Effect<Re
   return request.provider === "github" ? readGithub(runner, request) : readGitlab(runner, request)
 }
 
-/**
- * One-shot classification for the `watch_pr` job: a head change is terminal
- * (`superseded`) because the job has no durable baseline to update and a new
- * watch follows the new head.
- */
-export function classify(
-  baseline: Snapshot,
-  current: Snapshot,
-): Exclude<Outcome, "deadline" | "unavailable"> | undefined {
-  if (current.head !== baseline.head) return "superseded"
-  if (current.state === "merged") return "merged"
-  if (current.state === "closed") return "closed"
-  if (current.checks.failed > 0) return "failure"
-  if (current.checks.total > 0 && current.checks.pending === 0) return "success"
-  if (current.review !== baseline.review) return "review"
-  return undefined
-}
-
 /** The only baseline a poll decision reads: which commit and which review state the watch follows. */
 export type Baseline = Pick<Snapshot, "head" | "review">
 
 export type PollDecision =
-  | { readonly kind: "observe"; readonly outcome: Exclude<Outcome, "deadline" | "unavailable" | "superseded"> }
+  | { readonly kind: "observe"; readonly outcome: Exclude<Outcome, "deadline"> }
   | { readonly kind: "rebaseline"; readonly head: string; readonly review: string }
   | { readonly kind: "continue" }
 
 /**
- * Poller classification (#1071 PR2): unlike `classify`, a head change is not
- * terminal. The caller rebaselines the durable row onto the new head and keeps
- * watching, so a push to the PR does not silently orphan the watch.
+ * Poller classification (#1071): a head change is not terminal. The caller
+ * rebaselines the durable row onto the new head and keeps watching, so a push
+ * to the PR does not silently orphan the watch.
  *
  * Merge/close wins over a head change: a PR merged on top of new commits is
  * done, not merely rebaselined. A rebaseline deliberately reports no outcome
@@ -367,21 +348,11 @@ const OUTCOME_LABEL: Record<Outcome, string> = {
   merged: "merged",
   closed: "closed",
   review: "review state changed",
-  superseded: "head changed",
   deadline: "deadline reached; checks still pending",
-  unavailable: "forge unavailable",
 }
 
 function outcomeLabel(outcome: Outcome) {
   return OUTCOME_LABEL[outcome]
-}
-
-export function renderStopped(request: Request, reason: string) {
-  return [
-    `watch_pr stopped (${reason}) for ${request.url}`,
-    `inspect: ${inspectCommand(request)}`,
-    "Run one bounded check before reporting or merging.",
-  ].join("\n")
 }
 
 export function renderNotice(notice: Notice) {

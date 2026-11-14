@@ -14,6 +14,7 @@ import { SessionStatus } from "@/session/status"
 import { ExclusiveRegistry } from "@/session/engine-process"
 import { Database } from "@graphagent/core/database/database"
 import { GoalStateTable } from "@graphagent/core/goal/sql"
+import { PrWatchTable } from "@graphagent/core/lifecycle/pr-watch.sql"
 import { SessionID } from "@/session/schema"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -25,19 +26,46 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
 // resolve to a different instance, missing every published event.
 // Each test uses a unique SessionID so rows never collide across tests
 // (goal_state.session_id is the primary key).
-// #1067: the blocked-verdict downgrade consults the process-local background
-// registry through serviceOption at CALL time, so it must be merged into the
-// test context (provideMerge), not only fed into Goal's build context.
+// #1067/#1071: the blocked-verdict downgrade reads the durable `pr_watch`
+// table and consults the process-local background registry through
+// serviceOption at CALL time, so both must be merged into the test context
+// (provideMerge), not only fed into Goal's build context.
 const runningJobs: BackgroundJob.Info[] = []
 
 const testLayer = Goal.layer.pipe(
   Layer.provideMerge(Layer.mock(BackgroundJob.Service, { list: () => Effect.sync(() => [...runningJobs]) })),
   Layer.provide(SessionStatus.defaultLayer),
-  Layer.provide(Database.defaultLayer),
+  Layer.provideMerge(Database.defaultLayer),
   Layer.provideMerge(EventV2Bridge.defaultLayer),
 )
 
 const it = testEffect(testLayer)
+
+/** A live durable watch owned by `sessionID`; returns its id for the wait assertion. */
+const insertWatch = (sessionID: string, deadlineAt: number) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    const id = `watch_${Math.random().toString(36).slice(2)}`
+    yield* db
+      .insert(PrWatchTable)
+      .values({
+        id,
+        forge: "github",
+        host: "github.com",
+        url: "https://example.test/pr/9",
+        repo: "acme/widgets",
+        number: 9,
+        session_id: sessionID,
+        head: "abc",
+        phase: "watching",
+        deadline_at: deadlineAt,
+        created_at: Date.now(),
+        updated_at: Date.now(),
+      })
+      .run()
+      .pipe(Effect.orDie)
+    return id
+  })
 
 type CapturedEvent = {
   type: string
@@ -214,22 +242,13 @@ describe("Goal.updateAfterJudge — blocked branch", () => {
 })
 
 describe("Goal.updateAfterJudge — blocked with running work (#1067)", () => {
-  const watchJob = (sessionID: string, deadlineAt: number): BackgroundJob.Info => ({
-    id: "job_watch_blocked",
-    type: "watch_pr",
-    title: "watch https://example.test/pr/9",
-    status: "running",
-    started_at: Date.now(),
-    metadata: { sessionID: sessionID, url: "https://example.test/pr/9", deadlineAt },
-  })
-
-  it.live("downgrades to awaiting the session's running watch instead of pausing", () =>
+  it.live("downgrades to awaiting the session's live watch instead of pausing", () =>
     Effect.gen(function* () {
       const goal = yield* Goal.Service
       const sessionID = SessionID.descending()
       const state = yield* goal.set(sessionID, "merge the PR", 10)
       const deadlineAt = Date.now() + 90_000
-      runningJobs.push(watchJob(sessionID, deadlineAt))
+      const watchID = yield* insertWatch(sessionID, deadlineAt)
 
       const result = yield* goal.updateAfterJudge(sessionID, "blocked", "waiting on CI", false, {
         goalID: state.goal_id ?? "legacy",
@@ -243,13 +262,13 @@ describe("Goal.updateAfterJudge — blocked with running work (#1067)", () => {
         kind: "await",
         wait: {
           source: "watch_pr",
-          wait_id: "job_watch_blocked",
-          ref: { domain: "job", id: "job_watch_blocked" },
+          wait_id: watchID,
+          ref: { domain: "pr_watch", id: watchID },
         },
       })
       // The wait outlives the watch by the delivery margin.
       expect(result?.state.intent?.kind === "await" ? result.state.intent.wait.deadline : 0).toBe(deadlineAt + 60_000)
-      expect(result?.message).toContain("已改为等待该任务完成")
+      expect(result?.message).toContain("已改为等待其完成")
       expect((yield* goal.load(sessionID))?.status).toBe("waiting")
     }),
   )
@@ -276,7 +295,7 @@ describe("Goal.updateAfterJudge — blocked with running work (#1067)", () => {
       const sessionID = SessionID.descending()
       yield* goal.set(sessionID, "deploy production", 10)
       yield* goal.setIntent(sessionID, { kind: "blocked", reason: "missing production credentials" })
-      runningJobs.push(watchJob(sessionID, Date.now() + 90_000))
+      yield* insertWatch(sessionID, Date.now() + 90_000)
       const before = yield* goal.load(sessionID)
 
       const result = yield* goal.updateAfterJudge(sessionID, "blocked", "missing credentials", false, {

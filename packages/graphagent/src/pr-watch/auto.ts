@@ -1,0 +1,79 @@
+// SPDX-FileCopyrightText: 2026 LeXwDeX
+// SPDX-License-Identifier: Apache-2.0
+
+export * as PrWatchAuto from "./auto"
+
+import { Cause, Effect, Option } from "effect"
+import { PrWatchPoller } from "./poller"
+import { parseRequest } from "./forge"
+
+/**
+ * Auto-registration of PR watches (#1071 PR4).
+ *
+ * The retired design made users configure a PostToolUse hook that ran a
+ * separate `pr-watch` script after `gh pr create`. The tool pipeline now calls
+ * this built-in subscriber at its own PostToolUse seam, so the watch needs no
+ * user hook and no extra process. It is deliberately narrow: one tool id
+ * (`bash`), one successful command shape (`gh pr create`, exit 0), a URL in
+ * the command's own output (never a replayed command), and a root session —
+ * `watch_pr` is ROOT_ONLY, so a child session must not create a durable watch.
+ */
+
+/** The model-facing result fields the subscriber needs; no tool-layer types. */
+export interface ToolOutcome {
+  readonly toolID: string
+  readonly command: string | undefined
+  readonly exit: number | undefined
+  readonly output: string | undefined
+  readonly sessionID: string
+  /** A child session (`parentID` set) never auto-registers. */
+  readonly parentID: string | undefined
+}
+
+const GH_PR_CREATE = /\bgh\s+pr\s+create\b/
+// `gh pr create` prints the request URL; the output may also carry the shell
+// footer and banners, so every https token is tried and the first one that
+// parses as a supported GitHub/GitLab request wins.
+const URL_PATTERN = /https:\/\/[^\s"'<>]+/g
+
+/**
+ * The request a successful `gh pr create` announced, or undefined when this
+ * call is not one. Recognition reads the completed command and its exit code;
+ * the target comes only from the output.
+ */
+export function createdRequest(command: string | undefined, exit: number | undefined, output: string | undefined) {
+  if (command === undefined || exit !== 0 || output === undefined) return undefined
+  if (!GH_PR_CREATE.test(command)) return undefined
+  for (const match of output.matchAll(URL_PATTERN)) {
+    try {
+      return parseRequest(match[0])
+    } catch {
+      // Not a watchable request URL: keep looking for the real one.
+    }
+  }
+  return undefined
+}
+
+/**
+ * The built-in PostToolUse subscriber: registers the created request durably
+ * and returns. Registration failures are logged, never surfaced into the tool
+ * result that already succeeded.
+ */
+export const afterTool = Effect.fn("PrWatchAuto.afterTool")(function* (input: ToolOutcome) {
+  if (input.toolID !== "bash" || input.parentID !== undefined) return
+  const request = createdRequest(input.command, input.exit, input.output)
+  if (!request) return
+  const poller = Option.getOrUndefined(yield* Effect.serviceOption(PrWatchPoller.Service))
+  if (!poller) return
+  yield* poller.register({ sessionID: input.sessionID, request }).pipe(
+    Effect.catchCause((cause: Cause.Cause<never>) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.failCause(cause)
+        : Effect.logWarning("pr watch auto-registration failed", {
+            sessionID: input.sessionID,
+            url: request.url,
+            cause: Cause.pretty(cause),
+          }),
+    ),
+  )
+})
