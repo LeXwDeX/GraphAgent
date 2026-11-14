@@ -386,6 +386,12 @@ export const NodeCancelled = Event.define({
   schema: {
     ...Base,
     nodeID: NodeID,
+    /** Who cancelled the node: a replan fragment (the row leaves the current
+     * graph revision) or an agent control call (the row stays in the current
+     * revision and only its execution attempt ends). */
+    source: Schema.Literals(["replan", "control"]),
+    /** Optional audit text for a control cancellation. */
+    reason: Schema.optional(Schema.String),
   },
 })
 export type NodeCancelled = typeof NodeCancelled.Type

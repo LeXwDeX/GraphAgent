@@ -112,7 +112,7 @@ describe("CommandPlugin", () => {
       // Entry form only: routing keeps when to promote and how to start. YAML,
       // references and risk tiers live in the on-demand guides. The tight budget
       // keeps removed detail from creeping back into the always-on text.
-      expect(Buffer.byteLength(CommandPlugin.WorkflowContent)).toBeLessThan(2_700)
+      expect(Buffer.byteLength(CommandPlugin.WorkflowContent)).toBeLessThan(3_000)
       expect(CommandPlugin.WorkflowContent).toContain("including project source and tests")
       expect(CommandPlugin.WorkflowFactsContent).toContain("A small\ntask-local graph")
       expect(CommandPlugin.WorkflowContent).toContain("# Orchestration Router")
@@ -120,7 +120,18 @@ describe("CommandPlugin", () => {
       expect(CommandPlugin.WorkflowContent).toContain("smallest justified graph")
       expect(CommandPlugin.WorkflowContent).not.toMatch(/load (?:the )?[`"']?orchestration-router/i)
       expect(CommandPlugin.WorkflowContent).not.toContain("Do not discover, load, or apply an external Skill")
-      expect(CommandPlugin.WorkflowContent).toContain('guide(topic="blocks")')
+      // The guide action is gone: the always-on routing alone must carry the
+      // four action groups and the coordination rules.
+      expect(CommandPlugin.WorkflowContent).not.toContain('guide(topic="blocks")')
+      expect(CommandPlugin.WorkflowContent).toContain("`spec`")
+      expect(CommandPlugin.WorkflowContent).toContain("`run`")
+      expect(CommandPlugin.WorkflowContent).toContain("`inspect`")
+      expect(CommandPlugin.WorkflowContent).toContain("`control`")
+      expect(CommandPlugin.WorkflowContent).toContain("spec_path")
+      expect(CommandPlugin.WorkflowContent).toContain("checkpoints are gates")
+      expect(CommandPlugin.WorkflowContent).toContain("parks the workflow paused")
+      expect(CommandPlugin.WorkflowContent).toContain("one live DAG")
+      expect(CommandPlugin.WorkflowContent).toContain("`agent` tool")
       expect(CommandPlugin.WorkflowContent).not.toContain("# Orchestration Domains")
       expect(CommandPlugin.WorkflowContent).not.toContain("```yaml")
       expect(CommandPlugin.WorkflowContent).not.toContain("Verdict Disposal Contract")
@@ -136,10 +147,8 @@ describe("CommandPlugin", () => {
 
   it.effect("offers references after DAG selection without mandatory risk tiers", () =>
     Effect.sync(() => {
-      expect(CommandPlugin.WorkflowContent).toContain("After choosing a DAG")
-      expect(CommandPlugin.WorkflowContent).toContain('`workflow(action="list")`')
+      expect(CommandPlugin.WorkflowContent).toContain("`spec(list)`")
       expect(CommandPlugin.WorkflowContent).toContain("never guess a route name")
-      expect(CommandPlugin.WorkflowContent).toContain("needs no library search")
       ;[
         "product planning",
         "technical design",
@@ -179,10 +188,11 @@ describe("CommandPlugin", () => {
     Effect.sync(() => {
       expect(CommandPlugin.WorkflowFactsContent).toContain("write the graph to a")
       expect(CommandPlugin.WorkflowFactsContent).toContain("task-local file")
-      // The resident description keeps tool selection and the progressive
-      // guide index only; per-action field semantics live in the parameter
+      // The resident description carries the four-action route (the guide
+      // action is gone); per-action field semantics stay in the parameter
       // schema (change repair-workflow-authoring-validation).
-      expect(CommandPlugin.WorkflowContent).not.toContain("## Actions")
+      expect(CommandPlugin.WorkflowContent).toContain("## Actions")
+      expect(CommandPlugin.WorkflowContent).toContain("`spec`")
       expect(CommandPlugin.WorkflowContent).toContain("parameter schema")
       expect(CommandPlugin.WorkflowFactsContent).toContain('{ action: "read", spec_path: "<name-returned-by-list>" }')
       expect(CommandPlugin.WorkflowFactsContent).toContain("use only an exact returned name")

@@ -697,19 +697,46 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
-              "description": "Create a workflow",
               "enum": [
-                "start",
+                "spec",
               ],
               "type": "string",
             },
-            "spec_path": {
-              "description": "(start/extend/control replan/read/validate) An exact saved workflow name returned by workflow(action="list"), or a path to a YAML workflow spec. The \`builtin://<name>\` path marker list shows for builtin templates also resolves, by name. Graph content belongs in that file; relative paths resolve from the session directory, not a config.workspace declared inside that file",
+            "operation": {
+              "enum": [
+                "list",
+              ],
               "type": "string",
             },
           },
           "required": [
             "action",
+            "operation",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "spec",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "enum": [
+                "read",
+              ],
+              "type": "string",
+            },
+            "spec_path": {
+              "description": "Saved workflow name or .yaml/.yml path",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
             "spec_path",
           ],
           "type": "object",
@@ -717,6 +744,319 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
+              "enum": [
+                "spec",
+              ],
+              "type": "string",
+            },
+            "config": {
+              "properties": {
+                "blocks": {
+                  "items": {
+                    "properties": {
+                      "depends_on": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                      "fan_out": {
+                        "type": "string",
+                      },
+                      "id": {
+                        "type": "string",
+                      },
+                      "instruction": {
+                        "type": "string",
+                      },
+                      "kind": {
+                        "enum": [
+                          "explore",
+                          "plan",
+                          "prototype",
+                          "debug",
+                          "coding",
+                          "verify",
+                          "review",
+                          "synthesize",
+                        ],
+                        "type": "string",
+                      },
+                      "report_to_parent": {
+                        "type": "boolean",
+                      },
+                      "required": {
+                        "type": "boolean",
+                      },
+                      "worker_config": {
+                        "properties": {
+                          "timeout_ms": {
+                            "type": "number",
+                          },
+                        },
+                        "required": [
+                          "timeout_ms",
+                        ],
+                        "type": "object",
+                      },
+                      "worker_type": {
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "id",
+                      "kind",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                "delivery_node": {
+                  "type": "string",
+                },
+                "max_concurrency": {
+                  "type": "number",
+                },
+                "max_node_replan_attempts": {
+                  "type": "number",
+                },
+                "max_total_nodes": {
+                  "type": "number",
+                },
+                "name": {
+                  "type": "string",
+                },
+                "node_defaults": {
+                  "properties": {
+                    "report_to_parent": {
+                      "type": "boolean",
+                    },
+                    "required": {
+                      "type": "boolean",
+                    },
+                    "worker_config": {
+                      "properties": {
+                        "timeout_ms": {
+                          "type": "number",
+                        },
+                      },
+                      "type": "object",
+                    },
+                  },
+                  "type": "object",
+                },
+                "nodes": {
+                  "items": {
+                    "properties": {
+                      "cancel": {
+                        "type": "boolean",
+                      },
+                      "condition": {
+                        "type": "string",
+                      },
+                      "depends_on": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                      "fan_out": {
+                        "type": "string",
+                      },
+                      "id": {
+                        "type": "string",
+                      },
+                      "input_mapping": {
+                        "additionalProperties": {
+                          "type": "string",
+                        },
+                        "type": "object",
+                      },
+                      "isolation": {
+                        "enum": [
+                          "worktree",
+                        ],
+                        "type": "string",
+                      },
+                      "name": {
+                        "type": "string",
+                      },
+                      "output_schema": {
+                        "type": "object",
+                      },
+                      "prompt_template": {
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                          },
+                          "inline": {
+                            "type": "string",
+                          },
+                          "input": {
+                            "type": "object",
+                          },
+                        },
+                        "type": "object",
+                      },
+                      "report_to_parent": {
+                        "type": "boolean",
+                      },
+                      "required": {
+                        "type": "boolean",
+                      },
+                      "restart": {
+                        "type": "boolean",
+                      },
+                      "review": {
+                        "properties": {
+                          "implementation_node_id": {
+                            "type": "string",
+                          },
+                          "phase": {
+                            "enum": [
+                              "design",
+                              "diff",
+                            ],
+                            "type": "string",
+                          },
+                          "verification_node_id": {
+                            "type": "string",
+                          },
+                        },
+                        "required": [
+                          "phase",
+                        ],
+                        "type": "object",
+                      },
+                      "skip_ok": {
+                        "type": "boolean",
+                      },
+                      "worker_config": {
+                        "properties": {
+                          "timeout_ms": {
+                            "type": "number",
+                          },
+                        },
+                        "type": "object",
+                      },
+                      "worker_type": {
+                        "type": "string",
+                      },
+                      "workspace": {
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "id",
+                      "name",
+                      "worker_type",
+                      "depends_on",
+                      "prompt_template",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                "objective": {
+                  "type": "string",
+                },
+                "workspace": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "name",
+              ],
+              "type": "object",
+            },
+            "operation": {
+              "description": "Write a start spec; creates no workflow",
+              "enum": [
+                "draft",
+              ],
+              "type": "string",
+            },
+            "title": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "config",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "spec",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "description": "Pre-flight without creating a workflow",
+              "enum": [
+                "validate",
+              ],
+              "type": "string",
+            },
+            "profile": {
+              "description": "portable checks; environment also resolves prompts, workers, models",
+              "enum": [
+                "portable",
+                "environment",
+              ],
+              "type": "string",
+            },
+            "spec_path": {
+              "description": "Saved workflow name or .yaml/.yml path",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "spec_path",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "run",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "enum": [
+                "start",
+              ],
+              "type": "string",
+            },
+            "spec_path": {
+              "description": "Saved workflow name or .yaml/.yml path",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "spec_path",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "run",
+              ],
+              "type": "string",
+            },
+            "operation": {
               "description": "Add nodes or blocks to a live workflow",
               "enum": [
                 "extend",
@@ -724,17 +1064,17 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "(start/extend/control replan/read/validate) An exact saved workflow name returned by workflow(action="list"), or a path to a YAML workflow spec. The \`builtin://<name>\` path marker list shows for builtin templates also resolves, by name. Graph content belongs in that file; relative paths resolve from the session directory, not a config.workspace declared inside that file",
+              "description": "Saved workflow name or .yaml/.yml path",
               "type": "string",
             },
             "workflow_id": {
-              "description": "Target workflow ID",
               "pattern": "^dag.*$",
               "type": "string",
             },
           },
           "required": [
             "action",
+            "operation",
             "workflow_id",
             "spec_path",
           ],
@@ -743,25 +1083,254 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
         {
           "properties": {
             "action": {
-              "description": "Control a live workflow",
+              "enum": [
+                "inspect",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "enum": [
+                "status",
+              ],
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "inspect",
+              ],
+              "type": "string",
+            },
+            "cursor": {
+              "description": "Page cursor from the previous page",
+              "type": "string",
+            },
+            "limit": {
+              "maximum": 12000,
+              "minimum": 1,
+              "type": "integer",
+            },
+            "node_id": {
+              "type": "string",
+            },
+            "operation": {
+              "description": "Node output; file-backed results return content_ref/path",
+              "enum": [
+                "result",
+              ],
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+            "node_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
               "enum": [
                 "control",
               ],
               "type": "string",
             },
             "operation": {
-              "description": "Apply a node fragment (add/cancel/restart/replace)",
+              "enum": [
+                "pause",
+              ],
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "control",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "enum": [
+                "resume",
+              ],
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "control",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "enum": [
+                "cancel",
+              ],
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "control",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "enum": [
+                "complete",
+              ],
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "control",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "enum": [
+                "step",
+              ],
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "control",
+              ],
+              "type": "string",
+            },
+            "node_id": {
+              "type": "string",
+            },
+            "operation": {
+              "description": "Cancel one non-terminal node; required nodes still fail the workflow",
+              "enum": [
+                "cancel_node",
+              ],
+              "type": "string",
+            },
+            "reason": {
+              "description": "Audit reason",
+              "type": "string",
+            },
+            "workflow_id": {
+              "pattern": "^dag.*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "action",
+            "operation",
+            "workflow_id",
+            "node_id",
+          ],
+          "type": "object",
+        },
+        {
+          "properties": {
+            "action": {
+              "enum": [
+                "control",
+              ],
+              "type": "string",
+            },
+            "operation": {
+              "description": "Apply a fragment: add/cancel/restart/replace nodes",
               "enum": [
                 "replan",
               ],
               "type": "string",
             },
             "spec_path": {
-              "description": "(start/extend/control replan/read/validate) An exact saved workflow name returned by workflow(action="list"), or a path to a YAML workflow spec. The \`builtin://<name>\` path marker list shows for builtin templates also resolves, by name. Graph content belongs in that file; relative paths resolve from the session directory, not a config.workspace declared inside that file",
+              "description": "Saved workflow name or .yaml/.yml path",
               "type": "string",
             },
             "workflow_id": {
-              "description": "Target workflow ID",
               "pattern": "^dag.*$",
               "type": "string",
             },
@@ -771,39 +1340,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
             "operation",
             "workflow_id",
             "spec_path",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "description": "Control a live workflow",
-              "enum": [
-                "control",
-              ],
-              "type": "string",
-            },
-            "operation": {
-              "description": "pause/resume/cancel/step/complete",
-              "enum": [
-                "pause",
-                "resume",
-                "cancel",
-                "step",
-                "complete",
-              ],
-              "type": "string",
-            },
-            "workflow_id": {
-              "description": "Target workflow ID",
-              "pattern": "^dag.*$",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "operation",
-            "workflow_id",
           ],
           "type": "object",
         },
@@ -816,13 +1352,13 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "expected_graph_rev": {
-              "description": "Exact graph_rev from workflow status; stale recovery requests are rejected",
+              "description": "Exact graph_rev from status",
               "maximum": 9007199254740991,
               "minimum": 0,
               "type": "integer",
             },
             "node_ids": {
-              "description": "Current node IDs to retry; their downstream closure is invalidated automatically",
+              "description": "Nodes to retry; downstream closure is invalidated",
               "items": {
                 "type": "string",
               },
@@ -830,14 +1366,14 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "array",
             },
             "operation": {
-              "description": "Retry selected nodes and affected descendants in the same workflow, retaining valid completed work and prior attempts",
+              "description": "Retry nodes and descendants, keeping valid completed work",
               "enum": [
                 "recover",
               ],
               "type": "string",
             },
             "resume_cancelled": {
-              "description": "Set true only for an explicitly requested recovery of a cancelled workflow",
+              "description": "Set true only to recover a cancelled workflow",
               "type": "boolean",
             },
             "workflow_id": {
@@ -863,24 +1399,22 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "node_id": {
-              "description": "Running node whose deadline to extend",
               "type": "string",
             },
             "operation": {
-              "description": "Grant a RUNNING node with a pending formal timeout escalation already delivered to the parent more execution time without a replan — no graph rewrite, no agent restart, no replan attempt consumed. Refused without a pending escalation (no_escalation) or before its wake is delivered (escalation_undelivered). An elapsed deadline alone does not authorize an extension; the cumulative escalation cap still applies.",
+              "description": "Extend one RUNNING node with a delivered timeout escalation",
               "enum": [
                 "extend_timeout",
               ],
               "type": "string",
             },
             "timeout_ms": {
-              "description": "Fresh execution timeout in milliseconds applied from now (same semantics as worker_config.timeout_ms); min 1s, max 24h per extension",
+              "description": "Fresh timeout from now, 1s-24h",
               "maximum": 86400000,
               "minimum": 1000,
               "type": "integer",
             },
             "workflow_id": {
-              "description": "Target workflow ID",
               "pattern": "^dag.*$",
               "type": "string",
             },
@@ -903,11 +1437,11 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "fingerprint": {
-              "description": "Expected target fingerprint value of the selected tree: the computed git value, or 'none' for a non-git directory. The runtime computes the fingerprint itself and rejects a mismatch",
+              "description": "Expected fingerprint: computed git value or 'none'",
               "type": "string",
             },
             "node_ids": {
-              "description": "Running target-sensitive nodes to restart. Omit to restart every running target-sensitive node",
+              "description": "Running target-sensitive nodes; omit for all",
               "items": {
                 "type": "string",
               },
@@ -915,23 +1449,21 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "array",
             },
             "operation": {
-              "description": "Change the workflow target (workspace and/or target fingerprint) and restart running target-sensitive attempts so their old evidence cannot reach the gate",
+              "description": "Change workspace/fingerprint and restart target-sensitive nodes",
               "enum": [
                 "retarget",
               ],
               "type": "string",
             },
             "reason": {
-              "description": "Short audit reason for the target change",
               "type": "string",
             },
             "workflow_id": {
-              "description": "Target workflow ID",
               "pattern": "^dag.*$",
               "type": "string",
             },
             "workspace": {
-              "description": "Absolute path to a linked worktree of the same project. Rebinds the workflow execution directory and recomputes the target fingerprint. Omit to keep the current workspace",
+              "description": "Linked worktree; omit to keep the current one",
               "type": "string",
             },
           },
@@ -942,510 +1474,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
           ],
           "type": "object",
         },
-        {
-          "properties": {
-            "action": {
-              "description": "Inspect durable workflow and node state",
-              "enum": [
-                "status",
-              ],
-              "type": "string",
-            },
-            "workflow_id": {
-              "description": "Target workflow ID",
-              "pattern": "^dag.*$",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "workflow_id",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "description": "Read inline durable node output in bounded pages. File-backed output instead returns content_ref, path, summary, and next_cursor: null; use the read tool on path to read the file",
-              "enum": [
-                "result",
-              ],
-              "type": "string",
-            },
-            "cursor": {
-              "description": "Opaque continuation cursor returned by the previous inline-output page; ignored for file references",
-              "type": "string",
-            },
-            "limit": {
-              "description": "Maximum inline-output page characters; defaults to 8000, max 12000. Ignored for file references",
-              "maximum": 12000,
-              "minimum": 1,
-              "type": "integer",
-            },
-            "node_id": {
-              "description": "Target durable node ID",
-              "type": "string",
-            },
-            "workflow_id": {
-              "description": "Target workflow ID",
-              "pattern": "^dag.*$",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "workflow_id",
-            "node_id",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "description": "Show saved workflow names, objectives, sizes, scopes, and validation status",
-              "enum": [
-                "list",
-              ],
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "description": "Inspect one saved spec before retargeting it",
-              "enum": [
-                "read",
-              ],
-              "type": "string",
-            },
-            "spec_path": {
-              "description": "(start/extend/control replan/read/validate) An exact saved workflow name returned by workflow(action="list"), or a path to a YAML workflow spec. The \`builtin://<name>\` path marker list shows for builtin templates also resolves, by name. Graph content belongs in that file; relative paths resolve from the session directory, not a config.workspace declared inside that file",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "spec_path",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "description": "Load detailed guidance only when needed",
-              "enum": [
-                "guide",
-              ],
-              "type": "string",
-            },
-            "topic": {
-              "description": "blocks: composable block schema; interface: low-level workflow API; policy: gates/admission/recovery; patterns: domain playbooks. Omit for the compact index",
-              "enum": [
-                "blocks",
-                "interface",
-                "policy",
-                "patterns",
-              ],
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "description": "Write a new YAML START spec under the project's workflow drafts area and return its spec_path. Requires workflow draft and edit permission; an existing filename is refused. No workflow is created. The file is a start document, not an extend or replan envelope (see the blocks guide). Field names are schema-checked",
-              "enum": [
-                "draft",
-              ],
-              "type": "string",
-            },
-            "config": {
-              "anyOf": [
-                {
-                  "properties": {
-                    "blocks": {
-                      "description": "Composable blocks compiled into nodes by the runtime",
-                      "items": {
-                        "properties": {
-                          "depends_on": {
-                            "description": "Block IDs this block waits for. Defaults to []",
-                            "items": {
-                              "type": "string",
-                            },
-                            "type": "array",
-                          },
-                          "fan_out": {
-                            "description": "(coding only) Plan block ID in depends_on whose work packages fan this writer out at runtime: two or more disjoint packages run as parallel writers joined by an implementation aggregator under this block's ID; fewer packages run this writer unchanged",
-                            "type": "string",
-                          },
-                          "id": {
-                            "description": "Unique block identifier; dependencies target block IDs",
-                            "type": "string",
-                          },
-                          "instruction": {
-                            "description": "Task-specific instruction added to the block's built-in execution contract",
-                            "type": "string",
-                          },
-                          "kind": {
-                            "description": "Composable workflow block; debug and review expand into evidence-gathering subgraphs",
-                            "enum": [
-                              "explore",
-                              "plan",
-                              "prototype",
-                              "debug",
-                              "coding",
-                              "verify",
-                              "review",
-                              "synthesize",
-                            ],
-                            "type": "string",
-                          },
-                          "report_to_parent": {
-                            "description": "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default; a reporting block with dependents becomes a blocking checkpoint, and the compiler gates its dependents on verdicts",
-                            "type": "boolean",
-                          },
-                          "required": {
-                            "description": "Whether failure is terminal. Decision and verification blocks default to true; volume blocks to false",
-                            "type": "boolean",
-                          },
-                          "worker_config": {
-                            "description": "{ timeout_ms } — bounds the node from permit acquisition to completion; time spent queued does not count, but a permit wait longer than timeout_ms fails the node without spawning. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Overrides config.node_defaults.worker_config",
-                            "properties": {
-                              "timeout_ms": {
-                                "type": "number",
-                              },
-                            },
-                            "required": [
-                              "timeout_ms",
-                            ],
-                            "type": "object",
-                          },
-                          "worker_type": {
-                            "description": "Optional configured agent override; defaults from the block kind",
-                            "type": "string",
-                          },
-                        },
-                        "required": [
-                          "id",
-                          "kind",
-                        ],
-                        "type": "object",
-                      },
-                      "type": "array",
-                    },
-                    "delivery_node": {
-                      "description": "Final node whose answer is copied once into the main conversation. A unique terminal synthesize block is selected automatically; otherwise delivery is a result index.",
-                      "type": "string",
-                    },
-                    "max_concurrency": {
-                      "description": "Max parallel nodes. Default: 5",
-                      "type": "number",
-                    },
-                    "max_node_replan_attempts": {
-                      "description": "Max replan restarts per node ID. Default: 5",
-                      "type": "number",
-                    },
-                    "max_total_nodes": {
-                      "description": "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
-                      "type": "number",
-                    },
-                    "name": {
-                      "description": "Workflow name",
-                      "type": "string",
-                    },
-                    "node_defaults": {
-                      "description": "Defaults inherited by nodes that omit required, worker_config, or report_to_parent",
-                      "properties": {
-                        "report_to_parent": {
-                          "type": "boolean",
-                        },
-                        "required": {
-                          "type": "boolean",
-                        },
-                        "worker_config": {
-                          "properties": {
-                            "timeout_ms": {
-                              "type": "number",
-                            },
-                          },
-                          "type": "object",
-                        },
-                      },
-                      "type": "object",
-                    },
-                    "objective": {
-                      "description": "Injected into every generated child prompt; required for blocks",
-                      "type": "string",
-                    },
-                    "workspace": {
-                      "description": "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
-                      "type": "string",
-                    },
-                  },
-                  "required": [
-                    "name",
-                    "objective",
-                    "blocks",
-                  ],
-                  "type": "object",
-                },
-                {
-                  "properties": {
-                    "delivery_node": {
-                      "description": "Final node whose answer is copied once into the main conversation. A unique terminal synthesize block is selected automatically; otherwise delivery is a result index.",
-                      "type": "string",
-                    },
-                    "max_concurrency": {
-                      "description": "Max parallel nodes. Default: 5",
-                      "type": "number",
-                    },
-                    "max_node_replan_attempts": {
-                      "description": "Max replan restarts per node ID. Default: 5",
-                      "type": "number",
-                    },
-                    "max_total_nodes": {
-                      "description": "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
-                      "type": "number",
-                    },
-                    "name": {
-                      "description": "Workflow name",
-                      "type": "string",
-                    },
-                    "node_defaults": {
-                      "description": "Defaults inherited by nodes that omit required, worker_config, or report_to_parent",
-                      "properties": {
-                        "report_to_parent": {
-                          "type": "boolean",
-                        },
-                        "required": {
-                          "type": "boolean",
-                        },
-                        "worker_config": {
-                          "properties": {
-                            "timeout_ms": {
-                              "type": "number",
-                            },
-                          },
-                          "type": "object",
-                        },
-                      },
-                      "type": "object",
-                    },
-                    "nodes": {
-                      "description": "Low-level node declarations",
-                      "items": {
-                        "properties": {
-                          "cancel": {
-                            "description": "(replan only) Cancel this node",
-                            "type": "boolean",
-                          },
-                          "condition": {
-                            "description": "One comparison on one direct dependency's output: "<dep>.output.<field> <op> <literal>" with ==, !=, <, <=, >, or >=; no && or ||. The node is skipped when the comparison is false",
-                            "type": "string",
-                          },
-                          "depends_on": {
-                            "description": "Node IDs this node waits for ([] for root)",
-                            "items": {
-                              "type": "string",
-                            },
-                            "type": "array",
-                          },
-                          "fan_out": {
-                            "description": "(implementation writers) Direct dependency whose output.packages [{ id, instruction, write_set }] fans this writer out when it becomes ready: two or more disjoint packages run as parallel writers <id>--<package-id> and this node becomes their implementation aggregator under the same id; fewer packages, or an unsafe shape, run this writer unchanged",
-                            "type": "string",
-                          },
-                          "id": {
-                            "description": "Unique node identifier, used in depends_on",
-                            "type": "string",
-                          },
-                          "input_mapping": {
-                            "additionalProperties": {
-                              "type": "string",
-                            },
-                            "description": "Optional variable-to-source map, e.g. { resultA: "node-a", count: "node-b.output.count" }. Omit to expose each direct dependency under its node ID",
-                            "type": "object",
-                          },
-                          "isolation": {
-                            "description": "Run this writer-capable node in a fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Review and verify workers cannot isolate.",
-                            "enum": [
-                              "worktree",
-                            ],
-                            "type": "string",
-                          },
-                          "name": {
-                            "description": "Human-readable node name",
-                            "type": "string",
-                          },
-                          "output_schema": {
-                            "description": "JSON Schema for the child's final JSON answer",
-                            "type": "object",
-                          },
-                          "prompt_template": {
-                            "anyOf": [
-                              {
-                                "properties": {
-                                  "inline": {
-                                    "description": "Inline prompt text; bind {{placeholders}} via input or input_mapping",
-                                    "type": "string",
-                                  },
-                                  "input": {
-                                    "type": "object",
-                                  },
-                                },
-                                "required": [
-                                  "inline",
-                                ],
-                                "type": "object",
-                              },
-                              {
-                                "properties": {
-                                  "id": {
-                                    "description": "Prompt asset id resolved from .agents/workflows/prompts (project, then global)",
-                                    "type": "string",
-                                  },
-                                  "input": {
-                                    "type": "object",
-                                  },
-                                },
-                                "required": [
-                                  "id",
-                                ],
-                                "type": "object",
-                              },
-                            ],
-                            "description": "Template: exactly one of { id: "..." } or { inline: "...", input: {...} }. Direct dependency outputs are available as {{node-id}} by default",
-                          },
-                          "report_to_parent": {
-                            "description": "If true and the node has dependents, it is a blocking reporting checkpoint: every direct dependent must gate on its output via condition, and the node must declare output_schema. Without dependents it is a reporting leaf (a progress wake). Inherits config.node_defaults.report_to_parent",
-                            "type": "boolean",
-                          },
-                          "required": {
-                            "description": "If true and this node fails, the workflow terminalizes as failed. Inherits config.node_defaults.required",
-                            "type": "boolean",
-                          },
-                          "restart": {
-                            "description": "(replan only) Re-spawn this running node with new prompt. Running nodes only — terminal (completed/failed/skipped) nodes are immutable; to retry a failed node, add a replacement node under a new id",
-                            "type": "boolean",
-                          },
-                          "review": {
-                            "description": "(deep review workers) design reviews pre-implementation artifacts; diff reviews require implementation_node_id, verification_node_id, and authoring-validated wiring: transitive review→verification→implementation dependencies, input_mapping for the diff artifact, fingerprint, and verification output, a PASS-gated condition, and a verdict+implementation_fingerprint output_schema; deep mode additionally requires the diff review to feed a required final gate conditioned on verdict ACCEPT. Violations are authoring errors in deep mode, warnings in standard mode.",
-                            "properties": {
-                              "implementation_node_id": {
-                                "type": "string",
-                              },
-                              "phase": {
-                                "enum": [
-                                  "design",
-                                  "diff",
-                                ],
-                                "type": "string",
-                              },
-                              "verification_node_id": {
-                                "type": "string",
-                              },
-                            },
-                            "required": [
-                              "phase",
-                            ],
-                            "type": "object",
-                          },
-                          "skip_ok": {
-                            "description": "If true, a required node skipped by its condition (or a cascade) does not fail the workflow. New required nodes default to false; explicitly mark intentional mutually-exclusive branches true",
-                            "type": "boolean",
-                          },
-                          "worker_config": {
-                            "description": "{ timeout_ms } — bounds the node from permit acquisition to completion; time spent queued does not count, but a permit wait longer than timeout_ms fails the node without spawning. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Inherits config.node_defaults.worker_config",
-                            "properties": {
-                              "timeout_ms": {
-                                "type": "number",
-                              },
-                            },
-                            "type": "object",
-                          },
-                          "worker_type": {
-                            "description": "Agent type (explore, build, general, plan, or custom)",
-                            "type": "string",
-                          },
-                          "workspace": {
-                            "description": "Absolute path to a linked worktree of the same project where this node runs. Overrides config.workspace. Omit to run in config.workspace or the session directory.",
-                            "type": "string",
-                          },
-                        },
-                        "required": [
-                          "id",
-                          "name",
-                          "worker_type",
-                          "depends_on",
-                          "prompt_template",
-                        ],
-                        "type": "object",
-                      },
-                      "type": "array",
-                    },
-                    "workspace": {
-                      "description": "Absolute path to a linked worktree of the same project where workflow child sessions run. Omit to keep the session directory behavior. A node workspace overrides this value.",
-                      "type": "string",
-                    },
-                  },
-                  "required": [
-                    "name",
-                    "nodes",
-                  ],
-                  "type": "object",
-                },
-              ],
-              "description": "Exactly one graph shape: { name, objective, blocks: [{ id, kind, depends_on?, instruction?, worker_type?, worker_config?, required?, report_to_parent? }], node_defaults?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } or the low-level { name, nodes: [...], node_defaults?, delivery_node?, max_concurrency?, max_node_replan_attempts?, max_total_nodes? } form. A block-level worker_config { timeout_ms } overrides node_defaults.worker_config for that block. delivery_node selects the final node copied to the parent. This is the start file's config envelope only; consult each nested field's schema",
-            },
-            "title": {
-              "description": "Optional workflow title",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "config",
-          ],
-          "type": "object",
-        },
-        {
-          "properties": {
-            "action": {
-              "description": "Pre-flight a custom spec without creating a workflow; returns diagnostics, never a workflow ID",
-              "enum": [
-                "validate",
-              ],
-              "type": "string",
-            },
-            "profile": {
-              "description": "portable: distributable-template checks; environment: additionally resolves prompts, workers, and models in this project. Defaults: builtin specs portable, project/global/path specs environment",
-              "enum": [
-                "portable",
-                "environment",
-              ],
-              "type": "string",
-            },
-            "spec_path": {
-              "description": "(start/extend/control replan/read/validate) An exact saved workflow name returned by workflow(action="list"), or a path to a YAML workflow spec. The \`builtin://<name>\` path marker list shows for builtin templates also resolves, by name. Graph content belongs in that file; relative paths resolve from the session directory, not a config.workspace declared inside that file",
-              "type": "string",
-            },
-          },
-          "required": [
-            "action",
-            "spec_path",
-          ],
-          "type": "object",
-        },
       ],
-      "description": "The workflow action and its action-owned fields",
     },
   },
   "required": [

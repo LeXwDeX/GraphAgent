@@ -42,6 +42,10 @@ function branchByAction(schema: JsonSchemaNode, action: string, field: string): 
   )
 }
 
+function branchByOperation(schema: JsonSchemaNode, operation: string): JsonSchemaNode[] {
+  return branches(schema).filter((branch) => branch.properties?.operation?.enum?.includes(operation))
+}
+
 describe("workflow tool schema contract", () => {
   test("serialized parameters root is a plain object for every provider transport", () => {
     for (const model of [openaiModel, azureModel, geminiModel, glmModel]) {
@@ -55,22 +59,29 @@ describe("workflow tool schema contract", () => {
 
   test("the union survives intact inside the params property", () => {
     const transformed = ToolJsonSchema.fromSchema(Parameters as never) as JsonSchemaNode
-    expect(branches(transformed)).toHaveLength(14)
+    expect(branches(transformed)).toHaveLength(18)
     expect(transformed.properties?.params).toBeDefined()
     expect(transformed.required).toEqual(["params"])
   })
 
-  test("each action branch keeps its own fields", () => {
+  test("each operation branch keeps its own fields", () => {
     const transformed = ToolJsonSchema.fromSchema(Parameters as never) as JsonSchemaNode
-    expect(branchByAction(transformed, "start", "spec_path")).toHaveLength(1)
-    expect(branchByAction(transformed, "result", "cursor")).toHaveLength(1)
-    const resultBranch = branches(transformed).find((branch) => branch.properties?.action?.enum?.includes("result"))!
-    expect(resultBranch.required).toEqual(expect.arrayContaining(["workflow_id", "node_id"]))
+    expect(branchByOperation(transformed, "start")).toHaveLength(1)
+    expect(branchByOperation(transformed, "start")[0].properties).toMatchObject({ action: { enum: ["run"] } })
+    expect(branchByOperation(transformed, "result")[0].properties).toMatchObject({ action: { enum: ["inspect"] } })
+    expect(branchByOperation(transformed, "result")[0].required).toEqual(
+      expect.arrayContaining(["workflow_id", "node_id"]),
+    )
+    expect(branchByOperation(transformed, "list")[0].properties).toMatchObject({ action: { enum: ["spec"] } })
+    expect(branchByOperation(transformed, "pause")[0].properties).toMatchObject({ action: { enum: ["control"] } })
+    // The action group alone is never sufficient: every branch carries a
+    // required operation discriminator.
+    for (const branch of branches(transformed)) expect(branch.required).toContain("operation")
   })
 
-  test("decoded shape is { params: { action, ...fields } }", () => {
-    const decoded = Schema.decodeUnknownSync(Parameters)({ params: { action: "list" } })
-    expect(decoded).toEqual({ params: { action: "list" } })
+  test("decoded shape is { params: { action, operation, ...fields } }", () => {
+    const decoded = Schema.decodeUnknownSync(Parameters)({ params: { action: "spec", operation: "list" } })
+    expect(decoded).toEqual({ params: { action: "spec", operation: "list" } })
   })
 
   test("recovery requires selected nodes and the observed graph revision", () => {

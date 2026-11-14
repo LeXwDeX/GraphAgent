@@ -198,7 +198,7 @@ describe("workflow tool status — current-revision filtering (Train A, A-p1 sta
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: { action: "status", workflow_id: Dag.ID.make("dag_rev_status") } },
+        { params: { action: "inspect", operation: "status", workflow_id: Dag.ID.make("dag_rev_status") } },
         toolContext(),
       )
       expect(result.output).toContain("current_a")

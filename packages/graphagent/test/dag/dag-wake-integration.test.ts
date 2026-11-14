@@ -2750,9 +2750,10 @@ describe("DagLoop atomic wake integration", () => {
           const second = yield* takeWithin(childPrompts, "second root node did not start")
           const roots = new Map([first, second].map((item) => [item.title, item]))
 
-          // NodeCancelled lands on failed + superseded + error_class=cancelled,
-          // then a real agent failure on node-b wakes the parent. The cancelled
-          // row must not be attributed as a failed agent node.
+          // NodeCancelled(source=control) lands on failed + error_class=cancelled
+          // but stays in the current revision, then a real agent failure on
+          // node-b wakes the parent. The cancelled row must not be attributed
+          // as a failed agent node.
           yield* dag.nodeCancelled(dagID, "node-a")
           yield* dag.nodeFailed(dagID, "node-b", "agent failed", "exec_failed")
           yield* Deferred.succeed(roots.get("node-a")!.release, "ignored")
@@ -2763,9 +2764,118 @@ describe("DagLoop atomic wake integration", () => {
           expect(wakeText).toContain("[DAG Workflow failed]")
           expect(wakeText).toContain('Failed nodes:\n- "node-b" (exec_failed): agent failed')
           expect(wakeText).not.toContain('- "node-a"')
-          expect((yield* store.getCurrentNodes(dagID)).map((node) => node.id)).not.toContain("node-a")
+          // A control cancellation keeps the row visible in the current
+          // revision; wake attribution filters it by error_class instead.
+          expect((yield* store.getCurrentNodes(dagID)).map((node) => node.id)).toContain("node-a")
           yield* Deferred.succeed(parent.release, "success")
         }),
+      ),
+    )
+  })
+
+  it("control-cancelling a required running node aborts its child, fails the workflow, and keeps it current", async () => {
+    await Effect.runPromise(
+      runWakeTest(({ dag, store, childPrompts, parentPrompts }) =>
+        Effect.gen(function* () {
+          const dagID = yield* dag.create({
+            projectID: "project-1",
+            sessionID: "ses_parent",
+            title: "Cancel required",
+            config: { name: "cancel-required", nodes: [node("node-a"), node("node-b", ["node-a"])] },
+          })
+          const first = yield* takeWithin(childPrompts, "root node did not start")
+          expect(first.title).toBe("node-a")
+
+          yield* dag.nodeCancelled(dagID, "node-a", "wrong route")
+
+          const row = yield* store.getNode(dagID, "node-a")
+          expect(row?.status).toBe("failed")
+          expect(row?.errorClass).toBe("cancelled")
+          expect(row?.errorReason).toBe("cancelled by agent: wrong route")
+          // A control cancellation keeps the row in the current revision.
+          expect(row?.superseded).toBe(false)
+          expect((yield* store.getCurrentNodes(dagID)).map((n) => n.id)).toContain("node-a")
+
+          // The dependent never spawns; the required cancellation terminalizes
+          // the workflow as failed.
+          const second = yield* Queue.take(childPrompts).pipe(Effect.timeoutOption("200 millis"))
+          expect(Option.isNone(second)).toBe(true)
+          const status = yield* pollWithTimeout(
+            store.getWorkflow(dagID).pipe(Effect.map((workflow) => (workflow?.status === "failed" ? true : undefined))),
+            "required control cancellation did not fail the workflow",
+          )
+          expect(status).toBe(true)
+
+          const parent = yield* takeWithin(parentPrompts, "workflow failure did not wake the parent")
+          expect(promptText(parent.input)).toContain("[DAG Workflow failed]")
+          // Releasing the aborted child late must not resurrect the row.
+          yield* Deferred.succeed(first.release, "late success")
+          expect((yield* store.getNode(dagID, "node-a"))?.status).toBe("failed")
+          yield* Deferred.succeed(parent.release, "success")
+        }),
+      ),
+    )
+  })
+
+  it("fails a restarted workflow whose required node was control-cancelled before the crash", async () => {
+    const cancelledConfig = JSON.stringify({
+      name: "restart-cancel-required",
+      nodes: [{ ...node("node-a"), report_to_parent: false }],
+    })
+    await Effect.runPromise(
+      runWakeTest(
+        ({ store }) =>
+          Effect.gen(function* () {
+            const status = yield* pollWithTimeout(
+              store
+                .getWorkflow("dag_restart_cancel")
+                .pipe(Effect.map((workflow) => (workflow?.status === "failed" ? true : undefined))),
+              "restart did not re-fail the workflow from the durable control-cancelled row",
+            )
+            expect(status).toBe(true)
+            const row = yield* store.getNode("dag_restart_cancel", "node-a")
+            expect(row?.status).toBe("failed")
+            expect(row?.errorClass).toBe("cancelled")
+            expect(row?.superseded).toBe(false)
+          }),
+        ({ database }) =>
+          Effect.gen(function* () {
+            yield* database.db
+              .insert(WorkflowTable)
+              .values({
+                id: "dag_restart_cancel",
+                project_id: "project-1" as never,
+                session_id: "ses_parent" as never,
+                title: "Restart cancel required",
+                status: "running",
+                config: cancelledConfig,
+                seq: 1,
+                wake_reported: false,
+                directory: process.cwd(),
+                target_fingerprint: { kind: "none" },
+              })
+              .run()
+              .pipe(Effect.orDie)
+            yield* database.db
+              .insert(WorkflowNodeTable)
+              .values({
+                id: "node-a",
+                workflow_id: "dag_restart_cancel",
+                name: "node-a",
+                worker_type: "build",
+                status: "failed",
+                required: true,
+                depends_on: [],
+                wake_eligible: false,
+                wake_reported: false,
+                error_reason: "cancelled by agent: wrong route",
+                error_class: "cancelled",
+                superseded: false,
+                seq: 2,
+              })
+              .run()
+              .pipe(Effect.orDie)
+          }),
       ),
     )
   })

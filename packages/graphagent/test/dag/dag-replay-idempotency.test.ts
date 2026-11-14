@@ -150,7 +150,7 @@ describe("DagProjector: replay idempotency", () => {
         yield* events.publish(DagEvent.NodeRegistered, { dagID, nodeID: "a" as never, name: "A", workerType: "build", dependsOn: [], required: true, timestamp: ts(1) })
         yield* events.publish(DagEvent.WorkflowStarted, { dagID, timestamp: ts(2) })
         yield* events.publish(DagEvent.NodeStarted, { dagID, nodeID: "a" as never, childSessionID: "ses_A" as never, timestamp: ts(3) })
-        yield* events.publish(DagEvent.NodeCancelled, { dagID, nodeID: "a" as never, timestamp: ts(4) })
+        yield* events.publish(DagEvent.NodeCancelled, { dagID, nodeID: "a" as never, source: "replan", timestamp: ts(4) })
         yield* events.publish(DagEvent.NodeStarted, { dagID, nodeID: "a" as never, childSessionID: "ses_B" as never, timestamp: ts(5) })
 
         const original = yield* snapshotState(dagID, ["a"])

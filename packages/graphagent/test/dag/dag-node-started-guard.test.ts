@@ -59,7 +59,7 @@ describe("DagProjector: NodeStarted status guard", () => {
         expect((yield* store.getNode(dagID, nodeID))?.status).toBe("running")
 
         // Concurrent replan(cancel) terminalizes the node (running → failed via NodeCancelled)
-        yield* events.publish(DagEvent.NodeCancelled, { dagID, nodeID, timestamp: ts(3) })
+        yield* events.publish(DagEvent.NodeCancelled, { dagID, nodeID, source: "replan", timestamp: ts(3) })
         expect((yield* store.getNode(dagID, nodeID))?.status).toBe("failed")
 
         // The stale/racing NodeStarted (spawn fiber resuming after cancel) MUST NOT resurrect it

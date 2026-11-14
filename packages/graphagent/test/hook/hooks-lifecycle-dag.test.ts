@@ -78,7 +78,7 @@ if(i.hook_event_name==="SubagentStop" && process.argv[2]==="global" && !i.stop_h
     )
     const childMatch = (hit: { body: unknown }) => JSON.stringify(hit.body).includes("Produce the report.")
     yield* llm.toolMatch((hit) => JSON.stringify(hit.body).includes("HOOK-LIFECYCLE-START"), "workflow", {
-      params: { action: "start", spec_path: spec },
+      params: { action: "run", operation: "start", spec_path: spec },
     })
     yield* llm.textMatch(childMatch, "FINAL_DAG_REPORT")
     const server = yield* opencode.host({

@@ -660,7 +660,7 @@ export interface Interface {
     reason: string,
     attempt?: NodeExecutionAttempt,
   ) => Effect.Effect<void, Error>
-  readonly nodeCancelled: (dagID: string, nodeID: string) => Effect.Effect<void, Error>
+  readonly nodeCancelled: (dagID: string, nodeID: string, reason?: string) => Effect.Effect<void, Error>
   readonly nodeRestarted: (dagID: string, nodeID: string, childSessionID: string) => Effect.Effect<void, Error>
   readonly nodeTimeoutEscalated: (
     dagID: string,
@@ -1362,6 +1362,7 @@ export const layer = Layer.effect(
           data: {
             dagID: dagID as ID,
             nodeID: id as never,
+            source: "replan",
             timestamp: yield* DateTime.now,
           },
         })
@@ -1679,7 +1680,7 @@ export const layer = Layer.effect(
             if (isNodeTerminalStatus(node.status as NodeStatus)) continue
             batch.push({
               definition: DagEvent.NodeCancelled,
-              data: { dagID: ID.make(dagID), nodeID: NodeID.make(id), timestamp },
+              data: { dagID: ID.make(dagID), nodeID: NodeID.make(id), source: "replan", timestamp },
             })
           }
           for (const node of added) {
@@ -2048,7 +2049,12 @@ export const layer = Layer.effect(
         timestamp: yield* DateTime.now,
       })
     })
-    const nodeCancelled = Effect.fn("Dag.nodeCancelled")(function* (lock: WorkflowLock, dagID: string, nodeID: string) {
+    const nodeCancelled = Effect.fn("Dag.nodeCancelled")(function* (
+      lock: WorkflowLock,
+      dagID: string,
+      nodeID: string,
+      reason?: string,
+    ) {
       // Cancellation is valid from any non-terminal status. NodeCancelled
       // projects to `failed`, a legal target from pending/queued/running, but
       // no single declared transition covers all three, so guard on terminality.
@@ -2061,6 +2067,8 @@ export const layer = Layer.effect(
       yield* events.publish(DagEvent.NodeCancelled, {
         dagID: dagID as ID,
         nodeID: nodeID as never,
+        source: "control",
+        ...(reason ? { reason } : {}),
         timestamp: yield* DateTime.now,
       })
     })
@@ -2319,8 +2327,8 @@ export const layer = Layer.effect(
         withWorkflowLock(dagID)((lock) =>
           withMailbox(dagID, undefined, nodeSkipped(lock, dagID, nodeID, reason, attempt)),
         ),
-      nodeCancelled: (dagID, nodeID) =>
-        withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, nodeCancelled(lock, dagID, nodeID))),
+      nodeCancelled: (dagID, nodeID, reason) =>
+        withWorkflowLock(dagID)((lock) => withMailbox(dagID, undefined, nodeCancelled(lock, dagID, nodeID, reason))),
       nodeRestarted: (dagID, nodeID, childSessionID) =>
         withWorkflowLock(dagID)((lock) =>
           withMailbox(dagID, undefined, nodeRestarted(lock, dagID, nodeID, childSessionID)),

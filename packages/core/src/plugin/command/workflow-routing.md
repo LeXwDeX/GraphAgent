@@ -30,18 +30,28 @@ active child's work, stop or isolate its writes.
 A read-only request keeps every selected child read-only. Preserve named roles,
 configured model constraints, scope limits, and prohibited actions in child prompts.
 
-## How to start
+## Actions
 
-Start from the smallest justified graph. Prefer `workflow(action="draft")` with
-a structured `config`; validate the returned `spec_path`, then start it. Draft
-writes only `title` and `config` and the start defaults to `mode: "standard"`;
-hand-write the start YAML for `deep`, whose top-level `mode: deep` and
-`admission` draft cannot carry. Draft's `config` already covers blocks/nodes
-bindings.
-After choosing a DAG, use `workflow(action="list")` to find a saved reference;
-never guess a route name. A task-local graph needs no library search.
+Graph content lives in a spec file; the parameter schema owns action fields.
 
-Load the guide for the decision at hand: `guide(topic="blocks")` for YAML and
-block contracts, `interface` for actions and low-level fields, `policy` for
-admission, verdicts and recovery, and `patterns` for cross-domain examples. The
-parameter schema owns action fields; validation is the file authority.
+- `spec` — list/read/draft/validate saved specs. Draft writes a start file and
+  returns its `spec_path`; validate pre-flights a spec without creating a workflow.
+- `run` — start a workflow from `spec_path`, or extend a live one.
+- `inspect` — status/result for durable state and paged node output.
+- `control` — pause/resume/step/cancel/complete/cancel_node/replan/recover/
+  extend_timeout/retarget a live workflow.
+
+Keep one objective on one live DAG. Start from the smallest justified graph:
+draft a structured `config`, validate the returned `spec_path`, then start it.
+Use `spec(list)` to find a saved reference; never guess a route name.
+
+## Coordination
+
+- Messaging and result delivery use the `agent` tool (`send`, `receive`,
+  `observe`); workflow has no send/receive/observe action.
+- Reporting checkpoints are gates: wait for the wake a reporting node produces
+  instead of polling `inspect(status)`, and answer the verdict before dependents
+  can proceed.
+- A rejected mutation parks the workflow paused. Correct the reported cause and
+  retry the rejected call; never restart or cancel the graph to escape a
+  rejection, and never claim work ran without evidence.

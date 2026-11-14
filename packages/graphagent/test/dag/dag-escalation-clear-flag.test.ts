@@ -152,7 +152,11 @@ describe("escalation_pending clears on terminal/cancel transitions (Q1)", () => 
 
           const row = yield* store.getNode(dagID, "a")
           expect(row?.status).toBe("failed")
-          expect(row?.errorReason).toBe("cancelled via replan")
+          expect(row?.errorReason).toBe("cancelled by agent")
+          expect(row?.errorClass).toBe("cancelled")
+          // A control cancellation ends the attempt but keeps the row in the
+          // current graph revision.
+          expect(row?.superseded).toBe(false)
           expect(row?.escalationPending).toBe(false)
         }),
       ),

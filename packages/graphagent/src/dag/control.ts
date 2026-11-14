@@ -115,6 +115,7 @@ export type ControlRejection = ControlNotFound | ControlConflict | ControlInvali
  */
 export type ControlRequest =
   | { readonly op: "pause" | "resume" | "step" | "cancel" | "complete" }
+  | { readonly op: "cancel_node"; readonly nodeID: string; readonly reason?: string }
   | { readonly op: "replan"; readonly prepared: PreparedReplan }
   | { readonly op: "extend"; readonly prepared: PreparedExtend }
   | {
@@ -148,6 +149,7 @@ export type ControlOutcome =
   | { readonly op: "step"; readonly workflowID: string; readonly result: DagSuccess<"step"> }
   | { readonly op: "cancel"; readonly workflowID: string }
   | { readonly op: "complete"; readonly workflowID: string }
+  | { readonly op: "cancel_node"; readonly workflowID: string; readonly nodeID: string }
   | {
       readonly op: "replan"
       readonly workflowID: string
@@ -506,6 +508,10 @@ const make = Effect.gen(function* () {
             yield* dag.complete(dagID)
             return { op: "complete", workflowID: dagID }
           }
+          case "cancel_node": {
+            yield* dag.nodeCancelled(dagID, request.nodeID, request.reason)
+            return { op: "cancel_node", workflowID: dagID, nodeID: request.nodeID }
+          }
           case "replan": {
             const result = yield* dag.replan(dagID, { nodes: request.prepared.nodes })
             const resume = yield* resumeAfterMutation(dagID, "replan")
@@ -537,6 +543,8 @@ const make = Effect.gen(function* () {
             })
             return { op: "retarget", workflowID: dagID, result }
           }
+          default:
+            return yield* Effect.die(new Error("unreachable control request"))
         }
       })
 

@@ -1031,7 +1031,8 @@ describe("DagLoop settled Stop notification", () => {
           )
           const cancelled = yield* store.getNode(dagID, "n1")
           expect(cancelled?.status).toBe("failed")
-          expect(cancelled?.superseded).toBe(true)
+          // A user control cancellation keeps the row in the current revision.
+          expect(cancelled?.superseded).toBe(false)
           expect(observed).toEqual(["SubagentStart"])
         }),
       ),

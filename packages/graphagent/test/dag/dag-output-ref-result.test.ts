@@ -215,7 +215,7 @@ describe("workflow tool result — file-ref view (Train B, B-p3)", () => {
               const info = yield* WorkflowTool
               const workflow = yield* info.init()
               const result = yield* Effect.exit(workflow.execute(
-                { params: { action: "result", workflow_id: Dag.ID.make("dag_output_ref"), node_id: Dag.NodeID.make("node_managed") } },
+                { params: { action: "inspect", operation: "result", workflow_id: Dag.ID.make("dag_output_ref"), node_id: Dag.NodeID.make("node_managed") } },
                 toolContext(),
               ))
               if (corrupt) {
@@ -244,7 +244,7 @@ describe("workflow tool result — file-ref view (Train B, B-p3)", () => {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: { action: "result", workflow_id: Dag.ID.make("dag_output_ref"), node_id: Dag.NodeID.make("node_ref") } },
+        { params: { action: "inspect", operation: "result", workflow_id: Dag.ID.make("dag_output_ref"), node_id: Dag.NodeID.make("node_ref") } },
         toolContext(),
       )
       const parsed = JSON.parse(result.output)
@@ -269,7 +269,7 @@ describe("workflow tool result — file-ref view (Train B, B-p3)", () => {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
       const result = yield* workflow.execute(
-        { params: { action: "result", workflow_id: Dag.ID.make("dag_output_ref"), node_id: Dag.NodeID.make("node_inline") } },
+        { params: { action: "inspect", operation: "result", workflow_id: Dag.ID.make("dag_output_ref"), node_id: Dag.NodeID.make("node_inline") } },
         toolContext(),
       )
       const parsed = JSON.parse(result.output)
