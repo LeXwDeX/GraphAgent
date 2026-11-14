@@ -23,8 +23,12 @@ import { EngineProcess } from "@/session/engine-process"
  * The process-level poller owns live watches and records the phase it is
  * driving in `EngineProcess.prWatch`; a read hits that live entry first and
  * falls back to the durable `pr_watch` row, the record a restarted process
- * resumes from. An unknown `phase` is not a lifecycle value and reads as none
- * instead of failing the read.
+ * resumes from. The live entry is a cache, not an authority: another process
+ * may have claimed the row and moved it (delivered, cancelled, expired) since
+ * this process observed it. A read therefore trusts the entry only while the
+ * durable row still names this process and carries the same phase; otherwise
+ * the entry is dropped and the row answers. An unknown `phase` is not a
+ * lifecycle value and reads as none instead of failing the read.
  *
  * Every row names its owning session, so the session row decides directory
  * ownership, the same rule the job resolver applies. A watch whose session is
@@ -56,20 +60,35 @@ export const layer = Layer.effectDiscard(
       read: (id) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
-          const live = EngineProcess.prWatch.watches.get(id)
-          if (live && isPrWatchPhase(live.phase)) {
-            if (!(yield* ownsSession(db, live.sessionID, instance.directory)))
-              return Option.none<LifecycleState<"pr_watch">>()
-            return Option.some(
-              stateOf({
-                ref: ref("pr_watch", id),
-                value: live.phase,
-                source: "live",
-                observedAt: live.observedAt,
-              }),
-            )
-          }
+          // The durable row is read even when a live entry exists: it is the
+          // authority the cache must reconcile with.
           const row = yield* db.select().from(PrWatchTable).where(eq(PrWatchTable.id, id)).get().pipe(Effect.orDie)
+          const live = EngineProcess.prWatch.watches.get(id)
+          if (live) {
+            // The marker is this process's poller's observation. Cross-process
+            // transitions (a claim by another process, a delivery, a cancel,
+            // an expiry) leave it stale, so it answers only while the row
+            // still names this process and the same known phase.
+            const consistent =
+              row !== undefined &&
+              isPrWatchPhase(live.phase) &&
+              row.phase === live.phase &&
+              row.process_id === EngineProcess.runner.id
+            if (!consistent) {
+              EngineProcess.prWatch.watches.delete(id)
+            } else if (yield* ownsSession(db, row.session_id, instance.directory)) {
+              return Option.some(
+                stateOf({
+                  ref: ref("pr_watch", id),
+                  value: live.phase,
+                  source: "live",
+                  observedAt: live.observedAt,
+                }),
+              )
+            } else {
+              return Option.none<LifecycleState<"pr_watch">>()
+            }
+          }
           if (!row || !isPrWatchPhase(row.phase)) return Option.none<LifecycleState<"pr_watch">>()
           if (!(yield* ownsSession(db, row.session_id, instance.directory)))
             return Option.none<LifecycleState<"pr_watch">>()

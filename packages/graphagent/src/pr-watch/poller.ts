@@ -41,9 +41,11 @@ import {
  * Claim protocol: a due row's `next_poll_at` is cleared to NULL and its
  * `process_id` set to this process's `pid:nonce` identity in one UPDATE ...
  * RETURNING. A crash mid-read leaves the row owned by a dead process with no
- * `next_poll_at`; the construction-time takeover pass (`recoverOnce`) hands
- * those rows to this process and reschedules them — unlike `RuntimeJobRecovery`
- * a leftover watch is resumed, never failed.
+ * `next_poll_at`; the takeover pass (`recoverOnce`) hands those rows to this
+ * process and reschedules them — unlike `RuntimeJobRecovery` a leftover watch
+ * is resumed, never failed. The pass runs at construction and at a bounded
+ * interval inside the loop, because the owner can die long after startup and
+ * its row would otherwise stay invisible to the due scan.
  *
  * Baseline rule (differs from the one-shot tool): a new head is not terminal.
  * `classifyPoll` rebaselines the row onto the new head and the watch keeps
@@ -52,14 +54,22 @@ import {
  * is the inbox source of PR3, not this layer.
  *
  * Deadline is checked before every forge read and also by the due scan, so an
- * overdue watch expires (`expired`, outcome `deadline`) without spawning
- * `gh`/`glab`.
+ * overdue watch never spawns `gh`/`glab`. It converges to `delivering` with
+ * outcome `deadline`, the same path an observation takes: the inbox source
+ * delivers the deadline notice and settles the row to `expired`. A deadline
+ * is a promise `watch_pr` makes to the session, not a silent terminal write.
  */
 
 /** The poll cadence after a successful read. The row stores the next absolute time. */
 export const POLL_INTERVAL_MS = 15_000
 /** How long the loop sleeps when no watch exists. A registration wakes it early. */
 const IDLE_SLEEP_MS = 60_000
+/**
+ * How often the running loop re-runs the takeover pass. A process that claims
+ * a row and then dies leaves `next_poll_at` NULL, which the due scan never
+ * selects; without a periodic pass the watch would stall until its deadline.
+ */
+export const RECOVER_INTERVAL_MS = 60_000
 /** Upper bound for one loop sleep, so a clock jump or a far deadline cannot park the loop. */
 const MAX_SLEEP_MS = 60_000
 const BATCH_LIMIT = 32
@@ -130,9 +140,16 @@ export interface Interface {
    * as undefined.
    */
   readonly cancel: (input: Required<QueryInput>) => Effect.Effect<WatchInfo | undefined>
+  /**
+   * Retires every live watch of a session (session deletion): one guarded
+   * write moves them to `cancelled` and drops their live markers, so the
+   * poller stops reading the forge and no notice stays owed to a session that
+   * no longer exists. Returns how many watches were retired.
+   */
+  readonly retireSession: (sessionID: string) => Effect.Effect<number>
   /** One scan pass over due rows. Exported for deterministic tests. */
   readonly pollOnce: () => Effect.Effect<number>
-  /** One takeover pass for rows whose owner process is gone. Returns rows taken over. */
+  /** One takeover pass for rows whose owner process is gone. Also runs periodically from the loop. */
   readonly recoverOnce: () => Effect.Effect<number>
   /** Re-arm the loop (idempotent; the startup layer forks it at construction). */
   readonly init: () => Effect.Effect<void>
@@ -230,14 +247,17 @@ export const make = Effect.gen(function* () {
     })
 
   /**
-   * Converge one watching row to `expired`. The deadline condition is the
-   * guard, so two processes racing the same row publish one transition.
+   * Converges one overdue watching row onto its deadline notice: the row moves
+   * to `delivering` with outcome `deadline` and the source delivers it, so the
+   * session receives the notice the watch promised and the goal gets its wake.
+   * The deadline condition is the guard, so two processes racing the same row
+   * publish one transition.
    */
-  const expire = Effect.fnUntraced(function* (id: string, sessionID: string) {
+  const deliverDeadline = Effect.fnUntraced(function* (id: string, sessionID: string) {
     const now = yield* Clock.currentTimeMillis
     const updated = yield* db
       .update(PrWatchTable)
-      .set({ phase: "expired", outcome: "deadline", next_poll_at: null, updated_at: now })
+      .set({ phase: "delivering", outcome: "deadline", next_poll_at: null, process_id: owner, updated_at: now })
       .where(
         and(
           eq(PrWatchTable.id, id),
@@ -248,12 +268,16 @@ export const make = Effect.gen(function* () {
       .returning({ id: PrWatchTable.id })
       .get()
       .pipe(Effect.orDie)
-    // Another process may have moved the row (expired it, or owns it now).
-    // Either way this process no longer speaks for it: drop the live entry so
-    // the resolver reads the durable truth.
-    forgetLive(id)
-    if (!updated) return false
-    yield* publish(id, "watching", "expired", "deadline", sessionID)
+    // Another process may have moved the row (observed an outcome, or owns it
+    // now). Either way this process no longer speaks for it: drop the live
+    // entry so the resolver reads the durable truth.
+    if (!updated) {
+      forgetLive(id)
+      return false
+    }
+    observeLive(id, sessionID, "delivering")
+    yield* publish(id, "watching", "delivering", "deadline", sessionID)
+    yield* nudgeDelivery(sessionID)
     return true
   })
 
@@ -281,11 +305,11 @@ export const make = Effect.gen(function* () {
 
   const pollOne = Effect.fnUntraced(function* (row: typeof PrWatchTable.$inferSelect) {
     const claimedAt = yield* Clock.currentTimeMillis
-    if (claimedAt >= row.deadline_at) return yield* expire(row.id, row.session_id)
+    if (claimedAt >= row.deadline_at) return yield* deliverDeadline(row.id, row.session_id)
 
     const read = yield* readSnapshot(forge.run, rowRequest(row)).pipe(Effect.timeoutOption(READ_TIMEOUT))
     const now = yield* Clock.currentTimeMillis
-    if (now >= row.deadline_at) return yield* expire(row.id, row.session_id)
+    if (now >= row.deadline_at) return yield* deliverDeadline(row.id, row.session_id)
     if (Option.isNone(read) || !read.value.ok) {
       // A forge read is retried until the deadline: one transient CLI failure
       // must not end a durable watch. The row keeps its baseline and stays
@@ -373,14 +397,14 @@ export const make = Effect.gen(function* () {
     for (const row of overdue) {
       // A failure legitimately stops the pass; a defect inside one row only
       // costs that row this tick, and the loop re-reads it next time.
-      const expired = yield* expire(row.id, row.session_id).pipe(
+      const delivered = yield* deliverDeadline(row.id, row.session_id).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.failCause(cause)
-            : Effect.logWarning("PrWatchPoller deadline convergence failed", { cause }).pipe(Effect.as(false)),
+            : Effect.logWarning("PrWatchPoller deadline delivery failed", { cause }).pipe(Effect.as(false)),
         ),
       )
-      if (expired) handled++
+      if (delivered) handled++
     }
 
     const due = yield* db
@@ -463,16 +487,25 @@ export const make = Effect.gen(function* () {
     )
 
   const loopEffect = Effect.gen(function* () {
+    let lastRecoverAt: number | undefined
     for (;;) {
       const gate = yield* Deferred.make<void>()
       wake = gate
       // The whole tick is guarded: a dead database or a bad row degrades to a
       // logged interval skip, never a dead loop. Scope disposal still unwinds.
       const wait = yield* Effect.gen(function* () {
-        yield* pollOnce()
         const now = yield* Clock.currentTimeMillis
+        // A row whose owner died between startup and now is invisible to the
+        // due scan (`next_poll_at` NULL); hand it over on a bounded interval
+        // so the watch resumes instead of stalling until its deadline.
+        if (lastRecoverAt === undefined || now - lastRecoverAt >= RECOVER_INTERVAL_MS) {
+          lastRecoverAt = now
+          yield* recoverOnce()
+        }
+        yield* pollOnce()
+        const after = yield* Clock.currentTimeMillis
         const due = yield* nextDueAt
-        return due === undefined ? IDLE_SLEEP_MS : Math.max(0, Math.min(due - now, MAX_SLEEP_MS))
+        return due === undefined ? IDLE_SLEEP_MS : Math.max(0, Math.min(due - after, MAX_SLEEP_MS))
       }).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
@@ -615,7 +648,40 @@ export const make = Effect.gen(function* () {
     return watchInfoOf({ ...row, phase: "cancelled", next_poll_at: null, updated_at: now })
   })
 
-  return Service.of({ register, query, cancel, pollOnce, recoverOnce, init })
+  const retireSession = Effect.fn("PrWatchPoller.retireSession")(function* (sessionID: string) {
+    const rows = yield* db
+      .select({ id: PrWatchTable.id, phase: PrWatchTable.phase })
+      .from(PrWatchTable)
+      .where(and(eq(PrWatchTable.session_id, sessionID), inArray(PrWatchTable.phase, LIVE_PHASES)))
+      .all()
+      .pipe(Effect.orDie)
+    if (rows.length === 0) return 0
+    const now = yield* Clock.currentTimeMillis
+    yield* db
+      .update(PrWatchTable)
+      .set({ phase: "cancelled", next_poll_at: null, updated_at: now })
+      .where(and(eq(PrWatchTable.session_id, sessionID), inArray(PrWatchTable.phase, LIVE_PHASES)))
+      .run()
+      .pipe(Effect.orDie)
+    for (const row of rows) {
+      forgetLive(row.id)
+      // The session is being deleted: publish the edge for observers, but a
+      // failed publish must not undo the durable retirement.
+      yield* publish(row.id, row.phase, "cancelled", "session deleted", sessionID).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("PrWatchPoller retirement transition failed", {
+                watchID: row.id,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      )
+    }
+    return rows.length
+  })
+
+  return Service.of({ register, query, cancel, retireSession, pollOnce, recoverOnce, init })
 })
 
 /** Bare service without process-start side effects; tests provide Database, Lifecycle and ForgeRunner. */

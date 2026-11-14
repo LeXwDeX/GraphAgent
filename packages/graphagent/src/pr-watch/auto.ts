@@ -30,11 +30,79 @@ export interface ToolOutcome {
   readonly parentID: string | undefined
 }
 
-const GH_PR_CREATE = /\bgh\s+pr\s+create\b/
 // `gh pr create` prints the request URL; the output may also carry the shell
 // footer and banners, so every https token is tried and the first one that
 // parses as a supported GitHub/GitLab request wins.
 const URL_PATTERN = /https:\/\/[^\s"'<>]+/g
+
+/**
+ * Splits a command line into the simple-command segments a shell would run,
+ * with quoting removed. Only the shape recognition needs: unquoted whitespace
+ * separates words, quotes group (and hide their content from the command
+ * position), and `&&`, `||`, `|`, `&`, `;` and newlines start a new segment.
+ * `undefined` for an unterminated quote: an ambiguous command never counts.
+ */
+function commandSegments(command: string): string[][] | undefined {
+  const segments: string[][] = []
+  let words: string[] = []
+  let word = ""
+  let quote: "'" | '"' | undefined
+  let started = false
+  const endWord = () => {
+    if (!started) return
+    words.push(word)
+    word = ""
+    started = false
+  }
+  const endSegment = () => {
+    endWord()
+    if (words.length > 0) segments.push(words)
+    words = []
+  }
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index]
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined
+      else if (char === "\\" && quote === '"' && index + 1 < command.length) word += command[++index]
+      else word += char
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      started = true
+      continue
+    }
+    if (char === "\\" && index + 1 < command.length) {
+      word += command[++index]
+      started = true
+      continue
+    }
+    if (char === "&" || char === "|" || char === ";" || char === "\n") {
+      endSegment()
+      continue
+    }
+    if (/\s/.test(char)) {
+      endWord()
+      continue
+    }
+    word += char
+    started = true
+  }
+  if (quote !== undefined) return undefined
+  endSegment()
+  return segments
+}
+
+/**
+ * True when one simple command of the line actually runs `gh pr create`. The
+ * command position is what counts: the same words inside a quoted argument
+ * (`printf ... 'gh pr create'`) are data, not a create.
+ */
+function runsPrCreate(command: string): boolean {
+  const segments = commandSegments(command)
+  if (!segments) return false
+  return segments.some((words) => words[0] === "gh" && words[1] === "pr" && words[2] === "create")
+}
 
 /**
  * The request a successful `gh pr create` announced, or undefined when this
@@ -43,7 +111,7 @@ const URL_PATTERN = /https:\/\/[^\s"'<>]+/g
  */
 export function createdRequest(command: string | undefined, exit: number | undefined, output: string | undefined) {
   if (command === undefined || exit !== 0 || output === undefined) return undefined
-  if (!GH_PR_CREATE.test(command)) return undefined
+  if (!runsPrCreate(command)) return undefined
   for (const match of output.matchAll(URL_PATTERN)) {
     try {
       return parseRequest(match[0])

@@ -173,8 +173,20 @@ describe("pr_watch lifecycle resolver", () => {
     Effect.gen(function* () {
       yield* insertSession("ses_watch_live", "/own")
       yield* insertSession("ses_watch_live_foreign", "/other")
-      yield* insertWatch({ id: "watch_live_owned", session_id: "ses_watch_live", phase: "watching" })
-      yield* insertWatch({ id: "watch_live_foreign", session_id: "ses_watch_live_foreign", phase: "watching" })
+      // The live marker is a cache of the durable row this process's poller
+      // drives: both name this process and the same phase.
+      yield* insertWatch({
+        id: "watch_live_owned",
+        session_id: "ses_watch_live",
+        phase: "delivering",
+        process_id: EngineProcess.runner.id,
+      })
+      yield* insertWatch({
+        id: "watch_live_foreign",
+        session_id: "ses_watch_live_foreign",
+        phase: "delivering",
+        process_id: EngineProcess.runner.id,
+      })
       EngineProcess.prWatch.watches.set("watch_live_owned", {
         phase: "delivering",
         sessionID: "ses_watch_live",
@@ -193,7 +205,7 @@ describe("pr_watch lifecycle resolver", () => {
               .get(ref("pr_watch", "watch_live_owned"))
               .pipe(Effect.provideService(InstanceRef, own)),
           )
-          // The live entry wins over the persisted `watching` row.
+          // The live entry answers with its observation time.
           expect(live).toMatchObject({
             value: "delivering",
             phase: "settling",
@@ -213,6 +225,71 @@ describe("pr_watch lifecycle resolver", () => {
           EngineProcess.prWatch.watches.delete("watch_live_owned")
           EngineProcess.prWatch.watches.delete("watch_live_foreign")
         }),
+      )
+    }),
+  )
+
+  it.live("drops a live phase the durable row no longer agrees with", () =>
+    Effect.gen(function* () {
+      yield* insertSession("ses_watch_stale", "/own")
+      // This process observed `watching`, then another process delivered the
+      // watch and settled the durable row.
+      yield* insertWatch({
+        id: "watch_stale_terminal",
+        session_id: "ses_watch_stale",
+        phase: "succeeded",
+        process_id: EngineProcess.runner.id,
+      })
+      EngineProcess.prWatch.watches.set("watch_stale_terminal", {
+        phase: "watching",
+        sessionID: "ses_watch_stale",
+        observedAt: 123,
+      })
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const lifecycle = yield* Lifecycle.Service
+          const observed = Option.getOrUndefined(
+            yield* lifecycle
+              .get(ref("pr_watch", "watch_stale_terminal"))
+              .pipe(Effect.provideService(InstanceRef, own)),
+          )
+          // The durable terminal value wins and the stale marker is evicted.
+          expect(observed).toMatchObject({ value: "succeeded", source: "persisted", terminal: true })
+          expect(EngineProcess.prWatch.watches.has("watch_stale_terminal")).toBe(false)
+        }),
+        Effect.sync(() => EngineProcess.prWatch.watches.delete("watch_stale_terminal")),
+      )
+    }),
+  )
+
+  it.live("drops a live phase another process now owns", () =>
+    Effect.gen(function* () {
+      yield* insertSession("ses_watch_other_owner", "/own")
+      // Another process claimed the row (cancel, delivery or a poll) while
+      // this process still holds its old observation.
+      yield* insertWatch({
+        id: "watch_other_owner",
+        session_id: "ses_watch_other_owner",
+        phase: "delivering",
+        process_id: "999999:another-process",
+      })
+      EngineProcess.prWatch.watches.set("watch_other_owner", {
+        phase: "delivering",
+        sessionID: "ses_watch_other_owner",
+        observedAt: 123,
+      })
+      yield* Effect.ensuring(
+        Effect.gen(function* () {
+          const lifecycle = yield* Lifecycle.Service
+          const observed = Option.getOrUndefined(
+            yield* lifecycle
+              .get(ref("pr_watch", "watch_other_owner"))
+              .pipe(Effect.provideService(InstanceRef, own)),
+          )
+          expect(observed).toMatchObject({ value: "delivering", source: "persisted", phase: "settling" })
+          expect(EngineProcess.prWatch.watches.has("watch_other_owner")).toBe(false)
+        }),
+        Effect.sync(() => EngineProcess.prWatch.watches.delete("watch_other_owner")),
       )
     }),
   )

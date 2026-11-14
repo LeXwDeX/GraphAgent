@@ -143,7 +143,11 @@ const recordingPrompts = (db: Db, options: { readonly barrier?: number; readonly
   })
 
 /** The source over the same database with a stub inbox that records registration and startup drains. */
-const harness = (directory: string, prompts: Pick<PromptInterface, "admit">) =>
+const harness = (
+  directory: string,
+  prompts: Pick<PromptInterface, "admit">,
+  goal?: PrWatchSource.Deps["goal"],
+) =>
   Effect.gen(function* () {
     const { db } = yield* Database.Service
     const scope = yield* Scope.Scope
@@ -162,6 +166,7 @@ const harness = (directory: string, prompts: Pick<PromptInterface, "admit">) =>
           }),
       },
       prompts,
+      ...(goal ? { goal } : {}),
       directory,
       scope,
     })
@@ -227,6 +232,32 @@ describe("pr_watch source", () => {
     }),
   )
 
+  it.effect("delivers a deadline notice and settles the watch as expired", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const sessionID = SessionID.make(unique("ses_prw_deadline"))
+      yield* seedSession(db, sessionID)
+      // The poller records an overdue watch as a deliverable outcome, not a
+      // silent terminal write.
+      yield* insertWatch(db, { id: "watch_deadline", session_id: sessionID, outcome: "deadline" })
+      const recording = yield* recordingPrompts(db)
+      const source = yield* harness(DIRECTORY, recording.prompts)
+
+      expect(yield* source.claim(sessionID)).toBe(true)
+      expect(recording.admitted).toHaveLength(1)
+      const part = recording.admitted[0].input.parts[0]
+      expect(part.type === "text" ? part.text : "").toContain(
+        "watch_pr deadline reached; checks still pending for https://github.com/acme/widgets/pull/42",
+      )
+      // The deadline notice settles the durable row; it is not left owed or
+      // reported as a successful watch.
+      expect((yield* rowOf(db, "watch_deadline"))).toMatchObject({
+        delivery: "watch_deadline:deadline:abc",
+        phase: "expired",
+      })
+    }),
+  )
+
   it.effect("publishes the terminal lifecycle edge and wakes only this watch's goal wait", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
@@ -234,7 +265,6 @@ describe("pr_watch source", () => {
       yield* seedSession(db, sessionID)
       yield* insertWatch(db, { id: "watch_settle", session_id: sessionID })
       const recording = yield* recordingPrompts(db)
-      const source = yield* harness(DIRECTORY, recording.prompts)
       const transitions: Array<Parameters<Lifecycle.Interface["transition"]>[0]> = []
       const wakes: Array<{ match: Parameters<GoalLoop.Interface["wake"]>[1]; evaluate?: boolean }> = []
       const lifecycle = Lifecycle.Service.of({
@@ -254,12 +284,12 @@ describe("pr_watch source", () => {
             return true
           }),
       })
+      // The wake port is captured at init/make, not looked up from the claim's
+      // context: the claim runs in the inbox's captured graph, which cannot
+      // contain GoalLoop (the inbox is GoalLoop's own dependency).
+      const source = yield* harness(DIRECTORY, recording.prompts, goalLoop)
 
-      expect(
-        yield* source
-          .claim(sessionID)
-          .pipe(Effect.provideService(Lifecycle.Service, lifecycle), Effect.provideService(GoalLoop.Service, goalLoop)),
-      ).toBe(true)
+      expect(yield* source.claim(sessionID).pipe(Effect.provideService(Lifecycle.Service, lifecycle))).toBe(true)
       expect(transitions).toEqual([
         {
           ref: { domain: "pr_watch", id: "watch_settle" },

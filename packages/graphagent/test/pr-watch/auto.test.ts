@@ -25,6 +25,7 @@ const poller = () => {
       }),
     query: () => Effect.succeed([]),
     cancel: () => Effect.succeed(undefined),
+    retireSession: () => Effect.succeed(0),
     pollOnce: () => Effect.succeed(0),
     recoverOnce: () => Effect.succeed(0),
     init: () => Effect.void,
@@ -48,6 +49,15 @@ describe("gh pr create recognition", () => {
     expect(createdRequest("gh pr create", 0, "https://example.com/not-a-request")).toBeUndefined()
     expect(createdRequest(undefined, 0, URL)).toBeUndefined()
     expect(createdRequest("gh pr create", undefined, URL)).toBeUndefined()
+  })
+
+  test("only recognises the command position, not quoted argument text", () => {
+    // The words are data for printf: the command that runs is printf, not gh.
+    expect(createdRequest(`printf '%s\\n' 'gh pr create' '${URL}'`, 0, `${URL}\n`)).toBeUndefined()
+    expect(createdRequest(`echo 'gh pr create ${URL}'`, 0, `${URL}\n`)).toBeUndefined()
+    expect(createdRequest(`bash -c 'gh pr create --fill'`, 0, `${URL}\n`)).toBeUndefined()
+    // An unterminated quote makes the command shape ambiguous.
+    expect(createdRequest(`gh pr create --title 'unterminated`, 0, `${URL}\n`)).toBeUndefined()
   })
 })
 

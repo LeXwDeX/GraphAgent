@@ -23,7 +23,7 @@ type Db = Database.Interface["db"]
 export type Row = typeof PrWatchTable.$inferSelect
 
 /** The forge outcomes a delivering row can carry; the poller writes only these. */
-const DELIVERABLE: ReadonlySet<string> = new Set(["success", "failure", "merged", "closed", "review"])
+const DELIVERABLE: ReadonlySet<string> = new Set(["success", "failure", "merged", "closed", "review", "deadline"])
 
 const isDeliverable = (value: string | null): value is Outcome => value !== null && DELIVERABLE.has(value)
 
@@ -35,10 +35,15 @@ export const outcomeOf = (row: Row): Outcome | undefined => (isDeliverable(row.o
 /**
  * The terminal phase a delivered notice settles to. A merge is the request
  * succeeding; a close without merge and failed checks are the watch reporting
- * failure; an observed review change is a settled outcome.
+ * failure; a deadline is the watch ending without an observation; an observed
+ * review change is a settled outcome.
  */
-export const settledPhase = (outcome: Outcome): "succeeded" | "failed" =>
-  outcome === "failure" || outcome === "closed" ? "failed" : "succeeded"
+export const settledPhase = (outcome: Outcome): "succeeded" | "failed" | "expired" =>
+  outcome === "failure" || outcome === "closed"
+    ? "failed"
+    : outcome === "deadline"
+      ? "expired"
+      : "succeeded"
 
 export const noticeOf = (row: Row): Notice | undefined => {
   const outcome = outcomeOf(row)
@@ -142,7 +147,7 @@ export const markDelivered = (
   watchID: string,
   key: string,
   now: number,
-  phase: "succeeded" | "failed",
+  phase: "succeeded" | "failed" | "expired",
 ): Effect.Effect<boolean> =>
   db
     .update(PrWatchTable)

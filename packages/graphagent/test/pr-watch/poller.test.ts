@@ -370,7 +370,7 @@ describe("pr_watch polling", () => {
     }),
   )
 
-  it.effect("converges an overdue watch to expired without reading the forge", () =>
+  it.effect("turns an overdue watch into a delivered deadline notice without reading the forge", () =>
     Effect.gen(function* () {
       const seen = yield* watchLifecycle()
       let reads = 0
@@ -386,18 +386,22 @@ describe("pr_watch polling", () => {
 
       expect(yield* poller.pollOnce()).toBe(1)
       expect(reads).toBe(0)
+      // The deadline is a notice, not a silent terminal write: the row takes
+      // the delivery path so the session hears that the watch ended.
       expect(yield* readRow("watch_overdue")).toMatchObject({
-        phase: "expired",
+        phase: "delivering",
         outcome: "deadline",
         next_poll_at: null,
       })
+      expect(EngineProcess.prWatch.watches.get("watch_overdue")).toMatchObject({ phase: "delivering" })
       yield* eventually(
         transitions(seen, "watch_overdue").pipe(Effect.map((list) => (list.length >= 1 ? list : undefined))),
-        "the expiry transition",
+        "the deadline delivery transition",
       )
       expect(yield* transitions(seen, "watch_overdue")).toMatchObject([
-        { from: "watching", to: "expired", phase: "failed", reason: "deadline" },
+        { from: "watching", to: "delivering", phase: "settling", reason: "deadline" },
       ])
+      EngineProcess.prWatch.watches.delete("watch_overdue")
     }),
   )
 
@@ -416,6 +420,60 @@ describe("pr_watch polling", () => {
         outcome: null,
       })
       EngineProcess.prWatch.watches.delete(id)
+    }),
+  )
+})
+
+describe("pr_watch session retirement", () => {
+  it.effect("retires every live watch of a deleted session and leaves the others alone", () =>
+    Effect.gen(function* () {
+      const seen = yield* watchLifecycle()
+      yield* insertWatch({
+        id: "watch_retire_watching",
+        session_id: "ses_gone",
+        process_id: PrWatchPoller.prWatchProcessID,
+      })
+      yield* insertWatch({
+        id: "watch_retire_delivering",
+        session_id: "ses_gone",
+        phase: "delivering",
+        outcome: "success",
+        process_id: PrWatchPoller.prWatchProcessID,
+      })
+      yield* insertWatch({ id: "watch_retire_done", session_id: "ses_gone", phase: "succeeded" })
+      yield* insertWatch({ id: "watch_retire_other", session_id: "ses_kept" })
+      EngineProcess.prWatch.watches.set("watch_retire_watching", {
+        phase: "watching",
+        sessionID: "ses_gone",
+        observedAt: 0,
+      })
+      EngineProcess.prWatch.watches.set("watch_retire_delivering", {
+        phase: "delivering",
+        sessionID: "ses_gone",
+        observedAt: 0,
+      })
+
+      const poller = yield* PrWatchPoller.Service
+      expect(yield* poller.retireSession("ses_gone")).toBe(2)
+      // Live watches stop polling and stop being owed to the session; a
+      // terminal row and another session's watch are untouched.
+      expect(yield* readRow("watch_retire_watching")).toMatchObject({ phase: "cancelled", next_poll_at: null })
+      expect(yield* readRow("watch_retire_delivering")).toMatchObject({ phase: "cancelled", next_poll_at: null })
+      expect(yield* readRow("watch_retire_done")).toMatchObject({ phase: "succeeded" })
+      expect(yield* readRow("watch_retire_other")).toMatchObject({ phase: "watching" })
+      expect(EngineProcess.prWatch.watches.has("watch_retire_watching")).toBe(false)
+      expect(EngineProcess.prWatch.watches.has("watch_retire_delivering")).toBe(false)
+      expect(yield* poller.retireSession("ses_gone")).toBe(0)
+
+      yield* eventually(
+        transitions(seen, "watch_retire_watching").pipe(
+          Effect.map((list) => (list.length >= 1 ? list : undefined)),
+        ),
+        "the retirement transition",
+      )
+      expect(yield* transitions(seen, "watch_retire_watching")).toMatchObject([
+        { from: "watching", to: "cancelled", reason: "session deleted" },
+      ])
     }),
   )
 })
@@ -447,6 +505,38 @@ describe("pr_watch poll loop", () => {
       )
       expect(observed).toMatchObject({ outcome: "success" })
       EngineProcess.prWatch.watches.delete(id)
+    }),
+  )
+
+  it.effect("periodically takes over a watch whose owner died after startup", () =>
+    Effect.gen(function* () {
+      const source = yield* ForgeScript
+      yield* source.use(sequenceRunner([{ code: 127, stdout: "", stderr: "not found" }]))
+      const poller = yield* PrWatchPoller.Service
+      yield* poller.init()
+      // Complete the first loop iteration so the periodic recovery interval
+      // starts from a known point.
+      const { id } = yield* poller.register({ sessionID: "ses_periodic", request })
+      yield* eventually(
+        readRow(id).pipe(Effect.map((row) => (row?.next_poll_at === 15_000 ? row : undefined))),
+        "the first loop poll",
+      )
+
+      // A row claimed by a process that died mid-poll: next_poll_at is NULL,
+      // so the due scan never selects it and only recovery can resume it.
+      yield* insertWatch({ id: "watch_orphaned", process_id: "proc_dead", next_poll_at: null })
+      yield* TestClock.adjust(Duration.millis(PrWatchPoller.RECOVER_INTERVAL_MS))
+
+      const taken = yield* eventually(
+        readRow("watch_orphaned").pipe(
+          Effect.map((row) => (row?.process_id === PrWatchPoller.prWatchProcessID ? row : undefined)),
+        ),
+        "the periodic takeover of the dead owner's watch",
+      )
+      expect(taken.phase).toBe("watching")
+      expect(taken.next_poll_at).not.toBeNull()
+      EngineProcess.prWatch.watches.delete(id)
+      EngineProcess.prWatch.watches.delete("watch_orphaned")
     }),
   )
 })

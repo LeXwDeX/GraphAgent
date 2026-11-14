@@ -381,6 +381,7 @@ const harness = (seed: ReadonlyArray<WatchInfo> = []) => {
       }),
     pollOnce: () => Effect.succeed(0),
     recoverOnce: () => Effect.succeed(0),
+    retireSession: () => Effect.succeed(0),
     init: () => Effect.void,
   }
   return { registered, cancelled, layer: Layer.succeed(PrWatchPoller.Service, service) }

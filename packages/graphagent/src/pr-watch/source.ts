@@ -5,6 +5,7 @@ import type { Database } from "@graphagent/core/database/database"
 import { Cause, Clock, Effect, Option, type Scope } from "effect"
 import { DagLocation } from "@/dag/location"
 import { InstanceRef } from "@/effect/instance-ref"
+import type { Interface as GoalLoopInterface } from "@/goal/loop"
 import { Lifecycle } from "@/lifecycle/service"
 import { ChildRegistry } from "@/session/child/registry"
 import type { InboxSource, Interface as InboxInterface } from "@/session/inbox"
@@ -20,12 +21,12 @@ import { PrWatchStore as Store } from "./store"
  * The `pr_watch` inbox source (#1071 PR3): delivery of the forge outcomes the
  * process-level poller records.
  *
- * The ledger is the `pr_watch` table. An observation moves its row to
- * `delivering` with the outcome; `delivery` stays empty until the notice
- * commits, and the mark — `delivery` plus the terminal phase — is written
- * inside the admission transaction. A row whose mark is still empty is owed to
- * the session and survives a restart; a marked row is settled and the resolver
- * no longer reports it as live.
+ * The ledger is the `pr_watch` table. An observation — or the watch's own
+ * deadline — moves its row to `delivering` with the outcome; `delivery` stays
+ * empty until the notice commits, and the mark — `delivery` plus the terminal
+ * phase — is written inside the admission transaction. A row whose mark is
+ * still empty is owed to the session and survives a restart; a marked row is
+ * settled and the resolver no longer reports it as live.
  *
  * Delivery is `turn_boundary`: a notice never enters a running turn. While the
  * session is busy the inbox's idle gate skips the claim and the row waits; the
@@ -46,6 +47,14 @@ export interface Deps {
   readonly inbox: Pick<InboxInterface, "register" | "drain">
   /** The admission port. */
   readonly prompts: Pick<PromptInterface, "admit">
+  /**
+   * The goal wake port, captured where the app layer provides it (init).
+   * It is deliberately not resolved from the claim's context: the inbox is a
+   * dependency of GoalLoop, so the service graph an inbox captures cannot
+   * contain GoalLoop.Service, and a claim-time lookup would silently skip the
+   * wake and leave the goal waiting until its deadline.
+   */
+  readonly goal?: Pick<GoalLoopInterface, "wake">
   /** Directory of the instance this source serves; only the sessions it owns are delivered. */
   readonly directory: string
   /** Owns the startup deliveries (one fiber per session with an owed notice). */
@@ -81,34 +90,33 @@ const maybeDelivering = () => [...EngineProcess.prWatch.watches.values()].some((
  * evaluation, exactly like the retired in-tool watch did. A runtime without
  * the goal loop (headless fixtures) simply skips it.
  */
-const wakeGoal = (row: Store.Row, notice: Notice) =>
-  Effect.gen(function* () {
-    const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
-    const loops = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
-    if (!loops) return
-    yield* loops.wake(
+const wakeGoal = (goal: Deps["goal"], row: Store.Row, notice: Notice) => {
+  if (!goal) return Effect.void
+  return goal
+    .wake(
       SessionID.make(row.session_id),
       { source: "watch_pr", ids: [row.id, row.url] },
       renderNotice(notice),
       { evaluate: false },
     )
-  }).pipe(
-    Effect.catchCause((cause) =>
-      Cause.hasInterrupts(cause)
-        ? Effect.interrupt
-        : Effect.logWarning("pr watch goal wake failed", {
-            watchID: row.id,
-            cause: Cause.pretty(cause),
-          }),
-    ),
-  )
+    .pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("pr watch goal wake failed", {
+              watchID: row.id,
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    )
+}
 
 /**
  * Publishes the terminal lifecycle edge after the delivery transaction
  * committed. The durable row already carries the phase; the event is the
  * transient notification, so a failure here loses no state.
  */
-const publishSettled = (row: Store.Row, phase: "succeeded" | "failed") =>
+const publishSettled = (row: Store.Row, phase: "succeeded" | "failed" | "expired") =>
   Effect.gen(function* () {
     const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(Lifecycle.Service))
     if (!lifecycle) return
@@ -158,7 +166,7 @@ const deliver = (ctx: Ctx, session: Store.SessionInfo, row: Store.Row, claimEpoc
     // Wake before the admission, like the retired in-tool watch: the notice
     // turn's end-of-turn idle is what evaluates the goal. Waking afterwards
     // would race a turn that can end before this fiber resumes.
-    yield* wakeGoal(row, notice)
+    yield* wakeGoal(ctx.goal, row, notice)
     const input = {
       sessionID,
       ...(session.agent ? { agent: session.agent } : {}),
@@ -306,10 +314,16 @@ export const init = Effect.fn("PrWatchSource.init")(function* (input: {
   const { SessionPrompt } = yield* Effect.promise(() => import("@/session/prompt"))
   const prompts = Option.getOrUndefined(yield* Effect.serviceOption(SessionPrompt.Service))
   if (!prompts) return
+  // Captured here, in the caller's (app layer) context, so a claim running in
+  // the inbox's captured graph still has the goal wake port. Bootstrap resolves
+  // GoalLoop in this same context before it initializes the inbox.
+  const { GoalLoop } = yield* Effect.promise(() => import("@/goal/loop"))
+  const goal = Option.getOrUndefined(yield* Effect.serviceOption(GoalLoop.Service))
   yield* make({
     db: input.database.db,
     inbox: input.inbox,
     prompts,
+    ...(goal ? { goal } : {}),
     directory: instance.directory,
     scope: input.scope,
   })

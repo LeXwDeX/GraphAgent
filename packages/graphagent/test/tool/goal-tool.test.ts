@@ -198,6 +198,7 @@ const pollerLayer = (watches: ReadonlyArray<PrWatchPoller.WatchInfo>) =>
       register: () => Effect.die(new Error("register is not used by this test")),
       query: () => Effect.succeed(watches),
       cancel: () => Effect.succeed(undefined),
+      retireSession: () => Effect.succeed(0),
       pollOnce: () => Effect.succeed(0),
       recoverOnce: () => Effect.succeed(0),
       init: () => Effect.void,
