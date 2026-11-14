@@ -13,7 +13,6 @@ import PROMPT_REVIEW from "./template/review.txt"
 import PROMPT_IMPORT_CLAUDE from "./template/import-claude.txt"
 import PROMPT_CREATE_HOOK from "./template/create-hook.txt"
 import { LegacyEvent } from "@graphagent/schema/legacy-event"
-import { CommandPlugin } from "@graphagent/core/plugin/command"
 
 type State = {
   commands: Record<string, Info>
@@ -72,7 +71,6 @@ export const Default = {
   GOAL: "goal",
   SUBGOAL: "subgoal",
   MEMORY: "memory",
-  DAG_AUTO: "dag-auto",
   IMPORT_CLAUDE: "import-claude",
   CREATE_HOOK: "create-hook",
 } as const
@@ -137,13 +135,6 @@ export const layer = Layer.effect(
         source: "command",
         template: "",
         hints: ["$ARGUMENTS"],
-      }
-      commands[Default.DAG_AUTO] = {
-        name: Default.DAG_AUTO,
-        description: CommandPlugin.DagAutoDescription,
-        source: "command",
-        template: CommandPlugin.DagAutoContent,
-        hints: hints(CommandPlugin.DagAutoContent),
       }
       commands[Default.IMPORT_CLAUDE] = {
         name: Default.IMPORT_CLAUDE,

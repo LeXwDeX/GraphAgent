@@ -105,7 +105,7 @@ Host details live only in the maintainer's global agent instructions and the unt
 - New workflow specs must not pin node models. Preserve historical persisted node models for compatibility. Resolution order is persisted node model → DAG tier → worker agent model → parent session model.
 - Model tiers come from `dag.model` in `.agents/settings.json` (project overrides the user-level `graphagent.json(c)`). Required nodes and `review` / `review-*` workers prefer `advanced`; other nodes prefer `standard`. A single configured tier serves both.
 - DAG execution policy in `graphagent.json` is global-layer only: `dag.mode`, `dag.concurrency`, `dag.max_total_nodes`, `dag.budget`, and `dag.safety` are stripped from project-level files with one warning per file and key per process. Keep this global-only rule when adding DAG policy keys; `dag.model` and `dag.thinking_depth` remain project-configurable.
-- Keep platform delivery (issues, PRs, merge, release) out of `/dag-*` commands; use SpecGit for delivery. Built-in commands register via `packages/core/src/plugin/command.ts` and `packages/graphagent/src/command/index.ts`; user commands shadow builtins by name.
+- Keep platform delivery (issues, PRs, merge, release) out of `/dag-*` commands; use SpecGit for delivery. Built-in commands register via `packages/graphagent/src/command/index.ts`; built-in skills register via `packages/graphagent/src/skill/builtin/index.ts`, and `/dag-auto` is a non-hidden skill promoted to a command. DAG authoring/policy guidance lives in the `dag-*` built-in skills, not in command templates; user commands and disk skills shadow builtins by name.
 
 ## Delivery (SpecGit 2)
 

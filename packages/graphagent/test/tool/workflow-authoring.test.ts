@@ -6,6 +6,13 @@ import { Result, Schema } from "effect"
 import { CommandPlugin } from "@graphagent/core/plugin/command"
 import { Parameters } from "../../src/tool/workflow"
 import { DagBlocks } from "../../src/dag/blocks"
+import { BUILTIN_SKILLS } from "../../src/skill/builtin"
+
+const skill = (name: string) => {
+  const item = BUILTIN_SKILLS.find((entry) => entry.name === name)
+  if (!item) throw new Error(`missing built-in skill ${name}`)
+  return item.content
+}
 
 // Regression fixtures for change repair-workflow-authoring-validation.
 //
@@ -290,17 +297,21 @@ describe("workflow tool authoring guidance (#775)", () => {
     expect(routing).toContain("spec_path")
     expect(routing).not.toContain('guide(topic="blocks")')
 
-    const interfaceGuide = CommandPlugin.WorkflowFactsContent
-    expect(interfaceGuide).toContain("The draft is a start document only")
-    expect(interfaceGuide).toContain("either `{ objective, blocks: [...] }` (block route)")
-    expect(interfaceGuide).toContain("or `{ nodes: [...] }` (low-level route)")
-    expect(interfaceGuide).toContain("`fragment`")
+    const auto = skill("dag-auto")
+    expect(auto).toContain('workflow({params:{action:"spec",operation:"draft",config}})')
+    expect(auto).toContain("spec(validate)")
+    expect(auto).toContain("run(start)")
 
-    const blocksGuide = CommandPlugin.WorkflowBlocksContent
+    const nodes = skill("dag-nodes")
+    expect(nodes).toContain("Every node receives its direct `depends_on` outputs")
+    expect(nodes).toContain("## Node Fields")
+
+    const blocks = skill("dag-blocks")
     // The extended start-envelope statement stays intact for the drift hints.
-    expect(blocksGuide).toContain("`objective` lives INSIDE `config`")
-    expect(blocksGuide).toContain("or `nodes` for the low-level route")
-    expect(blocksGuide).toContain("graph budgets")
-    expect(blocksGuide).toContain("never both")
+    expect(blocks).toContain("`objective` lives INSIDE `config`")
+    expect(blocks).toContain("`blocks` or `nodes`, never both")
+    expect(blocks).toContain("graph budgets")
+    expect(blocks).toContain("never both")
+    expect(blocks).toContain("`fragment`")
   })
 })

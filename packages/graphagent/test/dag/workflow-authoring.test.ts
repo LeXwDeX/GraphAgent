@@ -4,9 +4,9 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
-import { CommandPlugin } from "@graphagent/core/plugin/command"
 import { WorkflowAuthoring } from "../../src/dag/authoring"
 import { DagValidation } from "../../src/dag/validation"
+import { BUILTIN_SKILLS } from "../../src/skill/builtin"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(CrossSpawnSpawner.defaultLayer)
@@ -466,9 +466,11 @@ describe("WorkflowAuthoring action-specific recovery hints (#775)", () => {
     }),
   )
 
-  it.effect("keeps every block-guide YAML envelope executable, including added extend examples", () =>
+  it.effect("keeps every block-skill YAML envelope executable, including added extend examples", () =>
     Effect.gen(function* () {
-      const guide = CommandPlugin.WorkflowBlocksContent
+      const blocks = BUILTIN_SKILLS.find((skill) => skill.name === "dag-blocks")
+      if (!blocks) throw new Error("missing dag-blocks skill")
+      const guide = blocks.content
       const examples = (heading: string) => {
         const section = guide.slice(guide.indexOf(`### ${heading}`))
         const next = section.indexOf("\n### ", 1)

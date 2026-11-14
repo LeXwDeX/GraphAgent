@@ -5,6 +5,12 @@ import { CONFIG_BASENAME, PROJECT_DIR } from "@graphagent/core/brand"
 import customizeConfigContent from "./customize-graphagent.md" with { type: "text" }
 import configureHooksContent from "./configure-hooks.md" with { type: "text" }
 import gitWorkflowContent from "./git-workflow.md" with { type: "text" }
+import dagAutoContent from "./dag-auto.md" with { type: "text" }
+import dagBlocksContent from "./dag-blocks.md" with { type: "text" }
+import dagNodesContent from "./dag-nodes.md" with { type: "text" }
+import dagRecoveryContent from "./dag-recovery.md" with { type: "text" }
+import dagPatternsContent from "./dag-patterns.md" with { type: "text" }
+import dagPolicyContent from "./dag-policy.md" with { type: "text" }
 
 export interface BuiltinSkill {
   name: string
@@ -37,5 +43,45 @@ export const BUILTIN_SKILLS: readonly BuiltinSkill[] = [
     description:
       "Use when committing, pushing, creating a branch, or opening or updating a pull request. Covers inspecting changes, staging only intended files, commit message style, non-destructive git rules, and the gh PR workflow.",
     content: gitWorkflowContent,
+  },
+  {
+    name: "dag-auto",
+    description: "Assess useful DAG orchestration for a request and adapt the graph to its evidence and dependencies",
+    content: dagAutoContent,
+  },
+  {
+    name: "dag-blocks",
+    description:
+      "Use when authoring or repairing composable workflow block YAML. Covers start/extend/replan envelopes, block kinds and contracts, fan_out, and when to drop to low-level nodes.",
+    content: dagBlocksContent,
+    hidden: true,
+  },
+  {
+    name: "dag-nodes",
+    description:
+      "Use when authoring low-level workflow nodes or resolving saved workflows. Covers node fields, input mapping, prompt templates, budgets, node defaults, and single-workspace discipline.",
+    content: dagNodesContent,
+    hidden: true,
+  },
+  {
+    name: "dag-recovery",
+    description:
+      "Use when a workflow failed, stalled, timed out, needs replanning or recovery, or reports a verdict needing disposal. Covers failure triage, crash recovery, pause-first replan, checkpoint gating, and bounded repair.",
+    content: dagRecoveryContent,
+    hidden: true,
+  },
+  {
+    name: "dag-patterns",
+    description:
+      "Use when selecting a workflow shape or combining domain playbooks. Covers staged gates, parallel fan-out, adversarial review, diverge-converge, and cross-domain assurance slices.",
+    content: dagPatternsContent,
+    hidden: true,
+  },
+  {
+    name: "dag-policy",
+    description:
+      "Use for DAG execution policy: model tiers, depth choices, parent/child ownership, deep admission QA, role resolution, review lifecycle, and business-verdict gates.",
+    content: dagPolicyContent,
+    hidden: true,
   },
 ]

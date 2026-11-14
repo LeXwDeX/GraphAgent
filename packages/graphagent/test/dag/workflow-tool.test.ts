@@ -1186,8 +1186,9 @@ describe("workflow tool execution", () => {
     Effect.gen(function* () {
       const info = yield* WorkflowTool
       const workflow = yield* info.init()
-      // The guide action is gone and the dag-* skills arrive in a later
-      // change: the always-on description alone must carry the minimum route.
+      // The guide action is gone and the dag-* skills are on-demand (a skill
+      // permission may deny them): the always-on description alone must carry
+      // the minimum route.
       expect(workflow.description).toContain("`spec`")
       expect(workflow.description).toContain("`run`")
       expect(workflow.description).toContain("`inspect`")
