@@ -982,11 +982,14 @@ export const layer = Layer.effect(
 
       // Roll back the created worktree (directory and branch) when the creation
       // batch fails before committing. The whole create sequence is published in
-      // ONE durable transaction, so a failure of any projector/handler leaves
-      // zero events: there can be no durable WorkflowCreated row pointing at a
-      // removed directory. A crash between the transaction commit and this
-      // effect returning is covered by the orphan-pending sweep (event log has
-      // all three events) instead.
+      // ONE durable transaction, so a projector/handler failure leaves zero
+      // events. But `publishMany` masks interruption only around the commit +
+      // durable wake: an interrupt delivered during the NOTIFY phase (or between
+      // the commit returning and this effect returning) surfaces as a failed
+      // exit even though the batch is already durable, and that WorkflowCreated
+      // row references this directory. So the rollback must first prove the
+      // durable workflow is absent; a committed workflow keeps its directory and
+      // is left to the orphan-pending sweep (event log has all three events).
       const removeWorkflowWorktree = () =>
         workflowWorktree && worktreeSvc
           ? inOwnerInstance(
@@ -994,6 +997,15 @@ export const layer = Layer.effect(
               worktreeSvc.remove({ directory: workflowWorktree.directory, keepBranch: false }),
             ).pipe(Effect.ignore)
           : Effect.void
+      // Safe direction: an unreadable store keeps the directory. A leaked
+      // worktree is recoverable; deleting one that a durable workflow references
+      // is not.
+      const rollbackWorkflowWorktree = Effect.gen(function* () {
+        if (!workflowWorktree) return
+        const workflow = yield* store.getWorkflow(dagID)
+        if (workflow) return
+        yield* removeWorkflowWorktree()
+      })
       return yield* Effect.gen(function* () {
         const ts = yield* DateTime.now
         const startTs = yield* DateTime.now
@@ -1043,9 +1055,12 @@ export const layer = Layer.effect(
         return dagID
       }).pipe(
         // onExit (not onError): an interruption before the uninterruptible
-        // commit must also remove the worktree; after a successful commit the
-        // exit is success and the directory stays.
-        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Effect.uninterruptible(removeWorkflowWorktree()))),
+        // commit must also remove the worktree; a failure after the commit
+        // (notify-phase interrupt) keeps it because the durable check in
+        // rollbackWorkflowWorktree sees the committed workflow.
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit) ? Effect.void : Effect.uninterruptible(rollbackWorkflowWorktree),
+        ),
       )
     })
 

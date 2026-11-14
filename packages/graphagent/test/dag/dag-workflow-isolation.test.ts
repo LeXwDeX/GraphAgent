@@ -9,7 +9,7 @@
 // explicit for readability.
 import { afterEach, describe, expect, it } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Cause, Effect, Layer } from "effect"
@@ -68,7 +68,30 @@ interface WorktreeProbe {
   failCreate: boolean
 }
 
-function baseLayer(probe: WorktreeProbe, bridge?: Layer.Layer<EventV2Bridge.Service>) {
+// Bridges the real EventV2 batch publish (so the creation sequence durably
+// commits and projects) and then interrupts before returning: the exact
+// commit-succeeded/notify-phase-interrupted window Dag.create must survive.
+function interruptAfterPublish(events: Layer.Layer<EventV2.Service>): Layer.Layer<EventV2Bridge.Service> {
+  return Layer.effect(
+    EventV2Bridge.Service,
+    Effect.gen(function* () {
+      const inner = yield* EventV2.Service
+      return EventV2Bridge.Service.of({
+        ...inner,
+        publishMany: (entries, options) =>
+          Effect.gen(function* () {
+            yield* inner.publishMany(entries, options)
+            return yield* Effect.interrupt
+          }),
+      })
+    }),
+  ).pipe(Layer.provide(events))
+}
+
+type BridgeLayer = Layer.Layer<EventV2Bridge.Service>
+type BridgeFactory = (events: Layer.Layer<EventV2.Service>) => BridgeLayer
+
+function baseLayer(probe: WorktreeProbe, bridge?: BridgeLayer | BridgeFactory) {
   const database = Database.defaultLayer
   const events = EventV2.defaultLayer.pipe(Layer.provide(database))
   const store = DagStore.defaultLayer.pipe(Layer.provide(database))
@@ -99,7 +122,10 @@ function baseLayer(probe: WorktreeProbe, bridge?: Layer.Layer<EventV2Bridge.Serv
     provide: (input: { directory: string }, effect: Effect.Effect<unknown>) =>
       Effect.provideService(effect, InstanceRef, { directory: input.directory } as never),
   } as never)
-  const bridgeLayer = bridge ?? EventV2Bridge.defaultLayer.pipe(Layer.provide(Layer.merge(database, events)))
+  const bridgeLayer =
+    typeof bridge === "function"
+      ? bridge(events)
+      : (bridge ?? EventV2Bridge.defaultLayer.pipe(Layer.provide(Layer.merge(database, events))))
   return Layer.provideMerge(
     Dag.layer,
     Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridgeLayer),
@@ -235,6 +261,71 @@ describe("Dag.create workflow-level worktree isolation (#1030)", () => {
           expect(yield* db.select().from(WorkflowTable).all()).toEqual([])
         }),
       ).pipe(Effect.provide(baseLayer(probe, failingBridge))) as Effect.Effect<never>,
+    )
+  })
+
+  it("keeps the worktree when the creation batch committed but publish was interrupted before returning", async () => {
+    const repository = repo()
+    const probe = newProbe()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          const { db } = yield* Database.Service
+          const exit = yield* Effect.exit(
+            dag.create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            }),
+          )
+          expect(exit._tag).toBe("Failure")
+          expect(exit._tag === "Failure" ? Cause.hasInterruptsOnly(exit.cause) : false).toBe(true)
+          // publishMany committed the whole batch before the notify-phase
+          // interrupt, so the durable running workflow owns the worktree: the
+          // rollback must skip it and leave settlement to the orphan sweep.
+          const workflows = yield* db.select().from(WorkflowTable).all()
+          expect(workflows).toHaveLength(1)
+          expect(workflows[0]?.status).toBe("running")
+          expect(parseWorkflowConfig(workflows[0]?.config ?? "")?.worktree?.directory).toBe(probe.created[0])
+          expect(existsSync(probe.created[0]!)).toBe(true)
+          expect(probe.removals).toEqual([])
+        }),
+      ).pipe(Effect.provide(baseLayer(probe, interruptAfterPublish))) as Effect.Effect<never>,
+    )
+  })
+
+  it("rolls back the worktree when the create batch is interrupted before committing", async () => {
+    const repository = repo()
+    const probe = newProbe()
+    const interruptedBridge = Layer.mock(EventV2Bridge.Service, {
+      publishMany: () => Effect.interrupt,
+    })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* seed(repository)
+          const dag = yield* Dag.Service
+          const { db } = yield* Database.Service
+          const exit = yield* Effect.exit(
+            dag.create({
+              projectID: Project.ID.make("project-1"),
+              sessionID: "ses_create",
+              title: "isolated",
+              config: { name: "isolated", isolation: "worktree", nodes: [node("a")] },
+            }),
+          )
+          expect(exit._tag).toBe("Failure")
+          expect(exit._tag === "Failure" ? Cause.hasInterruptsOnly(exit.cause) : false).toBe(true)
+          // Zero durable rows: the worktree was never committed, so roll it back.
+          expect(yield* db.select().from(WorkflowTable).all()).toEqual([])
+          expect(yield* db.select().from(EventTable).all()).toEqual([])
+          expect(probe.removals).toEqual([{ directory: probe.created[0], keepBranch: false }])
+          expect(existsSync(probe.created[0]!)).toBe(false)
+        }),
+      ).pipe(Effect.provide(baseLayer(probe, interruptedBridge))) as Effect.Effect<never>,
     )
   })
 
