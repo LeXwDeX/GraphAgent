@@ -155,7 +155,7 @@ config:
 The listed node and default fields are exhaustive; workflow YAML has no
 model-selection field. Model selection is configuration-owned: nodes with
 `required: true` or `worker_type: review` / `review-*` prefer the `advanced`
-tier in `dag.jsonc`; other nodes prefer `standard`. A single configured tier
+tier in the `dag` section of `settings.json`; other nodes prefer `standard`. A single configured tier
 serves both groups. Resolution then falls back to the selected agent model and
 the parent-session model. If no
 source provides a model, the workflow tool returns a blocked diagnostic and
@@ -329,7 +329,7 @@ config:
 ```
 
 The three reviewer nodes use `worker_type: general` without `required: true`,
-so they prefer `standard` from `dag.jsonc`. Node IDs and prompt IDs do not
+so they prefer `standard` from the `dag` section of `settings.json`. Node IDs and prompt IDs do not
 select a model tier. The arbiter prefers `advanced` because it is
 `required: true` — its execution failure signals
 that the artifact could not be confidently accepted, while its successful
@@ -479,8 +479,8 @@ invalid input does not constitute recovery.
 
 ## Model Assignment Strategy
 
-Workflow YAML has no model-selection field. Resolution follows the `dag.jsonc`
-tier, then the configured agent model, then the parent-session model. If all
+Workflow YAML has no model-selection field. Resolution follows the `dag` tier
+in `settings.json`, then the configured agent model, then the parent-session model. If all
 three are absent, the workflow tool returns a blocked diagnostic and does not
 create the workflow. Recovery does not grant permission to change models.
 
@@ -488,7 +488,7 @@ create the workflow. Recovery does not grant permission to change models.
 - Fast models for mechanical implementation — well-specified edits where speed and cost matter.
 - Diverse models in adversarial review — reduces single-model blind spots.
 
-The two-tier defaults in `dag.jsonc` implement the split mechanically:
+The two-tier defaults in the `dag` section of `settings.json` implement the split mechanically:
 `required: true` nodes and `review`/`review-*` workers prefer the
 `advanced` tier; every other node prefers `standard`. A single configured
 tier serves both groups.
@@ -496,7 +496,7 @@ tier serves both groups.
 ## Prompt Templates
 
 Templates are read-only prompt fragments installed under project
-`.agents/dag-prompts/*.md` or global `<graphagent config dir>/dag-prompts/*.md`.
+`.agents/workflows/prompts/*.md` or global `<graphagent config dir>/workflows/prompts/*.md`.
 Project assets shadow global assets. Prompt IDs have no bundled fallback;
 bundled workflow YAML does not install these fragments. Confirm that a
 referenced ID exists before using it. Missing assets are rejected during

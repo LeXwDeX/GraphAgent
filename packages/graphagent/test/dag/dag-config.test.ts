@@ -15,6 +15,7 @@ let projectDir: string
 let globalDir: string
 const originalConfigDir = process.env.GRAPHAGENT_CONFIG_DIR
 const originalHome = process.env.GRAPHAGENT_TEST_HOME
+const originalDisableProjectConfig = process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG
 
 beforeEach(async () => {
   // realpath keeps the resolved root comparable with git's real toplevel on
@@ -33,6 +34,8 @@ afterEach(async () => {
   else process.env.GRAPHAGENT_CONFIG_DIR = originalConfigDir
   if (originalHome === undefined) delete process.env.GRAPHAGENT_TEST_HOME
   else process.env.GRAPHAGENT_TEST_HOME = originalHome
+  if (originalDisableProjectConfig === undefined) delete process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG
+  else process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG = originalDisableProjectConfig
   await fs.rm(dir, { recursive: true, force: true })
 })
 
@@ -80,6 +83,32 @@ describe("DagSection.dagSection", () => {
       model: { advanced: "user/big", standard: "project/small" },
       thinking_depth: "low",
     })
+  })
+
+  it("expands {env:} variables in dag values like the main config loader", async () => {
+    process.env.DAG_SECTION_TEST_MODEL = "prov/env-model"
+    try {
+      await writeFile(
+        path.join(globalDir, "graphagent.json"),
+        JSON.stringify({ dag: { model: { standard: "{env:DAG_SECTION_TEST_MODEL}" } } }),
+      )
+      expect(await section(projectDir)).toEqual({ model: { standard: "prov/env-model" } })
+    } finally {
+      delete process.env.DAG_SECTION_TEST_MODEL
+    }
+  })
+
+  it("ignores project settings when GRAPHAGENT_DISABLE_PROJECT_CONFIG is set", async () => {
+    await writeFile(
+      path.join(globalDir, "graphagent.json"),
+      JSON.stringify({ dag: { model: { advanced: "user/big", standard: "user/small" } } }),
+    )
+    await writeProjectSettings(projectDir, {
+      dag: { model: { standard: "project/small" }, thinking_depth: "high" },
+    })
+    process.env.GRAPHAGENT_DISABLE_PROJECT_CONFIG = "1"
+    // The user layer survives; no project value leaks through.
+    expect(await section(projectDir)).toEqual({ model: { advanced: "user/big", standard: "user/small" } })
   })
 
   it("applies settings.local.json over settings.json", async () => {

@@ -7,8 +7,8 @@ profiles below are examples, not prerequisites for completing a task.
 ## Model Tiers and Evidence
 
 Tier placement is mechanical, not a model-ID choice: `required: true` nodes
-and `review`/`review-*` workers prefer the advanced model tier of
-`dag.jsonc`; every other node prefers standard. A single configured tier
+and `review`/`review-*` workers prefer the advanced model tier of the `dag`
+section in `settings.json`; every other node prefers standard. A single configured tier
 serves both groups. This mapping does not
 prescribe who may analyze, implement, or summarize. Set `required` according to
 whether execution failure should stop the workflow, not to manufacture roles.
@@ -185,7 +185,7 @@ If a required capability has no eligible role, report the missing capability and
 Workflow YAML has no model-selection field. Model assignment belongs to
 runtime configuration, not the workflow graph:
 
-`dag.jsonc` tier → configured agent model → parent session model
+`dag` tier in `settings.json` → configured agent model → parent session model
 
 Qualitative labels such as "strong", "fast", or "cheap" guide tier placement,
 but you MUST NOT invent a model identifier. If every configured source is
@@ -196,7 +196,7 @@ models or bypass provider constraints.
 
 Prefer expressing "strong model for judgment, fast model for volume" through
 tier placement — `required: true` and `review`/`review-*` workers prefer
-the advanced tier of `dag.jsonc`, everything else prefers standard — rather than
+the advanced tier of the `dag` section in `settings.json`, everything else prefers standard — rather than
 graph-level model fields.
 
 ## Profile: Brainstorm
