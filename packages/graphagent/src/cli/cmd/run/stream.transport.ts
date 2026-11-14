@@ -883,7 +883,7 @@ function createLayer(input: StreamInput) {
                 yield* Deferred.fail(
                   next.done,
                   new Error(
-                    `The server accepted the prompt but the session reported no activity for ${(IDLE_ESCAPE_TICKS * 250) / 1000}s, so the run never started. Check the opencode server log.`,
+                    `The server accepted the prompt but the session reported no activity for ${(IDLE_ESCAPE_TICKS * 250) / 1000}s, so the run never started. Check the graphagent server log.`,
                   ),
                 ).pipe(Effect.ignore)
                 return

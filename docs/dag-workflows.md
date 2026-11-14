@@ -195,7 +195,7 @@ A node's final reply can be plain text, a structured payload (one final JSON val
 
 Everything DAG-specific lives under `.agents/`, with a global counterpart in
 the config dir (`GRAPHAGENT_CONFIG_DIR`, else `~/.config/graphagent`).
-Everything else inherits the main opencode configuration.
+Everything else inherits the main GraphAgent configuration.
 
 | Path                         | Purpose                                                                       | Global counterpart                                          |
 | ---------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------- |

@@ -87,12 +87,12 @@ async function needsTranspileReexec() {
 
 export const TuiThreadCommand = cmd({
   command: "$0 [project]",
-  describe: "start opencode tui",
+  describe: "start graphagent tui",
   builder: (yargs) =>
     yargs
       .positional("project", {
         type: "string",
-        describe: "path to start opencode in",
+        describe: "path to start graphagent in",
       })
       .option("model", {
         type: "string",

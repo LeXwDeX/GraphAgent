@@ -22,7 +22,7 @@ export function describeSearchPathFailure(
     case "NotFound":
       return `Search path does not exist: ${searchPath}${suffix}. ${notFoundHint}`
     case "PermissionDenied":
-      return `Filesystem permission denied for search path: ${searchPath}${suffix}. Check filesystem access permissions. This is an operating-system restriction, not an OpenCode permission policy rejection.`
+      return `Filesystem permission denied for search path: ${searchPath}${suffix}. Check filesystem access permissions. This is an operating-system restriction, not a GraphAgent permission policy rejection.`
     case "BadResource":
       return `Invalid search path: ${searchPath}${suffix}. A path component is not a directory or the path cannot be traversed.`
     default: {

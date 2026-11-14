@@ -431,7 +431,7 @@ describe("tool.grep", () => {
       if (result._tag === "Failure") {
         const text = Cause.pretty(result.cause)
         expect(text).toContain(`Filesystem permission denied for search path: ${test.directory}`)
-        expect(text).toContain("not an OpenCode permission policy rejection")
+        expect(text).toContain("not a GraphAgent permission policy rejection")
         expect(text).not.toContain("does not exist")
       }
     }),
