@@ -9,7 +9,7 @@ import { Database } from "../database/database"
 import { EventV2, type Definition, type Subscriber } from "../event"
 import { LayerNode } from "../effect/layer-node"
 import { DagEvent } from "@graphagent/schema/dag-event"
-import { ERROR_CLASS_CANCELLED } from "@graphagent/schema/dag-status"
+import { ERROR_CLASS_BUDGET_EXHAUSTED, ERROR_CLASS_CANCELLED } from "@graphagent/schema/dag-status"
 import { DagNodeAttemptTable, WorkflowNodeTable, WorkflowTable } from "./sql"
 
 type WorkflowStatus = DagEvent.WorkflowStatus
@@ -67,6 +67,11 @@ export const NodeStatusProjection = {
   // terminal — this entry is node-scoped only.
   cancelled: { to: "failed", from: ["pending", "queued", "running"] },
   restarted: { to: "pending", from: ["running"] },
+  // D12 budget requeue: the one sanctioned terminal→pending transition. It is
+  // restricted to budget-cancelled failures (the projector guard also checks
+  // error_class) and never consumes replan_attempts. The drift test exempts
+  // exactly this entry, like the two workflow reopen entries.
+  requeued: { to: "pending", from: ["failed"] },
 } as const
 
 export const WorkflowStatusProjection = {
@@ -501,18 +506,41 @@ export const layer = Layer.effectDiscard(
         // event. Only an attempt that actually started earns a row: a stale
         // or racing NodeStarted (0-row guarded update) must not create a
         // phantom attempt sharing the real attempt's identity. The attempt
-        // ordinal is the node's restart count at start time, the same
-        // `(child_session, replan_attempts)` identity the mailbox uses.
+        // ordinal is the node's execution-attempt sequence (previous ledger
+        // max + 1), which equals the restart count on the replan path and is
+        // also fresh for a D12 budget requeue, whose `replan_attempts` must
+        // stay unchanged. A repeated start on an already-running node (same
+        // child session, or any ledger history at all) stays idempotent.
         // Replay reuses the event transaction, and a repeated event decodes
         // as already applied, but NOT CONFLICT keeps a partially replayed or
         // dirty database idempotent too.
         if (!started) return
+        const previousStatus = current?.status
+        const history = yield* db
+          .select({ attempt: DagNodeAttemptTable.attempt, childSessionID: DagNodeAttemptTable.child_session_id })
+          .from(DagNodeAttemptTable)
+          .where(and(
+            eq(DagNodeAttemptTable.workflow_id, event.data.dagID),
+            eq(DagNodeAttemptTable.node_id, event.data.nodeID),
+          ))
+          .all()
+          .pipe(Effect.orDie)
+        // The same child session is the same attempt however often its start
+        // is observed (a crash re-adopts a running child without a new row).
+        if (history.some((row) => row.childSessionID === event.data.childSessionID)) return
+        // A start observed on a row that was already running is a duplicate
+        // of the live attempt, not a replacement. Keep the first observation
+        // unless no ledger row exists at all (an upgraded database filling in
+        // an attempt started before the ledger existed).
+        const freshAttempt = previousStatus === "pending" || previousStatus === "queued"
+        if (!freshAttempt && history.length > 0) return
+        const nextAttempt = history.reduce((max, row) => Math.max(max, row.attempt), -1) + 1
         yield* db
           .insert(DagNodeAttemptTable)
           .values({
             workflow_id: event.data.dagID,
             node_id: event.data.nodeID,
-            attempt: current?.replan_attempts ?? 0,
+            attempt: nextAttempt,
             child_session_id: event.data.childSessionID,
             started_at: toMillis(event.data.timestamp),
           })
@@ -737,6 +765,43 @@ export const layer = Layer.effectDiscard(
           eq(WorkflowNodeTable.workflow_id, event.data.dagID),
           eq(WorkflowNodeTable.id, event.data.nodeID),
           inArray(WorkflowNodeTable.status, [...NodeStatusProjection.restarted.from]),
+        ))
+        .run()
+        .pipe(Effect.orDie),
+    )
+
+    // D12 budget requeue: a node the engine cancelled because the session's
+    // token budget ran out returns to `pending` for a fresh attempt. Only the
+    // budget-cancelled failure row is eligible (the status+error_class guards
+    // keep every other terminal row immutable), and replan_attempts is left
+    // untouched so the requeue consumes no replan budget. The old attempt's
+    // ledger row stays; NodeStarted appends the replacement attempt.
+    yield* project(DagEvent.NodeRequeued, (event) =>
+      db
+        .update(WorkflowNodeTable)
+        .set({
+          status: "pending",
+          // No child owns the requeued node until the replacement attempt
+          // starts. The ledger keeps the cancelled attempt's session for
+          // accounting; the row's pointer only names the live attempt.
+          child_session_id: null,
+          error_reason: null,
+          error_class: null,
+          completed_at: null,
+          deadline_ms: null,
+          timeout_extensions: 0,
+          escalation_pending: false,
+          // The budget pause owns the wake for this episode; the cancelled
+          // attempt's failure must not open a second node wake.
+          wake_reported: true,
+          seq: event.durable!.seq,
+          time_updated: toMillis(event.data.timestamp),
+        })
+        .where(and(
+          eq(WorkflowNodeTable.workflow_id, event.data.dagID),
+          eq(WorkflowNodeTable.id, event.data.nodeID),
+          inArray(WorkflowNodeTable.status, [...NodeStatusProjection.requeued.from]),
+          eq(WorkflowNodeTable.error_class, ERROR_CLASS_BUDGET_EXHAUSTED),
         ))
         .run()
         .pipe(Effect.orDie),

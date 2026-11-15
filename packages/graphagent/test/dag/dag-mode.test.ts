@@ -83,6 +83,37 @@ describe("DagMode.state (L2)", () => {
     )
   })
 
+  test("a warn-tier budget appends the warning line with its percentage", () => {
+    const text = DagMode.state({
+      ...facts,
+      budgetState: { used: 850, cacheRead: 10, budget: 1000, warnRatio: 0.8, tier: "warn" },
+    }).parts.join("\n")
+    expect(text).toContain("DAG token budget: over 85% used. Prefer finishing and reporting over new stages.")
+  })
+
+  test("an exhausted budget appends the exhaustion line and the budget line stays", () => {
+    const text = DagMode.state({
+      ...facts,
+      budgetState: { used: 1200, cacheRead: 10, budget: 1000, warnRatio: 0.8, tier: "exhausted" },
+    }).parts.join("\n")
+    expect(text).toContain("DAG token budget exhausted: the engine paused this session's workflows")
+    expect(text).toContain("DAG token budget 500000 tokens")
+    expect(text).not.toContain("over 120% used")
+  })
+
+  test("a normal or unlimited tier adds no budget line", () => {
+    const normal = DagMode.state({
+      ...facts,
+      budgetState: { used: 10, cacheRead: 0, budget: 1000, warnRatio: 0.8, tier: "normal" },
+    }).parts.join("\n")
+    const unlimited = DagMode.state({
+      ...facts,
+      budgetState: { used: 10_000_000, cacheRead: 0, budget: null, warnRatio: 0.8, tier: "normal" },
+    }).parts.join("\n")
+    expect(normal).not.toContain("DAG token budget:")
+    expect(unlimited).not.toContain("DAG token budget:")
+  })
+
   test("plan mode and a non-interactive run add their own line", () => {
     const text = DagMode.state({ ...facts, plan: true, noninteractive: true }).parts.join("\n")
     expect(text).toContain("Plan mode is active: start only read-only workflows")

@@ -4,6 +4,7 @@
 import { Effect, Option, type Schema } from "effect"
 import { CommandPlugin } from "@graphagent/core/plugin/command"
 import { Dag } from "@/dag/dag"
+import { DagBudget } from "@/dag/budget"
 import { DagControl } from "@/dag/control"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -72,6 +73,8 @@ export const WorkflowTool = Tool.define<
     // Optional so harnesses without a Config service stay valid; the service
     // lookup needs no environment requirement of its own.
     const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
+    // #1031 M5: optional so harnesses without the budget service stay valid.
+    const budget = Option.getOrUndefined(yield* Effect.serviceOption(DagBudget.Service))
 
     const authoring = WorkflowAuthoring.make({
       loadEnvironment: DagEnvironmentCatalogs.makeCatalogLoader(agents, provider),
@@ -149,7 +152,7 @@ export const WorkflowTool = Tool.define<
                   return yield* Effect.die(new Error("unreachable workflow spec operation"))
               }
             case "run":
-              return yield* runWorkflow({ dag, control, authoring, sessionID: ctx.sessionID, session, ctx }, params)
+              return yield* runWorkflow({ dag, control, ...(budget ? { budget } : {}), authoring, sessionID: ctx.sessionID, session, ctx }, params)
             case "inspect":
               return yield* inspectWorkflow({ dag, sessionID: ctx.sessionID, children: ctx.children }, params)
             case "control":

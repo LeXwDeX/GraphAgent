@@ -38,8 +38,8 @@ describe("public event manifest", () => {
       SessionV1.Event.Error,
     ])
     expect(EventManifest.Latest.size).toBe(67)
-    // 32 = 31 before #1030 D9-g + `dag.workflow.worktree_settled`.
-    expect(EventManifest.Durable.size).toBe(32)
+    // 33 = 32 before #1031 M5 + `dag.node.requeued` (D12 budget requeue).
+    expect(EventManifest.Durable.size).toBe(33)
   })
 
   test("uses canonical definitions for current public events", () => {

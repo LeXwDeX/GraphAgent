@@ -25,6 +25,7 @@ import { WorkflowTool } from "./workflow"
 import { AgentTool } from "./agent"
 import { DagAgentMessages } from "@/dag/agent-messages"
 import { Dag } from "@/dag/dag"
+import { DagBudget } from "@/dag/budget"
 import { DagControl } from "@/dag/control"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { ChildRegistry } from "@/session/child/registry"
@@ -661,6 +662,9 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(EventV2Bridge.defaultLayer),
       Layer.provide(Dag.defaultLayer),
       Layer.provide(DagControl.defaultLayer),
+      // #1031 M5: the workflow tool resolves the budget gate when the tool is
+      // constructed, so the service must be in this layer's context.
+      Layer.provide(DagBudget.defaultLayer),
       Layer.provide(DagAgentMessages.defaultLayer),
     )
     .pipe(

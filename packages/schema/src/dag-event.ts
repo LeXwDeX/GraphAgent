@@ -457,6 +457,24 @@ export const NodeRestarted = Event.define({
 })
 export type NodeRestarted = typeof NodeRestarted.Type
 
+/**
+ * D12: requeue a node that a budget exhaustion cancelled. Unlike NodeRestarted
+ * this does not consume the node's replan counter (`replan_attempts` stays the
+ * same) and it is only accepted for `failed` rows whose `error_class` is
+ * `budget_exhausted`; the projector guard enforces both. The replacement
+ * attempt earns its own ledger row at the next NodeStarted.
+ */
+export const NodeRequeued = Event.define({
+  type: "dag.node.requeued",
+  ...options,
+  schema: {
+    ...Base,
+    nodeID: NodeID,
+    reason: Schema.String,
+  },
+})
+export type NodeRequeued = typeof NodeRequeued.Type
+
 // Timeout is a signal, not a failure: the node keeps running and the main
 // agent is woken to adjudicate (extend via replan with a new timeout_ms, or
 // cancel/replan). The node row stays RUNNING; only timeout_extensions counts.
@@ -517,6 +535,7 @@ export const DurableDefinitions = Event.inventory(
   NodeAborted,
   NodeCancelled,
   NodeRestarted,
+  NodeRequeued,
   NodeTimeoutEscalated,
   NodeDeadlineExtended,
 )

@@ -14,8 +14,11 @@ import type { WorkflowRow } from "@graphagent/core/dag/store"
 export class ResumeBlockedError extends Schema.TaggedError<ResumeBlockedError>()("ResumeBlockedError", {
   workflowID: Schema.String,
   pauseReason: Schema.optional(Schema.String),
+  /** Policy-owned explanation; falls back to the generic pause text. */
+  detail: Schema.optional(Schema.String),
 }) {
   override get message() {
+    if (this.detail) return this.detail
     return this.pauseReason
       ? `Workflow ${this.workflowID} is paused (${this.pauseReason}) and cannot resume until the budget guard allows it`
       : `Workflow ${this.workflowID} cannot resume right now`

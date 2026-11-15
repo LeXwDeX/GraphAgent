@@ -12,6 +12,7 @@ import type { SessionV1 } from "@graphagent/core/v1/session"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import * as AgentSchedulerState from "@/session/agent-scheduler-state"
 import { Dag } from "@/dag/dag"
+import { DagBudget } from "@/dag/budget"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { spawnNode, type NodeSpawnInput } from "@/dag/runtime/spawn"
@@ -164,6 +165,44 @@ function makeSpawnInput(directory?: string): NodeSpawnInput {
 function workflowSchedule(workflowID = "wf-1", cap = 1) {
   return { limit: { kind: "workflow" as const, workflowID }, cap }
 }
+
+describe("spawnNode budget admission (#1031 M5)", () => {
+  it("denies the child session before creation and exhausts the workflow", async () => {
+    const harness = makeHarness(
+      () => "running",
+      () => true,
+    )
+    let exhausted = 0
+    const budget = Layer.succeed(
+      DagBudget.Service,
+      DagBudget.Service.of({
+        state: () => Effect.die("unused"),
+        check: () =>
+          Effect.fail(new DagBudget.BudgetExhaustedError({ sessionID: "ses_parent", used: 1200, budget: 1000 })),
+        exhaust: () =>
+          Effect.sync(() => {
+            exhausted++
+            return 1
+          }),
+        onBudgetChanged: () => Effect.succeed(0),
+        init: () => Effect.void,
+      }),
+    )
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
+          yield* Fiber.await(result.fiber).pipe(Effect.timeoutOption("2 seconds"))
+          expect(harness.createCalls()).toBe(0)
+          expect(exhausted).toBe(1)
+          // The node stays owned by the durable exhaustion sweep: no spurious
+          // nodeFailed from the spawn path itself.
+          expect(harness.events.filter((event) => event.type === "nodeFailed")).toEqual([])
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(harness.fullLayer, budget))) as Effect.Effect<never>,
+    )
+  })
+})
 
 describe("spawnNode pause fence (#379)", () => {
   it("holds a queued node at the fence while the workflow is paused, then spawns after resume", async () => {

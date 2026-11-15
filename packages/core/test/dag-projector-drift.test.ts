@@ -19,6 +19,11 @@
  *   reopen a naturally-completed workflow (see dag.ts reopenCompleted).
  * - WorkflowStatusProjection.recoveryReopen (failed/cancelled→running): explicit
  *   fenced recovery replaces affected node attempts and retains their history.
+ * - NodeStatusProjection.requeued (failed→pending): the D12 budget requeue
+ *   primitive reintroduces a node whose attempt the engine cancelled at budget
+ *   exhaustion. It is narrower than the exemption looks: the projector guard
+ *   accepts only failed rows with error_class = budget_exhausted, and
+ *   replan_attempts is untouched.
  */
 import { describe, expect, it } from "bun:test"
 import { NodeStatusProjection, WorkflowStatusProjection } from "../src/dag/projector"
@@ -33,6 +38,9 @@ describe("projector from-guards vs declared transition tables", () => {
   it("every node projection guard is a declared transition (or a self-transition)", () => {
     const violations: string[] = []
     for (const [event, projection] of Object.entries(NodeStatusProjection)) {
+      // The D12 budget requeue is the sanctioned failed→pending exception;
+      // its scope is asserted separately below.
+      if (event === "requeued") continue
       for (const from of projection.from) {
         if (from === projection.to) continue
         const allowed = getValidNextNodeStatuses(from as NodeStatus)
@@ -49,7 +57,7 @@ describe("projector from-guards vs declared transition tables", () => {
     for (const [event, projection] of Object.entries(WorkflowStatusProjection)) {
       // The documented terminal-irreversibility exception: additive-extend
       // reopen of a completed workflow. Exempt exactly this entry.
-      if (event === "replanReopen" || event === "recoveryReopen") continue
+      if (event === "replanReopen" || event === "recoveryReopen" || event === "requeued") continue
       for (const from of projection.from) {
         if (from === projection.to) continue
         const allowed = getValidNextWorkflowStatuses(from as WorkflowStatus)
@@ -69,6 +77,11 @@ describe("projector from-guards vs declared transition tables", () => {
   it("scopes explicit recovery to failed/cancelled workflows without reopening archives", () => {
     expect(WorkflowStatusProjection.recoveryReopen.to).toBe("running")
     expect([...WorkflowStatusProjection.recoveryReopen.from]).toEqual(["failed", "cancelled"])
+  })
+
+  it("scopes the budget requeue to failed→pending only", () => {
+    expect(NodeStatusProjection.requeued.to).toBe("pending")
+    expect([...NodeStatusProjection.requeued.from]).toEqual(["failed"])
   })
 })
 

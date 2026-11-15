@@ -34,6 +34,7 @@ import {
   isTransitionRejection,
   isWorkflowTerminalStatus,
   isTerminalWorkflowStatusValue,
+  PAUSE_REASON_BUDGET_EXHAUSTED,
 } from "@graphagent/core/dag/core/types"
 import { Dag, type WorkflowConfig, parseWorkflowConfig } from "../dag"
 import { staleUpstreamNodes, staleUpstreamNote } from "../recovery-plan"
@@ -1500,6 +1501,39 @@ const serviceLayer = Layer.effect(
           Effect.forkScoped({ startImmediately: true }),
         )
 
+        // D12 budget requeue: the node row is pending again, so the in-memory
+        // graph must be rebuilt from the durable rows before any later schema
+        // event (typically WorkflowResumed, which arrives in the same requeue
+        // transaction). Rebuilding also drops the failed-unsatisfied seed that
+        // would otherwise keep the node unready. Whichever handler wins the
+        // race re-checks the durable status: a requeue on a paused workflow
+        // (the budget-raise order) schedules nothing here and leaves dispatch
+        // to WorkflowResumed.
+        yield* events.subscribe(DagEvent.NodeRequeued).pipe(
+          Stream.filter((e) => runtimes.has(e.data.dagID as string)),
+          Stream.runForEach((evt) =>
+            Effect.gen(function* () {
+              const dagID = evt.data.dagID as string
+              const entry = runtimes.get(dagID)
+              if (!entry) return
+              yield* entry.evalLock.withPermits(1)(
+                Effect.gen(function* () {
+                  if (runtimes.get(dagID) !== entry) return
+                  const workflow = yield* store.getWorkflow(dagID)
+                  if (!workflow || isTerminalWorkflowStatusValue(workflow.status)) return
+                  entry.vetoHold = false
+                  entry.runtime.setPaused(workflow.status === "paused")
+                  entry.runtime.setStepMode(workflow.status === "stepping")
+                  entry.runtime.rebuildGraph(toSchedulingNodes(yield* store.getCurrentNodes(dagID)))
+                  if (workflow.status === "running" && !entry.runtime.isStepMode()) yield* spawnReady(dagID)
+                  yield* checkCompletion(dagID)
+                }),
+              )
+            }).pipe(guarded("NodeRequeued")),
+          ),
+          Effect.forkScoped({ startImmediately: true }),
+        )
+
         yield* events.subscribe(DagEvent.NodeFailed).pipe(
           Stream.filter((e) => runtimes.has(e.data.dagID as string)),
           Stream.runForEach((evt) =>
@@ -1600,7 +1634,14 @@ const serviceLayer = Layer.effect(
               const dagID = evt.data.dagID as string
               const entry = runtimes.get(dagID)
               if (!entry) return
-              yield* entry.evalLock.withPermits(1)(refreshControlFlags(dagID, entry))
+              const workflow = yield* entry.evalLock.withPermits(1)(refreshControlFlags(dagID, entry))
+              // #1031 M5: a budget pause is an immediate report boundary, not a
+              // five-minute reminder. Nudge now; the wake table's
+              // budget-paused predicate makes the batch deliverable, and the
+              // durable wake receipt keeps it to exactly one turn.
+              if (workflow?.status === "paused" && workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED) {
+                yield* delivery.nudge(entry.parentSessionID)
+              }
             }).pipe(guarded("WorkflowPaused")),
           ),
           Effect.forkScoped({ startImmediately: true }),

@@ -30,7 +30,7 @@ export interface Deps {
   readonly agents: Pick<Agent.Interface, "defaultInfo" | "get" | "list" | "permissionPolicy">
   readonly providers: Pick<Provider.Interface, "defaultModel" | "getModel">
   readonly config: Pick<Config.Interface, "dagGlobal" | "get">
-  readonly dagStore: Pick<DagStore.Interface, "getNodes" | "listBySession">
+  readonly dagStore: Pick<DagStore.Interface, "getWorkflowSummaries" | "listBySession">
   readonly scheduler: Pick<AgentScheduler.Interface, "capacity">
 }
 
@@ -95,20 +95,18 @@ export const read = Effect.fn("DagModeReader.read")(function* (deps: Deps, info:
   })
 
   const workflows = yield* deps.dagStore.listBySession(info.id)
-  const childSessionIDs = new Set<string>()
-  for (const workflow of workflows) {
-    for (const node of yield* deps.dagStore.getNodes(workflow.id)) {
-      if (node.childSessionId) childSessionIDs.add(node.childSessionId)
-    }
+  // #1031 M5 accounting: the durable attempt ledger, not the node row's
+  // latest child session. getWorkflowSummaries already sums every attempt
+  // (input + cache write + output + reasoning) and reports cache reads
+  // separately, so a retried or budget-requeued node counts every attempt and
+  // task children never leak into the budget.
+  const summaries = yield* deps.dagStore.getWorkflowSummaries(info.id)
+  let used = 0
+  let usedCacheRead = 0
+  for (const summary of summaries) {
+    used += summary.tokens ?? 0
+    usedCacheRead += summary.tokensCacheRead ?? 0
   }
-  const usages: DagModeStatus.TokenUsage[] = []
-  for (const childSessionID of childSessionIDs) {
-    const child = yield* deps.sessions
-      .get(SessionID.make(childSessionID))
-      .pipe(Effect.catch(() => Effect.succeed(undefined)))
-    if (child?.tokens) usages.push(child.tokens)
-  }
-  const usage = DagModeStatus.sumUsage(usages)
 
   const runningWorkflows = workflows.filter(
     (workflow) => workflow.status === WorkflowStatus.RUNNING || workflow.status === WorkflowStatus.STEPPING,
@@ -124,8 +122,8 @@ export const read = Effect.fn("DagModeReader.read")(function* (deps: Deps, info:
         // #1031 M1: an explicit `budget off` means unlimited, not "inherit the
         // global `dag.budget.tokens`" — the flag keeps the two apart.
         tokens: info.dagBudgetUnlimited ? null : (info.dagBudgetTokens ?? dag.budget?.tokens ?? null),
-        used: usage.used,
-        usedCacheRead: usage.usedCacheRead,
+        used,
+        usedCacheRead,
         warnRatio: dag.budget?.warn_ratio ?? DagModeStatus.DEFAULT_BUDGET_WARN_RATIO,
       },
       limits: {

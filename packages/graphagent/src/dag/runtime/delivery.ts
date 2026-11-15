@@ -9,6 +9,7 @@ import type { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
 import {
   ERROR_CLASS_BUDGET_EXHAUSTED,
   ERROR_CLASS_CANCELLED,
+  PAUSE_REASON_BUDGET_EXHAUSTED,
   displayState,
   isNodeTerminalStatus,
   isTerminalWorkflowStatusValue,
@@ -200,7 +201,12 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     const reportableWorkflows = snapshot.workflows.filter(
       (workflow) =>
         !workflow.wakeReported &&
-        (isTerminalWorkflowStatusValue(workflow.status) || isPausedReminderDue(workflow, now)),
+        (isTerminalWorkflowStatusValue(workflow.status) ||
+          // #1031 M5: a budget pause is reported as soon as it happens; the
+          // five-minute reminder exists for pauses that need no immediate
+          // parent action. The wake receipt still makes it exactly one turn.
+          workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED ||
+          isPausedReminderDue(workflow, now)),
     )
     // #1030 D9-g: a terminal workflow isolated in a workflow-level worktree is
     // deliverable only after its settlement projection commits. The wake
@@ -649,7 +655,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
                 ? `\nRequired nodes not completed (no final answer was produced):\n${incomplete.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
                 : ""
             return workflow.status === "paused"
-              ? `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
+              ? workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED
+                ? `[DAG Workflow paused] Workflow "${workflow.title}" is paused because the session's DAG token budget is exhausted. The engine cancelled its in-flight nodes. Report what is done and what is missing; only the user can raise the budget (/dag-mode budget <tokens> or /config), and the engine resumes this workflow automatically when it is raised. Do not start replacement work to route around the budget, and do not change the budget yourself.`
+                : `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
               : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${workflow.worktree ? `\n${workflowWorktreeText(workflow.worktree)}` : ""}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
           }),
         ]

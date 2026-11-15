@@ -29,6 +29,8 @@ import {
   WorkflowStatus,
   NodeStatus,
   PAUSE_REASON_CHECKPOINT,
+  PAUSE_REASON_BUDGET_EXHAUSTED,
+  ERROR_CLASS_BUDGET_EXHAUSTED,
 } from "@graphagent/core/dag/core/types"
 import type { PauseReason } from "@graphagent/core/dag/core/types"
 import { ResumeGuard } from "./resume-guard"
@@ -588,6 +590,24 @@ export interface Interface {
     dagID: string,
     checkpointSeq: number,
   ) => Effect.Effect<"paused" | "acknowledged" | "inactive", Error>
+  /**
+   * D12 budget exhaustion: pause a live workflow with reason
+   * `budget_exhausted` and immediately fail every in-flight attempt
+   * (`running`/`queued`) with error_class `budget_exhausted`. Idempotent: a
+   * workflow already paused for budget only has its remaining in-flight
+   * attempts failed; any other state is left untouched (`ignored`).
+   */
+  readonly pauseForBudget: (dagID: string) => Effect.Effect<"paused" | "ignored", Error>
+  /**
+   * D12 requeue primitive: return budget-cancelled nodes of a budget-paused
+   * workflow to `pending` for a fresh attempt. It consumes no replan count and
+   * only touches rows failed with error_class `budget_exhausted`.
+   */
+  readonly requeueNodes: (
+    dagID: string,
+    nodeIDs: readonly string[],
+    reason: string,
+  ) => Effect.Effect<{ readonly requeued: readonly string[] }, Error>
   readonly resume: (dagID: string) => Effect.Effect<void, Error>
   readonly step: (
     dagID: string,
@@ -2267,6 +2287,85 @@ export const layer = Layer.effect(
         yield* Effect.fail(new TerminalViolationError(nodeID, node.status, "failed"))
       }
     })
+    const pauseForBudget = Effect.fn("Dag.pauseForBudget")(function* (lock: WorkflowLock, dagID: string) {
+      const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+      if (!workflow || isTerminalWorkflowStatusValue(workflow.status)) return "ignored" as const
+      if (workflow.status === "pending") return "ignored" as const
+      if (workflow.status !== "paused") {
+        // D12: the durable pause reason is what survives a restart and what the
+        // ResumeGuard consults before any resume/step.
+        yield* pause(lock, dagID, PAUSE_REASON_BUDGET_EXHAUSTED)
+      } else if (workflow.pauseReason !== PAUSE_REASON_BUDGET_EXHAUSTED) {
+        // A manual/checkpoint pause owns its own in-flight policy; budget
+        // exhaustion must not terminalize work this pause holds.
+        return "ignored" as const
+      }
+      // In-flight attempts are cancelled now, not at the next scheduling round:
+      // a child that already consumed a step would otherwise overshoot the
+      // budget by roughly (in-flight nodes × one step). The loop's NodeFailed
+      // handler aborts the child session; the durable event is the authority.
+      //
+      // Published directly, not through `nodeFailed`: that path consults the
+      // mailbox fence, which can reject a failure when newer input arrived. A
+      // workflow-level budget cancel must win over a stale-input race, exactly
+      // like terminal workflow cleanup (`terminateNonTerminalNodes`). The
+      // projector's status guard makes a racing completion a safe no-op.
+      const nodes = yield* store.getCurrentNodes(dagID).pipe(Effect.orDie)
+      for (const node of nodes) {
+        if (node.status !== "running" && node.status !== "queued") continue
+        yield* events.publish(DagEvent.NodeFailed, {
+          dagID: DagEvent.DagID.make(dagID),
+          nodeID: DagEvent.NodeID.make(node.id),
+          reason: "DAG token budget exhausted",
+          trigger: "exec_failed",
+          errorClass: ERROR_CLASS_BUDGET_EXHAUSTED,
+          timestamp: yield* DateTime.now,
+        })
+      }
+      return "paused" as const
+    })
+
+    const requeueNodes = Effect.fn("Dag.requeueNodes")(function* (
+      _lock: WorkflowLock,
+      dagID: string,
+      nodeIDs: readonly string[],
+      reason: string,
+    ) {
+      const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
+      if (!workflow) return yield* Effect.fail(new Error(`Workflow not found: ${dagID}`))
+      // Only a budget pause has an episode that can be requeued; any other
+      // state leaves the request a no-op instead of touching terminal rows.
+      if (workflow.status !== "paused" || workflow.pauseReason !== PAUSE_REASON_BUDGET_EXHAUSTED) {
+        return { requeued: [] as readonly string[] }
+      }
+      const nodes = yield* store.getCurrentNodes(dagID).pipe(Effect.orDie)
+      const byID = new Map(nodes.map((node) => [node.id, node]))
+      const ids = [...new Set(nodeIDs)]
+      for (const id of ids) {
+        if (!byID.has(id)) return yield* Effect.fail(new Error(`Node not found: ${id}`))
+      }
+      // The error_class guard is the safety boundary: a terminal row cancelled
+      // for any other reason stays immutable (the projector enforces it too).
+      const eligible = ids.filter((id) => {
+        const node = byID.get(id)!
+        return node.status === "failed" && node.errorClass === ERROR_CLASS_BUDGET_EXHAUSTED
+      })
+      if (eligible.length === 0) return { requeued: [] as readonly string[] }
+      const timestamp = yield* DateTime.now
+      yield* events.publishMany(
+        eligible.map((id) => ({
+          definition: DagEvent.NodeRequeued,
+          data: {
+            dagID: DagEvent.DagID.make(dagID),
+            nodeID: DagEvent.NodeID.make(id),
+            reason,
+            timestamp,
+          },
+        })),
+      )
+      return { requeued: eligible }
+    })
+
     const nodeSkipped = Effect.fn("Dag.nodeSkipped")(function* (
       lock: WorkflowLock,
       dagID: string,
@@ -2481,6 +2580,9 @@ export const layer = Layer.effect(
       create,
       store,
       pause: (dagID, reason) => withWorkflowLock(dagID)((lock) => pause(lock, dagID, reason)),
+      pauseForBudget: (dagID) => withWorkflowLock(dagID)((lock) => pauseForBudget(lock, dagID)),
+      requeueNodes: (dagID, nodeIDs, reason) =>
+        withWorkflowLock(dagID)((lock) => requeueNodes(lock, dagID, nodeIDs, reason)),
       pauseForCheckpoint: (dagID, checkpointSeq) =>
         withWorkflowLock(dagID)((lock) => pauseForCheckpoint(lock, dagID, checkpointSeq)),
       // D12: resume/step are the two engine transitions that can lift a pause,

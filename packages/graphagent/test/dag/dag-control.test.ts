@@ -519,13 +519,18 @@ describe("DagControl.apply — paused ResumeGuard precheck", () => {
       )
     })
 
-    it(`skips the precheck for a running ${op}`, async () => {
+    it(`prechecks a running ${op} too (the budget gate is status-independent)`, async () => {
       const harness = makeHarness({ workflow: activeWorkflow() })
       harness.guardState.policy = vetoPolicy
       await runHarness(harness, (control) =>
         Effect.gen(function* () {
-          yield* control.apply(workflowID, request, caller)
-          expect(harness.guardChecks).toHaveLength(0)
+          const exit = yield* control.apply(workflowID, request, caller).pipe(Effect.exit)
+          const rejection = rejectionOf(exit)
+          expect(rejection._tag).toBe("Conflict")
+          if (rejection._tag === "Conflict") expect(rejection.kind).toBe("resume-blocked")
+          expect(harness.guardChecks).toHaveLength(1)
+          // Nothing was mutated or parked.
+          expect(methods(harness)).toEqual(["store.getWorkflow"])
         }),
       )
     })

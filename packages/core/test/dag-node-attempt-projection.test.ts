@@ -15,6 +15,8 @@
  */
 import { describe, expect, test } from "bun:test"
 import { DateTime, Effect, Layer } from "effect"
+import { eq } from "drizzle-orm"
+import { ERROR_CLASS_BUDGET_EXHAUSTED } from "@graphagent/schema/dag-status"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
 import { DagProjector } from "@graphagent/core/dag/projector"
@@ -167,6 +169,93 @@ describe("dag_node_attempt projection (#1027 D6)", () => {
         // Same (workflow, node, attempt) identity: the projection updates the
         // node row but the ledger keeps the attempt's first observation.
         expect((yield* rows()).map((row) => row.child_session_id)).toEqual(["ses_first"])
+      }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
+    )
+  })
+
+  test("a budget requeue earns a new attempt row without consuming replan_attempts", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed()
+        const events = yield* EventV2.Service
+        const { db } = yield* Database.Service
+        const dagID = DagEvent.DagID.make("dag_attempt")
+        const nodeID = DagEvent.NodeID.make("n1")
+
+        yield* started("ses_first", yield* DateTime.now)
+        yield* events.publish(DagEvent.NodeFailed, {
+          dagID,
+          nodeID,
+          reason: "DAG token budget exhausted",
+          trigger: "exec_failed",
+          errorClass: ERROR_CLASS_BUDGET_EXHAUSTED,
+          timestamp: yield* DateTime.now,
+        })
+        yield* events.publish(DagEvent.NodeRequeued, {
+          dagID,
+          nodeID,
+          reason: "budget raised by the user",
+          timestamp: yield* DateTime.now,
+        })
+        const requeued = yield* db
+          .select()
+          .from(WorkflowNodeTable)
+          .where(eq(WorkflowNodeTable.id, "n1"))
+          .get()
+          .pipe(Effect.orDie)
+        expect(requeued?.status).toBe("pending")
+        expect(requeued?.error_class).toBeNull()
+        expect(requeued?.replan_attempts).toBe(0)
+        expect(requeued?.child_session_id).toBeNull()
+
+        yield* started("ses_second", yield* DateTime.now)
+        expect((yield* rows()).map((row) => [row.attempt, row.child_session_id])).toEqual([
+          [0, "ses_first"],
+          [1, "ses_second"],
+        ])
+        const after = yield* db
+          .select()
+          .from(WorkflowNodeTable)
+          .where(eq(WorkflowNodeTable.id, "n1"))
+          .get()
+          .pipe(Effect.orDie)
+        expect(after?.replan_attempts).toBe(0)
+      }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
+    )
+  })
+
+  test("NodeRequeued only accepts budget-cancelled failures", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed()
+        const events = yield* EventV2.Service
+        const { db } = yield* Database.Service
+        const dagID = DagEvent.DagID.make("dag_attempt")
+        const nodeID = DagEvent.NodeID.make("n1")
+
+        yield* started("ses_first", yield* DateTime.now)
+        yield* events.publish(DagEvent.NodeFailed, {
+          dagID,
+          nodeID,
+          reason: "boom",
+          trigger: "exec_failed",
+          timestamp: yield* DateTime.now,
+        })
+        yield* events.publish(DagEvent.NodeRequeued, {
+          dagID,
+          nodeID,
+          reason: "budget raised by the user",
+          timestamp: yield* DateTime.now,
+        })
+        const after = yield* db
+          .select()
+          .from(WorkflowNodeTable)
+          .where(eq(WorkflowNodeTable.id, "n1"))
+          .get()
+          .pipe(Effect.orDie)
+        // A non-budget failure is a terminal row; the requeue guard leaves it.
+        expect(after?.status).toBe("failed")
+        expect(after?.error_class).toBe("exec_failed")
       }).pipe(Effect.provide(projectorLayer()), Effect.scoped),
     )
   })

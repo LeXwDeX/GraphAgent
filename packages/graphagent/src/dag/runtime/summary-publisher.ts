@@ -61,6 +61,8 @@ const SUMMARY_TRIGGER_EVENTS = [
   DagEvent.NodeAborted,
   DagEvent.NodeCancelled,
   DagEvent.NodeRestarted,
+  // D12 budget requeue: failed → pending moves failedNodes back to queued/pending.
+  DagEvent.NodeRequeued,
   // F10: escalation changes the visible summary (escalatedNodes rises from 0)
   // without any status transition — without this trigger the TUI would keep
   // showing a plain RUNNING node until some unrelated node event fires.
