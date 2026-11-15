@@ -32,6 +32,24 @@ const dagLayerWithGlobalCap = (maxTotalNodes: number) =>
     Layer.mergeAll(testLayer, TestConfig.layer({ dagGlobal: () => Effect.succeed({ max_total_nodes: maxTotalNodes }) })),
   )
 
+/** The same graph runtime with a mutable global cap: the config layer is
+ * consulted per call, so a test can lower `dag.max_total_nodes` after
+ * creation and observe the next mutation clamp against it. */
+const dagLayerWithMutableGlobalCap = (cap: { value: number }) =>
+  Layer.provideMerge(
+    Dag.layer,
+    Layer.mergeAll(testLayer, TestConfig.layer({ dagGlobal: () => Effect.succeed({ max_total_nodes: cap.value }) })),
+  )
+
+/** Drive one node to failure, then pause scheduling: the state recover accepts. */
+const failNodeAndPause = (dag: Dag.Interface, dagID: string, nodeID: string) =>
+  Effect.gen(function* () {
+    yield* dag.nodeQueued(dagID, nodeID)
+    yield* dag.nodeStarted(dagID, nodeID, `ses_${nodeID}`)
+    yield* dag.nodeFailed(dagID, nodeID, "transport failed", "exec_failed")
+    yield* dag.pause(dagID)
+  })
+
 function node(id: string, dependsOn: string[] = []): NodeConfig {
   return {
     id,
@@ -219,6 +237,64 @@ describe("Dag.create structural validation", () => {
         expect(error.message).toContain("Total node ceiling exceeded: 3 nodes > 2 max")
         expect(error.diagnostics[0]?.hint).toContain("fixed by the start document")
       }).pipe(Effect.scoped, Effect.provide(dagLayerWithGlobalCap(2))),
+    )
+  })
+
+  it("recovers a 120-node workflow created under a global cap of 150 (#1031 M4)", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        const dag = yield* Dag.Service
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "recover-global-cap",
+            config: {
+              name: "recover-global-cap",
+              nodes: Array.from({ length: 120 }, (_, i) => node(`n${i}`)),
+            },
+          })
+          .pipe(Effect.orDie)
+        yield* failNodeAndPause(dag, dagID, "n0")
+        const workflow = (yield* dag.store.getWorkflow(dagID))!
+        // Pre-fix recover fell back to the 100-node default ceiling and
+        // rejected this retry (121 nodes) the create path had admitted.
+        const recovered = yield* dag.recover(dagID, { nodeIDs: ["n0"], expectedGraphRev: workflow.graphRev })
+        expect(recovered.replacements.map((item) => item.previous)).toEqual(["n0"])
+        expect((yield* dag.store.getWorkflow(dagID))?.status).toBe("running")
+      }).pipe(Effect.scoped, Effect.provide(dagLayerWithGlobalCap(150))),
+    )
+  })
+
+  it("rejects a recovery the lowered global cap no longer admits (#1031 M4)", async () => {
+    const cap = { value: 10 }
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        const dag = yield* Dag.Service
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "recover-lowered-cap",
+            config: { name: "recover-lowered-cap", nodes: [node("a"), node("b"), node("c")] },
+          })
+          .pipe(Effect.orDie)
+        yield* failNodeAndPause(dag, dagID, "a")
+        // The cap is read per mutation: creation was admitted under 10, but
+        // recovery must honor the current 2-node ceiling, like replan does.
+        cap.value = 2
+        const workflow = (yield* dag.store.getWorkflow(dagID))!
+        const error = yield* dag
+          .recover(dagID, { nodeIDs: ["a"], expectedGraphRev: workflow.graphRev })
+          .pipe(Effect.catch((e: Error) => Effect.succeed(e)))
+        expect(error).toBeInstanceOf(Dag.StructuralValidationError)
+        if (!(error instanceof Dag.StructuralValidationError)) throw new Error("expected a structural failure")
+        expect(error.message).toContain("Total node ceiling exceeded: 4 nodes > 2 max")
+        expect(error.diagnostics[0]?.hint).toContain("recover document")
+        expect((yield* dag.store.getWorkflow(dagID))?.status).toBe("paused")
+      }).pipe(Effect.scoped, Effect.provide(dagLayerWithMutableGlobalCap(cap))),
     )
   })
 

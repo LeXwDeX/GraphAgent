@@ -1828,6 +1828,10 @@ export const layer = Layer.effect(
       )
       const addedIDs = new Set(plan.replacements.map((replacement) => replacement.current))
       const added = plan.config.nodes.filter((node) => addedIDs.has(node.id))
+      // The persisted declaration is re-clamped against the user's CURRENT
+      // global cap, as in _replan: recovery must neither reject a graph the
+      // current ceiling admits nor produce one it forbids.
+      const userMaxTotalNodes = yield* readUserMaxTotalNodes()
       const diagnostics = DagValidation.replanStructuralDiagnostics({
         fragmentNodes: added,
         rerunNodes: added,
@@ -1840,7 +1844,11 @@ export const layer = Layer.effect(
         // are copies of stored nodes, so every gate keeps its accepted form.
         grandfatheredNodeIds: new Set(plan.config.nodes.map((node) => node.id)),
         action: "recover",
-        config,
+        config: {
+          mode: config.mode,
+          max_total_nodes: config.max_total_nodes,
+          user_max_total_nodes: userMaxTotalNodes,
+        },
         isolation: config.isolation,
       }).filter((diagnostic) => diagnostic.severity === "error")
       if (diagnostics.length > 0) return yield* Effect.fail(new StructuralValidationError({ diagnostics }))
