@@ -48,14 +48,22 @@ export const priorRoundLoader =
       if (!config) return yield* Effect.fail(`workflow "${reference.workflow_id}" has an unreadable config`)
       const decision = config.nodes.find((node) => node.id === reference.review_id)
       if (!decision) return yield* Effect.fail(`review "${reference.review_id}" is not in workflow ${reference.workflow_id}`)
+      const laneIDs = decision.depends_on.filter(
+        (dependency) => config.nodes.find((node) => node.id === dependency)?.review_lane !== undefined,
+      )
+      // prior_round continues a review decision, never an arbitrary completed
+      // node. A verification or implementation node has no arbitration
+      // record, so accepting it would restart at round 1 with empty findings
+      // and silently skip the referenced review's open items and round ceiling.
+      if (decision.review_arbitration !== true && decision.review === undefined && laneIDs.length === 0)
+        return yield* Effect.fail(
+          `review "${reference.review_id}" is not a review decision; prior_round must reference a review block's decision node`,
+        )
       const rows = yield* dag.store.getCurrentNodes(reference.workflow_id).pipe(Effect.orDie)
       const decisionRow = rows.find((row) => row.id === reference.review_id)
       const decisionOutput = record(decisionRow?.output)
       if (!decisionRow || decisionRow.status !== "completed" || decisionOutput === undefined)
         return yield* Effect.fail(`review "${reference.review_id}" has no completed structured output`)
-      const laneIDs = decision.depends_on.filter(
-        (dependency) => config.nodes.find((node) => node.id === dependency)?.review_lane !== undefined,
-      )
       const findings = laneIDs.flatMap((laneID) => {
         const row = rows.find((candidate) => candidate.id === laneID)
         const actions = record(row?.output)?.required_actions

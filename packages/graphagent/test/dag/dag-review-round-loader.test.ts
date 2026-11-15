@@ -248,6 +248,55 @@ describe("priorRoundLoader", () => {
     expect(stopped).toContain("review loop stopped: two consecutive rounds raised no new upheld finding")
   })
 
+  it("refuses a prior_round reference that is not a review decision", async () => {
+    const nodes: NodeConfig[] = [
+      lane,
+      decision,
+      {
+        id: "verification",
+        name: "verification",
+        worker_type: "auditor",
+        depends_on: [],
+        required: true,
+        prompt_template: { inline: "verify" },
+      },
+      {
+        id: "implementation",
+        name: "implementation",
+        worker_type: "build",
+        depends_on: [],
+        required: true,
+        prompt_template: { inline: "implement" },
+      },
+    ]
+    const rounds = () => [
+      {
+        id: "dag_prev",
+        config: { name: "prior", review_gate: "strict" as const, nodes },
+        rows: [
+          ...rows,
+          makeNodeRow({ id: "verification", status: "completed", output: { verdict: "PASS" } }),
+          makeNodeRow({
+            id: "implementation",
+            status: "completed",
+            output: { fingerprint: "abc", changed_files: ["a.ts"] },
+          }),
+        ],
+      },
+    ]
+    // Both nodes have a completed structured output, so only the review
+    // decision check can reject them.
+    for (const reviewID of ["verification", "implementation"]) {
+      const failure = await Effect.runPromise(
+        storeLoader(rounds())({ workflow_id: "dag_prev", review_id: reviewID }).pipe(Effect.flip),
+      )
+      expect(failure).toContain(`review "${reviewID}" is not a review decision`)
+    }
+    // The real review decision still resolves its round.
+    const round = await Effect.runPromise(storeLoader(rounds())(reference))
+    expect(round.round).toBe(2)
+  })
+
   it("refuses another session's workflow and an incomplete review", async () => {
     const foreign = await Effect.runPromise(loader(config(), "ses_other")(reference).pipe(Effect.flip))
     expect(foreign).toContain("is not owned by this session")

@@ -205,6 +205,9 @@ export interface NodeConfig {
   review_new_findings?: number
   /** The compiler-generated fan-out aggregator under a review block id. */
   aggregates_writers?: boolean
+  /** Compiler-generated helper node: its worker was chosen by block
+   * compilation, not by an authored worker override. */
+  generated_helper?: "aggregate" | "evidence"
   /** #1031 M6: arbitration-depth marker for a block-compiled review decision;
    * unset for hand-authored review nodes, whose outputs keep the legacy shape. */
   review_arbitration?: boolean

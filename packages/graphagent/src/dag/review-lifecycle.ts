@@ -491,10 +491,12 @@ export function strictReviewCoverageErrors(input: {
   // Mirror the authored-block check (requireReviewCoverage): a persisted
   // block-compiled non-writer node must not gain write capability through a
   // worker override, or recover/retry would keep a graph that runs unreviewed
-  // writes. The override is only visible on the compiled node, never on the
-  // authored source at this point.
+  // writes. Compiler-generated helpers are exempt: their worker was chosen by
+  // block compilation (the aggregator is covered as a writer, debug evidence
+  // inherits its block's worker), so they are not authored overrides.
   for (const node of nodes) {
-    const override = node.block === undefined ? undefined : nonWriterWorkerOverride(node.block, node.worker_type)
+    if (node.block === undefined || compilerGeneratedHelper(node)) continue
+    const override = nonWriterWorkerOverride(node.block, node.worker_type)
     if (override)
       errors.push(
         `${node.id}: ${node.block} block overrides its worker to write-capable "${override}"; under the strict gate only coding and prototype writers may change the workspace, and each needs a fingerprint-bound diff review`,
@@ -521,6 +523,18 @@ export function strictReviewCoverageErrors(input: {
     if (repeated.length > 0) errors.push(`config.acceptance repeats id(s): ${repeated.join(", ")}`)
   }
   return errors
+}
+
+/** Compiler-generated helper nodes never represent an authored worker
+ * override. Newer persisted configs carry `generated_helper`; the aggregator
+ * marker and the compiler-owned evidence id suffix keep configs persisted
+ * before that marker recoverable. */
+function compilerGeneratedHelper(node: NodeConfig) {
+  return (
+    node.generated_helper !== undefined
+    || node.aggregates_writers === true
+    || (node.block === "debug" && node.id.endsWith("--evidence"))
+  )
 }
 
 function dependsOnTransitively(nodes: readonly NodeConfig[], startID: string, targetID: string): boolean {

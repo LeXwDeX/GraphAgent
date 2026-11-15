@@ -233,6 +233,66 @@ describe("strict review coverage at authoring checkpoints", () => {
     )
   })
 
+  it("accepts compiler helper nodes under the persisted strict re-check", async () => {
+    // Multiple parallel writers fan into one verify → review route; the
+    // compiler injects `<review>--aggregate` with an explore worker. That is
+    // not an authored override, so the persisted Dag.create re-check must
+    // accept the graph the authoring gate accepted.
+    const parallel: WorkflowBlock[] = [
+      { id: "api", kind: "coding" },
+      { id: "web", kind: "coding" },
+      { id: "verification", kind: "verify", depends_on: ["api", "web"] },
+      { id: "decision", kind: "review", depends_on: ["verification"], lenses: ["standards", "intent", "completeness"] },
+      { id: "final", kind: "synthesize", depends_on: ["decision"] },
+    ] as WorkflowBlock[]
+    const authored = await prepare(
+      startSpec({
+        name: "strict",
+        objective: "Ship both writers through one review route",
+        blocks: parallel,
+        acceptance,
+        review_gate: "strict",
+      }),
+    )
+    expect(authored.valid).toBe(true)
+
+    const nodes = DagBlocks.compileWorkflowBlocks(
+      { objective: "Ship both writers through one review route", blocks: parallel },
+      { review_gate: "strict", acceptance },
+    )
+    expect(nodes.find((node) => node.id === "decision--aggregate")).toMatchObject({
+      aggregates_writers: true,
+      generated_helper: "aggregate",
+      worker_type: "explore",
+    })
+    // The marker must survive the persisted-config round trip the recover /
+    // Dag.create re-check reads.
+    const persisted = Dag.parseWorkflowConfig(JSON.stringify({ name: "strict", nodes }))
+    expect(persisted?.nodes.find((node) => node.id === "decision--aggregate")?.generated_helper).toBe("aggregate")
+    expect(strictReviewCoverageErrors({ nodes, acceptance })).toEqual([])
+
+    // Debug blocks expand into a compiler-chosen explorer evidence node.
+    const debugNodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Diagnose the failure",
+      blocks: [{ id: "diagnose", kind: "debug" }] as WorkflowBlock[],
+    })
+    expect(debugNodes.find((node) => node.id === "diagnose--evidence")).toMatchObject({
+      generated_helper: "evidence",
+      worker_type: "explore",
+    })
+    expect(strictReviewCoverageErrors({ nodes: debugNodes })).toEqual([])
+  })
+
+  it("still rejects an authored override on a generated block's main node", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Diagnose the failure",
+      blocks: [{ id: "diagnose", kind: "debug", worker_type: "build" }] as WorkflowBlock[],
+    })
+    expect(strictReviewCoverageErrors({ nodes })).toEqual([
+      expect.stringContaining('diagnose: debug block overrides its worker to write-capable "build"'),
+    ])
+  })
+
   it("rejects a strict extend or replan fragment that adds an uncovered writer", async () => {
     const extend = await prepare(
       { objective: "Ship it", blocks: [{ id: "implementation", kind: "coding" }] },

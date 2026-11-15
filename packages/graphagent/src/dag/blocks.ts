@@ -464,6 +464,7 @@ function compileBlock(
         condition,
         skipOk: condition !== undefined ? true : undefined,
         blockKind: block.kind,
+        generatedHelper: "evidence",
       }),
       node({
         id: block.id,
@@ -605,6 +606,7 @@ function compileBlock(
         outputSchema: IMPLEMENTATION_SCHEMA,
         blockKind: block.kind,
         aggregatesWriters: true,
+        generatedHelper: "aggregate",
       }),
       ...lanesWithDecision,
     ]
@@ -790,6 +792,8 @@ function node(input: {
   priorInput?: Record<string, unknown>
   /** The compiler-generated fan-out aggregator under a review block id. */
   aggregatesWriters?: boolean
+  /** The compiler chose this helper node's worker; no author override applies. */
+  generatedHelper?: "aggregate" | "evidence"
 }): NodeConfig {
   // issue #387: an instruction equal to the objective (after trim and
   // line-ending normalization) would render the same content twice in the
@@ -849,6 +853,7 @@ function node(input: {
     ...(input.reviewQuietRounds !== undefined ? { review_quiet_rounds: input.reviewQuietRounds } : {}),
     ...(input.reviewNewFindings !== undefined ? { review_new_findings: input.reviewNewFindings } : {}),
     ...(input.aggregatesWriters ? { aggregates_writers: true } : {}),
+    ...(input.generatedHelper ? { generated_helper: input.generatedHelper } : {}),
   }
 }
 
