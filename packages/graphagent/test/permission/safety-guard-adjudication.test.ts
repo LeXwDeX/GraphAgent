@@ -13,13 +13,14 @@ import { expect } from "bun:test"
 import * as fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Effect, Exit, Fiber, Layer } from "effect"
+import { Effect, Exit, Fiber, Layer, Option } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Dag } from "@/dag/dag"
 import { InstanceState } from "@/effect/instance-state"
 import { Git } from "@/git"
 import { Permission, type AskOptions } from "@/permission"
 import { SafetyGuard } from "@/permission/safety-guard"
+import { ChildPolicy } from "@/session/child/policy"
 import { ChildRegistry } from "@/session/child/registry"
 import type { ChildOwner, ChildPermissionPolicy } from "@/session/child/types"
 import { SessionID } from "@/session/schema"
@@ -77,6 +78,15 @@ const lazyPermissionLayer = Permission.layer.pipe(
 )
 const lazyEnv = Layer.mergeAll(lazyPermissionLayer, database, events, bridge, projector, store, dag)
 const lazyIt = testEffect(lazyEnv)
+
+/**
+ * #1031 M7 finding 4: the app runtime merges Database and Permission as
+ * siblings, so `Permission.defaultLayer` must provide Database itself or the
+ * unattended seam sees none. Both references here are the same memoized
+ * `Database.defaultLayer`, exactly like BaseAppLayer.
+ */
+const productionLayer = Layer.mergeAll(Database.defaultLayer, Permission.defaultLayer)
+const productionIt = testEffect(productionLayer)
 
 const resetGitCalls = () => {
   gitCalls.branch = 0
@@ -520,6 +530,39 @@ it.instance(
       expect(absolute).toContain("dag_safety:SF-1")
       const unproven = yield* expectDenied(run(`cd ${directory}/missing; printf x > ./inside.txt`))
       expect(unproven).toContain("dag_safety:SF-1")
+    }),
+  { git: true },
+)
+
+productionIt.instance(
+  "the production Permission layer resolves a DAG-on task child to auto and guards it",
+  () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* setRootDagMode("on")
+      const auto = yield* makeRun("prod-task-on", {
+        owner: { kind: "task", toolCallID: "call_prod_on" },
+        permission: { ask: "root-dag-mode" },
+      })
+      // The policy resolves through the Database the permission layer was
+      // built with, not one handed in beside it.
+      const subject = yield* ChildPolicy.askOf(db)(auto.childSessionID)
+      expect(Option.getOrUndefined(subject)?.ask).toBe("auto")
+
+      const permission = yield* Permission.Service
+      // Without its own Database the layer resolves this child to "user" and
+      // the ask waits for a dialog; the timeout turns that regression into a
+      // fast, explicit failure instead of a test timeout.
+      const outcome = yield* bash(auto.childSessionID, "rm -rf /").pipe(
+        Effect.exit,
+        Effect.timeoutOption("2 seconds"),
+      )
+      expect(Option.isSome(outcome)).toBe(true)
+      if (Option.isSome(outcome)) {
+        expect(Exit.isFailure(outcome.value)).toBe(true)
+        if (Exit.isFailure(outcome.value)) expect(String(outcome.value.cause)).toContain("dag_safety:SF-3")
+      }
+      expect(yield* permission.list()).toEqual([])
     }),
   { git: true },
 )

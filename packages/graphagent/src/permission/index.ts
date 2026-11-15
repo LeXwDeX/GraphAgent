@@ -803,6 +803,12 @@ export const defaultLayer = layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(SettingsHook.defaultLayer),
   Layer.provide(Notification.defaultLayer),
+  // The unattended seam reads the task child's root DAG mode through
+  // `ChildPolicy.askOf(database)`; without its own Database this layer is
+  // built before any sibling provides one and every task child falls back to
+  // "user" (#1031 M7). The same memoized instance a sibling Database layer
+  // builds is shared here.
+  Layer.provide(Database.defaultLayer),
 )
 
 export const node = LayerNode.make(layer, [
@@ -811,6 +817,7 @@ export const node = LayerNode.make(layer, [
   SettingsHook.node,
   Notification.node,
   Config.node,
+  Database.node,
 ])
 
 export * as Permission from "."

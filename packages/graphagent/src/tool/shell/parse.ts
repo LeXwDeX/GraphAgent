@@ -53,6 +53,14 @@ export interface Segment {
    * decides against it. A conditional `cd` must not be trusted.
    */
   readonly run: "always" | "maybe" | "never"
+  /**
+   * Enclosing function definitions (bash only), innermost first. A command
+   * inside a body does not run when the function is defined; it runs only
+   * when the function is called. `run` keeps the conditional verdict of the
+   * statement inside the body, so a caller analyzing the body can still
+   * resolve literal `true`/`false` operands.
+   */
+  readonly functions?: readonly string[]
 }
 
 const resolveWasm = (asset: string) => {
@@ -290,6 +298,20 @@ function nearest(node: Node | null, type: string) {
   return undefined
 }
 
+/** Names of the function definitions enclosing `node`, innermost first. */
+function functionPath(node: Node): string[] {
+  const names: string[] = []
+  let current: Node | null = node.parent
+  while (current) {
+    if (current.type === "function_definition") {
+      const name = current.childForFieldName("name") ?? current.child(0)
+      if (name) names.push(unquote(name.text))
+    }
+    current = current.parent
+  }
+  return names
+}
+
 function redirectTarget(node: Node) {
   // Adjacent quoted and unquoted fragments form one word (`..'/'victim`);
   // re-join them so the guard decodes the same file name bash opens.
@@ -362,6 +384,7 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
       if (owned.length === 0) continue
       const inner = commands(statement)
       const last = inner.at(-1)
+      const enclosing = functionPath(statement)
       if (!last) {
         commandless.push({
           start: statement.startIndex,
@@ -373,6 +396,7 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
             pipeline: nextPipeline++,
             ...shellScope(statement, ps),
             run: executionOf(statement, ps),
+            ...(enclosing.length > 0 ? { functions: enclosing } : {}),
           },
         })
         continue
@@ -392,6 +416,7 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
             pipeline: nextPipeline++,
             ...shellScope(statement, ps),
             run: executionOf(statement, ps),
+            ...(enclosing.length > 0 ? { functions: enclosing } : {}),
           },
         })
         continue
@@ -427,6 +452,7 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
         } else {
           group = nextPipeline++
         }
+        const enclosing = functionPath(node)
         return {
           start,
           end,
@@ -437,6 +463,7 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
             pipeline: group,
             ...shellScope(node, ps),
             run: executionOf(node, ps),
+            ...(enclosing.length > 0 ? { functions: enclosing } : {}),
           } satisfies Segment,
         }
       })

@@ -1088,10 +1088,47 @@ function readTargetList(seg: ShellParse.Segment, argv: readonly string[]): ReadW
     for (const target of words(args)) out.push({ raw: target, label: name })
   if (name === "grep" || name === "rg") {
     let patternSeen = false
+    let options = true
     for (let index = 0; index < args.length; index++) {
       const arg = args[index] ?? ""
-      if (isFlag(arg)) {
-        if (["-e", "--regexp", "-f", "--file"].includes(arg)) index++
+      if (options && arg === "--") {
+        options = false
+        continue
+      }
+      if (options && arg.startsWith("--")) {
+        const equals = arg.indexOf("=")
+        const header = equals >= 0 ? arg.slice(0, equals) : arg
+        if (header === "--regexp") {
+          // The pattern is supplied here, so every positional is a file.
+          patternSeen = true
+          if (equals < 0) index++
+          continue
+        }
+        if (header === "--file") {
+          // A pattern file is read by grep itself; the positionals are files.
+          patternSeen = true
+          const value = equals >= 0 ? arg.slice(equals + 1) : args[index + 1]
+          if (equals < 0) index++
+          if (value !== undefined && value !== "") out.push({ raw: value, label: name })
+          continue
+        }
+        continue
+      }
+      if (options && isFlag(arg)) {
+        // A short bundle may carry `e`/`f`; the rest of the bundle or the next
+        // word is that option's value. Other flags consume nothing here.
+        const flags = arg.slice(1)
+        const at = flags.search(/[ef]/)
+        if (at < 0) continue
+        patternSeen = true
+        const attached = flags.slice(at + 1)
+        if (attached !== "") {
+          if (flags[at] === "f") out.push({ raw: attached, label: name })
+          continue
+        }
+        const value = args[index + 1]
+        index++
+        if (flags[at] === "f" && value !== undefined) out.push({ raw: value, label: name })
         continue
       }
       if (!patternSeen) {
@@ -1164,6 +1201,76 @@ function targetDirectories(args: readonly string[]) {
   return out
 }
 
+/** Long curl options whose value names a file curl writes. */
+const CURL_FILE_OPTIONS = new Set([
+  "--output",
+  "--dump-header",
+  "--cookie-jar",
+  "--trace",
+  "--trace-ascii",
+  "--stderr",
+])
+
+/** Short curl options whose value names a file curl writes. */
+const CURL_SHORT_FILE_OPTIONS = /[oDc]/
+
+/** Files and directories a curl invocation writes, including remote-name output. */
+function curlWriteTargets(args: readonly string[]): string[] {
+  const targets: string[] = []
+  let outputDir: string | undefined
+  let remoteName = false
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? ""
+    if (arg === "--") break
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("=")
+      const header = equals >= 0 ? arg.slice(0, equals) : arg
+      if (header === "--output-dir") {
+        const value = equals >= 0 ? arg.slice(equals + 1) : args[index + 1]
+        if (equals < 0) index++
+        // `-o` and `-O` resolve relative names against this directory.
+        if (value !== undefined && value !== "") {
+          outputDir = value
+          targets.push(value)
+        }
+        continue
+      }
+      if (header === "--remote-name" || header === "--remote-name-all") {
+        remoteName = true
+        continue
+      }
+      if (CURL_FILE_OPTIONS.has(header)) {
+        const value = equals >= 0 ? arg.slice(equals + 1) : args[index + 1]
+        if (equals < 0) index++
+        if (value !== undefined && value !== "") targets.push(value)
+        continue
+      }
+      continue
+    }
+    if (!isShortFlag(arg)) continue
+    // A short bundle may carry `o`, `D` or `c`; the rest of the bundle is the
+    // attached value, otherwise the next word is.
+    const flags = arg.slice(1)
+    const at = flags.search(CURL_SHORT_FILE_OPTIONS)
+    if (at < 0) continue
+    const attached = flags.slice(at + 1)
+    if (attached !== "") {
+      targets.push(attached)
+      continue
+    }
+    const value = args[index + 1]
+    if (value !== undefined) {
+      targets.push(value)
+      index++
+    }
+  }
+  // The remote file name is chosen by the server, but its directory decides
+  // the boundary: a directory inside the project keeps every direct child
+  // inside, a directory outside does not.
+  if (remoteName) targets.push(outputDir ?? ".")
+  return targets
+}
+
 /** The write destinations of one simple command, independent of evaluation. */
 function writeTargetList(argv: readonly string[]): { targets: readonly string[]; label: string } | undefined {
   const name = commandName(argv)
@@ -1171,6 +1278,7 @@ function writeTargetList(argv: readonly string[]): { targets: readonly string[];
   const all = words(args)
   if (name === "rm") return { targets: all, label: "rm" }
   if (name === "tee") return { targets: all, label: "tee" }
+  if (name === "curl") return { targets: curlWriteTargets(args), label: "curl" }
   // `mv` removes every source; each one mutates the filesystem. `cp` only
   // writes the destination (sources are reads). `-t` moves the destination
   // out of the trailing slot.
@@ -1216,7 +1324,8 @@ function writePaths(input: EvaluateInput, moves: boolean): WritePath[] {
   }
   if (input.permission !== "bash" || !input.segments) return []
   const paths: WritePath[] = []
-  for (const context of segmentContexts(input.segments, input.cwd, input.knownDirectories)) {
+  const functions = functionTable(input.segments)
+  for (const context of segmentContexts(input.segments, input.cwd, input.knownDirectories, { functions })) {
     for (const redirect of context.segment.redirects) {
       // `<` is a read, but `<>` also writes (and creates) the target.
       if (redirect.op.startsWith("<") && redirect.op !== "<>") continue
@@ -1291,7 +1400,8 @@ async function nativeReadSymlinkViolation(input: EvaluateInput) {
 /** Bash readers go through the same word list the lexical check uses. */
 async function bashReadSymlinkViolation(input: EvaluateInput) {
   if (!input.segments) return undefined
-  for (const context of segmentContexts(input.segments, input.cwd, input.knownDirectories)) {
+  const functions = functionTable(input.segments)
+  for (const context of segmentContexts(input.segments, input.cwd, input.knownDirectories, { functions })) {
     for (const word of readTargetList(context.segment, context.argv)) {
       const violation = await readSymlinkViolation(word.raw, context.cwd, context.known, word.label)
       if (violation) return violation
@@ -1346,6 +1456,67 @@ interface SegmentContext {
   readonly known: boolean
   /** A wrapper whose inner command cannot be inspected; deny before classifying. */
   readonly wrapperViolation?: Violation
+  /** A user-defined function call whose body cannot be expanded; deny before classifying. */
+  readonly callViolation?: Violation
+}
+
+/** User-defined function bodies of one parsed command, with their cwd effects. */
+interface FunctionTable {
+  /** Direct body commands per function name. */
+  readonly bodies: ReadonlyMap<string, readonly ShellParse.Segment[]>
+  /** Functions whose body may `cd` in the caller's shell. */
+  readonly changesCwd: ReadonlySet<string>
+}
+
+/** Bound on nested function expansion; a deeper call cannot be reviewed. */
+const MAX_FUNCTION_DEPTH = 8
+
+/**
+ * Collect the function definitions of a command. A body runs only when the
+ * function is called, so its commands are deferred at definition time and
+ * re-analyzed at each call site. Duplicate or recursive definitions stay
+ * over-approximated: every body is reviewed, which can only deny more.
+ */
+function functionTable(segments: readonly ShellParse.Segment[]): FunctionTable | undefined {
+  const bodies = new Map<string, ShellParse.Segment[]>()
+  for (const segment of segments) {
+    const name = segment.functions?.[0]
+    if (name === undefined) continue
+    const body = bodies.get(name)
+    if (body) body.push(segment)
+    else bodies.set(name, [segment])
+  }
+  if (bodies.size === 0) return undefined
+  const memo = new Map<string, boolean>()
+  const visiting = new Set<string>()
+  const mayMove = (name: string): boolean => {
+    const cached = memo.get(name)
+    if (cached !== undefined) return cached
+    // A recursive definition cannot be proven not to move the caller.
+    if (visiting.has(name)) return true
+    visiting.add(name)
+    const direct = bodies.get(name) ?? []
+    // A body's own top-level scope is its shortest scope; a `cd` inside a
+    // subshell or pipeline element stays in that scope and never moves the
+    // caller.
+    const scope = direct.reduce(
+      (shortest, segment) =>
+        (segment.scope ?? "").split("/").length < shortest.split("/").length ? (segment.scope ?? "") : shortest,
+      direct[0]?.scope ?? "",
+    )
+    const result = direct.some((segment) => {
+      if (segment.run === "never") return false
+      const called = commandName(unwrapExecution(segment.argv, "", true).argv)
+      if (called === "cd") return (segment.scope ?? "") === scope
+      return bodies.has(called) && mayMove(called)
+    })
+    visiting.delete(name)
+    memo.set(name, result)
+    return result
+  }
+  const changesCwd = new Set<string>()
+  for (const name of bodies.keys()) if (mayMove(name)) changesCwd.add(name)
+  return { bodies, changesCwd }
 }
 
 const parentScope = (scope: string) => {
@@ -1353,16 +1524,34 @@ const parentScope = (scope: string) => {
   return cut < 0 ? "" : scope.slice(0, cut)
 }
 
+interface ContextOptions {
+  /** Expand calls to these user-defined functions into their bodies. */
+  readonly functions?: FunctionTable
+  /** Body segments execute because a call is being analyzed. */
+  readonly deferred?: boolean
+  readonly depth?: number
+  readonly calls?: ReadonlySet<string>
+}
+
 /**
  * One working-directory state per shell scope: a `cd` inside `( ... )` or
  * `$()` never moves the parent shell, and a pipeline element runs in its own
  * subshell. States are inherited from the nearest enclosing scope.
+ *
+ * A function body is skipped at definition time and expanded at each call:
+ * the body runs in the caller's shell, so its commands are analyzed against
+ * the call-time directory. A call to a function that may `cd` leaves the
+ * caller's directory unproven.
  */
 function segmentContexts(
   segments: readonly ShellParse.Segment[],
   cwd: string,
   knownDirectories?: ReadonlySet<string>,
+  options: ContextOptions = {},
 ): SegmentContext[] {
+  const functions = options.functions
+  const depth = options.depth ?? 0
+  const calls = options.calls ?? new Set<string>()
   const states = new Map<string, { cwd: string; known: boolean }>()
   const stateFor = (scope: string) => {
     for (let current = scope; ; current = parentScope(current)) {
@@ -1375,17 +1564,45 @@ function segmentContexts(
   for (const segment of segments) {
     // A statically skipped statement never runs: no target, no cwd change.
     if (segment.run === "never") continue
+    // A function body runs only when the function is called.
+    if (segment.functions !== undefined && options.deferred !== true) continue
     const scope = segment.scope ?? ""
     const state = stateFor(scope)
     const execution = unwrapExecution(segment.argv, state.cwd, state.known)
+    const called = commandName(execution.argv)
+    const body = functions?.bodies.get(called)
+    // A recursive or too deeply nested call cannot be reviewed statically.
+    const callViolation =
+      body !== undefined && (calls.has(called) || depth >= MAX_FUNCTION_DEPTH)
+        ? sf3("function call", `cannot statically prove the side effects of the call to "${called}"`)
+        : undefined
     out.push({
       segment,
       argv: execution.argv,
       cwd: execution.cwd,
       known: execution.known,
       ...(execution.violation ? { wrapperViolation: execution.violation } : {}),
+      ...(callViolation ? { callViolation } : {}),
     })
-    if (commandName(execution.argv) !== "cd") continue
+    if (body !== undefined && callViolation === undefined) {
+      const nextCalls = new Set(calls)
+      nextCalls.add(called)
+      out.push(
+        ...segmentContexts(body, execution.cwd, knownDirectories, {
+          functions,
+          deferred: true,
+          depth: depth + 1,
+          calls: nextCalls,
+        }),
+      )
+    }
+    // A user-defined function shadows a builtin of the same name; the body
+    // analysis proves its side effects, and the call itself moves no cwd.
+    if (body !== undefined) {
+      if (functions?.changesCwd.has(called)) states.set(scope, { cwd: execution.cwd, known: false })
+      continue
+    }
+    if (called !== "cd") continue
     if (segment.run === "maybe") {
       // The conditional cd may not run, so later commands cannot trust
       // either the old or the new directory.
@@ -1421,7 +1638,8 @@ export function gitStateRequests(
   knownDirectories?: ReadonlySet<string>,
 ) {
   const requests = new Map<string, string>()
-  for (const context of segmentContexts(segments, cwd, knownDirectories)) {
+  const functions = functionTable(segments)
+  for (const context of segmentContexts(segments, cwd, knownDirectories, { functions })) {
     if (commandName(context.argv) !== "git") continue
     const invocation = parseGit(context.argv, context.cwd, context.known)
     if (invocation.uncertain || invocation.name !== "push" || !invocation.cwdKnown) continue
@@ -1434,7 +1652,8 @@ export function gitStateRequests(
 function bashViolation(input: EvaluateInput): Violation | undefined {
   const segments = input.segments
   if (!segments) return undefined
-  const contexts = segmentContexts(segments, input.cwd, input.knownDirectories)
+  const functions = functionTable(segments)
+  const contexts = segmentContexts(segments, input.cwd, input.knownDirectories, { functions })
   for (let index = 0; index < contexts.length; index++) {
     const context = contexts[index]
     if (!context) continue
@@ -1442,6 +1661,7 @@ function bashViolation(input: EvaluateInput): Violation | undefined {
     // A wrapper that may run something this guard cannot read denies before
     // any classifier gets to trust the visible arguments.
     if (context.wrapperViolation) return context.wrapperViolation
+    if (context.callViolation) return context.callViolation
     // A commandless redirect carries its own write target.
     const redirect = redirectViolation(input, seg.redirects, cwd, known)
     if (redirect) return redirect
@@ -1640,7 +1860,8 @@ export function referenceRoots(value: { readonly references?: unknown; readonly 
  */
 async function provenDirectories(segments: readonly ShellParse.Segment[], cwd: string): Promise<Set<string>> {
   const proven = new Set<string>()
-  for (const context of segmentContexts(segments, cwd)) {
+  const functions = functionTable(segments)
+  for (const context of segmentContexts(segments, cwd, undefined, { functions })) {
     if (commandName(context.argv) !== "cd") continue
     const next = context.argv[1]
     if (next === undefined) {

