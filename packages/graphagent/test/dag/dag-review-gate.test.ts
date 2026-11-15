@@ -19,10 +19,12 @@ const brief = {
   blocking_questions: [],
 }
 
+// A read-only profile keeps these gate/acceptance cases valid under strict:
+// strict writers must come from coding, prototype, or build blocks.
 const node = {
   id: "work",
   name: "work",
-  worker_type: "general",
+  worker_type: "explore",
   depends_on: [],
   prompt_template: { inline: "Do the work" },
 }

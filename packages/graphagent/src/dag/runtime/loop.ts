@@ -741,6 +741,29 @@ const serviceLayer = Layer.effect(
                 verdictEvidence: nodesSnapshot
                   .filter((source) => node.dependsOn.includes(source.id) && source.status === "completed")
                   .map((source) => ({ nodeID: source.id, output: source.output })),
+                // #1031 M6: a block-compiled arbitration resolves prior
+                // findings and, under the strict gate, may only ACCEPT when
+                // every lens/skeptic lane completed.
+                ...(nodeConfig?.review_arbitration
+                  ? {
+                      reviewArbitration: true as const,
+                      ...(nodeConfig.prior_findings !== undefined
+                        ? { priorFindings: nodeConfig.prior_findings }
+                        : {}),
+                      strictReviewGate:
+                        entry.config?.mode === "deep" || entry.config?.review_gate === "strict",
+                      incompleteReviewLanes: (entry.config?.nodes ?? [])
+                        .filter(
+                          (definition) =>
+                            definition.review_lane !== undefined
+                            && node.dependsOn.includes(definition.id)
+                            && !nodesSnapshot.some(
+                              (row) => row.id === definition.id && row.status === "completed",
+                            ),
+                        )
+                        .map((definition) => definition.id),
+                    }
+                  : {}),
                 fallbackModel: DagConfig.tierModel(nodeDagConfig, {
                   required: node.required,
                   workerType: node.workerType,

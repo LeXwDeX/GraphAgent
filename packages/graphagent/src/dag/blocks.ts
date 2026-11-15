@@ -29,6 +29,35 @@ export type ReviewLens = (typeof REVIEW_LENSES)[number]
 
 const DEFAULT_REVIEW_LENSES: readonly ReviewLens[] = ["standards", "intent"]
 
+/** A finding carried from a previous review round. `ref` names the exact
+ * prior required action as `<workflow_id>/<lane node>/<index>`; the prior
+ * arbitration's disposition travels with it so the next round can resolve it. */
+export interface PriorFinding {
+  readonly ref: string
+  readonly node: string
+  readonly index: number
+  readonly action: string
+  readonly disposition?: {
+    readonly novelty: "new" | { readonly dup_of: string }
+    readonly decision: "upheld" | "refuted"
+    readonly evidence: string
+  }
+}
+
+/** The previous round a review block continues. The engine resolves these
+ * stored outputs at compile time and injects them as prior findings; the
+ * authoring agent never fills them by hand. */
+export interface PriorRound {
+  readonly workflow_id: string
+  readonly review_id: string
+  /** 1-based round number of the referenced decision. */
+  readonly round: number
+  /** Consecutive referenced rounds that raised no new upheld finding. */
+  readonly quiet_rounds: number
+  readonly new_findings: number
+  readonly findings: readonly PriorFinding[]
+}
+
 /** One acceptance criterion (config.acceptance). The completeness lane judges
  * each item and cites evidence for its status. */
 export const AcceptanceItem = Schema.Struct({
@@ -82,6 +111,15 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
     description:
       "(review only) Adversarial skeptic lanes, 0-4. Each assumes the change is wrong and attacks from a rotated angle: evidence existence, minimal counterexample, alternative explanation, boundaries and concurrency. Defaults to 0",
   }),
+  prior_round: Schema.optional(
+    Schema.Struct({
+      workflow_id: Schema.String.annotate({ description: "Prior workflow whose stored review outputs seed this round" }),
+      review_id: Schema.String.annotate({ description: "Review decision node id inside the prior workflow" }),
+    }),
+  ).annotate({
+    description:
+      "(review only) Continue a review loop: the engine reads the referenced workflow's lane findings and arbitration dispositions and injects them as prior findings. Never fill prior findings by hand",
+  }),
 }) {}
 
 export interface WorkflowBlockGraph {
@@ -97,6 +135,9 @@ export interface WorkflowBlockCompileOptions {
   review_gate?: ReviewGate
   /** config.acceptance entries projected into the completeness lane. */
   acceptance?: readonly AcceptanceItem[]
+  /** Prior-round findings resolved from stored workflow outputs, keyed by
+   * `<workflow_id>/<review_id>`. Only a live authoring caller supplies them. */
+  prior_rounds?: Readonly<Record<string, PriorRound>>
 }
 
 // An ACCEPT must refute, by lane and index, every required action a review
@@ -114,9 +155,42 @@ const REFUTED_SCHEMA = {
   },
 } as const
 
+// Cross-round arbitration: one disposition per lane required action (whatever
+// the verdict) and one resolution per prior finding. `novelty` is either the
+// literal "new" or { dup_of: <prior finding ref> }.
+const DISPOSITIONS_SCHEMA = {
+  type: "array",
+  items: {
+    type: "object",
+    required: ["node", "index", "novelty", "decision", "evidence"],
+    properties: {
+      node: { type: "string" },
+      index: { type: "integer" },
+      novelty: { type: ["string", "object"] },
+      decision: { type: "string", enum: ["upheld", "refuted"] },
+      evidence: { type: "string" },
+    },
+  },
+} as const
+
+const RESOLVED_SCHEMA = {
+  type: "array",
+  items: {
+    type: "object",
+    required: ["ref", "how", "evidence"],
+    properties: {
+      ref: { type: "string" },
+      how: { type: "string", enum: ["fixed", "refuted", "still_open"] },
+      evidence: { type: "string" },
+    },
+  },
+} as const
+
+const NOT_EXAMINED_SCHEMA = { type: "array", items: { type: "string" } } as const
+
 const GENERAL_VERDICT_SCHEMA = {
   type: "object",
-  required: ["verdict", "summary", "findings", "required_actions"],
+  required: ["verdict", "summary", "findings", "required_actions", "dispositions", "resolved"],
   properties: {
     verdict: {
       type: "string",
@@ -126,6 +200,8 @@ const GENERAL_VERDICT_SCHEMA = {
     findings: { type: "array" },
     required_actions: { type: "array" },
     refuted: REFUTED_SCHEMA,
+    dispositions: DISPOSITIONS_SCHEMA,
+    resolved: RESOLVED_SCHEMA,
   },
 } as const
 
@@ -137,6 +213,7 @@ const LANE_REVIEW_SCHEMA = {
     summary: { type: "string" },
     findings: { type: "array" },
     required_actions: { type: "array", items: { type: "string" } },
+    not_examined: NOT_EXAMINED_SCHEMA,
   },
 } as const
 
@@ -152,6 +229,7 @@ export const COMPLETENESS_REVIEW_SCHEMA = {
     summary: { type: "string" },
     findings: { type: "array" },
     required_actions: { type: "array", items: { type: "string" } },
+    not_examined: NOT_EXAMINED_SCHEMA,
     acceptance: {
       type: "array",
       items: {
@@ -227,7 +305,15 @@ const VERIFICATION_SCHEMA = {
 
 const DIFF_REVIEW_SCHEMA = {
   type: "object",
-  required: ["verdict", "implementation_fingerprint", "summary", "findings", "required_actions"],
+  required: [
+    "verdict",
+    "implementation_fingerprint",
+    "summary",
+    "findings",
+    "required_actions",
+    "dispositions",
+    "resolved",
+  ],
   properties: {
     verdict: { type: "string", enum: ["ACCEPT", "REJECT"] },
     implementation_fingerprint: { type: "string" },
@@ -235,10 +321,22 @@ const DIFF_REVIEW_SCHEMA = {
     findings: { type: "array" },
     required_actions: { type: "array" },
     refuted: REFUTED_SCHEMA,
+    dispositions: DISPOSITIONS_SCHEMA,
+    resolved: RESOLVED_SCHEMA,
   },
 } as const
 
 const WRITER_KINDS = new Set<WorkflowBlockKind>(["coding", "prototype"])
+
+/** Read-only profiles may judge but never change the workspace. Strict review
+ * lanes and arbitration must use one of these; anything else is treated as
+ * write-capable. Mirrors the isolation validation's static catalog so a block
+ * compile and a persisted graph agree. */
+const READ_ONLY_PROFILES = new Set(["plan", "explore", "auditor", "review", "verify", "verification"])
+
+export function isReadOnlyProfile(workerType: string) {
+  return READ_ONLY_PROFILES.has(workerType) || /^(?:review|verify|verification)-/.test(workerType)
+}
 
 // Shared execution discipline for every block that runs shell commands. A
 // silent long command reads as hung and invites manual interrupts; keep the
@@ -270,6 +368,7 @@ export function compileWorkflowBlocks(
 ): NodeConfig[] {
   requireValidBlockGraph(graph, options)
   requireValidReviewRoutes(graph.blocks)
+  requireReviewCoverage(graph, options)
   const { blocks, aggregations, verifyAggregators } = aggregateParallelWriters(graph.blocks)
   const reportingVerifications = reviewRouteVerificationGates(blocks, aggregations)
   const nodes = blocks.flatMap((block) =>
@@ -342,7 +441,8 @@ function compileBlock(
         reportToParent: false,
         workerConfig: block.worker_config,
         condition,
-        skipOk: condition !== undefined,
+        skipOk: condition !== undefined ? true : undefined,
+        blockKind: block.kind,
       }),
       node({
         id: block.id,
@@ -355,6 +455,7 @@ function compileBlock(
         required: block.required ?? true,
         reportToParent: block.report_to_parent ?? false,
         workerConfig: block.worker_config,
+        blockKind: block.kind,
       }),
     ]
   }
@@ -373,6 +474,10 @@ function compileBlock(
           verification: `${route.verificationID}.output`,
         }
       : undefined
+    const strict = options.review_gate === "strict"
+    const priorRound = block.prior_round
+      ? options.prior_rounds?.[`${block.prior_round.workflow_id}/${block.prior_round.review_id}`]
+      : undefined
     const descriptors = reviewLaneDescriptors(block, options.acceptance)
     const lanes = descriptors.map((descriptor) =>
       node({
@@ -390,6 +495,8 @@ function compileBlock(
         inputMapping: reviewEvidence,
         outputSchema: descriptor.schema,
         targetSensitive: true,
+        blockKind: block.kind,
+        reviewLane: descriptor.suffix,
       }),
     )
     const laneIDs = lanes.map((lane) => lane.id)
@@ -414,12 +521,21 @@ function compileBlock(
             ? "Reject unsupported claims, deduplicate overlaps, and submit ACCEPT or REJECT while echoing the supplied implementation fingerprint exactly."
             : "Reject unsupported claims, deduplicate overlaps, and submit one structured result with verdict ACCEPT, REVISE, REJECT, or BLOCKED.",
           "Use ACCEPT only when no material required action remains: leave required_actions empty and list every required action a review lane raised in refuted as { node, index, reason } with the evidence that disproves it. The runtime rejects an ACCEPT that does neither.",
-        ].join(" "),
+          "Whatever the verdict, submit dispositions covering every required action each lane raised ({ node, index, novelty: \"new\" or { dup_of: <prior ref> }, decision: upheld|refuted, evidence }) and resolved covering every prior finding ({ ref, how: fixed|refuted|still_open, evidence }).",
+          priorRound
+            ? "The supplied prior findings are the previous round's unresolved and resolved items; adjudicate each one explicitly rather than restating it as new."
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
         required: block.required ?? true,
         reportToParent: block.report_to_parent ?? true,
         workerConfig: block.worker_config,
         condition: reviewCondition,
-        skipOk: reviewCondition !== undefined,
+        // The strict gate makes the decision a non-skippable required node:
+        // a failed verification closes the route and the workflow fails
+        // instead of completing with the review silently skipped.
+        skipOk: strict ? false : reviewCondition !== undefined ? true : undefined,
         inputMapping: route
           ? {
               ...reviewEvidence,
@@ -435,6 +551,21 @@ function compileBlock(
           : undefined,
         outputSchema: route ? DIFF_REVIEW_SCHEMA : GENERAL_VERDICT_SCHEMA,
         targetSensitive: true,
+        blockKind: block.kind,
+        reviewLenses: reviewLenses(block),
+        priorRound: block.prior_round,
+        priorFindings: priorRound?.findings,
+        reviewRound: priorRound ? priorRound.round + 1 : 1,
+        // The streak travels forward: two consecutive quiet rounds stop the
+        // loop (the loader refuses to start a successor beyond that).
+        reviewQuietRounds: priorRound
+          ? priorRound.new_findings === 0
+            ? priorRound.quiet_rounds + 1
+            : 0
+          : undefined,
+        reviewNewFindings: priorRound?.new_findings,
+        priorPrompt: priorRound && priorRound.findings.length > 0 ? "Prior findings (from the referenced review round):\n{{prior_findings}}" : undefined,
+        priorInput: priorRound && priorRound.findings.length > 0 ? { prior_findings: priorRound.findings } : undefined,
       }),
     ]
     if (!aggregation) return lanesWithDecision
@@ -451,6 +582,8 @@ function compileBlock(
         workerConfig: block.worker_config,
         inputMapping: aggregatorEvidenceMapping(aggregation.writerIDs),
         outputSchema: IMPLEMENTATION_SCHEMA,
+        blockKind: block.kind,
+        aggregatesWriters: true,
       }),
       ...lanesWithDecision,
     ]
@@ -500,7 +633,7 @@ function compileBlock(
       adversarial: routeVerificationGate ? false : undefined,
       workerConfig: block.worker_config,
       condition,
-      skipOk: condition !== undefined,
+      skipOk: condition !== undefined ? true : undefined,
       inputMapping: verifyAggregator
         ? {
             implementation_changed_files: `${verifyAggregator}.output.changed_files`,
@@ -516,6 +649,7 @@ function compileBlock(
             : undefined,
       fanOut: block.fan_out,
       targetSensitive: block.kind === "verify" || block.kind === "synthesize",
+      blockKind: block.kind,
     }),
   ]
 }
@@ -605,7 +739,8 @@ function node(input: {
   workerConfig?: { timeout_ms: number }
   condition?: string
   /** Accept a false condition on this required node. Set only at intentional
-   * mutually-exclusive branch points; omitted means the node stays strict. */
+   * mutually-exclusive branch points; an explicit false keeps the node a hard
+   * failure (the strict review decision uses it). */
   skipOk?: boolean
   inputMapping?: Record<string, string>
   review?: NodeConfig["review"]
@@ -615,6 +750,25 @@ function node(input: {
   fanOut?: string
   /** #944: the node judges the current working tree. */
   targetSensitive?: boolean
+  /** The block kind that produced this node; persisted so replay-time gates
+   * (recover/retry) keep block semantics without the authored blocks. */
+  blockKind?: WorkflowBlockKind
+  /** Review lane suffix (lens or skeptic-N); lane nodes are read-only. */
+  reviewLane?: string
+  /** Lenses the review decision arbitrates (persisted review contract). */
+  reviewLenses?: readonly ReviewLens[]
+  /** Prior round this decision continues, persisted for round accounting. */
+  priorRound?: NonNullable<WorkflowBlock["prior_round"]>
+  /** Findings resolved from the prior round's stored outputs. */
+  priorFindings?: readonly PriorFinding[]
+  reviewRound?: number
+  reviewQuietRounds?: number
+  reviewNewFindings?: number
+  /** Prompt fragment carrying the prior findings JSON. */
+  priorPrompt?: string
+  priorInput?: Record<string, unknown>
+  /** The compiler-generated fan-out aggregator under a review block id. */
+  aggregatesWriters?: boolean
 }): NodeConfig {
   // issue #387: an instruction equal to the objective (after trim and
   // line-ending normalization) would render the same content twice in the
@@ -646,6 +800,7 @@ function node(input: {
         instruction,
         input.contract,
         adversarial,
+        input.priorPrompt ?? "",
         "Use dependency outputs as evidence and return a concise artifact that downstream blocks can consume. Do not ask the user questions from this child session.",
       ]
         .filter(Boolean)
@@ -653,16 +808,26 @@ function node(input: {
       input: {
         objective: input.objective,
         ...(hasInstruction ? { instruction: instructionText } : {}),
+        ...input.priorInput,
       },
     },
     ...(input.workerConfig ? { worker_config: input.workerConfig } : {}),
     ...(input.condition ? { condition: input.condition } : {}),
-    ...(input.condition && input.skipOk ? { skip_ok: true } : {}),
+    ...(input.skipOk !== undefined ? { skip_ok: input.skipOk } : {}),
     ...(input.inputMapping ? { input_mapping: input.inputMapping } : {}),
     ...(input.review ? { review: input.review } : {}),
     ...(input.outputSchema ? { output_schema: input.outputSchema } : {}),
     ...(input.fanOut ? { fan_out: input.fanOut } : {}),
     ...(input.targetSensitive ? { target_sensitive: true } : {}),
+    ...(input.blockKind ? { block: input.blockKind } : {}),
+    ...(input.reviewLane ? { review_lane: input.reviewLane } : {}),
+    ...(input.reviewLenses ? { review_lenses: [...input.reviewLenses], review_arbitration: true } : {}),
+    ...(input.priorRound ? { prior_round: input.priorRound } : {}),
+    ...(input.priorFindings && input.priorFindings.length > 0 ? { prior_findings: [...input.priorFindings] } : {}),
+    ...(input.reviewRound !== undefined ? { review_round: input.reviewRound } : {}),
+    ...(input.reviewQuietRounds !== undefined ? { review_quiet_rounds: input.reviewQuietRounds } : {}),
+    ...(input.reviewNewFindings !== undefined ? { review_new_findings: input.reviewNewFindings } : {}),
+    ...(input.aggregatesWriters ? { aggregates_writers: true } : {}),
   }
 }
 
@@ -703,6 +868,14 @@ function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBloc
         throw new Error(`Block "${block.id}" declares lenses, which only review blocks support`)
       if (block.skeptics !== undefined)
         throw new Error(`Block "${block.id}" declares skeptics, which only review blocks support`)
+      if (block.prior_round !== undefined)
+        throw new Error(`Block "${block.id}" declares prior_round, which only review blocks support`)
+    }
+    if (block.prior_round !== undefined) {
+      if (block.prior_round.workflow_id.trim() === "")
+        throw new Error(`Block "${block.id}" prior_round.workflow_id must not be empty`)
+      if (block.prior_round.review_id.trim() === "")
+        throw new Error(`Block "${block.id}" prior_round.review_id must not be empty`)
     }
     const reviewDependencies = (block.depends_on ?? []).filter(
       (dependency) => graph.blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
@@ -845,6 +1018,60 @@ function reviewRouteVerificationGates(blocks: WorkflowBlock[], aggregations: Map
 
 function requireValidReviewRoutes(blocks: WorkflowBlock[]) {
   blocks.filter((block) => block.kind === "review").forEach((block) => reviewWriterTopology(block, blocks))
+}
+
+/**
+ * Strict review-coverage gate (config.review_gate "strict", which deep mode and
+ * a session DAG mode of on fix at start). Writers must be covered by a
+ * downstream diff review bound to their fingerprint; every review decision is a
+ * required, non-skippable, read-only gate whose lenses include completeness;
+ * and a writing graph must carry 1-50 uniquely identified acceptance items.
+ * The standard gate keeps the same shape advisory (the caller reports
+ * warnings).
+ */
+export function requireReviewCoverage(graph: WorkflowBlockGraph, options: WorkflowBlockCompileOptions = {}) {
+  if (options.review_gate !== "strict") return
+  const reviews = graph.blocks.filter((block) => block.kind === "review")
+  const writers = graph.blocks.filter((block) => WRITER_KINDS.has(block.kind))
+  const errors: string[] = []
+
+  for (const writer of writers) {
+    const covered = reviews.some((review) =>
+      reviewWriterTopology(review, graph.blocks)?.implementations.some((candidate) => candidate.id === writer.id),
+    )
+    if (!covered) {
+      errors.push(
+        `Writer block "${writer.id}" has no downstream review gate bound to its implementation fingerprint; under the strict gate every writer needs verify → review (phase diff) whose implementation_node_id points at the writer or its fan-out aggregator`,
+      )
+    }
+  }
+
+  for (const review of reviews) {
+    if (review.required === false)
+      errors.push(`Review block "${review.id}" must set required: true under the strict gate`)
+    if (!reviewLenses(review).includes("completeness"))
+      errors.push(`Review block "${review.id}" must include the completeness lens under the strict gate`)
+    const workerType = review.worker_type ?? "auditor"
+    if (!isReadOnlyProfile(workerType))
+      errors.push(
+        `Review block "${review.id}" lanes and arbitration use write-capable worker "${workerType}"; the strict gate requires a read-only profile such as auditor`,
+      )
+  }
+
+  if (writers.length > 0) {
+    const acceptance = options.acceptance ?? []
+    if (acceptance.length === 0) {
+      errors.push(
+        "A strict workflow with writers must declare config.acceptance so the completeness lane can judge every criterion",
+      )
+    }
+    if (acceptance.length > 50) errors.push(`config.acceptance has ${acceptance.length} items; the strict gate allows at most 50`)
+    const repeated = uniqueDuplicates(acceptance.map((item) => item.id))
+    if (repeated.length > 0)
+      errors.push(`config.acceptance repeats id(s): ${repeated.join(", ")}; every acceptance id must be unique`)
+  }
+
+  if (errors.length > 0) throw new Error(errors.join("; "))
 }
 
 interface ReviewWriterTopology {

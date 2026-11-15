@@ -376,7 +376,8 @@ describe("Dag.create structural validation", () => {
               name: "review-gate",
               review_gate: "strict",
               acceptance: [{ id: "AC1", text: "the change works" }],
-              nodes: [node("a")],
+              // Strict writers must come from blocks; this case pins persistence, not writer coverage.
+              nodes: [{ ...node("a"), worker_type: "explore" }],
             },
           })
           .pipe(Effect.orDie)
@@ -418,7 +419,8 @@ describe("Dag.create structural validation", () => {
                   blocking_questions: [],
                 },
               }),
-              nodes: [node("a")],
+              // Strict writers must come from blocks; this case pins derived acceptance.
+              nodes: [{ ...node("a"), worker_type: "explore" }],
             },
           })
           .pipe(Effect.orDie)

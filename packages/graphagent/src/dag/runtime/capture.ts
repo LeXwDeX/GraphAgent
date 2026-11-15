@@ -12,7 +12,13 @@
  * each attempt starts with a clean slate).
  */
 
-import { acceptConsistencyErrors, validateReviewResult, type VerdictEvidence } from "../review-lifecycle"
+import {
+  acceptConsistencyErrors,
+  arbitrationConsistencyErrors,
+  validateReviewResult,
+  type VerdictEvidence,
+} from "../review-lifecycle"
+import type { PriorFinding } from "../blocks"
 import { validateAgainstSchema, type SchemaValidationFix } from "./schema-validator"
 import { validateInWorker, type Validation } from "./schema-validation"
 export { validateAgainstSchema, unsupportedSchemaKeywords } from "./schema-validator"
@@ -100,12 +106,23 @@ export function settlePlainTextOutput(text: string | undefined): PlainTextSettle
   return { kind: "complete", output: text }
 }
 
+/** Cross-round and strict-gate context for a block-compiled review decision.
+ * Hand-authored review nodes leave every field unset and keep the legacy
+ * verdict consistency contract. */
+export interface ArbitrationSettlementOptions {
+  readonly reviewArbitration?: boolean
+  readonly priorFindings?: readonly PriorFinding[]
+  readonly strictReviewGate?: boolean
+  readonly incompleteReviewLanes?: readonly string[]
+}
+
 export function settleCapturedOutput(
   captured: unknown,
   reviewFingerprint: string | undefined,
   suffix = "",
   submitted = captured !== undefined && captured !== null,
   evidence: readonly VerdictEvidence[] = [],
+  arbitration: ArbitrationSettlementOptions = {},
 ): CapturedSettlement {
   if (!submitted)
     return { kind: "fail", reason: `output_schema declared but no final structured response was captured${suffix}` }
@@ -114,7 +131,18 @@ export function settleCapturedOutput(
     if (!result.valid)
       return { kind: "fail", reason: `Review result contract failed${suffix}: ${result.errors.join("; ")}` }
   }
-  const inconsistent = acceptConsistencyErrors(captured, evidence)
+  const inconsistent = [
+    ...acceptConsistencyErrors(captured, evidence),
+    ...(arbitration.reviewArbitration
+      ? arbitrationConsistencyErrors(captured, evidence, {
+          ...(arbitration.priorFindings !== undefined ? { priorFindings: arbitration.priorFindings } : {}),
+          ...(arbitration.strictReviewGate !== undefined ? { strict: arbitration.strictReviewGate } : {}),
+          ...(arbitration.incompleteReviewLanes !== undefined
+            ? { incompleteReviewLanes: arbitration.incompleteReviewLanes }
+            : {}),
+        })
+      : []),
+  ]
   if (inconsistent.length > 0)
     return { kind: "fail", reason: `Verdict consistency contract failed${suffix}: ${inconsistent.join("; ")}` }
   return { kind: "complete", output: captured }

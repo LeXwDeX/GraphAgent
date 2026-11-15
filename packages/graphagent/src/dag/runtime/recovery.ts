@@ -49,13 +49,30 @@ import { captureFinalResponse, finalAssistantText, type FinalCaptureResult } fro
 import { commitOutputFileRef, isManagedOutputFileRef, verifyOutputFileRef } from "./output-ref"
 import { recoverIsolatedWorktree, recoverWorktreeMetadata } from "./worktree-completion"
 
+type RecoveredNodeConfig = Pick<
+  NodeConfig,
+  | "id"
+  | "output_schema"
+  | "review"
+  | "input_mapping"
+  | "workspace"
+  | "workspace_writes"
+  | "review_lane"
+  | "review_arbitration"
+  | "prior_findings"
+>
+
+type RecoveredWorkflowConfig = {
+  mode?: "standard" | "deep"
+  review_gate?: "strict" | "standard"
+  nodes: RecoveredNodeConfig[]
+}
+
 export function reconcileWorkflow(
   dagID: string,
   checkSessionStatus: (childSessionID: string) => Effect.Effect<"active" | "completed" | "failed" | "unknown", Error>,
   cancelSession?: (sessionID: string) => Effect.Effect<void, Error>,
-  workflowConfig?: {
-    nodes: Pick<NodeConfig, "id" | "output_schema" | "review" | "input_mapping" | "workspace">[]
-  } | null,
+  workflowConfig?: RecoveredWorkflowConfig | null,
   lastAssistantText?: (childSessionID: string) => Effect.Effect<string | undefined, Error>,
   /** #943/#947: effective workflow execution directory. The workflow owner
    * directory is only for ownership checks in the caller; node-level and
@@ -297,7 +314,13 @@ export function reconcileWorkflow(
             // Settlement still passes the review contract, and a receipt that
             // belongs to an older input snapshot is rejected when the node
             // settles.
-            const settlement = recoveredSettlement(nodeConfig, nodes, node.capturedOutput, node.capturedOutputPresent)
+            const settlement = recoveredSettlement(
+              nodeConfig,
+              workflowConfig,
+              nodes,
+              node.capturedOutput,
+              node.capturedOutputPresent,
+            )
             const completed = yield* settle(
               node.id,
               settlement.kind === "complete"
@@ -343,7 +366,7 @@ export function reconcileWorkflow(
             continue
           }
           const settlement = captured.ok
-            ? recoveredSettlement(nodeConfig, nodes, captured.output, true)
+            ? recoveredSettlement(nodeConfig, workflowConfig, nodes, captured.output, true)
             : ({ kind: "fail", reason: captured.reason } as const)
           const completed = yield* settle(
             node.id,
@@ -604,15 +627,7 @@ export function reconcileWorkflow(
 export function continueRecoveredMessageNode(
   dagID: string,
   nodeID: string,
-  config:
-    | {
-        nodes: Pick<
-          NodeConfig,
-          "id" | "output_schema" | "review" | "input_mapping" | "workspace" | "workspace_writes"
-        >[]
-      }
-    | null
-    | undefined,
+  config: RecoveredWorkflowConfig | null | undefined,
   directory?: string,
   authorizeSource?: (
     childSessionID: string,
@@ -959,7 +974,7 @@ export function continueRecoveredMessageNode(
                 yield* new Dag.StaleMessageInputError({ dagID, nodeID, reason: captured.code })
               const all = yield* dag.store.getNodes(dagID)
               const settlement = captured.ok
-                ? recoveredSettlement(nodeConfig, all, captured.output, true)
+                ? recoveredSettlement(nodeConfig, config, all, captured.output, true)
                 : ({ kind: "fail", reason: captured.reason } as const)
               if (settlement.kind === "fail")
                 return yield* failNode(
@@ -1078,8 +1093,12 @@ export function continueRecoveredMessageNode(
  * spurious mismatch → forced re-run, never a false accept; typical hashes are
  * untouched by the sanitizer.
  */
-function recoveredSettlement(
-  nodeConfig: Pick<NodeConfig, "id" | "review" | "input_mapping">,
+export function recoveredSettlement(
+  nodeConfig: Pick<
+    NodeConfig,
+    "id" | "review" | "input_mapping" | "review_arbitration" | "prior_findings"
+  >,
+  config: RecoveredWorkflowConfig | null | undefined,
   rows: readonly DagStore.NodeRow[],
   captured: unknown,
   submitted?: boolean,
@@ -1090,8 +1109,23 @@ function recoveredSettlement(
   const evidence = rows
     .filter((row) => dependsOn.includes(row.id) && row.status === "completed")
     .map((row) => ({ nodeID: row.id, output: row.output }))
+  const arbitration = nodeConfig.review_arbitration
+    ? {
+        reviewArbitration: true as const,
+        ...(nodeConfig.prior_findings !== undefined ? { priorFindings: nodeConfig.prior_findings } : {}),
+        strictReviewGate: config?.mode === "deep" || config?.review_gate === "strict",
+        incompleteReviewLanes: (config?.nodes ?? [])
+          .filter(
+            (definition) =>
+              definition.review_lane !== undefined
+              && dependsOn.includes(definition.id)
+              && !rows.some((row) => row.id === definition.id && row.status === "completed"),
+          )
+          .map((definition) => definition.id),
+      }
+    : {}
   if (nodeConfig.review?.phase !== "diff")
-    return settleCapturedOutput(captured, undefined, " (recovered)", submitted, evidence)
+    return settleCapturedOutput(captured, undefined, " (recovered)", submitted, evidence, arbitration)
   const resolved = resolveInputMapping(
     nodeConfig.input_mapping,
     (nodeID) => rows.find((row) => row.id === nodeID)?.output,
@@ -1102,7 +1136,7 @@ function recoveredSettlement(
       kind: "fail",
       reason: "review implementation fingerprint could not be resolved from durable state (recovered)",
     }
-  return settleCapturedOutput(captured, fingerprint, " (recovered)", submitted, evidence)
+  return settleCapturedOutput(captured, fingerprint, " (recovered)", submitted, evidence, arbitration)
 }
 
 export function makeSessionStatusChecker(

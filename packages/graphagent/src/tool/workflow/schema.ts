@@ -97,6 +97,12 @@ export const CompactBlock = Schema.Struct({
   fan_out: Schema.optional(Schema.String),
   lenses: Schema.optional(Schema.Array(Schema.Literals(DagBlocks.REVIEW_LENSES))),
   skeptics: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4 }))),
+  prior_round: Schema.optional(
+    Schema.Struct({
+      workflow_id: Schema.String,
+      review_id: Schema.String,
+    }),
+  ),
 })
 export const CompactNode = Schema.Struct({
   id: Schema.String,

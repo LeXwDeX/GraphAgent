@@ -88,6 +88,7 @@ describe("workflow inspect status child runs (#1030 D9-h)", () => {
           getWorkflow: () => Effect.succeed(workflow),
           getCurrentNodes: () => Effect.succeed([node]),
           getNodes: () => Effect.succeed([node]),
+          getWorkflowSummaries: () => Effect.succeed([]),
         },
       } as unknown as Dag.Interface
 
@@ -132,6 +133,7 @@ describe("workflow inspect status child runs (#1030 D9-h)", () => {
           getWorkflow: () => Effect.succeed(workflow),
           getCurrentNodes: () => Effect.succeed([node]),
           getNodes: () => Effect.succeed([node]),
+          getWorkflowSummaries: () => Effect.succeed([]),
         },
       } as unknown as Dag.Interface
 

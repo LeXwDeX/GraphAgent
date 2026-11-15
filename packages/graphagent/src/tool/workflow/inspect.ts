@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { Effect, Option } from "effect"
+import { Cause, Effect, Option } from "effect"
 import type { NodeRow } from "@graphagent/core/dag/store"
 import { Dag } from "@/dag/dag"
+import { DagCoverage } from "@/dag/coverage"
 import { verifyOutputFileRef } from "@/dag/runtime/output-ref"
 import type { ChildRunView } from "@/session/child/run"
 import { SessionID } from "@/session/schema"
@@ -64,14 +65,53 @@ export const inspectWorkflow = (context: InspectContext, params: InspectParams):
       // history keeps the full record.
       const latestRetarget = dag.store.getLatestRetarget ? yield* dag.store.getLatestRetarget(workflow.id) : undefined
       const childRuns = yield* nodeChildRuns(context.children, nodes)
-      return renderStatus({ workflow, nodes, allNodes, failureReason, latestRetarget, childRuns })
+      // #1031 M6: coverage is engine-owned; skipped/failed/gated nodes, a
+      // declined fan-out, lane gaps, and a budget pause are listed here
+      // instead of relying on the model to mention them.
+      const coverage = DagCoverage.workflowCoverage({
+        config: Dag.parseWorkflowConfig(workflow.config),
+        nodes,
+        workflow: { status: workflow.status, pauseReason: workflow.pauseReason },
+      })
+      // Usage is presentational: a store implementation without the summary
+      // query (or a read defect) must not fail the status view.
+      const summaries = yield* Effect.suspend(() => dag.store.getWorkflowSummaries(sessionID)).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed([]),
+        ),
+      )
+      const usage = summaries.find((summary) => summary.id === workflow.id)
+      return renderStatus({
+        workflow,
+        nodes,
+        allNodes,
+        failureReason,
+        latestRetarget,
+        childRuns,
+        coverage,
+        ...(usage
+          ? {
+              usage: {
+                nodeCount: usage.nodeCount,
+                tokens: usage.tokens,
+                tokensCacheRead: usage.tokensCacheRead,
+              },
+            }
+          : {}),
+      })
     }
 
-    yield* requireOwnedWorkflow(dag, params.workflow_id, sessionID)
+    const workflow = yield* requireOwnedWorkflow(dag, params.workflow_id, sessionID)
     const node = yield* dag.store.getNode(params.workflow_id, params.node_id).pipe(Effect.orDie)
     if (!node) {
       return yield* Effect.die(new Error(`Workflow node not found: ${params.workflow_id}/${params.node_id}`))
     }
     yield* verifyOutputFileRef(node.capturedOutput).pipe(Effect.orDie)
-    return yield* renderResult(params.workflow_id, params.node_id, node, params.cursor, params.limit)
+    const currentNodes = yield* dag.store.getCurrentNodes(params.workflow_id).pipe(Effect.orDie)
+    const coverage = DagCoverage.workflowCoverage({
+      config: Dag.parseWorkflowConfig(workflow.config),
+      nodes: currentNodes,
+      workflow: { status: workflow.status, pauseReason: workflow.pauseReason },
+    })
+    return yield* renderResult(params.workflow_id, params.node_id, node, params.cursor, params.limit, coverage)
   })

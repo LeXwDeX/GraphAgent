@@ -51,6 +51,7 @@ import type { LimitKey } from "@/session/agent-scheduler-state"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
 import { DagBudget } from "../budget"
 import { isReviewWorker, type VerdictEvidence } from "../review-lifecycle"
+import type { PriorFinding } from "../blocks"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagModel } from "../model"
 import { DagLocation } from "../location"
@@ -155,6 +156,15 @@ export interface NodeSpawnInput {
   workspaceWrites?: "allow" | "deny"
   /** Completed direct dependency outputs an ACCEPT verdict must account for. */
   verdictEvidence?: readonly VerdictEvidence[]
+  /** #1031 M6: this node is a block-compiled review arbitration, so its
+   * dispositions/resolved are enforced at settlement. */
+  reviewArbitration?: boolean
+  /** Prior-round findings this arbitration must resolve. */
+  priorFindings?: readonly PriorFinding[]
+  /** The workflow runs under the strict review gate. */
+  strictReviewGate?: boolean
+  /** Lens/skeptic lanes of this decision that did not complete. */
+  incompleteReviewLanes?: readonly string[]
   /** DAG tier default — authoritative unless a persisted node model pin exists. */
   fallbackModel?: { modelID: string; providerID: string }
   /** DAG thinking_depth — forwarded as the prompt variant (no-op unless the model defines it). */
@@ -1522,6 +1532,16 @@ export function spawnNode(
                         "",
                         true,
                         input.verdictEvidence,
+                        {
+                          ...(input.reviewArbitration !== undefined
+                            ? { reviewArbitration: input.reviewArbitration }
+                            : {}),
+                          ...(input.priorFindings !== undefined ? { priorFindings: input.priorFindings } : {}),
+                          ...(input.strictReviewGate !== undefined ? { strictReviewGate: input.strictReviewGate } : {}),
+                          ...(input.incompleteReviewLanes !== undefined
+                            ? { incompleteReviewLanes: input.incompleteReviewLanes }
+                            : {}),
+                        },
                       )
                     : ({
                         kind: "fail",

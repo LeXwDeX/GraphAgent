@@ -816,6 +816,21 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                         },
                         "type": "array",
                       },
+                      "prior_round": {
+                        "properties": {
+                          "review_id": {
+                            "type": "string",
+                          },
+                          "workflow_id": {
+                            "type": "string",
+                          },
+                        },
+                        "required": [
+                          "workflow_id",
+                          "review_id",
+                        ],
+                        "type": "object",
+                      },
                       "report_to_parent": {
                         "type": "boolean",
                       },

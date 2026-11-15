@@ -4,6 +4,8 @@
 export * as DagReviewLifecycle from "./review-lifecycle"
 
 import type { NodeConfig, WorkflowConfig } from "./dag"
+import type { PriorFinding } from "./blocks"
+import { isReadOnlyProfile } from "./blocks"
 import { evaluateCondition } from "./runtime/eval"
 import { normalizeOutput, verdictField } from "./runtime/verdict"
 
@@ -197,6 +199,299 @@ export function acceptConsistencyErrors(output: unknown, evidence: readonly Verd
         ]
       : []),
   ]
+}
+
+/** Cross-round arbitration context: the prior findings a block-compiled
+ * decision resolves and the strict-gate lane completeness requirement. */
+export interface ArbitrationOptions {
+  /** Findings carried from the referenced prior round (engine-resolved). */
+  priorFindings?: readonly PriorFinding[]
+  /** The workflow runs under the strict review gate. */
+  strict?: boolean
+  /** Lens/skeptic lanes of this decision that did not complete. */
+  incompleteReviewLanes?: readonly string[]
+}
+
+interface Disposition {
+  node: string
+  index: number
+  novelty: "new" | { dup_of: string }
+  decision: "upheld" | "refuted"
+}
+
+interface Resolution {
+  ref: string
+  how: "fixed" | "refuted" | "still_open"
+}
+
+const keyOf = (node: string, index: number) => `${node}\u0000${index}`
+
+function dispositionRecord(value: unknown): Disposition | undefined {
+  const item = structuredRecord(value)
+  const index = item?.index
+  if (!item || typeof item.node !== "string" || typeof index !== "number" || !Number.isInteger(index))
+    return undefined
+  const decision = item.decision
+  if (decision !== "upheld" && decision !== "refuted") return undefined
+  const novelty = item.novelty
+  if (novelty === "new") return { node: item.node, index, novelty, decision }
+  const duplicate = structuredRecord(novelty)
+  if (duplicate && typeof duplicate.dup_of === "string")
+    return { node: item.node, index, novelty: { dup_of: duplicate.dup_of }, decision }
+  return undefined
+}
+
+function resolutionRecord(value: unknown): Resolution | undefined {
+  const item = structuredRecord(value)
+  if (!item || typeof item.ref !== "string") return undefined
+  if (item.how !== "fixed" && item.how !== "refuted" && item.how !== "still_open") return undefined
+  return { ref: item.ref, how: item.how }
+}
+
+/**
+ * Cross-round arbitration contract (#1031 M6). A block-compiled review decision
+ * submits dispositions for every required action the lanes raised — regardless
+ * of its verdict — and resolved for every prior finding. The runtime rejects
+ * missing and dangling entries; an ACCEPT additionally rejects an upheld
+ * disposition, any still-open resolution, and a duplicate of a still-open prior
+ * finding. Under the strict gate an ACCEPT also requires every lane to have
+ * completed.
+ */
+export function arbitrationConsistencyErrors(
+  output: unknown,
+  evidence: readonly VerdictEvidence[] = [],
+  options: ArbitrationOptions = {},
+): string[] {
+  const result = structuredRecord(output)
+  if (!result) return []
+  const errors: string[] = []
+  const rawDispositions = Array.isArray(result.dispositions) ? result.dispositions : undefined
+  const rawResolved = Array.isArray(result.resolved) ? result.resolved : undefined
+  if (rawDispositions === undefined)
+    errors.push("decision must submit dispositions covering every lane required action")
+  if (rawResolved === undefined) errors.push("decision must submit resolved covering every prior finding")
+
+  const expectedActions = evidence.flatMap((item) => {
+    const raised = structuredRecord(item.output)?.required_actions
+    return Array.isArray(raised) ? raised.map((_, index) => keyOf(item.nodeID, index)) : []
+  })
+  const expectedSet = new Set(expectedActions)
+  const dispositions = (rawDispositions ?? []).map(dispositionRecord)
+  const malformed = dispositions.filter((item) => item === undefined).length
+  if (malformed > 0)
+    errors.push(
+      `${malformed} disposition(s) are malformed; each needs { node, index, novelty: "new" or { dup_of }, decision: upheld|refuted, evidence }`,
+    )
+  const validDispositions = dispositions.filter((item): item is Disposition => item !== undefined)
+  const dispositionKeys = validDispositions.map((item) => keyOf(item.node, item.index))
+  const repeatedActions = uniqueKeys(dispositionKeys)
+  if (repeatedActions.length > 0)
+    errors.push(`dispositions repeat lane action(s): ${readableKeys(repeatedActions)}`)
+  const dispositionSet = new Set(dispositionKeys)
+  const missingDispositions = [...expectedSet].filter((key) => !dispositionSet.has(key))
+  if (missingDispositions.length > 0)
+    errors.push(`dispositions miss lane required action(s): ${readableKeys(missingDispositions)}`)
+  const unknownDispositions = [...dispositionSet].filter((key) => !expectedSet.has(key))
+  if (unknownDispositions.length > 0)
+    errors.push(`dispositions name unknown lane required action(s): ${readableKeys(unknownDispositions)}`)
+
+  const priorRefs = new Set((options.priorFindings ?? []).map((finding) => finding.ref))
+  const danglingDuplicates = validDispositions.flatMap((item) =>
+    typeof item.novelty === "object" && !priorRefs.has(item.novelty.dup_of) ? [item.novelty] : [],
+  )
+  if (danglingDuplicates.length > 0)
+    errors.push(
+      `dispositions name dup_of ref(s) that are not prior findings: ${danglingDuplicates.map((item) => item.dup_of).join(", ")}`,
+    )
+
+  const resolved = (rawResolved ?? []).map(resolutionRecord)
+  const malformedResolved = resolved.filter((item) => item === undefined).length
+  if (malformedResolved > 0)
+    errors.push(`${malformedResolved} resolved entr(y/ies) are malformed; each needs { ref, how: fixed|refuted|still_open, evidence }`)
+  const validResolved = resolved.filter((item): item is Resolution => item !== undefined)
+  const resolvedRefs = validResolved.map((item) => item.ref)
+  const repeatedResolved = uniqueKeys(resolvedRefs)
+  if (repeatedResolved.length > 0) errors.push(`resolved repeats prior finding ref(s): ${repeatedResolved.join(", ")}`)
+  const resolvedSet = new Set(resolvedRefs)
+  const missingResolved = [...priorRefs].filter((ref) => !resolvedSet.has(ref))
+  if (missingResolved.length > 0) errors.push(`resolved misses prior finding(s): ${missingResolved.join(", ")}`)
+  const unknownResolved = [...resolvedSet].filter((ref) => !priorRefs.has(ref))
+  if (unknownResolved.length > 0) errors.push(`resolved names ref(s) that are not prior findings: ${unknownResolved.join(", ")}`)
+
+  const verdict = result.verdict === "ACCEPT" ? "ACCEPT" : undefined
+  if (verdict === "ACCEPT") {
+    const upheld = validDispositions
+      .filter((item) => item.decision === "upheld")
+      .map((item) => `${item.node}[${item.index}]`)
+    if (upheld.length > 0)
+      errors.push(`ACCEPT upholds finding(s) ${upheld.join(", ")}; fix them or submit a non-ACCEPT verdict`)
+    const open = validResolved.filter((item) => item.how === "still_open").map((item) => item.ref)
+    if (open.length > 0) errors.push(`ACCEPT leaves prior finding(s) still open: ${open.join(", ")}`)
+    const openRefs = new Set(open)
+    const duplicatesOfOpen = validDispositions.flatMap((item) =>
+      typeof item.novelty === "object" && openRefs.has(item.novelty.dup_of)
+        ? [`${item.node}[${item.index}] duplicates still-open ${item.novelty.dup_of}`]
+        : [],
+    )
+    if (duplicatesOfOpen.length > 0)
+      errors.push(`ACCEPT hides still-open work behind duplicates: ${duplicatesOfOpen.join(", ")}`)
+    const incomplete = options.strict ? [...(options.incompleteReviewLanes ?? [])] : []
+    if (incomplete.length > 0)
+      errors.push(
+        `ACCEPT requires every review lane to complete under the strict gate; not completed: ${incomplete.join(", ")}. Submit BLOCKED or REJECT`,
+      )
+  }
+  return errors
+}
+
+function uniqueKeys(values: string[]): string[] {
+  return [...new Set(values.filter((value, index) => values.indexOf(value) !== index))]
+}
+
+function readableKeys(keys: readonly string[]): string {
+  return keys.map((key) => key.replace("\u0000", "[")).map((key) => `${key}]`).join(", ")
+}
+
+/** This round's disposition/resolution counts. */
+export interface ReviewRoundMetrics {
+  raised: number
+  newFindings: number
+  upheld: number
+  refuted: number
+  fixed: number
+  resolvedRefuted: number
+  stillOpen: number
+}
+
+export function reviewRoundMetrics(
+  output: unknown,
+  evidence: readonly VerdictEvidence[] = [],
+): ReviewRoundMetrics {
+  const result = structuredRecord(output)
+  const rawDispositions = result && Array.isArray(result.dispositions) ? result.dispositions : []
+  const rawResolved = result && Array.isArray(result.resolved) ? result.resolved : []
+  const dispositions = rawDispositions
+    .map(dispositionRecord)
+    .filter((item): item is Disposition => item !== undefined)
+  const resolved = rawResolved.map(resolutionRecord).filter((item): item is Resolution => item !== undefined)
+  const raised = evidence.reduce((sum, item) => {
+    const actions = structuredRecord(item.output)?.required_actions
+    return sum + (Array.isArray(actions) ? actions.length : 0)
+  }, 0)
+  return {
+    raised,
+    newFindings: dispositions.filter((item) => item.novelty === "new" && item.decision === "upheld").length,
+    upheld: dispositions.filter((item) => item.decision === "upheld").length,
+    refuted: dispositions.filter((item) => item.decision === "refuted").length,
+    fixed: resolved.filter((item) => item.how === "fixed").length,
+    resolvedRefuted: resolved.filter((item) => item.how === "refuted").length,
+    stillOpen: resolved.filter((item) => item.how === "still_open").length,
+  }
+}
+
+/** The round-chain totals a workflow result reports: per-round new findings,
+ * cumulative raised/fixed/refuted/open, and the trailing quiet-round streak. */
+export interface ReviewRoundSummary {
+  rounds: number
+  newFindingsPerRound: number[]
+  raised: number
+  newFindings: number
+  upheld: number
+  refuted: number
+  fixed: number
+  resolvedRefuted: number
+  stillOpen: number
+  quietRounds: number
+}
+
+export function reviewRoundSummary(rounds: readonly ReviewRoundMetrics[]): ReviewRoundSummary {
+  const trailingQuiet = [...rounds].reverse().findIndex((round) => round.newFindings > 0)
+  const quietRounds = trailingQuiet === -1 ? rounds.length : trailingQuiet
+  const total = (pick: (round: ReviewRoundMetrics) => number) => rounds.reduce((sum, round) => sum + pick(round), 0)
+  return {
+    rounds: rounds.length,
+    newFindingsPerRound: rounds.map((round) => round.newFindings),
+    raised: total((round) => round.raised),
+    newFindings: total((round) => round.newFindings),
+    upheld: total((round) => round.upheld),
+    refuted: total((round) => round.refuted),
+    fixed: total((round) => round.fixed),
+    resolvedRefuted: total((round) => round.resolvedRefuted),
+    stillOpen: total((round) => round.stillOpen),
+    quietRounds,
+  }
+}
+
+/** Strict review-coverage errors for an already-compiled graph (#1031 M6).
+ * Block-compiled decisions carry their lenses, lane markers, and writer
+ * markers through persistence, so recover/retry re-check the same contract
+ * without the authored blocks. Hand-authored node graphs carry no marker and
+ * are grandfathered: they were accepted by an earlier gate, and a persisted
+ * deep workflow must stay recoverable. The non-block writer rejection lives
+ * where the source shape is still known (authoring compileBlockSource). */
+export function strictReviewCoverageErrors(input: {
+  nodes: readonly NodeConfig[]
+  acceptance?: readonly { id: string }[]
+}): string[] {
+  const nodes = input.nodes
+  const decisions = nodes.filter((node) => node.review_arbitration === true)
+  const lanes = nodes.filter((node) => node.review_lane !== undefined)
+  const blockCompiled = decisions.length > 0 || lanes.length > 0 || nodes.some((node) => node.block !== undefined)
+  const errors: string[] = []
+  if (!blockCompiled) return errors
+
+  const writers = nodes.filter(
+    (node) => node.block === "coding" || node.block === "prototype" || node.aggregates_writers === true,
+  )
+  for (const writer of writers) {
+    const covered = decisions.some((decision) => {
+      const implementationID = decision.review?.implementation_node_id
+      if (decision.review?.phase !== "diff" || !implementationID) return false
+      if (!dependsOnTransitively(nodes, decision.id, writer.id)) return false
+      return (
+        implementationID === writer.id
+        || (nodes.some((node) => node.id === implementationID) && dependsOnTransitively(nodes, implementationID, writer.id))
+      )
+    })
+    if (!covered)
+      errors.push(
+        `${writer.id}: writer has no downstream diff review bound to its implementation fingerprint; every writer needs verify → review with implementation_node_id pointing at the writer or its fan-out aggregator`,
+      )
+  }
+  for (const decision of decisions) {
+    if (decision.required !== true) errors.push(`${decision.id}: strict review decision must set required: true`)
+    if (decision.skip_ok !== false) errors.push(`${decision.id}: strict review decision must set skip_ok: false`)
+    if (!(decision.review_lenses ?? []).includes("completeness"))
+      errors.push(`${decision.id}: strict review decision must include the completeness lens`)
+    if (!isReadOnlyProfile(decision.worker_type))
+      errors.push(`${decision.id}: strict review arbitration uses write-capable worker "${decision.worker_type}"`)
+  }
+  for (const lane of lanes) {
+    if (!isReadOnlyProfile(lane.worker_type))
+      errors.push(`${lane.id}: strict review lane uses write-capable worker "${lane.worker_type}"`)
+  }
+  if (writers.length > 0) {
+    const acceptance = input.acceptance ?? []
+    if (acceptance.length === 0)
+      errors.push("strict workflows with writers must declare config.acceptance for the completeness lane")
+    if (acceptance.length > 50) errors.push(`config.acceptance has ${acceptance.length} items; the strict gate allows at most 50`)
+    const repeated = uniqueKeys(acceptance.map((item) => item.id))
+    if (repeated.length > 0) errors.push(`config.acceptance repeats id(s): ${repeated.join(", ")}`)
+  }
+  return errors
+}
+
+function dependsOnTransitively(nodes: readonly NodeConfig[], startID: string, targetID: string): boolean {
+  const visited = new Set<string>()
+  const visit = (nodeID: string): boolean => {
+    if (visited.has(nodeID)) return false
+    visited.add(nodeID)
+    const node = nodes.find((candidate) => candidate.id === nodeID)
+    if (!node) return false
+    if (node.depends_on.includes(targetID)) return true
+    return node.depends_on.some(visit)
+  }
+  return visit(startID)
 }
 
 // Same normalization as verdict gates: plain or fenced JSON strings count as

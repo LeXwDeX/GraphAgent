@@ -13,7 +13,7 @@ export * as WorkflowAuthoring from "./authoring"
 
 import { Effect, Schema } from "effect"
 import type { NodeConfig, NodeDefaults, WorkflowConfig } from "./dag"
-import type { AcceptanceItem, ReviewGate } from "./blocks"
+import type { AcceptanceItem, PriorRound, ReviewGate, WorkflowBlock } from "./blocks"
 import { acceptanceFromCriteria, type AdmissionInput } from "./admission"
 import type { Config } from "@/config/config"
 import { DagValidation } from "./validation"
@@ -67,6 +67,10 @@ interface PrepareInput {
   /** Acceptance items judged by the completeness lane; mutations pass the
    * workflow's persisted config.acceptance. */
   acceptance?: readonly AcceptanceItem[]
+  /** Resolve a review block's prior_round from the referenced workflow's
+   * stored outputs. Live callers supply it; portable validation compiles
+   * without prior findings. A failure becomes a blocking diagnostic. */
+  prior_rounds?: (reference: { workflow_id: string; review_id: string }) => Effect.Effect<PriorRound, string>
 }
 
 interface Options {
@@ -128,19 +132,21 @@ export function make(options: Options = {}) {
       const key = cacheKey(input, profile, userMaxTotalNodes)
       // Environment catalogs are live state (models and agents may
       // change during the tool instance), so only portable results are safe
-      // to cache by source content.
-      const cached = profile === "portable" ? cache.get(key) : undefined
+      // to cache by source content. A prior_round compile depends on another
+      // workflow's stored outputs, so it is never cached.
+      const cacheable = profile === "portable" && !sourceMentionsPriorRound(input.source)
+      const cached = cacheable ? cache.get(key) : undefined
       if (cached) return cached
 
       const parsed = parseSource(input.source, input.action, profile)
       if (!parsed.value) {
-        if (profile === "portable") cache.set(key, parsed.result)
+        if (cacheable) cache.set(key, parsed.result)
         return parsed.result
       }
       const decoded = decodeAction(input.action, parsed.value.value, sourceName, profile)
       if (!decoded.value) {
         const result = { ...decoded.result, document: parsed.value.value }
-        if (profile === "portable") cache.set(key, result)
+        if (cacheable) cache.set(key, result)
         return result
       }
       if (decoded.value.action === "replan") {
@@ -175,15 +181,21 @@ export function make(options: Options = {}) {
           )
         if (rejected.length > 0) {
           const result = { ...invalidResult(sourceName, profile, rejected), document: decoded.value.spec }
-          if (profile === "portable") cache.set(key, result)
+          if (cacheable) cache.set(key, result)
           return result
         }
       }
+      const prior = yield* resolvePriorRounds(decoded.value, input.prior_rounds)
+      if (prior.diagnostics.length > 0) {
+        const result = { ...invalidResult(sourceName, profile, prior.diagnostics), document: decoded.value.spec }
+        if (cacheable) cache.set(key, result)
+        return result
+      }
       const review = effectiveReviewConfig(decoded.value, input)
-      const compiled = compileAction(decoded.value, input.known_dependencies, review)
+      const compiled = compileAction(decoded.value, input.known_dependencies, review, prior.rounds)
       if (!compiled.nodes) {
         const result = { ...invalidResult(sourceName, profile, compiled.diagnostics), document: decoded.value.spec }
-        if (profile === "portable") cache.set(key, result)
+        if (cacheable) cache.set(key, result)
         return result
       }
       if (profile === "environment" && !options.loadEnvironment) {
@@ -229,17 +241,29 @@ export function make(options: Options = {}) {
         catalogs,
         structural: input.action === "start",
       })
-      const prepared = validation.valid ? prepareGraph(decoded.value, nodes, nodeDefaults, review) : undefined
+      // Block compilation reports through diagnostics; node-source compilation
+      // can also return nodes with blocking diagnostics (the strict writer
+      // gate). Merge them with the post-compile result instead of
+      // short-circuiting, so the caller sees every error the document has.
+      const errors = DagValidation.sortDiagnostics([
+        ...validation.errors,
+        ...compiled.diagnostics.filter((diagnostic) => diagnostic.severity === "error"),
+      ])
+      const valid = errors.length === 0
+      const prepared = valid ? prepareGraph(decoded.value, nodes, nodeDefaults, review) : undefined
       const result = {
         ...validation,
+        valid,
+        errors,
         warnings: DagValidation.sortDiagnostics([
           ...validation.warnings,
+          ...compiled.diagnostics.filter((diagnostic) => diagnostic.severity === "warning"),
           ...legacyModelWarnings(input.action, parsed.value),
         ]),
         document: decoded.value.spec,
         ...(prepared ? { prepared } : {}),
       } satisfies Result
-      if (profile === "portable") cache.set(key, result)
+      if (cacheable) cache.set(key, result)
       return result
     })
 
@@ -353,6 +377,7 @@ function compileAction(
   decoded: DecodedAction,
   knownDependencies: string[] | undefined,
   review: EffectiveReviewConfig,
+  priorRounds: Readonly<Record<string, PriorRound>> = {},
 ): {
   nodes?: NodeConfig[]
   diagnostics: DagValidation.Diagnostic[]
@@ -371,6 +396,7 @@ function compileAction(
     known_dependencies: knownDependencies,
     review_gate: review.review_gate,
     ...(review.acceptance !== undefined ? { acceptance: review.acceptance } : {}),
+    ...(Object.keys(priorRounds).length > 0 ? { prior_rounds: priorRounds } : {}),
   }
   if (decoded.action === "extend") {
     const extend = decoded.spec
@@ -389,6 +415,60 @@ function compileAction(
     node_defaults: graph.node_defaults,
     config: decoded.action === "start" ? { ...graph, mode: decoded.spec.mode } : graph,
   }
+}
+
+function decodedBlocks(decoded: DecodedAction): readonly WorkflowBlock[] {
+  if (decoded.action === "start")
+    return "blocks" in decoded.spec.config ? decoded.spec.config.blocks : []
+  if (decoded.action === "extend") return "blocks" in decoded.spec ? decoded.spec.blocks : []
+  return "blocks" in decoded.spec.fragment ? decoded.spec.fragment.blocks : []
+}
+
+function priorRoundPath(decoded: DecodedAction): string {
+  return decoded.action === "start" ? "config.blocks" : decoded.action === "extend" ? "blocks" : "fragment.blocks"
+}
+
+/** Resolve every declared prior_round through the caller's live loader. The
+ * authoring agent never supplies prior findings itself; a missing or unknown
+ * reference is a blocking diagnostic, never a silent empty round. */
+function resolvePriorRounds(
+  decoded: DecodedAction,
+  loader: PrepareInput["prior_rounds"],
+): Effect.Effect<{ rounds: Record<string, PriorRound>; diagnostics: DagValidation.Diagnostic[] }> {
+  return Effect.gen(function* () {
+    const references = new Map<string, { workflow_id: string; review_id: string }>()
+    for (const block of decodedBlocks(decoded)) {
+      const reference = block.prior_round
+      if (block.kind !== "review" || reference === undefined) continue
+      // Shape errors (empty ids, non-review blocks) belong to block compile.
+      if (reference.workflow_id.trim() === "" || reference.review_id.trim() === "") continue
+      references.set(`${reference.workflow_id}/${reference.review_id}`, reference)
+    }
+    if (loader === undefined || references.size === 0) return { rounds: {}, diagnostics: [] }
+    const rounds: Record<string, PriorRound> = {}
+    const diagnostics: DagValidation.Diagnostic[] = []
+    for (const [key, reference] of references) {
+      const loaded = yield* loader(reference).pipe(Effect.result)
+      if (loaded._tag === "Failure") {
+        diagnostics.push(
+          DagValidation.diagnostic({
+            code: DagValidation.DIAGNOSTIC_CODES.dagInvalid,
+            path: priorRoundPath(decoded),
+            message: `prior_round ${key} could not be resolved: ${loaded.failure}`,
+            hint: "Reference the review decision of a completed or live workflow owned by this session; prior findings are read from its stored outputs",
+          }),
+        )
+      } else {
+        rounds[key] = loaded.success
+      }
+    }
+    return { rounds, diagnostics }
+  })
+}
+
+function sourceMentionsPriorRound(source: Source) {
+  if (source.kind === "yaml") return source.content.includes("prior_round")
+  return (JSON.stringify(source.value) ?? "").includes("prior_round")
 }
 
 function invalidResult(

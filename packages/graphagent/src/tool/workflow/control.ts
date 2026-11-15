@@ -109,6 +109,7 @@ export const controlWorkflow = (context: ControlContext, params: ControlParams):
         action: "replan",
         workflow,
         specPath: params.spec_path,
+        sessionID,
         session,
         ctx,
       })

@@ -548,7 +548,11 @@ describe("workflow spec validator", () => {
         })
         const unknown = result.errors.filter((d) => d.code === DagValidation.DIAGNOSTIC_CODES.workerUnknown)
         expect(unknown.map((d) => d.message)).toEqual(expect.arrayContaining([expect.stringContaining('"build"')]))
-        expect(result.warnings).toEqual([])
+        // #1031 M6: standard mode voices strict coverage gaps as advisory
+        // warnings; this case pins the unrelated warning surface.
+        expect(result.warnings.filter((warning) => !warning.message.startsWith("Review coverage advisory:"))).toEqual(
+          [],
+        )
 
         const legacy = yield* validateSpec({
           value: {
