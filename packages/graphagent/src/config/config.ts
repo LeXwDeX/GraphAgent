@@ -15,7 +15,7 @@ import { existsSync } from "fs"
 import { isRecord } from "@/util/record"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
-import { Context, Duration, Effect, Layer, Option, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Option, References, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { EffectFlock } from "@graphagent/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
@@ -495,6 +495,14 @@ export const layer = Layer.effect(
           Effect.logError("failed to load global config, using defaults", { error: String(error) }),
         ),
         Effect.orElseSucceed((): Info => ({})),
+        // This snapshot is read lazily from whatever fiber asks first — the
+        // scheduler, DAG mode defaults, and the budget gate. Listeners forked
+        // by the event bus can carry the runtime's default loggers rather than
+        // the interactive set, so the per-file `loading` INFO emitted by
+        // `loadFile` would land on the process's stdout (CLI `run` asserts
+        // exact stdout). The instance loader below already logs the same files
+        // through the real logger; errors and warnings still surface here.
+        Effect.provideService(References.MinimumLogLevel, "Warn"),
       ),
       Duration.infinity,
     )

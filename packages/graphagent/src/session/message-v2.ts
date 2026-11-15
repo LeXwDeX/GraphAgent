@@ -1269,6 +1269,8 @@ const AUTOMATION_MARKERS = [
   "[DAG Node Timeout]",
   "[Continuing toward your standing goal]",
   "Automatically delivered DAG result.",
+  // #1031 M5: the engine-generated budget-raise wake.
+  "budget raised by the user;",
 ]
 const AUTOMATION_METADATA = ["backgroundResult", "prWatch"]
 const AGENT_MESSAGE_PREFIX = '{"kind":"dag_agent_message"'

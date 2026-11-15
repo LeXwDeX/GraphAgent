@@ -197,8 +197,21 @@ export class Service extends Context.Service<Service, Interface>()("@graphagent/
 // Implementation
 // ============================================================================
 
-/** Ops whose paused workflow must consult the resume policy before mutation. */
-const PRECHECKED_OPS: ReadonlySet<ControlRequest["op"]> = new Set(["extend", "replan", "recover", "extend_timeout"])
+/**
+ * Ops that may schedule or reshape work and therefore consult the resume
+ * policy before mutating. The check is not limited to paused workflows: the
+ * M5 budget gate rejects `extend`/`replan`/`recover`/`extend_timeout` while the
+ * session's token budget is exhausted even on a running workflow, because each
+ * of them would admit new execution. `pause`/`cancel`/`complete` stay
+ * ungated so the parent can always stop work, and resume/step rely on Dag's
+ * in-lock guard instead of duplicating the policy call.
+ */
+const PRECHECKED_OPS: ReadonlySet<ControlRequest["op"]> = new Set([
+  "extend",
+  "replan",
+  "recover",
+  "extend_timeout",
+])
 
 const contextString = (error: unknown, key: string): string | undefined => {
   if (!isRecord(error)) return undefined
@@ -456,11 +469,11 @@ const make = Effect.gen(function* () {
         return yield* Effect.fail(new ControlNotFound())
       }
 
-      // D12: a paused workflow may refuse mutations that would wake scheduling.
+      // D12: mutations that would wake scheduling may be refused by policy.
       // The check runs before any mutation and never parks: a veto means
       // nothing was attempted. resume/step rely on Dag's in-lock guard instead
       // of duplicating the policy call.
-      if (PRECHECKED_OPS.has(request.op) && workflow.status === "paused") {
+      if (PRECHECKED_OPS.has(request.op)) {
         const checked = yield* ResumeGuard.check(workflow).pipe(Effect.exit)
         if (Exit.isFailure(checked)) {
           if (Cause.hasInterrupts(checked.cause)) return yield* Effect.interrupt

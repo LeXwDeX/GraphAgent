@@ -3,6 +3,7 @@
 
 import { Effect } from "effect"
 import { Dag } from "@/dag/dag"
+import { DagBudget } from "@/dag/budget"
 import { DagControl } from "@/dag/control"
 import { DagValidation } from "@/dag/validation"
 import { WorkflowAuthoring } from "@/dag/authoring"
@@ -20,6 +21,8 @@ type Authoring = ReturnType<typeof WorkflowAuthoring.make>
 export interface RunContext {
   readonly dag: Dag.Interface
   readonly control: DagControl.Interface
+  /** #1031 M5 budget gate; absent in harnesses without the service (fail-open). */
+  readonly budget?: Pick<DagBudget.Interface, "check">
   readonly authoring: Authoring
   readonly sessionID: string
   readonly session: {
@@ -34,6 +37,31 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
   Effect.gen(function* () {
     const { dag, control, authoring, sessionID, session, ctx } = context
     if (params.operation === "start") {
+      // #1031 M5: the budget gate rejects a new workflow before authoring or
+      // any durable row. The parent can still stop, inspect or ask; only the
+      // user can raise the budget.
+      if (context.budget) {
+        const gate = yield* context.budget
+          .check(SessionID.make(sessionID))
+          .pipe(Effect.catchTag("BudgetExhausted", (failure) => Effect.succeed(failure)))
+        if (gate instanceof DagBudget.BudgetExhaustedError) {
+          return {
+            title: "Workflow not started: DAG token budget exhausted",
+            output: JSON.stringify(
+              {
+                workflow_created: false,
+                error_code: "budget_exhausted",
+                used: gate.used,
+                budget: gate.budget,
+                message: gate.message,
+              },
+              null,
+              2,
+            ),
+            metadata: { blocked: true, diagnosticSummary: gate.message },
+          }
+        }
+      }
       const source = yield* loadAuthoringSource(params.spec_path, session.directory, session.projectID, ctx).pipe(
         Effect.orDie,
       )

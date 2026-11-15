@@ -77,6 +77,7 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagLoop } from "@/dag/runtime/loop"
 import { DagNodePublisher } from "@/dag/runtime/node-publisher"
+import { DagBudget } from "@/dag/budget"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { EventResidueSweep } from "@graphagent/core/event/residue-sweep"
@@ -212,6 +213,9 @@ const BaseAppLayer = Layer.mergeAll(
   // the same instances; a second build (server graph) converges through the
   // per-row CAS instead of double-polling.
   Layer.provideMerge(PrWatchPoller.defaultLayer),
+  // #1031 M5: exposes DagBudget and its ResumeGuard policy to every context
+  // that runs a Dag command (spawn admission, control, the workflow tool).
+  Layer.provideMerge(DagBudget.defaultLayer),
 )
 
 export const AppLayer = Layer.mergeAll(HookCwd.layer, HookTodo.layer).pipe(Layer.provideMerge(BaseAppLayer))

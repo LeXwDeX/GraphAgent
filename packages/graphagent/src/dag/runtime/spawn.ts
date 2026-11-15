@@ -49,6 +49,7 @@ import type { ChildRunHandle } from "@/session/child/run"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import type { LimitKey } from "@/session/agent-scheduler-state"
 import { Dag, type NodeExecutionAttempt, isStaleMessageInput } from "../dag"
+import { DagBudget } from "../budget"
 import { isReviewWorker, type VerdictEvidence } from "../review-lifecycle"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { DagModel } from "../model"
@@ -747,6 +748,42 @@ export function spawnNode(
               yield* Effect.sleep(250)
             }
             slot = yield* acquirePermit()
+          }
+          // #1031 M5 spawn admission: the authoritative budget gate, checked
+          // before any worktree or child session exists. The usage subscriber
+          // pauses workflows as soon as the ledger crosses the budget, but a
+          // spawn that already held a permit can reach this point in the
+          // window before that event is handled. Exhausting here (uninterruptible
+          // so a concurrent NodeFailed cleanup cannot cut the pause short itself)
+          // durably pauses the workflow and fails this queued attempt, so no
+          // child is created and no later node.started can follow.
+          const budgetService = Option.getOrUndefined(yield* Effect.serviceOption(DagBudget.Service))
+          if (budgetService) {
+            const verdict = yield* budgetService.check(SessionID.make(input.parentSessionID)).pipe(Effect.exit)
+            if (Exit.isFailure(verdict)) {
+              const denied = Cause.findErrorOption(verdict.cause)
+              if (Option.isSome(denied) && denied.value instanceof DagBudget.BudgetExhaustedError) {
+                yield* budgetService.exhaust(SessionID.make(input.parentSessionID)).pipe(
+                  Effect.uninterruptible,
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterrupts(cause)
+                      ? Effect.interrupt
+                      : Effect.logWarning("DAG spawn budget exhaustion failed to pause the workflow", {
+                          dagID: input.dagID,
+                          nodeID: input.nodeID,
+                          cause: Cause.pretty(cause),
+                        }),
+                  ),
+                )
+                // The attempt is already durably failed by the exhaustion
+                // sweep; ending through an interrupt keeps this fiber's cleanups
+                // (permit release, worktree rollback) without a second result.
+                yield* Effect.interrupt
+              }
+              yield* Cause.hasInterrupts(verdict.cause)
+                ? Effect.interrupt
+                : Effect.failCause(verdict.cause)
+            }
           }
           // The execution budget starts at permit acquisition: the queue wait
           // (including a pause hold) does not consume it. nodeStarted persists

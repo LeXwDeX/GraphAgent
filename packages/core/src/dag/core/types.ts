@@ -218,6 +218,11 @@ export function isNodeTerminalStatus(status: NodeStatus): boolean {
  * restarts never originate from a terminal node; the projector's NodeRestarted
  * resets the row to PENDING. (Node-level PAUSED was removed in D11: no
  * NodePaused durable event exists and no projector path writes it.)
+ *
+ * The D12 budget requeue is the single projector-level exception: a FAILED row
+ * cancelled by budget exhaustion may return to PENDING under
+ * NodeStatusProjection.requeued. It is not a general terminal escape hatch —
+ * the projector guard additionally requires error_class = budget_exhausted.
  */
 export function getValidNextNodeStatuses(currentStatus: NodeStatus): NodeStatus[] {
   switch (currentStatus) {

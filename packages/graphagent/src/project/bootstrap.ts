@@ -10,6 +10,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Effect, Layer, Scope } from "effect"
 import { Config } from "@/config/config"
 import { GoalLoop } from "@/goal/loop"
+import { DagBudget } from "@/dag/budget"
 import { DagLoop } from "@/dag/runtime/loop"
 import { DagNodePublisher } from "@/dag/runtime/node-publisher"
 import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
@@ -134,6 +135,15 @@ export const layer = Layer.effect(
       yield* dagNodePublisher
         .init()
         .pipe(Effect.catchCause((cause) => Effect.logWarning("dag node publisher init failed", { cause })))
+      // #1031 M5: reconcile the token-budget tier of sessions left mid-episode
+      // by an earlier process. Runs after DagLoop recovery so a workflow that
+      // is still below a raised budget can resume into a live scheduler.
+      const budget = yield* Effect.serviceOption(DagBudget.Service)
+      if (budget._tag === "Some") {
+        yield* budget.value
+          .init()
+          .pipe(Effect.catchCause((cause) => Effect.logWarning("dag budget init failed", { cause })))
+      }
     }).pipe(Effect.withSpan("InstanceBootstrap"))
 
     return Service.of({ run })
@@ -145,6 +155,7 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
     Config.defaultLayer,
     Database.defaultLayer,
     DagLoop.defaultLayer,
+    DagBudget.defaultLayer,
     DagSummaryPublisher.defaultLayer,
     DagNodePublisher.defaultLayer,
     Format.defaultLayer,
@@ -159,6 +170,7 @@ export const node = LayerNode.make(layer, [
   Config.node,
   Database.node,
   DagLoop.node,
+  DagBudget.node,
   DagSummaryPublisher.node,
   DagNodePublisher.node,
   Format.node,

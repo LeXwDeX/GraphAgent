@@ -66,6 +66,21 @@ export function resolveInitial(input: {
 }
 
 /**
+ * #1031 M5: the session's live token-budget tier. DagBudget owns the numbers;
+ * the request builder merges the cached value into L2 so a warning/exhausted
+ * line survives every ordinary turn publication.
+ */
+export type BudgetTier = "normal" | "warn" | "exhausted"
+
+export interface BudgetState {
+  readonly used: number
+  readonly cacheRead: number
+  readonly budget: number | null
+  readonly warnRatio: number
+  readonly tier: BudgetTier
+}
+
+/**
  * Everything L2 renders. The request builder supplies the live values: the mode
  * from the durable row, the budget from the same row plus the global `dag`
  * config, and availability from the resolved tools, permissions and model.
@@ -78,6 +93,8 @@ export interface Snapshot {
   readonly concurrency: number
   /** Per-workflow node cap (`dag.max_total_nodes`). */
   readonly maxTotalNodes: number
+  /** M5 live usage and tier; merged from the process cache when omitted. */
+  readonly budgetState?: BudgetState
   readonly unavailable?: UnavailableReason
   /** The `plan` agent may start only read-only workflows. */
   readonly plan?: boolean
@@ -109,10 +126,28 @@ const belts = (input: Snapshot) => [
   "Load the dag-auto skill for the playbook.",
 ]
 
+/** M5 budget-tier lines appended to L2 (Issue #1031 §M2 wording). */
+function budgetLines(budget: BudgetState | undefined): string[] {
+  if (!budget || budget.budget === null || budget.budget <= 0) return []
+  if (budget.tier === "exhausted")
+    return [
+      "DAG token budget exhausted: the engine paused this session's workflows and cancelled their running nodes. Report what is done and missing; only the user can raise the budget; the engine resumes them when it is raised.",
+    ]
+  if (budget.tier === "warn") {
+    const pct = Math.floor((budget.used / budget.budget) * 100)
+    return [`DAG token budget: over ${pct}% used. Prefer finishing and reporting over new stages.`]
+  }
+  return []
+}
+
 function onText(input: Snapshot): string {
   if (input.unavailable)
     return `DAG mode: ON but unavailable (${input.unavailable}). Work directly and tell the user once that DAG mode cannot run.`
-  return ["DAG mode: ON (set by the user for this session).", ...belts(input)].join("\n")
+  return [
+    "DAG mode: ON (set by the user for this session).",
+    ...belts(input),
+    ...budgetLines(input.budgetState),
+  ].join("\n")
 }
 
 /** L2: the state block for one snapshot. Off clears a previously sent block. */
@@ -124,9 +159,33 @@ export function state(input: Snapshot): RuntimeSlots.Slot {
   }
 }
 
+// Process-memory mirrors of the last L2 snapshot and budget tier per session.
+// DagBudget rewrites L2 between turns; the request builder (which does not
+// read usage itself) merges the cached tier into every fresh snapshot.
+const snapshots = new Map<SessionID, Snapshot>()
+const budgets = new Map<SessionID, BudgetState>()
+
 /** Publish L2 for this process. */
 export function set(sessionID: SessionID, input: Snapshot): void {
-  EngineProcess.runtimes.runtimeSlots.set(sessionID, KEY, state(input))
+  const merged: Snapshot = { ...input, budgetState: input.budgetState ?? budgets.get(sessionID) }
+  snapshots.set(sessionID, merged)
+  EngineProcess.runtimes.runtimeSlots.set(sessionID, KEY, state(merged))
+}
+
+/**
+ * Record a budget-tier change and republish L2 when this process already built
+ * a snapshot for the session. Without a base snapshot the tier is only cached:
+ * the next request merges it before the model sees anything.
+ */
+export function setBudget(sessionID: SessionID, budget: BudgetState): void {
+  budgets.set(sessionID, budget)
+  const base = snapshots.get(sessionID)
+  if (base) set(sessionID, { ...base, budgetState: budget })
+}
+
+/** The last budget tier this process computed for the session, if any. */
+export function budgetState(sessionID: SessionID): BudgetState | undefined {
+  return budgets.get(sessionID)
 }
 
 export type ReceiptKind = "on" | "off" | "status" | "budget"
@@ -164,8 +223,10 @@ export function text(kind: ReceiptKind, values: ReceiptValues): string {
       return `DAG 模式已关闭；${shown(values.n)} 个运行中的工作流会继续到结束。`
     case "status":
       return `模式 ${shown(values.state)}；新会话默认 ${shown(values.default)}；并发 ${shown(values.running)}/${shown(values.cap)}；节点上限 ${shown(values.nodes)}；token ${shown(values.used)}/${shown(values.budget)}。`
-    case "budget":
-      return `本会话 DAG 预算已设为 ${shown(values.N)} token。`
+    case "budget": {
+      const resumed = typeof values.k === "number" && values.k > 0 ? ` 已恢复 ${values.k} 个工作流。` : ""
+      return `本会话 DAG 预算已设为 ${shown(values.N)} token。${resumed}`
+    }
     default:
       return ""
   }

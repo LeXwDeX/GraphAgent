@@ -60,6 +60,8 @@ const NODE_TRIGGER_EVENTS = [
   DagEvent.NodeAborted,
   DagEvent.NodeCancelled,
   DagEvent.NodeRestarted,
+  // D12 budget requeue: failed → pending is a visible status change.
+  DagEvent.NodeRequeued,
   DagEvent.NodeTimeoutEscalated,
   DagEvent.NodeDeadlineExtended,
 ] as const

@@ -73,6 +73,7 @@ export type DeliveryPolicy = "idle_only" | "join_or_start" | "turn_boundary"
 
 export type InboxSourceID =
   | "child.result"
+  | "dag.budget"
   | "dag.delivery"
   | "dag.mailbox.step"
   | "hook.followup"
@@ -482,6 +483,19 @@ export const layer = Layer.effect(
               {
                 id: "hook.rewake",
                 priority: 20,
+                mode: "join_or_start",
+                hint: () => false,
+                claim: () => Effect.succeed(false),
+              },
+            ],
+            // #1031 M5: the budget-raise wake is engine-generated (never a
+            // user or agent payload). A submit whitelist only: the item is
+            // admitted immediately and nothing is held across boundaries.
+            [
+              "dag.budget",
+              {
+                id: "dag.budget",
+                priority: 25,
                 mode: "join_or_start",
                 hint: () => false,
                 claim: () => Effect.succeed(false),

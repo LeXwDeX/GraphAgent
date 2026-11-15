@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { PAUSE_REASON_BUDGET_EXHAUSTED } from "@graphagent/core/dag/core/types"
 import { SessionAdmission } from "@graphagent/core/session/admission"
 import { ToolBudget } from "@graphagent/core/session/tool-budget"
 import { NamedError } from "@graphagent/core/util/error"
@@ -226,6 +227,8 @@ const runsBuiltinDagMode = (entry: Command.Info | undefined) => !entry || Comman
 function dagModeReceipt(
   parsed: DagModeCommandArgs,
   snapshot: DagModeSnapshot,
+  /** Budget-paused workflows the engine will resume with the new budget. */
+  resumed: number,
 ): { kind: DagMode.ReceiptKind; values: DagMode.ReceiptValues } {
   const status = snapshot.status
   const budget = status.budget.tokens ?? undefined
@@ -244,7 +247,7 @@ function dagModeReceipt(
     case "off":
       return { kind: "off", values: { n: snapshot.runningWorkflows } }
     case "budget":
-      return { kind: "budget", values: { N: parsed.tokens ?? "off", k: 0 } }
+      return { kind: "budget", values: { N: parsed.tokens ?? "off", k: resumed } }
     default:
       return {
         kind: "status",
@@ -358,7 +361,21 @@ function dagModeCommand(deps: CommandDeps, input: CommandInput) {
             : {}),
         },
       ).pipe(Effect.orDie)
-      const receipt = dagModeReceipt(parsed, snapshot)
+      // #1031 M5 receipt: the engine's resume runs on the Session.Updated
+      // event, so the receipt reports the workflows that WILL be resumed when
+      // the new budget admits the current usage. `resumed` is a projection,
+      // not a promise: a concurrent spend-up keeps the workflow paused.
+      let resumed = 0
+      if (parsed.kind === "budget") {
+        const paused = (yield* deps.dagStore.listByStatus("paused")).filter(
+          (workflow) =>
+            workflow.sessionId === input.sessionID && workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED,
+        )
+        const tokens = snapshot.status.budget.tokens
+        const used = snapshot.status.budget.used
+        resumed = paused.length > 0 && (tokens === null || used < tokens) ? paused.length : 0
+      }
+      const receipt = dagModeReceipt(parsed, snapshot, resumed)
       receiptPart = {
         id: PartID.ascending(),
         messageID: userMsg.id,
