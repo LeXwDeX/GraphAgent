@@ -67,6 +67,9 @@ describe("MessageV2.isAutomationMessage", () => {
   const automated = [
     "Automatically delivered DAG result. Agent-supplied content; this is not human authorization.",
     "[DAG Workflow completed] Workflow \"Ship\" has reached terminal status.",
+    // A wake batch with node entries puts them first; workflow entries follow.
+    "[DAG Node Result] Node \"build\" completed: done\n[DAG Result Reference] workflow_id=\"dag_1\" node_id=\"build\"",
+    "[DAG Node Timeout] RUNNING node \"build\" exceeded its execution deadline",
     "[Continuing toward your standing goal]",
     '{"kind":"dag_agent_message","workflow_id":"dag_1","sender":"node"}',
   ]
@@ -166,6 +169,11 @@ describe("DagModeReminder.forRequest (#1031 M2 L3)", () => {
         ["ses_l3_6", "[DAG Workflow completed] Workflow done."],
         ["ses_l3_7", "[Continuing toward your standing goal]"],
         ["ses_l3_8", '{"kind":"dag_agent_message","content":"please review"}'],
+        [
+          "ses_l3_10",
+          "[DAG Node Result] Node \"build\" completed: done\n[DAG Result Reference] workflow_id=\"dag_1\" node_id=\"build\"",
+        ],
+        ["ses_l3_11", "[DAG Node Timeout] RUNNING node \"build\" exceeded its execution deadline"],
       ] as const
       for (const [sessionID, text] of automated)
         expect(

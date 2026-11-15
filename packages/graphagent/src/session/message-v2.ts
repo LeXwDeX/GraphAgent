@@ -1263,6 +1263,10 @@ export function isLocalCommand(message: { info: { role: string }; parts?: readon
  */
 const AUTOMATION_MARKERS = [
   "[DAG Workflow ",
+  // A wake batch lists node entries before workflow entries, so the summary of
+  // a batch that includes results or timeout escalations starts with these.
+  "[DAG Node Result]",
+  "[DAG Node Timeout]",
   "[Continuing toward your standing goal]",
   "Automatically delivered DAG result.",
 ]

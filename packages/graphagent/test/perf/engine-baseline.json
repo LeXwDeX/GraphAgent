@@ -5,12 +5,12 @@
   "scenarios": {
     "S1": {
       "perTurn": {
-        "sql.read": 56,
+        "sql.read": 55,
         "sql.write": 25,
         "commits": 11,
-        "json.parseBytes": 70271,
-        "json.encodeBytes": 4494,
-        "sha256Bytes": 4172,
+        "json.parseBytes": 70318,
+        "json.encodeBytes": 4472,
+        "sha256Bytes": 4150,
         "git.spawns": 4,
         "snapshot.lockWaits": 0,
         "events.durable": 11,
@@ -22,9 +22,9 @@
         "sql.read": 32,
         "sql.write": 14,
         "commits": 6,
-        "json.parseBytes": 46698,
-        "json.encodeBytes": 2573,
-        "sha256Bytes": 2251,
+        "json.parseBytes": 46798,
+        "json.encodeBytes": 2577,
+        "sha256Bytes": 2255,
         "git.spawns": 0,
         "snapshot.lockWaits": 0,
         "events.durable": 6,
@@ -51,12 +51,12 @@
     },
     "S2": {
       "perTurn": {
-        "sql.read": 252,
+        "sql.read": 251,
         "sql.write": 81,
         "commits": 36,
-        "json.parseBytes": 1604742,
-        "json.encodeBytes": 137552,
-        "sha256Bytes": 82793,
+        "json.parseBytes": 1604641,
+        "json.encodeBytes": 137526,
+        "sha256Bytes": 82767,
         "git.spawns": 12,
         "snapshot.lockWaits": 0,
         "events.durable": 37,
@@ -65,10 +65,10 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 59,
+        "sql.read": 58,
         "sql.write": 21,
         "commits": 9,
-        "json.parseBytes": 468728,
+        "json.parseBytes": 468627,
         "json.encodeBytes": 3943,
         "sha256Bytes": 3725,
         "git.spawns": 4,
@@ -113,12 +113,12 @@
     },
     "S3": {
       "perTurn": {
-        "sql.read": 86,
+        "sql.read": 85,
         "sql.write": 33,
         "commits": 15,
-        "json.parseBytes": 151571,
-        "json.encodeBytes": 4661,
-        "sha256Bytes": 4325,
+        "json.parseBytes": 151462,
+        "json.encodeBytes": 4624,
+        "sha256Bytes": 4288,
         "git.spawns": 4,
         "snapshot.lockWaits": 0,
         "events.durable": 13,
@@ -130,9 +130,9 @@
         "sql.read": 36,
         "sql.write": 14,
         "commits": 6,
-        "json.parseBytes": 61603,
-        "json.encodeBytes": 2565,
-        "sha256Bytes": 2229,
+        "json.parseBytes": 61597,
+        "json.encodeBytes": 2561,
+        "sha256Bytes": 2225,
         "git.spawns": 0,
         "snapshot.lockWaits": 0,
         "events.durable": 6,
@@ -159,13 +159,13 @@
     },
     "S5": {
       "perTurn": {
-        "sql.read": 3242,
+        "sql.read": 3202,
         "sql.write": 1674,
-        "commits": 653,
-        "json.parseBytes": 538299,
-        "json.encodeBytes": 258913,
-        "sha256Bytes": 247965,
-        "git.spawns": 48,
+        "commits": 650,
+        "json.parseBytes": 530238,
+        "json.encodeBytes": 257217,
+        "sha256Bytes": 246269,
+        "git.spawns": 52,
         "snapshot.lockWaits": 30,
         "events.durable": 624,
         "events.ephemeral": 68,
@@ -173,7 +173,7 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 0,
+        "sql.read": 1,
         "sql.write": 0,
         "commits": 0,
         "json.parseBytes": 0,
@@ -474,12 +474,12 @@
     },
     "S6": {
       "perTurn": {
-        "sql.read": 114,
+        "sql.read": 112,
         "sql.write": 56,
         "commits": 25,
-        "json.parseBytes": 36194,
-        "json.encodeBytes": 1198573,
-        "sha256Bytes": 13576,
+        "json.parseBytes": 36022,
+        "json.encodeBytes": 1198551,
+        "sha256Bytes": 13554,
         "git.spawns": 16,
         "snapshot.lockWaits": 0,
         "events.durable": 24,
@@ -488,12 +488,12 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 35,
+        "sql.read": 34,
         "sql.write": 19,
         "commits": 8,
-        "json.parseBytes": 17436,
-        "json.encodeBytes": 598244,
-        "sha256Bytes": 5746,
+        "json.parseBytes": 17400,
+        "json.encodeBytes": 598247,
+        "sha256Bytes": 5749,
         "git.spawns": 6,
         "snapshot.lockWaits": 0,
         "events.durable": 9,
@@ -530,12 +530,12 @@
     },
     "S7": {
       "perTurn": {
-        "sql.read": 314,
+        "sql.read": 312,
         "sql.write": 104,
         "commits": 45,
-        "json.parseBytes": 2400244,
-        "json.encodeBytes": 142239,
-        "sha256Bytes": 87492,
+        "json.parseBytes": 2400042,
+        "json.encodeBytes": 142213,
+        "sha256Bytes": 87466,
         "git.spawns": 31,
         "snapshot.lockWaits": 0,
         "events.durable": 48,
@@ -544,10 +544,10 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 56,
+        "sql.read": 55,
         "sql.write": 22,
         "commits": 9,
-        "json.parseBytes": 513387,
+        "json.parseBytes": 513286,
         "json.encodeBytes": 4327,
         "sha256Bytes": 4218,
         "git.spawns": 4,
@@ -602,12 +602,12 @@
     },
     "S4": {
       "perTurn": {
-        "sql.read": 733,
+        "sql.read": 712,
         "sql.write": 454,
         "commits": 195,
-        "json.parseBytes": 426617,
-        "json.encodeBytes": 94035,
-        "sha256Bytes": 93710,
+        "json.parseBytes": 422918,
+        "json.encodeBytes": 93761,
+        "sha256Bytes": 93436,
         "git.spawns": 244,
         "snapshot.lockWaits": 0,
         "events.durable": 213,
@@ -616,12 +616,12 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 33,
+        "sql.read": 32,
         "sql.write": 21,
         "commits": 9,
-        "json.parseBytes": 19148,
-        "json.encodeBytes": 4467,
-        "sha256Bytes": 4467,
+        "json.parseBytes": 18976,
+        "json.encodeBytes": 4455,
+        "sha256Bytes": 4455,
         "git.spawns": 12,
         "snapshot.lockWaits": 0,
         "events.durable": 10,
@@ -809,5 +809,55 @@
       ]
     }
   },
-  "declared": []
+  "declared": [
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S1",
+      "delta": 1,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S2",
+      "delta": 1,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S3",
+      "delta": 1,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S4",
+      "delta": 21,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S5",
+      "delta": 38,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S6",
+      "delta": 2,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    },
+    {
+      "pr": "#1317",
+      "metric": "sql.read",
+      "scenario": "S7",
+      "delta": 2,
+      "reason": "reconcileDagMode reads the durable session row once per prepare to refresh DAG mode (Issue #1031 M1 Codex P2)"
+    }
+  ]
 }
