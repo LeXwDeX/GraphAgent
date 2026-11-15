@@ -24,7 +24,7 @@ export type Dag = typeof ConfigV1.Dag.Type
  * commented placeholder left as "") counts as unconfigured.
  */
 export function tierModel(info: Dag, node: { required: boolean; workerType: string }) {
-  const critical = node.required || isReviewWorker(node.workerType)
+  const critical = node.required || isReviewWorker(node.workerType) || node.workerType === "auditor"
   const advanced = parseModelRef(info.model?.advanced)
   const standard = parseModelRef(info.model?.standard)
   return critical ? (advanced ?? standard) : (standard ?? advanced)

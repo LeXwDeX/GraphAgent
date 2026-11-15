@@ -571,6 +571,24 @@ describe("workflow spec validator", () => {
       }),
     )
 
+    it.effect("accepts the built-in auditor as a block worker in the environment catalog", () =>
+      Effect.gen(function* () {
+        const result = yield* validateSpec({
+          value: validBlocksSpec,
+          source: "<inline>",
+          profile: "environment",
+          catalogs: {
+            worker_types: new Set(["plan", "build", "general", "auditor"]),
+          },
+        })
+        // Verify and the default review lanes compile to the built-in auditor;
+        // registering it in Agent.list is what makes them catalog-valid.
+        expect(
+          result.errors.filter((d) => d.code === DagValidation.DIAGNOSTIC_CODES.workerUnknown),
+        ).toEqual([])
+      }),
+    )
+
     it.effect("model.unavailable is reported per unresolved node", () =>
       Effect.gen(function* () {
         const result = yield* validateSpec({

@@ -730,7 +730,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or .yaml/.yml path",
+              "description": "Saved workflow name or path",
               "type": "string",
             },
           },
@@ -751,6 +751,26 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
             },
             "config": {
               "properties": {
+                "acceptance": {
+                  "items": {
+                    "properties": {
+                      "id": {
+                        "description": "Stable acceptance id the completeness lane reports against (for example AC1)",
+                        "type": "string",
+                      },
+                      "text": {
+                        "description": "Acceptance criterion the delivered work must satisfy",
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "id",
+                      "text",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
                 "blocks": {
                   "items": {
                     "properties": {
@@ -782,11 +802,30 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                         ],
                         "type": "string",
                       },
+                      "lenses": {
+                        "items": {
+                          "enum": [
+                            "standards",
+                            "intent",
+                            "completeness",
+                            "security",
+                            "tests",
+                            "performance",
+                          ],
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
                       "report_to_parent": {
                         "type": "boolean",
                       },
                       "required": {
                         "type": "boolean",
+                      },
+                      "skeptics": {
+                        "maximum": 4,
+                        "minimum": 0,
+                        "type": "integer",
                       },
                       "worker_config": {
                         "properties": {
@@ -794,9 +833,6 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                             "type": "number",
                           },
                         },
-                        "required": [
-                          "timeout_ms",
-                        ],
                         "type": "object",
                       },
                       "worker_type": {
@@ -973,6 +1009,13 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                 "objective": {
                   "type": "string",
                 },
+                "review_gate": {
+                  "enum": [
+                    "strict",
+                    "standard",
+                  ],
+                  "type": "string",
+                },
                 "workspace": {
                   "type": "string",
                 },
@@ -983,7 +1026,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "object",
             },
             "operation": {
-              "description": "Write a start spec; creates no workflow",
+              "description": "Write a start spec; creates none",
               "enum": [
                 "draft",
               ],
@@ -1016,7 +1059,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "profile": {
-              "description": "portable checks; environment also resolves prompts, workers, models",
+              "description": "portable checks; environment resolves prompts, workers, models",
               "enum": [
                 "portable",
                 "environment",
@@ -1024,7 +1067,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or .yaml/.yml path",
+              "description": "Saved workflow name or path",
               "type": "string",
             },
           },
@@ -1050,7 +1093,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or .yaml/.yml path",
+              "description": "Saved workflow name or path",
               "type": "string",
             },
           },
@@ -1077,7 +1120,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or .yaml/.yml path",
+              "description": "Saved workflow name or path",
               "type": "string",
             },
             "workflow_id": {
@@ -1301,7 +1344,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "operation": {
-              "description": "Cancel one non-terminal node; required nodes still fail the workflow",
+              "description": "Cancel one non-terminal node; required nodes still fail it",
               "enum": [
                 "cancel_node",
               ],
@@ -1333,14 +1376,14 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "operation": {
-              "description": "Apply a fragment: add/cancel/restart/replace nodes",
+              "description": "Apply a fragment: add/cancel/restart/replace",
               "enum": [
                 "replan",
               ],
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or .yaml/.yml path",
+              "description": "Saved workflow name or path",
               "type": "string",
             },
             "workflow_id": {
@@ -1365,7 +1408,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "expected_graph_rev": {
-              "description": "Exact graph_rev from status",
+              "description": "Exact graph_rev",
               "maximum": 9007199254740991,
               "minimum": 0,
               "type": "integer",
@@ -1422,7 +1465,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "timeout_ms": {
-              "description": "Fresh timeout from now, 1s-24h",
+              "description": "Fresh timeout, 1s-24h",
               "maximum": 86400000,
               "minimum": 1000,
               "type": "integer",
@@ -1450,7 +1493,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "fingerprint": {
-              "description": "Expected fingerprint: computed git value or 'none'",
+              "description": "Expected fingerprint: git value or 'none'",
               "type": "string",
             },
             "node_ids": {
@@ -1476,7 +1519,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "workspace": {
-              "description": "Linked worktree; omit to keep the current one",
+              "description": "Linked worktree; omit to keep current",
               "type": "string",
             },
           },

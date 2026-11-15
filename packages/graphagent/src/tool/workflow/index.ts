@@ -136,6 +136,7 @@ export const WorkflowTool = Tool.define<
             directory: callingSession.directory,
             projectID: callingSession.projectID,
             model: callingSession.model,
+            dagMode: callingSession.dagMode,
           }
           switch (params.action) {
             case "spec":

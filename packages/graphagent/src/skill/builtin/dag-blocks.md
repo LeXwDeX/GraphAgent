@@ -1,101 +1,98 @@
 # Composable Workflow Blocks
 
-Blocks are the high-level interface for a one-off workflow YAML file. The tool
-compiles them into ordinary durable DAG nodes before validation and
-persistence; node-based YAML remains compatible.
+Blocks are the high-level interface for a one-off workflow YAML file; they
+compile into durable DAG nodes before validation and persistence. Node-based
+YAML remains compatible.
 
 Use blocks when a DAG serves the task. Examples are optional, not a checklist or
-stage minimum; selecting a block opts into its compiler and output contracts.
+stage minimum; selecting one opts into its compiler and output contracts.
 
-Every live `extend` or `control(replan)` costs a parent turn, so declare known
-structure — parallel branches, dependencies, conditions, `fan_out` writers — in
-the start graph, and mutate at runtime only for structure that depends on
-results.
+Every live `extend` or `control(replan)` costs a parent turn: declare known
+structure in the start graph, and mutate at runtime only for structure that
+depends on results.
 
 ## Authoring contract
 
 Never infer or invent a YAML field. Copy the intended envelope and change
-values only. Unknown fields are errors; a field from a tool call, runtime
-result, or other action does not belong here unless listed.
+values only. Unknown fields are errors; a tool-call or runtime field does not
+belong here unless listed.
 
 ### Start file
 
-Author-written top-level fields: optional `title`, `mode`, `admission`, and
-required `config`. `objective` lives INSIDE `config`; the top level carries no
-graph fields. For the block route, `config` requires `name`, `objective`,
-`blocks`; optional fields are `node_defaults`, `max_concurrency`,
-`max_node_replan_attempts`, `max_total_nodes`.
+Top-level fields: optional `title`, `mode`, `admission`, required `config`.
+`objective` lives INSIDE `config`; the top level carries no graph fields.
+`config` requires `name`, `objective`, `blocks`; optional fields are
+`node_defaults`, `max_concurrency`, `max_node_replan_attempts`,
+`max_total_nodes`, `acceptance`, and `review_gate`.
+
+`acceptance` is `[{ id, text }]`; `review_gate` is `"strict"` or `"standard"`.
+Both are start-only and fixed at run.start: DAG mode on or `mode: deep` fixes
+`review_gate` to `strict`, overriding an authored `standard`; otherwise it
+defaults to `standard`. A deep workflow without `acceptance` derives
+`AC1..ACn` from `admission.brief.acceptance_criteria`.
 
 ```yaml
-title: Implement session recovery
 config:
   name: implement-session-recovery
-  objective: Implement session recovery with focused tests and evidence-backed review.
-  blocks:
-    - { id: map, kind: explore }
-    - { id: design, kind: plan, depends_on: [map], instruction: Define the seam and interface plus acceptance evidence. }
-    - { id: coding, kind: coding, depends_on: [design], instruction: Deliver through observable tests. }
-    - { id: verify, kind: verify, depends_on: [coding] }
-    - { id: review, kind: review, depends_on: [verify] }
+  objective: Implement session recovery with focused tests.
+  acceptance: [{ id: AC1, text: Recovery restores the interrupted session }]
+  blocks: [{ id: coding, kind: coding }, { id: verify, kind: verify, depends_on: [coding] }, { id: review, kind: review, depends_on: [verify], lenses: [standards, intent, completeness] }]
 ```
 
 ### Extend file
 
 An extend file takes its graph at the top level — required `objective` plus
 `blocks` or `nodes`, never both. It has no `config`, `title`, `name`, or
-`fragment` wrapper and no graph budgets (`max_concurrency`,
-`max_node_replan_attempts`, `max_total_nodes`) or `node_defaults`: those belong
-to the start document and cannot change.
+`fragment` wrapper and no start-document fields (`node_defaults`, graph budgets,
+`acceptance`, `review_gate`).
 
 ```yaml
-objective: Add regression coverage for the newly confirmed recovery edge case.
-blocks:
-  - { id: recovery-fix, kind: coding, instruction: Implement only the confirmed fix and its test. }
-  - { id: recovery-verify, kind: verify, depends_on: [recovery-fix] }
+objective: Add regression coverage.
+blocks: [{ id: fix, kind: coding }, { id: verify, kind: verify, depends_on: [fix] }]
 ```
 
 ### Replan file
 
-A replan file contains only `fragment`. For the block route, `fragment` takes
-start's `config` fields: required `name`, `objective`, `blocks`, plus the four
-optional fields.
+A replan file contains only `fragment`, which takes start's `config` fields
+except the start-only `acceptance` and `review_gate`.
 
 ```yaml
 fragment:
   name: recover-session-recovery
-  objective: Replace the invalid route with a diagnosed, verified repair path.
-  blocks:
-    - { id: diagnose, kind: debug, instruction: Reproduce the failure and identify the evidence-backed root cause. }
-    - { id: repair, kind: coding, depends_on: [diagnose], instruction: Apply the smallest supported repair. }
-    - { id: verify, kind: verify, depends_on: [repair] }
+  objective: Replace the invalid route with a diagnosed repair path.
+  blocks: [{ id: diagnose, kind: debug }, { id: repair, kind: coding, depends_on: [diagnose] }, { id: verify, kind: verify, depends_on: [repair] }]
 ```
 
 Every block accepts only `id`, `kind`, `depends_on`, `instruction`,
 `worker_type`, `worker_config`, `required`, and `report_to_parent`; `id` and
-`kind` are required. Kinds: `explore`, `plan`, `prototype`, `debug`, `coding`,
-`verify`, `review`, `synthesize`. Omit `worker_type` unless the exact configured
-agent name is known; never invent one. Block `worker_config` (`timeout_ms` only)
-overrides `node_defaults.worker_config` for every expanded node;
-`node_defaults` accepts only `required`, `report_to_parent`, and
-`worker_config`. `fan_out` is described below.
+`kind` are required. `review` blocks also accept `lenses` and `skeptics`.
+`lenses` takes `standards`, `intent`, `completeness`, `security`, `tests`, or
+`performance`, defaults to `[standards, intent]`, and produces one
+`<block>--<lens>` lane each. `skeptics` is 0-4 (default 0), adding
+`<block>--skeptic-1..n` lanes whose fixed angles rotate: evidence existence,
+counterexample/minimal reproduction, alternative explanation, then
+boundaries/concurrency. Either field on another kind is a compile error. Kinds:
+`explore`, `plan`, `prototype`, `debug`, `coding`, `verify`, `review`,
+`synthesize`. Never invent `worker_type`. `worker_config` (`timeout_ms` only)
+overrides `node_defaults.worker_config`; `node_defaults` accepts only
+`required`, `report_to_parent`, and `worker_config`.
 
 `action`, `workflow_id`, `operation`, `spec_path`, and `profile` (validate only)
 are tool-call fields, not YAML. These YAML fields are exhaustive: do not copy
 fields from read/status output or persisted records. Deep admission is the only
 exception; load skill dag-policy.
 
-Exact calls: validate
-`{ action: "spec", operation: "validate", spec_path: "workflow.yaml", profile: "portable" }`,
-start `{ action: "run", operation: "start", spec_path: "workflow.yaml" }`, extend
-`{ action: "run", operation: "extend", workflow_id: "dag_...", spec_path: "extend.yaml" }`,
-replan `{ action: "control", operation: "replan", workflow_id: "dag_...", spec_path: "replan.yaml" }`.
-`spec.validate` decodes start only; extend and replan validate their own envelopes,
-and a `config` wrapper is not a valid extension file.
+Validate
+`{ action: "spec", operation: "validate", spec_path: "workflow.yaml", profile: "portable" }`;
+start and extend use `{ action: "run", operation: "start" | "extend", spec_path: "file.yaml" }`;
+replan uses
+`{ action: "control", operation: "replan", workflow_id: "dag_...", spec_path: "replan.yaml" }`.
+`spec.validate` decodes start only; extend and replan validate their own
+envelopes, and a `config` wrapper is not a valid extension file.
 
 `objective` is required and injected into every node; use blocks or nodes, never
 both. IDs use letters, numbers, underscores, and hyphens; dependencies must be
-acyclic and may name fragment blocks or durable node IDs during **extend** and
-replan.
+acyclic and may name fragment blocks or durable node IDs.
 
 ## Block contracts
 
@@ -103,55 +100,57 @@ replan.
 - `plan`: decision- or implementation-ready options/work packages, checks,
   falsifiers, and risks.
 - `prototype`: the smallest throwaway experiment resolving a runnable
-  uncertainty; it is not production code but publishes its changed files and
-  fingerprint for verification or review.
+  uncertainty; it publishes changed files and fingerprint, not production code.
 - `debug`: expands to reproduce/evidence followed by root-cause diagnosis.
 - `coding`: bounded production implementation plus focused tests and checks.
 - `verify`: deterministic acceptance checks with explicit PASS/FAIL evidence.
-- `review`: design/content inputs expand to independent standards and intent
-  reviews plus a general arbiter. An implementation input must follow
-  `coding → verify(PASS) → review`; the compiler binds the implementation
-  fingerprint through both reviews into an `ACCEPT | REJECT` decision. Lanes
-  return `required_actions`; the runtime fails an ACCEPT that lists its own
-  required actions or leaves a lane's action unrefuted.
+- `review`: `lenses` expand into one read-only lane per lens (default standards
+  and intent), `skeptics` add optional adversarial lanes, and `auditor`
+  arbitrates them. The `completeness` lens judges every `config.acceptance` item
+  covered/partial/missing with evidence, lists unlisted expectations, and enters
+  missing/unlisted items in `required_actions`. An implementation input must
+  follow `coding → verify(PASS) → review`; the compiler binds the implementation
+  fingerprint through every review lane into an `ACCEPT | REJECT` decision.
+  Lanes return `required_actions`; the runtime fails an ACCEPT that lists its
+  own required actions or leaves a lane's action unrefuted.
 - `synthesize`: resolves dependency outputs into the parent-facing result.
 
-Block contracts are self-contained. `instruction` specializes a lifecycle kind
-into a capability such as `codebase-design` or `global-review`; it never
-delegates the method to an external Skill.
+Review lanes, skeptics, the decision, `verify`, and `synthesize` default to the
+built-in read-only `auditor`; a writing `synthesize` declares `worker_type`.
+
+`instruction` specializes a lifecycle kind such as `codebase-design` or
+`global-review`; it never delegates the method to an external Skill.
 
 Judgment and acceptance gates (`plan`, debug diagnosis, `verify`, review
-decision, `synthesize`) are required by default. Volume lanes (`explore`,
-`prototype`, `coding`, debug evidence, independent review lanes) are optional;
-an explicit `required` overrides. `review` and `synthesize` report to the
+decision, `synthesize`) default to required; volume lanes (`explore`,
+`prototype`, `coding`, debug evidence, independent review lanes) are optional,
+and an explicit `required` overrides. `review` and `synthesize` report to the
 parent by default; other blocks stay quiet. A block after a review gate is
 conditioned on its accepted verdict; the condition language handles one verdict
 reference, so fan multiple review lanes into one review block first.
 
 All block workers share one workspace. Unordered `coding` and `prototype`
 writers run in parallel, so their packages must be triple-disjoint: source
-files, generated artifacts, and lockfiles must not overlap, and no shared build
+files, generated artifacts, and lockfiles never overlap, and no shared build
 may run. The plan block owns this partition. For an implementation review over
 parallel writers, the compiler injects a read-only aggregation node before the
-verification gate; it fails loudly on overlapping write sets and otherwise
-publishes the union with one implementation fingerprint computed at
-convergence. Ordered chains compile unchanged; read-only lanes stay parallel.
-The resident Orchestration Router owns route selection and phase pruning; this
-skill owns block fields, contracts, and graph mechanics.
+verification gate; it fails on overlapping write sets and otherwise publishes
+the union with one implementation fingerprint. Ordered chains compile unchanged;
+read-only lanes stay parallel. The Orchestration Router owns routing; this skill
+owns block fields and graph mechanics.
 
-When the number of independent slices is known only after planning, declare one
-`coding` block with `fan_out: <plan-block-id>` (the plan must also be in its
+When independent slices are known only after planning, declare one `coding`
+block with `fan_out: <plan-block-id>` (the plan must also be in its
 `depends_on`). That plan returns `packages` of
-`{ id, instruction, write_set }`. When the writer is ready, two or more disjoint
-packages run as parallel writers `<writer>--<package>`, and the writer's id
-becomes their aggregator, so verify/review bindings stay unchanged. One package
-runs the writer as authored; overlapping or malformed packages, or a node
-ceiling, run it serially with the reason in its prompt.
+`{ id, instruction, write_set }`. Two or more disjoint packages run as parallel
+writers `<writer>--<package>` joined by an aggregator under the writer's id, so
+verify/review bindings stay unchanged; one package, or overlapping/malformed
+packages or a node ceiling, runs the writer serially with the reason in its
+prompt.
 
 ## When to use low-level nodes
 
 Drop to `nodes` for custom template bindings, conditional branches, output
-schemas, retry/cancel/restart controls, or deep diff-review metadata. Load
-skill dag-nodes for the node interface and skill dag-recovery for gates and
-recovery. Do not poll a running workflow; reporting blocks wake the parent
-when a decision is actionable.
+schemas, retry/cancel controls, or deep diff-review metadata. Load skill
+dag-nodes for node fields and skill dag-recovery for gates and recovery. Do not
+poll a running workflow; reporting blocks wake the parent.

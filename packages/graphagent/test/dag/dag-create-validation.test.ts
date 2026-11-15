@@ -12,6 +12,7 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { Dag, type NodeConfig, type WorkflowConfig } from "@/dag/dag"
+import { DagAdmission } from "@/dag/admission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TestConfig } from "../fixture/config"
 
@@ -358,6 +359,76 @@ describe("Dag.create structural validation", () => {
           .pipe(Effect.orDie)
         expect(dagID.startsWith("dag")).toBe(true)
       }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
+    )
+  })
+
+  it("persists config.acceptance and the fixed review gate", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        const dag = yield* Dag.Service
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "review-gate",
+            config: {
+              name: "review-gate",
+              review_gate: "strict",
+              acceptance: [{ id: "AC1", text: "the change works" }],
+              nodes: [node("a")],
+            },
+          })
+          .pipe(Effect.orDie)
+        const workflow = yield* dag.store.getWorkflow(dagID).pipe(Effect.orDie)
+        const config = workflow ? Dag.parseWorkflowConfig(workflow.config) : undefined
+        expect(config?.review_gate).toBe("strict")
+        expect(config?.acceptance).toEqual([{ id: "AC1", text: "the change works" }])
+      }).pipe(Effect.scoped, Effect.provide(dagLayer)),
+    )
+  })
+
+  it("derives deep acceptance AC1..ACn from the admission brief at create", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        const dag = yield* Dag.Service
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "deep-gate",
+            config: {
+              name: "deep-gate",
+              mode: "deep",
+              admission: DagAdmission.createAdmissionRecord({
+                brief_revision: 1,
+                qa_mode: "STANDARD",
+                verdict: "READY",
+                brief: {
+                  goal: "Ship the change",
+                  scope: { in: ["src"], out: [] },
+                  constraints: [],
+                  assumptions: [],
+                  acceptance_criteria: ["first criterion", "second criterion"],
+                  evidence_required: ["focused checks pass"],
+                  risks: [],
+                  review_plan: ["independent review"],
+                  open_questions: [],
+                  blocking_questions: [],
+                },
+              }),
+              nodes: [node("a")],
+            },
+          })
+          .pipe(Effect.orDie)
+        const workflow = yield* dag.store.getWorkflow(dagID).pipe(Effect.orDie)
+        const config = workflow ? Dag.parseWorkflowConfig(workflow.config) : undefined
+        expect(config?.acceptance).toEqual([
+          { id: "AC1", text: "first criterion" },
+          { id: "AC2", text: "second criterion" },
+        ])
+      }).pipe(Effect.scoped, Effect.provide(dagLayer)),
     )
   })
 })

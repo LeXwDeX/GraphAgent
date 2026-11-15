@@ -780,7 +780,7 @@ const missingModelRuntime = testEffect(
 
 // The builtin agent catalog the environment validation checks worker types
 // against — mirrors the real build/plan/general/explore builtins.
-const builtinAgentCatalog = ["build", "plan", "general", "explore"].map((name) => ({
+const builtinAgentCatalog = ["build", "plan", "general", "explore", "auditor"].map((name) => ({
   name,
   mode: "all" as const,
   permission: [],

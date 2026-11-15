@@ -71,6 +71,8 @@ describe("workflow draft wire schema parity", () => {
       required: true,
       report_to_parent: true,
       fan_out: "plan",
+      lenses: ["standards", "intent"],
+      skeptics: 2,
     }
     const config = {
       name: "parity",
@@ -83,6 +85,8 @@ describe("workflow draft wire schema parity", () => {
       max_node_replan_attempts: 2,
       max_total_nodes: 100,
       workspace: "/worktree",
+      acceptance: [{ id: "AC1", text: "Every mirrored key round-trips" }],
+      review_gate: "strict",
     }
     const decode = Schema.decodeUnknownSync(Parameters, { onExcessProperty: "error" })
     expect(() => decode({ params: { action: "spec", operation: "draft", config } })).not.toThrow()

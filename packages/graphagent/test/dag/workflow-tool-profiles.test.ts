@@ -125,6 +125,29 @@ describe("DAG worker tool profiles", () => {
     }),
   )
 
+  it.instance("advertises only inspection tools for the built-in auditor", () =>
+    Effect.gen(function* () {
+      const auditor = yield* (yield* Agent.Service).get("auditor")
+      expect(auditor).toBeDefined()
+      const tools = advertised(auditor!, childPermission(auditor!))
+      for (const allowed of [
+        "read",
+        "grep",
+        "glob",
+        "bash",
+        "webfetch",
+        "websearch",
+        "skill",
+        "serena_initial_instructions",
+      ]) {
+        expect(tools).toContain(allowed)
+      }
+      for (const denied of ["edit", "write", "apply_patch", "todowrite", "task", "question", "plan_exit"]) {
+        expect(tools).not.toContain(denied)
+      }
+    }),
+  )
+
   it.instance("keeps pattern-scoped plan edit while hiding its derived todowrite", () =>
     Effect.gen(function* () {
       const plan = yield* (yield* Agent.Service).get("plan")

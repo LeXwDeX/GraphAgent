@@ -32,7 +32,7 @@ describe("workflow blocks", () => {
     expect(nodes.map((node) => ({ id: node.id, worker: node.worker_type, dependsOn: node.depends_on }))).toEqual([
       { id: "map", worker: "explore", dependsOn: [] },
       { id: "build", worker: "build", dependsOn: ["map"] },
-      { id: "verify", worker: "general", dependsOn: ["build"] },
+      { id: "verify", worker: "auditor", dependsOn: ["build"] },
     ])
     expect(nodes[0]?.prompt_template.input).toEqual({
       objective: "Add durable session recovery",
@@ -251,6 +251,125 @@ describe("workflow blocks", () => {
       }),
     )
     expect(nodes.find((node) => node.id === "report")?.condition).toBe('decision.output.verdict == "ACCEPT"')
+  })
+
+  it("expands configured lenses and skeptics into lanes the decision arbitrates", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks(
+      {
+        objective: "Review the implementation",
+        blocks: [
+          { id: "implementation", kind: "coding" },
+          { id: "verification", kind: "verify", depends_on: ["implementation"] },
+          {
+            id: "decision",
+            kind: "review",
+            depends_on: ["verification"],
+            lenses: ["standards", "intent", "completeness"],
+            skeptics: 2,
+          },
+        ],
+      },
+      { acceptance: [{ id: "AC1", text: "All acceptance tests pass" }] },
+    )
+    const byID = new Map(nodes.map((node) => [node.id, node]))
+
+    expect(nodes.map((node) => node.id)).toEqual([
+      "implementation",
+      "verification",
+      "decision--standards",
+      "decision--intent",
+      "decision--completeness",
+      "decision--skeptic-1",
+      "decision--skeptic-2",
+      "decision",
+    ])
+    expect(byID.get("decision")?.depends_on).toEqual([
+      "decision--standards",
+      "decision--intent",
+      "decision--completeness",
+      "decision--skeptic-1",
+      "decision--skeptic-2",
+      "verification",
+    ])
+    for (const id of [
+      "decision--standards",
+      "decision--intent",
+      "decision--completeness",
+      "decision--skeptic-1",
+      "decision--skeptic-2",
+      "decision",
+    ]) {
+      expect(byID.get(id)?.worker_type).toBe("auditor")
+      expect(byID.get(id)?.target_sensitive).toBe(true)
+    }
+    expect(byID.get("decision")?.input_mapping).toEqual({
+      implementation_changed_files: "implementation.output.changed_files",
+      implementation_fingerprint: "implementation.output.fingerprint",
+      verification: "verification.output",
+      standards_review: "decision--standards.output",
+      intent_review: "decision--intent.output",
+      completeness_review: "decision--completeness.output",
+      skeptic_1_review: "decision--skeptic-1.output",
+      skeptic_2_review: "decision--skeptic-2.output",
+    })
+    expect(byID.get("decision--completeness")?.output_schema).toMatchObject({
+      required: ["verdict", "summary", "findings", "required_actions", "acceptance", "unlisted"],
+      properties: {
+        acceptance: {
+          items: {
+            required: ["id", "status", "evidence"],
+            properties: { status: { enum: ["covered", "partial", "missing"] } },
+          },
+        },
+        unlisted: { type: "array", items: { type: "string" } },
+      },
+    })
+    expect(byID.get("decision--completeness")?.prompt_template.inline).toContain("- AC1: All acceptance tests pass")
+    expect(byID.get("decision--skeptic-1")?.prompt_template.inline).toContain(
+      "Assume the change or conclusion is wrong.",
+    )
+    expect(byID.get("decision--skeptic-1")?.prompt_template.inline).toContain("evidence exists")
+    expect(byID.get("decision--skeptic-2")?.prompt_template.inline).toContain("counterexample")
+    expect(byID.get("decision--skeptic-1")?.prompt_template.inline).not.toContain("counterexample")
+  })
+
+  it("routes read-only block defaults to the auditor", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Summarize the evidence",
+      blocks: [
+        { id: "final", kind: "synthesize" },
+        { id: "check", kind: "verify" },
+      ],
+    })
+    expect(nodes.find((node) => node.id === "final")?.worker_type).toBe("auditor")
+    expect(nodes.find((node) => node.id === "check")?.worker_type).toBe("auditor")
+  })
+
+  it("rejects review-only lane fields and malformed lens lists", () => {
+    expect(() =>
+      DagBlocks.compileWorkflowBlocks({
+        objective: "Invalid graph",
+        blocks: [{ id: "map", kind: "explore", lenses: ["standards"] }],
+      }),
+    ).toThrow('Block "map" declares lenses, which only review blocks support')
+    expect(() =>
+      DagBlocks.compileWorkflowBlocks({
+        objective: "Invalid graph",
+        blocks: [{ id: "map", kind: "explore", skeptics: 1 }],
+      }),
+    ).toThrow('Block "map" declares skeptics, which only review blocks support')
+    expect(() =>
+      DagBlocks.compileWorkflowBlocks({
+        objective: "Invalid graph",
+        blocks: [{ id: "gate", kind: "review", lenses: [] }],
+      }),
+    ).toThrow('Block "gate" must declare at least one review lens')
+    expect(() =>
+      DagBlocks.compileWorkflowBlocks({
+        objective: "Invalid graph",
+        blocks: [{ id: "gate", kind: "review", lenses: ["intent", "intent"] }],
+      }),
+    ).toThrow('Block "gate" repeats review lens: intent')
   })
 
   it("accepts skips only on the intentional review-gate branches", () => {
@@ -508,8 +627,8 @@ describe("workflow blocks", () => {
       build: "standard",
       "decision--aggregate": "advanced",
       verify: "advanced",
-      "decision--standards": "standard",
-      "decision--intent": "standard",
+      "decision--standards": "advanced",
+      "decision--intent": "advanced",
       decision: "advanced",
       report: "advanced",
     })

@@ -13,7 +13,8 @@ export * as WorkflowAuthoring from "./authoring"
 
 import { Effect, Schema } from "effect"
 import type { NodeConfig, NodeDefaults, WorkflowConfig } from "./dag"
-import type { AdmissionInput } from "./admission"
+import type { AcceptanceItem, ReviewGate } from "./blocks"
+import { acceptanceFromCriteria, type AdmissionInput } from "./admission"
 import type { Config } from "@/config/config"
 import { DagValidation } from "./validation"
 
@@ -60,6 +61,12 @@ interface PrepareInput {
   executionWorkspace?: string
   known_dependencies?: string[]
   node_defaults?: NodeDefaults
+  /** Frozen review gate: the caller overrides the authored value at start
+   * (session mode on) and passes the workflow's persisted value for mutations. */
+  review_gate?: ReviewGate
+  /** Acceptance items judged by the completeness lane; mutations pass the
+   * workflow's persisted config.acceptance. */
+  acceptance?: readonly AcceptanceItem[]
 }
 
 interface Options {
@@ -74,6 +81,34 @@ type DecodedAction =
   | { action: "start"; spec: DagValidation.StartSpec }
   | { action: "extend"; spec: DagValidation.ExtendGraph }
   | { action: "replan"; spec: { fragment: DagValidation.StartGraph } }
+
+interface EffectiveReviewConfig {
+  review_gate: ReviewGate
+  acceptance?: readonly AcceptanceItem[]
+}
+
+/** The review gate is fixed at start and never re-derived from the current
+ * session mode: a deep start always fixes strict, an explicit caller override
+ * (session mode on) wins over the authored value, and mutations pass the
+ * workflow's persisted gate through PrepareInput. Deep workflows without
+ * config.acceptance derive AC1..ACn from the admission criteria. */
+function effectiveReviewConfig(decoded: DecodedAction, input: PrepareInput): EffectiveReviewConfig {
+  if (decoded.action !== "start") {
+    return {
+      review_gate: input.review_gate ?? "standard",
+      ...(input.acceptance !== undefined ? { acceptance: input.acceptance } : {}),
+    }
+  }
+  const spec = decoded.spec
+  let acceptance: readonly AcceptanceItem[] | undefined = spec.config.acceptance ?? input.acceptance
+  if (acceptance === undefined && spec.mode === "deep" && spec.admission) {
+    acceptance = acceptanceFromCriteria(spec.admission.brief.acceptance_criteria)
+  }
+  return {
+    review_gate: spec.mode === "deep" ? "strict" : (input.review_gate ?? spec.config.review_gate ?? "standard"),
+    ...(acceptance !== undefined ? { acceptance } : {}),
+  }
+}
 
 const VALIDATOR_VERSION = 1
 const ModelRef = Schema.Struct({ providerID: Schema.String, modelID: Schema.String })
@@ -110,7 +145,7 @@ export function make(options: Options = {}) {
       }
       if (decoded.value.action === "replan") {
         const fragment = decoded.value.spec.fragment
-        const rejected = (["delivery_node", "workspace", "isolation"] as const)
+        const rejected = (["delivery_node", "workspace", "isolation", "acceptance", "review_gate"] as const)
           .filter((field) => fragment[field] !== undefined)
           .map((field) =>
             DagValidation.diagnostic({
@@ -121,13 +156,21 @@ export function make(options: Options = {}) {
                   ? "workspace only applies to start; set workspace on individual nodes instead"
                   : field === "isolation"
                     ? "isolation only applies to start; a workflow-level worktree cannot be introduced mid-run"
-                    : `${field} only applies to start; replans preserve the existing capture and delivery configuration`,
+                    : field === "acceptance"
+                      ? "acceptance only applies to start; the workflow's acceptance criteria are fixed and judged by its completeness lane"
+                      : field === "review_gate"
+                        ? "review_gate only applies to start; the gate is fixed at run.start and later mutations validate against the persisted value"
+                        : `${field} only applies to start; replans preserve the existing capture and delivery configuration`,
               hint:
                 field === "workspace"
                   ? 'Remove "workspace" from the fragment and set it on each node that needs a different checkout.'
                   : field === "isolation"
                     ? 'Remove "isolation" from the fragment; node-level isolation stays available per node.'
-                    : `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
+                    : field === "acceptance"
+                      ? 'Remove "acceptance" from the fragment; it belongs to the start document.'
+                      : field === "review_gate"
+                        ? 'Remove "review_gate" from the fragment; start a successor workflow to change the gate.'
+                        : `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
             }),
           )
         if (rejected.length > 0) {
@@ -136,7 +179,8 @@ export function make(options: Options = {}) {
           return result
         }
       }
-      const compiled = compileAction(decoded.value, input.known_dependencies)
+      const review = effectiveReviewConfig(decoded.value, input)
+      const compiled = compileAction(decoded.value, input.known_dependencies, review)
       if (!compiled.nodes) {
         const result = { ...invalidResult(sourceName, profile, compiled.diagnostics), document: decoded.value.spec }
         if (profile === "portable") cache.set(key, result)
@@ -174,6 +218,7 @@ export function make(options: Options = {}) {
         profile,
         config: {
           ...compiled.config,
+          review_gate: review.review_gate,
           ...(userMaxTotalNodes !== undefined ? { user_max_total_nodes: userMaxTotalNodes } : {}),
           ...(nodeDefaults ? { node_defaults: nodeDefaults } : {}),
         },
@@ -184,7 +229,7 @@ export function make(options: Options = {}) {
         catalogs,
         structural: input.action === "start",
       })
-      const prepared = validation.valid ? prepareGraph(decoded.value, nodes, nodeDefaults) : undefined
+      const prepared = validation.valid ? prepareGraph(decoded.value, nodes, nodeDefaults, review) : undefined
       const result = {
         ...validation,
         warnings: DagValidation.sortDiagnostics([
@@ -201,7 +246,12 @@ export function make(options: Options = {}) {
   return { prepare }
 }
 
-function prepareGraph(decoded: DecodedAction, nodes: NodeConfig[], nodeDefaults?: NodeDefaults): PreparedGraph {
+function prepareGraph(
+  decoded: DecodedAction,
+  nodes: NodeConfig[],
+  nodeDefaults: NodeDefaults | undefined,
+  review: EffectiveReviewConfig,
+): PreparedGraph {
   if (decoded.action !== "start") return { action: decoded.action, nodes }
   const spec = decoded.spec
   const blocks = "blocks" in spec.config ? spec.config.blocks : []
@@ -217,6 +267,8 @@ function prepareGraph(decoded: DecodedAction, nodes: NodeConfig[], nodeDefaults?
       name: spec.config.name,
       ...(deliveryNode ? { delivery_node: deliveryNode } : {}),
       mode: spec.mode ?? "standard",
+      review_gate: review.review_gate,
+      ...(review.acceptance !== undefined ? { acceptance: [...review.acceptance] } : {}),
       ...(spec.config.max_concurrency !== undefined ? { max_concurrency: spec.config.max_concurrency } : {}),
       ...(spec.config.max_node_replan_attempts !== undefined
         ? { max_node_replan_attempts: spec.config.max_node_replan_attempts }
@@ -299,7 +351,8 @@ function decodeAction(action: Action, value: unknown, source: string, profile: D
 
 function compileAction(
   decoded: DecodedAction,
-  knownDependencies?: string[],
+  knownDependencies: string[] | undefined,
+  review: EffectiveReviewConfig,
 ): {
   nodes?: NodeConfig[]
   diagnostics: DagValidation.Diagnostic[]
@@ -314,9 +367,14 @@ function compileAction(
     isolation?: "worktree"
   }
 } {
+  const options: DagValidation.BlockCompileOptions = {
+    known_dependencies: knownDependencies,
+    review_gate: review.review_gate,
+    ...(review.acceptance !== undefined ? { acceptance: review.acceptance } : {}),
+  }
   if (decoded.action === "extend") {
     const extend = decoded.spec
-    const compiled = DagValidation.compileBlockSource(extend, { known_dependencies: knownDependencies })
+    const compiled = DagValidation.compileBlockSource(extend, options)
     return {
       ...compiled,
       blocks: "blocks" in extend ? extend.blocks : undefined,
@@ -324,7 +382,7 @@ function compileAction(
     }
   }
   const graph = decoded.action === "start" ? decoded.spec.config : decoded.spec.fragment
-  const compiled = DagValidation.compileGraphSource(graph, { known_dependencies: knownDependencies })
+  const compiled = DagValidation.compileGraphSource(graph, options)
   return {
     ...compiled,
     blocks: "blocks" in graph ? graph.blocks : undefined,
@@ -423,6 +481,8 @@ function cacheKey(input: PrepareInput, profile: DagValidation.Profile, userMaxTo
     execution_workspace: input.executionWorkspace,
     known_dependencies: input.known_dependencies,
     node_defaults: input.node_defaults,
+    review_gate: input.review_gate,
+    acceptance: input.acceptance,
     user_max_total_nodes: userMaxTotalNodes,
   })
   return new Bun.CryptoHasher("sha256").update(`${context}\0${content}`).digest("hex")

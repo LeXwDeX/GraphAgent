@@ -277,6 +277,27 @@ describe("DAG review lifecycle", () => {
     })
   })
 
+  it("applies strict lifecycle errors when a standard-mode workflow fixes review_gate strict", () => {
+    const nodes = [
+      node("review-standard", {
+        worker_type: "review",
+        review: {
+          phase: "diff",
+          implementation_node_id: "implement",
+          verification_node_id: "verify",
+        },
+      }),
+    ]
+    const strict = validateReviewLifecycle({ ...workflow("standard", nodes), review_gate: "strict" })
+    expect(strict.valid).toBe(false)
+    expect(strict.errors).toEqual([
+      "review-standard: implementation node implement does not exist",
+      "review-standard: verification node verify does not exist",
+      "review-standard: deep diff review must feed a required final gate conditioned on verdict ACCEPT",
+    ])
+    expect(strict.warnings).toEqual([])
+  })
+
   it("accepts actual diff evidence only after verification PASS", () => {
     const review = validDiffFlow()[2]
     if (!review) throw new Error("fixture is incomplete")

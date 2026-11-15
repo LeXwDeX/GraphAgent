@@ -4,6 +4,7 @@
 export * as DagAdmission from "./admission"
 
 import { Schema } from "effect"
+import type { AcceptanceItem } from "./blocks"
 
 export const States = [
   "UNASSESSED",
@@ -129,6 +130,12 @@ export function createAdmissionRecord(input: AdmissionInput): AdmissionRecord {
     ...(input.waiver_reason ? { waiver_reason: input.waiver_reason } : {}),
     ...(input.acknowledged_risks ? { acknowledged_risks: input.acknowledged_risks } : {}),
   }
+}
+
+/** Deep workflows without config.acceptance derive their completeness items
+ * from the admission brief, numbered AC1..ACn in brief order. */
+export function acceptanceFromCriteria(criteria: readonly string[]): AcceptanceItem[] {
+  return criteria.map((text, index) => ({ id: `AC${index + 1}`, text }))
 }
 
 export function validateAdmission(record: AdmissionRecord) {

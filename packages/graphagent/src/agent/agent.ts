@@ -13,6 +13,7 @@ import { Auth } from "../auth"
 import { ProviderTransform } from "@/provider/transform"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_AUDITOR from "./prompt/auditor.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
@@ -269,6 +270,40 @@ export const layer = Layer.effect(
             description:
               "Reviews finished changes (uncommitted work, a commit, a branch, or a PR) and reports findings. Read-only.",
             prompt: PROMPT_REVIEW,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          auditor: {
+            name: "auditor",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                read: "allow",
+                grep: "allow",
+                glob: "allow",
+                // Shell access is not a read-only sandbox; this is a behavioral
+                // restriction, not command-level enforcement.
+                bash: "allow",
+                webfetch: "allow",
+                websearch: "allow",
+                // Read-only workers still need the session bootstrap path.
+                skill: "allow",
+                "*_initial_instructions": "allow",
+                // One rule covers edit, write, and apply_patch.
+                edit: "deny",
+                task: "deny",
+                todowrite: "deny",
+                question: "deny",
+                plan_exit: "deny",
+                external_directory: readonlyExternalDirectory,
+              }),
+              user,
+            ),
+            description:
+              "Read-only auditor. Verifies completed work and claimed evidence against primary sources and reports what the evidence supports.",
+            prompt: PROMPT_AUDITOR,
             options: {},
             mode: "subagent",
             native: true,

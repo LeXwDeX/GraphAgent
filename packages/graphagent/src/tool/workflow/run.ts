@@ -29,6 +29,8 @@ export interface RunContext {
     readonly directory: string
     readonly projectID: string
     readonly model: { id: string; providerID: string } | undefined
+    /** Session DAG mode; "on" fixes the workflow review gate to strict. */
+    readonly dagMode?: "on" | "off"
   }
   readonly ctx: Tool.Context
 }
@@ -70,6 +72,10 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
         source,
         profile: "environment",
         environment: { directory: session.directory, parent: session.model },
+        // The gate level is fixed at run.start: DAG mode on (or a deep spec,
+        // handled inside authoring) upgrades it to strict and overrides an
+        // authored standard. Later mode switches cannot change it.
+        ...(session.dagMode === "on" ? { review_gate: "strict" as const } : {}),
       })
       const blocking = result.errors.filter(
         (diagnostic) => diagnostic.code !== DagValidation.DIAGNOSTIC_CODES.modelUnavailable,
