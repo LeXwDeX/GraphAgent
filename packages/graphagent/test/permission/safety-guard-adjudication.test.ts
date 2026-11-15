@@ -10,9 +10,13 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { expect } from "bun:test"
+import * as fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { Effect, Exit, Fiber, Layer } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Dag } from "@/dag/dag"
+import { InstanceState } from "@/effect/instance-state"
 import { Git } from "@/git"
 import { Permission, type AskOptions } from "@/permission"
 import { SafetyGuard } from "@/permission/safety-guard"
@@ -415,6 +419,43 @@ lazyIt.instance(
       expect(gitCalls.branch).toBeGreaterThan(0)
       expect(gitCalls.defaultBranch).toBeGreaterThan(0)
       expect(gitCalls.remote).toBeGreaterThan(0)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "denies a write that leaves the project through a symlinked directory",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("symlink")
+      const directory = yield* InstanceState.directory
+      const outside = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "safety-outside-")))
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(outside, { recursive: true, force: true })))
+      yield* Effect.promise(() => fs.symlink(outside, path.join(directory, "link"), "dir"))
+      const edit = (relative: string) =>
+        ask(childSessionID, { permission: "edit", patterns: [relative], metadata: {} })
+
+      const direct = yield* expectDenied(edit("link/victim.txt"))
+      expect(direct).toContain("dag_safety:SF-1")
+      // A new file below the symlinked directory is the same escape.
+      const nested = yield* expectDenied(edit("link/nested/new.txt"))
+      expect(nested).toContain("dag_safety:SF-1")
+      // Lexically inside and really inside stays writable.
+      yield* edit("new-file.txt")
+      yield* Effect.promise(() => fs.mkdir(path.join(directory, "real")))
+      yield* edit("real/file.txt")
+      yield* Effect.promise(() => fs.symlink(path.join(directory, "real"), path.join(directory, "inlink"), "dir"))
+      yield* edit("inlink/file.txt")
+
+      // Bash writes take the same path.
+      const bashCause = yield* expectDenied(
+        ask(childSessionID, {
+          permission: "bash",
+          patterns: ["tee link/from-bash.txt"],
+          metadata: { command: "tee link/from-bash.txt", cwd: directory, shell: "bash" },
+        }),
+      )
+      expect(bashCause).toContain("dag_safety:SF-1")
     }),
   { git: true },
 )

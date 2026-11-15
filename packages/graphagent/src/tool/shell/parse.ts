@@ -41,13 +41,12 @@ export interface Segment {
   /** Identity of the enclosing pipeline; distinct for every standalone command. */
   readonly pipeline: number
   /**
-   * Ancestor subshell identities, outer first and `/`-joined (bash only).
-   * `cd` inside a subshell never moves the parent shell, so consumers that
-   * track a working directory keep one state per scope.
+   * Enclosing subshell and pipeline-element identities, outer first and
+   * `/`-joined (bash only). A `cd` in a subshell or pipeline element applies
+   * to the rest of that scope and never moves the parent shell, so consumers
+   * that track a working directory keep one state per scope.
    */
   readonly scope: string
-  /** True when the command is one element of a pipeline (bash only). */
-  readonly pipelineScoped: boolean
 }
 
 const resolveWasm = (asset: string) => {
@@ -166,18 +165,28 @@ function identity(node: Node) {
 
 const SCOPES = new Set(["subshell", "command_substitution", "process_substitution"])
 
-/** Subshell ancestry and pipeline membership of one command (bash only). */
+/** The direct child of `pipeline` containing `node`: one pipeline element. */
+function pipelineElement(node: Node, pipeline: Node) {
+  let element = node
+  while (element.parent && identity(element.parent) !== identity(pipeline)) element = element.parent
+  return element
+}
+
+/**
+ * Scope of one command (bash only): its enclosing subshells and its pipeline
+ * element. A pipeline element runs in its own subshell, so a `cd` there
+ * applies to the rest of that element and never to the parent shell.
+ */
 function shellScope(node: Node, ps: boolean) {
-  if (ps) return { scope: "", pipelineScoped: false }
+  if (ps) return { scope: "" }
   const ancestors: string[] = []
-  let pipelineScoped = false
   let current: Node | null = node.parent
   while (current) {
-    if (current.type === "pipeline") pipelineScoped = true
     if (SCOPES.has(current.type)) ancestors.push(identity(current))
+    else if (current.type === "pipeline") ancestors.push(identity(pipelineElement(node, current)))
     current = current.parent
   }
-  return { scope: ancestors.reverse().join("/"), pipelineScoped }
+  return { scope: ancestors.reverse().join("/") }
 }
 
 function nearest(node: Node | null, type: string) {

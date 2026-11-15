@@ -119,7 +119,7 @@ describe("SF-2 sensitive reads", () => {
       expect(
         evaluate(base({ permission: "grep", pattern: "KEY", metadata: { path: "/home/u/.ssh" } }))?.ruleID,
       ).toBe("SF-2")
-      expect(evaluate(base({ permission: "glob", pattern: "*.key", metadata: { path: root } }))).toBeUndefined()
+      expect(evaluate(base({ permission: "glob", pattern: "*.key", metadata: { path: root } }))?.ruleID).toBe("SF-2")
       expect((yield* bash("cat .env"))?.ruleID).toBe("SF-2")
       expect((yield* bash("cat .env.example"))).toBeUndefined()
       expect((yield* bash("grep KEY .env"))?.ruleID).toBe("SF-2")
@@ -287,6 +287,108 @@ describe("SF-3 subshell scope", () => {
       expect((yield* bash("cd child; rm -rf ../victim"))).toBeUndefined()
       expect((yield* bash("cd child; (rm -rf ../../victim)"))?.ruleID).toBe("SF-3")
       expect((yield* bash("cd child | cat; rm -rf ../victim"))?.ruleID).toBe("SF-3")
+    }),
+  )
+
+  effect("a cd inside a compound pipeline element applies there but does not leak", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("{ cd ..; rm -rf victim; } | cat"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("{ cd child; rm -rf victim; } | cat"))).toBeUndefined()
+      // The element's cd never moves the parent shell.
+      expect((yield* bash("{ cd child; } | cat; rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      // Nested pipeline elements inherit their enclosing element's cd.
+      expect((yield* bash("{ cd ..; { rm -rf victim; } | cat; } | cat"))?.ruleID).toBe("SF-3")
+    }),
+  )
+})
+
+describe("SF-1 unknown cwd after a dynamic cd", () => {
+  effect("a relative cd cannot restore a known cwd", () =>
+    Effect.gen(function* () {
+      expect((yield* bash('cd "$DEST"; cd child; rm -rf ../victim'))?.ruleID).toBe("SF-1")
+      expect((yield* bash("cd /repo/project; cd child; rm -rf ../victim"))).toBeUndefined()
+      expect((yield* bash("cd /repo; cd child; rm -rf ../victim"))?.ruleID).toBe("SF-3")
+    }),
+  )
+})
+
+describe("SF-4 bulk push selectors", () => {
+  effect("pushing every branch or ref cannot hide a default-branch publish", () =>
+    Effect.gen(function* () {
+      for (const option of ["--all", "--mirror", "--branches", "--branches=main"])
+        expect((yield* bash(`git push ${option} origin`, { git: git({ branch: "feat/x" }) }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git push --all", { git: git({ branch: "feat/x" }) }))?.ruleID).toBe("SF-4")
+      for (const option of ["--tags", "--follow-tags"])
+        expect((yield* bash(`git push ${option} origin feat/x`, { git: git() }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git push origin 'refs/heads/*:refs/heads/*'", { git: git() }))?.ruleID).toBe("SF-4")
+      // The `+` form is a force update, which SF-3 reports first.
+      expect((yield* bash("git push origin '+refs/heads/*:refs/heads/*'", { git: git() }))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git push origin feat/x", { git: git() }))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-3 remote ref deletion", () => {
+  effect("deleting the default branch is destructive; feature deletions stay allowed", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("git push --delete origin main", { git: git() }))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git push -d origin master", { git: git({ defaultBranch: "master" }) }))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git push origin :main", { git: git() }))?.ruleID).toBe("SF-3")
+      // Quoted refspecs reach git without their quotes; checks must too.
+      expect((yield* bash("git push origin ':main'", { git: git() }))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git push origin --delete refs/heads/main", { git: git() }))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git push --delete origin main", { git: git({ defaultBranch: undefined }) }))?.ruleID).toBe(
+        "SF-3",
+      )
+      // Non-default (feature) deletions are allowed.
+      expect((yield* bash("git push --delete origin feat/stale", { git: git() }))).toBeUndefined()
+      expect((yield* bash("git push origin :feat/stale", { git: git() }))).toBeUndefined()
+      expect((yield* bash("git push origin ':feat/stale'", { git: git() }))).toBeUndefined()
+      // No ref named: git errors, so nothing is deleted.
+      expect((yield* bash("git push --delete origin", { git: git() }))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-2 grep/glob selection patterns", () => {
+  effect("grep include and glob patterns cannot select sensitive files", () =>
+    Effect.gen(function* () {
+      expect(
+        evaluate(base({ permission: "grep", pattern: "PRIVATE", metadata: { path: "keys", include: "*.pem" } }))?.ruleID,
+      ).toBe("SF-2")
+      expect(
+        evaluate(base({ permission: "grep", pattern: "PRIVATE", metadata: { path: "keys", include: "*.{pem,key}" } }))
+          ?.ruleID,
+      ).toBe("SF-2")
+      expect(
+        evaluate(base({ permission: "grep", pattern: "PRIVATE", metadata: { path: "keys", include: "{.env,.npmrc}" } }))
+          ?.ruleID,
+      ).toBe("SF-2")
+      expect(evaluate(base({ permission: "glob", pattern: "{.env,.npmrc}", metadata: { path: root } }))?.ruleID).toBe(
+        "SF-2",
+      )
+      expect(
+        evaluate(base({ permission: "grep", pattern: "PRIVATE", metadata: { path: "keys", include: "*.ts" } })),
+      ).toBeUndefined()
+      expect(evaluate(base({ permission: "grep", pattern: "PRIVATE", metadata: { path: ".ssh" } }))?.ruleID).toBe("SF-2")
+      expect(evaluate(base({ permission: "glob", pattern: "**/*.pem", metadata: { path: root } }))?.ruleID).toBe("SF-2")
+      expect(evaluate(base({ permission: "glob", pattern: "src/**/*.ts", metadata: { path: root } }))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-3/SF-2 executable paths", () => {
+  effect("commands are checked by their basename, not only a bare name", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("/bin/rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("/usr/bin/git push --force origin feat/x"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("/usr/local/bin/git reset --hard"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("/usr/bin/git push origin main"))?.ruleID).toBe("SF-4")
+      expect((yield* bash("/bin/cat .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("/bin/tee ../outside.txt"))?.ruleID).toBe("SF-1")
+      // Bare commands keep working.
+      expect((yield* bash("rm -rf /"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("cat .env"))?.ruleID).toBe("SF-2")
     }),
   )
 })

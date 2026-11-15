@@ -198,12 +198,46 @@ const firstGlob = (pattern: string) => {
   return pattern.length
 }
 
+/** Brace alternatives (`*.{pem,key}`) that ripgrep and bash globs accept. */
+function expandBraces(pattern: string): string[] {
+  const open = pattern.indexOf("{")
+  if (open < 0) return [pattern]
+  const close = pattern.indexOf("}", open + 1)
+  if (close < 0) return [pattern]
+  const options = pattern.slice(open + 1, close).split(",")
+  if (options.length < 2) return [pattern]
+  const head = pattern.slice(0, open)
+  const tail = pattern.slice(close + 1)
+  return options.flatMap((option) => expandBraces(`${head}${option}${tail}`)).slice(0, 16)
+}
+
 /**
  * Sensitive-file category a glob spelling can select. `cat .env*` and
  * `keys/*.pem` must not slip past SF-2 just because the resolver strips the
  * wildcard and reports the parent directory.
  */
 export function sensitiveGlob(raw: string, cwd: string): string | undefined {
+  for (const pattern of expandBraces(raw)) {
+    const category = sensitiveGlobOne(pattern, cwd)
+    if (category) return category
+  }
+  return undefined
+}
+
+/** Sensitive category selected by a tool glob/include, exact names included. */
+function sensitiveSelection(selected: string, cwd: string): string | undefined {
+  for (const pattern of expandBraces(selected)) {
+    const glob = sensitiveGlobOne(pattern, cwd)
+    if (glob) return glob
+    if (!GLOB_META.test(pattern)) {
+      const category = sensitiveCategory(resolveTarget(pattern, cwd).path ?? pattern)
+      if (category) return category
+    }
+  }
+  return undefined
+}
+
+function sensitiveGlobOne(raw: string, cwd: string): string | undefined {
   const expanded = expand(raw).replaceAll("\\", "/")
   if (!GLOB_META.test(expanded)) return undefined
   // Resolve `..`/relative spellings before the fixed-path checks; glob
@@ -271,6 +305,11 @@ function commandArgs(argv: readonly string[]) {
 const isFlag = (value: string) => value.startsWith("-") && value !== "-"
 const isShortFlag = (value: string) => isFlag(value) && !value.startsWith("--")
 const words = (argv: readonly string[]) => argv.filter((value) => !isFlag(value))
+
+/** `/bin/rm` and `rm` must reach the same checks; other platforms' separators too. */
+function commandName(argv: readonly string[]) {
+  return path.posix.basename((argv[0] ?? "").replaceAll("\\", "/")).toLowerCase()
+}
 
 /** Global options that take a value, from `git -h`; both `=` and a separate word. */
 const GIT_VALUE_OPTIONS = new Set([
@@ -395,7 +434,9 @@ function parseGit(argv: readonly string[], cwd: string, known = true): GitInvoca
       index++
       continue
     }
-    return result({ name: token.toLowerCase(), args: argv.slice(index + 1) })
+    // Subcommand arguments are quoted shell words; checks compare the value
+    // the shell will pass to git, not the spelling with quotes.
+    return result({ name: token.toLowerCase(), args: argv.slice(index + 1).map((value) => ShellParse.unquote(value)) })
   }
   return result()
 }
@@ -493,6 +534,25 @@ function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: strin
   if (invocation.uncertain || invocation.name !== "push") return undefined
   const args = invocation.args
   const git = invocation.cwdKnown ? gitFor(input, invocation.cwd) : undefined
+  // Bulk selectors publish every branch or ref, including the default branch,
+  // whatever the current branch or the explicit refs say. A wildcard refspec
+  // (`refs/heads/*:refs/heads/*`) selects the same set as `--all`.
+  const bulk = args.find(
+    (arg) =>
+      arg === "--all" ||
+      arg === "--mirror" ||
+      arg === "--branches" ||
+      arg.startsWith("--branches=") ||
+      arg === "--tags" ||
+      arg === "--follow-tags" ||
+      (!isFlag(arg) && arg.includes("*")),
+  )
+  if (bulk !== undefined)
+    return sf4(
+      "git push bulk refs",
+      `"${bulk}" publishes or updates every branch/ref, including the default branch; push an explicit feature branch instead`,
+    )
+  const deleting = args.some((arg) => arg === "--delete" || arg === "-d")
   const pushed = args.filter((value) => !isFlag(value))
   let refs = pushed
   if (pushed.length > 0) {
@@ -510,6 +570,9 @@ function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: strin
   }
 
   if (refs.length === 0) {
+    // `git push --delete <remote>` names no ref; git refuses it, so nothing
+    // is removed and the bare-push release check does not apply.
+    if (deleting) return undefined
     if (!git || git.branch === undefined)
       return sf4(
         "git push",
@@ -525,6 +588,19 @@ function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: strin
 
   for (const ref of refs) {
     const destination = refspecDestination(ref, git)
+    // `--delete` and the `:<ref>` refspec remove a remote ref. Removing the
+    // default branch is destructive (SF-3); a feature ref stays allowed.
+    const removes = deleting || /^\+?:/.test(ref)
+    if (removes) {
+      if (destination === undefined)
+        return sf3("git push --delete", "cannot determine which remote ref the delete removes")
+      if (matchesDefault(destination, git))
+        return sf3(
+          "git push --delete",
+          `deleting the default branch "${destination}" is a destructive release action; delete a feature branch only`,
+        )
+      continue
+    }
     if (destination === undefined) return undefined
     if (matchesDefault(destination, git))
       return sf4(
@@ -536,7 +612,7 @@ function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: strin
 }
 
 function destructiveViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known: boolean) {
-  const name = (argv[0] ?? "").toLowerCase()
+  const name = commandName(argv)
   const args = argv.slice(1)
 
   if (name === "rm") {
@@ -606,7 +682,7 @@ function destructiveViolation(input: EvaluateInput, argv: readonly string[], cwd
 }
 
 function publishViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known: boolean) {
-  const name = (argv[0] ?? "").toLowerCase()
+  const name = commandName(argv)
   const args = argv.slice(1)
   if (["npm", "pnpm", "yarn"].includes(name) && args.includes("publish"))
     return sf4(`${name} publish`, "publishing a package is a release action; finish the work and ask the user to release")
@@ -623,7 +699,7 @@ function publishViolation(input: EvaluateInput, argv: readonly string[], cwd: st
 }
 
 function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, argv: readonly string[], cwd: string) {
-  const name = (argv[0] ?? "").toLowerCase()
+  const name = commandName(argv)
   const args = argv.slice(1)
   if (["cat", "less", "more", "head", "tail"].includes(name)) {
     for (const target of words(args)) {
@@ -680,25 +756,117 @@ function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, a
   return undefined
 }
 
-function writeViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known = true) {
-  const name = (argv[0] ?? "").toLowerCase()
+/** The write destinations of one simple command, independent of evaluation. */
+function writeTargetList(argv: readonly string[]): { targets: readonly string[]; label: string } | undefined {
+  const name = commandName(argv)
   const args = argv.slice(1)
   const all = words(args)
-  const check = (targets: readonly string[], label: string) => {
-    for (const target of targets) {
-      const violation = writeTarget(input, target, cwd, known, label)
-      if (violation) return violation
-    }
-    return undefined
-  }
-  if (name === "rm") return check(all, "rm")
-  if (name === "tee") return check(all, "tee")
-  if (name === "cp" || name === "mv") return check(all.slice(-1), name)
-  if (name === "ln") return check(all.slice(-1), "ln")
-  if (name === "chmod" || name === "chown") return check(all.slice(1), name)
+  if (name === "rm") return { targets: all, label: "rm" }
+  if (name === "tee") return { targets: all, label: "tee" }
+  if (name === "cp" || name === "mv") return { targets: all.slice(-1), label: name }
+  if (name === "ln") return { targets: all.slice(-1), label: "ln" }
+  if (name === "chmod" || name === "chown") return { targets: all.slice(1), label: name }
   if (name === "sed" && args.some((arg) => arg === "--in-place" || arg.startsWith("-i"))) {
     const rest = args.filter((arg) => !isFlag(arg))
-    return check(rest.slice(1), "sed -i")
+    return { targets: rest.slice(1), label: "sed -i" }
+  }
+  return undefined
+}
+
+function writeViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known = true) {
+  const list = writeTargetList(argv)
+  if (!list) return undefined
+  for (const target of list.targets) {
+    const violation = writeTarget(input, target, cwd, known, list.label)
+    if (violation) return violation
+  }
+  return undefined
+}
+
+/** One write destination of an ask, with the directory it resolves against. */
+interface WritePath {
+  readonly raw: string
+  readonly cwd: string
+  readonly known: boolean
+}
+
+/** Write destinations the lexical checks inspect; used again for symlink resolution. */
+function writePaths(input: EvaluateInput, moves: boolean): WritePath[] {
+  const base = input.instance?.worktree ?? input.cwd
+  if (input.permission === "edit") {
+    const paths: WritePath[] = [{ raw: input.pattern, cwd: base, known: true }]
+    if (moves) for (const raw of editMoveTargets(input.metadata)) paths.push({ raw, cwd: base, known: true })
+    return paths
+  }
+  if (input.permission !== "bash" || !input.segments) return []
+  const paths: WritePath[] = []
+  for (const context of segmentContexts(input.segments, input.cwd)) {
+    for (const redirect of context.segment.redirects) {
+      if (redirect.op.startsWith("<")) continue
+      const expanded = expand(redirect.target)
+      if (SAFE_REDIRECTS.has(expanded) || expanded.startsWith("/dev/fd/") || /^&\d+$/.test(expanded)) continue
+      paths.push({ raw: redirect.target, cwd: context.cwd, known: context.known })
+    }
+    const list = writeTargetList(context.argv)
+    if (list) for (const target of list.targets) paths.push({ raw: target, cwd: context.cwd, known: context.known })
+  }
+  return paths
+}
+
+/** Real path of the nearest existing ancestor plus the not-yet-created components. */
+async function realPathOf(target: string): Promise<string | undefined> {
+  let current = path.resolve(target)
+  const tail: string[] = []
+  for (;;) {
+    try {
+      return path.join(await fs.realpath(current), ...tail.reverse())
+    } catch (error) {
+      // Only a missing component may be appended blindly. Permission errors
+      // and symlink loops leave the real location unproven, so deny.
+      const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined
+      if (code !== "ENOENT" && code !== "ENOTDIR") return undefined
+      const parent = path.dirname(current)
+      if (parent === current) return undefined
+      tail.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
+async function realRootsOf(input: EvaluateInput): Promise<string[]> {
+  const roots = [input.instance?.directory, input.instance?.worktree, ...input.allowRoots].filter(
+    (root): root is string => typeof root === "string" && root !== "" && root !== "/",
+  )
+  const real = await Promise.all(roots.map((root) => realPathOf(root)))
+  return [...new Set(real.filter((root): root is string => root !== undefined))]
+}
+
+/**
+ * A lexical boundary check cannot see symlinks. Resolve the existing path
+ * components and refuse a write whose real location leaves every allowed
+ * root. New files are covered through their nearest existing parent.
+ */
+export async function symlinkViolation(
+  input: EvaluateInput,
+  options: { readonly moves?: boolean } = {},
+): Promise<Violation | undefined> {
+  if (input.explicit) return undefined
+  if (input.permission !== "edit" && input.permission !== "bash") return undefined
+  const paths = writePaths(input, options.moves !== false)
+  if (paths.length === 0) return undefined
+  const roots = await realRootsOf(input)
+  for (const entry of paths) {
+    const target = resolveTarget(entry.raw, entry.cwd)
+    if (target.dynamic || target.path === undefined) continue
+    if (!entry.known && !path.isAbsolute(expand(entry.raw))) continue
+    // Lexical escapes already fail SF-1; only apparently-inside targets need
+    // the deeper resolution.
+    if (!inside(input, target.path)) continue
+    const real = await realPathOf(target.path)
+    if (real === undefined)
+      return sf1("symlink write", `cannot resolve the write target through symlinks: ${target.path}`)
+    if (!roots.some((root) => FSUtil.contains(root, real)))
+      return sf1("symlink write", `write target resolves outside the project: ${real}`)
   }
   return undefined
 }
@@ -735,18 +903,21 @@ function segmentContexts(segments: readonly ShellParse.Segment[], cwd: string): 
     const state = stateFor(scope)
     const argv = commandArgs(segment.argv)
     out.push({ segment, argv, cwd: state.cwd, known: state.known })
-    if ((argv[0] ?? "").toLowerCase() !== "cd" || segment.pipelineScoped) continue
+    if (commandName(argv) !== "cd") continue
     const next = argv[1]
     if (next === undefined) {
       states.set(scope, { cwd: os.homedir(), known: true })
       continue
     }
     const resolved = resolveTarget(next, state.cwd)
+    // A relative `cd` resolves against the real cwd; once that is unknown the
+    // result stays unknown. Only an absolute target names a proven directory.
+    const certain = state.known || path.isAbsolute(expand(next))
     states.set(
       scope,
       resolved.dynamic || resolved.path === undefined
         ? { cwd: state.cwd, known: false }
-        : { cwd: resolved.path, known: true },
+        : { cwd: resolved.path, known: certain },
     )
   }
   return out
@@ -756,7 +927,7 @@ function segmentContexts(segments: readonly ShellParse.Segment[], cwd: string): 
 export function gitStateRequests(segments: readonly ShellParse.Segment[], cwd: string) {
   const requests = new Map<string, string>()
   for (const context of segmentContexts(segments, cwd)) {
-    if ((context.argv[0] ?? "").toLowerCase() !== "git") continue
+    if (commandName(context.argv) !== "git") continue
     const invocation = parseGit(context.argv, context.cwd, context.known)
     if (invocation.uncertain || invocation.name !== "push" || !invocation.cwdKnown) continue
     const key = path.resolve(invocation.cwd)
@@ -773,7 +944,7 @@ function bashViolation(input: EvaluateInput): Violation | undefined {
     const context = contexts[index]
     if (!context) continue
     const { segment: seg, argv, cwd, known } = context
-    const name = (argv[0] ?? "").toLowerCase()
+    const name = commandName(argv)
     if (!name) continue
     const redirect = redirectViolation(input, seg.redirects, cwd, known)
     if (redirect) return redirect
@@ -786,7 +957,7 @@ function bashViolation(input: EvaluateInput): Violation | undefined {
     if (publish) return publish
     if (name === "curl" || name === "wget") {
       const next = contexts[index + 1]
-      const nextName = next ? (next.argv[0] ?? "").toLowerCase() : ""
+      const nextName = next ? commandName(next.argv) : ""
       if (next && next.segment.pipeline === seg.pipeline && SHELLS.has(nextName))
         return sf3(`${name} | ${nextName}`, "piping a download into a shell executes unreviewed remote code")
     }
@@ -851,9 +1022,20 @@ export function evaluate(input: EvaluateInput): Violation | undefined {
     const raw = typeof input.metadata?.path === "string" ? input.metadata.path : undefined
     // grep/glob resolve their `path` against the working directory, not the
     // worktree root (the permission pattern is the search pattern, not a path).
-    const glob = raw ? sensitiveGlob(raw, input.instance?.directory ?? input.cwd) : undefined
+    const directory = input.instance?.directory ?? input.cwd
+    const target = raw ? resolveTarget(raw, directory) : undefined
+    // The include glob (grep) or the search glob (glob) selects the files the
+    // tool reads; a sensitive selection must not pass on the directory alone.
+    const include = typeof input.metadata?.include === "string" ? input.metadata.include : undefined
+    const selected = input.permission === "glob" ? input.pattern : include
+    if (selected) {
+      const base = target?.path !== undefined && !target.dynamic ? target.path : directory
+      const selection = sensitiveSelection(selected, base)
+      if (selection)
+        return sf2(input.permission, `searching a ${selection} is not allowed: ${expand(selected)}`)
+    }
+    const glob = raw ? sensitiveGlob(raw, directory) : undefined
     if (glob) return sf2(input.permission, `reading a ${glob} is not allowed: ${expand(raw ?? "")}`)
-    const target = raw ? resolveTarget(raw, input.instance?.directory ?? input.cwd) : undefined
     if (!target || target.dynamic || target.path === undefined) return extraViolation(input)
     const category = sensitiveCategory(target.path)
     if (category) return sf2(input.permission, `reading a ${category} is not allowed: ${target.path}`)
@@ -1022,7 +1204,7 @@ export const layer = Layer.effect(
           }
         }
 
-        const violation = evaluate({
+        const request: EvaluateInput = {
           permission: input.request.permission,
           pattern: input.pattern,
           metadata,
@@ -1034,7 +1216,15 @@ export const layer = Layer.effect(
           git: undefined,
           ...(gitStates.size > 0 ? { gitStates } : {}),
           segments,
-        })
+        }
+        // Lexical checks stay pure; symlink resolution runs only when they
+        // found nothing. Move targets are checked once per ask, not once per
+        // permission pattern.
+        const violation =
+          evaluate(request) ??
+          (yield* Effect.promise(() =>
+            symlinkViolation(request, { moves: input.request.patterns[0] === input.pattern }),
+          ).pipe(Effect.orElseSucceed(() => undefined)))
         if (!violation) return "allow" as const
 
         if (input.owner.kind === "dag_node") {
