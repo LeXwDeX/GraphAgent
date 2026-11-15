@@ -3,7 +3,8 @@ import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { METADATA_NAMESPACE } from "@graphagent/core/brand"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema, Semaphore } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Option, Scope, Schema, Semaphore } from "effect"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -114,6 +115,30 @@ interface ProcessorContext extends Input {
 }
 
 type StreamEvent = LLMEvent
+
+/**
+ * The unattended safety list's SF-5 denial is a recoverable tool error: the
+ * node sees the reason and can choose another path. Every other doom-loop
+ * outcome (user rejection, interrupt, ...) keeps its turn-ending semantics.
+ */
+const settleDoomLoop = (
+  ctx: ProcessorContext,
+  value: { readonly id: string },
+  check: Effect.Effect<void, unknown>,
+  fail: (id: string, error: unknown) => Effect.Effect<unknown>,
+) =>
+  Effect.gen(function* () {
+    const doom = yield* check.pipe(Effect.exit)
+    if (Exit.isSuccess(doom)) return
+    const failure = Cause.findErrorOption(doom.cause)
+    const denial = Option.isSome(failure) ? failure.value : undefined
+    if (!(denial instanceof PermissionV1.DeniedError) || !(denial.reason ?? "").startsWith("dag_safety:SF-5")) {
+      yield* Effect.failCause(doom.cause)
+      return
+    }
+    ctx.attempt.pendingToolExecutions.delete(value.id)
+    yield* fail(value.id, denial)
+  })
 
 function hasReasoningMetadata(value: unknown): boolean {
   const pending = [value]
@@ -465,7 +490,7 @@ export const layer = Layer.effect(
                 : value.providerMetadata,
             }))
 
-            yield* checkDoomLoop(ctx, value, input)
+            yield* settleDoomLoop(ctx, value, checkDoomLoop(ctx, value, input), failToolCall)
             return
           }
 

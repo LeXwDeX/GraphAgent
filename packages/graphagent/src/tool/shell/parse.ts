@@ -47,6 +47,12 @@ export interface Segment {
    * that track a working directory keep one state per scope.
    */
   readonly scope: string
+  /**
+   * Whether the shell reaches this statement: `maybe` for a conditional
+   * operand or loop/branch body, `never` when a literal `true`/`false`
+   * decides against it. A conditional `cd` must not be trusted.
+   */
+  readonly run: "always" | "maybe" | "never"
 }
 
 const resolveWasm = (asset: string) => {
@@ -189,6 +195,92 @@ function shellScope(node: Node, ps: boolean) {
   return { scope: ancestors.reverse().join("/") }
 }
 
+/** Compound statements that open their redirects before running the body. */
+const entryRedirect = (type: string) =>
+  type === "subshell" || type === "compound_statement" || type === "function_definition" || type.endsWith("_statement")
+
+const CONDITIONAL_CONTAINERS = new Set([
+  "if_statement",
+  "while_statement",
+  "for_statement",
+  "c_style_for_statement",
+  "case_statement",
+  "do_group",
+  "elif_clause",
+  "else_clause",
+])
+
+function directChild(parent: Node, node: Node) {
+  let current = node
+  while (current.parent && identity(current.parent) !== identity(parent)) current = current.parent
+  return current
+}
+
+/** Literal verdict of a one-word `true`/`:`/`false` operand, when it has one. */
+function literalTruth(node: Node | undefined): boolean | undefined {
+  if (!node || node.type !== "command") return undefined
+  const argv = tokens(node)
+  if (argv.length !== 1) return undefined
+  const name = unquote(argv[0] ?? "")
+  if (name === "true" || name === ":") return true
+  if (name === "false") return false
+  return undefined
+}
+
+/** Literal truth of the `&&`/`||` chain before an operand at `last`. */
+function chainTruth(children: readonly Node[], last: number): boolean | undefined {
+  let value = literalTruth(children[0])
+  for (let index = 1; index + 1 <= last; index += 2) {
+    const operator = children[index]
+    if (!operator || (operator.type !== "&&" && operator.type !== "||")) return undefined
+    const truth = literalTruth(children[index + 1])
+    if (value === undefined || truth === undefined) return undefined
+    value = operator.type === "&&" ? value && truth : value || truth
+  }
+  return value
+}
+
+/** Whether the shell reaches this operand of an `&&`/`||` list. */
+function listVerdict(list: Node, node: Node): "always" | "maybe" | "never" {
+  const branch = directChild(list, node)
+  const children: Node[] = []
+  for (let index = 0; index < list.childCount; index++) {
+    const child = list.child(index)
+    if (child) children.push(child)
+  }
+  const index = children.findIndex((child) => identity(child) === identity(branch))
+  if (index < 2) return "always"
+  const operator = children[index - 1]
+  if (!operator || (operator.type !== "&&" && operator.type !== "||")) return "always"
+  const truth = chainTruth(children, index - 2)
+  if (truth === undefined) return "maybe"
+  if (operator.type === "&&") return truth ? "always" : "never"
+  return truth ? "never" : "always"
+}
+
+/**
+ * Whether the shell reaches a statement (bash only). Conditional operands,
+ * loop bodies and if/case branches may not run; a literal `true`/`false`
+ * condition resolves the common cases exactly.
+ */
+function executionOf(node: Node, ps: boolean): "always" | "maybe" | "never" {
+  if (ps) return "always"
+  let verdict: "always" | "maybe" | "never" = "always"
+  let current: Node = node
+  while (current.parent) {
+    const parent = current.parent
+    if (parent.type === "list") {
+      const next = listVerdict(parent, node)
+      if (next === "never") return "never"
+      if (next === "maybe") verdict = "maybe"
+    } else if (CONDITIONAL_CONTAINERS.has(parent.type)) {
+      verdict = "maybe"
+    }
+    current = parent
+  }
+  return verdict
+}
+
 function nearest(node: Node | null, type: string) {
   let current: Node | null = node
   while (current) {
@@ -199,14 +291,22 @@ function nearest(node: Node | null, type: string) {
 }
 
 function redirectTarget(node: Node) {
+  // Adjacent quoted and unquoted fragments form one word (`..'/'victim`);
+  // re-join them so the guard decodes the same file name bash opens.
+  const parts: string[] = []
   for (let index = 0; index < node.childCount; index++) {
     const child = node.child(index)
     if (!child) continue
-    if (child.type === "word" || child.type === "string" || child.type === "raw_string" || child.type === "concatenation")
-      return child.text
-    if (child.type === "redirected_file_name") return child.text.trim()
+    if (
+      child.type === "word" ||
+      child.type === "string" ||
+      child.type === "raw_string" ||
+      child.type === "concatenation"
+    )
+      parts.push(child.text)
+    else if (child.type === "redirected_file_name") parts.push(child.text.trim())
   }
-  return undefined
+  return parts.length > 0 ? parts.join("") : undefined
 }
 
 function redirectsOf(statement: Node, ps: boolean): Redirect[] {
@@ -272,6 +372,26 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
             redirects: owned,
             pipeline: nextPipeline++,
             ...shellScope(statement, ps),
+            run: executionOf(statement, ps),
+          },
+        })
+        continue
+      }
+      // A compound statement opens its redirect before running the body, so
+      // the target resolves against the entry cwd, not the last inner `cd`.
+      let branch: Node = last
+      while (branch.parent && identity(branch.parent) !== identity(statement)) branch = branch.parent
+      if (entryRedirect(branch.type)) {
+        commandless.push({
+          start: statement.startIndex,
+          end: statement.endIndex,
+          segment: {
+            argv: [],
+            raw: statement.text.trim(),
+            redirects: owned,
+            pipeline: nextPipeline++,
+            ...shellScope(statement, ps),
+            run: executionOf(statement, ps),
           },
         })
         continue
@@ -316,6 +436,7 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
             redirects: redirects.get(identity(node)) ?? [],
             pipeline: group,
             ...shellScope(node, ps),
+            run: executionOf(node, ps),
           } satisfies Segment,
         }
       })

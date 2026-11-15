@@ -26,6 +26,8 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { LLMEvent } from "@graphagent/llm"
+import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { Permission } from "@/permission"
 import { ToolInputRejectedError } from "../../src/session/llm/ai-sdk"
 
 const summary = Layer.succeed(
@@ -150,7 +152,7 @@ const replacements = [
  * Builds a processor environment backed by a scripted LLM.Service. Each
  * processor attempt consumes the next script; the last script repeats.
  */
-function scripted(scripts: LLMEvent[][]) {
+function scripted(scripts: LLMEvent[][], options: { denyDoomLoop?: boolean } = {}) {
   let calls = 0
   const service = Layer.succeed(
     LLM.Service,
@@ -163,9 +165,18 @@ function scripted(scripts: LLMEvent[][]) {
       },
     }),
   )
+  // #1031 M7 SF-5: the unattended adjudicator denies the doom-loop ask with a
+  // `dag_safety:SF-5` reason instead of prompting.
+  const doomDenied = Layer.mock(Permission.Service, {
+    ask: (request) =>
+      request.permission === "doom_loop"
+        ? Effect.fail(new PermissionV1.DeniedError({ ruleset: [], reason: "dag_safety:SF-5: denied by test" }))
+        : Effect.void,
+  })
+  const extra = options.denyDoomLoop ? [LayerNode.replace(Permission.node, doomDenied)] : []
   const it = testEffect(
     LayerNode.buildLayer(root, {
-      replacements: [...replacements, LayerNode.replace(LLM.node, service)],
+      replacements: [...replacements, LayerNode.replace(LLM.node, service), ...extra],
     }),
   )
   return { count: () => calls, it }
@@ -821,6 +832,73 @@ rejectedThenUnknownText.it.effect(
         expect(rejectedThenUnknownText.count()).toBe(2)
         expect(result).toBe("continue")
         expect(msg.error).toBeUndefined()
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// SF-5 (unattended doom loop) is a recoverable tool error
+// ---------------------------------------------------------------------------
+
+const identicalCall = (id: string): LLMEvent[] => [
+  LLMEvent.toolInputStart({ id, name: "lookup" }),
+  LLMEvent.toolInputDelta({ id, name: "lookup", text: '{"query":"x"}' }),
+  LLMEvent.toolInputEnd({ id, name: "lookup" }),
+  LLMEvent.toolCall({ id, name: "lookup", input: { query: "x" } }),
+]
+
+const toolOk = (id: string) =>
+  LLMEvent.toolResult({
+    id,
+    name: "lookup",
+    result: { type: "json", value: { title: "Lookup", output: "ok", metadata: {} } },
+  })
+
+const doomScript: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  ...identicalCall("call-a"),
+  toolOk("call-a"),
+  ...identicalCall("call-b"),
+  toolOk("call-b"),
+  ...identicalCall("call-c"),
+  // The adapter may still deliver the result after the admission denial; it
+  // must not overwrite the recorded SF-5 error part.
+  toolOk("call-c"),
+  LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+  LLMEvent.finish({ reason: "tool-calls" }),
+]
+
+const doomLoop = scripted([doomScript], { denyDoomLoop: true })
+
+doomLoop.it.effect(
+  "session.processor turns an unattended SF-5 denial into a tool error and keeps the turn",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "keep trying")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle.process(input(chat.id, parent, mdl)).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(run)
+
+        // The denial is a tool error, not a turn-ending failure: the node can
+        // choose another path on the next step.
+        expect(result).toBe("continue")
+        expect(msg.error).toBeUndefined()
+        const calls = toolParts(yield* MessageV2.parts(msg.id))
+        expect(calls).toHaveLength(3)
+        expect(calls.find((part) => part.callID === "call-a")?.state.status).toBe("completed")
+        expect(calls.find((part) => part.callID === "call-b")?.state.status).toBe("completed")
+        const denied = calls.find((part) => part.callID === "call-c")
+        expect(denied?.state.status).toBe("error")
+        if (denied?.state.status === "error") expect(denied.state.error).toContain("dag_safety:SF-5")
       }),
     { config: cfg },
   ),

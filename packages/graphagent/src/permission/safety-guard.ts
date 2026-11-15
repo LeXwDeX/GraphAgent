@@ -108,8 +108,58 @@ const GLOB = /[*?[]/
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"])
 const SAFE_REDIRECTS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"])
 
-function expand(raw: string) {
-  const text = ShellParse.unquote(raw)
+/**
+ * Decode one static shell word: adjacent quoted and unquoted fragments plus
+ * backslash escapes (`..'/'victim` is `../victim`, `.e'n'v` is `.env`).
+ * Returns undefined for a malformed word (unterminated quote), which callers
+ * treat as an unknowable target.
+ */
+export function decodeWord(raw: string): string | undefined {
+  let out = ""
+  let quote: "'" | '"' | undefined
+  for (let index = 0; index < raw.length; index++) {
+    const char = raw[index] ?? ""
+    if (quote === "'") {
+      if (char === "'") quote = undefined
+      else out += char
+      continue
+    }
+    if (quote === '"') {
+      if (char === '"') {
+        quote = undefined
+        continue
+      }
+      if (char === "\\" && index + 1 < raw.length) {
+        const next = raw[index + 1] ?? ""
+        // In double quotes only these characters are escaped by a backslash.
+        if (next === "$" || next === "`" || next === '"' || next === "\\") {
+          out += next
+          index++
+          continue
+        }
+        out += char
+        continue
+      }
+      out += char
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      continue
+    }
+    if (char === "\\" && index + 1 < raw.length) {
+      out += raw[++index]
+      continue
+    }
+    out += char
+  }
+  return quote === undefined ? out : undefined
+}
+
+/** Static word expansion plus the home forms the guard already understands. */
+function expandDecoded(raw: string): string | undefined {
+  const text = decodeWord(raw)
+  if (text === undefined) return undefined
   if (text === "~") return os.homedir()
   if (text.startsWith("~/")) return path.join(os.homedir(), text.slice(2))
   if (text === "$HOME") return os.homedir()
@@ -117,11 +167,17 @@ function expand(raw: string) {
   return text
 }
 
+/** Best-effort display expansion (a malformed word keeps its unquoted spelling). */
+function expand(raw: string) {
+  return expandDecoded(raw) ?? ShellParse.unquote(raw)
+}
+
 /** Resolve one shell word to a project-checkable path; `dynamic` is unknowable. */
 export function resolveTarget(raw: string, cwd: string): { path?: string; dynamic: boolean } {
-  const expanded = expand(raw)
+  const expanded = expandDecoded(raw)
   // An unexpanded home of another user (`~name`) is not a project path.
-  if (expanded === "" || expanded.startsWith("~") || DYNAMIC.test(expanded)) return { dynamic: true }
+  if (expanded === undefined || expanded === "" || expanded.startsWith("~") || DYNAMIC.test(expanded))
+    return { dynamic: true }
   const glob = GLOB.exec(expanded)
   const literal = glob ? expanded.slice(0, glob.index) : expanded
   const absolute = path.isAbsolute(literal) ? literal : path.resolve(cwd, literal)
@@ -149,8 +205,9 @@ export function sensitiveCategory(target: string): string | undefined {
 
 /** Resolve a literal tool-provided path; glob characters are file-name bytes. */
 function concreteTarget(raw: string, cwd: string): { path?: string; dynamic: boolean } {
-  const expanded = expand(raw)
-  if (expanded === "" || expanded.startsWith("~") || DYNAMIC.test(expanded)) return { dynamic: true }
+  const expanded = expandDecoded(raw)
+  if (expanded === undefined || expanded === "" || expanded.startsWith("~") || DYNAMIC.test(expanded))
+    return { dynamic: true }
   return { path: path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded), dynamic: false }
 }
 
@@ -240,7 +297,7 @@ function sensitiveSelection(selected: string, cwd: string): string | undefined {
 }
 
 function sensitiveGlobOne(raw: string, cwd: string): string | undefined {
-  const expanded = expand(raw).replaceAll("\\", "/")
+  const expanded = (expandDecoded(raw) ?? expand(raw)).replaceAll("\\", "/")
   if (!GLOB_META.test(expanded)) return undefined
   // Resolve `..`/relative spellings before the fixed-path checks; glob
   // characters survive `path.resolve`, so the pattern stays a pattern.
@@ -310,11 +367,14 @@ const words = (argv: readonly string[]) => argv.filter((value) => !isFlag(value)
 
 /** `/bin/rm`, `'rm'` and `rm` must reach the same checks; other platforms' separators too. */
 function commandName(argv: readonly string[]) {
-  // Shell quoting is not part of the executable: `'cat'`, `"cat"` and the
-  // concatenated `c'a't` all run `cat`.
-  let text = ShellParse.unquote(argv[0] ?? "").replaceAll("'", "").replaceAll('"', "")
-  text = text.includes("/") || /^[A-Za-z]:/.test(text) ? text.replaceAll("\\", "/") : text.replaceAll("\\", "")
-  return path.posix.basename(text).toLowerCase()
+  const raw = argv[0] ?? ""
+  // Windows-style executables keep backslashes as separators (`C:\bin\rm`).
+  if (/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\"))
+    return path.posix.basename(raw.replaceAll("\\", "/")).toLowerCase()
+  // Shell quoting and escapes are not part of the executable: `'cat'`,
+  // `"cat"`, `c'a't` and `\c\a\t` all run `cat`.
+  const text = decodeWord(raw) ?? raw.replaceAll("'", "").replaceAll('"', "")
+  return path.posix.basename(text.replaceAll("\\", "/")).toLowerCase()
 }
 
 /** Global options that take a value, from `git -h`; both `=` and a separate word. */
@@ -390,7 +450,7 @@ function parseGit(argv: readonly string[], cwd: string, known = true): GitInvoca
       index += inline ? 1 : 2
       const resolved = concreteTarget(value, effective)
       if (resolved.dynamic || resolved.path === undefined) cwdKnown = false
-      else if (cwdKnown || path.isAbsolute(expand(value))) {
+      else if (cwdKnown || path.isAbsolute(expandDecoded(value) ?? "")) {
         // An absolute -C names the repository regardless of an earlier
         // dynamic `cd`; a relative one does not.
         effective = resolved.path
@@ -442,7 +502,11 @@ function parseGit(argv: readonly string[], cwd: string, known = true): GitInvoca
     }
     // Subcommand arguments are quoted shell words; checks compare the value
     // the shell will pass to git, not the spelling with quotes.
-    return result({ name: token.toLowerCase(), args: argv.slice(index + 1).map((value) => ShellParse.unquote(value)) })
+    const name = decodeWord(token) ?? ShellParse.unquote(token)
+    return result({
+      name: name.toLowerCase(),
+      args: argv.slice(index + 1).map((value) => decodeWord(value) ?? ShellParse.unquote(value)),
+    })
   }
   return result()
 }
@@ -465,7 +529,7 @@ function writeTarget(
   const target = resolveTarget(raw, cwd)
   if (target.dynamic || target.path === undefined)
     return sf1(label, `cannot determine the write target of "${raw.trim()}"`)
-  if (!known && !path.isAbsolute(expand(raw)))
+  if (!known && !path.isAbsolute(expandDecoded(raw) ?? ""))
     return sf1(label, `cannot determine the working directory for "${raw.trim()}"`)
   if (!inside(input, target.path)) return sf1(label, `write target is outside the project: ${target.path}`)
   return undefined
@@ -515,7 +579,7 @@ function redirectViolation(
       if (violation) return violation
       continue
     }
-    const expanded = expand(redirect.target)
+    const expanded = expandDecoded(redirect.target) ?? expand(redirect.target)
     if (SAFE_REDIRECTS.has(expanded) || expanded.startsWith("/dev/fd/") || /^&\d+$/.test(expanded)) continue
     const violation = writeTarget(input, redirect.target, cwd, known, "shell output redirect")
     if (violation) return violation
@@ -569,20 +633,11 @@ function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: strin
     )
   const deleting = args.some((arg) => arg === "--delete" || arg === "-d")
   const pushed = args.filter((value) => !isFlag(value))
-  let refs = pushed
-  if (pushed.length > 0) {
-    if (git?.remotes.includes(pushed[0] ?? "")) refs = pushed.slice(1)
-    else if ((git?.remotes.length ?? 0) === 0 && pushed.length >= 2) refs = pushed.slice(1)
-    else if (
-      (git?.remotes.length ?? 0) === 0 &&
-      pushed.length === 1 &&
-      !matchesDefault(pushed[0] ?? "", git) &&
-      pushed[0] !== "HEAD"
-    )
-      // A single bare word with no known remotes is treated as the remote
-      // name, so the effective target is the current branch.
-      refs = []
-  }
+  // `git push [<repository> [<refspec>...]]`: the first positional is the
+  // repository whatever its spelling (configured remote, URL or path), so
+  // only the later positionals are refspecs. A repository-only push publishes
+  // the current branch.
+  const refs = pushed.slice(1)
 
   if (refs.length === 0) {
     // `git push --delete <remote>` names no ref; git refuses it, so nothing
@@ -859,7 +914,7 @@ function writePaths(input: EvaluateInput, moves: boolean): WritePath[] {
     for (const redirect of context.segment.redirects) {
       // `<` is a read, but `<>` also writes (and creates) the target.
       if (redirect.op.startsWith("<") && redirect.op !== "<>") continue
-      const expanded = expand(redirect.target)
+      const expanded = expandDecoded(redirect.target) ?? expand(redirect.target)
       if (SAFE_REDIRECTS.has(expanded) || expanded.startsWith("/dev/fd/") || /^&\d+$/.test(expanded)) continue
       paths.push({ raw: redirect.target, cwd: context.cwd, known: context.known })
     }
@@ -914,7 +969,7 @@ export async function symlinkViolation(
   for (const entry of paths) {
     const target = resolveTarget(entry.raw, entry.cwd)
     if (target.dynamic || target.path === undefined) continue
-    if (!entry.known && !path.isAbsolute(expand(entry.raw))) continue
+    if (!entry.known && !path.isAbsolute(expandDecoded(entry.raw) ?? "")) continue
     // Lexical escapes already fail SF-1; only apparently-inside targets need
     // the deeper resolution.
     if (!inside(input, target.path)) continue
@@ -959,11 +1014,19 @@ function segmentContexts(
   }
   const out: SegmentContext[] = []
   for (const segment of segments) {
+    // A statically skipped statement never runs: no target, no cwd change.
+    if (segment.run === "never") continue
     const scope = segment.scope ?? ""
     const state = stateFor(scope)
     const argv = commandArgs(segment.argv)
     out.push({ segment, argv, cwd: state.cwd, known: state.known })
     if (commandName(argv) !== "cd") continue
+    if (segment.run === "maybe") {
+      // The conditional cd may not run, so later commands cannot trust
+      // either the old or the new directory.
+      states.set(scope, { cwd: state.cwd, known: false })
+      continue
+    }
     const next = argv[1]
     if (next === undefined) {
       states.set(scope, { cwd: os.homedir(), known: true })
@@ -975,7 +1038,7 @@ function segmentContexts(
     // When the caller proved which directories exist, a target outside that
     // set may fail and leave the old cwd, so the result stays uncertain.
     const proven = knownDirectories === undefined || (resolved.path !== undefined && knownDirectories.has(resolved.path))
-    const certain = (state.known || path.isAbsolute(expand(next))) && proven
+    const certain = (state.known || path.isAbsolute(expandDecoded(next) ?? "")) && proven
     states.set(
       scope,
       resolved.dynamic || resolved.path === undefined
