@@ -459,3 +459,32 @@ it.instance(
     }),
   { git: true },
 )
+
+it.instance(
+  "a cd to a missing directory keeps the cwd uncertain",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("failed-cd")
+      const directory = yield* InstanceState.directory
+      yield* Effect.promise(() => fs.mkdir(path.join(directory, "existing-child")))
+      const run = (command: string) =>
+        ask(childSessionID, {
+          permission: "bash",
+          patterns: [command],
+          metadata: { command, cwd: directory, shell: "bash" },
+        })
+
+      // The child directory exists, so `../victim` lands inside the project.
+      yield* run("cd existing-child; printf x > ../victim")
+      // A missing child leaves bash in the project root; trusting the new cwd
+      // would wrongly allow the project-outside `../victim`.
+      const missing = yield* expectDenied(run("cd missing-child; printf x > ../victim"))
+      expect(missing).toContain("dag_safety:SF-1")
+      // An existing absolute cd is honored; an unproven one is not.
+      const absolute = yield* expectDenied(run(`cd ${directory}; printf x > ../victim`))
+      expect(absolute).toContain("dag_safety:SF-1")
+      const unproven = yield* expectDenied(run(`cd ${directory}/missing; printf x > ./inside.txt`))
+      expect(unproven).toContain("dag_safety:SF-1")
+    }),
+  { git: true },
+)

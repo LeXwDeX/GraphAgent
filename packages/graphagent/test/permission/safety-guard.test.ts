@@ -77,11 +77,43 @@ describe("SF-1 project-outside writes", () => {
       expect((yield* bash("tee /etc/motd"))?.ruleID).toBe("SF-1")
       expect((yield* bash("sed -i 's/a/b/' /etc/hosts"))?.ruleID).toBe("SF-1")
       expect((yield* bash("mv ./a.txt ../b.txt"))?.ruleID).toBe("SF-1")
+      // A move deletes every source; sources outside the project are writes.
+      expect((yield* bash("mv ../victim ./victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("mv ../outside/a ./a"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("mv a ../outside/b ./dest"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("mv ./a ./b"))).toBeUndefined()
+      // `--target-directory` moves the destination out of the trailing slot.
+      expect((yield* bash("mv --target-directory=/etc ./a"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("mv -t ./dest ./a"))).toBeUndefined()
+      expect((yield* bash("mv -vt ./dest ./a"))).toBeUndefined()
+      expect((yield* bash("cp -vt /etc ./a"))?.ruleID).toBe("SF-1")
+      // `cp` reads its sources; only the destination is a write.
+      expect((yield* bash("cp --target-directory=/etc ./a"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("cp -t ./dest ./a"))).toBeUndefined()
+      expect((yield* bash("cp ../victim ./victim"))).toBeUndefined()
       expect((yield* bash("cp ./a.txt /etc/b.txt"))?.ruleID).toBe("SF-1")
       expect((yield* bash("chmod 644 /etc/hosts"))?.ruleID).toBe("SF-1")
       expect((yield* bash("rm /etc/hosts"))?.ruleID).toBe("SF-1")
       expect((yield* bash("tee $TARGET"))?.ruleID).toBe("SF-1")
       expect((yield* bash("echo hi > ./build/out.txt"))).toBeUndefined()
+    }),
+  )
+
+  effect("a redirect with no command still writes", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("true; > ../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("> ../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("true; 2> ../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("true; >> ../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("true; &> ../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("true; >| ../victim"))?.ruleID).toBe("SF-1")
+      // `<>` opens for read and write (and creates the file).
+      expect((yield* bash("true; <> ../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("true; <> .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("true; > ./inside"))).toBeUndefined()
+      expect((yield* bash("> ./inside"))).toBeUndefined()
+      // A commandless input redirect is a readable target too.
+      expect((yield* bash("true; < .env"))?.ruleID).toBe("SF-2")
     }),
   )
 })
@@ -312,6 +344,30 @@ describe("SF-1 unknown cwd after a dynamic cd", () => {
   )
 })
 
+describe("SF-1 cd that may fail", () => {
+  effect("a cd target that is not proven keeps the cwd uncertain", () =>
+    Effect.gen(function* () {
+      const command = "cd missing-child; printf x > ../victim"
+      // Unproven cd: the shell may stay in the old cwd, so relative writes
+      // cannot be trusted.
+      expect((yield* bash(command, { knownDirectories: new Set<string>() }))?.ruleID).toBe("SF-1")
+      expect(
+        (yield* bash(command, { knownDirectories: new Set([`${root}/missing-child`]) })),
+      ).toBeUndefined()
+      expect(
+        (yield* bash("cd child; rm -rf ../victim", { knownDirectories: new Set([`${root}/child`]) })),
+      ).toBeUndefined()
+      expect(
+        (yield* bash("cd /repo/project/child; rm -rf ../victim", { knownDirectories: new Set([`${root}/child`]) })),
+      ).toBeUndefined()
+      // An absolute target that is not proven is no safer than a relative one.
+      expect(
+        (yield* bash("cd /abs/missing; printf x > ../victim", { knownDirectories: new Set<string>() }))?.ruleID,
+      ).toBe("SF-1")
+    }),
+  )
+})
+
 describe("SF-4 bulk push selectors", () => {
   effect("pushing every branch or ref cannot hide a default-branch publish", () =>
     Effect.gen(function* () {
@@ -386,6 +442,12 @@ describe("SF-3/SF-2 executable paths", () => {
       expect((yield* bash("/usr/bin/git push origin main"))?.ruleID).toBe("SF-4")
       expect((yield* bash("/bin/cat .env"))?.ruleID).toBe("SF-2")
       expect((yield* bash("/bin/tee ../outside.txt"))?.ruleID).toBe("SF-1")
+      // Shell quoting is not part of the executable name.
+      expect((yield* bash("'cat' .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash('"cat" .env'))?.ruleID).toBe("SF-2")
+      expect((yield* bash("c'a't .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("'/bin/rm' -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash('"git" push --force origin feat/x'))?.ruleID).toBe("SF-3")
       // Bare commands keep working.
       expect((yield* bash("rm -rf /"))?.ruleID).toBe("SF-3")
       expect((yield* bash("cat .env"))?.ruleID).toBe("SF-2")

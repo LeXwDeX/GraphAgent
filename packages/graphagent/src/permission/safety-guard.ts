@@ -83,6 +83,8 @@ export interface EvaluateInput {
   readonly git: GitState | undefined
   /** Facts of repositories reached through `git -C`, keyed by resolved directory. */
   readonly gitStates?: ReadonlyMap<string, GitState | undefined>
+  /** Directories statically proven to exist; a `cd` elsewhere may fail and keep the old cwd. */
+  readonly knownDirectories?: ReadonlySet<string>
   /** Parsed bash command; absent for non-shell permissions. */
   readonly segments: readonly ShellParse.Segment[] | undefined
 }
@@ -306,9 +308,13 @@ const isFlag = (value: string) => value.startsWith("-") && value !== "-"
 const isShortFlag = (value: string) => isFlag(value) && !value.startsWith("--")
 const words = (argv: readonly string[]) => argv.filter((value) => !isFlag(value))
 
-/** `/bin/rm` and `rm` must reach the same checks; other platforms' separators too. */
+/** `/bin/rm`, `'rm'` and `rm` must reach the same checks; other platforms' separators too. */
 function commandName(argv: readonly string[]) {
-  return path.posix.basename((argv[0] ?? "").replaceAll("\\", "/")).toLowerCase()
+  // Shell quoting is not part of the executable: `'cat'`, `"cat"` and the
+  // concatenated `c'a't` all run `cat`.
+  let text = ShellParse.unquote(argv[0] ?? "").replaceAll("'", "").replaceAll('"', "")
+  text = text.includes("/") || /^[A-Za-z]:/.test(text) ? text.replaceAll("\\", "/") : text.replaceAll("\\", "")
+  return path.posix.basename(text).toLowerCase()
 }
 
 /** Global options that take a value, from `git -h`; both `=` and a separate word. */
@@ -495,6 +501,15 @@ function redirectViolation(
 ): Violation | undefined {
   for (const redirect of redirects) {
     if (redirect.op.startsWith("<<") && !redirect.op.startsWith("<<<")) continue
+    // `<>` opens for read and write (and creates the file), so it needs both
+    // checks; every other `<` form is a read only.
+    if (redirect.op === "<>") {
+      const read = readTarget(input, redirect.target, cwd, "shell read-write redirect")
+      if (read) return read
+      const write = writeTarget(input, redirect.target, cwd, known, "shell read-write redirect")
+      if (write) return write
+      continue
+    }
     if (redirect.op.startsWith("<") && !redirect.op.startsWith("<<<")) {
       const violation = readTarget(input, redirect.target, cwd, "shell input redirect")
       if (violation) return violation
@@ -756,6 +771,38 @@ function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, a
   return undefined
 }
 
+/** `-t`/`--target-directory` destinations, including their `=`/attached forms. */
+function targetDirectories(args: readonly string[]) {
+  const out: string[] = []
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? ""
+    if (arg === "-t" || arg === "--target-directory") {
+      const next = args[index + 1]
+      if (next !== undefined) {
+        out.push(next)
+        index++
+      }
+      continue
+    }
+    if (arg.startsWith("--target-directory=")) out.push(arg.slice("--target-directory=".length))
+    else if (arg.startsWith("-") && !arg.startsWith("--") && arg.length > 1) {
+      // `-t` may be bundled with other flags (`-vt dir`, `-vtdir`).
+      const at = arg.indexOf("t", 1)
+      if (at < 0) continue
+      const attached = arg.slice(at + 1)
+      if (attached !== "") out.push(attached)
+      else {
+        const next = args[index + 1]
+        if (next !== undefined) {
+          out.push(next)
+          index++
+        }
+      }
+    }
+  }
+  return out
+}
+
 /** The write destinations of one simple command, independent of evaluation. */
 function writeTargetList(argv: readonly string[]): { targets: readonly string[]; label: string } | undefined {
   const name = commandName(argv)
@@ -763,7 +810,15 @@ function writeTargetList(argv: readonly string[]): { targets: readonly string[];
   const all = words(args)
   if (name === "rm") return { targets: all, label: "rm" }
   if (name === "tee") return { targets: all, label: "tee" }
-  if (name === "cp" || name === "mv") return { targets: all.slice(-1), label: name }
+  // `mv` removes every source; each one mutates the filesystem. `cp` only
+  // writes the destination (sources are reads). `-t` moves the destination
+  // out of the trailing slot.
+  if (name === "mv" || name === "cp") {
+    const directories = targetDirectories(args)
+    if (directories.length > 0)
+      return { targets: name === "mv" ? [...all, ...directories] : directories, label: name }
+    return { targets: name === "mv" ? all : all.slice(-1), label: name }
+  }
   if (name === "ln") return { targets: all.slice(-1), label: "ln" }
   if (name === "chmod" || name === "chown") return { targets: all.slice(1), label: name }
   if (name === "sed" && args.some((arg) => arg === "--in-place" || arg.startsWith("-i"))) {
@@ -800,9 +855,10 @@ function writePaths(input: EvaluateInput, moves: boolean): WritePath[] {
   }
   if (input.permission !== "bash" || !input.segments) return []
   const paths: WritePath[] = []
-  for (const context of segmentContexts(input.segments, input.cwd)) {
+  for (const context of segmentContexts(input.segments, input.cwd, input.knownDirectories)) {
     for (const redirect of context.segment.redirects) {
-      if (redirect.op.startsWith("<")) continue
+      // `<` is a read, but `<>` also writes (and creates) the target.
+      if (redirect.op.startsWith("<") && redirect.op !== "<>") continue
       const expanded = expand(redirect.target)
       if (SAFE_REDIRECTS.has(expanded) || expanded.startsWith("/dev/fd/") || /^&\d+$/.test(expanded)) continue
       paths.push({ raw: redirect.target, cwd: context.cwd, known: context.known })
@@ -888,7 +944,11 @@ const parentScope = (scope: string) => {
  * `$()` never moves the parent shell, and a pipeline element runs in its own
  * subshell. States are inherited from the nearest enclosing scope.
  */
-function segmentContexts(segments: readonly ShellParse.Segment[], cwd: string): SegmentContext[] {
+function segmentContexts(
+  segments: readonly ShellParse.Segment[],
+  cwd: string,
+  knownDirectories?: ReadonlySet<string>,
+): SegmentContext[] {
   const states = new Map<string, { cwd: string; known: boolean }>()
   const stateFor = (scope: string) => {
     for (let current = scope; ; current = parentScope(current)) {
@@ -912,7 +972,10 @@ function segmentContexts(segments: readonly ShellParse.Segment[], cwd: string): 
     const resolved = resolveTarget(next, state.cwd)
     // A relative `cd` resolves against the real cwd; once that is unknown the
     // result stays unknown. Only an absolute target names a proven directory.
-    const certain = state.known || path.isAbsolute(expand(next))
+    // When the caller proved which directories exist, a target outside that
+    // set may fail and leave the old cwd, so the result stays uncertain.
+    const proven = knownDirectories === undefined || (resolved.path !== undefined && knownDirectories.has(resolved.path))
+    const certain = (state.known || path.isAbsolute(expand(next))) && proven
     states.set(
       scope,
       resolved.dynamic || resolved.path === undefined
@@ -924,9 +987,13 @@ function segmentContexts(segments: readonly ShellParse.Segment[], cwd: string): 
 }
 
 /** Directories a `git push` in this command needs facts for; empty for every other ask. */
-export function gitStateRequests(segments: readonly ShellParse.Segment[], cwd: string) {
+export function gitStateRequests(
+  segments: readonly ShellParse.Segment[],
+  cwd: string,
+  knownDirectories?: ReadonlySet<string>,
+) {
   const requests = new Map<string, string>()
-  for (const context of segmentContexts(segments, cwd)) {
+  for (const context of segmentContexts(segments, cwd, knownDirectories)) {
     if (commandName(context.argv) !== "git") continue
     const invocation = parseGit(context.argv, context.cwd, context.known)
     if (invocation.uncertain || invocation.name !== "push" || !invocation.cwdKnown) continue
@@ -939,15 +1006,16 @@ export function gitStateRequests(segments: readonly ShellParse.Segment[], cwd: s
 function bashViolation(input: EvaluateInput): Violation | undefined {
   const segments = input.segments
   if (!segments) return undefined
-  const contexts = segmentContexts(segments, input.cwd)
+  const contexts = segmentContexts(segments, input.cwd, input.knownDirectories)
   for (let index = 0; index < contexts.length; index++) {
     const context = contexts[index]
     if (!context) continue
     const { segment: seg, argv, cwd, known } = context
-    const name = commandName(argv)
-    if (!name) continue
+    // A commandless redirect carries its own write target.
     const redirect = redirectViolation(input, seg.redirects, cwd, known)
     if (redirect) return redirect
+    const name = commandName(argv)
+    if (!name) continue
     if (name === "cd") continue
     const sensitive = sensitiveReadViolation(input, seg, argv, cwd)
     if (sensitive) return sensitive
@@ -1134,6 +1202,27 @@ export function referenceRoots(value: { readonly references?: unknown; readonly 
   return out
 }
 
+/**
+ * Existing directories a `cd` in this command may enter. A `cd` elsewhere may
+ * fail and leave the old cwd, so consumers keep that path uncertain.
+ */
+async function provenDirectories(segments: readonly ShellParse.Segment[], cwd: string): Promise<Set<string>> {
+  const proven = new Set<string>()
+  for (const context of segmentContexts(segments, cwd)) {
+    if (commandName(context.argv) !== "cd") continue
+    const next = context.argv[1]
+    if (next === undefined) {
+      proven.add(os.homedir())
+      continue
+    }
+    const resolved = resolveTarget(next, context.cwd)
+    if (resolved.dynamic || resolved.path === undefined) continue
+    const stat = await fs.stat(resolved.path).catch(() => undefined)
+    if (stat?.isDirectory()) proven.add(resolved.path)
+  }
+  return proven
+}
+
 function summaryOf(violation: Violation) {
   const text = `${violation.ruleID} ${violation.label}: ${violation.reason}`
   return text.length > 200 ? `${text.slice(0, 197)}...` : text
@@ -1167,10 +1256,15 @@ export const layer = Layer.effect(
                 Effect.catchCause(() => Effect.succeed(undefined)),
               )
             : undefined
+        // A `cd` may fail; prove which directories exist before trusting it.
+        const knownDirectories =
+          !input.rule.explicit && segments
+            ? yield* Effect.promise(() => provenDirectories(segments, cwd)).pipe(Effect.orElseSucceed(() => undefined))
+            : undefined
         // Git facts are only consumed by SF-4 push checks. Resolve them for
         // the repositories a push actually targets, and never for ordinary
         // read/edit/other asks: each lookup costs several Git subprocesses.
-        const requests = !input.rule.explicit && segments ? gitStateRequests(segments, cwd) : []
+        const requests = !input.rule.explicit && segments ? gitStateRequests(segments, cwd, knownDirectories) : []
         const gitStates = new Map<string, GitState | undefined>()
         if (requests.length > 0) {
           const gitService = Option.getOrUndefined(yield* Effect.serviceOption(Git.Service))
@@ -1215,6 +1309,7 @@ export const layer = Layer.effect(
           extra,
           git: undefined,
           ...(gitStates.size > 0 ? { gitStates } : {}),
+          ...(knownDirectories !== undefined ? { knownDirectories } : {}),
           segments,
         }
         // Lexical checks stay pure; symlink resolution runs only when they

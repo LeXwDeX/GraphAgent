@@ -223,9 +223,22 @@ function redirectsOf(statement: Node, ps: boolean): Redirect[] {
   for (let index = 0; index < statement.childCount; index++) {
     const child = statement.child(index)
     if (!child || child.type !== "file_redirect") continue
-    const operator = child.child(0)
+    // A file descriptor (`2>`/`0<`) precedes the operator; the operator is the
+    // first remaining punctuation child.
+    let operator: Node | undefined
+    for (let inner = 0; inner < child.childCount; inner++) {
+      const item = child.child(inner)
+      if (!item || item.type === "file_descriptor") continue
+      if (item.type === "redirected_file_name" || item.type === "word" || item.type === "string") continue
+      if (item.type === "raw_string" || item.type === "concatenation") continue
+      operator = item
+      break
+    }
     const target = redirectTarget(child)
-    if (operator && target !== undefined) out.push({ op: operator.text.trim(), target })
+    // tree-sitter parses `<>` as `<` plus an error token; keep the raw form
+    // because it writes (and creates) as well as reads.
+    const op = /^(?:\d+)?<>/.test(child.text.trim()) ? "<>" : operator?.text.trim()
+    if (op && target !== undefined) out.push({ op, target })
   }
   return out
 }
@@ -239,13 +252,30 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
   const tree = yield* parse(command, ps)
   try {
     const redirects = new Map<string, Redirect[]>()
+    // A redirect with no command still writes (`> file`): keep it as its own
+    // commandless segment so consumers can evaluate the target.
+    const commandless: { start: number; end: number; segment: Segment }[] = []
+    let nextPipeline = 0
     for (const statement of tree.rootNode.descendantsOfType("redirected_statement")) {
       if (!statement) continue
       const owned = redirectsOf(statement, ps)
       if (owned.length === 0) continue
       const inner = commands(statement)
       const last = inner.at(-1)
-      if (!last) continue
+      if (!last) {
+        commandless.push({
+          start: statement.startIndex,
+          end: statement.endIndex,
+          segment: {
+            argv: [],
+            raw: statement.text.trim(),
+            redirects: owned,
+            pipeline: nextPipeline++,
+            ...shellScope(statement, ps),
+          },
+        })
+        continue
+      }
       redirects.set(identity(last), owned)
     }
     if (ps) {
@@ -263,11 +293,10 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
     }
 
     const pipelines = new Map<string, number>()
-    let nextPipeline = 0
-    const out = commands(tree.rootNode)
+    const entries = commands(tree.rootNode)
       .map((node) => ({ node, start: node.startIndex, end: node.endIndex }))
       .toSorted((left, right) => left.start - right.start || left.end - right.end)
-      .map(({ node }) => {
+      .map(({ node, start, end }) => {
         const pipeline = nearest(node.parent, "pipeline")
         let group: number
         if (pipeline) {
@@ -279,14 +308,20 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
           group = nextPipeline++
         }
         return {
-          argv: tokens(node),
-          raw: source(node),
-          redirects: redirects.get(identity(node)) ?? [],
-          pipeline: group,
-          ...shellScope(node, ps),
-        } satisfies Segment
+          start,
+          end,
+          segment: {
+            argv: tokens(node),
+            raw: source(node),
+            redirects: redirects.get(identity(node)) ?? [],
+            pipeline: group,
+            ...shellScope(node, ps),
+          } satisfies Segment,
+        }
       })
-    return out
+    return [...entries, ...commandless]
+      .toSorted((left, right) => left.start - right.start || left.end - right.end)
+      .map((entry) => entry.segment)
   } finally {
     tree.delete()
   }
