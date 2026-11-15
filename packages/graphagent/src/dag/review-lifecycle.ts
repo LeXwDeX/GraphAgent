@@ -5,7 +5,7 @@ export * as DagReviewLifecycle from "./review-lifecycle"
 
 import type { NodeConfig, WorkflowConfig } from "./dag"
 import type { PriorFinding } from "./blocks"
-import { isReadOnlyProfile } from "./blocks"
+import { isReadOnlyProfile, isReviewWorker, nonWriterWorkerOverride } from "./blocks"
 import { evaluateCondition } from "./runtime/eval"
 import { normalizeOutput, verdictField } from "./runtime/verdict"
 
@@ -389,6 +389,36 @@ export function reviewRoundMetrics(
   }
 }
 
+/**
+ * This round's new upheld findings and the quiet streak after it, derived from
+ * the completed decision's stored arbitration output. The compiled
+ * `review_quiet_rounds` is only the streak the round entered with (round N-1's
+ * accounting), so the round's own dispositions must decide whether the streak
+ * extends: a raised round resets it. A round that predates arbitration
+ * dispositions has no refuted record, so every stored lane action counts as
+ * `legacyRaised`. The prior-round loader and workflow coverage share this
+ * accounting.
+ */
+export function reviewRoundQuietStreak(
+  output: unknown,
+  enteringQuietRounds: number,
+  legacyRaised = 0,
+): { newFindings: number; quietRounds: number } {
+  const result = structuredRecord(output)
+  const rawDispositions = result && Array.isArray(result.dispositions) ? result.dispositions : []
+  const newFindings =
+    rawDispositions.length === 0
+      ? legacyRaised
+      : rawDispositions
+          .map(dispositionRecord)
+          .filter((item): item is Disposition => item !== undefined)
+          .filter((item) => item.novelty === "new" && item.decision === "upheld").length
+  return {
+    newFindings,
+    quietRounds: newFindings === 0 ? enteringQuietRounds + 1 : 0,
+  }
+}
+
 /** The round-chain totals a workflow result reports: per-round new findings,
  * cumulative raised/fixed/refuted/open, and the trailing quiet-round streak. */
 export interface ReviewRoundSummary {
@@ -456,6 +486,18 @@ export function strictReviewCoverageErrors(input: {
     if (!covered)
       errors.push(
         `${writer.id}: writer has no downstream diff review bound to its implementation fingerprint; every writer needs verify → review with implementation_node_id pointing at the writer or its fan-out aggregator`,
+      )
+  }
+  // Mirror the authored-block check (requireReviewCoverage): a persisted
+  // block-compiled non-writer node must not gain write capability through a
+  // worker override, or recover/retry would keep a graph that runs unreviewed
+  // writes. The override is only visible on the compiled node, never on the
+  // authored source at this point.
+  for (const node of nodes) {
+    const override = node.block === undefined ? undefined : nonWriterWorkerOverride(node.block, node.worker_type)
+    if (override)
+      errors.push(
+        `${node.id}: ${node.block} block overrides its worker to write-capable "${override}"; under the strict gate only coding and prototype writers may change the workspace, and each needs a fingerprint-bound diff review`,
       )
   }
   for (const decision of decisions) {
@@ -721,26 +763,10 @@ function dependsTransitively(config: WorkflowConfig, startID: string, targetID: 
   return visit(startID)
 }
 
-export function isReviewWorker(workerType: string) {
-  return workerType === "review" || workerType.startsWith("review-")
-}
-
 /** #1030 D9-h: worker types whose job is to judge the workspace, never to
  * change it. The built-in `auditor` agent is the read-only worker that review
  * lanes, skeptics, verification, and synthesis use by default. */
-export function isReadOnlyWorker(workerType: string) {
-  return isReviewWorker(workerType) || workerType === "auditor"
-}
-
-/** #1030 D9-h: the effective workspace-write policy of a node. An explicit
- * `workspace_writes` wins; otherwise read-only workers deny writes and every
- * other worker keeps its agent permission. */
-export function workspaceWritesOf(
-  node: Pick<NodeConfig, "workspace_writes"> | undefined,
-  workerType: string,
-): "allow" | "deny" {
-  return node?.workspace_writes ?? (isReadOnlyWorker(workerType) ? "deny" : "allow")
-}
+export { isReadOnlyWorker, isReviewWorker, workspaceWritesOf } from "./blocks"
 
 /**
  * #944: a node judges the working tree when block compilation marks it

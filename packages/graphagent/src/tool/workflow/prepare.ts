@@ -5,6 +5,7 @@ import { Effect } from "effect"
 import { Dag } from "@/dag/dag"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import type { PriorFinding, PriorRound } from "@/dag/blocks"
+import { reviewRoundQuietStreak } from "@/dag/review-lifecycle"
 import { normalizeOutput } from "@/dag/runtime/verdict"
 import { isRecord } from "@/util/record"
 import type { Tool } from "../tool"
@@ -92,25 +93,14 @@ export const priorRoundLoader =
         }
       }
       const round = decision.review_round ?? 1
-      // A round that predates arbitration dispositions has no refuted record:
-      // every stored action still counts as a raised finding rather than a
-      // silent quiet round.
-      const computedNew =
-        dispositions.length === 0
-          ? findings.length
-          : findings.filter(
-              (finding) => finding.disposition?.novelty === "new" && finding.disposition.decision === "upheld",
-            ).length
-      // The round's own stored dispositions are the only sound novelty source.
-      // The compiled review_new_findings/review_quiet_rounds fields were
-      // written from the referenced predecessor before this round ran, so
-      // replaying them would carry round N-1's count down the chain: a quiet
-      // round after a raised one would never extend the streak, and a raised
-      // round after a quiet one could stop the loop early. review_quiet_rounds
-      // is the streak this round entered with; extend or reset it with the
-      // measured novelty.
-      const newFindings = computedNew
-      const quietRounds = newFindings === 0 ? (decision.review_quiet_rounds ?? 0) + 1 : 0
+      // The round's own stored dispositions decide its novelty; the compiled
+      // review_quiet_rounds is only the streak the round entered with. A round
+      // that predates arbitration dispositions counts its stored lane actions.
+      const { newFindings, quietRounds } = reviewRoundQuietStreak(
+        decisionOutput,
+        decision.review_quiet_rounds ?? 0,
+        findings.length,
+      )
       // A successor must also inherit the findings this decision left open. A
       // lane that did not re-raise an item does not resolve it; `resolved` is
       // the only authority on it. The stored prior findings keep the original

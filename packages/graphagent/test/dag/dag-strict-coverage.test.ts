@@ -25,7 +25,7 @@ import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 
 const acceptance: AcceptanceItem[] = [{ id: "AC1", text: "The change works" }]
 
-const reviewed = (extra: { lenses?: ReviewLens[]; acceptance?: boolean } = {}): {
+const reviewed = (extra: { lenses?: ReviewLens[]; acceptance?: boolean; decisionWorker?: string } = {}): {
   objective: string
   blocks: WorkflowBlock[]
   acceptance?: AcceptanceItem[]
@@ -39,6 +39,7 @@ const reviewed = (extra: { lenses?: ReviewLens[]; acceptance?: boolean } = {}): 
       kind: "review",
       depends_on: ["verification"],
       lenses: extra.lenses ?? ["standards", "intent", "completeness"],
+      ...(extra.decisionWorker !== undefined ? { worker_type: extra.decisionWorker } : {}),
     },
     // The strict gate also keeps the pre-existing final-gate requirement: the
     // accepted review must feed a required node conditioned on ACCEPT.
@@ -61,7 +62,7 @@ const prepare = (value: unknown, input: { action?: "start" | "extend" | "replan"
 const graph = (config: Record<string, unknown>) => ({ config: { name: "strict", ...config } })
 const startSpec = (config: Record<string, unknown>) => graph(config)
 
-function strictGraph(extra: { lenses?: ReviewLens[]; acceptance?: boolean } = {}) {
+function strictGraph(extra: { lenses?: ReviewLens[]; acceptance?: boolean; decisionWorker?: string } = {}) {
   const spec = reviewed(extra)
   const { objective, blocks, acceptance: items } = spec
   return {
@@ -160,6 +161,76 @@ describe("strict review coverage at authoring checkpoints", () => {
     expect(result.valid).toBe(true)
     expect(result.warnings.some((warning) => warning.message.includes("completeness lens"))).toBe(true)
     expect(result.warnings.some((warning) => warning.message.includes("config.acceptance"))).toBe(true)
+  })
+
+  it("rejects a write-capable worker override on a non-writer block", async () => {
+    for (const kind of ["synthesize", "verify", "explore"] as const) {
+      const result = await prepare(
+        startSpec({
+          name: "strict",
+          objective: "No unreviewed writes",
+          blocks: [{ id: "aux", kind, worker_type: "build" }] as WorkflowBlock[],
+          review_gate: "strict",
+        }),
+      )
+      expect(result.valid).toBe(false)
+      expect(
+        result.errors.some((error) =>
+          error.message.includes(`Block "aux" (${kind}) overrides its worker to write-capable "build"`),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  it("rejects a review override to a worker the read-only profile list accepts", async () => {
+    // `explore` passes isReadOnlyProfile but still runs with workspace writes,
+    // so only the effective write-capability check closes this route.
+    const result = await prepare(startSpec(strictGraph({ decisionWorker: "explore" })))
+    expect(result.valid).toBe(false)
+    expect(
+      result.errors.some((error) =>
+        error.message.includes('Block "decision" (review) overrides its worker to write-capable "explore"'),
+      ),
+    ).toBe(true)
+  })
+
+  it("still requires a fingerprint-bound review for an explicit build writer", async () => {
+    const result = await prepare(
+      startSpec({
+        name: "strict",
+        objective: "Ship it",
+        blocks: [{ id: "implementation", kind: "coding", worker_type: "build" }] as WorkflowBlock[],
+        acceptance,
+        review_gate: "strict",
+      }),
+    )
+    expect(result.valid).toBe(false)
+    expect(result.errors[0]?.message).toContain("has no downstream review gate")
+  })
+
+  it("reports a write-capable override as a warning under the standard gate", async () => {
+    const result = await prepare(
+      startSpec({
+        name: "standard",
+        objective: "No unreviewed writes",
+        blocks: [{ id: "aux", kind: "synthesize", worker_type: "build" }] as WorkflowBlock[],
+      }),
+      { review_gate: "standard" },
+    )
+    expect(result.valid).toBe(true)
+    expect(
+      result.warnings.some((warning) => warning.message.includes('overrides its worker to write-capable "build"')),
+    ).toBe(true)
+  })
+
+  it("re-checks the write-capable override on persisted block nodes", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "No unreviewed writes",
+      blocks: [{ id: "aux", kind: "synthesize", worker_type: "build" }] as WorkflowBlock[],
+    })
+    expect(strictReviewCoverageErrors({ nodes })).toContainEqual(
+      expect.stringContaining('aux: synthesize block overrides its worker to write-capable "build"'),
+    )
   })
 
   it("rejects a strict extend or replan fragment that adds an uncovered writer", async () => {
@@ -378,7 +449,7 @@ describe("coverage", () => {
     ])
   })
 
-  it("records why a review loop stopped", () => {
+  it("records why a review loop stopped from the completed rounds", () => {
     const loopConfig = (extra: Partial<NodeConfig>): WorkflowConfig => ({
       name: "loop",
       nodes: [{ ...completionConfigNode("decision"), review_arbitration: true, ...extra }],
@@ -386,9 +457,38 @@ describe("coverage", () => {
     expect(workflowCoverage({ config: loopConfig({ review_round: 5 }), nodes: [] })).toEqual([
       { node_id: "decision", reason: "review loop stopped: five rounds reached" },
     ])
-    expect(workflowCoverage({ config: loopConfig({ review_quiet_rounds: 2 }), nodes: [] })).toEqual([
-      { node_id: "decision", reason: "review loop stopped: two consecutive quiet rounds" },
-    ])
+    // A round that has not completed has no measured novelty; the compiled
+    // entering streak alone must not report a stop.
+    expect(
+      workflowCoverage({
+        config: loopConfig({ review_quiet_rounds: 2 }),
+        nodes: [makeNodeRow({ id: "decision", status: "running" })],
+      }),
+    ).toEqual([])
+    // Round 1 was quiet, so round 2 entered with streak two, but its own
+    // dispositions raised a new upheld finding: the streak resets.
+    const raised = makeNodeRow({
+      id: "decision",
+      status: "completed",
+      output: {
+        verdict: "REJECT",
+        dispositions: [
+          { node: "review--intent", index: 0, novelty: "new", decision: "upheld", evidence: "reproduced" },
+        ],
+        resolved: [],
+      },
+    })
+    expect(workflowCoverage({ config: loopConfig({ review_quiet_rounds: 2 }), nodes: [raised] })).toEqual([])
+    // Raised → quiet → quiet: the third round completed without new upheld
+    // findings, so the loop really stopped on two consecutive quiet rounds.
+    const quiet = makeNodeRow({
+      id: "decision",
+      status: "completed",
+      output: { verdict: "BLOCKED", dispositions: [], resolved: [] },
+    })
+    expect(
+      workflowCoverage({ config: loopConfig({ review_round: 3, review_quiet_rounds: 2 }), nodes: [quiet] }),
+    ).toEqual([{ node_id: "decision", reason: "review loop stopped: two consecutive quiet rounds" }])
   })
 
   it("records unread result pages and renders the section in the configured language", () => {

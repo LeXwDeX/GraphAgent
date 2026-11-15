@@ -17,6 +17,7 @@ import { PAUSE_REASON_BUDGET_EXHAUSTED } from "@graphagent/core/dag/core/types"
 import type { DagStore } from "@graphagent/core/dag/store"
 import type { UiLanguage } from "@graphagent/core/config/language"
 import type { WorkflowConfig } from "./dag"
+import { reviewRoundQuietStreak } from "./review-lifecycle"
 import { normalizeOutput } from "./runtime/verdict"
 import { isRecord } from "@/util/record"
 
@@ -104,12 +105,30 @@ export function workflowCoverage(input: {
   }
 
   // A review loop that stopped for its own rule (not the dry-run default)
-  // reports why: the caller must surface the remaining open findings.
+  // reports why: the caller must surface the remaining open findings. The
+  // quiet streak is measured from the completed decision's own dispositions
+  // (the same accounting as the prior-round loader), never from the compiled
+  // `review_quiet_rounds`: that field is the streak the round entered with,
+  // and a pending or raised round must not report a stop.
   for (const definition of input.config?.nodes ?? []) {
     if (definition.review_arbitration !== true) continue
-    if ((definition.review_round ?? 1) >= 5)
+    if ((definition.review_round ?? 1) >= 5) {
       entries.push({ node_id: definition.id, reason: "review loop stopped: five rounds reached" })
-    else if ((definition.review_quiet_rounds ?? 0) >= 2)
+      continue
+    }
+    const completed = current.find((node) => node.id === definition.id && node.status === "completed")
+    if (!completed) continue
+    const legacyRaised = definition.depends_on.reduce((sum, laneID) => {
+      if (definitions.get(laneID)?.review_lane === undefined) return sum
+      const actions = record(current.find((node) => node.id === laneID)?.output)?.required_actions
+      return sum + (Array.isArray(actions) ? actions.length : 0)
+    }, 0)
+    const { quietRounds } = reviewRoundQuietStreak(
+      completed.output,
+      definition.review_quiet_rounds ?? 0,
+      legacyRaised,
+    )
+    if (quietRounds >= 2)
       entries.push({ node_id: definition.id, reason: "review loop stopped: two consecutive quiet rounds" })
   }
 

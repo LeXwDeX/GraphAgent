@@ -282,9 +282,18 @@ export function deliverReport(input: {
     const report = node ? reportText(node, structured, input.source, artifact) : resultIndex(workflow, nodes)
     // #1031 M6: coverage is deterministic engine output, never model prose.
     // Empty coverage appends nothing; the section title follows the configured
-    // interface language.
+    // interface language. A committed answer part is the durable receipt, so
+    // it freezes the language it was rendered with: the retry window
+    // (acknowledge:false, then the completion wake) may cross a UI-language
+    // change, and re-rendering the localized section would make the receipt
+    // unmatchable and block the pending wake.
     const configured = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
-    const language = resolveLanguage(configured ? (yield* configured.get()).language : undefined)
+    const receiptLanguage =
+      receipt?.type === "text" ? receipt.metadata?.dag_delivery?.language : undefined
+    const language =
+      receiptLanguage === "zh-CN" || receiptLanguage === "en"
+        ? receiptLanguage
+        : resolveLanguage(configured ? (yield* configured.get()).language : undefined)
     const coverage = DagCoverage.workflowCoverage({
       config,
       nodes,
@@ -309,6 +318,7 @@ export function deliverReport(input: {
       node_id: node?.id,
       child_session_id: node?.childSessionId,
       replan_attempt: node?.replanAttempts,
+      language,
       ...((artifact ?? body.artifact) ? { artifact: artifact ?? body.artifact } : {}),
     }
     const database = yield* Database.Service

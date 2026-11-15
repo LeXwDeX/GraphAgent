@@ -338,6 +338,27 @@ export function isReadOnlyProfile(workerType: string) {
   return READ_ONLY_PROFILES.has(workerType) || /^(?:review|verify|verification)-/.test(workerType)
 }
 
+/** #1030 D9-h: worker types whose job is to judge the workspace, never to
+ * change it. The built-in `auditor` agent is the read-only worker that review
+ * lanes, skeptics, verification, and synthesis use by default. */
+export function isReviewWorker(workerType: string) {
+  return workerType === "review" || workerType.startsWith("review-")
+}
+
+export function isReadOnlyWorker(workerType: string) {
+  return isReviewWorker(workerType) || workerType === "auditor"
+}
+
+/** The effective workspace-write policy of a node. An explicit
+ * `workspace_writes` wins; otherwise read-only workers deny writes and every
+ * other worker keeps its agent permission. */
+export function workspaceWritesOf(
+  node: Pick<NodeConfig, "workspace_writes"> | undefined,
+  workerType: string,
+): "allow" | "deny" {
+  return node?.workspace_writes ?? (isReadOnlyWorker(workerType) ? "deny" : "allow")
+}
+
 // Shared execution discipline for every block that runs shell commands. A
 // silent long command reads as hung and invites manual interrupts; keep the
 // rule in one place so all command-heavy contracts stay in sync.
@@ -621,7 +642,7 @@ function compileBlock(
     node({
       id: block.id,
       name: `${block.id}: ${block.kind}`,
-      workerType: block.worker_type ?? workerType(block.kind),
+      workerType: block.worker_type ?? defaultBlockWorker(block.kind),
       dependencies,
       objective,
       instruction: block.instruction,
@@ -831,7 +852,8 @@ function node(input: {
   }
 }
 
-function workerType(kind: WorkflowBlockKind) {
+/** The worker a block kind runs when it does not override one. */
+export function defaultBlockWorker(kind: WorkflowBlockKind) {
   if (kind === "explore") return "explore"
   if (kind === "plan") return "plan"
   if (kind === "coding" || kind === "prototype") return "build"
@@ -839,6 +861,22 @@ function workerType(kind: WorkflowBlockKind) {
   // the built-in auditor. A synthesize that must write declares worker_type.
   if (kind === "verify" || kind === "synthesize") return "auditor"
   return "general"
+}
+
+/**
+ * A non-writer block whose explicit worker override runs with workspace
+ * writes. The strict gate rejects it: only coding and prototype writers may
+ * change the workspace, and each needs a fingerprint-bound diff review, so a
+ * write-capable synthesize/verify/explore/review block would run unreviewed
+ * work. An override equal to the kind's default is not an escalation.
+ */
+export function nonWriterWorkerOverride(
+  kind: WorkflowBlockKind,
+  workerType: string | undefined,
+): string | undefined {
+  if (WRITER_KINDS.has(kind) || workerType === undefined || workerType === defaultBlockWorker(kind))
+    return undefined
+  return workspaceWritesOf(undefined, workerType) === "allow" ? workerType : undefined
 }
 
 function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBlockCompileOptions) {
@@ -1042,6 +1080,18 @@ export function requireReviewCoverage(graph: WorkflowBlockGraph, options: Workfl
     if (!covered) {
       errors.push(
         `Writer block "${writer.id}" has no downstream review gate bound to its implementation fingerprint; under the strict gate every writer needs verify → review (phase diff) whose implementation_node_id points at the writer or its fan-out aggregator`,
+      )
+    }
+  }
+
+  // A worker override can hand write capability to a block kind the writer
+  // filter above never inspects, letting synthesized or exploratory work
+  // change the tree outside every fingerprint-bound review.
+  for (const block of graph.blocks) {
+    const override = nonWriterWorkerOverride(block.kind, block.worker_type)
+    if (override) {
+      errors.push(
+        `Block "${block.id}" (${block.kind}) overrides its worker to write-capable "${override}"; under the strict gate only coding and prototype writers may change the workspace, and each needs verify → review bound to its implementation fingerprint`,
       )
     }
   }
