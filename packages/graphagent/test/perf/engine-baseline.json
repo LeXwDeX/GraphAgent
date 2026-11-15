@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "collectedAt": "2026-11-15T00:07:52.428Z",
-  "commit": "7e640047411b86fc730484d04829506f4099ccf2",
+  "collectedAt": "2026-11-15T09:37:11.054Z",
+  "commit": "b60608071dc2a4ca686bf0067b7bf1549423e012",
   "scenarios": {
     "S1": {
       "perTurn": {
-        "sql.read": 55,
+        "sql.read": 56,
         "sql.write": 25,
         "commits": 11,
-        "json.parseBytes": 70318,
-        "json.encodeBytes": 4472,
-        "sha256Bytes": 4150,
+        "json.parseBytes": 70419,
+        "json.encodeBytes": 4497,
+        "sha256Bytes": 4175,
         "git.spawns": 4,
         "snapshot.lockWaits": 0,
         "events.durable": 11,
@@ -37,9 +37,9 @@
         {
           "purpose": "conversation",
           "messageCount": 51,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "452767ae6fb95ed7",
+          "prefixHash": "3baa1af7634e5716",
           "toolChoice": "auto"
         }
       ],
@@ -51,12 +51,12 @@
     },
     "S2": {
       "perTurn": {
-        "sql.read": 251,
+        "sql.read": 252,
         "sql.write": 81,
         "commits": 36,
-        "json.parseBytes": 1604641,
-        "json.encodeBytes": 137526,
-        "sha256Bytes": 82767,
+        "json.parseBytes": 1604742,
+        "json.encodeBytes": 137553,
+        "sha256Bytes": 82794,
         "git.spawns": 12,
         "snapshot.lockWaits": 0,
         "events.durable": 37,
@@ -65,10 +65,10 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 58,
+        "sql.read": 59,
         "sql.write": 21,
         "commits": 9,
-        "json.parseBytes": 468627,
+        "json.parseBytes": 468728,
         "json.encodeBytes": 3943,
         "sha256Bytes": 3725,
         "git.spawns": 4,
@@ -99,9 +99,9 @@
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "5ceaa66fbb694589",
+          "prefixHash": "e8dba4806cbc6859",
           "toolChoice": "auto"
         }
       ],
@@ -113,12 +113,12 @@
     },
     "S3": {
       "perTurn": {
-        "sql.read": 85,
+        "sql.read": 86,
         "sql.write": 33,
         "commits": 15,
-        "json.parseBytes": 151462,
-        "json.encodeBytes": 4624,
-        "sha256Bytes": 4288,
+        "json.parseBytes": 151563,
+        "json.encodeBytes": 4651,
+        "sha256Bytes": 4315,
         "git.spawns": 4,
         "snapshot.lockWaits": 0,
         "events.durable": 13,
@@ -145,7 +145,7 @@
         {
           "purpose": "conversation",
           "messageCount": 105,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
           "prefixHash": "f24a98a5c0aaaa02",
           "toolChoice": "auto"
@@ -159,14 +159,14 @@
     },
     "S5": {
       "perTurn": {
-        "sql.read": 3202,
+        "sql.read": 3266,
         "sql.write": 1674,
         "commits": 650,
-        "json.parseBytes": 530238,
-        "json.encodeBytes": 257217,
-        "sha256Bytes": 246269,
-        "git.spawns": 52,
-        "snapshot.lockWaits": 30,
+        "json.parseBytes": 535512,
+        "json.encodeBytes": 258866,
+        "sha256Bytes": 247918,
+        "git.spawns": 56,
+        "snapshot.lockWaits": 31,
         "events.durable": 624,
         "events.ephemeral": 68,
         "convert.messages": 34,
@@ -193,7 +193,7 @@
           "messageCount": 3,
           "toolsHash": "281d3d38aae5405e",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "1825d136ad4fa4fb",
+          "prefixHash": "a2c05874fe0a1aef",
           "toolChoice": "auto"
         },
         {
@@ -201,7 +201,7 @@
           "messageCount": 3,
           "toolsHash": "281d3d38aae5405e",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "e434fcc63722d78f",
+          "prefixHash": "5431112deaed8320",
           "toolChoice": "auto"
         },
         {
@@ -209,15 +209,7 @@
           "messageCount": 3,
           "toolsHash": "281d3d38aae5405e",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "cdf885bb98c163ab",
-          "toolChoice": "auto"
-        },
-        {
-          "purpose": "conversation",
-          "messageCount": 3,
-          "toolsHash": "cac33c0e531b000b",
-          "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "0c673530161220ac",
+          "prefixHash": "34cae5f5b5f3fd80",
           "toolChoice": "auto"
         },
         {
@@ -225,7 +217,7 @@
           "messageCount": 3,
           "toolsHash": "281d3d38aae5405e",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "fd56c19e12010e7a",
+          "prefixHash": "56fe6dcce1e9e75d",
           "toolChoice": "auto"
         },
         {
@@ -233,7 +225,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "0c673530161220ac",
+          "prefixHash": "e0a97af893f6767c",
           "toolChoice": "auto"
         },
         {
@@ -241,7 +233,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "0c673530161220ac",
+          "prefixHash": "e0a97af893f6767c",
           "toolChoice": "auto"
         },
         {
@@ -249,7 +241,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "dded47848dbce3c9",
+          "prefixHash": "e0a97af893f6767c",
           "toolChoice": "auto"
         },
         {
@@ -257,7 +249,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5c88b5504e969a0c",
+          "prefixHash": "d87f718298f66d4f",
           "toolChoice": "auto"
         },
         {
@@ -265,7 +257,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5ada59b32aff1987",
+          "prefixHash": "cb17cbb79bc4d65f",
           "toolChoice": "auto"
         },
         {
@@ -273,7 +265,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5ede80e4d5836001",
+          "prefixHash": "35542ec55239008b",
           "toolChoice": "auto"
         },
         {
@@ -281,7 +273,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "9ecae3f3d078f49e",
+          "prefixHash": "1f0ad6bc5f0d9b2a",
           "toolChoice": "auto"
         },
         {
@@ -289,7 +281,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "dded47848dbce3c9",
+          "prefixHash": "f165142bd67b268c",
           "toolChoice": "auto"
         },
         {
@@ -297,7 +289,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5c88b5504e969a0c",
+          "prefixHash": "d87f718298f66d4f",
           "toolChoice": "auto"
         },
         {
@@ -305,7 +297,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5ada59b32aff1987",
+          "prefixHash": "cb17cbb79bc4d65f",
           "toolChoice": "auto"
         },
         {
@@ -313,7 +305,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5ede80e4d5836001",
+          "prefixHash": "35542ec55239008b",
           "toolChoice": "auto"
         },
         {
@@ -321,7 +313,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "9ecae3f3d078f49e",
+          "prefixHash": "1f0ad6bc5f0d9b2a",
           "toolChoice": "auto"
         },
         {
@@ -329,7 +321,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "dded47848dbce3c9",
+          "prefixHash": "f165142bd67b268c",
           "toolChoice": "auto"
         },
         {
@@ -337,7 +329,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5c88b5504e969a0c",
+          "prefixHash": "d87f718298f66d4f",
           "toolChoice": "auto"
         },
         {
@@ -345,7 +337,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "d73a40f685052553",
+          "prefixHash": "cb17cbb79bc4d65f",
           "toolChoice": "auto"
         },
         {
@@ -353,7 +345,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "020db525adedc645",
+          "prefixHash": "6d9e05822b85d0da",
           "toolChoice": "auto"
         },
         {
@@ -361,7 +353,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "ae68cd2d4a9d39a0",
+          "prefixHash": "545fc2cbcf12fcfa",
           "toolChoice": "auto"
         },
         {
@@ -369,7 +361,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5ada59b32aff1987",
+          "prefixHash": "35542ec55239008b",
           "toolChoice": "auto"
         },
         {
@@ -377,7 +369,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5ede80e4d5836001",
+          "prefixHash": "36b850e40af3ff5a",
           "toolChoice": "auto"
         },
         {
@@ -385,7 +377,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "9ecae3f3d078f49e",
+          "prefixHash": "1f0ad6bc5f0d9b2a",
           "toolChoice": "auto"
         },
         {
@@ -393,7 +385,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "d73a40f685052553",
+          "prefixHash": "f165142bd67b268c",
           "toolChoice": "auto"
         },
         {
@@ -401,7 +393,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "020db525adedc645",
+          "prefixHash": "6d9e05822b85d0da",
           "toolChoice": "auto"
         },
         {
@@ -409,7 +401,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "d73a40f685052553",
+          "prefixHash": "545fc2cbcf12fcfa",
           "toolChoice": "auto"
         },
         {
@@ -417,7 +409,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "ae68cd2d4a9d39a0",
+          "prefixHash": "36b850e40af3ff5a",
           "toolChoice": "auto"
         },
         {
@@ -425,7 +417,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "020db525adedc645",
+          "prefixHash": "545fc2cbcf12fcfa",
           "toolChoice": "auto"
         },
         {
@@ -433,7 +425,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "ae68cd2d4a9d39a0",
+          "prefixHash": "6d9e05822b85d0da",
           "toolChoice": "auto"
         },
         {
@@ -441,7 +433,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "4d3b774f99baee87",
+          "prefixHash": "36b850e40af3ff5a",
           "toolChoice": "auto"
         },
         {
@@ -449,7 +441,7 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "4d3b774f99baee87",
+          "prefixHash": "9b4d36f8d082adb3",
           "toolChoice": "auto"
         },
         {
@@ -457,7 +449,15 @@
           "messageCount": 3,
           "toolsHash": "cac33c0e531b000b",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "4d3b774f99baee87",
+          "prefixHash": "9b4d36f8d082adb3",
+          "toolChoice": "auto"
+        },
+        {
+          "purpose": "conversation",
+          "messageCount": 3,
+          "toolsHash": "cac33c0e531b000b",
+          "systemHash": "f254f7e7ea20f0df",
+          "prefixHash": "9b4d36f8d082adb3",
           "toolChoice": "auto"
         }
       ],
@@ -474,12 +474,12 @@
     },
     "S6": {
       "perTurn": {
-        "sql.read": 112,
+        "sql.read": 114,
         "sql.write": 56,
         "commits": 25,
-        "json.parseBytes": 36022,
-        "json.encodeBytes": 1198551,
-        "sha256Bytes": 13554,
+        "json.parseBytes": 36224,
+        "json.encodeBytes": 1198578,
+        "sha256Bytes": 13581,
         "git.spawns": 16,
         "snapshot.lockWaits": 0,
         "events.durable": 24,
@@ -488,10 +488,10 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 34,
+        "sql.read": 35,
         "sql.write": 19,
         "commits": 8,
-        "json.parseBytes": 17400,
+        "json.parseBytes": 17451,
         "json.encodeBytes": 598247,
         "sha256Bytes": 5749,
         "git.spawns": 6,
@@ -506,17 +506,17 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "c7c3a69603b7ac13",
+          "prefixHash": "6336150f46b50a3e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "8528abd77d36694a",
+          "prefixHash": "46e54212067d05c1",
           "toolChoice": "auto"
         }
       ],
@@ -530,12 +530,12 @@
     },
     "S7": {
       "perTurn": {
-        "sql.read": 312,
+        "sql.read": 314,
         "sql.write": 104,
         "commits": 45,
-        "json.parseBytes": 2400042,
-        "json.encodeBytes": 142213,
-        "sha256Bytes": 87466,
+        "json.parseBytes": 2400244,
+        "json.encodeBytes": 142238,
+        "sha256Bytes": 87491,
         "git.spawns": 31,
         "snapshot.lockWaits": 0,
         "events.durable": 48,
@@ -544,10 +544,10 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 55,
+        "sql.read": 56,
         "sql.write": 22,
         "commits": 9,
-        "json.parseBytes": 513286,
+        "json.parseBytes": 513387,
         "json.encodeBytes": 4327,
         "sha256Bytes": 4218,
         "git.spawns": 4,
@@ -578,17 +578,17 @@
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "14fc79cef7cd8e0c",
-          "prefixHash": "fa699410f5c3a598",
+          "prefixHash": "ddc2da3fffe0f04f",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 7,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "14fc79cef7cd8e0c",
-          "prefixHash": "1739922c74f7fe3c",
+          "prefixHash": "2d3d20aa8cdb3750",
           "toolChoice": "auto"
         }
       ],
@@ -602,12 +602,12 @@
     },
     "S4": {
       "perTurn": {
-        "sql.read": 712,
+        "sql.read": 733,
         "sql.write": 454,
         "commits": 195,
-        "json.parseBytes": 422918,
-        "json.encodeBytes": 93761,
-        "sha256Bytes": 93436,
+        "json.parseBytes": 426617,
+        "json.encodeBytes": 94036,
+        "sha256Bytes": 93711,
         "git.spawns": 244,
         "snapshot.lockWaits": 0,
         "events.durable": 213,
@@ -616,12 +616,12 @@
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 32,
+        "sql.read": 33,
         "sql.write": 21,
         "commits": 9,
-        "json.parseBytes": 18976,
-        "json.encodeBytes": 4455,
-        "sha256Bytes": 4455,
+        "json.parseBytes": 19148,
+        "json.encodeBytes": 4467,
+        "sha256Bytes": 4467,
         "git.spawns": 12,
         "snapshot.lockWaits": 0,
         "events.durable": 10,
@@ -634,169 +634,169 @@
         {
           "purpose": "conversation",
           "messageCount": 3,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3954f88e4c8b31bc",
+          "prefixHash": "ed9451d58f8d366c",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 5,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "b6fdb0fafe8bb2cd",
+          "prefixHash": "e641e53504e35a2e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 7,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "b43ed5a2e02bc434",
+          "prefixHash": "a4c91182cb801f72",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 9,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 11,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 13,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 15,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 17,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 19,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 21,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 23,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 25,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 27,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 29,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 31,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 33,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 35,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 37,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 39,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 41,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         },
         {
           "purpose": "conversation",
           "messageCount": 44,
-          "toolsHash": "908c1fa424c2fb6e",
+          "toolsHash": "ba4631d68e537566",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "3e4dce3fb5c87186",
+          "prefixHash": "68fac568b5403a4e",
           "toolChoice": "auto"
         }
       ],
