@@ -24,6 +24,7 @@ import { deliverReport, reportIdentity, selectReportNode } from "@/dag/runtime/r
 import { commitOutputFileRef, verifyOutputFileRef } from "@/dag/runtime/output-ref"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 import { WorkflowAuthoring } from "@/dag/authoring"
+import { Config } from "@/config/config"
 import { parseWorkflowConfig } from "@/dag/dag"
 import { before } from "@/session/message-v2"
 
@@ -47,12 +48,31 @@ function fixture(
     source?: SessionV1.WithParts
     acknowledge?: boolean
     config?: Record<string, unknown>
+    /** Configured interface language for the engine-appended coverage section.
+     * A function resolves per call, so a test can simulate a UI-language change
+     * between a receipt write and its retry. */
+    language?: "zh-CN" | "en" | (() => "zh-CN" | "en")
   },
 ) {
   const database = Database.layerFromPath(":memory:")
   const eventsLayer = EventV2.layer.pipe(Layer.provide(database))
   const projector = SessionProjector.layer.pipe(Layer.provide(eventsLayer), Layer.provide(database))
-  const layer = Layer.mergeAll(database, DagStore.layer.pipe(Layer.provide(database)), eventsLayer, projector)
+  const languageOf = () =>
+    typeof options?.language === "function" ? options.language() : options?.language
+  const languageLayer =
+    options?.language === undefined
+      ? undefined
+      : Layer.mock(Config.Service, {
+          get: () => Effect.succeed({ language: languageOf() }),
+          getGlobal: () => Effect.succeed({ language: languageOf() }),
+        })
+  const layer = Layer.mergeAll(
+    database,
+    DagStore.layer.pipe(Layer.provide(database)),
+    eventsLayer,
+    projector,
+    ...(languageLayer ? [languageLayer] : []),
+  )
   return Effect.scoped(
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -1127,3 +1147,98 @@ it("does not consume a same-millisecond user that sorts after the previous assis
       expect(yield* deliver()).toBe(false)
     }),
   ))
+
+it("appends the deterministic coverage section in the configured language", () =>
+  fixture(
+    ({ database, deliver }) =>
+      Effect.gen(function* () {
+        yield* database.db
+          .insert(WorkflowNodeTable)
+          .values({
+            workflow_id: "wf-1",
+            id: "omitted",
+            name: "Omitted",
+            worker_type: "explore",
+            status: "skipped",
+            required: false,
+            depends_on: [],
+            seq: 7,
+            time_created: 1,
+            time_updated: 100,
+          })
+          .run()
+        yield* deliver()
+        const answer = (yield* database.db.select().from(PartTable))
+          .map((row) => row.data as SessionV1.TextPart)
+          .find((part) => part.metadata?.dag_delivery?.kind === "answer")!
+        expect(answer.text).toContain("## 覆盖与截断")
+        expect(answer.text).toContain('omitted: gated: condition evaluated false (final.output.verdict == "ACCEPT")')
+      }),
+    {
+      language: "zh-CN",
+      config: {
+        name: "delivery",
+        delivery_node: "final",
+        nodes: [
+          { id: "final", depends_on: [] },
+          { id: "omitted", depends_on: [], condition: 'final.output.verdict == "ACCEPT"' },
+        ],
+      },
+    },
+  ))
+
+it("freezes the coverage language in the receipt across a language change", () => {
+  // The deferred retry (acknowledge:false, then the completion wake) is a
+  // supported window: the receipt is committed before the wake is admitted, so
+  // a UI-language change in between must not rewrite its localized section.
+  let language: "zh-CN" | "en" = "zh-CN"
+  return fixture(
+    ({ database, deliver }) =>
+      Effect.gen(function* () {
+        yield* database.db
+          .insert(WorkflowNodeTable)
+          .values({
+            workflow_id: "wf-1",
+            id: "omitted",
+            name: "Omitted",
+            worker_type: "explore",
+            status: "skipped",
+            required: false,
+            depends_on: [],
+            seq: 7,
+            time_created: 1,
+            time_updated: 100,
+          })
+          .run()
+        const answers = () =>
+          Effect.gen(function* () {
+            const rows = yield* database.db.select().from(PartTable)
+            return rows
+              .map((row) => row.data as SessionV1.TextPart)
+              .filter((part) => part.metadata?.dag_delivery?.kind === "answer")
+          })
+        expect(yield* deliver()).toBe(true)
+        const first = (yield* answers())[0]
+        expect(first.text).toContain("## 覆盖与截断")
+        language = "en"
+        expect(yield* deliver()).toBe(true)
+        const retried = yield* answers()
+        expect(retried).toHaveLength(1)
+        expect(retried[0].text).toBe(first.text)
+        expect(retried[0].text).toContain("## 覆盖与截断")
+        expect(retried[0].text).not.toContain("## Coverage and truncation")
+      }),
+    {
+      acknowledge: false,
+      language: () => language,
+      config: {
+        name: "delivery",
+        delivery_node: "final",
+        nodes: [
+          { id: "final", depends_on: [] },
+          { id: "omitted", depends_on: [], condition: 'final.output.verdict == "ACCEPT"' },
+        ],
+      },
+    },
+  )
+})

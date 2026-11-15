@@ -109,7 +109,7 @@ const belts = (input: Snapshot) => [
   "- Run independent work in parallel; parallel writers need disjoint write sets or worktree isolation.",
   "- Collaborate: answer node messages promptly with the agent tool, and pass a finding to parallel nodes it affects.",
   "- Every workflow that changes files ends with verify and a review bound to the implementation fingerprint, with read-only lanes including completeness against config.acceptance, plus skeptic lanes for risky conclusions. Repeat review rounds until two consecutive rounds raise no new upheld finding, at most five.",
-  "- Every finding ends fixed, refuted with evidence, or reported to the user as open. Report coverage honestly: skipped, failed, or uncovered parts, unread result pages, safety denials, and limits hit.",
+  "- Every finding ends fixed, refuted with evidence, or reported to the user as open. The engine appends a coverage-and-truncation section to the delivered report; end your final report with it plus one usage line: \"DAG usage: N nodes, X tokens\" (add \"≈ $Y\" only when pricing is configured).",
   `- Thoroughness outranks token cost within the user's limits: concurrency ${input.concurrency} shared by all sessions, ${input.maxTotalNodes} nodes per workflow, DAG token budget ${input.budget === null ? "unlimited" : `${input.budget} tokens`}. Only the user can raise a limit; never work around one. A successor stage for remaining in-scope work is not a workaround.`,
   "- DAG mode covers orchestration only. Fixes for a review-only request, commits, pushes, releases, product decisions, and new permissions or credentials still need the user.",
   ...(input.plan

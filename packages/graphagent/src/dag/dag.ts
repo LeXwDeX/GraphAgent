@@ -35,7 +35,7 @@ import {
 import type { PauseReason } from "@graphagent/core/dag/core/types"
 import { ResumeGuard } from "./resume-guard"
 import { AdmissionRecord, ExecutionMode, acceptanceFromCriteria, transitionAdmission, validateAdmission } from "./admission"
-import type { AcceptanceItem, ReviewGate } from "./blocks"
+import type { AcceptanceItem, PriorFinding, ReviewGate, WorkflowBlockKind } from "./blocks"
 import { unresolvedReviewOutcomes, targetSensitiveNode } from "./review-lifecycle"
 import { ReplanDefinition } from "./replan-definition"
 import { DagValidation, StructuralValidationError } from "./validation"
@@ -185,6 +185,32 @@ export interface NodeConfig {
    * (review lanes, verify, synthesize). Their attempts record a target
    * fingerprint and a stale result cannot settle completion. */
   target_sensitive?: boolean
+  /** Block-compiled node: the authored block kind that produced it. Persisted
+   * so recover/retry validation keeps block semantics without the source. */
+  block?: WorkflowBlockKind
+  /** Review lane suffix (lens or skeptic-N). Lane nodes are read-only, and the
+   * strict gate refuses an ACCEPT while any of them is not completed. */
+  review_lane?: string
+  /** Lenses a block-compiled review decision arbitrates. */
+  review_lenses?: string[]
+  /** Prior round a block-compiled review continues. */
+  prior_round?: { workflow_id: string; review_id: string }
+  /** Findings resolved from the referenced workflow's stored outputs. */
+  prior_findings?: PriorFinding[]
+  /** 1-based review round this decision belongs to. */
+  review_round?: number
+  /** Consecutive prior rounds that raised no new upheld finding. */
+  review_quiet_rounds?: number
+  /** New upheld findings the referenced round raised. */
+  review_new_findings?: number
+  /** The compiler-generated fan-out aggregator under a review block id. */
+  aggregates_writers?: boolean
+  /** Compiler-generated helper node: its worker was chosen by block
+   * compilation, not by an authored worker override. */
+  generated_helper?: "aggregate" | "evidence"
+  /** #1031 M6: arbitration-depth marker for a block-compiled review decision;
+   * unset for hand-authored review nodes, whose outputs keep the legacy shape. */
+  review_arbitration?: boolean
 }
 
 export interface NodeDefaults {
@@ -875,6 +901,7 @@ export const layer = Layer.effect(
         review_gate: config.review_gate,
         max_total_nodes: config.max_total_nodes,
         user_max_total_nodes: yield* readUserMaxTotalNodes(),
+        acceptance: config.acceptance,
       })
       const structuralErrors = DagValidation.sortDiagnostics(structural.filter((d) => d.severity === "error"))
       for (const warning of structural.filter((d) => d.severity === "warning")) {

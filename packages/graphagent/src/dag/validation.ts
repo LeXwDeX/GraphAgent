@@ -29,7 +29,7 @@ import type { NodeConfig } from "./dag"
 import { DEFAULT_WORKFLOW_CONFIG } from "./dag"
 import { DagBlocks } from "./blocks"
 import { AdmissionInput, ExecutionMode } from "./admission"
-import { validateReviewLifecycle } from "./review-lifecycle"
+import { strictReviewCoverageErrors, validateReviewLifecycle } from "./review-lifecycle"
 import { conditionReference, conditionSyntaxError, parseInputMappingReference } from "./runtime/eval"
 import { unsupportedSchemaKeywords } from "./runtime/capture"
 import { placeholderKeys, templateSourceById } from "./templates/resolve"
@@ -568,6 +568,8 @@ export interface BlockCompileOptions {
   known_dependencies?: string[]
   review_gate?: DagBlocks.ReviewGate
   acceptance?: readonly DagBlocks.AcceptanceItem[]
+  /** Prior-round findings resolved from stored workflow outputs. */
+  prior_rounds?: Readonly<Record<string, DagBlocks.PriorRound>>
 }
 
 export function compileBlockSource(
@@ -582,6 +584,7 @@ export function compileBlockSource(
           known_dependencies: options.known_dependencies,
           ...(options.review_gate !== undefined ? { review_gate: options.review_gate } : {}),
           ...(options.acceptance !== undefined ? { acceptance: options.acceptance } : {}),
+          ...(options.prior_rounds !== undefined ? { prior_rounds: options.prior_rounds } : {}),
         },
       )
       return { nodes, diagnostics: [] }
@@ -598,7 +601,24 @@ export function compileBlockSource(
       }
     }
   }
-  return { nodes: source.nodes.map(materializeNode), diagnostics: [] }
+  const nodes = source.nodes.map(materializeNode)
+  // Strict gates writers by block type: every writer is a coding, prototype,
+  // or build block. A hand-authored node graph cannot prove that shape, so a
+  // write-capable profile is rejected instead of silently producing work no
+  // fingerprint-bound review can cover.
+  const writers =
+    options.review_gate === "strict" ? nodes.filter((node) => !DagBlocks.isReadOnlyProfile(node.worker_type)) : []
+  return {
+    nodes,
+    diagnostics: writers.map((node) =>
+      diagnostic({
+        code: DIAGNOSTIC_CODES.dagInvalid,
+        path: `nodes[${node.id}].worker_type`,
+        message: `node "${node.id}" is write-capable ("${node.worker_type}"); under the strict review gate writers must use a coding, prototype, or build block so they produce a fingerprint`,
+        hint: "Use the blocks form (objective + blocks) or lower config.review_gate to standard",
+      }),
+    ),
+  }
 }
 
 function materializeNode(node: NodeSpec): NodeConfig {
@@ -685,6 +705,38 @@ export interface StructuralInput {
    * warning. Block-compiled graphs are compiler-owned; their edges are not
    * linted (default true for direct callers such as Dag.create). */
   redundant_dependency_lint?: boolean
+  /** Acceptance items judged by the completeness lane (strict coverage). */
+  acceptance?: readonly { id: string }[]
+  /** The document authored blocks, so block compilation already enforced the
+   * strict coverage gate; only persisted/replay graphs need the node-level
+   * re-check here. */
+  block_compiled?: boolean
+}
+
+/** Strict review-coverage diagnostics shared by create, validate, and replan.
+ * The strict gate fails on a gap; the standard gate reports the same gaps as
+ * warnings. A block-compiled document already ran the block compiler's own
+ * check at the strict gate, so only persisted graphs and the standard advisory
+ * pass re-run it here. Hand-authored legacy graphs carry no block marker and
+ * are grandfathered (see strictReviewCoverageErrors). */
+function strictReviewCoverageDiagnostics(input: {
+  nodes: readonly NodeConfig[]
+  mode?: ExecutionMode
+  review_gate?: DagBlocks.ReviewGate
+  acceptance?: readonly { id: string }[]
+  block_compiled?: boolean
+}): Diagnostic[] {
+  const strict = input.mode === "deep" || input.review_gate === "strict"
+  if (strict && input.block_compiled === true) return []
+  return strictReviewCoverageErrors({ nodes: input.nodes, acceptance: input.acceptance }).map((error) =>
+    diagnostic({
+      severity: strict ? "error" : "warning",
+      code: DIAGNOSTIC_CODES.dagInvalid,
+      path: "nodes",
+      message: strict ? `Invalid review coverage: ${error}` : `Review coverage advisory: ${error}`,
+      hint: "Strict workflows: writer blocks → verify → review (phase diff) with completeness, config.acceptance, and read-only lanes and arbitration",
+    }),
+  )
 }
 
 function duplicateNodeIds(nodes: readonly NodeConfig[]): string[] {
@@ -1376,6 +1428,13 @@ export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
     ...ceilingDiagnostics(input),
     ...review.errors,
     ...review.warnings,
+    ...strictReviewCoverageDiagnostics({
+      nodes: input.nodes,
+      mode: input.mode,
+      review_gate: input.review_gate,
+      acceptance: input.acceptance,
+      block_compiled: input.block_compiled,
+    }),
     ...(duplicates.length === 0 ? topologyDiagnostics(input.nodes) : []),
     ...outputSchemaKeywordDiagnostics(input.nodes),
     ...(input.redundant_dependency_lint === false ? [] : redundantDependencyDiagnostics(input.nodes)),
@@ -1403,6 +1462,8 @@ export interface ReplanStructuralInput {
     review_gate?: DagBlocks.ReviewGate
     nodes: readonly NodeConfig[]
     node_defaults?: { readonly report_to_parent?: boolean }
+    /** Acceptance items persisted with the workflow (strict coverage). */
+    acceptance?: readonly { id: string }[]
   }
   /** Durable nodes already terminal before this replan. Their reporting
    * verdicts are delivered — the checkpoint gate exempts them so additive
@@ -1438,6 +1499,12 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
     grandfathered: input.grandfatheredNodeIds,
   })
   return sortDiagnostics([
+    ...strictReviewCoverageDiagnostics({
+      nodes: input.merged.nodes,
+      mode: input.merged.mode,
+      review_gate: input.merged.review_gate,
+      acceptance: input.merged.acceptance,
+    }),
     ...duplicateIdDiagnostics(duplicates),
     ...danglingDependencyDiagnostics(input.rerunNodes, knownIds),
     ...inputMappingDiagnostics(input.rerunNodes, input.merged.nodes),
@@ -1684,12 +1751,9 @@ export function workspaceDiagnostics(input: {
 
 /** #946: worktree isolation belongs to write-capable workers. Review and
  * verify workers judge a tree from outside; isolating them would hide the
- * changes they must inspect. */
-const STATIC_READONLY_WORKERS = new Set(["plan", "explore", "auditor", "review", "verify", "verification"])
-
-function isReadonlyWorker(name: string): boolean {
-  return STATIC_READONLY_WORKERS.has(name) || /^(?:review|verify|verification)-/.test(name)
-}
+ * changes they must inspect. The static catalog lives in blocks.ts so the
+ * strict review gate and isolation validation cannot drift. */
+const isReadonlyWorker = DagBlocks.isReadOnlyProfile
 
 /**
  * #946: side-effect-free isolation rules. Git existence and cleanliness are
@@ -1889,6 +1953,7 @@ export function validatePostCompile(input: {
     user_max_total_nodes?: number
     workspace?: string
     isolation?: "worktree"
+    acceptance?: readonly { id: string }[]
     node_defaults?: { required?: boolean; report_to_parent?: boolean; model?: { modelID: string; providerID: string } }
   }
   nodes: readonly NodeConfig[]
@@ -1919,6 +1984,8 @@ export function validatePostCompile(input: {
             user_max_total_nodes: input.config.user_max_total_nodes,
             node_defaults: input.config.node_defaults,
             redundant_dependency_lint: input.blocks === undefined,
+            acceptance: input.config.acceptance,
+            block_compiled: input.blocks !== undefined,
           })),
       // DAG-02: the checkpoint gate is NOT a whole-graph structural check —
       // fragment actions (replan/extend) must satisfy it exactly like start.

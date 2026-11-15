@@ -61,7 +61,7 @@ export type Metadata = {
   diagnosticSummary?: string
 }
 
-const specPath = Schema.String.annotate({ description: "Saved workflow name or path" })
+const specPath = Schema.String.annotate({ description: "Saved spec name or path" })
 const workflowID = Dag.ID
 const nodeID = Dag.NodeID
 const op = <const L extends string>(name: L) => Schema.Literal(name)
@@ -97,6 +97,12 @@ export const CompactBlock = Schema.Struct({
   fan_out: Schema.optional(Schema.String),
   lenses: Schema.optional(Schema.Array(Schema.Literals(DagBlocks.REVIEW_LENSES))),
   skeptics: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4 }))),
+  prior_round: Schema.optional(
+    Schema.Struct({
+      workflow_id: Schema.String,
+      review_id: Schema.String,
+    }),
+  ),
 })
 export const CompactNode = Schema.Struct({
   id: Schema.String,
@@ -144,8 +150,17 @@ const GraphBudgetFields = {
   isolation: Schema.optional(Schema.Literal("worktree")),
   // #1031 M6: acceptance items and the start-only review gate. The authoring
   // boundary derives acceptance from a deep admission brief when omitted and
-  // rejects both fields in replan fragments.
-  acceptance: Schema.optional(DagBlocks.AcceptanceItems),
+  // rejects both fields in replan fragments. The wire mirror drops the
+  // authoring descriptions: this branch dominates the tool-definition budget,
+  // and the authoring layer remains the semantic authority.
+  acceptance: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        text: Schema.String,
+      }),
+    ),
+  ),
   review_gate: Schema.optional(Schema.Literals(DagBlocks.REVIEW_GATES)),
 }
 export const DraftGraph = Schema.Struct({
@@ -168,7 +183,7 @@ const SpecList = Schema.Struct({ action: act("spec"), operation: op("list") })
 const SpecRead = Schema.Struct({ action: act("spec"), operation: op("read"), spec_path: specPath })
 const SpecDraft = Schema.Struct({
   action: act("spec"),
-  operation: op("draft").annotate({ description: "Write a start spec; creates none" }),
+  operation: op("draft").annotate({ description: "Write a start spec" }),
   title: Schema.optional(Schema.String),
   config: DraftGraph,
 })
@@ -177,7 +192,7 @@ const SpecValidate = Schema.Struct({
   operation: op("validate").annotate({ description: "Pre-flight without creating a workflow" }),
   spec_path: specPath,
   profile: Schema.optional(Schema.Literals(["portable", "environment"])).annotate({
-    description: "portable checks; environment resolves prompts, workers, models",
+    description: "portable checks syntax; environment resolves assets",
   }),
 })
 
@@ -188,7 +203,7 @@ const SpecValidate = Schema.Struct({
 const RunStart = Schema.Struct({ action: act("run"), operation: op("start"), spec_path: specPath })
 const RunExtend = Schema.Struct({
   action: act("run"),
-  operation: op("extend").annotate({ description: "Add nodes or blocks to a live workflow" }),
+  operation: op("extend").annotate({ description: "Add nodes/blocks to a live workflow" }),
   workflow_id: workflowID,
   spec_path: specPath,
 })
@@ -200,10 +215,10 @@ const RunExtend = Schema.Struct({
 const InspectStatus = Schema.Struct({ action: act("inspect"), operation: op("status"), workflow_id: workflowID })
 const InspectResult = Schema.Struct({
   action: act("inspect"),
-  operation: op("result").annotate({ description: "Node output; file-backed results return content_ref/path" }),
+  operation: op("result").annotate({ description: "Node output; file-backed reads use content_ref/path" }),
   workflow_id: workflowID,
   node_id: nodeID,
-  cursor: Schema.optional(ResultCursorToken).annotate({ description: "Page cursor from the previous page" }),
+  cursor: Schema.optional(ResultCursorToken).annotate({ description: "Cursor from the previous page" }),
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_RESULT_PAGE_CHARS }))),
 })
 
@@ -233,22 +248,22 @@ const ControlReplan = Schema.Struct({
 })
 const ControlRecover = Schema.Struct({
   action: act("control"),
-  operation: op("recover").annotate({ description: "Retry nodes and descendants, keeping valid completed work" }),
+  operation: op("recover").annotate({ description: "Retry nodes and descendants; keep valid work" }),
   workflow_id: workflowID,
   node_ids: Schema.Array(nodeID)
     .check(Schema.isMinLength(1))
-    .annotate({ description: "Nodes to retry; downstream closure is invalidated" }),
+    .annotate({ description: "Nodes to retry; invalidates downstream closure" }),
   expected_graph_rev: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
     description: "Exact graph_rev",
   }),
   resume_cancelled: Schema.optional(Schema.Boolean).annotate({
-    description: "Set true only to recover a cancelled workflow",
+    description: "Set true only for a cancelled workflow",
   }),
 })
 const ControlExtendTimeout = Schema.Struct({
   action: act("control"),
   operation: op("extend_timeout").annotate({
-    description: "Extend one RUNNING node with a delivered timeout escalation",
+    description: "Extend a RUNNING node after timeout escalation",
   }),
   workflow_id: workflowID,
   node_id: nodeID,
@@ -259,7 +274,7 @@ const ControlExtendTimeout = Schema.Struct({
 const ControlRetarget = Schema.Struct({
   action: act("control"),
   operation: op("retarget").annotate({
-    description: "Change workspace/fingerprint and restart target-sensitive nodes",
+    description: "Change workspace/fingerprint; restart affected nodes",
   }),
   workflow_id: workflowID,
   workspace: Schema.optional(Schema.String).annotate({ description: "Linked worktree; omit to keep current" }),
@@ -269,7 +284,7 @@ const ControlRetarget = Schema.Struct({
   node_ids: Schema.optional(
     Schema.Array(nodeID)
       .check(Schema.isMinLength(1))
-      .annotate({ description: "Running target-sensitive nodes; omit for all" }),
+      .annotate({ description: "Affected running nodes; omit for all" }),
   ),
   reason: Schema.optional(Schema.String),
 })

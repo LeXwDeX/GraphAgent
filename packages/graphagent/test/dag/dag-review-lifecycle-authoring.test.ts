@@ -63,6 +63,16 @@ function diffFlow(options: { explicitRequired: boolean; reviewCondition: string 
   ]
 }
 
+// #1031 M6: deep implies the strict gate, which rejects hand-authored
+// write-capable nodes (writers must come from blocks). These regressions pin
+// the review-lifecycle wiring, so that orthogonal coverage rejection is
+// filtered out before asserting the lifecycle result.
+const withoutCoverage = (errors: readonly { message: string }[]) =>
+  errors.filter(
+    (error) =>
+      !error.message.startsWith("Invalid review coverage:") && !error.message.includes("is write-capable"),
+  )
+
 function prepareDeep(nodes: unknown[], nodeDefaults?: Record<string, unknown>) {
   return Effect.runPromise(
     WorkflowAuthoring.make().prepare({
@@ -85,7 +95,7 @@ describe("deep review lifecycle authoring", () => {
       diffFlow({ explicitRequired: true, reviewCondition: 'verify.output.verdict == "PASS"' }),
       { required: true },
     )
-    expect(result.errors).toEqual([])
+    expect(withoutCoverage(result.errors)).toEqual([])
   })
 
   test("final gate inheriting required from node_defaults is accepted", async () => {
@@ -93,7 +103,7 @@ describe("deep review lifecycle authoring", () => {
       diffFlow({ explicitRequired: false, reviewCondition: 'verify.output.verdict == "PASS"' }),
       { required: true },
     )
-    expect(result.errors.map((d) => d.message)).toEqual([])
+    expect(withoutCoverage(result.errors).map((d) => d.message)).toEqual([])
   })
 
   test("an inverted or non-PASS gate on the diff review is rejected", async () => {
@@ -111,6 +121,6 @@ describe("deep review lifecycle authoring", () => {
     const result = await prepareDeep(
       diffFlow({ explicitRequired: true, reviewCondition: "verify.output.verdict == PASS" }),
     )
-    expect(result.errors).toEqual([])
+    expect(withoutCoverage(result.errors)).toEqual([])
   })
 })

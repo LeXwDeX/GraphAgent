@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { mkdir, writeFile, unlink } from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
@@ -10,6 +10,9 @@ import type { DagStore } from "@graphagent/core/dag/store"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import type { EventV2 } from "@graphagent/core/event"
 import { Database } from "@graphagent/core/database/database"
+import { resolveLanguage } from "@graphagent/core/config/language"
+import { Config } from "@/config/config"
+import { DagCoverage } from "../coverage"
 import { Model } from "@graphagent/schema/model"
 import { Provider } from "@graphagent/schema/provider"
 import type { Session } from "@/session/session"
@@ -277,6 +280,26 @@ export function deliverReport(input: {
       artifact = node.capturedOutput
     }
     const report = node ? reportText(node, structured, input.source, artifact) : resultIndex(workflow, nodes)
+    // #1031 M6: coverage is deterministic engine output, never model prose.
+    // Empty coverage appends nothing; the section title follows the configured
+    // interface language. A committed answer part is the durable receipt, so
+    // it freezes the language it was rendered with: the retry window
+    // (acknowledge:false, then the completion wake) may cross a UI-language
+    // change, and re-rendering the localized section would make the receipt
+    // unmatchable and block the pending wake.
+    const configured = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
+    const receiptLanguage =
+      receipt?.type === "text" ? receipt.metadata?.dag_delivery?.language : undefined
+    const language =
+      receiptLanguage === "zh-CN" || receiptLanguage === "en"
+        ? receiptLanguage
+        : resolveLanguage(configured ? (yield* configured.get()).language : undefined)
+    const coverage = DagCoverage.workflowCoverage({
+      config,
+      nodes,
+      workflow: { status: workflow.status, pauseReason: workflow.pauseReason },
+    })
+    const coverageText = DagCoverage.coverageSection(coverage, language)
     // #1030 D9-g: the final report names the workflow-level worktree evidence
     // (directory/branch/base/head/patch) even when the body came from a node.
     // Read it from the durable row: the snapshot may predate the settlement.
@@ -284,7 +307,7 @@ export function deliverReport(input: {
     // #944: a delivered result whose target changed mid-run must say so in the
     // parent wake text, not only in the structured result view.
     const body = yield* boundReport(
-      `${node?.staleTarget ? `${report}\n\n[stale target: this result was produced before the target changed]` : report}${worktreeEvidence}`,
+      `${node?.staleTarget ? `${report}\n\n[stale target: this result was produced before the target changed]` : report}${worktreeEvidence}${coverageText ? `\n\n${coverageText}` : ""}`,
       workflow,
       node,
     ).pipe(Effect.orDie)
@@ -295,6 +318,7 @@ export function deliverReport(input: {
       node_id: node?.id,
       child_session_id: node?.childSessionId,
       replan_attempt: node?.replanAttempts,
+      language,
       ...((artifact ?? body.artifact) ? { artifact: artifact ?? body.artifact } : {}),
     }
     const database = yield* Database.Service

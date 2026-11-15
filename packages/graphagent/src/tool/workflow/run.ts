@@ -12,7 +12,7 @@ import { createAdmissionRecord } from "@/dag/admission"
 import type { Tool } from "../tool"
 import { authoringWarnings, blockedMetadata, validationOutput } from "./render"
 import { loadAuthoringSource } from "./files"
-import { prepareMutation } from "./prepare"
+import { prepareMutation, priorRoundLoader } from "./prepare"
 import { requireOwnedWorkflow, rejectDiagnostics, runMutation } from "./mutation"
 import type { Metadata, RunParams } from "./schema"
 
@@ -76,6 +76,7 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
         // handled inside authoring) upgrades it to strict and overrides an
         // authored standard. Later mode switches cannot change it.
         ...(session.dagMode === "on" ? { review_gate: "strict" as const } : {}),
+        prior_rounds: priorRoundLoader(dag, sessionID),
       })
       const blocking = result.errors.filter(
         (diagnostic) => diagnostic.code !== DagValidation.DIAGNOSTIC_CODES.modelUnavailable,
@@ -118,6 +119,7 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
       action: "extend",
       workflow,
       specPath: params.spec_path,
+      sessionID,
       session,
       ctx,
     })

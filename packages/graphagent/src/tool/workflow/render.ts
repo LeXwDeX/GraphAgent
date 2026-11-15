@@ -9,8 +9,9 @@ import type { ChildRunView } from "@/session/child/run"
 import { Dag } from "@/dag/dag"
 import { DagIsolation } from "@/dag/isolation"
 import { DagLocation } from "@/dag/location"
-import { DagReviewLifecycle } from "@/dag/review-lifecycle"
+import { DagReviewLifecycle, reviewRoundMetrics, reviewRoundSummary } from "@/dag/review-lifecycle"
 import { DagValidation } from "@/dag/validation"
+import { DagCoverage, resultPage, withResultPageCoverage } from "@/dag/coverage"
 import { isManagedOutputFileRef, isOutputFileRef } from "@/dag/runtime/output-ref"
 import type { Tool } from "../tool"
 import {
@@ -168,13 +169,33 @@ export function renderStatus(input: {
   /** #1030 D9-h: each node's child run, keyed by child session, as read
    * through ChildRuns.inspect. Absent when the caller has no child-run view. */
   childRuns?: ReadonlyMap<string, ChildRunView>
+  /** #1031 M6: deterministic coverage entries for this snapshot. */
+  coverage?: readonly DagCoverage.CoverageEntry[]
+  /** #1031 M6: durable usage the parent's final report quotes. */
+  usage?: { readonly nodeCount: number; readonly tokens: number; readonly tokensCacheRead: number }
 }): Tool.ExecuteResult {
-  const { workflow, nodes, allNodes, failureReason, latestRetarget, childRuns } = input
+  const { workflow, nodes, allNodes, failureReason, latestRetarget, childRuns, coverage, usage } = input
   const config = Dag.parseWorkflowConfig(workflow.config)
   // A completed graph can still carry an unresolved review verdict
   // (REJECT checkpoint, issue #294); surface it explicitly instead
   // of burying it in a terminal reason string.
   const unresolvedReviews = config ? DagReviewLifecycle.unresolvedReviewOutcomes(config, nodes) : []
+  // #1031 M6: the review round chain, computed from the arbitration decisions
+  // that carry persisted round markers. Rounds stay per-node so extend and
+  // successor chains report the same numbers.
+  const reviewRounds = (config?.nodes ?? [])
+    .filter((definition) => definition.review_arbitration === true)
+    .toSorted((a, b) => (a.review_round ?? 1) - (b.review_round ?? 1))
+    .map((definition) => {
+      const row = nodes.find((node) => node.id === definition.id)
+      const evidence = row
+        ? nodes
+            .filter((node) => row.dependsOn.includes(node.id) && node.status === "completed")
+            .map((node) => ({ nodeID: node.id, output: node.output }))
+        : []
+      return { round: definition.review_round ?? 1, ...reviewRoundMetrics(row?.output, evidence) }
+    })
+  const reviewQuality = reviewRounds.length > 0 ? reviewRoundSummary(reviewRounds) : undefined
   // #946: workflow-level isolation view. Kept worktrees stay
   // visible until an operator removes them; conflicts are a
   // report, never an automatic merge. Superseded attempts come
@@ -260,6 +281,29 @@ export function renderStatus(input: {
         graph_rev: workflow.graphRev,
         session_id: workflow.sessionId,
         mode: config?.mode ?? "standard",
+        ...(reviewQuality
+          ? {
+              review_quality: {
+                rounds: reviewQuality.rounds,
+                quiet_rounds: reviewQuality.quietRounds,
+                new_findings_per_round: reviewQuality.newFindingsPerRound,
+                raised: reviewQuality.raised,
+                fixed: reviewQuality.fixed,
+                refuted: reviewQuality.refuted + reviewQuality.resolvedRefuted,
+                still_open: reviewQuality.stillOpen,
+              },
+            }
+          : {}),
+        ...(coverage && coverage.length > 0 ? { coverage } : {}),
+        ...(usage
+          ? {
+              usage: {
+                nodes: usage.nodeCount,
+                tokens: usage.tokens,
+                ...(usage.tokensCacheRead > 0 ? { tokens_cache_read: usage.tokensCacheRead } : {}),
+              },
+            }
+          : {}),
         ...(unresolvedReviews.length > 0 ? { unresolved_reviews: unresolvedReviews } : {}),
         ...(worktrees.length > 0 ? { worktrees } : {}),
         ...(conflicts.length > 0 ? { conflicts } : {}),
@@ -313,6 +357,7 @@ export const renderResult = (
   node: NodeRow,
   cursorToken: ResultCursorToken | undefined,
   limit: number | undefined,
+  coverage: readonly DagCoverage.CoverageEntry[] = [],
 ): Effect.Effect<Tool.ExecuteResult> =>
   Effect.gen(function* () {
     // Train B (v1.0.15 B3): a submit-time file ref reads as a durable
@@ -336,6 +381,7 @@ export const renderResult = (
             summary: node.capturedOutput.summary,
             size: node.capturedOutput.size,
             sha256: node.capturedOutput.sha256,
+            ...(coverage.length > 0 ? { coverage } : {}),
             ...(isManagedOutputFileRef(node.capturedOutput)
               ? {
                   storage: node.capturedOutput.storage,
@@ -380,8 +426,14 @@ export const renderResult = (
     if (cursor.value.offset > content.length) {
       return yield* Effect.die(new Error("Workflow result cursor is beyond the current output"))
     }
-    const pageEnd = resultPageEnd(content, cursor.value.offset, limit ?? DEFAULT_RESULT_PAGE_CHARS)
+    const pageLimit = limit ?? DEFAULT_RESULT_PAGE_CHARS
+    const pageEnd = resultPageEnd(content, cursor.value.offset, pageLimit)
     const truncated = pageEnd < content.length
+    const resultCoverage = withResultPageCoverage(coverage, {
+      nodeID,
+      page: resultPage(content.length, pageEnd, pageLimit),
+      truncated,
+    })
     const nextCursor = truncated
       ? encodeResultCursor(
           new ResultCursor({
@@ -405,6 +457,7 @@ export const renderResult = (
           content: content.slice(cursor.value.offset, pageEnd),
           truncated,
           next_cursor: nextCursor,
+          ...(resultCoverage.length > 0 ? { coverage: resultCoverage } : {}),
         },
         null,
         2,

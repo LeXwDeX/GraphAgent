@@ -42,6 +42,13 @@ Block defaults:
 - `debug` evidence lane -> `explore`; its diagnosis lane -> `general`
 - review lanes, skeptics, the review decision, verification, and synthesis -> `auditor`
 
+Under the `strict` review gate, every review lane and its arbitration decision
+must use a read-only profile: `explore`, `plan`, `auditor`, `review`, `verify`,
+`verification`, or a matching `review-*` / `verify-*` / `verification-*` name.
+A write-capable profile in either position is an authoring error; under
+`standard` the same gap is a warning. The block compiler defaults lanes, the
+decision, verification, and synthesis to `auditor`.
+
 `review` and `review-*` worker types remain configuration-owned: their effective
 profile is the configured worker agent's profile. The built-in read-only
 `auditor` implements verification, synthesis, and block review lanes by default.
