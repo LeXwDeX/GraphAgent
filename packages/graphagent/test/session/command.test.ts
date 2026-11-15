@@ -154,7 +154,13 @@ function harness(overrides: {
         : () => Effect.succeed(model),
       getModel: () => Effect.succeed({ capabilities: { toolcall: true } }),
     },
-    dagStore: { listBySession: () => Effect.succeed([]), getNodes: () => Effect.succeed([]) },
+    // #1031 M5: the snapshot accounts from the attempt-ledger summaries and the
+    // budget receipt projects the budget-paused workflows.
+    dagStore: {
+      listBySession: () => Effect.succeed([]),
+      getWorkflowSummaries: () => Effect.succeed([]),
+      listByStatus: () => Effect.succeed([]),
+    },
     scheduler: {
       capacity: () =>
         Effect.succeed({
