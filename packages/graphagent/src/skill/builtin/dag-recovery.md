@@ -1,9 +1,9 @@
 # DAG Recovery and Replanning
 
-This skill owns adaptation after execution starts: replanning, escalation,
-crash recovery, node-failure triage, verdict disposal, checkpoint gating, and
-bounded repair. Load skill dag-policy for admission, roles, and review
-contracts; load skill dag-nodes for node fields.
+This skill owns replanning, escalation, crash recovery, node-failure triage,
+verdict disposal, checkpoint gating, and bounded repair. Load skill dag-policy
+for admission, roles, and review contracts; load skill dag-nodes for node
+fields.
 
 ## Adaptive replanning
 
@@ -22,8 +22,7 @@ Use `extend` and `control(replan)` based on observed results:
 
 Only `report_to_parent: true` nodes produce checkpoints, at the next actionable
 wake boundary; terminal state also wakes the parent. Do not poll `status`
-merely to wait. A flawed decomposition may call for targeted replanning, direct
-follow-up, or stopping. The mandatory-action guard covers only live workflows,
+merely to wait. The mandatory-action guard covers only live workflows,
 so a checkpoint that terminalizes its workflow delivers its verdict without
 enforcement; the Verdict Disposal Contract governs that case (`extend` remains
 valid after a reporting leaf completed the graph).
@@ -147,12 +146,14 @@ a ceiling breach, do not retry the identical plan.
 A terminal workflow, a node-ceiling rejection, or a refused `recover`/`extend`
 ends that graph, not the task. When work the request already covers remains
 (verification, review, acceptance, a bounded repair), continue it yourself:
-start a bounded successor workflow for the remaining steps, or do it directly.
-Reuse the predecessor's valid outputs, cite its failure evidence, and leave the
-old workflow untouched. Do not pause, end the turn, or ask permission; the
-original request is the authorization. Ask only when the next step would widen
-scope, need new permissions or credentials, take an irreversible external
-action, or repeat a plan already failed twice.
+with DAG mode ON, start a bounded successor workflow for the remaining steps or
+do it directly; with it OFF, start a successor only within a workflow request
+the user made for this objective. Reuse the predecessor's valid outputs, cite
+its failure evidence, and leave the old workflow untouched. Do not pause, end
+the turn, or ask permission; the original request is the authorization. Never
+raise a user limit. Ask only when the next step would widen scope, need new
+permissions or credentials, take an irreversible external action, or repeat a
+plan already failed twice.
 
 ## Actionable Checkpoints
 
@@ -182,8 +183,7 @@ workflow.
 When later work depends on items a node produces — for example one verifier per
 finding — make it an actionable checkpoint, deduplicate and rank its
 `findings`, then add item nodes with a bounded `extend`. `fan_out` only expands
-writers from a plan's `packages`, not general per-item work. Expand only items
-that need separate work.
+writers from a plan's `packages`, not general per-item work.
 
 Do not poll `status` to wait; wakes report checkpoints and terminal outcomes.
 Use `status` for diagnosis, a control decision, or an accurate report.
@@ -192,8 +192,7 @@ Use `status` for diagnosis, a control decision, or an accurate report.
 
 For graph-based repair, use finite `extend` or `control(replan)` targeting
 remaining findings. Direct repair may be simpler once child writers have
-stopped. Do not create cyclic `depends_on` or bypass budgets. Additional waves
-need a concrete evidence gap, not a quota. Declare finite
+stopped. Do not create cyclic `depends_on` or bypass budgets. Declare finite
 `max_node_replan_attempts`; when exhausted, change approach (direct repair or a
 successor with a different decomposition). Only stop with `BLOCKED` when no
 in-scope approach remains.

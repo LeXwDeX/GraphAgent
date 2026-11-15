@@ -1,11 +1,19 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-// #1031 M1: the pure rules behind session-level DAG mode.
+// #1031 M1/M2: the pure rules behind session-level DAG mode and its three
+// notice layers.
 import { describe, expect, test } from "bun:test"
 import { DagMode } from "@/dag/mode"
 import { EngineProcess } from "@/session/engine-process"
 import { SessionID } from "@/session/schema"
+
+const facts = {
+  mode: "on" as const,
+  budget: 500_000,
+  concurrency: 12,
+  maxTotalNodes: 100,
+}
 
 describe("DagMode.resolveInitial", () => {
   test("an explicit creation value wins over the global default", () => {
@@ -30,26 +38,75 @@ describe("DagMode.resolveInitial", () => {
   })
 })
 
-describe("DagMode slot", () => {
-  test("on carries the model-facing text and off clears it", () => {
-    const on = DagMode.slot("on")
-    expect(on.key).toBe("dag_mode")
-    expect(on.parts.join("\n")).toContain("DAG mode is on")
-    expect(on.cleared.length).toBeGreaterThan(0)
+describe("DagMode.SYSTEM (L1)", () => {
+  test("carries the mechanism, the user-owned switch, and the per-request override", () => {
+    expect(DagMode.SYSTEM).toContain("# DAG workflows")
+    expect(DagMode.SYSTEM).toContain("only the user can change")
+    expect(DagMode.SYSTEM).toContain("the latest dag_mode <runtime_context> block reports it")
+    expect(DagMode.SYSTEM).toContain("overrides the setting for that request")
+    expect(DagMode.SYSTEM).toContain("Never change DAG mode or the DAG budget yourself")
+    expect(DagMode.SYSTEM).toContain("Load the dag-auto skill")
+  })
+})
 
-    const off = DagMode.slot("off")
-    expect(off.key).toBe("dag_mode")
-    expect(off.parts).toEqual([])
+describe("DagMode.state (L2)", () => {
+  test("on renders the mode, the limits and the budget", () => {
+    const slot = DagMode.state(facts)
+    expect(slot.key).toBe("dag_mode")
+    const text = slot.parts.join("\n")
+    expect(text).toContain("DAG mode: ON")
+    expect(text).toContain("concurrency 12 shared by all sessions")
+    expect(text).toContain("100 nodes per workflow")
+    expect(text).toContain("DAG token budget 500000 tokens")
+    expect(text).toContain("applies to that request only")
+    expect(text).toContain("Load the dag-auto skill")
+    // #1031 M2: the block travels in runtime context on every request; the
+    // Issue caps it at 2.3 KB.
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2.3 * 1024)
   })
 
-  test("set and ensure write the process registry for the session", () => {
-    const sessionID = SessionID.make("ses_dag_mode_slot")
-    DagMode.set(sessionID, "on")
-    expect(EngineProcess.runtimes.runtimeSlots.list(sessionID).map((slot) => slot.key)).toEqual(["dag_mode"])
+  test("an unlimited budget reads as unlimited", () => {
+    expect(DagMode.state({ ...facts, budget: null }).parts.join("\n")).toContain("DAG token budget unlimited")
+  })
 
-    DagMode.ensure({ id: sessionID, dagMode: "off" })
+  test("off carries no block and announces the cleared state", () => {
+    const slot = DagMode.state({ ...facts, mode: "off" })
+    expect(slot.key).toBe("dag_mode")
+    expect(slot.parts).toEqual([])
+    expect(slot.cleared).toContain("DAG mode: OFF")
+  })
+
+  test("unavailable keeps the first line and drops the playbook", () => {
+    const text = DagMode.state({ ...facts, unavailable: "start_denied" }).parts.join("\n")
+    expect(text).toBe(
+      "DAG mode: ON but unavailable (start_denied). Work directly and tell the user once that DAG mode cannot run.",
+    )
+  })
+
+  test("plan mode and a non-interactive run add their own line", () => {
+    const text = DagMode.state({ ...facts, plan: true, noninteractive: true }).parts.join("\n")
+    expect(text).toContain("Plan mode is active: start only read-only workflows")
+    expect(text).toContain("Non-interactive run: do not decide product questions")
+  })
+
+  test("set writes the process registry for the session", () => {
+    const sessionID = SessionID.make("ses_dag_mode_slot")
+    DagMode.set(sessionID, facts)
     const slot = EngineProcess.runtimes.runtimeSlots.list(sessionID).find((item) => item.key === "dag_mode")
-    expect(slot?.parts).toEqual([])
+    expect(slot?.parts.join("\n")).toContain("DAG mode: ON")
+
+    DagMode.set(sessionID, { ...facts, mode: "off" })
+    const cleared = EngineProcess.runtimes.runtimeSlots.list(sessionID).find((item) => item.key === "dag_mode")
+    expect(cleared?.parts).toEqual([])
+  })
+})
+
+describe("DagMode.REMINDER (L3)", () => {
+  test("is static, short, and scopes a direct-work request to itself", () => {
+    expect(DagMode.REMINDER).toContain("Follow the latest dag_mode context")
+    expect(DagMode.REMINDER).toContain("orchestrate this request")
+    expect(DagMode.REMINDER).toContain("asked to work directly for this request")
+    expect(Buffer.byteLength(DagMode.REMINDER)).toBeLessThan(300)
   })
 })
 

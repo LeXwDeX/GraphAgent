@@ -53,7 +53,6 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionMessageID } from "@graphagent/schema/session-message-id"
 import { DagBudgetTokens, DagMode } from "@graphagent/schema/dag-mode"
-import { DagMode as DagModeState } from "@/dag/mode"
 import { Goal } from "@/goal/goal"
 import { ExclusiveRegistry } from "./engine-process"
 import { SessionStatus } from "./status"
@@ -1165,8 +1164,9 @@ export const layer: Layer.Layer<
     })
 
     // #1031 M1: the /dag-mode command changes a top-level session only. The
-    // durable row is the source of truth; the runtime slot is refreshed here so
-    // the next request sees the new mode without a restart.
+    // durable row is the source of truth; the request builder re-derives the
+    // model-facing slot from it (#1031 M2), so a switch reaches the next
+    // placeable request without a process-local write here.
     const setDagMode = Effect.fn("Session.setDagMode")(function* (input: {
       sessionID: SessionID
       mode: DagMode
@@ -1176,7 +1176,6 @@ export const layer: Layer.Layer<
         ? Effect.fail(new DagModeError({ sessionID: input.sessionID, reason: "child_session" }))
         : Effect.void
       yield* patch(input.sessionID, { dagMode: input.mode, time: { updated: Date.now() } }).pipe(Effect.orDie)
-      DagModeState.set(input.sessionID, input.mode)
     })
 
     const setDagBudget = Effect.fn("Session.setDagBudget")(function* (input: {

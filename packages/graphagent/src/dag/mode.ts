@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Session-level DAG mode state (Issue #1013 / #1031 M1).
+ * Session-level DAG mode state (Issue #1013 / #1031 M1/M2).
  *
  * The mode lives on the session row (`dagMode`) so it survives a process
  * restart; the model-facing state lives in a runtime-context slot, which is
@@ -10,22 +10,41 @@
  * the slot from the row because a restarted process starts with an empty
  * registry. It reads the live row (`DagModeReader.durableMode`) rather than the
  * turn loop's snapshot, since `/dag-mode` can run inside an active turn.
+ *
+ * M2 split the user's choice into three layers: L1 (`SYSTEM`, constant, in the
+ * system prompt when the workflow tool is published), L2 (`state`, a runtime
+ * slot that follows the live switch, limits and budget) and L3 (`REMINDER`, a
+ * one-per-turn tail note the session prompt service latches).
  */
 import type { DagMode as DagModeType } from "@graphagent/schema/dag-mode"
 import { EngineProcess } from "@/session/engine-process"
 import type { RuntimeSlots } from "@/session/runtime-slots"
 import type { SessionID } from "@/session/schema"
+import type { UnavailableReason } from "./mode-status"
 
 export const KEY = "dag_mode"
 
-const ON_TEXT = [
-  "<dag_mode>",
-  "DAG mode is on for this session. The main agent may start workflows when the task benefits from parallel or staged work; every node spends tokens.",
-  "</dag_mode>",
+/**
+ * L1: the mechanism and its authorization semantics. Constant for the life of
+ * the conversation, so it belongs to the cached system prefix. It enters the
+ * system prompt only for a main session whose workflow tool is published;
+ * custom agent prompts replace this text, which is why the block cannot stay in
+ * `graphagent.txt` (`# DAG workflows` was removed there).
+ */
+export const SYSTEM = [
+  "# DAG workflows",
+  "You can run workflows through the workflow tool: dependency graphs of agent nodes with parallel workers, worktree isolation, multi-lens review and arbitration, adversarial skeptics, structured outputs, replanning, and recovery. Nodes report only to you and never ask the user; relay what the user needs to know, and answer node messages with the agent tool. Node permission prompts never reach the user: a node call that matches the safety list is denied with a reason and the node continues, and you are told in the report. The workflow view in the interface is read-only: when the user asks to change a workflow, check it and act through the workflow tool.",
+  "DAG mode is a per-session setting that only the user can change, with a user-only command; the latest dag_mode <runtime_context> block reports it. When it reports ON, treat it as the user's standing instruction for this session and orchestrate as it describes. When it reports OFF, or no dag_mode block is present, start a workflow only when the user explicitly asks, in a message or with /dag-auto. An explicit instruction in the current user message (work directly, or use a workflow) overrides the setting for that request. Never change DAG mode or the DAG budget yourself, by any means.",
+  "Load the dag-auto skill before authoring a workflow. Model tiers come from the dag configuration; nodes do not pin models.",
 ].join("\n")
 
+/** L3: one tail note per user-authored turn while the mode is on. */
+export const REMINDER =
+  "[Follow the latest dag_mode context: orchestrate this request unless it is conversational, trivial, or the user asked to work directly for this request.]"
+
+/** L2 cleared block: a session that was switched off announces it once. */
 export const CLEARED =
-  "DAG mode is off for this session; the main agent starts a workflow only when the user explicitly asks for one."
+  "DAG mode: OFF. Start a workflow only when the user explicitly asks, in a message or with /dag-auto. Workflows already running continue: handle their checkpoints and bounded repair within the same workflow to a terminal state; start no successor workflow unless the user asks."
 
 /** The mode a session row reports, defaulting old rows to off. */
 export function get(session: { readonly dagMode?: DagModeType }): DagModeType {
@@ -46,27 +65,68 @@ export function resolveInitial(input: {
   return input.explicit ?? input.global?.mode ?? "off"
 }
 
-/** The runtime-context slot for one mode. Off clears a previously sent block. */
-export function slot(mode: DagModeType): RuntimeSlots.Slot {
+/**
+ * Everything L2 renders. The request builder supplies the live values: the mode
+ * from the durable row, the budget from the same row plus the global `dag`
+ * config, and availability from the resolved tools, permissions and model.
+ */
+export interface Snapshot {
+  readonly mode: DagModeType
+  /** Effective DAG token budget; null means unlimited. */
+  readonly budget: number | null
+  /** Effective global node concurrency (`dag.concurrency`, bounded by the child pool). */
+  readonly concurrency: number
+  /** Per-workflow node cap (`dag.max_total_nodes`). */
+  readonly maxTotalNodes: number
+  readonly unavailable?: UnavailableReason
+  /** The `plan` agent may start only read-only workflows. */
+  readonly plan?: boolean
+  /** A non-interactive run must not decide product questions. */
+  readonly noninteractive?: boolean
+}
+
+const belts = (input: Snapshot) => [
+  "- Run every substantive request as workflows to raise parallelism, collaboration, and review quality. Work directly only for conversational turns, answers already in context, trivial mechanical edits verifiable with one command, commands the user asked to run as given, or when the user asked to work directly for this request; then say why in one short clause. A direct-work or workflow instruction in the current message applies to that request only.",
+  "- Do not ask whether to orchestrate. State the plan in one line (stages, approximate agent count), then start.",
+  "- Stage multi-phase work as understand, design, implement, review: one workflow per stage, or one workflow with a reporting checkpoint between stages. Read each stage's result before the next. At most one live workflow per user objective; independent objectives may run in parallel.",
+  "- Run independent work in parallel; parallel writers need disjoint write sets or worktree isolation.",
+  "- Collaborate: answer node messages promptly with the agent tool, and pass a finding to parallel nodes it affects.",
+  "- Every workflow that changes files ends with verify and a review bound to the implementation fingerprint, with read-only lanes including completeness against config.acceptance, plus skeptic lanes for risky conclusions. Repeat review rounds until two consecutive rounds raise no new upheld finding, at most five.",
+  "- Every finding ends fixed, refuted with evidence, or reported to the user as open. Report coverage honestly: skipped, failed, or uncovered parts, unread result pages, safety denials, and limits hit.",
+  `- Thoroughness outranks token cost within the user's limits: concurrency ${input.concurrency} shared by all sessions, ${input.maxTotalNodes} nodes per workflow, DAG token budget ${input.budget === null ? "unlimited" : `${input.budget} tokens`}. Only the user can raise a limit; never work around one. A successor stage for remaining in-scope work is not a workaround.`,
+  "- DAG mode covers orchestration only. Fixes for a review-only request, commits, pushes, releases, product decisions, and new permissions or credentials still need the user.",
+  ...(input.plan
+    ? [
+        "- Plan mode is active: start only read-only workflows (research, design, review). Workflows started earlier keep running; do not add writers to them.",
+      ]
+    : []),
+  ...(input.noninteractive
+    ? [
+        "- Non-interactive run: do not decide product questions; finish what needs no decision and end with a list of decisions the user must make.",
+      ]
+    : []),
+  "- If a workflow cannot be authored or started, work directly and tell the user this request was not orchestrated, and why.",
+  "Load the dag-auto skill for the playbook.",
+]
+
+function onText(input: Snapshot): string {
+  if (input.unavailable)
+    return `DAG mode: ON but unavailable (${input.unavailable}). Work directly and tell the user once that DAG mode cannot run.`
+  return ["DAG mode: ON (set by the user for this session).", ...belts(input)].join("\n")
+}
+
+/** L2: the state block for one snapshot. Off clears a previously sent block. */
+export function state(input: Snapshot): RuntimeSlots.Slot {
   return {
     key: KEY,
-    parts: mode === "on" ? [ON_TEXT] : [],
+    parts: input.mode === "on" ? [onText(input)] : [],
     cleared: CLEARED,
   }
 }
 
-/** Publish the mode to the model for this process. */
-export function set(sessionID: SessionID, mode: DagModeType): void {
-  EngineProcess.runtimes.runtimeSlots.set(sessionID, KEY, slot(mode))
-}
-
-/**
- * Re-derive the slot from a session snapshot. Idempotent and cheap, but a
- * snapshot goes stale while a turn runs; request building reads the live row
- * through `DagModeReader.durableMode` instead.
- */
-export function ensure(session: { readonly id: SessionID; readonly dagMode?: DagModeType }): void {
-  set(session.id, get(session))
+/** Publish L2 for this process. */
+export function set(sessionID: SessionID, input: Snapshot): void {
+  EngineProcess.runtimes.runtimeSlots.set(sessionID, KEY, state(input))
 }
 
 export type ReceiptKind = "on" | "off" | "status" | "budget"

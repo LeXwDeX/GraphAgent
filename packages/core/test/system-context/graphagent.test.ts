@@ -5,12 +5,14 @@ import { describe, expect, test } from "bun:test"
 import { GraphAgentPrompt } from "@graphagent/core/system-context/graphagent"
 
 describe("GraphAgentPrompt", () => {
-  test("renders one identity with the hooks and DAG entry points", () => {
+  test("renders one identity with the hooks entry and without DAG mode text", () => {
     const prompt = GraphAgentPrompt.render(["edit", "write"])
     expect(prompt).toContain("You are GraphAgent")
     expect(prompt).toContain("GraphAgent is an independent project")
     expect(prompt).toContain("# Hooks")
-    expect(prompt).toContain("# DAG workflows")
+    // #1031 M2: the DAG section moved to `DagMode.SYSTEM`, which the request
+    // builder injects only for a main session whose workflow tool is published.
+    expect(prompt).not.toContain("# DAG workflows")
     expect(prompt).not.toContain("${")
   })
 

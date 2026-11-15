@@ -31,10 +31,16 @@ import type { SystemPrompt } from "../system"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ChildSlot } from "../child/slot"
 import type { ChildRuns } from "../child/run"
+import { DEFAULT_WORKFLOW_CONFIG } from "@/dag/dag"
 import { DagMode } from "@/dag/mode"
-import { DagModeReader } from "@/dag/mode-read"
+import type { UnavailableReason } from "@/dag/mode-status"
+import { DagModeReminder } from "../dag-mode-reminder"
 import { EngineProcess } from "../engine-process"
 import { RuntimeSlots } from "../runtime-slots"
+import { DEFAULT_LIMITS } from "../agent-scheduler-state"
+import type { DagMode as DagModeType } from "@graphagent/schema/dag-mode"
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
+import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { FSUtil } from "@graphagent/core/fs-util"
 import type { Config } from "@/config/config"
@@ -238,6 +244,7 @@ export interface PrepareDeps {
   readonly settingsHook: SettingsHook.Interface | undefined
   readonly toolSources: ToolSourceLedger.Interface
   readonly todoReminders: Option.Option<TodoReminders.Interface>
+  readonly dagModeReminders: Option.Option<DagModeReminder.Interface>
   readonly agentMessages: DagMessages.Interface | undefined
   readonly reasoningDistillationEnabled: (model: Provider.Model) => Effect.Effect<boolean>
   readonly queueModelSwitch: (
@@ -519,25 +526,156 @@ function rememberRequestPrefix(
 }
 
 /**
- * Reconcile the model-facing DAG slot from the durable row (#1031 M1). The
+ * Reconcile the model-facing DAG facts from the durable row (#1031 M1/M2). The
  * turn loop's session snapshot predates the loop, and a local `/dag-mode`
- * command may run inside the active turn, so the row is the source of truth.
+ * command may run inside the active turn, so the row is the source of truth for
+ * the mode and the session budget. A row deleted mid-turn falls back to the
+ * snapshot instead of failing the request.
  */
 const reconcileDagMode = Effect.fnUntraced(function* (
   sessions: Session.Interface,
   sessionID: SessionID,
-  fallback: SessionV1.SessionInfo["dagMode"],
+  fallback: Pick<Session.Info, "dagMode" | "dagBudgetTokens" | "dagBudgetUnlimited">,
 ) {
-  const mode = yield* DagModeReader.durableMode(sessions, sessionID).pipe(
-    // A row deleted mid-turn falls back to the snapshot instead of failing the request.
-    Effect.catch(() => Effect.succeed(DagMode.get({ dagMode: fallback }))),
-  )
-  DagMode.set(sessionID, mode)
+  const live = yield* sessions.get(sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+  const info = live ?? fallback
+  return {
+    mode: DagMode.get(info),
+    budgetTokens: info.dagBudgetTokens,
+    budgetUnlimited: info.dagBudgetUnlimited,
+  }
 })
 
 /** A local command exchange is presentation state, not a model request (#1031 M1). */
 const isModelSourceMessage = (message: SessionV1.WithParts) =>
   message.info.role === "user" && !!message.info.model && !MessageV2.isLocalCommand(message)
+
+interface DagRequestFacts {
+  readonly advertised: boolean
+  readonly unavailable?: UnavailableReason
+  readonly mode: DagModeType
+  readonly budget: number | null
+  readonly concurrency: number
+  readonly maxTotalNodes: number
+}
+
+/**
+ * The DAG facts one request derives (#1031 M2). Availability comes from the
+ * request inputs, never from the per-step tool set: a closing or
+ * structured-terminal step advertises no tools yet still belongs to a turn
+ * whose workflow tool is published. The budget follows the live row so a
+ * mid-turn `/dag-mode budget` reaches the next placeable request.
+ */
+const dagRequestFacts = Effect.fnUntraced(function* (input: {
+  sessions: Session.Interface
+  config: Config.Interface
+  session: Session.Info
+  agent: Agent.Info
+  user: SessionV1.User
+  model: Provider.Model
+  nativePermission: PermissionV1.Ruleset
+  configured: ConfigV1.Info
+}): Effect.fn.Return<DagRequestFacts> {
+  const permission = Permission.merge(input.agent.permission, input.session.permission ?? [])
+  const disabled = input.configured.tools?.workflow === false
+  const denied = Permission.disabledByPolicy(["workflow"], input.nativePermission, permission).has("workflow")
+  const switchedOff = input.user.tools?.workflow === false
+  const advertised = !input.session.parentID && !disabled && !denied && !switchedOff
+  // The status degradation order: tool switch, deny rule, then model
+  // capabilities. `no_worker` needs the agent catalog and stays with the
+  // `/dag-mode status` snapshot.
+  const unavailable: UnavailableReason | undefined = input.session.parentID
+    ? undefined
+    : !advertised
+      ? disabled
+        ? "workflow_tool_disabled"
+        : "start_denied"
+      : !input.model.capabilities.toolcall
+        ? "model_no_tool_calling"
+        : undefined
+  const live = yield* reconcileDagMode(input.sessions, input.session.id, input.session)
+  const dag = yield* input.config.dagGlobal()
+  return {
+    advertised,
+    unavailable,
+    mode: live.mode,
+    budget: live.budgetUnlimited ? null : (live.budgetTokens ?? dag.budget?.tokens ?? null),
+    concurrency: dag.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
+    maxTotalNodes: dag.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+  }
+})
+
+/** Publish L2 for a main session; a child session owns no workflow budget. */
+function publishDagMode(input: {
+  sessionID: SessionID
+  session: Session.Info
+  agent: Agent.Info
+  user: SessionV1.User
+  facts: DagRequestFacts
+}) {
+  if (input.session.parentID) return
+  DagMode.set(input.sessionID, {
+    mode: input.facts.mode,
+    budget: input.facts.budget,
+    concurrency: input.facts.concurrency,
+    maxTotalNodes: input.facts.maxTotalNodes,
+    ...(input.facts.unavailable ? { unavailable: input.facts.unavailable } : {}),
+    ...(input.agent.name === "plan" ? { plan: true } : {}),
+    ...(input.user.hookMode === "noninteractive" ? { noninteractive: true } : {}),
+  })
+}
+
+/** The DAG turn state one request needs: L1 visibility, L2 publication and the L3 note. */
+const dagTurnState = Effect.fnUntraced(function* (input: {
+  deps: PrepareDeps
+  sessionID: SessionID
+  session: Session.Info
+  agent: Agent.Info
+  user: SessionV1.User
+  model: Provider.Model
+  nativePermission: PermissionV1.Ruleset
+  configured: ConfigV1.Info
+  messages: SessionV1.WithParts[]
+}) {
+  const facts = yield* dagRequestFacts({
+    sessions: input.deps.sessions,
+    config: input.deps.config,
+    session: input.session,
+    agent: input.agent,
+    user: input.user,
+    model: input.model,
+    nativePermission: input.nativePermission,
+    configured: input.configured,
+  })
+  publishDagMode({
+    sessionID: input.sessionID,
+    session: input.session,
+    agent: input.agent,
+    user: input.user,
+    facts,
+  })
+  const eligible = facts.advertised && facts.unavailable === undefined && facts.mode === "on"
+  const reminder = yield* requestReminder(input.deps.dagModeReminders, {
+    sessionID: input.sessionID,
+    messages: input.messages,
+    eligible,
+  })
+  return { advertised: facts.advertised, reminder }
+})
+
+/** Ask an optional per-turn reminder service; an absent service sends nothing. */
+const requestReminder = <Input>(
+  service: Option.Option<{ readonly forRequest: (input: Input) => Effect.Effect<string | undefined> }>,
+  input: Input,
+) =>
+  Option.match(service, {
+    onNone: () => Effect.succeed(undefined),
+    onSome: (reminders) => reminders.forRequest(input),
+  })
+
+/** The one request-only tail block: the todo reminder, then the DAG tail note. */
+const reminderText = (todo: string | undefined, dag: string | undefined) =>
+  [todo, dag].filter((text): text is string => !!text).join("\n\n") || undefined
 
 /**
  * The tool set this step advertises. Native and configured permission rules and
@@ -1702,22 +1840,20 @@ export function makePrepare(deps: PrepareDeps) {
       })
     }
 
+    const configured = yield* config.get()
+    const dagTurn = yield* dagTurnState({
+      deps, sessionID, session, agent, user: lastUser, model, nativePermission, configured, messages: msgs,
+    })
+
     // Reminder text is computed after the persisted user content and appended by
     // the provider adapter after the persisted user content. It never
     // reaches stored messages and only the current turn carries one.
-    const todoReminder = yield* Option.match(todoReminders, {
-      onNone: () => Effect.succeed(undefined),
-      onSome: (reminders) =>
-        reminders.forRequest({
-          sessionID,
-          messages: msgs,
-          enabled: enabledTools.includes("todowrite"),
-        }),
+    const todoReminder = yield* requestReminder(todoReminders, {
+      sessionID, messages: msgs, enabled: enabledTools.includes("todowrite"),
     })
 
     // Building the folding history walks every message; only do it when
     // built-in dynamic folding is enabled for this request.
-    const configured = yield* config.get()
     const foldingConfig = configured.compaction
     const folding = ConfigCompaction.resolveDynamic({
       disabledByEnvironment: Flag.GRAPHAGENT_DISABLE_PRUNE,
@@ -1773,13 +1909,14 @@ export function makePrepare(deps: PrepareDeps) {
       ...(skills ? [skills] : []),
       ...goalDocs.system,
       ...hooksDocs,
+      ...(dagTurn.advertised ? [DagMode.SYSTEM] : []),
       RuntimeContext.SYSTEM_NOTE,
     ]
     // Goal, memory, the environment and the date are state, not system text:
     // the cached prefix must not change when the directory or the day changes.
-    // Owner-contributed slots (for example DAG mode) follow them.
+    // Owner-contributed slots (for example DAG mode, published by `dagTurnState`)
+    // follow them.
     const ctx = yield* InstanceState.context
-    yield* reconcileDagMode(sessions, sessionID, session.dagMode)
     const runtimeState = RuntimeSlots.state({
       goal: goalDocs.context,
       memory: memoryDocs,
@@ -1830,7 +1967,8 @@ export function makePrepare(deps: PrepareDeps) {
     })
     if (runtime.ledger.length > 0) runtimeContextBySession.set(sessionID, runtime.ledger)
     else runtimeContextBySession.delete(sessionID)
-    processInput.messages.splice(0, modelMsgs.length, ...TodoReminders.append(runtime.messages, todoReminder))
+    const reminder = reminderText(todoReminder, dagTurn.reminder)
+    processInput.messages.splice(0, modelMsgs.length, ...TodoReminders.append(runtime.messages, reminder))
     processInput.system.push(...runtime.unplaced)
     // The cached fragment is only valid for the resolved tool set; the
     // structured-output tool is added afterwards, so that request
