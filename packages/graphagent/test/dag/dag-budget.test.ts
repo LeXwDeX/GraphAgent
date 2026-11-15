@@ -25,6 +25,7 @@ import { DagMode } from "@/dag/mode"
 import { ResumeBlockedError, ResumeGuard } from "@/dag/resume-guard"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
+import { disposeInstance } from "@/effect/instance-registry"
 import { Config } from "@/config/config"
 import { Session } from "@/session/session"
 import { SessionInbox } from "@/session/inbox"
@@ -60,7 +61,7 @@ type LayerServices =
 interface Harness {
   readonly state: HarnessState
   readonly wakes: Array<{ sessionID: string; text: string }>
-  readonly counters: { pauseCalls: number }
+  readonly counters: { pauseCalls: number; requeueCalls: number }
   readonly layer: Layer.Layer<LayerServices>
 }
 
@@ -70,6 +71,9 @@ interface HarnessOptions {
   readonly toastGate?: { readonly entered: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
   /** Fails the first N pauseForBudget calls (a transient workflow lock timeout). */
   readonly failPauseForBudget?: number
+  /** Scripted requeueNodes outcomes: "fail" throws, "partial" requeues all but
+   *  the last requested node (the rest stay failed). */
+  readonly requeueOutcomes?: ReadonlyArray<"fail" | "partial">
   /** The inbox mock requires an instance context, like the real submit. */
   readonly inboxRequiresInstance?: boolean
 }
@@ -83,7 +87,7 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
     ...initial,
   }
   const wakes: Array<{ sessionID: string; text: string }> = []
-  const counters = { pauseCalls: 0 }
+  const counters = { pauseCalls: 0, requeueCalls: 0 }
   const database = Database.layerFromPath(":memory:")
   const events = EventV2.layer.pipe(Layer.provide(database))
   const rawBridge = EventV2Bridge.layer.pipe(Layer.provide(events))
@@ -109,22 +113,33 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
   const failPause = options.failPauseForBudget ?? 0
+  const requeueOutcomes = options.requeueOutcomes ?? []
   const dag =
-    failPause === 0
+    failPause === 0 && requeueOutcomes.length === 0
       ? rawDag
       : Layer.effect(
           Dag.Service,
           Effect.gen(function* () {
             const original = yield* Dag.Service
-            let remaining = failPause
+            let pauseRemaining = failPause
+            let requeueCall = 0
             return Dag.Service.of({
               ...original,
               pauseForBudget: (dagID) =>
                 Effect.suspend(() => {
                   counters.pauseCalls++
-                  if (remaining === 0) return original.pauseForBudget(dagID)
-                  remaining--
+                  if (pauseRemaining === 0) return original.pauseForBudget(dagID)
+                  pauseRemaining--
                   return Effect.fail(new Error("workflow lock timeout"))
+                }),
+              requeueNodes: (dagID, nodeIDs, reason) =>
+                Effect.suspend(() => {
+                  counters.requeueCalls++
+                  const scripted = requeueOutcomes[requeueCall++]
+                  if (scripted === "fail") return Effect.fail(new Error("workflow lock timeout"))
+                  if (scripted === "partial")
+                    return original.requeueNodes(dagID, nodeIDs.slice(0, -1), reason)
+                  return original.requeueNodes(dagID, nodeIDs, reason)
                 }),
             })
           }),
@@ -322,6 +337,20 @@ const readNodes = Effect.gen(function* () {
   const store = yield* DagStore.Service
   return yield* store.getCurrentNodes(dagID).pipe(Effect.orDie)
 })
+
+/** The owner instance a bootstrap `init` runs under. */
+const ownerInstance = {
+  directory: process.cwd(),
+  worktree: process.cwd(),
+  root: process.cwd(),
+  project: {
+    id: Project.ID.global,
+    worktree: process.cwd(),
+    time: { created: 0, updated: 0 },
+    sandboxes: [],
+  },
+  trustProject: true,
+}
 
 describe("DagBudget accounting", () => {
   test("tier thresholds: warn at the ratio, exhausted at the budget, unlimited never", () => {
@@ -641,20 +670,7 @@ describe("DagBudget instance context", () => {
 
         // Instance bootstrap runs init inside the owner instance; the captured
         // context is what the background raise paths must re-enter.
-        yield* budget.init().pipe(
-          Effect.provideService(InstanceRef, {
-            directory: process.cwd(),
-            worktree: process.cwd(),
-            root: process.cwd(),
-            project: {
-              id: Project.ID.global,
-              worktree: process.cwd(),
-              time: { created: 0, updated: 0 },
-              sandboxes: [],
-            },
-            trustProject: true,
-          }),
-        )
+        yield* budget.init().pipe(Effect.provideService(InstanceRef, ownerInstance))
 
         // The raise arrives as a durable session update. Its listener runs in
         // the EventV2 background runtime, which carries no instance context.
@@ -719,6 +735,127 @@ describe("DagBudget exhaustion retry", () => {
         const calls = harness.counters.pauseCalls
         yield* budget.onBudgetChanged(parent)
         expect(harness.counters.pauseCalls).toBe(calls)
+      }),
+    )
+  })
+})
+
+describe("DagBudget raise requeue failure", () => {
+  test("keeps the workflow budget-paused until every cancelled node is requeued", async () => {
+    const harness = makeHarness({ globalBudget: 1000 }, { requeueOutcomes: ["fail", "partial"] })
+    await run(
+      harness,
+      Effect.gen(function* () {
+        yield* seed()
+        yield* createWorkflow()
+        yield* startNode("a", child)
+        yield* queueNode("b")
+        yield* setChildTokens({ input: 1200, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 })
+        const budget = yield* DagBudget.Service
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).status).toBe("paused")
+
+        harness.state.globalBudget = 5000
+
+        // A transient workflow-lock failure requeues nothing: resuming now
+        // would settle the workflow as a required-node failure instead of
+        // rerunning the cancelled attempts.
+        expect(yield* budget.onBudgetChanged(parent)).toBe(0)
+        let workflow = yield* readWorkflow
+        expect(workflow.status).toBe("paused")
+        expect(workflow.pauseReason).toBe(PAUSE_REASON_BUDGET_EXHAUSTED)
+        expect(
+          (yield* readNodes).every(
+            (node) => node.status === "failed" && node.errorClass === ERROR_CLASS_BUDGET_EXHAUSTED,
+          ),
+        ).toBe(true)
+        expect(harness.wakes).toHaveLength(0)
+
+        // A partial replay (another actor moved a target row) is not enough:
+        // only a fresh read of the remaining cancelled rows may resume.
+        expect(yield* budget.onBudgetChanged(parent)).toBe(0)
+        workflow = yield* readWorkflow
+        expect(workflow.status).toBe("paused")
+        expect((yield* readNodes).some((node) => node.status === "failed")).toBe(true)
+        expect(harness.wakes).toHaveLength(0)
+
+        // A usage-triggered reconciliation (no new raise) retries the blocked
+        // replay, requeues the remaining rows and resumes exactly once.
+        yield* publishStepFinish(child)
+        yield* pollWithTimeout(
+          Effect.sync(() => (harness.wakes.length > 0 ? harness.wakes : undefined)),
+          "the blocked raise was not retried on the next reconciliation",
+        )
+        workflow = yield* readWorkflow
+        expect(workflow.status).toBe("running")
+        expect(
+          (yield* readNodes).every((node) => node.status === "pending" && node.childSessionId === null),
+        ).toBe(true)
+        expect(harness.wakes).toHaveLength(1)
+      }),
+    )
+  })
+})
+
+describe("DagBudget instance lifecycle", () => {
+  test("does not resume or wake a disposed instance's workflows, and reopens them on init", async () => {
+    const harness = makeHarness({ globalBudget: 1000 })
+    await run(
+      harness,
+      Effect.gen(function* () {
+        yield* seed()
+        yield* createWorkflow()
+        yield* startNode("a", child)
+        yield* setChildTokens({ input: 1200, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 })
+        const budget = yield* DagBudget.Service
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).status).toBe("paused")
+
+        // Bootstrap the owner instance, then dispose it. The registered
+        // disposer runs before a reload would bootstrap the next generation,
+        // so the captured context is gone rather than stale.
+        yield* budget.init().pipe(Effect.provideService(InstanceRef, ownerInstance))
+        expect(DagMode.budgetState(parent)?.tier).toBe("exhausted")
+        yield* Effect.promise(() => disposeInstance(process.cwd()))
+
+        // A `/config` raise reaches the process-wide consumer while the owner
+        // is gone. It must neither resume the workflow from a background
+        // context nor submit the wake into the closed generation.
+        harness.state.globalBudget = 5000
+        const events = yield* EventV2.Service
+        yield* events.publish(SessionV1.Event.Updated, {
+          sessionID: parent,
+          info: {
+            id: parent,
+            slug: "budget",
+            projectID: Project.ID.global,
+            directory: process.cwd(),
+            title: "budget",
+            version: "test",
+            time: { created: 0, updated: 1 },
+            dagBudgetTokens: 5000,
+          },
+        })
+        yield* pollWithTimeout(
+          Effect.sync(() => (DagMode.budgetState(parent)?.tier === "normal" ? true : undefined)),
+          "the background raise did not reconcile",
+        )
+        const paused = yield* readWorkflow
+        expect(paused.status).toBe("paused")
+        expect(paused.pauseReason).toBe(PAUSE_REASON_BUDGET_EXHAUSTED)
+        expect(harness.wakes).toHaveLength(0)
+
+        // The owner loads again: its bootstrap reconciles the still-paused
+        // workflow below the raised budget and delivers the wake through the
+        // new generation's context.
+        yield* budget.init().pipe(Effect.provideService(InstanceRef, ownerInstance))
+        yield* pollWithTimeout(
+          Effect.sync(() => (harness.wakes.length > 0 ? harness.wakes : undefined)),
+          "the reopened instance did not resume and wake the workflow",
+        )
+        expect(harness.wakes).toHaveLength(1)
+        expect(harness.wakes[0]?.text).toBe("budget raised by the user; 1 workflows resumed")
+        expect((yield* readWorkflow).status).toBe("running")
       }),
     )
   })

@@ -40,6 +40,7 @@ import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { ConfigHotReload } from "@/config/hot-reload"
 import { Config } from "@/config/config"
 import { InstanceRef } from "@/effect/instance-ref"
+import { registerDisposer } from "@/effect/instance-registry"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { SessionInbox } from "@/session/inbox"
@@ -109,6 +110,11 @@ const make = Effect.gen(function* () {
   // a transient pause failure cannot be masked by an already-recorded
   // "exhausted".
   const enforcing = new Set<string>()
+  // Sessions whose raise could not requeue every budget-cancelled node. The
+  // affected workflows stay budget-paused; the next reconciliation — a usage
+  // trigger, a session update or another raise — retries the replay instead of
+  // waiting for a new user action.
+  const resumePending = new Set<string>()
   // Effective budget last observed on a Session.Updated event (null = unlimited).
   const seenBudget = new Map<string, number | null>()
   // Child-session routing for step-finish usage; mirrors the summary publisher.
@@ -124,6 +130,24 @@ const make = Effect.gen(function* () {
   // instance context, while `SessionInbox.submit` resolves its instance state
   // and the prompt service from one. A reload re-runs init and replaces it.
   const instanceContexts = new Map<string, Context.Context<never>>()
+  // Set once any bootstrap captured a context. From then on this process-wide
+  // service is instance-managed: a directory without an entry is not loaded
+  // (disposed, or between reload generations), so its workflows must neither
+  // be resumed nor woken from a background context. Unit graphs that never run
+  // a bootstrap keep the unmanaged fallback.
+  let instanceManaged = false
+  // Captured contexts die with their instance. The instance store runs this
+  // registry's disposers (the same hook InstanceState uses to invalidate its
+  // caches) before a reload creates the next generation, so a disposed
+  // directory can never be re-entered with a stale context.
+  const unregisterDisposer = registerDisposer(async (directory) => {
+    instanceContexts.delete(DagLocation.canonicalDirectory(directory))
+  })
+  yield* Effect.addFinalizer(() => Effect.sync(unregisterDisposer))
+
+  /** Whether the directory still holds a live captured instance context. */
+  const directoryLoaded = (directory: string): boolean =>
+    instanceContexts.has(DagLocation.canonicalDirectory(directory))
 
   const compute = Effect.fn("DagBudget.state")(function* (sessionID: string) {
     const [info, dagConfig, summaries] = yield* Effect.all([
@@ -239,11 +263,52 @@ const make = Effect.gen(function* () {
       const captured =
         directory === undefined ? undefined : instanceContexts.get(DagLocation.canonicalDirectory(directory))
       if (captured === undefined) {
+        // Instance-managed graphs must not submit into a directory whose owner
+        // was disposed between the resume and this delivery: the captured
+        // generation is closed and the resumption is already durable. The
+        // owner's next bootstrap reconciles the now-running workflow.
+        if (instanceManaged) {
+          yield* Effect.logDebug("DagBudget wake skipped for an unloaded directory", { sessionID, directory })
+          return
+        }
         yield* submit
         return
       }
       yield* Effect.provideContext(submit, captured)
     })
+
+  /**
+   * Requeue the rows a budget cancel left failed, returning whether every
+   * requested node is pending again. `Dag.requeueNodes` commits the whole batch
+   * in one transaction under the workflow lock, so a failure requeued nothing;
+   * a partial result means another actor changed a target row between the read
+   * and the locked replay. Either way the workflow must stay budget-paused:
+   * resuming with budget-cancelled rows still failed would let the resumed
+   * scheduling settle it as a required-node failure instead of rerunning the
+   * cancelled attempts.
+   */
+  const requeueCancelled = Effect.fn("DagBudget.requeueCancelled")(function* (
+    dagID: string,
+    nodeIDs: readonly string[],
+  ) {
+    const outcome = yield* dag.requeueNodes(dagID, nodeIDs, "budget raised by the user").pipe(Effect.exit)
+    if (Exit.isFailure(outcome)) {
+      if (Cause.hasInterrupts(outcome.cause)) return yield* Effect.interrupt
+      yield* Effect.logWarning("DagBudget could not requeue budget-cancelled nodes", {
+        dagID,
+        cause: Cause.pretty(outcome.cause),
+      })
+      return false
+    }
+    const requeued = new Set(outcome.value.requeued)
+    if (nodeIDs.every((id) => requeued.has(id))) return true
+    yield* Effect.logWarning("DagBudget requeued only part of the budget-cancelled nodes; keeping the workflow paused", {
+      dagID,
+      requested: nodeIDs,
+      requeued: outcome.value.requeued,
+    })
+    return false
+  })
 
   /**
    * Resume every budget-paused workflow of the session when usage is below the
@@ -261,23 +326,24 @@ const make = Effect.gen(function* () {
         ownsWorkflow(workflow, instance),
     )
     let resumed = 0
+    let blocked = false
     let resumedDirectory: string | undefined
     for (const workflow of workflows) {
+      // This process-wide service also sees workflows of directories whose
+      // instance is gone (disposed, or between reload generations). Resuming
+      // one here would run it from a background context with no live owner,
+      // and the owner's reopen reconcile would no longer see it paused. Leave
+      // it budget-paused: that reconcile retries the raise.
+      if (instanceManaged && !directoryLoaded(workflow.directory)) continue
       const nodes = yield* store.getCurrentNodes(workflow.id)
       const requeue = nodes
         .filter((node) => node.status === "failed" && node.errorClass === ERROR_CLASS_BUDGET_EXHAUSTED)
         .map((node) => node.id)
-      if (requeue.length > 0) {
-        yield* dag.requeueNodes(workflow.id, requeue, "budget raised by the user").pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.interrupt
-              : Effect.logWarning("DagBudget could not requeue budget-cancelled nodes", {
-                  dagID: workflow.id,
-                  cause: Cause.pretty(cause),
-                }).pipe(Effect.as({ requeued: [] as readonly string[] })),
-          ),
-        )
+      // No budget-cancelled rows means there is nothing to replay (a queued or
+      // pending workflow); only a failed requeue blocks the resume.
+      if (requeue.length > 0 && !(yield* requeueCancelled(workflow.id, requeue))) {
+        blocked = true
+        continue
       }
       // Usage can cross the new budget between the raise and this resume; a
       // resumed workflow must not slip one step past it.
@@ -295,6 +361,8 @@ const make = Effect.gen(function* () {
       resumed++
       resumedDirectory ??= workflow.directory
     }
+    if (blocked) resumePending.add(sessionID)
+    else resumePending.delete(sessionID)
     if (resumed > 0) yield* wake(sessionID, resumed, resumedDirectory)
     return resumed
   })
@@ -330,7 +398,9 @@ const make = Effect.gen(function* () {
   ) {
     const next = yield* compute(sessionID)
     yield* announce(sessionID, next)
-    if (options.budgetChanged && next.tier !== "exhausted") {
+    // A blocked raise keeps retrying on any later reconciliation, not only on
+    // another user-visible budget change.
+    if ((options.budgetChanged || resumePending.has(sessionID)) && next.tier !== "exhausted") {
       return yield* resumePaused(sessionID, next)
     }
     return 0
@@ -502,8 +572,12 @@ const make = Effect.gen(function* () {
   const init = Effect.fn("DagBudget.init")(function* () {
     const instance = yield* InstanceRef
     // Keep the bootstrap context for the background raise paths (see wake); a
-    // reload bootstraps again and replaces the entry for the directory.
-    if (instance) instanceContexts.set(DagLocation.canonicalDirectory(instance.directory), yield* Effect.context())
+    // reload bootstraps again and replaces the entry for the directory (the
+    // disposal hook removed the previous generation's entry first).
+    if (instance) {
+      instanceManaged = true
+      instanceContexts.set(DagLocation.canonicalDirectory(instance.directory), yield* Effect.context())
+    }
     const sessionIDs = new Set<string>()
     for (const status of ["running", "stepping", "paused"]) {
       for (const workflow of yield* store.listByStatus(status)) {
