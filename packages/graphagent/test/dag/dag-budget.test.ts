@@ -74,6 +74,8 @@ interface HarnessOptions {
   /** Scripted requeueNodes outcomes: "fail" throws, "partial" requeues all but
    *  the last requested node (the rest stay failed). */
   readonly requeueOutcomes?: ReadonlyArray<"fail" | "partial">
+  /** Scripted resume outcomes: "fail" throws a transient workflow lock error. */
+  readonly resumeOutcomes?: ReadonlyArray<"fail">
   /** The inbox mock requires an instance context, like the real submit. */
   readonly inboxRequiresInstance?: boolean
 }
@@ -114,8 +116,9 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
   const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
   const failPause = options.failPauseForBudget ?? 0
   const requeueOutcomes = options.requeueOutcomes ?? []
+  const resumeOutcomes = options.resumeOutcomes ?? []
   const dag =
-    failPause === 0 && requeueOutcomes.length === 0
+    failPause === 0 && requeueOutcomes.length === 0 && resumeOutcomes.length === 0
       ? rawDag
       : Layer.effect(
           Dag.Service,
@@ -123,6 +126,7 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
             const original = yield* Dag.Service
             let pauseRemaining = failPause
             let requeueCall = 0
+            let resumeCall = 0
             return Dag.Service.of({
               ...original,
               pauseForBudget: (dagID) =>
@@ -140,6 +144,11 @@ function makeHarness(initial: Partial<HarnessState> = {}, options: HarnessOption
                   if (scripted === "partial")
                     return original.requeueNodes(dagID, nodeIDs.slice(0, -1), reason)
                   return original.requeueNodes(dagID, nodeIDs, reason)
+                }),
+              resume: (dagID) =>
+                Effect.suspend(() => {
+                  if (resumeOutcomes[resumeCall++] !== "fail") return original.resume(dagID)
+                  return Effect.fail(new Error("workflow lock timeout"))
                 }),
             })
           }),
@@ -856,6 +865,54 @@ describe("DagBudget instance lifecycle", () => {
         expect(harness.wakes).toHaveLength(1)
         expect(harness.wakes[0]?.text).toBe("budget raised by the user; 1 workflows resumed")
         expect((yield* readWorkflow).status).toBe("running")
+      }),
+    )
+  })
+})
+
+describe("DagBudget resume failure", () => {
+  test("retries a transiently failed resume on the next reconciliation", async () => {
+    const harness = makeHarness({ globalBudget: 1000 }, { resumeOutcomes: ["fail"] })
+    await run(
+      harness,
+      Effect.gen(function* () {
+        yield* seed()
+        yield* createWorkflow()
+        yield* startNode("a", child)
+        yield* queueNode("b")
+        yield* setChildTokens({ input: 1200, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 })
+        const budget = yield* DagBudget.Service
+        yield* budget.exhaust(parent)
+        expect((yield* readWorkflow).status).toBe("paused")
+
+        harness.state.globalBudget = 5000
+
+        // The replay succeeds but the resume hits a transient workflow-lock
+        // failure. The cancelled rows are already pending, so the workflow must
+        // stay budget-paused with the session armed for a retry, not silently
+        // settle as a required-node failure or park until another raise.
+        expect(yield* budget.onBudgetChanged(parent)).toBe(0)
+        let workflow = yield* readWorkflow
+        expect(workflow.status).toBe("paused")
+        expect(workflow.pauseReason).toBe(PAUSE_REASON_BUDGET_EXHAUSTED)
+        expect(
+          (yield* readNodes).every((node) => node.status === "pending" && node.childSessionId === null),
+        ).toBe(true)
+        expect(harness.wakes).toHaveLength(0)
+
+        // A usage-triggered reconciliation (no new raise) finds nothing left to
+        // replay and retries only the resume, which now succeeds once.
+        yield* publishStepFinish(child)
+        yield* pollWithTimeout(
+          Effect.sync(() => (harness.wakes.length > 0 ? harness.wakes : undefined)),
+          "the failed resume was not retried on the next reconciliation",
+        )
+        workflow = yield* readWorkflow
+        expect(workflow.status).toBe("running")
+        expect(harness.wakes).toHaveLength(1)
+        expect(harness.wakes[0]?.text).toBe("budget raised by the user; 1 workflows resumed")
+        // No second resume: the retry saw the already-requeued rows.
+        expect(harness.counters.requeueCalls).toBe(1)
       }),
     )
   })

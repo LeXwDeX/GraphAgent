@@ -356,6 +356,11 @@ const make = Effect.gen(function* () {
           dagID: workflow.id,
           cause: Cause.pretty(outcome.cause),
         })
+        // The nodes are already requeued, so the retry resumes without
+        // replaying them; but only keeping the session armed makes that retry
+        // happen at all. A transient lock failure must not park the raise
+        // until the user changes the budget again.
+        blocked = true
         continue
       }
       resumed++
