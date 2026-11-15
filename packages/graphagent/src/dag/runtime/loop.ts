@@ -1521,6 +1521,22 @@ const serviceLayer = Layer.effect(
                   if (runtimes.get(dagID) !== entry) return
                   const workflow = yield* store.getWorkflow(dagID)
                   if (!workflow || isTerminalWorkflowStatusValue(workflow.status)) return
+                  // D12 budget raise: the requeue can beat the NodeFailed
+                  // handler that cancels the failed attempt. The row is pending
+                  // again by now, so that handler drops its event as stale and
+                  // the old child would keep running unowned. A pending node
+                  // that still holds a runtime fiber/watcher is exactly that
+                  // stale attempt: interrupt it before the rebuild can schedule
+                  // the replacement (spawn's onInterrupt cancels the child).
+                  const requeued = yield* store.getNode(dagID, evt.data.nodeID as string)
+                  if (requeued?.status === "pending") {
+                    const fiber = entry.fibers.get(requeued.id)
+                    const watcher = entry.watchers.get(requeued.id)
+                    entry.fibers.delete(requeued.id)
+                    entry.watchers.delete(requeued.id)
+                    if (fiber) yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
+                    if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)
+                  }
                   entry.vetoHold = false
                   entry.runtime.setPaused(workflow.status === "paused")
                   entry.runtime.setStepMode(workflow.status === "stepping")

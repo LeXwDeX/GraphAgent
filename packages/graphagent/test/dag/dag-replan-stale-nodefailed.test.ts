@@ -102,6 +102,7 @@ function loopLayer(input: {
   readonly admissions: Queue.Queue<AdmissionAttempt>
   readonly interrupts: Queue.Queue<string>
   readonly holdReplan?: Deferred.Deferred<void>
+  readonly holdNodeFailed?: Deferred.Deferred<void>
   readonly agentGate?: (workerType: string) => Effect.Effect<void>
 }) {
   const database = Database.layerFromPath(":memory:")
@@ -117,11 +118,13 @@ function loopLayer(input: {
           original
             .subscribe(definition)
             .pipe(
-              Stream.tap(() =>
-                definition.type === DagEvent.WorkflowReplanned.type && input.holdReplan
-                  ? Deferred.await(input.holdReplan)
-                  : Effect.void,
-              ),
+              Stream.tap(() => {
+                if (definition.type === DagEvent.WorkflowReplanned.type && input.holdReplan)
+                  return Deferred.await(input.holdReplan)
+                if (definition.type === DagEvent.NodeFailed.type && input.holdNodeFailed)
+                  return Deferred.await(input.holdNodeFailed)
+                return Effect.void
+              }),
             ),
       })
     }),
@@ -231,6 +234,7 @@ function runLoopTest<A>(
   }) => Effect.Effect<A, Error>,
   options: {
     readonly holdReplan?: Deferred.Deferred<void>
+    readonly holdNodeFailed?: Deferred.Deferred<void>
     readonly agentGate?: (workerType: string) => Effect.Effect<void>
   } = {},
 ) {
@@ -277,6 +281,7 @@ function runLoopTest<A>(
           admissions,
           interrupts,
           holdReplan: options.holdReplan,
+          holdNodeFailed: options.holdNodeFailed,
           agentGate: options.agentGate,
         }),
       ),
@@ -859,6 +864,56 @@ describe("DagLoop replan vs stale NodeFailed", () => {
           const parent = yield* takeWithin(parentPrompts, "terminal wake did not reach the parent")
           yield* Deferred.succeed(parent.release, "success")
         }),
+      ),
+    )
+  })
+})
+
+describe("DagLoop budget requeue vs stale NodeFailed", () => {
+  it("cancels the budget-cancelled attempt when the requeue beats the failure handler", async () => {
+    // D12 budget raise: the requeue flips the failed row back to pending before
+    // the NodeFailed handler (which aborts the child) gets its evalLock. The
+    // handler then drops its event as stale, so the old child would keep
+    // running. Interrupting the stale runtime fiber at requeue time must
+    // cancel it, before the rebuild schedules the replacement attempt.
+    const holdNodeFailed = await Effect.runPromise(Deferred.make<void>())
+    await Effect.runPromise(
+      runLoopTest(
+        ({ dag, store, childPrompts, interrupts }) =>
+          Effect.gen(function* () {
+            const dagID = yield* dag.create({
+              projectID: "project-1",
+              sessionID: "ses_parent",
+              title: "Budget requeue cancel",
+              config: { name: "budget-requeue-cancel", nodes: [node("a")] },
+            })
+            const first = yield* takeWithin(childPrompts, "a did not start")
+            expect(first.title).toBe("a")
+
+            // Exhaust the budget with the failure handler held.
+            expect(yield* dag.pauseForBudget(dagID)).toBe("paused")
+            expect((yield* store.getNode(dagID, "a"))?.status).toBe("failed")
+            expect((yield* dag.requeueNodes(dagID, ["a"], "budget raised by the user")).requeued).toEqual(["a"])
+
+            // The raise is gated before resume (a later step crossed the new
+            // budget), so the workflow stays paused: no replacement attempt
+            // runs and nothing else can clean the old attempt up.
+            const interrupted = yield* takeWithin(interrupts, "the budget-cancelled attempt was not cancelled")
+            expect(interrupted).toBe("a")
+
+            // The requeued node runs as a fresh attempt once resume is allowed.
+            yield* dag.resume(dagID)
+            const second = yield* takeWithin(childPrompts, "the replacement attempt did not start")
+            expect(second.title).toBe("a")
+            yield* Deferred.succeed(second.release, "done")
+            yield* pollWithTimeout(
+              store
+                .getWorkflow(dagID)
+                .pipe(Effect.map((workflow) => (workflow?.status === "completed" ? workflow : undefined))),
+              "workflow did not complete after the replacement attempt",
+            )
+          }),
+        { holdNodeFailed },
       ),
     )
   })

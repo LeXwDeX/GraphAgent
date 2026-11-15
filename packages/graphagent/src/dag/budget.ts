@@ -104,13 +104,26 @@ const make = Effect.gen(function* () {
   // Tier history is request-coalescing state: dropping it only re-announces a
   // tier once after a restart, never changes an accounting result.
   const tiers = new Map<string, BudgetTier>()
+  // Sessions whose exhaustion enforcement failed and must be retried. This is
+  // deliberately separate from `tiers`: the tier is the announcement state, so
+  // a transient pause failure cannot be masked by an already-recorded
+  // "exhausted".
+  const enforcing = new Set<string>()
   // Effective budget last observed on a Session.Updated event (null = unlimited).
   const seenBudget = new Map<string, number | null>()
   // Child-session routing for step-finish usage; mirrors the summary publisher.
   const children = new Map<string, { sessionID: string; projectID: string; directory: string }>()
   const notChildren = new Set<string>()
-  // One scheduled reconcile per session; the boolean records "budget changed".
-  const pending = new Map<string, boolean>()
+  // One scheduled reconcile per session. `budgetChanged` records "the resume
+  // path must run"; `reconciling` says the pass is past its coalescing sleep,
+  // so a trigger arriving now may race its usage read and needs one trailing
+  // rerun; `rerun` is that pass.
+  const pending = new Map<string, { budgetChanged: boolean; reconciling: boolean; rerun: boolean }>()
+  // Instance context per directory, captured by bootstrap `init`. The event
+  // listeners and the `/config` queue run in background fibers that carry no
+  // instance context, while `SessionInbox.submit` resolves its instance state
+  // and the prompt service from one. A reload re-runs init and replaces it.
+  const instanceContexts = new Map<string, Context.Context<never>>()
 
   const compute = Effect.fn("DagBudget.state")(function* (sessionID: string) {
     const [info, dagConfig, summaries] = yield* Effect.all([
@@ -157,10 +170,17 @@ const make = Effect.gen(function* () {
       .publish(TuiEvent.ToastShow, { title: "DAG token budget", message, variant, duration: 8000 })
       .pipe(Effect.catchCause(() => Effect.void))
 
-  const exhaust = Effect.fn("DagBudget.exhaust")(function* (mainSessionID: SessionID) {
+  /**
+   * Pause every live workflow of the session and cancel its in-flight
+   * attempts. Failure is tracked apart from the announced tier: enforcement
+   * must retry on a later reconciliation even though `tiers` already records
+   * "exhausted".
+   */
+  const enforce = Effect.fn("DagBudget.enforce")(function* (mainSessionID: SessionID) {
     const instance = yield* InstanceRef
     const workflows = yield* store.listBySession(mainSessionID)
     let paused = 0
+    let failed = false
     for (const workflow of workflows) {
       if (isTerminalWorkflowStatusValue(workflow.status)) continue
       const budgetPaused =
@@ -174,20 +194,27 @@ const make = Effect.gen(function* () {
             : Effect.logWarning("DagBudget could not pause a workflow", {
                 dagID: workflow.id,
                 cause: Cause.pretty(cause),
-              }).pipe(Effect.as("ignored" as const)),
+              }).pipe(Effect.as("failed" as const)),
         ),
       )
       if (outcome === "paused") paused++
+      if (outcome === "failed") failed = true
     }
-    return paused
+    if (failed) enforcing.add(mainSessionID)
+    else enforcing.delete(mainSessionID)
+    return { paused, failed }
   })
 
-  const wake = (sessionID: string, resumed: number) =>
+  const exhaust = Effect.fn("DagBudget.exhaust")(function* (mainSessionID: SessionID) {
+    return (yield* enforce(mainSessionID)).paused
+  })
+
+  const wake = (sessionID: string, resumed: number, directory: string | undefined) =>
     Effect.gen(function* () {
       if (!inbox) return
       const at = yield* Clock.currentTimeMillis
       const text = `budget raised by the user; ${resumed} workflows resumed`
-      yield* inbox
+      const submit = inbox
         .submit("dag.budget", SessionID.make(sessionID), {
           prompt: { parts: [{ type: "text", text }] },
           admissionOptions: { continueToolBudget: true },
@@ -205,6 +232,17 @@ const make = Effect.gen(function* () {
                 }).pipe(Effect.asVoid),
           ),
         )
+      // The automatic raise paths (Session.Updated listener, `/config` queue)
+      // run in background fibers without the owner instance's context, but
+      // submit resolves its instance state and prompt service from one. Re-enter
+      // the context bootstrap captured for the workflow's directory.
+      const captured =
+        directory === undefined ? undefined : instanceContexts.get(DagLocation.canonicalDirectory(directory))
+      if (captured === undefined) {
+        yield* submit
+        return
+      }
+      yield* Effect.provideContext(submit, captured)
     })
 
   /**
@@ -223,6 +261,7 @@ const make = Effect.gen(function* () {
         ownsWorkflow(workflow, instance),
     )
     let resumed = 0
+    let resumedDirectory: string | undefined
     for (const workflow of workflows) {
       const nodes = yield* store.getCurrentNodes(workflow.id)
       const requeue = nodes
@@ -254,8 +293,9 @@ const make = Effect.gen(function* () {
         continue
       }
       resumed++
+      resumedDirectory ??= workflow.directory
     }
-    if (resumed > 0) yield* wake(sessionID, resumed)
+    if (resumed > 0) yield* wake(sessionID, resumed, resumedDirectory)
     return resumed
   })
 
@@ -272,10 +312,16 @@ const make = Effect.gen(function* () {
       }
       return
     }
-    if (next.tier === "exhausted" && previous !== "exhausted") {
-      yield* toast("error", "DAG token budget exhausted: workflows paused")
-      yield* exhaust(SessionID.make(sessionID))
+    if (next.tier !== "exhausted") {
+      enforcing.delete(sessionID)
+      return
     }
+    if (previous !== "exhausted") yield* toast("error", "DAG token budget exhausted: workflows paused")
+    // The tier marker above is not the enforcement receipt: a transient
+    // pauseForBudget failure must be retried on the next reconciliation instead
+    // of being masked by the already-recorded "exhausted".
+    if (previous === "exhausted" && !enforcing.has(sessionID)) return
+    yield* enforce(SessionID.make(sessionID))
   })
 
   const reconcile = Effect.fn("DagBudget.reconcile")(function* (
@@ -294,20 +340,29 @@ const make = Effect.gen(function* () {
    * Coalesce triggers per session (100 ms window so the durable usage
    * projection lands first, trailing rerun for events that raced the read).
    * `budgetChanged` is sticky: one budget-change event inside the window is
-   * enough to run the resume path.
+   * enough to run the resume path. A trigger that lands while a pass is
+   * reconciling must schedule one trailing pass: dropping it would lose the
+   * step that crossed the budget, leaving the children running.
    */
   const schedule = (sessionID: string, budgetChanged: boolean): Effect.Effect<void> =>
     Effect.gen(function* () {
-      if (pending.has(sessionID)) {
-        if (budgetChanged) pending.set(sessionID, true)
+      const running = pending.get(sessionID)
+      if (running !== undefined) {
+        if (budgetChanged) running.budgetChanged = true
+        // A trigger during the coalescing sleep is covered by the read that
+        // follows it; a trigger past the sleep may race that read, so it gets
+        // its own trailing pass.
+        if (running.reconciling) running.rerun = true
         return
       }
-      pending.set(sessionID, budgetChanged)
+      const state = { budgetChanged, reconciling: false, rerun: false }
+      pending.set(sessionID, state)
       yield* Effect.gen(function* () {
         for (;;) {
-          const changed = pending.get(sessionID) === true
-          pending.set(sessionID, false)
+          const changed = state.budgetChanged
+          state.budgetChanged = false
           yield* Effect.sleep("100 millis")
+          state.reconciling = true
           yield* reconcile(sessionID, { budgetChanged: changed }).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause)
@@ -318,12 +373,12 @@ const make = Effect.gen(function* () {
                   }),
             ),
           )
-          const again = pending.get(sessionID)
-          if (again === undefined) return
-          if (!again) {
+          state.reconciling = false
+          if (!state.rerun && !state.budgetChanged) {
             pending.delete(sessionID)
             return
           }
+          state.rerun = false
         }
       }).pipe(Effect.forkIn(scope))
     })
@@ -446,6 +501,9 @@ const make = Effect.gen(function* () {
 
   const init = Effect.fn("DagBudget.init")(function* () {
     const instance = yield* InstanceRef
+    // Keep the bootstrap context for the background raise paths (see wake); a
+    // reload bootstraps again and replaces the entry for the directory.
+    if (instance) instanceContexts.set(DagLocation.canonicalDirectory(instance.directory), yield* Effect.context())
     const sessionIDs = new Set<string>()
     for (const status of ["running", "stepping", "paused"]) {
       for (const workflow of yield* store.listByStatus(status)) {
