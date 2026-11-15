@@ -304,6 +304,14 @@ const GraphBudgetFields = {
     description:
       'Run the whole workflow in one fresh worktree of the workflow target. "worktree" is mutually exclusive with workspace; the target must be a clean git repository. Created at start and settled at the terminal transition (completed removes the directory but keeps its branch; failed/cancelled keep both).',
   }),
+  acceptance: Schema.optional(DagBlocks.AcceptanceItems).annotate({
+    description:
+      "Acceptance criteria the completeness review lane judges item by item. In deep mode without this field the admission acceptance_criteria are derived as AC1..ACn. Start-only; fragments cannot change it.",
+  }),
+  review_gate: Schema.optional(Schema.Literals(DagBlocks.REVIEW_GATES)).annotate({
+    description:
+      'Review gate fixed at start: "strict" enables the review-coverage requirements; "standard" keeps them advisory. A session DAG mode of on and a deep workflow fix it to "strict". Start-only; later mutations validate against the persisted value.',
+  }),
 } as const
 
 /** High-level graph: objective + composable blocks compiled into nodes. */
@@ -553,15 +561,28 @@ export function replanEnvelopeDiagnostic(value: unknown): Diagnostic | undefined
 export type BlockSource =
   { objective: string; blocks: readonly DagBlocks.WorkflowBlock[] } | { nodes: readonly NodeSpec[] }
 
+/** Options forwarded to the block compiler; the effective review gate and
+ * acceptance items are fixed before compilation so lanes and validation see
+ * the same contract. */
+export interface BlockCompileOptions {
+  known_dependencies?: string[]
+  review_gate?: DagBlocks.ReviewGate
+  acceptance?: readonly DagBlocks.AcceptanceItem[]
+}
+
 export function compileBlockSource(
   source: BlockSource,
-  options: { known_dependencies?: string[] } = {},
+  options: BlockCompileOptions = {},
 ): { nodes?: NodeConfig[]; diagnostics: Diagnostic[] } {
   if ("blocks" in source) {
     try {
       const nodes = DagBlocks.compileWorkflowBlocks(
         { objective: source.objective, blocks: [...source.blocks] },
-        { known_dependencies: options.known_dependencies },
+        {
+          known_dependencies: options.known_dependencies,
+          ...(options.review_gate !== undefined ? { review_gate: options.review_gate } : {}),
+          ...(options.acceptance !== undefined ? { acceptance: options.acceptance } : {}),
+        },
       )
       return { nodes, diagnostics: [] }
     } catch (error) {
@@ -597,7 +618,7 @@ function materializeNode(node: NodeSpec): NodeConfig {
 
 export function compileGraphSource(
   graph: StartGraph,
-  options: { known_dependencies?: string[] } = {},
+  options: BlockCompileOptions = {},
 ): { nodes?: NodeConfig[]; diagnostics: Diagnostic[] } {
   if ("blocks" in graph) {
     return compileBlockSource({ objective: graph.objective, blocks: graph.blocks }, options)
@@ -646,6 +667,8 @@ export interface StructuralInput {
   nodes: readonly NodeConfig[]
   delivery_node?: string
   mode?: ExecutionMode
+  /** Frozen workflow review gate (config.review_gate). */
+  review_gate?: DagBlocks.ReviewGate
   max_total_nodes?: number
   /** The user's global `dag.max_total_nodes` cap (Issue #1031 M4). The
    * effective ceiling is the lower of this and `max_total_nodes`. */
@@ -1174,6 +1197,9 @@ function ceilingDiagnostics(input: StructuralInput): Diagnostic[] {
 export function reviewLifecycleDiagnostics(input: {
   name?: string
   mode?: ExecutionMode
+  /** Frozen workflow review gate; strict joins deep mode in making diff-review
+   * violations errors instead of warnings. */
+  review_gate?: DagBlocks.ReviewGate
   nodes: readonly NodeConfig[]
   /** Authoring graphs are not default-normalized; the final-gate check
    * resolves `required` through these defaults like Dag.create would. */
@@ -1186,6 +1212,7 @@ export function reviewLifecycleDiagnostics(input: {
     {
       name: input.name ?? "validation",
       mode: input.mode,
+      ...(input.review_gate !== undefined ? { review_gate: input.review_gate } : {}),
       nodes: [...input.nodes],
       ...(input.node_defaults?.required !== undefined
         ? { node_defaults: { required: input.node_defaults.required } }
@@ -1325,6 +1352,7 @@ export function structuralDiagnostics(input: StructuralInput): Diagnostic[] {
   const duplicates = duplicateNodeIds(input.nodes)
   const review = reviewLifecycleDiagnostics({
     mode: input.mode,
+    review_gate: input.review_gate,
     nodes: input.nodes,
     node_defaults: input.node_defaults,
   })
@@ -1371,6 +1399,8 @@ export interface ReplanStructuralInput {
   merged: {
     name?: string
     mode?: ExecutionMode
+    /** Frozen workflow review gate (config.review_gate). */
+    review_gate?: DagBlocks.ReviewGate
     nodes: readonly NodeConfig[]
     node_defaults?: { readonly report_to_parent?: boolean }
   }
@@ -1403,6 +1433,7 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
   const review = reviewLifecycleDiagnostics({
     name: input.merged.name,
     mode: input.merged.mode,
+    review_gate: input.merged.review_gate,
     nodes: input.merged.nodes,
     grandfathered: input.grandfatheredNodeIds,
   })
@@ -1654,7 +1685,7 @@ export function workspaceDiagnostics(input: {
 /** #946: worktree isolation belongs to write-capable workers. Review and
  * verify workers judge a tree from outside; isolating them would hide the
  * changes they must inspect. */
-const STATIC_READONLY_WORKERS = new Set(["plan", "explore", "review", "verify", "verification"])
+const STATIC_READONLY_WORKERS = new Set(["plan", "explore", "auditor", "review", "verify", "verification"])
 
 function isReadonlyWorker(name: string): boolean {
   return STATIC_READONLY_WORKERS.has(name) || /^(?:review|verify|verification)-/.test(name)
@@ -1848,6 +1879,9 @@ export function validatePostCompile(input: {
   profile: Profile
   config: {
     mode?: ExecutionMode
+    /** Frozen review gate for this document (start: session mode/deep; a
+     * mutation passes the workflow's persisted value). */
+    review_gate?: DagBlocks.ReviewGate
     objective?: string
     delivery_node?: string
     max_total_nodes?: number
@@ -1880,6 +1914,7 @@ export function validatePostCompile(input: {
             nodes: input.nodes,
             delivery_node: input.config.delivery_node,
             mode: input.config.mode,
+            review_gate: input.config.review_gate,
             max_total_nodes: input.config.max_total_nodes,
             user_max_total_nodes: input.config.user_max_total_nodes,
             node_defaults: input.config.node_defaults,

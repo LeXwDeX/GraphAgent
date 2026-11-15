@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Dag } from "@/dag/dag"
+import { DagBlocks } from "@/dag/blocks"
 import { DagValidation } from "@/dag/validation"
 import { Schema } from "effect"
 
@@ -60,7 +61,7 @@ export type Metadata = {
   diagnosticSummary?: string
 }
 
-const specPath = Schema.String.annotate({ description: "Saved workflow name or .yaml/.yml path" })
+const specPath = Schema.String.annotate({ description: "Saved workflow name or path" })
 const workflowID = Dag.ID
 const nodeID = Dag.NodeID
 const op = <const L extends string>(name: L) => Schema.Literal(name)
@@ -88,10 +89,14 @@ export const CompactBlock = Schema.Struct({
   depends_on: Schema.optional(Schema.Array(Schema.String)),
   instruction: Schema.optional(Schema.String),
   worker_type: Schema.optional(Schema.String),
-  worker_config: Schema.optional(Schema.Struct({ timeout_ms: Schema.Number })),
+  // The parameter boundary only pre-filters drifted field names and types;
+  // whether a timeout is required stays the authoring layer's rule.
+  worker_config: Schema.optional(Schema.Struct({ timeout_ms: Schema.optional(Schema.Number) })),
   required: Schema.optional(Schema.Boolean),
   report_to_parent: Schema.optional(Schema.Boolean),
   fan_out: Schema.optional(Schema.String),
+  lenses: Schema.optional(Schema.Array(Schema.Literals(DagBlocks.REVIEW_LENSES))),
+  skeptics: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4 }))),
 })
 export const CompactNode = Schema.Struct({
   id: Schema.String,
@@ -137,6 +142,11 @@ const GraphBudgetFields = {
   // #1030 D9-g: workflow-level worktree. Start-only; the authoring boundary
   // rejects it in replan fragments and validates it against config.workspace.
   isolation: Schema.optional(Schema.Literal("worktree")),
+  // #1031 M6: acceptance items and the start-only review gate. The authoring
+  // boundary derives acceptance from a deep admission brief when omitted and
+  // rejects both fields in replan fragments.
+  acceptance: Schema.optional(DagBlocks.AcceptanceItems),
+  review_gate: Schema.optional(Schema.Literals(DagBlocks.REVIEW_GATES)),
 }
 export const DraftGraph = Schema.Struct({
   name: Schema.String,
@@ -158,7 +168,7 @@ const SpecList = Schema.Struct({ action: act("spec"), operation: op("list") })
 const SpecRead = Schema.Struct({ action: act("spec"), operation: op("read"), spec_path: specPath })
 const SpecDraft = Schema.Struct({
   action: act("spec"),
-  operation: op("draft").annotate({ description: "Write a start spec; creates no workflow" }),
+  operation: op("draft").annotate({ description: "Write a start spec; creates none" }),
   title: Schema.optional(Schema.String),
   config: DraftGraph,
 })
@@ -167,7 +177,7 @@ const SpecValidate = Schema.Struct({
   operation: op("validate").annotate({ description: "Pre-flight without creating a workflow" }),
   spec_path: specPath,
   profile: Schema.optional(Schema.Literals(["portable", "environment"])).annotate({
-    description: "portable checks; environment also resolves prompts, workers, models",
+    description: "portable checks; environment resolves prompts, workers, models",
   }),
 })
 
@@ -209,7 +219,7 @@ const ControlStep = Schema.Struct({ action: act("control"), operation: op("step"
 const ControlCancelNode = Schema.Struct({
   action: act("control"),
   operation: op("cancel_node").annotate({
-    description: "Cancel one non-terminal node; required nodes still fail the workflow",
+    description: "Cancel one non-terminal node; required nodes still fail it",
   }),
   workflow_id: workflowID,
   node_id: nodeID,
@@ -217,7 +227,7 @@ const ControlCancelNode = Schema.Struct({
 })
 const ControlReplan = Schema.Struct({
   action: act("control"),
-  operation: op("replan").annotate({ description: "Apply a fragment: add/cancel/restart/replace nodes" }),
+  operation: op("replan").annotate({ description: "Apply a fragment: add/cancel/restart/replace" }),
   workflow_id: workflowID,
   spec_path: specPath,
 })
@@ -229,7 +239,7 @@ const ControlRecover = Schema.Struct({
     .check(Schema.isMinLength(1))
     .annotate({ description: "Nodes to retry; downstream closure is invalidated" }),
   expected_graph_rev: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
-    description: "Exact graph_rev from status",
+    description: "Exact graph_rev",
   }),
   resume_cancelled: Schema.optional(Schema.Boolean).annotate({
     description: "Set true only to recover a cancelled workflow",
@@ -243,7 +253,7 @@ const ControlExtendTimeout = Schema.Struct({
   workflow_id: workflowID,
   node_id: nodeID,
   timeout_ms: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 86_400_000 })).annotate({
-    description: "Fresh timeout from now, 1s-24h",
+    description: "Fresh timeout, 1s-24h",
   }),
 })
 const ControlRetarget = Schema.Struct({
@@ -252,9 +262,9 @@ const ControlRetarget = Schema.Struct({
     description: "Change workspace/fingerprint and restart target-sensitive nodes",
   }),
   workflow_id: workflowID,
-  workspace: Schema.optional(Schema.String).annotate({ description: "Linked worktree; omit to keep the current one" }),
+  workspace: Schema.optional(Schema.String).annotate({ description: "Linked worktree; omit to keep current" }),
   fingerprint: Schema.optional(Schema.String).annotate({
-    description: "Expected fingerprint: computed git value or 'none'",
+    description: "Expected fingerprint: git value or 'none'",
   }),
   node_ids: Schema.optional(
     Schema.Array(nodeID)

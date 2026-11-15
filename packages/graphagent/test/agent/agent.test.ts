@@ -179,6 +179,35 @@ it.instance("review agent is a read-only subagent with a command allowlist", () 
   }),
 )
 
+it.instance("auditor agent is a read-only verification subagent", () =>
+  Effect.gen(function* () {
+    const auditor = yield* load((svc) => svc.get("auditor"))
+    expect(auditor).toBeDefined()
+    expect(auditor?.mode).toBe("subagent")
+    expect(auditor?.native).toBe(true)
+    expect(Permission.disabled(["edit", "write", "apply_patch"], auditor!.permission)).toEqual(
+      new Set(["edit", "write", "apply_patch"]),
+    )
+    for (const denied of ["task", "todowrite", "question", "plan_exit"]) {
+      expect(evalPerm(auditor, denied)).toBe("deny")
+    }
+    for (const allowed of [
+      "read",
+      "grep",
+      "glob",
+      "bash",
+      "webfetch",
+      "websearch",
+      "skill",
+      "serena_initial_instructions",
+    ]) {
+      expect(evalPerm(auditor, allowed)).toBe("allow")
+    }
+    expect(Permission.evaluate("bash", "npm test", auditor!.permission).action).toBe("allow")
+    expect(Permission.evaluate("external_directory", "/some/other/path", auditor!.permission).action).toBe("ask")
+  }),
+)
+
 it.instance("review agent asks for external directories and allows whitelisted external paths", () =>
   Effect.gen(function* () {
     const review = yield* load((svc) => svc.get("review"))

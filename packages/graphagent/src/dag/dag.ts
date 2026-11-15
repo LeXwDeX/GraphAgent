@@ -34,7 +34,8 @@ import {
 } from "@graphagent/core/dag/core/types"
 import type { PauseReason } from "@graphagent/core/dag/core/types"
 import { ResumeGuard } from "./resume-guard"
-import { AdmissionRecord, ExecutionMode, transitionAdmission, validateAdmission } from "./admission"
+import { AdmissionRecord, ExecutionMode, acceptanceFromCriteria, transitionAdmission, validateAdmission } from "./admission"
+import type { AcceptanceItem, ReviewGate } from "./blocks"
 import { unresolvedReviewOutcomes, targetSensitiveNode } from "./review-lifecycle"
 import { ReplanDefinition } from "./replan-definition"
 import { DagValidation, StructuralValidationError } from "./validation"
@@ -202,6 +203,10 @@ export interface WorkflowConfig {
   delivery_node?: string
   mode?: ExecutionMode
   admission?: AdmissionRecord
+  /** Acceptance criteria judged by the completeness review lane. */
+  acceptance?: AcceptanceItem[]
+  /** Review gate fixed at start; mutations validate against this value. */
+  review_gate?: ReviewGate
   max_concurrency?: number
   max_node_replan_attempts?: number
   max_total_nodes?: number
@@ -445,8 +450,16 @@ function persistedGateNodeIds(nodes: readonly NodeConfig[], persisted: ReadonlyM
 
 function normalizeWorkflowConfig(config: WorkflowConfig): WorkflowConfig & { nodes: NormalizedNodeConfig[] } {
   const defaults = normalizeNodeDefaults(config.node_defaults)
+  // Direct Dag.create callers bypass authoring; derive the deep-mode
+  // completeness items here too so the persisted graph always carries them.
+  const acceptance =
+    config.acceptance ??
+    (config.mode === "deep" && config.admission
+      ? acceptanceFromCriteria(config.admission.brief.acceptance_criteria)
+      : undefined)
   return {
     ...config,
+    ...(acceptance !== undefined ? { acceptance } : {}),
     mode: config.mode ?? "standard",
     max_concurrency: config.max_concurrency ?? DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
     max_node_replan_attempts: config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
@@ -859,6 +872,7 @@ export const layer = Layer.effect(
         nodes: config.nodes,
         delivery_node: config.delivery_node,
         mode: config.mode,
+        review_gate: config.review_gate,
         max_total_nodes: config.max_total_nodes,
         user_max_total_nodes: yield* readUserMaxTotalNodes(),
       })

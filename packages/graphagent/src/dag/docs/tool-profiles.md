@@ -26,6 +26,7 @@ permission; `list_mcp_resources`, `list_mcp_resource_templates`, and
 | Worker / block source            | Profile                                  | Advertised tools                                                                                                                                                                       | Hidden by the profile                                                                         |
 | -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `explore`, `debug--evidence`     | read-only research                       | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                             | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
+| `auditor`                        | read-only verification; model tier `advanced` | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                        | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
 | `plan`                           | read-only planning, plan-file edits      | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only plan files pass), `task` (except `general`), `skill`, MCP tools, `question`, `plan_exit` | `todowrite` in a child session                                                                |
 | `general`                        | writer / verifier                        | all default tools except `todowrite`; `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                                                               | `todowrite`, and `task` in a child session                                                    |
 | `build`                          | writer                                   | non-DAG primary: all default tools including `todowrite` and `task`; DAG child: `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                     | `todowrite` and `task` in a DAG child session                                                 |
@@ -39,12 +40,14 @@ Block defaults:
 - `plan` -> `plan`
 - `coding`, `prototype` -> `build`
 - `debug` evidence lane -> `explore`; its diagnosis lane -> `general`
-- every other lane, including review lanes, verification, and synthesis -> `general`
+- review lanes, skeptics, the review decision, verification, and synthesis -> `auditor`
 
-`review` and `verify` have no built-in agent. Their effective profile is the
-configured worker agent's profile. A runtime that must stay read-only should
-use `worker_type: explore` or a configured agent whose ruleset denies
-`edit`, `write`, `apply_patch`, `task`, and `todowrite`.
+`review` and `review-*` worker types remain configuration-owned: their effective
+profile is the configured worker agent's profile. The built-in read-only
+`auditor` implements verification, synthesis, and block review lanes by default.
+A runtime that must stay read-only should
+use `worker_type: explore` or `auditor`, or a configured agent whose ruleset
+denies `edit`, `write`, `apply_patch`, `task`, and `todowrite`.
 
 ## Bootstrap tools
 

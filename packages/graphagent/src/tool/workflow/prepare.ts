@@ -38,6 +38,10 @@ export const prepareMutation = (
       input.session.projectID,
       input.ctx,
     ).pipe(Effect.orDie)
+    // A fragment is validated under the workflow's frozen review gate, never
+    // the current session mode: switching DAG mode after start must not change
+    // the gate level of a live workflow.
+    const reviewGate = workflowConfig?.review_gate ?? (workflowConfig?.mode === "deep" ? "strict" : undefined)
     return yield* authoring.prepare({
       action: input.action,
       source,
@@ -46,5 +50,7 @@ export const prepareMutation = (
       executionWorkspace: workflowConfig?.workspace,
       known_dependencies: knownDependencies,
       node_defaults: workflowConfig?.node_defaults,
+      ...(reviewGate !== undefined ? { review_gate: reviewGate } : {}),
+      ...(workflowConfig?.acceptance !== undefined ? { acceptance: workflowConfig.acceptance } : {}),
     })
   })

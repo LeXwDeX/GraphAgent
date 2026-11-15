@@ -16,22 +16,24 @@ export function validateReviewLifecycle(
   config: WorkflowConfig,
   options: { grandfathered?: ReadonlySet<string> } = {},
 ) {
+  // Deep mode always implies the strict gate; a standard-mode workflow can opt
+  // into the same requirements with config.review_gate. The gate is fixed at
+  // run.start, so later mutations validate against this persisted value.
+  const strict = config.mode === "deep" || config.review_gate === "strict"
   const issues = config.nodes.flatMap((node) => {
     if (!node.review) {
       if (!isReviewWorker(node.worker_type)) return []
-      if ((config.mode ?? "standard") === "standard") return []
+      if (!strict) return []
       return [`${node.id}: deep review worker must declare review.phase as "design" or "diff"`]
     }
     if (node.review.phase === "design") return []
     return [
       ...validateDiffReview(config, node.id, options.grandfathered?.has(node.id) ?? false),
-      ...((config.mode ?? "standard") === "deep"
-        ? validateFinalReviewGate(config, node.id)
-        : []),
+      ...(strict ? validateFinalReviewGate(config, node.id) : []),
     ]
   })
 
-  if ((config.mode ?? "standard") === "standard") {
+  if (!strict) {
     return { valid: true, errors: [], warnings: issues }
   }
   return { valid: issues.length === 0, errors: issues, warnings: [] }
@@ -429,8 +431,8 @@ export function isReviewWorker(workerType: string) {
 }
 
 /** #1030 D9-h: worker types whose job is to judge the workspace, never to
- * change it. The built-in `auditor` arrives with E4; until then the name is
- * only a convention and does not resolve to a catalog agent. */
+ * change it. The built-in `auditor` agent is the read-only worker that review
+ * lanes, skeptics, verification, and synthesis use by default. */
 export function isReadOnlyWorker(workerType: string) {
   return isReviewWorker(workerType) || workerType === "auditor"
 }

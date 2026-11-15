@@ -17,6 +17,29 @@ export const WORKFLOW_BLOCK_KINDS = [
 
 export type WorkflowBlockKind = (typeof WORKFLOW_BLOCK_KINDS)[number]
 
+/** Workflow-level review gate (config.review_gate). `strict` enables the
+ * review-coverage requirements; `standard` keeps them advisory. */
+export const REVIEW_GATES = ["strict", "standard"] as const
+export type ReviewGate = (typeof REVIEW_GATES)[number]
+
+/** Independent review dimensions a review block can expand into. Every lane
+ * runs as its own read-only node and the decision arbitrates all of them. */
+export const REVIEW_LENSES = ["standards", "intent", "completeness", "security", "tests", "performance"] as const
+export type ReviewLens = (typeof REVIEW_LENSES)[number]
+
+const DEFAULT_REVIEW_LENSES: readonly ReviewLens[] = ["standards", "intent"]
+
+/** One acceptance criterion (config.acceptance). The completeness lane judges
+ * each item and cites evidence for its status. */
+export const AcceptanceItem = Schema.Struct({
+  id: Schema.String.annotate({
+    description: "Stable acceptance id the completeness lane reports against (for example AC1)",
+  }),
+  text: Schema.String.annotate({ description: "Acceptance criterion the delivered work must satisfy" }),
+})
+export type AcceptanceItem = typeof AcceptanceItem.Type
+export const AcceptanceItems = Schema.Array(AcceptanceItem)
+
 export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")({
   id: Schema.String.annotate({ description: "Unique block identifier; dependencies target block IDs" }),
   kind: Schema.Literals(WORKFLOW_BLOCK_KINDS).annotate({
@@ -51,6 +74,14 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
     description:
       "(coding only) Plan block ID in depends_on whose work packages fan this writer out at runtime: two or more disjoint packages run as parallel writers joined by an implementation aggregator under this block's ID; fewer packages run this writer unchanged",
   }),
+  lenses: Schema.optional(Schema.Array(Schema.Literals(REVIEW_LENSES))).annotate({
+    description:
+      "(review only) Independent review lanes, one node per lens: standards, intent, completeness, security, tests, performance. Defaults to [standards, intent]",
+  }),
+  skeptics: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 4 }))).annotate({
+    description:
+      "(review only) Adversarial skeptic lanes, 0-4. Each assumes the change is wrong and attacks from a rotated angle: evidence existence, minimal counterexample, alternative explanation, boundaries and concurrency. Defaults to 0",
+  }),
 }) {}
 
 export interface WorkflowBlockGraph {
@@ -60,6 +91,12 @@ export interface WorkflowBlockGraph {
 
 export interface WorkflowBlockCompileOptions {
   known_dependencies?: string[]
+  /** Effective review gate fixed before compilation (run.start derives it from
+   * the session mode or a deep spec; mutations reuse the persisted value). The
+   * strict review-coverage requirements read the same frozen value. */
+  review_gate?: ReviewGate
+  /** config.acceptance entries projected into the completeness lane. */
+  acceptance?: readonly AcceptanceItem[]
 }
 
 // An ACCEPT must refute, by lane and index, every required action a review
@@ -102,6 +139,46 @@ const LANE_REVIEW_SCHEMA = {
     required_actions: { type: "array", items: { type: "string" } },
   },
 } as const
+
+// The completeness lane judges every config.acceptance item and reports what
+// the work delivers beyond them. Missing items and unlisted expectations are
+// blocking, so they also enter required_actions (missing/partial evidence is
+// carried per item above).
+export const COMPLETENESS_REVIEW_SCHEMA = {
+  type: "object",
+  required: ["verdict", "summary", "findings", "required_actions", "acceptance", "unlisted"],
+  properties: {
+    verdict: { type: "string", enum: ["ACCEPT", "REJECT"] },
+    summary: { type: "string" },
+    findings: { type: "array" },
+    required_actions: { type: "array", items: { type: "string" } },
+    acceptance: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["id", "status", "evidence"],
+        properties: {
+          id: { type: "string" },
+          status: { type: "string", enum: ["covered", "partial", "missing"] },
+          evidence: { type: "string" },
+        },
+      },
+    },
+    unlisted: { type: "array", items: { type: "string" } },
+  },
+} as const
+
+// Adversarial skeptic contract: the spec's fixed wording; lanes rotate through
+// these angles so repeated skeptics do not duplicate one review.
+const SKEPTIC_CONTRACT =
+  "Assume the change or conclusion is wrong. Demonstrate a concrete failing input, violated acceptance item, regression, or unsupported claim with reproducible evidence; report only what you can demonstrate, each as a required action."
+
+const SKEPTIC_ANGLES = [
+  "verify that every cited piece of evidence exists and says what the report claims",
+  "construct a counterexample or the smallest reproduction that breaks the conclusion",
+  "propose and test an alternative explanation for the observed result",
+  "probe boundaries, edge cases, and concurrency for a failure the report missed",
+] as const
 
 export const IMPLEMENTATION_SCHEMA = {
   type: "object",
@@ -196,7 +273,7 @@ export function compileWorkflowBlocks(
   const { blocks, aggregations, verifyAggregators } = aggregateParallelWriters(graph.blocks)
   const reportingVerifications = reviewRouteVerificationGates(blocks, aggregations)
   const nodes = blocks.flatMap((block) =>
-    compileBlock(graph.objective, block, blocks, aggregations, verifyAggregators, reportingVerifications),
+    compileBlock(graph.objective, block, blocks, aggregations, verifyAggregators, reportingVerifications, options),
   )
   const duplicateNodeIDs = uniqueDuplicates(nodes.map((node) => node.id))
   if (duplicateNodeIDs.length > 0) {
@@ -239,6 +316,7 @@ function compileBlock(
   aggregations: Map<string, WriterAggregation>,
   verifyAggregators: Map<string, string[]>,
   reportingVerifications: ReadonlySet<string>,
+  options: WorkflowBlockCompileOptions,
 ): NodeConfig[] {
   const dependencies = block.depends_on ?? []
   const required = block.required ?? (block.kind === "plan" || block.kind === "verify" || block.kind === "synthesize")
@@ -295,48 +373,43 @@ function compileBlock(
           verification: `${route.verificationID}.output`,
         }
       : undefined
-    const lanes = [
+    const descriptors = reviewLaneDescriptors(block, options.acceptance)
+    const lanes = descriptors.map((descriptor) =>
       node({
-        id: `${block.id}--standards`,
-        name: `${block.id}: standards review`,
-        workerType: block.worker_type ?? "general",
+        id: `${block.id}--${descriptor.suffix}`,
+        name: `${block.id}: ${descriptor.name}`,
+        workerType: block.worker_type ?? "auditor",
         dependencies,
         objective,
         instruction: block.instruction,
-        contract: `${BLOCK_CONTRACTS.review} Focus on documented repository standards, architecture constraints, correctness, and verification evidence. List only blocking items in required_actions; ACCEPT requires it to be empty.`,
+        contract: descriptor.contract,
         required: false,
         reportToParent: false,
         workerConfig: block.worker_config,
         condition: reviewCondition,
         inputMapping: reviewEvidence,
-        outputSchema: LANE_REVIEW_SCHEMA,
+        outputSchema: descriptor.schema,
         targetSensitive: true,
       }),
-      node({
-        id: `${block.id}--intent`,
-        name: `${block.id}: intent review`,
-        workerType: block.worker_type ?? "general",
-        dependencies,
-        objective,
-        instruction: block.instruction,
-        contract: `${BLOCK_CONTRACTS.review} Focus on the confirmed goal, scope, acceptance criteria, and user-visible behavior. List only blocking items in required_actions; ACCEPT requires it to be empty.`,
-        required: false,
-        reportToParent: false,
-        workerConfig: block.worker_config,
-        condition: reviewCondition,
-        inputMapping: reviewEvidence,
-        outputSchema: LANE_REVIEW_SCHEMA,
-        targetSensitive: true,
-      }),
+    )
+    const laneIDs = lanes.map((lane) => lane.id)
+    const laneReviewMapping = Object.fromEntries(
+      descriptors.map((descriptor) => [
+        `${descriptor.suffix.replace(/-/g, "_")}_review`,
+        `${block.id}--${descriptor.suffix}.output`,
+      ]),
+    )
+    const lanesWithDecision = [
+      ...lanes,
       node({
         id: block.id,
         name: `${block.id}: review decision`,
-        workerType: block.worker_type ?? "general",
-        dependencies: [`${block.id}--standards`, `${block.id}--intent`, ...(route ? [route.verificationID] : [])],
+        workerType: block.worker_type ?? "auditor",
+        dependencies: [...laneIDs, ...(route ? [route.verificationID] : [])],
         objective,
         instruction: block.instruction,
         contract: [
-          "Arbitrate the two independent reviews finding by finding.",
+          "Arbitrate the independent reviews finding by finding.",
           route
             ? "Reject unsupported claims, deduplicate overlaps, and submit ACCEPT or REJECT while echoing the supplied implementation fingerprint exactly."
             : "Reject unsupported claims, deduplicate overlaps, and submit one structured result with verdict ACCEPT, REVISE, REJECT, or BLOCKED.",
@@ -350,8 +423,7 @@ function compileBlock(
         inputMapping: route
           ? {
               ...reviewEvidence,
-              standards_review: `${block.id}--standards.output`,
-              intent_review: `${block.id}--intent.output`,
+              ...laneReviewMapping,
             }
           : undefined,
         review: route
@@ -365,7 +437,7 @@ function compileBlock(
         targetSensitive: true,
       }),
     ]
-    if (!aggregation) return lanes
+    if (!aggregation) return lanesWithDecision
     return [
       node({
         id: aggregation.aggregatorID,
@@ -380,7 +452,7 @@ function compileBlock(
         inputMapping: aggregatorEvidenceMapping(aggregation.writerIDs),
         outputSchema: IMPLEMENTATION_SCHEMA,
       }),
-      ...lanes,
+      ...lanesWithDecision,
     ]
   }
 
@@ -446,6 +518,78 @@ function compileBlock(
       targetSensitive: block.kind === "verify" || block.kind === "synthesize",
     }),
   ]
+}
+
+interface ReviewLaneDescriptor {
+  suffix: string
+  name: string
+  contract: string
+  schema: Record<string, unknown>
+}
+
+/** One lane per lens, then one per skeptic. Skeptic angles rotate in a fixed
+ * order so numbered skeptics never repeat the same attack. */
+function reviewLaneDescriptors(
+  block: WorkflowBlock,
+  acceptance: readonly AcceptanceItem[] | undefined,
+): ReviewLaneDescriptor[] {
+  const lenses = reviewLenses(block)
+  const skeptics = Array.from({ length: block.skeptics ?? 0 }, (_, index) => {
+    const number = index + 1
+    const angle = SKEPTIC_ANGLES[index % SKEPTIC_ANGLES.length]
+    return {
+      suffix: `skeptic-${number}`,
+      name: `skeptic review ${number}`,
+      contract: `${SKEPTIC_CONTRACT} Attack angle: ${angle}.`,
+      schema: LANE_REVIEW_SCHEMA,
+    } satisfies ReviewLaneDescriptor
+  })
+  return [
+    ...lenses.map((lens) => ({
+      suffix: lens,
+      name: `${lens} review`,
+      contract: reviewLaneContract(lens, acceptance),
+      schema: lens === "completeness" ? COMPLETENESS_REVIEW_SCHEMA : LANE_REVIEW_SCHEMA,
+    })),
+    ...skeptics,
+  ]
+}
+
+function reviewLenses(block: WorkflowBlock): readonly ReviewLens[] {
+  const lenses = block.lenses ?? DEFAULT_REVIEW_LENSES
+  if (lenses.length === 0) throw new Error(`Block "${block.id}" must declare at least one review lens`)
+  const repeated = uniqueDuplicates([...lenses])
+  if (repeated.length > 0) throw new Error(`Block "${block.id}" repeats review lens: ${repeated.join(", ")}`)
+  return lenses
+}
+
+const LENS_ACTION_RULE =
+  "List only blocking items in required_actions; ACCEPT requires it to be empty."
+
+const LENS_FOCUS: Record<ReviewLens, string> = {
+  standards:
+    "Focus on documented repository standards, architecture constraints, correctness, and verification evidence.",
+  intent: "Focus on the confirmed goal, scope, acceptance criteria, and user-visible behavior.",
+  completeness:
+    "Judge every acceptance item as covered, partial, or missing and attach concrete evidence for each status. List every material expectation the work delivers that no acceptance item names in unlisted. Put every missing item and every unlisted expectation in required_actions; ACCEPT requires it to be empty.",
+  security:
+    "Focus on exploitable security defects: untrusted input reaching privileged operations, secret or credential exposure, injection, path traversal, authorization gaps, and unsafe defaults. Cite the concrete attack path.",
+  tests:
+    "Focus on test validity and coverage: whether the changed behavior is exercised by meaningful deterministic checks, whether the tests assert the intended contract rather than the implementation, and whether a regression would fail without the change. Cite the exact test or the missing case.",
+  performance:
+    "Focus on performance and resource behavior: algorithmic complexity, unbounded work or memory, repeated I/O or network calls on hot paths, and concurrency contention introduced by the change. Cite the concrete scenario and its cost.",
+}
+
+function reviewLaneContract(lens: ReviewLens, acceptance: readonly AcceptanceItem[] | undefined): string {
+  return lens === "completeness"
+    ? `${BLOCK_CONTRACTS.review} ${LENS_FOCUS[lens]} ${acceptanceSection(acceptance)}`
+    : `${BLOCK_CONTRACTS.review} ${LENS_FOCUS[lens]} ${LENS_ACTION_RULE}`
+}
+
+function acceptanceSection(acceptance: readonly AcceptanceItem[] | undefined): string {
+  if (!acceptance || acceptance.length === 0)
+    return "No config.acceptance items were supplied: return an empty acceptance list and put every uncovered expectation in unlisted."
+  return `Acceptance items:\n${acceptance.map((item) => `- ${item.id}: ${item.text}`).join("\n")}`
 }
 
 function node(input: {
@@ -526,6 +670,9 @@ function workerType(kind: WorkflowBlockKind) {
   if (kind === "explore") return "explore"
   if (kind === "plan") return "plan"
   if (kind === "coding" || kind === "prototype") return "build"
+  // Judging work is read-only: verification, synthesis, and review lanes run on
+  // the built-in auditor. A synthesize that must write declares worker_type.
+  if (kind === "verify" || kind === "synthesize") return "auditor"
   return "general"
 }
 
@@ -551,6 +698,12 @@ function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBloc
       }
     })
     if (block.fan_out !== undefined) requireValidFanOut(block, graph.blocks)
+    if (block.kind !== "review") {
+      if (block.lenses !== undefined)
+        throw new Error(`Block "${block.id}" declares lenses, which only review blocks support`)
+      if (block.skeptics !== undefined)
+        throw new Error(`Block "${block.id}" declares skeptics, which only review blocks support`)
+    }
     const reviewDependencies = (block.depends_on ?? []).filter(
       (dependency) => graph.blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
     )
