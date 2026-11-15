@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "57fbc0b8-e21b-4c79-900d-4e244c4bd410",
+  "id": "80e12d1c-d466-47f4-9a1e-42d05fa92706",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -1473,6 +1473,16 @@
       "default": null,
       "generated": null,
       "name": "stale_target",
+      "entityType": "columns",
+      "table": "workflow_node"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "safety_denials",
       "entityType": "columns",
       "table": "workflow_node"
     },

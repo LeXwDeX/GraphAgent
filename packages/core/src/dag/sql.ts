@@ -106,6 +106,10 @@ export const WorkflowNodeTable = sqliteTable(
     // True when a completed target-sensitive node saw a different tree than it
     // started with. NULL until evaluated; reads as false.
     stale_target: integer({ mode: "boolean" }),
+    // #1031 M7: DAG safety denials for this node, projected from
+    // `dag.node.safety_denied`. Bounded ({items: at most 20, total}); NULL
+    // until the first denial.
+    safety_denials: text({ mode: "json" }).$type<DagEvent.NodeSafetyDenials>(),
     // #946: worktree isolation evidence. NULL for non-isolated rows.
     // `worktree_state` is active|removed|kept; kept rows are the ones a failed
     // node leaves for inspection.

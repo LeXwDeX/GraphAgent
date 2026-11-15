@@ -14,6 +14,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Database } from "@graphagent/core/database/database"
 import { ChildPolicy } from "@/session/child/policy"
 import { AskAdjudicator } from "./ask-adjudicator"
+import { SafetyGuard } from "./safety-guard"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { type TriggerResult } from "@/hook/trigger-result"
 import { SettingsHook } from "@/hook"
@@ -50,9 +51,16 @@ export interface AskOptions {
   readonly canonicalToolName?: string
   /** Real MCP server of the tool that is asking. */
   readonly mcpServer?: { name: string; source: string }
-  readonly resolveRuleset?: (
-    mode?: "plan",
-  ) => Effect.Effect<{ native: PermissionV1.Ruleset; rules: PermissionV1.Ruleset }>
+  readonly resolveRuleset?: (mode?: "plan") => Effect.Effect<{
+    native: PermissionV1.Ruleset
+    rules: PermissionV1.Ruleset
+    /**
+     * Indices into `rules` whose allow the user wrote. The unattended
+     * adjudicator uses only these as explicit allows (#1031 M7); absent means
+     * the source cannot prove provenance and no rule counts as explicit.
+     */
+    userRuleIndices?: readonly number[]
+  }>
   /** Agent role receiving this call, used to name role-based denials. */
   readonly role?: string
   /** Internal: role-default rules inside the child session permission. */
@@ -158,8 +166,9 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
-    // The unattended-ask seam (Issue #1026, PR4). Absent until E4 registers its
-    // SafetyGuard: the ask path then behaves exactly as before.
+    // The unattended-ask seam (Issue #1026, PR4). #1031 M7 registers the
+    // SafetyGuard below; a harness that supplies its own adjudicator still
+    // decides for itself, and an absent service keeps the ask path unchanged.
     const adjudicator = Option.getOrUndefined(yield* Effect.serviceOption(AskAdjudicator.Service))
     const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
     const layerNotification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
@@ -316,8 +325,16 @@ export const layer = Layer.effect(
         // nothing happens here.
         if (adjudicator && Option.isSome(subject) && subject.value.ask === "auto") {
           const index = matchingRuleIndex(request.permission, pattern, ruleset)
-          const roleStart = Math.max(0, resolved.rules.length - (options?.sessionRuleCount ?? 0))
-          const explicit = rule.action === "allow" && !(options?.roleDefaultIndices ?? []).includes(index - roleStart)
+          // Explicit means the user wrote this allow. A resolved policy reports
+          // its user-rule indices; a direct caller's own ruleset is explicit by
+          // construction; a resolved policy without provenance proves nothing,
+          // so the safety list still applies.
+          const explicit =
+            rule.action === "allow" &&
+            index >= 0 &&
+            (resolved.userRuleIndices !== undefined
+              ? resolved.userRuleIndices.includes(index)
+              : options?.resolveRuleset === undefined && index < originalRuleset.length)
           const decision = yield* adjudicator.decide({
             request: { permission: request.permission, patterns: request.patterns, metadata: request.metadata },
             pattern,
@@ -781,12 +798,19 @@ export function disabled(tools: string[], ruleset: PermissionV1.Ruleset, options
 }
 
 export const defaultLayer = layer.pipe(
+  Layer.provide(SafetyGuard.defaultLayer),
   Layer.provide(Config.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(SettingsHook.defaultLayer),
   Layer.provide(Notification.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [EventV2Bridge.node, SettingsHook.node, Notification.node, Config.node])
+export const node = LayerNode.make(layer, [
+  SafetyGuard.node,
+  EventV2Bridge.node,
+  SettingsHook.node,
+  Notification.node,
+  Config.node,
+])
 
 export * as Permission from "."

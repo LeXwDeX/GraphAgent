@@ -64,7 +64,19 @@ const PERMISSION_RESTART_TOOLS = new Set([
   "lsp",
   "workflow",
 ])
-const ROOT_ONLY_TOOLS = new Set([MemorySearch.MemorySearchTool.id, TaskTool.id, "workflow", "goal", "watch_pr"])
+// Child sessions (a task subagent, a DAG node) never own the human dialog:
+// `question` and `plan_exit` are root-only even for an agent profile that
+// allows them (the `plan` profile does). A node asks its parent through
+// `agent.send`; a task child states what it needs in its final answer.
+const ROOT_ONLY_TOOLS = new Set([
+  MemorySearch.MemorySearchTool.id,
+  TaskTool.id,
+  "workflow",
+  "goal",
+  "watch_pr",
+  "question",
+  "plan_exit",
+])
 export { ROOT_ONLY_TOOLS }
 
 export const hookAddsInstructions = (result: TriggerResult) =>

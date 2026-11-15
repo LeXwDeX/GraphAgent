@@ -146,6 +146,19 @@ export const unavailable: Interface = {
   scanSessions: () => Effect.succeed([] as ReadonlyArray<string>),
 }
 
+/** #1031 M7: the node-result wake states its own denial count. */
+export function nodeSafetyWakeLine(total: number) {
+  if (total <= 0) return ""
+  const call = total === 1 ? "tool call" : "tool calls"
+  return `\n[DAG Safety] ${total} ${call} in this node ${total === 1 ? "was" : "were"} denied by the DAG safety policy; the node continued without ${total === 1 ? "it" : "them"}.`
+}
+
+/** #1031 M7: the workflow wake states the aggregate; details stay in inspect. */
+export function workflowSafetyWakeLine(total: number) {
+  if (total <= 0) return ""
+  return `\nSafety policy denied ${total} tool call${total === 1 ? "" : "s"} in this workflow; inspect status lists the rules. The calls were skipped and their nodes continued.`
+}
+
 /**
  * Single DAG delivery scheduler (E1/D7). It owns both ledgers without
  * unifying them: the durable wake marker (`wake_reported`, admitted ==
@@ -598,6 +611,17 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           }
         }
         const completionIDs = new Set(plan.completionReports.map((workflow) => workflow.id))
+        // #1031 M7: safety denials are reported, never escalated. The engine
+        // counts them from the durable node rows; the wake stays one turn and
+        // the node lifecycle is untouched.
+        const denialsByWorkflow = new Map<string, number>()
+        for (const workflow of batch.workflows) {
+          const nodes = yield* store
+            .getCurrentNodes(workflow.id)
+            .pipe(Effect.catchCause(() => Effect.succeed([] as DagStore.NodeRow[])))
+          const total = nodes.reduce((sum, node) => sum + (node.safetyDenials?.total ?? 0), 0)
+          if (total > 0) denialsByWorkflow.set(workflow.id, total)
+        }
         // A completed workflow can still leave required work undone when a
         // gate skipped it; name those nodes so the turn acts on them.
         const incompleteByWorkflow = new Map<string, string[]>()
@@ -644,7 +668,8 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
             const retrieval = truncated
               ? `\nComplete output: call workflow result with workflow_id="${node.workflowId}" and node_id="${node.id}".`
               : ""
-            return `[DAG Node Result] Node "${node.name}" ${state}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}`
+            const safety = nodeSafetyWakeLine(node.safetyDenials?.total ?? 0)
+            return `[DAG Node Result] Node "${node.name}" ${state}${failureClass}: ${output}\n[DAG Result Reference] workflow_id="${node.workflowId}" node_id="${node.id}" truncated=${truncated} at ${at}${retrieval}${safety}`
           }),
           ...batch.workflows.map((workflow) => {
             const failures = failuresByWorkflow.get(workflow.id)
@@ -654,11 +679,12 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
               : incomplete
                 ? `\nRequired nodes not completed (no final answer was produced):\n${incomplete.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
                 : ""
+            const safety = workflowSafetyWakeLine(denialsByWorkflow.get(workflow.id) ?? 0)
             return workflow.status === "paused"
               ? workflow.pauseReason === PAUSE_REASON_BUDGET_EXHAUSTED
                 ? `[DAG Workflow paused] Workflow "${workflow.title}" is paused because the session's DAG token budget is exhausted. The engine cancelled its in-flight nodes. Report what is done and what is missing; only the user can raise the budget (/dag-mode budget <tokens> or /config), and the engine resumes this workflow automatically when it is raised. Do not start replacement work to route around the budget, and do not change the budget yourself.`
                 : `[DAG Workflow paused] Workflow "${workflow.title}" has remained paused for five minutes. It is still paused and awaits an explicit control(replan), control(extend), control(resume), or control(cancel); no automatic transition was made.`
-              : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${workflow.worktree ? `\n${workflowWorktreeText(workflow.worktree)}` : ""}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
+              : `[DAG Workflow ${workflow.status}] Workflow "${workflow.title}" has reached terminal status. (at ${new Date(workflow.completedAt ?? workflow.timeUpdated).toISOString()})${attribution}${safety}${workflow.worktree ? `\n${workflowWorktreeText(workflow.worktree)}` : ""}${completionIDs.has(workflow.id) ? `\n${completionReportReference(workflow)}` : ""}`
           }),
         ]
         const summary = [

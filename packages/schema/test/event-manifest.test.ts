@@ -38,8 +38,8 @@ describe("public event manifest", () => {
       SessionV1.Event.Error,
     ])
     expect(EventManifest.Latest.size).toBe(67)
-    // 33 = 32 before #1031 M5 + `dag.node.requeued` (D12 budget requeue).
-    expect(EventManifest.Durable.size).toBe(33)
+    // 34 = 33 before #1031 M7 + `dag.node.safety_denied` (M7 safety guard).
+    expect(EventManifest.Durable.size).toBe(34)
   })
 
   test("uses canonical definitions for current public events", () => {

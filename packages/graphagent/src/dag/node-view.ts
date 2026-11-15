@@ -31,6 +31,8 @@ export function base(row: DagStore.NodeRow): DagSummary.NodeView {
     ...(row.output !== null || row.status === "completed" ? { output: row.output } : {}),
     ...(row.errorReason !== null ? { error_reason: row.errorReason } : {}),
     ...(row.errorClass !== null ? { error_class: row.errorClass } : {}),
+    // #1031 M7: bounded safety-denial evidence travels with the node push.
+    ...(row.safetyDenials ? { safety_denials: row.safetyDenials } : {}),
     ...(row.deadlineMs !== null ? { deadline_ms: row.deadlineMs } : {}),
     replan_attempts: row.replanAttempts,
     ...(row.startedAt !== null ? { started_at: row.startedAt } : {}),

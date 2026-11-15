@@ -64,6 +64,8 @@ const NODE_TRIGGER_EVENTS = [
   DagEvent.NodeRequeued,
   DagEvent.NodeTimeoutEscalated,
   DagEvent.NodeDeadlineExtended,
+  // #1031 M7: a denial changes the node's `safety_denials` evidence only.
+  DagEvent.NodeSafetyDenied,
 ] as const
 
 // A patch this large means the consumer is far behind; shipping most of the

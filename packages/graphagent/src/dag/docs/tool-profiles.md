@@ -27,7 +27,7 @@ permission; `list_mcp_resources`, `list_mcp_resource_templates`, and
 | -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `explore`, `debug--evidence`     | read-only research                       | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                             | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
 | `auditor`                        | read-only verification; model tier `advanced` | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                        | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
-| `plan`                           | read-only planning, plan-file edits      | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only plan files pass), `task` (except `general`), `skill`, MCP tools, `question`, `plan_exit` | `todowrite` in a child session                                                                |
+| `plan`                           | read-only planning, plan-file edits      | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only plan files pass), `task` (except `general`), `skill`, MCP tools | `todowrite` in a child session; `question`, `plan_exit` (root-only, hidden from every child session) |
 | `general`                        | writer / verifier                        | all default tools except `todowrite`; `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                                                               | `todowrite`, and `task` in a child session                                                    |
 | `build`                          | writer                                   | non-DAG primary: all default tools including `todowrite` and `task`; DAG child: `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                     | `todowrite` and `task` in a DAG child session                                                 |
 | `compaction`, `title`, `summary` | internal `* deny`                        | none                                                                                                                                                                                   | every tool; these hidden agents are not valid workflow worker types                           |
@@ -41,6 +41,21 @@ Block defaults:
 - `coding`, `prototype` -> `build`
 - `debug` evidence lane -> `explore`; its diagnosis lane -> `general`
 - review lanes, skeptics, the review decision, verification, and synthesis -> `auditor`
+
+## Unattended children
+
+`question` and `plan_exit` are root-only: a `task` subagent or DAG node hides
+them even when its agent profile allows them, so a node asks its parent through
+`agent.send` and a task child states the need in its final answer.
+
+DAG node attempts and task children of a DAG-on root are unattended: their
+permission asks never become a user dialog. Deny rules win first; a call matching
+the built-in safety list (SF-1 outside-project writes, SF-2 sensitive reads,
+SF-3 destructive commands, SF-4 releases, SF-5 repeated identical calls) or a
+global `dag.safety.extra` rule (SX-n) is refused as a tool error and the node
+keeps running, while a user-written explicit allow wins. All other asks
+auto-approve. For a DAG node, a denial is durable node evidence
+(`safety_denials`), not a tool-profile change.
 
 Under the `strict` review gate, every review lane and its arbitration decision
 must use a read-only profile: `explore`, `plan`, `auditor`, `review`, `verify`,

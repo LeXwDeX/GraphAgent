@@ -36,7 +36,7 @@ export interface CoverageEntry {
 
 type CoverageNode = Pick<
   DagStore.NodeRow,
-  "id" | "status" | "output" | "errorReason" | "errorClass" | "superseded"
+  "id" | "status" | "output" | "errorReason" | "errorClass" | "superseded" | "safetyDenials"
 >
 
 const record = (value: unknown): Record<string, unknown> | undefined => {
@@ -71,6 +71,20 @@ export function workflowCoverage(input: {
     } else if (node.status === "failed") {
       const details = [node.errorClass, node.errorReason].filter(Boolean).join(": ")
       entries.push({ node_id: node.id, reason: `failed${details ? `: ${details}` : ""}` })
+    }
+    // #1031 M7: a denied tool call is not a node failure, but the caller must
+    // still know the node did not try the whole task. The stored entries are
+    // bounded; the total keeps the count honest past the bound.
+    const denials = node.safetyDenials
+    if (denials && denials.total > 0) {
+      const rules = denials.items.map((item) => item.ruleID).join(", ")
+      const overflow = denials.total - denials.items.length
+      entries.push({
+        node_id: node.id,
+        reason: `safety denied: ${rules || "recorded"}${
+          overflow > 0 ? ` (${overflow} more not listed)` : ""
+        }`,
+      })
     }
     const notExamined = record(node.output)?.not_examined
     if (Array.isArray(notExamined)) {

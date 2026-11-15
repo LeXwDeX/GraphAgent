@@ -72,6 +72,13 @@ const GeneratedAgent = Schema.Struct({
 export interface PermissionPolicy {
   native: PermissionV1.Rule[]
   rules: PermissionV1.Rule[]
+  /**
+   * Indices into `rules` whose content the user wrote (global `permissions`,
+   * `permission`, or `agent.<name>.permission`). Native role defaults and the
+   * always-appended truncation allow are not listed: the DAG safety guard
+   * treats only these as an explicit allow (#1031 M7).
+   */
+  userRuleIndices?: readonly number[]
 }
 
 export interface Interface {
@@ -415,22 +422,23 @@ export const layer = Layer.effect(
             ? agent
             : (Object.entries(agents).find(([, item]) => item.name === agent)?.[0] ?? agent)
           const native = nativePermissions[key] ?? defaults
-          let rules = Permission.merge(
-            native,
-            latest.permissions?.map((rule) => ({
+          const userRules = [
+            ...(latest.permissions?.map((rule) => ({
               permission: rule.action,
               pattern: rule.resource,
               action: rule.effect,
-            })) ?? Permission.fromConfig(latest.permission ?? {}),
-            Permission.fromConfig(latest.agent?.[key]?.permission ?? {}),
-          )
+            })) ?? Permission.fromConfig(latest.permission ?? {})),
+            ...Permission.fromConfig(latest.agent?.[key]?.permission ?? {}),
+          ]
+          let rules = Permission.merge(native, userRules)
           const explicit = rules.some(
             (rule) =>
               rule.permission === "external_directory" && rule.action === "deny" && rule.pattern === Truncate.GLOB,
           )
           if (!explicit)
             rules = Permission.merge(rules, Permission.fromConfig({ external_directory: { [Truncate.GLOB]: "allow" } }))
-          return { native, rules }
+          const userRuleIndices = userRules.map((_, index) => native.length + index)
+          return { native, rules, userRuleIndices }
         })
         const hydrate = Effect.fnUntraced(function* (info: Info, agent = info.name) {
           const latest = yield* config.get()
