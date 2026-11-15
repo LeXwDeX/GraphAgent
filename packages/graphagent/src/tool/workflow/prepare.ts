@@ -101,8 +101,30 @@ export const priorRoundLoader =
           : findings.filter(
               (finding) => finding.disposition?.novelty === "new" && finding.disposition.decision === "upheld",
             ).length
-      const newFindings = decision.review_new_findings ?? computedNew
-      const quietRounds = decision.review_quiet_rounds ?? (newFindings === 0 ? 1 : 0)
+      // The round's own stored dispositions are the only sound novelty source.
+      // The compiled review_new_findings/review_quiet_rounds fields were
+      // written from the referenced predecessor before this round ran, so
+      // replaying them would carry round N-1's count down the chain: a quiet
+      // round after a raised one would never extend the streak, and a raised
+      // round after a quiet one could stop the loop early. review_quiet_rounds
+      // is the streak this round entered with; extend or reset it with the
+      // measured novelty.
+      const newFindings = computedNew
+      const quietRounds = newFindings === 0 ? (decision.review_quiet_rounds ?? 0) + 1 : 0
+      // A successor must also inherit the findings this decision left open. A
+      // lane that did not re-raise an item does not resolve it; `resolved` is
+      // the only authority on it. The stored prior findings keep the original
+      // ref and action text, so the next round must still resolve that ref.
+      const stillOpen = new Map<string, string>()
+      for (const item of Array.isArray(decisionOutput.resolved) ? decisionOutput.resolved : []) {
+        if (!isRecord(item) || typeof item.ref !== "string" || item.how !== "still_open") continue
+        stillOpen.set(item.ref, typeof item.evidence === "string" ? item.evidence : "")
+      }
+      for (const finding of decision.prior_findings ?? []) {
+        const evidence = stillOpen.get(finding.ref)
+        if (evidence === undefined) continue
+        findings.push({ ...finding, disposition: { novelty: "new", decision: "upheld", evidence } })
+      }
       if (round >= MAX_REVIEW_ROUNDS)
         return yield* Effect.fail(
           `review loop stopped: ${MAX_REVIEW_ROUNDS} rounds reached; report the remaining open findings instead of starting another round`,
