@@ -26,8 +26,15 @@ import { ProviderV2 } from "@graphagent/core/provider"
 import { ModelV2 } from "@graphagent/core/model"
 import { SessionProjector } from "@graphagent/core/session/projector"
 import { LLMEvent } from "@graphagent/llm"
+import { LLMClient } from "@graphagent/llm/route"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
+import { jsonSchema, tool, type Tool } from "ai"
+import { Auth } from "@/auth"
+import { Config } from "@/config/config"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
+import { ProviderAdapters } from "@/provider/adapter/registry"
+import { AgentScheduler } from "@/session/agent-scheduler"
 import { ToolInputRejectedError } from "../../src/session/llm/ai-sdk"
 
 const summary = Layer.succeed(
@@ -180,6 +187,48 @@ function scripted(scripts: LLMEvent[][], options: { denyDoomLoop?: boolean } = {
     }),
   )
   return { count: () => calls, it }
+}
+
+/**
+ * Drives the real native LLM runtime with a scripted wire stream, so tool-call
+ * admission is observed by the actual adapter and its execution gate.
+ */
+function nativeScripted(script: LLMEvent[], tools: Record<string, Tool>) {
+  const service = Layer.succeed(
+    LLMClient.Service,
+    LLMClient.Service.of({
+      prepare: () => Effect.die(new Error("native test does not prepare")),
+      stream: () => Stream.fromIterable(script),
+      generate: () => Effect.die(new Error("native test does not generate")),
+    }),
+  )
+  const llm = LLM.layer.pipe(
+    Layer.provide(Auth.defaultLayer),
+    Layer.provide(Config.defaultLayer),
+    Layer.provide(Provider.defaultLayer),
+    Layer.provide(ProviderAdapters.defaultLayer),
+    Layer.provide(service),
+    Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: true })),
+    Layer.provide(AgentScheduler.defaultLayer),
+  )
+  // #1031 M7 SF-5: the unattended adjudicator denies the doom-loop ask with a
+  // `dag_safety:SF-5` reason instead of prompting.
+  const doomDenied = Layer.mock(Permission.Service, {
+    ask: (request) =>
+      request.permission === "doom_loop"
+        ? Effect.fail(new PermissionV1.DeniedError({ ruleset: [], reason: "dag_safety:SF-5: denied by test" }))
+        : Effect.void,
+  })
+  const it = testEffect(
+    LayerNode.buildLayer(root, {
+      replacements: [
+        ...replacements,
+        LayerNode.replace(LLM.node, llm),
+        LayerNode.replace(Permission.node, doomDenied),
+      ],
+    }),
+  )
+  return { it, tools }
 }
 
 const boot = Effect.fn("IncompleteTest.boot")(function* () {
@@ -890,6 +939,70 @@ doomLoop.it.effect(
 
         // The denial is a tool error, not a turn-ending failure: the node can
         // choose another path on the next step.
+        expect(result).toBe("continue")
+        expect(msg.error).toBeUndefined()
+        const calls = toolParts(yield* MessageV2.parts(msg.id))
+        expect(calls).toHaveLength(3)
+        expect(calls.find((part) => part.callID === "call-a")?.state.status).toBe("completed")
+        expect(calls.find((part) => part.callID === "call-b")?.state.status).toBe("completed")
+        const denied = calls.find((part) => part.callID === "call-c")
+        expect(denied?.state.status).toBe("error")
+        if (denied?.state.status === "error") expect(denied.state.error).toContain("dag_safety:SF-5")
+      }),
+    { config: cfg },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// SF-5: the denied native call must not execute
+// ---------------------------------------------------------------------------
+
+const executedIds: string[] = []
+
+const lookupTool = tool({
+  description: "Lookup",
+  inputSchema: jsonSchema({ type: "object", properties: { query: { type: "string" } }, required: ["query"] }),
+  execute: async (_input: unknown, options: { toolCallId: string }) => {
+    executedIds.push(options.toolCallId)
+    return { ok: true }
+  },
+})
+
+const nativeDoomScript: LLMEvent[] = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.toolCall({ id: "call-a", name: "lookup", input: { query: "x" } }),
+  LLMEvent.toolCall({ id: "call-b", name: "lookup", input: { query: "x" } }),
+  LLMEvent.toolCall({ id: "call-c", name: "lookup", input: { query: "x" } }),
+  LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+  LLMEvent.finish({ reason: "tool-calls" }),
+]
+
+const nativeDoom = nativeScripted(nativeDoomScript, { lookup: lookupTool })
+
+nativeDoom.it.effect(
+  "session.processor does not execute an SF-5-denied native tool call",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        executedIds.length = 0
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "keep trying")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle
+          .process({ ...input(chat.id, parent, mdl), tools: nativeDoom.tools })
+          .pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(run)
+
+        // The denied call never reached the tool; the previous two did.
+        expect(executedIds).toEqual(["call-a", "call-b"])
+        // The model still sees the denial as that call's tool error, and the
+        // turn continues instead of stopping.
         expect(result).toBe("continue")
         expect(msg.error).toBeUndefined()
         const calls = toolParts(yield* MessageV2.parts(msg.id))

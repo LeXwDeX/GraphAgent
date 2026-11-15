@@ -267,7 +267,10 @@ describe("SF-1 apply_patch move targets", () => {
     expect(evaluate(base({ permission: "edit", pattern: "src/a.ts", metadata: move("../outside/b.ts") }))?.ruleID).toBe(
       "SF-1",
     )
-    expect(evaluate(base({ permission: "edit", pattern: "src/a.ts", metadata: move("$DEST/b.ts") }))?.ruleID).toBe("SF-1")
+    // Move destinations are literal native paths: a `$` is a directory name.
+    expect(
+      evaluate(base({ permission: "edit", pattern: "src/a.ts", metadata: move("$DEST/b.ts") })),
+    ).toBeUndefined()
   })
 })
 
@@ -519,6 +522,32 @@ describe("SF-4 explicit push repository", () => {
       expect((yield* bash("git push origin feat/x", { git: git() }))).toBeUndefined()
     }),
   )
+
+  effect("--repo and value-taking options move out of the positionals", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("git push --repo=origin main", { git: git({ branch: "feat/x" }) }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git push --repo origin main", { git: git({ branch: "feat/x" }) }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git push --repo=origin feat/x", { git: git({ branch: "main" }) }))).toBeUndefined()
+      // `-o` takes a separate value that is not a refspec.
+      expect((yield* bash("git push -o ci.skip origin", { git: git({ branch: "main" }) }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git push origin feat/x", { git: git() }))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-1/SF-2 native literal paths", () => {
+  it("native targets keep apostrophes, dollars and brackets literal", () => {
+    expect(evaluate(base({ permission: "edit", pattern: "docs/user's-guide.md" }))).toBeUndefined()
+    expect(evaluate(base({ permission: "edit", pattern: "app/routes/users.$userId.tsx" }))).toBeUndefined()
+    expect(evaluate(base({ permission: "edit", pattern: "app/routes/[id].tsx" }))).toBeUndefined()
+    expect(evaluate(base({ permission: "edit", pattern: "../outside" }))?.ruleID).toBe("SF-1")
+    expect(evaluate(base({ permission: "read", pattern: "docs/user's-guide.md" }))).toBeUndefined()
+    // A literal `$` directory can still hold a sensitive file.
+    expect(evaluate(base({ permission: "read", pattern: "proj$x/.env" }))?.ruleID).toBe("SF-2")
+    expect(evaluate(base({ permission: "grep", pattern: "KEY", metadata: { path: "proj$x/.ssh" } }))?.ruleID).toBe(
+      "SF-2",
+    )
+  })
 })
 
 describe("SF-5 doom loop and explicit allows", () => {

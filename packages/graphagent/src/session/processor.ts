@@ -137,8 +137,22 @@ const settleDoomLoop = (
       return
     }
     ctx.attempt.pendingToolExecutions.delete(value.id)
+    // The tool executes after this handler; the execution gate reads this
+    // entry and throws instead of dispatching the denied call.
+    deniedCallsOf(ctx).set(value.id, denial.message)
     yield* fail(value.id, denial)
   })
+
+/** Calls the safety guard denied before execution (SF-5), by call id. */
+const deniedCalls = new WeakMap<ProcessorContext, Map<string, string>>()
+
+function deniedCallsOf(ctx: ProcessorContext) {
+  const existing = deniedCalls.get(ctx)
+  if (existing) return existing
+  const created = new Map<string, string>()
+  deniedCalls.set(ctx, created)
+  return created
+}
 
 function hasReasoningMetadata(value: unknown): boolean {
   const pending = [value]
@@ -893,7 +907,7 @@ export const layer = Layer.effect(
             const generation = ++attemptGeneration
             const source = llm.stream({
               ...streamInput,
-              sessionRetry: true,
+              sessionRetry: true, onToolCallDenied: (id) => deniedCallsOf(ctx).get(id), // SF-5
               onThinkingInvalidated: (blocks) =>
                 Effect.gen(function* () {
                   const invalidated = new Set(blocks)

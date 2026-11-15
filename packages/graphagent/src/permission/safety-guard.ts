@@ -211,6 +211,18 @@ function concreteTarget(raw: string, cwd: string): { path?: string; dynamic: boo
   return { path: path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded), dynamic: false }
 }
 
+/**
+ * Resolve a native tool path. These permissions carry filesystem paths, not
+ * shell words: `user's-guide.md` and `users.$userId.tsx` are literal names,
+ * with no quote decoding, expansion or glob interpretation.
+ */
+function nativeTarget(raw: string, cwd: string): { path?: string; dynamic: boolean } {
+  const text = raw.trim()
+  if (text === "") return { dynamic: true }
+  const normalized = process.platform === "win32" ? text.replaceAll("\\", "/") : text
+  return { path: path.isAbsolute(normalized) ? path.normalize(normalized) : path.resolve(cwd, normalized), dynamic: false }
+}
+
 const GLOB_META = /[*?[]/
 const KEY_EXTENSIONS = ["pem", "key", "p12", "pfx"] as const
 
@@ -632,12 +644,34 @@ function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: strin
       `"${bulk}" publishes or updates every branch/ref, including the default branch; push an explicit feature branch instead`,
     )
   const deleting = args.some((arg) => arg === "--delete" || arg === "-d")
-  const pushed = args.filter((value) => !isFlag(value))
   // `git push [<repository> [<refspec>...]]`: the first positional is the
   // repository whatever its spelling (configured remote, URL or path), so
-  // only the later positionals are refspecs. A repository-only push publishes
-  // the current branch.
-  const refs = pushed.slice(1)
+  // only the later positionals are refspecs. `--repo` and the value-taking
+  // options below move their value out of the positional list.
+  let repositoryOption: string | undefined
+  const positionals: string[] = []
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? ""
+    if (arg === "--repo") {
+      const next = args[index + 1]
+      if (next !== undefined) {
+        repositoryOption = next
+        index++
+      }
+      continue
+    }
+    if (arg.startsWith("--repo=")) {
+      repositoryOption = arg.slice("--repo=".length)
+      continue
+    }
+    if (arg === "-o" || arg === "--push-option" || arg === "--receive-pack" || arg === "--exec") {
+      index++
+      continue
+    }
+    if (isFlag(arg)) continue
+    positionals.push(arg)
+  }
+  const refs = repositoryOption !== undefined ? positionals : positionals.slice(1)
 
   if (refs.length === 0) {
     // `git push --delete <remote>` names no ref; git refuses it, so nothing
@@ -967,7 +1001,9 @@ export async function symlinkViolation(
   if (paths.length === 0) return undefined
   const roots = await realRootsOf(input)
   for (const entry of paths) {
-    const target = resolveTarget(entry.raw, entry.cwd)
+    // Edit patterns and move targets are literal native paths; bash targets
+    // keep shell-word decoding.
+    const target = input.permission === "edit" ? nativeTarget(entry.raw, entry.cwd) : resolveTarget(entry.raw, entry.cwd)
     if (target.dynamic || target.path === undefined) continue
     if (!entry.known && !path.isAbsolute(expandDecoded(entry.raw) ?? "")) continue
     // Lexical escapes already fail SF-1; only apparently-inside targets need
@@ -1124,14 +1160,15 @@ export function evaluate(input: EvaluateInput): Violation | undefined {
   const base = input.instance?.worktree ?? input.cwd
 
   if (input.permission === "edit") {
-    const target = resolveTarget(input.pattern, base)
+    // Native file tools supply literal filesystem paths, not shell words.
+    const target = nativeTarget(input.pattern, base)
     if (target.dynamic || target.path === undefined)
       return sf1("edit", `cannot determine the write target of "${input.pattern}"`)
     if (!inside(input, target.path)) return sf1("edit", `write target is outside the project: ${target.path}`)
     // apply_patch names only the source in the permission patterns; a move
     // writes its destination, so that path must pass the same boundary.
     for (const raw of editMoveTargets(input.metadata)) {
-      const moved = concreteTarget(raw, base)
+      const moved = nativeTarget(raw, base)
       if (moved.dynamic || moved.path === undefined)
         return sf1("apply_patch move", `cannot determine the move target of "${raw}"`)
       if (!inside(input, moved.path)) return sf1("apply_patch move", `move target is outside the project: ${moved.path}`)
@@ -1140,9 +1177,9 @@ export function evaluate(input: EvaluateInput): Violation | undefined {
   }
 
   if (input.permission === "read") {
-    const glob = sensitiveGlob(input.pattern, base)
-    if (glob) return sf2("read", `reading a ${glob} is not allowed: ${expand(input.pattern)}`)
-    const target = resolveTarget(input.pattern, base)
+    // The read tool also supplies a literal path; bash readers go through
+    // `readTarget` with shell-word decoding instead.
+    const target = nativeTarget(input.pattern, base)
     if (target.dynamic || target.path === undefined) return extraViolation(input)
     const category = sensitiveCategory(target.path)
     if (category) return sf2("read", `reading a ${category} is not allowed: ${target.path}`)
@@ -1154,7 +1191,7 @@ export function evaluate(input: EvaluateInput): Violation | undefined {
     // grep/glob resolve their `path` against the working directory, not the
     // worktree root (the permission pattern is the search pattern, not a path).
     const directory = input.instance?.directory ?? input.cwd
-    const target = raw ? resolveTarget(raw, directory) : undefined
+    const target = raw ? nativeTarget(raw, directory) : undefined
     // The include glob (grep) or the search glob (glob) selects the files the
     // tool reads; a sensitive selection must not pass on the directory alone.
     const include = typeof input.metadata?.include === "string" ? input.metadata.include : undefined

@@ -26,7 +26,7 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { CacheGroup } from "./llm/cache-group"
-import { ToolRefusedError } from "./llm/refusal"
+import { ToolCallDeniedError, ToolRefusedError } from "./llm/refusal"
 import { ThinkingReplay } from "./thinking-replay"
 import { AgentScheduler } from "./agent-scheduler"
 import type { Lane as SchedulerLane } from "./agent-scheduler-state"
@@ -170,6 +170,12 @@ export type StreamInput = {
   toolPolicy?: "allow" | "refuse"
   /** Called for every local tool call on a `refuse` request, before execution. */
   onToolRefused?: () => void
+  /**
+   * Per-call execution gate (DAG safety list SF-5): a returned reason means the
+   * call was already denied and must not execute; the reason becomes its tool
+   * error instead.
+   */
+  onToolCallDenied?: (id: string) => string | undefined
   purpose?: RequestPurpose
   /** Scheduling lane; derived from purpose and parent session when omitted. */
   lane?: SchedulerLane
@@ -249,6 +255,8 @@ function gateTools(input: {
             // A failed stream closes its request scope. Refuse any SDK
             // callback that arrives after that scope has been aborted.
             if (request.abort.aborted) throw new DOMException("Aborted", "AbortError")
+            const denied = request.onToolCallDenied?.(args[1].toolCallId)
+            if (denied !== undefined) throw new ToolCallDeniedError(denied)
             if (refuseTools) {
               request.onToolRefused?.()
               throw new ToolRefusedError()
