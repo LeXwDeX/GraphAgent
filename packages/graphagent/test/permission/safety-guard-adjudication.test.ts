@@ -13,6 +13,7 @@ import { expect } from "bun:test"
 import { Effect, Exit, Fiber, Layer } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Dag } from "@/dag/dag"
+import { Git } from "@/git"
 import { Permission, type AskOptions } from "@/permission"
 import { SafetyGuard } from "@/permission/safety-guard"
 import { ChildRegistry } from "@/session/child/registry"
@@ -42,6 +43,42 @@ const permissionLayer = Permission.layer.pipe(
 )
 const env = Layer.mergeAll(permissionLayer, database, events, bridge, projector, store, dag)
 const it = testEffect(env)
+
+/** #1031 M7 finding 5: Git facts are only needed by SF-4 push checks. */
+const gitCalls = { branch: 0, defaultBranch: 0, remote: 0 }
+const gitMock = Layer.mock(Git.Service, {
+  branch: () =>
+    Effect.sync(() => {
+      gitCalls.branch++
+      return "feat/work"
+    }),
+  defaultBranch: () =>
+    Effect.sync(() => {
+      gitCalls.defaultBranch++
+      return { name: "main", ref: "main" }
+    }),
+  run: (args) =>
+    Effect.sync(() => {
+      if (args[0] === "remote") gitCalls.remote++
+      return { exitCode: 0, text: () => "origin", stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), truncated: false }
+    }),
+})
+const lazyPermissionLayer = Permission.layer.pipe(
+  Layer.provide(database),
+  Layer.provide(bridge),
+  Layer.provide(SafetyGuard.layer),
+  // `decide` reads Git through `serviceOption` in its caller's context, so the
+  // mock must stay visible to the test body, not only to the layer build.
+  Layer.provideMerge(gitMock),
+)
+const lazyEnv = Layer.mergeAll(lazyPermissionLayer, database, events, bridge, projector, store, dag)
+const lazyIt = testEffect(lazyEnv)
+
+const resetGitCalls = () => {
+  gitCalls.branch = 0
+  gitCalls.defaultBranch = 0
+  gitCalls.remote = 0
+}
 
 const rootSessionID = SessionID.make("ses_safety_root")
 
@@ -322,6 +359,62 @@ it.instance(
 
       ChildRegistry.end(entry, { type: "completed" })
       ChildRegistry.release(entry)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "denies an apply_patch move whose destination leaves the project",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("move-out")
+      const cause = yield* expectDenied(
+        ask(childSessionID, {
+          permission: "edit",
+          patterns: ["src/a.ts"],
+          metadata: {
+            files: [{ type: "move", filePath: "src/a.ts", movePath: "/repo/outside/b.ts" }],
+          },
+        }),
+      )
+      expect(cause).toContain("dag_safety:SF-1")
+
+      // A move inside the project stays allowed.
+      yield* ask(childSessionID, {
+        permission: "edit",
+        patterns: ["src/a.ts"],
+        metadata: {
+          files: [{ type: "move", filePath: "src/a.ts", movePath: "src/b.ts" }],
+        },
+      })
+    }),
+  { git: true },
+)
+
+lazyIt.instance(
+  "resolves Git facts only for a git push",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("lazy-git")
+      resetGitCalls()
+      yield* ask(childSessionID, { permission: "read", patterns: ["src/a.ts"], metadata: {} })
+      yield* ask(childSessionID, {
+        permission: "edit",
+        patterns: ["src/a.ts"],
+        metadata: { files: [{ type: "move", filePath: "src/a.ts", movePath: "src/b.ts" }] },
+      })
+      yield* bash(childSessionID, "git status")
+      // An explicit user allow settles the pattern before SF-4 needs facts.
+      yield* bash(childSessionID, "git push origin main", {
+        ruleset: [{ permission: "bash", pattern: "*", action: "allow" }],
+      })
+      expect(gitCalls).toEqual({ branch: 0, defaultBranch: 0, remote: 0 })
+
+      const cause = yield* expectDenied(bash(childSessionID, "git push origin main"))
+      expect(cause).toContain("dag_safety:SF-4")
+      expect(gitCalls.branch).toBeGreaterThan(0)
+      expect(gitCalls.defaultBranch).toBeGreaterThan(0)
+      expect(gitCalls.remote).toBeGreaterThan(0)
     }),
   { git: true },
 )

@@ -79,7 +79,10 @@ export interface EvaluateInput {
   /** Temp/skill/reference directories the agent defaults already allow. */
   readonly allowRoots: readonly string[]
   readonly extra: readonly SafetyRule[]
+  /** Git facts of `cwd`; the layer resolves them lazily, only for pushes. */
   readonly git: GitState | undefined
+  /** Facts of repositories reached through `git -C`, keyed by resolved directory. */
+  readonly gitStates?: ReadonlyMap<string, GitState | undefined>
   /** Parsed bash command; absent for non-shell permissions. */
   readonly segments: readonly ShellParse.Segment[] | undefined
 }
@@ -142,6 +145,101 @@ export function sensitiveCategory(target: string): string | undefined {
   return undefined
 }
 
+/** Resolve a literal tool-provided path; glob characters are file-name bytes. */
+function concreteTarget(raw: string, cwd: string): { path?: string; dynamic: boolean } {
+  const expanded = expand(raw)
+  if (expanded === "" || expanded.startsWith("~") || DYNAMIC.test(expanded)) return { dynamic: true }
+  return { path: path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded), dynamic: false }
+}
+
+const GLOB_META = /[*?[]/
+const KEY_EXTENSIONS = ["pem", "key", "p12", "pfx"] as const
+
+/** Glob segment to regex. `*` and `?` never cross `/`; `[...]` classes pass through. */
+function segmentGlob(pattern: string) {
+  let out = "^"
+  for (let index = 0; index < pattern.length; index++) {
+    const char = pattern[index] ?? ""
+    if (char === "*") out += "[^/]*"
+    else if (char === "?") out += "[^/]"
+    else if (char === "[") {
+      const close = pattern.indexOf("]", index + 1)
+      if (close < 0) {
+        out += "\\["
+        continue
+      }
+      let body = pattern.slice(index + 1, close)
+      if (body.startsWith("!")) body = "^" + body.slice(1)
+      // An empty class (`[]`, `[!]`) is not a valid regular expression.
+      if (body === "" || body === "^") out += "\\["
+      else out += `[${body.replaceAll("\\", "\\\\")}]`
+      index = close
+    } else out += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  }
+  return new RegExp(out + "$", "i")
+}
+
+/** True when the pattern can spell a leading dot (literally or through a bracket class). */
+function dotLeading(pattern: string) {
+  if (pattern.startsWith(".")) return true
+  if (!pattern.startsWith("[")) return false
+  const close = pattern.indexOf("]")
+  return close > 0 && pattern.slice(1, close).includes(".")
+}
+
+/** Bash does not match a leading dot unless the pattern spells one. */
+function matchesSegment(pattern: string, name: string) {
+  if (name.startsWith(".") && !dotLeading(pattern)) return false
+  return segmentGlob(pattern).test(name)
+}
+
+const firstGlob = (pattern: string) => {
+  for (let index = 0; index < pattern.length; index++) if ("*?[".includes(pattern[index] ?? "")) return index
+  return pattern.length
+}
+
+/**
+ * Sensitive-file category a glob spelling can select. `cat .env*` and
+ * `keys/*.pem` must not slip past SF-2 just because the resolver strips the
+ * wildcard and reports the parent directory.
+ */
+export function sensitiveGlob(raw: string, cwd: string): string | undefined {
+  const expanded = expand(raw).replaceAll("\\", "/")
+  if (!GLOB_META.test(expanded)) return undefined
+  // Resolve `..`/relative spellings before the fixed-path checks; glob
+  // characters survive `path.resolve`, so the pattern stays a pattern.
+  const lower = (path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded)).toLowerCase()
+  const segments = lower.split("/")
+  const base = segments.at(-1) ?? ""
+  const dirs = segments.slice(0, -1)
+
+  // A literal `.env`, unless the literal suffix after the wildcard is a known
+  // template (`.env.example`); `.env.example*` could still select
+  // `.env.example.local`, so it stays sensitive.
+  const literal = base.replaceAll("[.]", ".")
+  const first = firstGlob(literal)
+  const literalTail = first < literal.length ? literal.slice(first + 1) : literal
+  if (literal.includes(".env") && !ENV_TEMPLATE.test(literalTail)) return "environment file"
+  if (dotLeading(base) && matchesSegment(base, ".env")) return "environment file"
+
+  const dot = base.lastIndexOf(".")
+  const extension = dot >= 0 ? base.slice(dot + 1) : ""
+  if (extension !== "" && KEY_EXTENSIONS.some((name) => matchesSegment(extension, name)))
+    return "private key material"
+  if (base.includes("id_")) return "SSH private key"
+  if ([...CREDENTIAL_FILES].some((name) => matchesSegment(base, name))) return "credential file"
+  if (dirs.some((dir) => matchesSegment(dir, ".ssh"))) return "SSH directory"
+  if (dirs.some((dir) => matchesSegment(dir, ".aws")) && matchesSegment(base, "credentials")) return "AWS credentials"
+  if (dirs.some((dir) => matchesSegment(dir, ".docker")) && matchesSegment(base, "config.json"))
+    return "Docker credentials"
+  if (dirs.some((dir) => matchesSegment(dir, ".kube")) && matchesSegment(base, "config")) return "Kubernetes config"
+
+  const full = segmentGlob(lower)
+  if (full.test("/etc/shadow")) return "system password file"
+  if (full.test("/etc/sudoers") || full.test("/etc/sudoers.d/x")) return "sudoers file"
+  return undefined
+}
+
 function inside(input: EvaluateInput, target: string) {
   if (inProject(input, target)) return true
   return input.allowRoots.some((root) => FSUtil.contains(root, target))
@@ -174,6 +272,142 @@ const isFlag = (value: string) => value.startsWith("-") && value !== "-"
 const isShortFlag = (value: string) => isFlag(value) && !value.startsWith("--")
 const words = (argv: readonly string[]) => argv.filter((value) => !isFlag(value))
 
+/** Global options that take a value, from `git -h`; both `=` and a separate word. */
+const GIT_VALUE_OPTIONS = new Set([
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--config-env",
+  "--super-prefix",
+  "--attr-source",
+  "--shallow-file",
+])
+/** Global options that shape which repository a subcommand reads or writes. */
+const GIT_REPO_OPTIONS = new Set(["--git-dir", "--work-tree", "--namespace", "--bare"])
+const GIT_BOOLEAN_OPTIONS = new Set([
+  "--paginate",
+  "--no-pager",
+  "--no-replace-objects",
+  "--no-lazy-fetch",
+  "--no-optional-locks",
+  "--no-advice",
+  "--bare",
+  "--literal-pathspecs",
+  "--glob-pathspecs",
+  "--noglob-pathspecs",
+  "--icase-pathspecs",
+])
+const GIT_TERMINAL_OPTIONS = new Set(["--version", "--help", "--html-path", "--man-path", "--info-path"])
+const GIT_SHORT_OPTIONS = new Set(["p", "P", "v", "h"])
+
+interface GitInvocation {
+  /** Subcommand after the global options, lowercased. */
+  readonly name: string | undefined
+  /** Arguments after the subcommand. */
+  readonly args: readonly string[]
+  /** Working directory after `-C` (relative options resolve cumulatively). */
+  readonly cwd: string
+  readonly cwdKnown: boolean
+  /** An unrecognized global option hides the subcommand, so checks must not trust it. */
+  readonly uncertain: boolean
+  /** A global option that only prints information and exits. */
+  readonly terminal: boolean
+}
+
+/**
+ * Locate the subcommand behind git's global options. `git -C /repo reset
+ * --hard` and `git -c k=v push` must reach the same checks as the plain form.
+ */
+function parseGit(argv: readonly string[], cwd: string, known = true): GitInvocation {
+  let effective = cwd
+  let cwdKnown = known
+  let index = 1
+  const result = (over: Partial<GitInvocation> = {}): GitInvocation => ({
+    name: undefined,
+    args: [],
+    cwd: effective,
+    cwdKnown,
+    uncertain: false,
+    terminal: false,
+    ...over,
+  })
+
+  while (index < argv.length) {
+    const token = argv[index] ?? ""
+    if (token === "--") {
+      index++
+      break
+    }
+    if (token === "-C" || (token.startsWith("-C") && token.length > 2)) {
+      const inline = token.length > 2
+      const value = inline ? token.slice(2) : argv[index + 1]
+      if (value === undefined) return result({ uncertain: true })
+      index += inline ? 1 : 2
+      const resolved = concreteTarget(value, effective)
+      if (resolved.dynamic || resolved.path === undefined) cwdKnown = false
+      else if (cwdKnown || path.isAbsolute(expand(value))) {
+        // An absolute -C names the repository regardless of an earlier
+        // dynamic `cd`; a relative one does not.
+        effective = resolved.path
+        cwdKnown = true
+      }
+      continue
+    }
+    if (token === "-c" || (token.startsWith("-c") && token.length > 2)) {
+      if (token.length > 2) {
+        index++
+        continue
+      }
+      if (index + 1 >= argv.length) return result({ uncertain: true })
+      index += 2
+      continue
+    }
+    if (token.startsWith("--")) {
+      const equals = token.indexOf("=")
+      const header = equals >= 0 ? token.slice(0, equals) : token
+      if (GIT_TERMINAL_OPTIONS.has(header) || header === "--list-cmds" || (header === "--exec-path" && equals < 0))
+        return result({ terminal: true })
+      if (GIT_VALUE_OPTIONS.has(header)) {
+        if (GIT_REPO_OPTIONS.has(header)) cwdKnown = false
+        if (equals < 0) {
+          if (index + 1 >= argv.length) return result({ uncertain: true })
+          index += 2
+        } else index++
+        continue
+      }
+      if (header === "--exec-path") {
+        index++
+        continue
+      }
+      if (GIT_BOOLEAN_OPTIONS.has(token)) {
+        if (GIT_REPO_OPTIONS.has(token)) cwdKnown = false
+        index++
+        continue
+      }
+      // An unknown global option may consume the next word; the subcommand
+      // can no longer be located reliably.
+      return result({ uncertain: true })
+    }
+    if (isShortFlag(token)) {
+      const flags = token.slice(1)
+      for (const flag of flags) if (!GIT_SHORT_OPTIONS.has(flag)) return result({ uncertain: true })
+      if (flags === "v" || flags.includes("h")) return result({ terminal: true })
+      index++
+      continue
+    }
+    return result({ name: token.toLowerCase(), args: argv.slice(index + 1) })
+  }
+  return result()
+}
+
+/** Git facts for the directory a command actually operates in. */
+function gitFor(input: EvaluateInput, cwd: string): GitState | undefined {
+  const key = path.resolve(cwd)
+  if (input.gitStates?.has(key)) return input.gitStates.get(key)
+  if (key === path.resolve(input.cwd)) return input.git
+  return undefined
+}
+
 function writeTarget(
   input: EvaluateInput,
   raw: string,
@@ -191,11 +425,25 @@ function writeTarget(
 }
 
 function readTarget(input: EvaluateInput, raw: string, cwd: string, label: string): Violation | undefined {
+  const glob = sensitiveGlob(raw, cwd)
+  if (glob) return sf2(label, `reading a ${glob} is not allowed: ${expand(raw)}`)
   const target = resolveTarget(raw, cwd)
   if (target.dynamic || target.path === undefined) return undefined
   const category = sensitiveCategory(target.path)
   if (category) return sf2(label, `reading a ${category} is not allowed: ${target.path}`)
   return undefined
+}
+
+/** Move destinations an apply_patch carries; the source is already a permission pattern. */
+function editMoveTargets(metadata: Record<string, unknown> | undefined): string[] {
+  const files = metadata?.files
+  if (!Array.isArray(files)) return []
+  const out: string[] = []
+  for (const file of files) {
+    if (!isRecord(file) || file.type !== "move") continue
+    if (typeof file.movePath === "string" && file.movePath !== "") out.push(file.movePath)
+  }
+  return out
 }
 
 function redirectViolation(
@@ -240,9 +488,11 @@ function refspecDestination(refspec: string, git: GitState | undefined) {
   return value
 }
 
-function pushViolation(input: EvaluateInput, argv: readonly string[]): Violation | undefined {
-  const args = argv.slice(2)
-  const git = input.git
+function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known: boolean): Violation | undefined {
+  const invocation = parseGit(argv, cwd, known)
+  if (invocation.uncertain || invocation.name !== "push") return undefined
+  const args = invocation.args
+  const git = invocation.cwdKnown ? gitFor(input, invocation.cwd) : undefined
   const pushed = args.filter((value) => !isFlag(value))
   let refs = pushed
   if (pushed.length > 0) {
@@ -285,7 +535,7 @@ function pushViolation(input: EvaluateInput, argv: readonly string[]): Violation
   return undefined
 }
 
-function destructiveViolation(input: EvaluateInput, argv: readonly string[]) {
+function destructiveViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known: boolean) {
   const name = (argv[0] ?? "").toLowerCase()
   const args = argv.slice(1)
 
@@ -293,7 +543,7 @@ function destructiveViolation(input: EvaluateInput, argv: readonly string[]) {
     const recursive = args.some((arg) => arg === "--recursive" || (isShortFlag(arg) && /[rR]/.test(arg)))
     if (!recursive) return undefined
     for (const target of words(args)) {
-      const resolved = resolveTarget(target, input.cwd)
+      const resolved = resolveTarget(target, cwd)
       if (resolved.dynamic || resolved.path === undefined)
         return sf3("rm -r", `cannot determine the recursive delete target of "${target.trim()}"`)
       if (
@@ -307,9 +557,15 @@ function destructiveViolation(input: EvaluateInput, argv: readonly string[]) {
   }
 
   if (name === "git") {
-    const sub = (argv[1] ?? "").toLowerCase()
+    const invocation = parseGit(argv, cwd, known)
+    // An unrecognized global option could hide `push`, `reset` or `clean`;
+    // unattended runs refuse rather than guess.
+    if (invocation.uncertain)
+      return sf3("git global options", "cannot determine the git subcommand behind unrecognized global options")
+    const sub = invocation.name
+    const gitArgs = invocation.args
     if (sub === "push") {
-      const forced = args.some(
+      const forced = gitArgs.some(
         (arg) =>
           arg === "--force" ||
           arg === "-f" ||
@@ -320,9 +576,9 @@ function destructiveViolation(input: EvaluateInput, argv: readonly string[]) {
       if (forced)
         return sf3("git push --force", "force pushing rewrites remote history and can destroy other people's commits")
     }
-    if (sub === "reset" && args.includes("--hard"))
+    if (sub === "reset" && gitArgs.includes("--hard"))
       return sf3("git reset --hard", "a hard reset discards uncommitted work without recovery")
-    if (sub === "clean" && args.some((arg) => arg === "--force" || (isShortFlag(arg) && /f/.test(arg))))
+    if (sub === "clean" && gitArgs.some((arg) => arg === "--force" || (isShortFlag(arg) && /f/.test(arg))))
       return sf3("git clean -f", "git clean -f deletes untracked files with no recovery")
   }
 
@@ -330,7 +586,7 @@ function destructiveViolation(input: EvaluateInput, argv: readonly string[]) {
     const recursive = args.some((arg) => arg === "-R" || arg === "--recursive")
     if (!recursive) return undefined
     for (const target of words(args).slice(1)) {
-      const resolved = resolveTarget(target, input.cwd)
+      const resolved = resolveTarget(target, cwd)
       if (resolved.dynamic || resolved.path === undefined)
         return sf3(`${name} -R`, `cannot determine the recursive target of "${target.trim()}"`)
       if (resolved.path === path.parse(resolved.path).root || !inProject(input, resolved.path))
@@ -349,7 +605,7 @@ function destructiveViolation(input: EvaluateInput, argv: readonly string[]) {
   return undefined
 }
 
-function publishViolation(input: EvaluateInput, argv: readonly string[]) {
+function publishViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known: boolean) {
   const name = (argv[0] ?? "").toLowerCase()
   const args = argv.slice(1)
   if (["npm", "pnpm", "yarn"].includes(name) && args.includes("publish"))
@@ -362,16 +618,16 @@ function publishViolation(input: EvaluateInput, argv: readonly string[]) {
     if (sub === "pr" && (argv[2] ?? "").toLowerCase() === "merge")
       return sf4("gh pr merge", "merging a pull request is a delivery action owned by the main agent and the user")
   }
-  if (name === "git" && (argv[1] ?? "").toLowerCase() === "push") return pushViolation(input, argv)
+  if (name === "git") return pushViolation(input, argv, cwd, known)
   return undefined
 }
 
-function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, argv: readonly string[]) {
+function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, argv: readonly string[], cwd: string) {
   const name = (argv[0] ?? "").toLowerCase()
   const args = argv.slice(1)
   if (["cat", "less", "more", "head", "tail"].includes(name)) {
     for (const target of words(args)) {
-      const violation = readTarget(input, target, input.cwd, name)
+      const violation = readTarget(input, target, cwd, name)
       if (violation) return violation
     }
   }
@@ -387,13 +643,13 @@ function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, a
         patternSeen = true
         continue
       }
-      const violation = readTarget(input, arg, input.cwd, name)
+      const violation = readTarget(input, arg, cwd, name)
       if (violation) return violation
     }
   }
   if (name === "cp") {
     for (const target of words(args).slice(0, -1)) {
-      const violation = readTarget(input, target, input.cwd, name)
+      const violation = readTarget(input, target, cwd, name)
       if (violation) return violation
     }
   }
@@ -402,14 +658,14 @@ function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, a
       const arg = args[index] ?? ""
       const inline = /^--(?:data|data-binary|data-raw|data-urlencode|form)=@(.+)$/.exec(arg)
       if (inline) {
-        const violation = readTarget(input, inline[1] ?? "", input.cwd, "curl")
+        const violation = readTarget(input, inline[1] ?? "", cwd, "curl")
         if (violation) return violation
         continue
       }
       if (["-d", "--data", "--data-binary", "--data-raw", "--data-urlencode", "-F", "--form"].includes(arg)) {
         const next = args[index + 1]
         if (next?.startsWith("@")) {
-          const violation = readTarget(input, next.slice(1), input.cwd, "curl")
+          const violation = readTarget(input, next.slice(1), cwd, "curl")
           if (violation) return violation
         }
         index++
@@ -418,19 +674,19 @@ function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, a
   }
   for (const redirect of seg.redirects) {
     if (!redirect.op.startsWith("<") || redirect.op.startsWith("<<<")) continue
-    const violation = readTarget(input, redirect.target, input.cwd, "shell input redirect")
+    const violation = readTarget(input, redirect.target, cwd, "shell input redirect")
     if (violation) return violation
   }
   return undefined
 }
 
-function writeViolation(input: EvaluateInput, argv: readonly string[], known = true) {
+function writeViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known = true) {
   const name = (argv[0] ?? "").toLowerCase()
   const args = argv.slice(1)
   const all = words(args)
   const check = (targets: readonly string[], label: string) => {
     for (const target of targets) {
-      const violation = writeTarget(input, target, input.cwd, known, label)
+      const violation = writeTarget(input, target, cwd, known, label)
       if (violation) return violation
     }
     return undefined
@@ -447,43 +703,94 @@ function writeViolation(input: EvaluateInput, argv: readonly string[], known = t
   return undefined
 }
 
+interface SegmentContext {
+  readonly segment: ShellParse.Segment
+  readonly argv: readonly string[]
+  readonly cwd: string
+  readonly known: boolean
+}
+
+const parentScope = (scope: string) => {
+  const cut = scope.lastIndexOf("/")
+  return cut < 0 ? "" : scope.slice(0, cut)
+}
+
+/**
+ * One working-directory state per shell scope: a `cd` inside `( ... )` or
+ * `$()` never moves the parent shell, and a pipeline element runs in its own
+ * subshell. States are inherited from the nearest enclosing scope.
+ */
+function segmentContexts(segments: readonly ShellParse.Segment[], cwd: string): SegmentContext[] {
+  const states = new Map<string, { cwd: string; known: boolean }>()
+  const stateFor = (scope: string) => {
+    for (let current = scope; ; current = parentScope(current)) {
+      const found = states.get(current)
+      if (found) return found
+      if (current === "") return { cwd, known: true }
+    }
+  }
+  const out: SegmentContext[] = []
+  for (const segment of segments) {
+    const scope = segment.scope ?? ""
+    const state = stateFor(scope)
+    const argv = commandArgs(segment.argv)
+    out.push({ segment, argv, cwd: state.cwd, known: state.known })
+    if ((argv[0] ?? "").toLowerCase() !== "cd" || segment.pipelineScoped) continue
+    const next = argv[1]
+    if (next === undefined) {
+      states.set(scope, { cwd: os.homedir(), known: true })
+      continue
+    }
+    const resolved = resolveTarget(next, state.cwd)
+    states.set(
+      scope,
+      resolved.dynamic || resolved.path === undefined
+        ? { cwd: state.cwd, known: false }
+        : { cwd: resolved.path, known: true },
+    )
+  }
+  return out
+}
+
+/** Directories a `git push` in this command needs facts for; empty for every other ask. */
+export function gitStateRequests(segments: readonly ShellParse.Segment[], cwd: string) {
+  const requests = new Map<string, string>()
+  for (const context of segmentContexts(segments, cwd)) {
+    if ((context.argv[0] ?? "").toLowerCase() !== "git") continue
+    const invocation = parseGit(context.argv, context.cwd, context.known)
+    if (invocation.uncertain || invocation.name !== "push" || !invocation.cwdKnown) continue
+    const key = path.resolve(invocation.cwd)
+    if (!requests.has(key)) requests.set(key, invocation.cwd)
+  }
+  return [...requests.values()]
+}
+
 function bashViolation(input: EvaluateInput): Violation | undefined {
   const segments = input.segments
   if (!segments) return undefined
-  let cwd = input.cwd
-  let known = true
-  for (let index = 0; index < segments.length; index++) {
-    const seg = segments[index]
-    if (!seg) continue
-    const argv = commandArgs(seg.argv)
+  const contexts = segmentContexts(segments, input.cwd)
+  for (let index = 0; index < contexts.length; index++) {
+    const context = contexts[index]
+    if (!context) continue
+    const { segment: seg, argv, cwd, known } = context
     const name = (argv[0] ?? "").toLowerCase()
     if (!name) continue
     const redirect = redirectViolation(input, seg.redirects, cwd, known)
     if (redirect) return redirect
-    if (name === "cd") {
-      const next = argv[1]
-      if (next === undefined) cwd = os.homedir()
-      else {
-        const resolved = resolveTarget(next, cwd)
-        if (resolved.dynamic || resolved.path === undefined) known = false
-        else cwd = resolved.path
-      }
-      continue
-    }
-    const contextual = { ...input, cwd }
-    const sensitive = sensitiveReadViolation(contextual, seg, argv)
+    if (name === "cd") continue
+    const sensitive = sensitiveReadViolation(input, seg, argv, cwd)
     if (sensitive) return sensitive
-    const destructive = destructiveViolation(contextual, argv)
+    const destructive = destructiveViolation(input, argv, cwd, known)
     if (destructive) return destructive
-    const publish = publishViolation(contextual, argv)
+    const publish = publishViolation(input, argv, cwd, known)
     if (publish) return publish
     if (name === "curl" || name === "wget") {
-      const next = segments[index + 1]
-      const nextName = next ? (commandArgs(next.argv)[0] ?? "").toLowerCase() : ""
-      if (next && next.pipeline === seg.pipeline && SHELLS.has(nextName))
+      const next = contexts[index + 1]
+      const nextName = next ? (next.argv[0] ?? "").toLowerCase() : ""
+      if (next && next.segment.pipeline === seg.pipeline && SHELLS.has(nextName))
         return sf3(`${name} | ${nextName}`, "piping a download into a shell executes unreviewed remote code")
     }
-    const write = writeViolation(contextual, argv, known)
+    const write = writeViolation(input, argv, cwd, known)
     if (write) return write
   }
   return undefined
@@ -519,10 +826,20 @@ export function evaluate(input: EvaluateInput): Violation | undefined {
     if (target.dynamic || target.path === undefined)
       return sf1("edit", `cannot determine the write target of "${input.pattern}"`)
     if (!inside(input, target.path)) return sf1("edit", `write target is outside the project: ${target.path}`)
+    // apply_patch names only the source in the permission patterns; a move
+    // writes its destination, so that path must pass the same boundary.
+    for (const raw of editMoveTargets(input.metadata)) {
+      const moved = concreteTarget(raw, base)
+      if (moved.dynamic || moved.path === undefined)
+        return sf1("apply_patch move", `cannot determine the move target of "${raw}"`)
+      if (!inside(input, moved.path)) return sf1("apply_patch move", `move target is outside the project: ${moved.path}`)
+    }
     return extraViolation(input)
   }
 
   if (input.permission === "read") {
+    const glob = sensitiveGlob(input.pattern, base)
+    if (glob) return sf2("read", `reading a ${glob} is not allowed: ${expand(input.pattern)}`)
     const target = resolveTarget(input.pattern, base)
     if (target.dynamic || target.path === undefined) return extraViolation(input)
     const category = sensitiveCategory(target.path)
@@ -534,6 +851,8 @@ export function evaluate(input: EvaluateInput): Violation | undefined {
     const raw = typeof input.metadata?.path === "string" ? input.metadata.path : undefined
     // grep/glob resolve their `path` against the working directory, not the
     // worktree root (the permission pattern is the search pattern, not a path).
+    const glob = raw ? sensitiveGlob(raw, input.instance?.directory ?? input.cwd) : undefined
+    if (glob) return sf2(input.permission, `reading a ${glob} is not allowed: ${expand(raw ?? "")}`)
     const target = raw ? resolveTarget(raw, input.instance?.directory ?? input.cwd) : undefined
     if (!target || target.dynamic || target.path === undefined) return extraViolation(input)
     const category = sensitiveCategory(target.path)
@@ -666,30 +985,42 @@ export const layer = Layer.effect(
                 Effect.catchCause(() => Effect.succeed(undefined)),
               )
             : undefined
-        const gitService = Option.getOrUndefined(yield* Effect.serviceOption(Git.Service))
-        const git = gitService
-          ? yield* Effect.gen(function* () {
-              const branch = yield* gitService.branch(cwd).pipe(Effect.orElseSucceed(() => undefined))
-              const resolved = yield* gitService.defaultBranch(cwd).pipe(Effect.orElseSucceed(() => undefined))
-              const remotes = yield* gitService.run(["remote"], { cwd }).pipe(
-                Effect.map((result) =>
-                  result.exitCode === 0
-                    ? result
-                        .text()
-                        .split(/\r?\n/)
-                        .map((line) => line.trim())
-                        .filter(Boolean)
-                    : [],
-                ),
-                Effect.orElseSucceed(() => [] as string[]),
-              )
-              return {
-                ...(branch ? { branch } : {}),
-                ...(resolved ? { defaultBranch: resolved.name } : {}),
-                remotes,
-              } satisfies GitState
-            })
-          : yield* Effect.promise(() => gitStateFromFiles(cwd)).pipe(Effect.orElseSucceed(() => undefined))
+        // Git facts are only consumed by SF-4 push checks. Resolve them for
+        // the repositories a push actually targets, and never for ordinary
+        // read/edit/other asks: each lookup costs several Git subprocesses.
+        const requests = !input.rule.explicit && segments ? gitStateRequests(segments, cwd) : []
+        const gitStates = new Map<string, GitState | undefined>()
+        if (requests.length > 0) {
+          const gitService = Option.getOrUndefined(yield* Effect.serviceOption(Git.Service))
+          for (const directory of requests) {
+            const key = path.resolve(directory)
+            if (gitStates.has(key)) continue
+            const state = gitService
+              ? yield* Effect.gen(function* () {
+                  const branch = yield* gitService.branch(directory).pipe(Effect.orElseSucceed(() => undefined))
+                  const resolved = yield* gitService.defaultBranch(directory).pipe(Effect.orElseSucceed(() => undefined))
+                  const remotes = yield* gitService.run(["remote"], { cwd: directory }).pipe(
+                    Effect.map((result) =>
+                      result.exitCode === 0
+                        ? result
+                            .text()
+                            .split(/\r?\n/)
+                            .map((line) => line.trim())
+                            .filter(Boolean)
+                        : [],
+                    ),
+                    Effect.orElseSucceed(() => [] as string[]),
+                  )
+                  return {
+                    ...(branch ? { branch } : {}),
+                    ...(resolved ? { defaultBranch: resolved.name } : {}),
+                    remotes,
+                  } satisfies GitState
+                })
+              : yield* Effect.promise(() => gitStateFromFiles(directory)).pipe(Effect.orElseSucceed(() => undefined))
+            gitStates.set(key, state)
+          }
+        }
 
         const violation = evaluate({
           permission: input.request.permission,
@@ -700,7 +1031,8 @@ export const layer = Layer.effect(
           instance,
           allowRoots,
           extra,
-          git,
+          git: undefined,
+          ...(gitStates.size > 0 ? { gitStates } : {}),
           segments,
         })
         if (!violation) return "allow" as const

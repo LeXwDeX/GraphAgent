@@ -40,6 +40,14 @@ export interface Segment {
   readonly redirects: readonly Redirect[]
   /** Identity of the enclosing pipeline; distinct for every standalone command. */
   readonly pipeline: number
+  /**
+   * Ancestor subshell identities, outer first and `/`-joined (bash only).
+   * `cd` inside a subshell never moves the parent shell, so consumers that
+   * track a working directory keep one state per scope.
+   */
+  readonly scope: string
+  /** True when the command is one element of a pipeline (bash only). */
+  readonly pipelineScoped: boolean
 }
 
 const resolveWasm = (asset: string) => {
@@ -156,6 +164,22 @@ function identity(node: Node) {
   return `${node.type}:${node.startIndex}:${node.endIndex}`
 }
 
+const SCOPES = new Set(["subshell", "command_substitution", "process_substitution"])
+
+/** Subshell ancestry and pipeline membership of one command (bash only). */
+function shellScope(node: Node, ps: boolean) {
+  if (ps) return { scope: "", pipelineScoped: false }
+  const ancestors: string[] = []
+  let pipelineScoped = false
+  let current: Node | null = node.parent
+  while (current) {
+    if (current.type === "pipeline") pipelineScoped = true
+    if (SCOPES.has(current.type)) ancestors.push(identity(current))
+    current = current.parent
+  }
+  return { scope: ancestors.reverse().join("/"), pipelineScoped }
+}
+
 function nearest(node: Node | null, type: string) {
   let current: Node | null = node
   while (current) {
@@ -250,6 +274,7 @@ export const segments = Effect.fn("ShellParse.segments")(function* (command: str
           raw: source(node),
           redirects: redirects.get(identity(node)) ?? [],
           pipeline: group,
+          ...shellScope(node, ps),
         } satisfies Segment
       })
     return out

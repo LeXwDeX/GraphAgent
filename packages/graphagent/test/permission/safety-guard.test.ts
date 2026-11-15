@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from "bun:test"
+import path from "path"
 import { Effect } from "effect"
 import { Global } from "@graphagent/core/global"
 import { Project } from "@graphagent/core/project"
 import type { InstanceContext } from "@/project/instance-context"
 import { ShellParse } from "@/tool/shell/parse"
-import { evaluate, type EvaluateInput, type GitState, type SafetyRule } from "@/permission/safety-guard"
+import { evaluate, gitStateRequests, type EvaluateInput, type GitState, type SafetyRule } from "@/permission/safety-guard"
 
 /**
  * #1031 M7: the built-in safety list. These cases drive the pure evaluator;
@@ -207,6 +208,85 @@ describe("SF-4 outward release actions", () => {
       expect(
         (yield* bash("git push", { git: git({ branch: "main", defaultBranch: undefined }) }))?.ruleID,
       ).toBe("SF-4")
+    }),
+  )
+})
+
+describe("SF-1 apply_patch move targets", () => {
+  const move = (movePath: string) => ({
+    files: [{ type: "move", filePath: "/repo/project/src/a.ts", movePath }],
+  })
+
+  it("checks a move destination against the project boundary", () => {
+    expect(
+      evaluate(base({ permission: "edit", pattern: "src/a.ts", metadata: move("/repo/project/src/b.ts") })),
+    ).toBeUndefined()
+    expect(evaluate(base({ permission: "edit", pattern: "src/a.ts", metadata: move("/repo/outside/b.ts") }))?.ruleID).toBe(
+      "SF-1",
+    )
+    expect(evaluate(base({ permission: "edit", pattern: "src/a.ts", metadata: move("../outside/b.ts") }))?.ruleID).toBe(
+      "SF-1",
+    )
+    expect(evaluate(base({ permission: "edit", pattern: "src/a.ts", metadata: move("$DEST/b.ts") }))?.ruleID).toBe("SF-1")
+  })
+})
+
+describe("SF-3/SF-4 git global options", () => {
+  effect("sees the subcommand and repository behind -C/-c", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("git -C /repo reset --hard"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git -C ../other clean -fdx"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git -c core.pager=cat push --force origin feat/x"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git --no-pager -C /repo -c a=b reset --hard"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("git -C /repo push origin main"))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git -C /repo push"))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git -C /repo push origin feat/x"))).toBeUndefined()
+      expect((yield* bash("git --no-pager status"))).toBeUndefined()
+    }),
+  )
+
+  effect("requests Git facts only for push commands", () =>
+    Effect.gen(function* () {
+      const push = yield* ShellParse.segments("git push origin main", false)
+      expect(gitStateRequests(push, root)).toEqual([root])
+      const moved = yield* ShellParse.segments("git -C ../other push origin feat/x", false)
+      expect(gitStateRequests(moved, root)).toEqual([path.resolve(root, "../other")])
+      const status = yield* ShellParse.segments("git status", false)
+      expect(gitStateRequests(status, root)).toEqual([])
+    }),
+  )
+})
+
+describe("SF-2 sensitive read globs", () => {
+  effect("a glob spelling cannot hide a sensitive file name", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("cat .env*"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("cat .env.*"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("cat keys/*.pem"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("cat keys/server.?ey"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("cat .ssh/*"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("cat id_rs*"))?.ruleID).toBe("SF-2")
+      // Relative spellings resolve before the fixed-path checks.
+      expect((yield* bash("cat ../../etc/shadow*"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("cat .env.example"))).toBeUndefined()
+      expect((yield* bash("cat src/*.ts"))).toBeUndefined()
+      // Malformed classes stay literals instead of throwing inside the guard.
+      expect((yield* bash("cat []x"))).toBeUndefined()
+      expect((yield* bash("cat ["))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-3 subshell scope", () => {
+  effect("a cd inside a subshell does not move the parent shell", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("(cd child); rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("(cd child); rm -rf victim"))).toBeUndefined()
+      expect((yield* bash("(cd child; rm -rf ../victim)"))).toBeUndefined()
+      expect((yield* bash("cd child; rm -rf ../../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("cd child; rm -rf ../victim"))).toBeUndefined()
+      expect((yield* bash("cd child; (rm -rf ../../victim)"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("cd child | cat; rm -rf ../victim"))?.ruleID).toBe("SF-3")
     }),
   )
 })
