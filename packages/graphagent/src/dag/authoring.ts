@@ -14,6 +14,7 @@ export * as WorkflowAuthoring from "./authoring"
 import { Effect, Schema } from "effect"
 import type { NodeConfig, NodeDefaults, WorkflowConfig } from "./dag"
 import type { AdmissionInput } from "./admission"
+import type { Config } from "@/config/config"
 import { DagValidation } from "./validation"
 
 type Action = "start" | "extend" | "replan"
@@ -63,6 +64,10 @@ interface PrepareInput {
 
 interface Options {
   loadEnvironment?: (context: EnvironmentContext) => Effect.Effect<DagValidation.EnvironmentCatalogs>
+  /** Live config layer. Start validation reads the user's global
+   * `dag.max_total_nodes` cap from it on every call (Issue #1031 M4); without
+   * it the documented default applies. */
+  config?: Pick<Config.Interface, "dagGlobal">
 }
 
 type DecodedAction =
@@ -81,7 +86,11 @@ export function make(options: Options = {}) {
     Effect.gen(function* () {
       const profile = input.profile ?? "portable"
       const sourceName = input.source.kind === "yaml" ? input.source.source : (input.source.source ?? "<inline>")
-      const key = cacheKey(input, profile)
+      // Only a start document owns the node ceiling; fragments inherit the
+      // workflow's persisted one and are checked again by Dag.replan.
+      const userMaxTotalNodes =
+        input.action === "start" && options.config ? (yield* options.config.dagGlobal()).max_total_nodes : undefined
+      const key = cacheKey(input, profile, userMaxTotalNodes)
       // Environment catalogs are live state (models and agents may
       // change during the tool instance), so only portable results are safe
       // to cache by source content.
@@ -165,6 +174,7 @@ export function make(options: Options = {}) {
         profile,
         config: {
           ...compiled.config,
+          ...(userMaxTotalNodes !== undefined ? { user_max_total_nodes: userMaxTotalNodes } : {}),
           ...(nodeDefaults ? { node_defaults: nodeDefaults } : {}),
         },
         nodes,
@@ -400,7 +410,7 @@ function applyNodeModels(nodes: NodeConfig[], models: LegacyModels["nodes"]) {
   })
 }
 
-function cacheKey(input: PrepareInput, profile: DagValidation.Profile) {
+function cacheKey(input: PrepareInput, profile: DagValidation.Profile, userMaxTotalNodes?: number) {
   const content =
     input.source.kind === "yaml" ? input.source.content : (JSON.stringify(input.source.value) ?? "undefined")
   const context = JSON.stringify({
@@ -413,6 +423,7 @@ function cacheKey(input: PrepareInput, profile: DagValidation.Profile) {
     execution_workspace: input.executionWorkspace,
     known_dependencies: input.known_dependencies,
     node_defaults: input.node_defaults,
+    user_max_total_nodes: userMaxTotalNodes,
   })
   return new Bun.CryptoHasher("sha256").update(`${context}\0${content}`).digest("hex")
 }

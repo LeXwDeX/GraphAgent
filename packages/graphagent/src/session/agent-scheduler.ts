@@ -36,11 +36,13 @@ import { EngineProcess } from "./engine-process"
  *
  * # Child runs
  *
- * A slot covers one spawned child run (a DAG node or a task subagent). DAG
- * nodes hold the workflow layer (`max_concurrency`, truncated to the child
- * pool) and the DAG-wide layer (`dag.concurrency`, hot-read by the caller in
- * E4) at the same time. Task runs draw from the two slots reserved inside the
- * child pool and are not counted against the DAG-wide layer.
+ * A slot covers one spawned child run (a DAG node or a task subagent). A DAG
+ * node's workflow layer (`max_concurrency`, truncated to the pool left after
+ * the task reserve and to the DAG-wide layer) and the DAG-wide layer
+ * (`dag.concurrency`, hot-read by the caller in E4) are held at the same time;
+ * the effective per-workflow cap is the smallest of the three. Task runs draw
+ * from the two slots reserved inside the child pool and are not counted
+ * against the DAG-wide layer.
  *
  * # Penalties
  *
@@ -220,8 +222,17 @@ const childCaps = (limits: SchedulerLimits) => {
   }
 }
 
-const effectiveWorkflowCap = (limits: SchedulerLimits, cap: number) =>
-  Math.max(1, Math.min(cap, childCaps(limits).workflowPool))
+/**
+ * One workflow's node cap: the declared `max_concurrency`, the pool left after
+ * the task reserve, and the DAG-wide layer (`dag.concurrency`) all bound it.
+ * The DAG layer is process-wide, so a workflow asking for five nodes while the
+ * user allows three runs three — the truncation warning below and
+ * `capacity(limit).cap` report this same effective value.
+ */
+const effectiveWorkflowCap = (limits: SchedulerLimits, cap: number) => {
+  const { workflowPool, dagLayer } = childCaps(limits)
+  return Math.max(1, Math.min(cap, workflowPool, dagLayer))
+}
 
 const canRequest = (state: SchedulerState, input: RequestInput, nowMs: number): boolean => {
   const requests = state.requests
@@ -335,14 +346,15 @@ const pumpRequests = (state: SchedulerState, nowMs: number) => {
 }
 
 const slotAdmissible = (state: SchedulerState, limit: LimitKey, cap: number): boolean => {
-  const { workflowPool, dagLayer, childGlobal } = childCaps(state.limits)
+  const { dagLayer, childGlobal } = childCaps(state.limits)
   if (limit.kind === "workflow") {
+    // The per-workflow cap already folds in the DAG-wide layer and the pool
+    // left after the task reserve; the layer check below keeps that shared
+    // ceiling across workflows. A running task is excluded from both (its
+    // reserve is not part of `workflowPool`), and the total child pool still
+    // bounds the shared draw.
     if ((state.children.byWorkflow.get(limit.workflowID) ?? 0) >= effectiveWorkflowCap(state.limits, cap)) return false
     if (state.children.dagGlobal >= dagLayer) return false
-    // The task reserve is excluded from `workflowPool`, so a running task must
-    // not count against the workflow ceiling as well; the shared draw is still
-    // bounded by the total child pool.
-    if (state.children.dagGlobal >= workflowPool) return false
     return state.children.inflight < childGlobal
   }
   if ((state.children.byTaskParent.get(limit.parentSessionID) ?? 0) >= Math.max(1, cap)) return false
@@ -560,7 +572,7 @@ const acquireSlot = (state: SchedulerState, limit: LimitKey, cap: number, option
       const effective = effectiveWorkflowCap(state.limits, cap)
       if (cap > effective && state.children.warnedCaps.get(limit.workflowID) !== effective) {
         yield* Effect.sync(() => state.children.warnedCaps.set(limit.workflowID, effective))
-        yield* Effect.logWarning("workflow concurrency truncated to the child pool", {
+        yield* Effect.logWarning("workflow concurrency truncated to the child pool and DAG-wide layer", {
           workflowID: limit.workflowID,
           requested: cap,
           effective,

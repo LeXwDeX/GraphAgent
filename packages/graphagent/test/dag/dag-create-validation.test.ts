@@ -13,6 +13,7 @@ import { SessionTable } from "@graphagent/core/session/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
 import { Dag, type NodeConfig, type WorkflowConfig } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { TestConfig } from "../fixture/config"
 
 const testLayer = Layer.mergeAll(
   Database.defaultLayer,
@@ -23,6 +24,13 @@ const testLayer = Layer.mergeAll(
 )
 
 const dagLayer = Layer.provideMerge(Dag.layer, testLayer)
+
+/** The same graph runtime with a global `dag.max_total_nodes` user cap. */
+const dagLayerWithGlobalCap = (maxTotalNodes: number) =>
+  Layer.provideMerge(
+    Dag.layer,
+    Layer.mergeAll(testLayer, TestConfig.layer({ dagGlobal: () => Effect.succeed({ max_total_nodes: maxTotalNodes }) })),
+  )
 
 function node(id: string, dependsOn: string[] = []): NodeConfig {
   return {
@@ -97,18 +105,67 @@ describe("Dag.create structural validation", () => {
     )
   })
 
-  it("enforces max_total_nodes at creation, not only on replan", async () => {
+  it("enforces a declared max_total_nodes at creation, not only on replan", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const error = yield* createExpectingError({
           max_total_nodes: 2,
-          nodes: Array.from({ length: 101 }, (_, i) => node(`n${i}`)),
+          nodes: [node("a"), node("b"), node("c")],
         })
-        // A lower configured cap is raised to the 100-node floor.
-        expect(error.message).toContain("Total node ceiling exceeded: 101 nodes > 100 max")
-        // Only a start document owns the graph budget; the start hint may say so.
-        expect((error as Dag.StructuralValidationError).diagnostics[0]?.hint).toContain("raise config.max_total_nodes")
-      }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
+        // A declaration below the user cap is honored (no 100-node floor).
+        expect(error.message).toContain("Total node ceiling exceeded: 3 nodes > 2 max")
+        if (!(error instanceof Dag.StructuralValidationError)) throw new Error("expected a structural failure")
+        const hint = error.diagnostics[0]?.hint
+        expect(hint).toContain("Raise config.max_total_nodes")
+        expect(hint).toContain("dag.max_total_nodes cap of 100")
+      }).pipe(Effect.scoped, Effect.provide(dagLayer)),
+    )
+  })
+
+  it("applies the global dag.max_total_nodes cap to an omitted declaration", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const error = yield* createExpectingError({ nodes: [node("a"), node("b"), node("c")] })
+        expect(error.message).toContain("Total node ceiling exceeded: 3 nodes > 2 max")
+        if (!(error instanceof Dag.StructuralValidationError)) throw new Error("expected a structural failure")
+        // Only the user's global key can move this ceiling; the start document
+        // carries no declaration of its own to raise.
+        expect(error.diagnostics[0]?.hint).toContain("raise dag.max_total_nodes")
+      }).pipe(Effect.scoped, Effect.provide(dagLayerWithGlobalCap(2))),
+    )
+  })
+
+  it("clamps a declaration above the global cap to the user's ceiling", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const error = yield* createExpectingError({
+          max_total_nodes: 50,
+          nodes: [node("a"), node("b"), node("c")],
+        })
+        expect(error).toBeInstanceOf(Dag.StructuralValidationError)
+        expect(error.message).toContain("Total node ceiling exceeded: 3 nodes > 2 max")
+      }).pipe(Effect.scoped, Effect.provide(dagLayerWithGlobalCap(2))),
+    )
+  })
+
+  it("allows a graph the global cap admits even beyond the old default floor", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        const dag = yield* Dag.Service
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "raised-global-cap",
+            config: {
+              name: "raised-global-cap",
+              nodes: Array.from({ length: 120 }, (_, i) => node(`n${i}`)),
+            },
+          })
+          .pipe(Effect.orDie)
+        expect(dagID.startsWith("dag")).toBe(true)
+      }).pipe(Effect.scoped, Effect.provide(dagLayerWithGlobalCap(150))),
     )
   })
 
@@ -126,17 +183,42 @@ describe("Dag.create structural validation", () => {
           })
           .pipe(Effect.orDie)
         const error = yield* dag
-          .replan(dagID, { nodes: Array.from({ length: 100 }, (_, i) => node(`b${i}`)) })
+          .replan(dagID, { nodes: [node("b"), node("c")] })
           .pipe(Effect.catch((e: Error) => Effect.succeed(e)))
         expect(error).toBeInstanceOf(Dag.StructuralValidationError)
-        const ceiling = (error as Dag.StructuralValidationError).diagnostics.find((d) =>
-          d.message.includes("Total node ceiling exceeded: 101 nodes > 100 max"),
+        if (!(error instanceof Dag.StructuralValidationError)) throw new Error("expected a structural failure")
+        const ceiling = error.diagnostics.find((d) =>
+          d.message.includes("Total node ceiling exceeded: 3 nodes > 2 max"),
         )!
-        expect(ceiling.hint).not.toContain("raise max_total_nodes")
+        expect(ceiling.hint).not.toContain("raise config.max_total_nodes")
         expect(ceiling.hint).toContain("fixed by the start document")
         expect(ceiling.hint).toContain("Shrink the fragment")
         expect(ceiling.hint).toContain("bounded successor workflow")
-      }).pipe(Effect.scoped, Effect.provide(dagLayer)) as Effect.Effect<never>,
+      }).pipe(Effect.scoped, Effect.provide(dagLayer)),
+    )
+  })
+
+  it("rejects an extend that reaches past the global cap, even when the start document omitted it", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* setupFKs()
+        const dag = yield* Dag.Service
+        const dagID = yield* dag
+          .create({
+            projectID: Project.ID.global,
+            sessionID: "ses_create",
+            title: "extend-ceiling",
+            config: { name: "extend-ceiling", nodes: [node("a"), node("b")] },
+          })
+          .pipe(Effect.orDie)
+        const error = yield* dag
+          .extend(dagID, [node("c")])
+          .pipe(Effect.catch((e: Error) => Effect.succeed(e)))
+        expect(error).toBeInstanceOf(Dag.StructuralValidationError)
+        if (!(error instanceof Dag.StructuralValidationError)) throw new Error("expected a structural failure")
+        expect(error.message).toContain("Total node ceiling exceeded: 3 nodes > 2 max")
+        expect(error.diagnostics[0]?.hint).toContain("fixed by the start document")
+      }).pipe(Effect.scoped, Effect.provide(dagLayerWithGlobalCap(2))),
     )
   })
 

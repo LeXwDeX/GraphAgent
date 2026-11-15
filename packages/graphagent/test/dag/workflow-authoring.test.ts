@@ -715,3 +715,65 @@ describe("WorkflowAuthoring replan start-only capture fields", () => {
     }),
   )
 })
+
+describe("WorkflowAuthoring node ceiling (#1031 M4)", () => {
+  const threeNodes = {
+    config: {
+      name: "three-nodes",
+      nodes: [
+        { ...node, id: "a", name: "a" },
+        { ...node, id: "b", name: "b" },
+        { ...node, id: "c", name: "c" },
+      ],
+    },
+  }
+
+  const userCap = (maxTotalNodes: number) => ({ dagGlobal: () => Effect.succeed({ max_total_nodes: maxTotalNodes }) })
+
+  it.effect("applies the user's global dag.max_total_nodes cap to an omitted declaration", () =>
+    Effect.gen(function* () {
+      const authoring = WorkflowAuthoring.make({ config: userCap(2) })
+      const result = yield* authoring.prepare({
+        action: "start",
+        source: { kind: "inline", value: threeNodes },
+        profile: "portable",
+      })
+      expect(result.valid).toBe(false)
+      expect(result.errors.some((e) => e.message.includes("Total node ceiling exceeded: 3 nodes > 2 max"))).toBe(true)
+    }),
+  )
+
+  it.effect("clamps a declared cap above the user cap instead of letting it raise the ceiling", () =>
+    Effect.gen(function* () {
+      const authoring = WorkflowAuthoring.make({ config: userCap(2) })
+      const result = yield* authoring.prepare({
+        action: "start",
+        source: {
+          kind: "inline",
+          value: { config: { ...threeNodes.config, max_total_nodes: 50 } },
+        },
+        profile: "portable",
+      })
+      expect(result.valid).toBe(false)
+      expect(result.errors.some((e) => e.message.includes("Total node ceiling exceeded: 3 nodes > 2 max"))).toBe(true)
+    }),
+  )
+
+  it.effect("honors a declaration below the old 100-node floor", () =>
+    Effect.gen(function* () {
+      // No user cap supplied: the documented default is 100, and a lower
+      // declaration tightens it rather than being raised to the floor.
+      const result = yield* WorkflowAuthoring.make().prepare({
+        action: "start",
+        source: {
+          kind: "inline",
+          value: { config: { ...threeNodes.config, max_total_nodes: 2 } },
+        },
+        profile: "portable",
+      })
+      expect(result.valid).toBe(false)
+      expect(result.errors.some((e) => e.message.includes("Total node ceiling exceeded: 3 nodes > 2 max"))).toBe(true)
+      expect(result.errors.some((e) => e.hint.includes("Raise config.max_total_nodes deliberately"))).toBe(true)
+    }),
+  )
+})

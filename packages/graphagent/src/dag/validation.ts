@@ -223,7 +223,7 @@ export const NodeSchema = Schema.Struct({
     }),
   ).annotate({
     description:
-      "{ timeout_ms } — bounds the node from concurrency-slot acquisition to completion; time spent queued for a global/workflow slot does not count, but a permit wait longer than timeout_ms fails the node without spawning. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Inherits config.node_defaults.worker_config",
+      "{ timeout_ms } — bounds the node from concurrency-slot acquisition to completion; time spent queued for a global/workflow slot does not count and the queue wait never fails the node — the clock starts only when the slot is acquired. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Inherits config.node_defaults.worker_config",
   }),
   input_mapping: Schema.optional(Schema.Record(Schema.String, Schema.String)).annotate({
     description:
@@ -293,7 +293,8 @@ const GraphBudgetFields = {
     description: "Max replan restarts per node ID. Default: 5",
   }),
   max_total_nodes: Schema.optional(Schema.Number).annotate({
-    description: "Cumulative node cap across the workflow lifetime. Default and minimum: 100; lower values are raised to 100",
+    description:
+      "Cumulative node cap across the workflow lifetime. Defaults to the user's global dag.max_total_nodes (100); a lower declaration tightens it, a higher one is clamped to the user cap",
   }),
   workspace: Schema.optional(Schema.String).annotate({
     description:
@@ -646,6 +647,9 @@ export interface StructuralInput {
   delivery_node?: string
   mode?: ExecutionMode
   max_total_nodes?: number
+  /** The user's global `dag.max_total_nodes` cap (Issue #1031 M4). The
+   * effective ceiling is the lower of this and `max_total_nodes`. */
+  user_max_total_nodes?: number
   /** Nodes already registered in a live workflow; counts toward the ceiling. */
   existing_node_count?: number
   /** Node ids already present in a live workflow; valid dependency targets for
@@ -1109,10 +1113,17 @@ function bindingDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
   )
 }
 
-/** The default is also the floor: a start document may raise the budget but
- * never shrink it, so a tight self-imposed cap cannot strand remaining work. */
-export function effectiveMaxTotalNodes(maxTotalNodes: number | undefined) {
-  return Math.max(maxTotalNodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes, DEFAULT_WORKFLOW_CONFIG.maxTotalNodes)
+/**
+ * The effective node ceiling: the lower of the workflow's declared cap and the
+ * user's global cap (`dag.max_total_nodes`, Issue #1031 M4). The user cap is a
+ * hard ceiling — a workflow may tighten it, never loosen it — and it defaults
+ * to `DEFAULT_WORKFLOW_CONFIG.maxTotalNodes` when no config layer is present.
+ */
+export function effectiveMaxTotalNodes(
+  maxTotalNodes: number | undefined,
+  userMaxTotalNodes: number = DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+) {
+  return Math.min(maxTotalNodes ?? userMaxTotalNodes, userMaxTotalNodes)
 }
 
 /** Which document carries the ceiling. Only `start` can change it: extend,
@@ -1127,9 +1138,13 @@ function ceilingExceeded(
   totalNodes: number,
   maxTotalNodes: number | undefined,
   action: CeilingAction = "start",
+  userMaxTotalNodes: number = DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
 ): Diagnostic[] {
-  const max = effectiveMaxTotalNodes(maxTotalNodes)
+  const max = effectiveMaxTotalNodes(maxTotalNodes, userMaxTotalNodes)
   if (totalNodes <= max) return []
+  // A declared cap below the user ceiling is the tighter (self-imposed) bound;
+  // otherwise the user's global cap is what has to move.
+  const declaredTightens = maxTotalNodes !== undefined && maxTotalNodes < userMaxTotalNodes
   return [
     diagnostic({
       code: DIAGNOSTIC_CODES.dagInvalid,
@@ -1137,14 +1152,21 @@ function ceilingExceeded(
       message: `Total node ceiling exceeded: ${totalNodes} nodes > ${max} max`,
       hint:
         action === "start"
-          ? "Reduce the graph or raise config.max_total_nodes deliberately"
-          : `The ceiling is fixed by the start document (this ${action} would reach ${totalNodes} nodes; limit ${max}); a ${action} document cannot carry config.max_total_nodes. Shrink the fragment, or continue in-scope work in a bounded successor workflow (with a higher config.max_total_nodes if needed) without stopping for user approval`,
+          ? declaredTightens
+            ? `Raise config.max_total_nodes deliberately (up to the user's dag.max_total_nodes cap of ${userMaxTotalNodes}) or reduce the graph`
+            : "Reduce the graph or raise dag.max_total_nodes in the global config deliberately"
+          : `The ceiling is fixed by the start document and the user's dag.max_total_nodes cap (this ${action} would reach ${totalNodes} nodes; limit ${max}); a ${action} document cannot carry config.max_total_nodes. Shrink the fragment, or continue in-scope work in a bounded successor workflow (with a higher global dag.max_total_nodes if needed) without stopping for user approval`,
     }),
   ]
 }
 
 function ceilingDiagnostics(input: StructuralInput): Diagnostic[] {
-  return ceilingExceeded((input.existing_node_count ?? 0) + input.nodes.length, input.max_total_nodes)
+  return ceilingExceeded(
+    (input.existing_node_count ?? 0) + input.nodes.length,
+    input.max_total_nodes,
+    "start",
+    input.user_max_total_nodes,
+  )
 }
 
 /** Review-lifecycle diagnostics for one config. Shared by the structural
@@ -1365,7 +1387,7 @@ export interface ReplanStructuralInput {
   /** The document that triggered this check. Only a start document owns the
    * graph budget; extend/replan/recover hints must not suggest raising it. */
   action?: Exclude<CeilingAction, "start">
-  config: { mode?: ExecutionMode; max_total_nodes?: number }
+  config: { mode?: ExecutionMode; max_total_nodes?: number; user_max_total_nodes?: number }
   /** #1030 D9-g: the durable workflow-level isolation. Fragments cannot set
    * it, but they must not rebind a node away from the shared worktree. */
   isolation?: "worktree"
@@ -1406,7 +1428,12 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
             }),
           )
       : []),
-    ...ceilingExceeded(input.existingNodeCount + input.addCount, input.config.max_total_nodes, input.action ?? "replan"),
+    ...ceilingExceeded(
+      input.existingNodeCount + input.addCount,
+      input.config.max_total_nodes,
+      input.action ?? "replan",
+      input.config.user_max_total_nodes,
+    ),
     ...review.errors,
     ...review.warnings,
     ...(duplicates.length === 0 ? topologyDiagnostics(input.rerunNodes) : []),
@@ -1824,6 +1851,8 @@ export function validatePostCompile(input: {
     objective?: string
     delivery_node?: string
     max_total_nodes?: number
+    /** The user's global `dag.max_total_nodes` cap (Issue #1031 M4). */
+    user_max_total_nodes?: number
     workspace?: string
     isolation?: "worktree"
     node_defaults?: { required?: boolean; report_to_parent?: boolean; model?: { modelID: string; providerID: string } }
@@ -1852,6 +1881,7 @@ export function validatePostCompile(input: {
             delivery_node: input.config.delivery_node,
             mode: input.config.mode,
             max_total_nodes: input.config.max_total_nodes,
+            user_max_total_nodes: input.config.user_max_total_nodes,
             node_defaults: input.config.node_defaults,
             redundant_dependency_lint: input.blocks === undefined,
           })),

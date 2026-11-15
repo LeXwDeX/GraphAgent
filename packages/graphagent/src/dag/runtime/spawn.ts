@@ -11,13 +11,13 @@
  * session and NodeStarted only materialize INSIDE the concurrency permit, so a
  * 100-node fan-out no longer creates 100 sessions and shows 100 "running"
  * rows while true concurrency is 5. The execution deadline is anchored at
- * permit acquisition, not admission: the queued row carries NO deadline and
- * queue wait does not consume the node's budget. The permit wait itself is
- * bounded by timeout_ms, so a node that never gets a permit fails as a timeout
- * without spawning a session (no progress to protect). Running-node extensions
- * (F4) re-time RUNNING nodes only; a queued node has no deadline to move.
- * A queued node absent from a plain replan fragment is superseded (cancelled)
- * by planReplan; the additive extend path re-admits it with the same
+ * permit acquisition, not admission: the queued row carries NO deadline,
+ * queue wait does not consume the node's budget, and the wait for a
+ * global/workflow slot is unbounded — a node queues until a slot frees instead
+ * of failing on elapsed queue time. Running-node extensions (F4) re-time
+ * RUNNING nodes only; a queued node has no deadline to move. A queued node
+ * absent from a plain replan fragment is superseded (cancelled) by
+ * planReplan; the additive extend path re-admits it with the same
  * permit-anchored budget.
  *
  * Completion model (mirrors task.ts:210-221): a node completes when its child
@@ -291,8 +291,8 @@ export function makeDeadlineWatcher(
       if (node.status !== "running") {
         // Pre-running wait (F5): a queued/pending/paused node has no deadline
         // (the budget starts at permit acquisition) — do not abandon
-        // supervision; poll until it starts, terminalizes, or the scheduler's
-        // bounded permit wait fails it.
+        // supervision; poll until it starts or terminalizes. The scheduler
+        // wait for a slot is unbounded, so queue time never fails the node.
         yield* Effect.sleep(sleepUntilDeadlineMs(deadline, now, 1_000))
         continue
       }
@@ -707,35 +707,15 @@ export function spawnNode(
 
     const fiber = yield* Effect.forkIn(scope)(
       Effect.gen(function* () {
-        // Acquire the execution permit with a bounded wait of timeout_ms. The
-        // scheduler cancels the queued waiter itself when the wait expires, so
-        // no reservation leaks; the node fails as a timeout without spawning.
+        // Acquire the execution permit. The wait is unbounded: queue time is
+        // not execution time, so a node waits for a global/workflow slot
+        // instead of failing on elapsed queue time. The execution budget is
+        // anchored below, at the moment the permit is held.
         const acquirePermit = () =>
           scheduler.childSlot(schedule.limit, schedule.cap, {
             rootSessionID: input.parentSessionID,
-            timeoutMs,
-          }).pipe(
-            Effect.map(Option.some),
-            Effect.catchTag("AgentSchedulerTimeout", () =>
-              dag
-                .nodeFailed(
-                  input.dagID,
-                  input.nodeID,
-                  `node exceeded timeout while waiting for execution permit`,
-                  "timeout",
-                  executionAttempt,
-                )
-                .pipe(
-                  Effect.catchIf(isTransitionRejection, () =>
-                    Effect.logWarning("nodeFailed (permit-wait timeout) guard rejected — node already terminal"),
-                  ),
-                  Effect.as(Option.none<AgentScheduler.SlotPermit>()),
-                ),
-            ),
-          )
-        const acquired = yield* acquirePermit()
-        if (Option.isNone(acquired)) return
-        let slot: AgentScheduler.SlotPermit | undefined = acquired.value
+          })
+        let slot: AgentScheduler.SlotPermit | undefined = yield* acquirePermit()
         yield* Effect.gen(function* () {
           // #379 pause fence: scheduler admission is the only pause gate, so a
           // node queued before control(pause) still holds a spawn fiber that
@@ -760,15 +740,13 @@ export function spawnNode(
             )
             // A paused node must not keep a child-run slot: another workflow
             // and the foreground task pool have to be able to run while this
-            // one is paused. Resume re-queues the node for a fresh slot, with
-            // the same bounded permit wait.
+            // one is paused. Resume re-queues the node for a fresh slot; the
+            // wait does not time out.
             if (slot) yield* slot.release
             while ((yield* readPauseStatus) === "paused") {
               yield* Effect.sleep(250)
             }
-            const reacquired = yield* acquirePermit()
-            if (Option.isNone(reacquired)) return
-            slot = reacquired.value
+            slot = yield* acquirePermit()
           }
           // The execution budget starts at permit acquisition: the queue wait
           // (including a pause hold) does not consume it. nodeStarted persists

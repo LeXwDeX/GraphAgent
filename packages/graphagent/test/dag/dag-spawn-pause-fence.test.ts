@@ -7,9 +7,10 @@
 // reply fixture use type-only shims for branded IDs — converting them would
 // fork the shared harness shape without changing behavior.
 import { describe, expect, it } from "bun:test"
-import { Effect, Layer, Fiber, Option } from "effect"
+import { Clock, Effect, Layer, Fiber, Option } from "effect"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import * as AgentSchedulerState from "@/session/agent-scheduler-state"
 import { Dag } from "@/dag/dag"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
@@ -20,6 +21,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { pollWithTimeout } from "../lib/effect"
 
 type TrackedEvent = { type: string; nodeID: string }
 
@@ -28,18 +30,20 @@ type TrackedEvent = { type: string; nodeID: string }
 // (workflow status back to "running") must let the fiber proceed and complete.
 
 function makeHarness(
-  workflowStatus: () => string,
+  workflowStatus: (workflowID: string) => string,
   claimAdoption: () => boolean,
   directory: string | (() => string) = process.cwd(),
   agentWait?: Promise<void>,
+  schedulerLayer: Layer.Layer<AgentScheduler.Service> = AgentScheduler.defaultLayer,
 ) {
   const events: TrackedEvent[] = []
   const failUnrecoverableReasons: string[] = []
+  const started: Array<{ nodeID: string; deadlineMs: number }> = []
   const storeState = { failReads: 0, reads: 0 }
   let createCalls = 0
   const storeStub: Partial<DagStore.Interface> = {
     tryClaimAdoption: () => Effect.sync(() => claimAdoption()),
-    getWorkflow: () =>
+    getWorkflow: Effect.fn("s")((workflowID: string) =>
       Effect.suspend(() => {
         storeState.reads++
         if (storeState.failReads > 0) {
@@ -48,11 +52,13 @@ function makeHarness(
         }
         return Effect.sync(() =>
           makeWorkflowRow({
-            status: workflowStatus(),
+            id: workflowID,
+            status: workflowStatus(workflowID),
             directory: typeof directory === "function" ? directory() : directory,
           }),
         )
       }),
+    ),
     getNode: Effect.fn("s")((_workflowID: string, nodeID: string) =>
       Effect.sync(() => makeNodeRow({ id: nodeID, status: "queued" })),
     ),
@@ -60,7 +66,11 @@ function makeHarness(
   const dagLayer = Layer.mock(Dag.Service, {
     store: storeStub as DagStore.Interface,
     nodeQueued: Effect.fn("s")(() => Effect.void),
-    nodeStarted: Effect.fn("s")(() => Effect.void),
+    nodeStarted: Effect.fn("s")((_dagID: string, nodeID: string, _childSessionID: string, deadlineMs?: number) =>
+      Effect.sync(() => {
+        started.push({ nodeID, deadlineMs: deadlineMs ?? 0 })
+      }),
+    ),
     failUnrecoverable: Effect.fn("s")((_dagID: string, reason: string) =>
       Effect.sync(() => {
         failUnrecoverableReasons.push(reason)
@@ -110,10 +120,11 @@ function makeHarness(
   })
   return {
     events,
+    started,
     storeState,
     failUnrecoverableReasons,
     createCalls: () => createCalls,
-    fullLayer: Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer, AgentScheduler.defaultLayer),
+    fullLayer: Layer.mergeAll(dagLayer, agentLayer, sessionLayer, promptLayer, schedulerLayer),
   }
 }
 
@@ -150,8 +161,8 @@ function makeSpawnInput(directory?: string): NodeSpawnInput {
 }
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
-function workflowSchedule() {
-  return { limit: { kind: "workflow" as const, workflowID: "wf-1" }, cap: 1 }
+function workflowSchedule(workflowID = "wf-1", cap = 1) {
+  return { limit: { kind: "workflow" as const, workflowID }, cap }
 }
 
 describe("spawnNode pause fence (#379)", () => {
@@ -368,7 +379,7 @@ describe("spawnNode pause fence (#379)", () => {
     )
   })
 
-  it("fails a node whose permit wait exceeds the scheduler timeout", async () => {
+  it("keeps a node queued past timeout_ms and anchors its budget at permit acquisition", async () => {
     const harness = makeHarness(
       () => "running",
       () => true,
@@ -377,19 +388,99 @@ describe("spawnNode pause fence (#379)", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const scheduler = yield* AgentScheduler.Service
-          // Hold the workflow's only child slot so the spawn stays queued in
-          // the scheduler past its timeoutMs permit-wait bound. The scheduler
-          // cancels the queued waiter itself, so the node fails as a timeout
-          // without materializing a child session.
+          // Hold the workflow's only child slot past the node's timeout_ms.
+          // Queue time is not execution time, so the spawn must keep waiting
+          // instead of failing the permit wait without spawning.
           const held = yield* scheduler.childSlot({ kind: "workflow", workflowID: "wf-1" }, 1)
           const result = yield* spawnNode(workflowSchedule(), { ...makeSpawnInput(), timeoutMs: 200 })
-          const settled = yield* Fiber.await(result.fiber).pipe(Effect.timeoutOption("5 seconds"))
-          expect(Option.isSome(settled)).toBe(true)
+          yield* Effect.sleep(400)
+          expect(harness.createCalls()).toBe(0)
+          expect(harness.events).toEqual([])
+          expect(harness.started).toEqual([])
+
+          const releasedAt = yield* Clock.currentTimeMillis
           yield* held.release
+          yield* Fiber.await(result.fiber).pipe(Effect.timeout("5 seconds"))
+          expect(harness.createCalls()).toBe(1)
+          expect(harness.events.find((event) => event.type === "nodeCompleted")).toBeDefined()
+          // The deadline is anchored when the permit is granted (after the
+          // release), not when the spawn was dispatched.
+          expect(harness.started).toHaveLength(1)
+          expect(harness.started[0]?.deadlineMs).toBeGreaterThanOrEqual(releasedAt + 200)
         }),
       ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
     )
-    expect(harness.createCalls()).toBe(0)
-    expect(harness.events).toEqual([{ type: "nodeFailed", nodeID: "node-1" }])
+  })
+
+  it("a paused workflow releases the only global slot so another workflow progresses", async () => {
+    // One shared child slot for both workflows: without the pause release the
+    // paused workflow would starve the other one until resume.
+    const limits: AgentSchedulerState.SchedulerLimits = {
+      ...AgentSchedulerState.DEFAULT_LIMITS,
+      childGlobal: 1,
+      taskReserve: 1,
+    }
+    const scheduler = AgentScheduler.make(AgentSchedulerState.makeState(limits), () => Effect.succeed(limits))
+    let pausedA = true
+    let grantedA = false
+    const observed: AgentScheduler.Interface = {
+      ...scheduler,
+      childSlot: (limit, cap, options) =>
+        scheduler.childSlot(limit, cap, options).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (limit.kind === "workflow" && limit.workflowID === "wf-a") grantedA = true
+            }),
+          ),
+        ),
+    }
+    const harness = makeHarness(
+      (workflowID) => (workflowID === "wf-a" && pausedA ? "paused" : "running"),
+      () => true,
+      process.cwd(),
+      undefined,
+      Layer.succeed(AgentScheduler.Service, observed),
+    )
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const a = yield* spawnNode(workflowSchedule("wf-a"), {
+            ...makeSpawnInput(),
+            dagID: "wf-a",
+            nodeID: "a",
+            node: makeNodeRow({ id: "a" }),
+          })
+          // The paused node took the slot once, then gave it back while it
+          // waits for resume: the global pool is idle and no child exists.
+          yield* pollWithTimeout(
+            Effect.gen(function* () {
+              if (!grantedA) return undefined
+              const snapshot = yield* scheduler.capacity()
+              return snapshot.children.running === 0 ? (true as const) : undefined
+            }),
+            "the paused workflow never released the only child slot",
+          )
+          expect(harness.createCalls()).toBe(0)
+
+          // Another session's workflow now takes the freed slot and completes.
+          const b = yield* spawnNode(workflowSchedule("wf-b"), {
+            ...makeSpawnInput(),
+            dagID: "wf-b",
+            nodeID: "b",
+            node: makeNodeRow({ id: "b" }),
+            parentSessionID: "ses_parent_b",
+          })
+          yield* Fiber.await(b.fiber).pipe(Effect.timeout("5 seconds"))
+          expect(harness.events).toContainEqual({ type: "nodeCompleted", nodeID: "b" })
+          expect((yield* scheduler.capacity()).children.running).toBe(0)
+
+          // Resume lets the paused node run once the other workflow settled.
+          pausedA = false
+          yield* Fiber.await(a.fiber).pipe(Effect.timeout("5 seconds"))
+          expect(harness.events).toContainEqual({ type: "nodeCompleted", nodeID: "a" })
+          expect(harness.createCalls()).toBe(2)
+        }),
+      ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
+    )
   })
 })
