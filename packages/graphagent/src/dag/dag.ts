@@ -116,6 +116,22 @@ export const DEFAULT_WORKFLOW_CONFIG = {
   maxTimeoutExtensions: 20,
 } as const
 
+/**
+ * The user's global node ceiling (`dag.max_total_nodes`, Issue #1031 M4), read
+ * from the global config layer when the caller's environment provides one. The
+ * mode announcement and the scheduler read the same key, so a workflow sees one
+ * ceiling everywhere. Direct service callers and unit harnesses without Config
+ * keep the documented default that
+ * `DagValidation.effectiveMaxTotalNodes` applies.
+ */
+const readUserMaxTotalNodes = Effect.fn("Dag.readUserMaxTotalNodes")(function* () {
+  const { Config } = yield* Effect.promise(() => import("@/config/config"))
+  const config = yield* Effect.serviceOption(Config.Service)
+  if (Option.isNone(config)) return undefined
+  const dag = yield* config.value.dagGlobal()
+  return dag.max_total_nodes
+})
+
 // Cap on workflow-lock acquisition + critical section (ADR-0004). The critical
 // section is a synchronous DB write, so exceeding this means the workflow is
 // already broken — interrupt loudly via Effect's builtin TimeoutException. The
@@ -432,8 +448,11 @@ function normalizeWorkflowConfig(config: WorkflowConfig): WorkflowConfig & { nod
     mode: config.mode ?? "standard",
     max_concurrency: config.max_concurrency ?? DEFAULT_WORKFLOW_CONFIG.maxConcurrency,
     max_node_replan_attempts: config.max_node_replan_attempts ?? DEFAULT_WORKFLOW_CONFIG.maxNodeReplanAttempts,
-    // The default doubles as a floor (see DagValidation.effectiveMaxTotalNodes).
-    max_total_nodes: Math.max(config.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes, DEFAULT_WORKFLOW_CONFIG.maxTotalNodes),
+    // Kept as declared: the effective ceiling is the lower of this value and
+    // the user's global `dag.max_total_nodes` cap (see
+    // DagValidation.effectiveMaxTotalNodes), so a tighter declaration is
+    // honored and the user cap can change between mutations.
+    ...(config.max_total_nodes !== undefined ? { max_total_nodes: config.max_total_nodes } : {}),
     max_timeout_extensions: config.max_timeout_extensions ?? DEFAULT_WORKFLOW_CONFIG.maxTimeoutExtensions,
     node_defaults: defaults,
     nodes: config.nodes.map((node) => normalizeNodeConfig(node, defaults)),
@@ -814,12 +833,14 @@ export const layer = Layer.effect(
       // merge via the projector's upsert, and a dangling depends_on reference
       // would silently drop the edge in buildGraph — turning a typo'd
       // dependency into an immediately-runnable root node. Rejection happens
-      // before any event publication.
+      // before any event publication. The node ceiling is the lower of the
+      // document's declaration and the user's global `dag.max_total_nodes`.
       const structural = DagValidation.structuralDiagnostics({
         nodes: config.nodes,
         delivery_node: config.delivery_node,
         mode: config.mode,
         max_total_nodes: config.max_total_nodes,
+        user_max_total_nodes: yield* readUserMaxTotalNodes(),
       })
       const structuralErrors = DagValidation.sortDiagnostics(structural.filter((d) => d.severity === "error"))
       for (const warning of structural.filter((d) => d.severity === "warning")) {
@@ -1366,6 +1387,9 @@ export const layer = Layer.effect(
       if (!wfConfig) {
         return yield* Effect.fail(new Error(`Replan rejected: current workflow config is invalid: ${dagID}`))
       }
+      // The persisted declaration is re-clamped against the user's CURRENT
+      // global cap: lowering `dag.max_total_nodes` also bounds later growth.
+      const userMaxTotalNodes = yield* readUserMaxTotalNodes()
       // #1030 D9-g: completed settlement removes the workflow worktree while
       // keeping its branch. Reopening the graph would spawn into a missing
       // execution directory (workspace_missing) with no live worktree to
@@ -1471,7 +1495,11 @@ export const layer = Layer.effect(
         addCount: plan.add.length,
         merged,
         action,
-        config: { mode: wfConfig.mode, max_total_nodes: wfConfig.max_total_nodes },
+        config: {
+          mode: wfConfig.mode,
+          max_total_nodes: wfConfig.max_total_nodes,
+          user_max_total_nodes: userMaxTotalNodes,
+        },
         isolation: wfConfig.isolation,
         terminalNodeIds,
         grandfatheredNodeIds: persistedGateNodeIds(merged.nodes, cfgById),
@@ -1800,6 +1828,10 @@ export const layer = Layer.effect(
       )
       const addedIDs = new Set(plan.replacements.map((replacement) => replacement.current))
       const added = plan.config.nodes.filter((node) => addedIDs.has(node.id))
+      // The persisted declaration is re-clamped against the user's CURRENT
+      // global cap, as in _replan: recovery must neither reject a graph the
+      // current ceiling admits nor produce one it forbids.
+      const userMaxTotalNodes = yield* readUserMaxTotalNodes()
       const diagnostics = DagValidation.replanStructuralDiagnostics({
         fragmentNodes: added,
         rerunNodes: added,
@@ -1812,7 +1844,11 @@ export const layer = Layer.effect(
         // are copies of stored nodes, so every gate keeps its accepted form.
         grandfatheredNodeIds: new Set(plan.config.nodes.map((node) => node.id)),
         action: "recover",
-        config,
+        config: {
+          mode: config.mode,
+          max_total_nodes: config.max_total_nodes,
+          user_max_total_nodes: userMaxTotalNodes,
+        },
         isolation: config.isolation,
       }).filter((diagnostic) => diagnostic.severity === "error")
       if (diagnostics.length > 0) return yield* Effect.fail(new StructuralValidationError({ diagnostics }))

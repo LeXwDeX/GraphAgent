@@ -3,6 +3,7 @@
 
 import { describe, expect } from "bun:test"
 import { Duration, Effect, Exit, Fiber, Option } from "effect"
+import { logLines } from "effect/testing/TestConsole"
 import * as TestClock from "effect/testing/TestClock"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { DEFAULT_LIMITS, type SchedulerLimits } from "@/session/agent-scheduler-state"
@@ -355,6 +356,30 @@ describe("AgentScheduler child slots", () => {
         expect((yield* scheduler.capacity()).children.running).toBe(3)
         yield* b.release
         yield* c.release
+      }),
+    ),
+  )
+
+  it.effect("workflow cap is also truncated to the DAG-wide layer, and the warning fires", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scheduler = schedulerWith(limits({ childGlobal: 8, taskReserve: 2, dagConcurrency: 3 }))
+        // The workflow asks for five nodes; the process-wide DAG layer admits
+        // three, so `capacity(limit).cap` and the warning report three.
+        const first = yield* scheduler.childSlot(workflow(), 5)
+        expect((yield* scheduler.capacity(workflow())).limit).toEqual({ key: workflow(), used: 1, cap: 3 })
+        const second = yield* scheduler.childSlot(workflow(), 5)
+        const third = yield* scheduler.childSlot(workflow(), 5)
+        const fourth = yield* scheduler.childSlot(workflow(), 5).pipe(Effect.forkScoped)
+        yield* settle
+        expect((yield* scheduler.capacity()).children.dagRunning).toBe(3)
+        expect((yield* logLines).join("\n")).toContain(
+          "workflow concurrency truncated to the child pool and DAG-wide layer",
+        )
+        yield* first.release
+        yield* Fiber.join(fourth)
+        yield* second.release
+        yield* third.release
       }),
     ),
   )

@@ -37,7 +37,7 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
     }),
   ).annotate({
     description:
-      "{ timeout_ms } — bounds the node from permit acquisition to completion; time spent queued does not count, but a permit wait longer than timeout_ms fails the node without spawning. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Overrides config.node_defaults.worker_config",
+      "{ timeout_ms } — bounds the node from permit acquisition to completion; time spent queued does not count and the queue wait never fails the node — the clock starts only when the slot is acquired. A running node that exceeds it escalates to the parent for adjudication (capped deadline extensions) before failing. Overrides config.node_defaults.worker_config",
   }),
   required: Schema.optional(Schema.Boolean).annotate({
     description:

@@ -3822,9 +3822,12 @@ config:
         expect.objectContaining({
           max_concurrency: 5,
           max_node_replan_attempts: 5,
-          max_total_nodes: 100,
         }),
       )
+      // #1031 M4: the node ceiling is the lower of the document's declaration
+      // and the user's global `dag.max_total_nodes`; an omitted declaration is
+      // not persisted as a default.
+      expect(config.max_total_nodes).toBeUndefined()
       expect(config.nodes[0]).toEqual(
         expect.objectContaining({
           required: true,

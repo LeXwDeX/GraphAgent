@@ -205,7 +205,7 @@ describe("dag-nodes", () => {
     const nodes = flat(content("dag-nodes"))
     expect(nodes).toContain("max_concurrency`: default 5")
     expect(nodes).toContain("max_node_replan_attempts`: default 5")
-    expect(nodes).toContain("max_total_nodes`: default and minimum 100")
+    expect(nodes).toContain("max_total_nodes`: your user's global `dag.max_total_nodes` (default 100)")
     expect(nodes).toContain("timeout_ms`: default 10 minutes")
     expect(nodes).toContain("Propose-then-assemble")
     expect(nodes).toContain("Tier A — Disjoint write sets")

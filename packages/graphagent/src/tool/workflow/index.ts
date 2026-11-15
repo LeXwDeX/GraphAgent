@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { Effect, type Schema } from "effect"
+import { Effect, Option, type Schema } from "effect"
 import { CommandPlugin } from "@graphagent/core/plugin/command"
 import { Dag } from "@/dag/dag"
 import { DagControl } from "@/dag/control"
 import { Agent } from "@/agent/agent"
+import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
@@ -68,9 +69,15 @@ export const WorkflowTool = Tool.define<
     const sessions = yield* Session.Service
     const agents = yield* Agent.Service
     const provider = yield* Provider.Service
+    // Optional so harnesses without a Config service stay valid; the service
+    // lookup needs no environment requirement of its own.
+    const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
 
     const authoring = WorkflowAuthoring.make({
       loadEnvironment: DagEnvironmentCatalogs.makeCatalogLoader(agents, provider),
+      // Production reads the user's hot global `dag.max_total_nodes` cap on
+      // every start validation.
+      ...(config ? { config } : {}),
     })
 
     return {

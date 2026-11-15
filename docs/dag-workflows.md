@@ -149,7 +149,7 @@ Each node declares:
 | `report_to_parent` | Wake the parent agent when this node reaches a terminal state                                       |
 | `review`           | `design` or `diff` review phase with an implementation-fingerprint contract (below)                 |
 
-Workflow-level knobs: `max_concurrency` (default 5), `max_node_replan_attempts` (5), `max_total_nodes` (100), per-node `timeout_ms` (default 10 min, counted from permit acquisition; time spent queued does not count).
+Workflow-level knobs: `max_concurrency` (default 5), `max_node_replan_attempts` (5), `max_total_nodes` (the lower of the workflow's declaration and the user's global `dag.max_total_nodes`, default 100), per-node `timeout_ms` (default 10 min, counted from permit acquisition; time spent queued does not count and a queued node never times out).
 
 ### Scheduling & execution
 

@@ -116,10 +116,11 @@ Higher concurrency helps only genuinely independent work:
   provider capacity.
 - `max_node_replan_attempts`: default 5. Increase only for iterative
   quality-driven convergence (review → revise → review on one artifact).
-- `max_total_nodes`: default and minimum 100 (lower values are raised to 100).
-- `worker_config.timeout_ms`: default 10 minutes. The clock starts at
-  global/workflow concurrency-slot acquisition, so queue time is free; a
-  running node that exceeds the budget escalates before failing. Increase for
+- `max_total_nodes`: your user's global `dag.max_total_nodes` (default 100)
+  is a hard cap; only a lower declaration tightens it.
+- `worker_config.timeout_ms`: default 10 minutes from slot acquisition.
+  Queue time is free and never fails a queued node; a running node that
+  exceeds the budget escalates before failing. Increase for
   long-running nodes (compilation, large test suites). Verifiers and
   aggregators are the most common timeout victims: consuming several parallel
   reports and re-checking their claims runs sequentially and routinely needs
@@ -153,7 +154,7 @@ changes sequentially; review converges on its diff, not scattered edits.
 | `condition`        | no       | One comparison `<dep-id>.output.<field> <op> <value>` over a direct dependency, evaluated before spawn; the node is skipped if false. `op` is `==`, `!=`, `>`, `<`, `>=`, or `<=`; `value` is a number, `true`/`false`/`null`, a bare word, or a quoted string. Other syntax (`===`, `!==`, `&&`, `\|\|`) is rejected |
 | `input_mapping`    | no       | Map upstream node outputs into template variables |
 | `report_to_parent` | no       | If true, the parent wakes when this node completes or fails. Terminal status always wakes the parent regardless |
-| `worker_config`    | no       | `{ timeout_ms }` — bounds the node from concurrency-slot acquisition to completion (default 10 minutes); time spent queued for a global/workflow slot does not count, but a permit wait longer than `timeout_ms` fails the node without spawning, and a running node that exceeds it escalates before failing |
+| `worker_config`    | no       | `{ timeout_ms }` — bounds the node from concurrency-slot acquisition to completion (default 10 minutes); time spent queued for a global/workflow slot does not count and a queued node never times out, while a running node that exceeds it escalates before failing |
 | `workspace_writes` | no       | `"allow"`/`"deny"`. Deny withholds edit, write, apply_patch; shell keeps agent permission, so reviewers can run tests. Default deny for `review`/`review-*` and `auditor`, else allow |
 | `output_schema`    | no       | JSON Schema for the node result. The final answer must be exactly one matching JSON value; validation/capture run before settlement, and a near-miss on a present field gets one bounded correction turn |
 | `restart`          | no       | (replan only) Re-spawn this running node with the new prompt |
