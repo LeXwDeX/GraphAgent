@@ -730,7 +730,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or path",
+              "description": "Saved spec name or path",
               "type": "string",
             },
           },
@@ -755,11 +755,9 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                   "items": {
                     "properties": {
                       "id": {
-                        "description": "Stable acceptance id the completeness lane reports against (for example AC1)",
                         "type": "string",
                       },
                       "text": {
-                        "description": "Acceptance criterion the delivered work must satisfy",
                         "type": "string",
                       },
                     },
@@ -1041,7 +1039,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "object",
             },
             "operation": {
-              "description": "Write a start spec; creates none",
+              "description": "Write a start spec",
               "enum": [
                 "draft",
               ],
@@ -1074,7 +1072,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "profile": {
-              "description": "portable checks; environment resolves prompts, workers, models",
+              "description": "portable checks syntax; environment resolves assets",
               "enum": [
                 "portable",
                 "environment",
@@ -1082,7 +1080,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or path",
+              "description": "Saved spec name or path",
               "type": "string",
             },
           },
@@ -1108,7 +1106,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or path",
+              "description": "Saved spec name or path",
               "type": "string",
             },
           },
@@ -1128,14 +1126,14 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "operation": {
-              "description": "Add nodes or blocks to a live workflow",
+              "description": "Add nodes/blocks to a live workflow",
               "enum": [
                 "extend",
               ],
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or path",
+              "description": "Saved spec name or path",
               "type": "string",
             },
             "workflow_id": {
@@ -1186,7 +1184,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "cursor": {
-              "description": "Page cursor from the previous page",
+              "description": "Cursor from the previous page",
               "type": "string",
             },
             "limit": {
@@ -1198,7 +1196,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "operation": {
-              "description": "Node output; file-backed results return content_ref/path",
+              "description": "Node output; file-backed reads use content_ref/path",
               "enum": [
                 "result",
               ],
@@ -1398,7 +1396,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "spec_path": {
-              "description": "Saved workflow name or path",
+              "description": "Saved spec name or path",
               "type": "string",
             },
             "workflow_id": {
@@ -1429,7 +1427,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "integer",
             },
             "node_ids": {
-              "description": "Nodes to retry; downstream closure is invalidated",
+              "description": "Nodes to retry; invalidates downstream closure",
               "items": {
                 "type": "string",
               },
@@ -1437,14 +1435,14 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "array",
             },
             "operation": {
-              "description": "Retry nodes and descendants, keeping valid completed work",
+              "description": "Retry nodes and descendants; keep valid work",
               "enum": [
                 "recover",
               ],
               "type": "string",
             },
             "resume_cancelled": {
-              "description": "Set true only to recover a cancelled workflow",
+              "description": "Set true only for a cancelled workflow",
               "type": "boolean",
             },
             "workflow_id": {
@@ -1473,7 +1471,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "operation": {
-              "description": "Extend one RUNNING node with a delivered timeout escalation",
+              "description": "Extend a RUNNING node after timeout escalation",
               "enum": [
                 "extend_timeout",
               ],
@@ -1512,7 +1510,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "string",
             },
             "node_ids": {
-              "description": "Running target-sensitive nodes; omit for all",
+              "description": "Affected running nodes; omit for all",
               "items": {
                 "type": "string",
               },
@@ -1520,7 +1518,7 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               "type": "array",
             },
             "operation": {
-              "description": "Change workspace/fingerprint and restart target-sensitive nodes",
+              "description": "Change workspace/fingerprint; restart affected nodes",
               "enum": [
                 "retarget",
               ],
