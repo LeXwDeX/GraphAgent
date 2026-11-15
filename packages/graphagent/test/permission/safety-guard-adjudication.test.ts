@@ -461,6 +461,41 @@ it.instance(
 )
 
 it.instance(
+  "denies reading a sensitive file through a symlink",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("read-symlink")
+      const directory = yield* InstanceState.directory
+      const bashRun = (command: string) =>
+        ask(childSessionID, {
+          permission: "bash",
+          patterns: [command],
+          metadata: { command, cwd: directory, shell: "bash" },
+        })
+      const read = (pattern: string) => ask(childSessionID, { permission: "read", patterns: [pattern], metadata: {} })
+      yield* Effect.promise(() => fs.writeFile(path.join(directory, ".env"), "SECRET=1"))
+      yield* Effect.promise(() => fs.writeFile(path.join(directory, "notes.txt"), "hello"))
+      yield* Effect.promise(() => fs.symlink(".env", path.join(directory, "public.txt")))
+      yield* Effect.promise(() => fs.symlink("notes.txt", path.join(directory, "alias.txt")))
+
+      // The literal name of the link is harmless; its real target is not.
+      const native = yield* expectDenied(read("public.txt"))
+      expect(native).toContain("dag_safety:SF-2")
+      const cat = yield* expectDenied(bashRun("cat public.txt"))
+      expect(cat).toContain("dag_safety:SF-2")
+      const redirected = yield* expectDenied(bashRun("cat < public.txt"))
+      expect(redirected).toContain("dag_safety:SF-2")
+
+      // Ordinary files and links to ordinary files stay readable.
+      yield* read("notes.txt")
+      yield* read("alias.txt")
+      yield* bashRun("cat notes.txt")
+      yield* bashRun("cat alias.txt")
+    }),
+  { git: true },
+)
+
+it.instance(
   "a cd to a missing directory keeps the cwd uncertain",
   () =>
     Effect.gen(function* () {

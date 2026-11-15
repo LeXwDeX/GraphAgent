@@ -594,3 +594,89 @@ describe("unknown targets", () => {
     }),
   )
 })
+
+describe("SF-1 positional and special parameters", () => {
+  effect("a positional or special parameter is a dynamic write target", () =>
+    Effect.gen(function* () {
+      // `set -- ../victim; tee "$1"` writes wherever the shell was given.
+      expect((yield* bash('set -- ../victim; printf overwritten | tee "$1"'))?.ruleID).toBe("SF-1")
+      for (const parameter of ["$@", "$*", "$2", "$#", "$?", "$$", "$!", "$-"])
+        expect((yield* bash(`printf x | tee "${parameter}"`))?.ruleID).toBe("SF-1")
+      // Named variables and the home expansion are unchanged.
+      expect((yield* bash('tee "$HOME/x"'))?.ruleID).toBe("SF-1")
+      expect((yield* bash('printf x > "$OUT/inside"'))?.ruleID).toBe("SF-1")
+      // Native tool paths stay literal: `$` is part of the file name.
+      expect(evaluate(base({ permission: "edit", pattern: "app/routes/users.$userId.tsx" }))).toBeUndefined()
+      expect(evaluate(base({ permission: "edit", pattern: "docs/user's-guide.md" }))).toBeUndefined()
+    }),
+  )
+})
+
+describe("SF-1/SF-2/SF-3/SF-4 execution wrappers", () => {
+  effect("unwraps prefix wrappers before classifying the inner command", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("env rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("env FOO=bar rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("exec rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("command rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("nice -n 5 rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("nice -5 rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("timeout 5 rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("env env rm -rf ../victim"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("env git reset --hard"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("env -i FOO=bar cat .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("stdbuf -o0 cat .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("ionice -c 3 cat .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("time -p cat .env"))?.ruleID).toBe("SF-2")
+      expect((yield* bash("nohup tee /etc/motd"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("env npm publish"))?.ruleID).toBe("SF-4")
+      expect((yield* bash("env git push origin main", { git: git() }))?.ruleID).toBe("SF-4")
+      // A wrapper inside a pipeline element is unwrapped too.
+      expect((yield* bash("printf x | env tee ../victim"))?.ruleID).toBe("SF-1")
+    }),
+  )
+
+  effect("env -C moves the working directory for the wrapped command", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("env -C /etc rm -rf hosts"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("env --chdir=/etc rm -rf hosts"))?.ruleID).toBe("SF-3")
+      // A relative -C resolves against the shell cwd like `cd`.
+      expect((yield* bash("env -C sub tee ../../victim"))?.ruleID).toBe("SF-1")
+      expect((yield* bash("env -C sub tee ../victim"))).toBeUndefined()
+      expect((yield* bash("env -C sub tee ./inside"))).toBeUndefined()
+      // A dynamic -C leaves the cwd unknown, so a relative write denies.
+      expect((yield* bash('env -C "$DIR" tee ../victim'))?.ruleID).toBe("SF-1")
+      expect((yield* bash('env -C "$DIR" echo hi'))).toBeUndefined()
+    }),
+  )
+
+  effect("refuses wrappers whose execution cannot be inspected statically", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("eval 'rm -rf ../victim'"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("xargs rm"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("env -S 'rm -rf ../victim'"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("time -f %e cat file"))?.ruleID).toBe("SF-3")
+      expect((yield* bash("nice --unknown rm -rf ../victim"))?.ruleID).toBe("SF-3")
+    }),
+  )
+
+  effect("leaves unwrapped commands and harmless wrappers alone", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("env FOO=bar echo hi"))).toBeUndefined()
+      expect((yield* bash("command -v git"))).toBeUndefined()
+      expect((yield* bash("echo hi"))).toBeUndefined()
+      expect((yield* bash("tee ./inside"))).toBeUndefined()
+      expect((yield* bash("env echo hi > ./inside"))).toBeUndefined()
+      expect((yield* bash("nice rm -rf ./build"))).toBeUndefined()
+      expect((yield* bash("timeout 5 tee ./inside"))).toBeUndefined()
+      expect((yield* bash("time -p cat README.md"))).toBeUndefined()
+      expect((yield* bash("exec -a name tee ./inside"))).toBeUndefined()
+      expect((yield* bash("stdbuf -o0 cat README.md"))).toBeUndefined()
+      expect((yield* bash("env"))).toBeUndefined()
+      expect((yield* bash("command"))).toBeUndefined()
+      // Unwrapped `cd` tracking still works for later commands.
+      expect((yield* bash("env FOO=bar cd child; rm -rf ../victim"))).toBeUndefined()
+      expect((yield* bash("env FOO=bar cd child; rm -rf ../../victim"))?.ruleID).toBe("SF-3")
+    }),
+  )
+})

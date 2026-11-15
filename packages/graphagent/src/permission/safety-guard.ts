@@ -103,7 +103,10 @@ const envSensitive = (base: string) => (base.endsWith(".env") || base.includes("
 const PRIVATE_KEY = /\.(pem|key|p12|pfx)$/i
 const SSH_KEY = /^id_(rsa|ed25519|ecdsa)/i
 const CREDENTIAL_FILES = new Set([".npmrc", ".netrc", ".pgpass", ".git-credentials"])
-const DYNAMIC = /\$\(|`|\$\{|\$[A-Za-z_]/
+// Positional (`$1`) and special (`$@`, `$*`, `$#`, `$?`, `$$`, `$!`, `$-`)
+// parameters are dynamic too: `set -- ../victim; tee "$1"` names whatever the
+// shell was given, not a literal file name.
+const DYNAMIC = /\$\(|`|\$\{|\$[A-Za-z_0-9@*#?$!-]/
 const GLOB = /[*?[]/
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"])
 const SAFE_REDIRECTS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"])
@@ -387,6 +390,270 @@ function commandName(argv: readonly string[]) {
   // `"cat"`, `c'a't` and `\c\a\t` all run `cat`.
   const text = decodeWord(raw) ?? raw.replaceAll("'", "").replaceAll('"', "")
   return path.posix.basename(text.replaceAll("\\", "/")).toLowerCase()
+}
+
+/** Documented options of one execution wrapper (`env`, `nice`, ...). */
+interface WrapperSpec {
+  /** Options that consume a value, e.g. `--unset NAME` and `-u NAME`. */
+  readonly longValues?: readonly string[]
+  readonly shortValues?: readonly string[]
+  /** Options that consume nothing. */
+  readonly longFlags?: readonly string[]
+  readonly shortFlags?: readonly string[]
+  /** Options that only query or signal a process, so no command runs. */
+  readonly terminal?: readonly string[]
+  /** `NAME=VALUE` words belong to the wrapper itself (env). */
+  readonly assignments?: boolean
+  /** A bare numeric option is the value (`nice -5`). */
+  readonly numericValue?: boolean
+  /** Called for every value the wrapper consumes; env uses `-C` to move cwd. */
+  readonly onValue?: (option: string, value: string) => void
+}
+
+interface WrapperCommand {
+  /** The command the wrapper runs; empty when it runs none. */
+  readonly argv: readonly string[]
+  readonly terminal: boolean
+  /** An option this guard cannot interpret; it may hide the command. */
+  readonly unknown?: string
+}
+
+/**
+ * Consume one wrapper's documented options. The first remaining word starts
+ * the wrapped command. An option outside the documented set may consume the
+ * command or run something else, so it is reported instead of guessed.
+ */
+function wrapperCommand(args: readonly string[], spec: WrapperSpec): WrapperCommand {
+  const longValues = new Set(spec.longValues ?? [])
+  const longFlags = new Set(spec.longFlags ?? [])
+  const shortValues = new Set(spec.shortValues ?? [])
+  const shortFlags = new Set(spec.shortFlags ?? [])
+  const terminal = new Set(spec.terminal ?? [])
+  let index = 0
+  while (index < args.length) {
+    const token = args[index] ?? ""
+    if (token === "--") return { argv: args.slice(index + 1), terminal: false }
+    if (spec.assignments && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      index++
+      continue
+    }
+    if (token.startsWith("--")) {
+      const equals = token.indexOf("=")
+      const header = equals >= 0 ? token.slice(0, equals) : token
+      if (terminal.has(header)) return { argv: [], terminal: true }
+      if (longValues.has(header)) {
+        const value = equals >= 0 ? token.slice(equals + 1) : args[index + 1]
+        if (value === undefined) return { argv: [], terminal: false, unknown: header }
+        spec.onValue?.(header, value)
+        index += equals >= 0 ? 1 : 2
+        continue
+      }
+      if (longFlags.has(token)) {
+        index++
+        continue
+      }
+      return { argv: [], terminal: false, unknown: token }
+    }
+    if (token.startsWith("-") && token !== "-") {
+      // `nice -5` spells its adjustment as a bare number.
+      if (spec.numericValue && /^-\d+$/.test(token)) {
+        index++
+        continue
+      }
+      const flags = token.slice(1)
+      let step = 1
+      for (let at = 0; at < flags.length; at++) {
+        const flag = flags[at] ?? ""
+        if (shortFlags.has(flag)) continue
+        if (terminal.has(flag)) return { argv: [], terminal: true }
+        if (shortValues.has(flag)) {
+          // `-o0` attaches the value; `-o 0` takes the next word.
+          const value = flags.length > at + 1 ? flags.slice(at + 1) : args[index + 1]
+          if (value === undefined) return { argv: [], terminal: false, unknown: `-${flag}` }
+          spec.onValue?.(`-${flag}`, value)
+          if (flags.length === at + 1) step = 2
+          break
+        }
+        return { argv: [], terminal: false, unknown: `-${flag}` }
+      }
+      index += step
+      continue
+    }
+    return { argv: args.slice(index), terminal: false }
+  }
+  return { argv: [], terminal: true }
+}
+
+/** Prefix wrappers that launch the command in their own arguments. */
+const EXECUTION_WRAPPERS = new Set([
+  "env",
+  "command",
+  "exec",
+  "nohup",
+  "nice",
+  "ionice",
+  "timeout",
+  "stdbuf",
+  "time",
+])
+
+interface Execution {
+  readonly argv: readonly string[]
+  readonly cwd: string
+  readonly known: boolean
+  /** Set when the wrapped command cannot be inspected statically. */
+  readonly violation?: Violation
+}
+
+interface WrapperStep {
+  readonly argv: readonly string[]
+  readonly cwd: string
+  readonly known: boolean
+  readonly violation?: Violation
+}
+
+const wrapperDenial = (name: string, detail: string) =>
+  sf3(
+    "execution wrapper",
+    `cannot statically determine the command run through "${name}" (${detail}); unattended runs refuse execution they cannot inspect`,
+  )
+
+/** Unwrap one recognized prefix wrapper; the arguments are the wrapper's own. */
+function unwrapOne(name: string, args: readonly string[], cwd: string, known: boolean): WrapperStep {
+  let effective = cwd
+  let effectiveKnown = known
+  const move = (value: string) => {
+    const resolved = resolveTarget(value, effective)
+    const absolute = path.isAbsolute(expandDecoded(value) ?? "")
+    if (resolved.dynamic || resolved.path === undefined) {
+      effectiveKnown = false
+      return
+    }
+    // Like `cd`: only an absolute target restores a directory after an
+    // earlier unknown one; a relative one stays uncertain.
+    if (!effectiveKnown && !absolute) return
+    effective = resolved.path
+    if (absolute) effectiveKnown = true
+  }
+  const step = (parsed: WrapperCommand): WrapperStep =>
+    parsed.unknown === undefined
+      ? { argv: parsed.argv, cwd: effective, known: effectiveKnown }
+      : {
+          argv: [],
+          cwd: effective,
+          known: effectiveKnown,
+          violation: wrapperDenial(name, `unknown option "${parsed.unknown}"`),
+        }
+  switch (name) {
+    case "env":
+      return step(
+        wrapperCommand(args, {
+          longValues: ["--unset", "--chdir"],
+          longFlags: ["--ignore-environment", "--null"],
+          shortValues: ["u", "C"],
+          shortFlags: ["i", "0"],
+          assignments: true,
+          onValue: (option, value) => {
+            if (option === "-C" || option === "--chdir") move(value)
+          },
+        }),
+      )
+    case "command":
+      return step(wrapperCommand(args, { shortFlags: ["p"], terminal: ["v", "V"] }))
+    case "exec":
+      return step(wrapperCommand(args, { shortValues: ["a"], shortFlags: ["c", "l"] }))
+    case "nohup":
+      return step(wrapperCommand(args, {}))
+    case "nice":
+      return step(wrapperCommand(args, { longValues: ["--adjustment"], shortValues: ["n"], numericValue: true }))
+    case "ionice":
+      return step(
+        wrapperCommand(args, {
+          longValues: ["--class", "--classdata"],
+          longFlags: ["--ignore"],
+          shortValues: ["c", "n"],
+          shortFlags: ["t"],
+          terminal: ["p", "--pid"],
+        }),
+      )
+    case "stdbuf":
+      return step(
+        wrapperCommand(args, {
+          longValues: ["--input", "--output", "--error"],
+          shortValues: ["i", "o", "e"],
+        }),
+      )
+    case "timeout": {
+      const parsed = wrapperCommand(args, {
+        longValues: ["--signal", "--kill-after"],
+        longFlags: ["--foreground", "--preserve-status", "--verbose"],
+        shortValues: ["s", "k"],
+        shortFlags: ["v"],
+      })
+      const unwrapped = step(parsed)
+      if (unwrapped.violation || parsed.terminal) return unwrapped
+      // The first word after the options is the DURATION, never the command.
+      return { argv: parsed.argv.slice(1), cwd: effective, known: effectiveKnown }
+    }
+    case "time": {
+      const rest = args.slice()
+      while (rest[0] === "-p" || rest[0] === "--portability") rest.shift()
+      if (rest[0] === "--") rest.shift()
+      // `-f`/`-o` write their own output file and take a value; the command
+      // behind them cannot be located reliably.
+      else if (rest[0] !== undefined && isFlag(rest[0]))
+        return {
+          argv: [],
+          cwd: effective,
+          known: effectiveKnown,
+          violation: wrapperDenial(name, `option "${rest[0]}" can write its own file`),
+        }
+      return { argv: rest, cwd: effective, known: effectiveKnown }
+    }
+    default:
+      return { argv: [], cwd: effective, known: effectiveKnown }
+  }
+}
+
+/**
+ * Strip the wrappers that only launch the command in their arguments, so the
+ * classifiers see the executable that actually runs (`env rm -rf` is `rm`).
+ * Depth is bounded; wrappers whose command cannot be read statically deny.
+ */
+function unwrapExecution(rawArgv: readonly string[], cwd: string, known: boolean): Execution {
+  let current: readonly string[] = commandArgs(rawArgv)
+  let effective = cwd
+  let effectiveKnown = known
+  for (let depth = 0; ; depth++) {
+    const name = commandName(current)
+    if (name === "eval")
+      return {
+        argv: [],
+        cwd: effective,
+        known: effectiveKnown,
+        violation: wrapperDenial(name, "it executes a string this guard cannot read"),
+      }
+    if (name === "xargs")
+      return {
+        argv: [],
+        cwd: effective,
+        known: effectiveKnown,
+        violation: wrapperDenial(name, "its arguments come from stdin"),
+      }
+    if (!EXECUTION_WRAPPERS.has(name)) return { argv: current, cwd: effective, known: effectiveKnown }
+    if (depth >= 8)
+      return {
+        argv: [],
+        cwd: effective,
+        known: effectiveKnown,
+        violation: wrapperDenial(name, "nested wrappers exceed the supported depth"),
+      }
+    const next = unwrapOne(name, current.slice(1), effective, effectiveKnown)
+    effective = next.cwd
+    effectiveKnown = next.known
+    if (next.violation) return { argv: [], cwd: effective, known: effectiveKnown, violation: next.violation }
+    current = next.argv
+  }
 }
 
 /** Global options that take a value, from `git -h`; both `=` and a separate word. */
@@ -802,15 +1069,23 @@ function publishViolation(input: EvaluateInput, argv: readonly string[], cwd: st
   return undefined
 }
 
-function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, argv: readonly string[], cwd: string) {
+/** One file a simple command reads, with the label used in the denial reason. */
+interface ReadWord {
+  readonly raw: string
+  readonly label: string
+}
+
+/**
+ * The files a simple command reads: reader arguments, grep/rg targets, cp
+ * sources, curl `@file` inputs and input redirections. The lexical check and
+ * the symlink pass share this list so both inspect the same words.
+ */
+function readTargetList(seg: ShellParse.Segment, argv: readonly string[]): ReadWord[] {
   const name = commandName(argv)
   const args = argv.slice(1)
-  if (["cat", "less", "more", "head", "tail"].includes(name)) {
-    for (const target of words(args)) {
-      const violation = readTarget(input, target, cwd, name)
-      if (violation) return violation
-    }
-  }
+  const out: ReadWord[] = []
+  if (["cat", "less", "more", "head", "tail"].includes(name))
+    for (const target of words(args)) out.push({ raw: target, label: name })
   if (name === "grep" || name === "rg") {
     let patternSeen = false
     for (let index = 0; index < args.length; index++) {
@@ -823,38 +1098,35 @@ function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, a
         patternSeen = true
         continue
       }
-      const violation = readTarget(input, arg, cwd, name)
-      if (violation) return violation
+      out.push({ raw: arg, label: name })
     }
   }
-  if (name === "cp") {
-    for (const target of words(args).slice(0, -1)) {
-      const violation = readTarget(input, target, cwd, name)
-      if (violation) return violation
-    }
-  }
+  if (name === "cp") for (const target of words(args).slice(0, -1)) out.push({ raw: target, label: name })
   if (name === "curl") {
     for (let index = 0; index < args.length; index++) {
       const arg = args[index] ?? ""
       const inline = /^--(?:data|data-binary|data-raw|data-urlencode|form)=@(.+)$/.exec(arg)
       if (inline) {
-        const violation = readTarget(input, inline[1] ?? "", cwd, "curl")
-        if (violation) return violation
+        out.push({ raw: inline[1] ?? "", label: "curl" })
         continue
       }
       if (["-d", "--data", "--data-binary", "--data-raw", "--data-urlencode", "-F", "--form"].includes(arg)) {
         const next = args[index + 1]
-        if (next?.startsWith("@")) {
-          const violation = readTarget(input, next.slice(1), cwd, "curl")
-          if (violation) return violation
-        }
+        if (next?.startsWith("@")) out.push({ raw: next.slice(1), label: "curl" })
         index++
       }
     }
   }
   for (const redirect of seg.redirects) {
     if (!redirect.op.startsWith("<") || redirect.op.startsWith("<<<")) continue
-    const violation = readTarget(input, redirect.target, cwd, "shell input redirect")
+    out.push({ raw: redirect.target, label: "shell input redirect" })
+  }
+  return out
+}
+
+function sensitiveReadViolation(input: EvaluateInput, seg: ShellParse.Segment, argv: readonly string[], cwd: string) {
+  for (const word of readTargetList(seg, argv)) {
+    const violation = readTarget(input, word.raw, cwd, word.label)
     if (violation) return violation
   }
   return undefined
@@ -987,16 +1259,64 @@ async function realRootsOf(input: EvaluateInput): Promise<string[]> {
 }
 
 /**
+ * A read whose real target is sensitive even though its spelling is not:
+ * `cat public.txt` where `public.txt` links to `.env` reads the environment
+ * file the lexical check already refuses by name.
+ */
+async function readSymlinkViolation(raw: string, cwd: string, known: boolean, label: string) {
+  const target = resolveTarget(raw, cwd)
+  if (target.dynamic || target.path === undefined) return undefined
+  // A relative word under an unknown cwd names no provable file.
+  if (!known && !path.isAbsolute(expandDecoded(raw) ?? "")) return undefined
+  const real = await realPathOf(target.path)
+  // A missing file makes `read` fail on its own; there is nothing to leak.
+  if (real === undefined) return undefined
+  const category = sensitiveCategory(real)
+  if (category) return sf2(`${label} symlink`, `reading a ${category} through a symlink is not allowed: ${real}`)
+  return undefined
+}
+
+/** Native `read` carries a literal path; resolve it before the category check. */
+async function nativeReadSymlinkViolation(input: EvaluateInput) {
+  const base = input.instance?.worktree ?? input.cwd
+  const target = nativeTarget(input.pattern, base)
+  if (target.dynamic || target.path === undefined) return undefined
+  const real = await realPathOf(target.path)
+  if (real === undefined) return undefined
+  const category = sensitiveCategory(real)
+  if (category) return sf2("read symlink", `reading a ${category} through a symlink is not allowed: ${real}`)
+  return undefined
+}
+
+/** Bash readers go through the same word list the lexical check uses. */
+async function bashReadSymlinkViolation(input: EvaluateInput) {
+  if (!input.segments) return undefined
+  for (const context of segmentContexts(input.segments, input.cwd, input.knownDirectories)) {
+    for (const word of readTargetList(context.segment, context.argv)) {
+      const violation = await readSymlinkViolation(word.raw, context.cwd, context.known, word.label)
+      if (violation) return violation
+    }
+  }
+  return undefined
+}
+
+/**
  * A lexical boundary check cannot see symlinks. Resolve the existing path
  * components and refuse a write whose real location leaves every allowed
- * root. New files are covered through their nearest existing parent.
+ * root, and a read whose real target is a sensitive file. New files are
+ * covered through their nearest existing parent.
  */
 export async function symlinkViolation(
   input: EvaluateInput,
   options: { readonly moves?: boolean } = {},
 ): Promise<Violation | undefined> {
   if (input.explicit) return undefined
+  if (input.permission === "read") return nativeReadSymlinkViolation(input)
   if (input.permission !== "edit" && input.permission !== "bash") return undefined
+  if (input.permission === "bash") {
+    const read = await bashReadSymlinkViolation(input)
+    if (read) return read
+  }
   const paths = writePaths(input, options.moves !== false)
   if (paths.length === 0) return undefined
   const roots = await realRootsOf(input)
@@ -1020,9 +1340,12 @@ export async function symlinkViolation(
 
 interface SegmentContext {
   readonly segment: ShellParse.Segment
+  /** The command after execution wrappers are unwrapped. */
   readonly argv: readonly string[]
   readonly cwd: string
   readonly known: boolean
+  /** A wrapper whose inner command cannot be inspected; deny before classifying. */
+  readonly wrapperViolation?: Violation
 }
 
 const parentScope = (scope: string) => {
@@ -1054,31 +1377,37 @@ function segmentContexts(
     if (segment.run === "never") continue
     const scope = segment.scope ?? ""
     const state = stateFor(scope)
-    const argv = commandArgs(segment.argv)
-    out.push({ segment, argv, cwd: state.cwd, known: state.known })
-    if (commandName(argv) !== "cd") continue
+    const execution = unwrapExecution(segment.argv, state.cwd, state.known)
+    out.push({
+      segment,
+      argv: execution.argv,
+      cwd: execution.cwd,
+      known: execution.known,
+      ...(execution.violation ? { wrapperViolation: execution.violation } : {}),
+    })
+    if (commandName(execution.argv) !== "cd") continue
     if (segment.run === "maybe") {
       // The conditional cd may not run, so later commands cannot trust
       // either the old or the new directory.
-      states.set(scope, { cwd: state.cwd, known: false })
+      states.set(scope, { cwd: execution.cwd, known: false })
       continue
     }
-    const next = argv[1]
+    const next = execution.argv[1]
     if (next === undefined) {
       states.set(scope, { cwd: os.homedir(), known: true })
       continue
     }
-    const resolved = resolveTarget(next, state.cwd)
+    const resolved = resolveTarget(next, execution.cwd)
     // A relative `cd` resolves against the real cwd; once that is unknown the
     // result stays unknown. Only an absolute target names a proven directory.
     // When the caller proved which directories exist, a target outside that
     // set may fail and leave the old cwd, so the result stays uncertain.
     const proven = knownDirectories === undefined || (resolved.path !== undefined && knownDirectories.has(resolved.path))
-    const certain = (state.known || path.isAbsolute(expandDecoded(next) ?? "")) && proven
+    const certain = (execution.known || path.isAbsolute(expandDecoded(next) ?? "")) && proven
     states.set(
       scope,
       resolved.dynamic || resolved.path === undefined
-        ? { cwd: state.cwd, known: false }
+        ? { cwd: execution.cwd, known: false }
         : { cwd: resolved.path, known: certain },
     )
   }
@@ -1110,6 +1439,9 @@ function bashViolation(input: EvaluateInput): Violation | undefined {
     const context = contexts[index]
     if (!context) continue
     const { segment: seg, argv, cwd, known } = context
+    // A wrapper that may run something this guard cannot read denies before
+    // any classifier gets to trust the visible arguments.
+    if (context.wrapperViolation) return context.wrapperViolation
     // A commandless redirect carries its own write target.
     const redirect = redirectViolation(input, seg.redirects, cwd, known)
     if (redirect) return redirect
