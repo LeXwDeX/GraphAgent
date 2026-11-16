@@ -179,7 +179,7 @@ export type DagWorkflowSummary = {
   concurrencyRunning?: number
   coverageCount?: number
   checkpointPending?: boolean
-  quality?: DagWorkflowQuality
+  quality?: DagWorkflowQuality | null
 }
 
 export type DagWorkflowQuality = {
@@ -196,7 +196,7 @@ export type DagWorkflowQuality = {
     covered: number
     total: number
     unlisted: number
-  }
+  } | null
 }
 
 export type Todo = {
@@ -674,6 +674,7 @@ export type LifecycleDomain =
   | "turn"
   | "cancellation"
   | "pr_watch"
+  | "reminder"
 
 export type LifecycleStateRef = {
   domain: LifecycleDomain
@@ -808,7 +809,7 @@ export type SessionDagMode = {
     maxTotalNodes: number
     running: number
   }
-  quality: null
+  quality: DagWorkflowQuality | null
 }
 
 export type Provider = {
@@ -1940,6 +1941,7 @@ export type EventLifecycleTransitioned = {
       | "turn"
       | "cancellation"
       | "pr_watch"
+      | "reminder"
     stateID: string
     sessionID?: string
     from?: string

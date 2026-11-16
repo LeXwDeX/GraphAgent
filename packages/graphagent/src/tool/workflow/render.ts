@@ -9,7 +9,8 @@ import type { ChildRunView } from "@/session/child/run"
 import { Dag } from "@/dag/dag"
 import { DagIsolation } from "@/dag/isolation"
 import { DagLocation } from "@/dag/location"
-import { DagReviewLifecycle, reviewRoundMetrics, reviewRoundSummary } from "@/dag/review-lifecycle"
+import { DagReviewLifecycle } from "@/dag/review-lifecycle"
+import { DagQuality } from "@/dag/quality"
 import { DagValidation } from "@/dag/validation"
 import { DagCoverage, resultPage, withResultPageCoverage } from "@/dag/coverage"
 import { isManagedOutputFileRef, isOutputFileRef } from "@/dag/runtime/output-ref"
@@ -182,22 +183,10 @@ export function renderStatus(input: {
   // (REJECT checkpoint, issue #294); surface it explicitly instead
   // of burying it in a terminal reason string.
   const unresolvedReviews = config ? DagReviewLifecycle.unresolvedReviewOutcomes(config, nodes) : []
-  // #1031 M6: the review round chain, computed from the arbitration decisions
-  // that carry persisted round markers. Rounds stay per-node so extend and
-  // successor chains report the same numbers.
-  const reviewRounds = (config?.nodes ?? [])
-    .filter((definition) => definition.review_arbitration === true)
-    .toSorted((a, b) => (a.review_round ?? 1) - (b.review_round ?? 1))
-    .map((definition) => {
-      const row = nodes.find((node) => node.id === definition.id)
-      const evidence = row
-        ? nodes
-            .filter((node) => row.dependsOn.includes(node.id) && node.status === "completed")
-            .map((node) => ({ nodeID: node.id, output: node.output }))
-        : []
-      return { round: definition.review_round ?? 1, ...reviewRoundMetrics(row?.output, evidence) }
-    })
-  const reviewQuality = reviewRounds.length > 0 ? reviewRoundSummary(reviewRounds) : undefined
+  // #1031 M6 / #1027 D6b: review counters from the arbitration decisions that
+  // carry persisted round markers. The workflow summary's `quality` is computed
+  // by this same function, so the panel and this result agree.
+  const reviewQuality = DagQuality.reviewMetrics({ config, workflowID: workflow.id, nodes })
   // #946: workflow-level isolation view. Kept worktrees stay
   // visible until an operator removes them; conflicts are a
   // report, never an automatic merge. Superseded attempts come
@@ -287,13 +276,17 @@ export function renderStatus(input: {
         ...(reviewQuality
           ? {
               review_quality: {
-                rounds: reviewQuality.rounds,
-                quiet_rounds: reviewQuality.quietRounds,
+                reviews: reviewQuality.quality.reviews,
+                review_bound: reviewQuality.quality.reviewBound,
+                rounds: reviewQuality.quality.rounds,
+                quiet_rounds: reviewQuality.quality.quietRounds,
                 new_findings_per_round: reviewQuality.newFindingsPerRound,
-                raised: reviewQuality.raised,
-                fixed: reviewQuality.fixed,
-                refuted: reviewQuality.refuted + reviewQuality.resolvedRefuted,
-                still_open: reviewQuality.stillOpen,
+                raised: reviewQuality.quality.raised,
+                fixed: reviewQuality.quality.fixed,
+                refuted: reviewQuality.quality.refuted,
+                still_open: reviewQuality.quality.stillOpen,
+                skeptic_refutations: reviewQuality.quality.skepticRefutations,
+                completeness: reviewQuality.quality.completeness,
               },
             }
           : {}),

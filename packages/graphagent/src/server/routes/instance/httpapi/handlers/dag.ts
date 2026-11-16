@@ -7,6 +7,7 @@ import { InstanceHttpApi } from "../api"
 import { notFound } from "../errors"
 import { Dag } from "@/dag/dag"
 import { DagNodeView } from "@/dag/node-view"
+import { DagSummaryDerived } from "@/dag/summary-derived"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { InstanceState } from "@/effect/instance-state"
@@ -107,27 +108,12 @@ export const dagHandlers = HttpApiBuilder.group(InstanceHttpApi, "dag", (handler
     const summary = Effect.fn("DagHttpApi.summary")(function* (ctx: { params: { sessionID: string } }) {
       yield* requireSession(ctx.params.sessionID)
       const summaries = yield* dag.store.getWorkflowSummaries(ctx.params.sessionID).pipe(Effect.orDie)
-      return summaries.map((s) => ({
-        id: s.id,
-        title: s.title,
-        status: s.status,
-        graphRev: s.graphRev,
-        nodeCount: s.nodeCount,
-        completedNodes: s.completedNodes,
-        runningNodes: s.runningNodes,
-        failedNodes: s.failedNodes,
-        skippedNodes: s.skippedNodes,
-        abortedNodes: s.abortedNodes,
-        queuedNodes: s.queuedNodes,
-        escalatedNodes: s.escalatedNodes,
-        tokens: s.tokens,
-        tokensCacheRead: s.tokensCacheRead,
-        checkpointPending: s.checkpointPending,
-        // D6b owns the real values; fixed here so HTTP and the publisher
-        // event expose the same shape.
-        coverageCount: 0,
-        quality: null,
-      }))
+      // #1027 D6b: the same derivation the pushed event carries, so a client
+      // that reads instead of listening sees the same coverage and quality.
+      // One workflow read and one node read serve every workflow of the session.
+      const workflows = yield* dag.store.listBySession(ctx.params.sessionID).pipe(Effect.orDie)
+      const derived = yield* DagSummaryDerived.forWorkflows(dag.store, workflows)
+      return summaries.map((s) => DagSummaryDerived.toWire(s, derived.get(s.id)))
     })
 
     const nodes = Effect.fn("DagHttpApi.nodes")(function* (ctx: { params: { dagID: string } }) {

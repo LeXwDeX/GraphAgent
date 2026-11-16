@@ -32,11 +32,15 @@ const eventLayer = countingEventLayer(EventV2.layer.pipe(Layer.provide(dbLayer))
 const bridgeLayer = EventV2Bridge.layer.pipe(Layer.provide(eventLayer))
 const projectorLayer = SessionProjector.layer.pipe(Layer.provide(eventLayer), Layer.provide(dbLayer))
 
+// The counting bridge is built first, then everything else against it. `Goal`
+// and `Dag` default layers build `EventV2Bridge.layer` over the default event
+// bus; the layer memo is keyed by the layer value, so whichever composition
+// reaches `EventV2Bridge.layer` first fixes the instance every other one shares.
+// Built side by side, that was a race between database migrations, and the
+// bridge `Session` publishes through could end up uncounted. `provideMerge`
+// makes the counting bridge the first build, deterministically.
 const it = testEffect(
   Layer.mergeAll(
-    dbLayer,
-    eventLayer,
-    bridgeLayer,
     SessionNs.layer.pipe(
       Layer.provide(Storage.defaultLayer),
       Layer.provide(dbLayer),
@@ -50,7 +54,7 @@ const it = testEffect(
     ),
     CrossSpawnSpawner.defaultLayer,
     testInstanceStoreLayer,
-  ),
+  ).pipe(Layer.provideMerge(Layer.mergeAll(dbLayer, eventLayer, bridgeLayer))),
 )
 
 const userInfo = (sessionID: string, id: string) =>

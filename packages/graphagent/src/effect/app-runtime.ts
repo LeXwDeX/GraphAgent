@@ -62,6 +62,8 @@ import { RuntimeJobRecovery } from "@/background/recovery"
 import { GoalLifecycle } from "@/goal/lifecycle"
 import { PrWatchLifecycle } from "@/pr-watch/lifecycle"
 import { PrWatchPoller } from "@/pr-watch/poller"
+import { ReminderClock } from "@/reminder/clock"
+import { ReminderLifecycle } from "@/reminder/lifecycle"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { HookStartContext } from "@/hook/start-context"
@@ -213,6 +215,15 @@ const BaseAppLayer = Layer.mergeAll(
   // the same instances; a second build (server graph) converges through the
   // per-row CAS instead of double-polling.
   Layer.provideMerge(PrWatchPoller.defaultLayer),
+  // #1072: register the reminder domain with the lifecycle service; the layer
+  // self-provides Lifecycle and Database, which memoMap dedups with the
+  // instances built above.
+  Layer.provideMerge(ReminderLifecycle.defaultLayer),
+  // #1072: the process-level reminder clock. One timer, pointed at the earliest
+  // scheduled `fire_at`; it moves due reminders to `due` and the `reminder`
+  // inbox source (registered per instance by bootstrap) delivers them. A second
+  // build (server graph) converges through the per-row CAS.
+  Layer.provideMerge(ReminderClock.defaultLayer),
   // #1031 M5: exposes DagBudget and its ResumeGuard policy to every context
   // that runs a Dag command (spawn admission, control, the workflow tool).
   Layer.provideMerge(DagBudget.defaultLayer),

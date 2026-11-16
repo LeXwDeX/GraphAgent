@@ -11,6 +11,7 @@ import {
   GOAL_TRANSITION_TABLE,
   JOB_TRANSITION_TABLE,
   PR_WATCH_TRANSITION_TABLE,
+  REMINDER_TRANSITION_TABLE,
   TURN_TRANSITION_TABLE,
   type TransitionRequest,
   type TransitionTable,
@@ -67,6 +68,7 @@ const tables = new Map<Domain, TransitionTable>([
   ["job", JOB_TRANSITION_TABLE],
   ["goal", GOAL_TRANSITION_TABLE],
   ["pr_watch", PR_WATCH_TRANSITION_TABLE],
+  ["reminder", REMINDER_TRANSITION_TABLE],
   ["workflow", WORKFLOW_TRANSITION_TABLE],
   ["node", NODE_TRANSITION_TABLE],
 ])

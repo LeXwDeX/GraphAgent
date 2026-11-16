@@ -7,6 +7,7 @@
 //   - NodeDeadlineExtended clears escalation_pending  -> summary.escalatedNodes drops
 //   - NodeQueued moves pending -> queued              -> summary.queuedNodes rises
 //   - WorkflowStepped moves running -> stepping       -> summary.status changes
+//   - NodeSafetyDenied records a denial               -> summary.coverageCount rises
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Layer } from "effect"
 import { DagStore, type WorkflowRow, type WorkflowSummary } from "@graphagent/core/dag/store"
@@ -75,6 +76,19 @@ describe("DagSummaryPublisher trigger coverage", () => {
         },
         { type: DagEvent.NodeQueued.type, data: { dagID: "dag-2", nodeID: "n", deadlineMs: 1, timestamp: ts } },
         { type: DagEvent.WorkflowStepped.type, data: { dagID: "dag-3", nodeID: "n", timestamp: ts } },
+        // #1027 D6b: a denial is a coverage entry without any status change.
+        {
+          type: DagEvent.NodeSafetyDenied.type,
+          data: {
+            dagID: "dag-4",
+            nodeID: "n",
+            attempt: 0,
+            ruleID: "SF-3",
+            permission: "bash",
+            summary: "x",
+            timestamp: ts,
+          },
+        },
       ]
       const result: Record<string, number> = {}
       for (const event of cases) {
@@ -90,6 +104,7 @@ describe("DagSummaryPublisher trigger coverage", () => {
         [DagEvent.NodeDeadlineExtended.type]: 1,
         [DagEvent.NodeQueued.type]: 1,
         [DagEvent.WorkflowStepped.type]: 1,
+        [DagEvent.NodeSafetyDenied.type]: 1,
       })
     }).pipe(Effect.provide(Layer.provideMerge(DagSummaryPublisher.layer, Layer.mergeAll(events, store))))
   })
