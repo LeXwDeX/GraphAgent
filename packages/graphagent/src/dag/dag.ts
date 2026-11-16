@@ -209,7 +209,8 @@ export interface NodeConfig {
    * compilation, not by an authored worker override. */
   generated_helper?: "aggregate" | "evidence"
   /** #1031 M6: arbitration-depth marker for a block-compiled review decision;
-   * unset for hand-authored review nodes, whose outputs keep the legacy shape. */
+   * unset for hand-authored review nodes, whose outputs keep the pre-arbitration
+   * shape (no dispositions). */
   review_arbitration?: boolean
 }
 

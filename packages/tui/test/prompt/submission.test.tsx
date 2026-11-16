@@ -16,7 +16,8 @@ import { EditorContextProvider, useEditorContext, type EditorIntegration } from 
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
 import { KVProvider } from "../../src/context/kv"
-import { LocalProvider, useLocal } from "../../src/context/local"
+import { useLocal } from "../../src/context/local"
+import { ToastLocalProvider } from "../fixture/tui-local"
 import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
 import { PromptRefProvider } from "../../src/context/prompt"
@@ -261,7 +262,7 @@ async function mountRoute(
                                 <ProjectProvider>
                                   <SyncProvider>
                                     <ThemeProvider mode="dark">
-                                      <LocalProvider>
+                                      <ToastLocalProvider>
                                         <LocalProbe
                                           ready={(value) => {
                                             local = value
@@ -307,7 +308,7 @@ async function mountRoute(
                                             </PromptHistoryProvider>
                                           </FrecencyProvider>
                                         </PromptStashProvider>
-                                      </LocalProvider>
+                                      </ToastLocalProvider>
                                     </ThemeProvider>
                                   </SyncProvider>
                                 </ProjectProvider>

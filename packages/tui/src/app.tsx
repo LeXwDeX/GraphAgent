@@ -23,6 +23,7 @@ import {
   Show,
   on,
   type JSX,
+  type ParentProps,
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { openProviderPanel } from "./panel/provider"
@@ -35,9 +36,9 @@ import { SyncProvider, useSync } from "./context/sync"
 import { BtwProvider, useBtw } from "./context/btw"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
+import { HomeSessionDestinationProvider } from "./context/session-destination"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
-import { HomeSessionDestinationProvider } from "./routes/home/session-destination"
 import { useHomeFooterMeta } from "./routes/home/footer-meta"
 import { Main } from "./routes/session"
 import { Diff } from "./routes/diff"
@@ -63,7 +64,7 @@ import { useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
 import { dagIndicatorReserve } from "./shell/dag-indicator"
 import { HookProgress } from "./shell/hook-progress"
-import { HookStatusProvider } from "./context/hook-status"
+import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
@@ -154,6 +155,15 @@ export type TuiInput = {
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
   events?: EventSource
+}
+
+/**
+ * The model and agent state reports through a callback instead of importing the toast, so the data layer stays
+ * below `ui/` (#886 acceptance 34). Here it becomes a footer toast.
+ */
+function LocalWithToast(props: ParentProps) {
+  const toast = useToast()
+  return <LocalProvider notify={(notice) => toast.show(notice)}>{props.children}</LocalProvider>
 }
 
 function errorMessage(error: unknown) {
@@ -300,7 +310,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                             <ProjectProvider>
                                               <SyncProvider>
                                                 <ThemeProvider mode={mode}>
-                                                  <LocalProvider>
+                                                  <LocalWithToast>
                                                     <PromptStashProvider>
                                                       <CommandRegistryProvider>
                                                         <FrecencyProvider>
@@ -320,7 +330,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                         </FrecencyProvider>
                                                       </CommandRegistryProvider>
                                                     </PromptStashProvider>
-                                                  </LocalProvider>
+                                                  </LocalWithToast>
                                                 </ThemeProvider>
                                               </SyncProvider>
                                             </ProjectProvider>
@@ -378,8 +388,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
   const dagIndicator = useDagIndicator()
+  const hookStatus = useHookStatus()
   const footerStatus = useFooterStatus(
-    () => (route.data.type === "session" ? <HookProgress sessionID={route.data.sessionID} /> : undefined),
+    // The shared slot holds the hook progress only while a hook runs. The component renders nothing when idle, but
+    // an element in the slot would still keep the idle key hints off the session footer.
+    () =>
+      route.data.type === "session" && hookStatus.list(route.data.sessionID).length > 0 ? (
+        <HookProgress sessionID={route.data.sessionID} />
+      ) : undefined,
     () => dagIndicatorReserve(dagIndicator(), dimensions().width, kv.get("ambiguous_width", 1) === 2 ? 2 : 1),
   )
   const bottomZone = createBottomZoneState()

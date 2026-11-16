@@ -14,7 +14,7 @@ import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagBlocks } from "@/dag/blocks"
 import { BUILTIN_WORKFLOWS } from "@/dag/builtin-workflows"
 import { DagTemplateInputs } from "@/dag/template-inputs"
-import { reportingCheckpoints, selectReportNode } from "@/dag/runtime/report-delivery"
+import { isDisplayOnlyCompletion } from "@/dag/runtime/report-delivery"
 import { DagValidation } from "@/dag/validation"
 import { DagWorkflows } from "@/dag/workflows"
 import { makeNodeRow } from "./fixtures"
@@ -178,9 +178,11 @@ describe("builtin stage specs", () => {
       })
 
       // A stage hands over to the parent, which reads its result before it
-      // starts the next one. The delivery rule gives the parent a completion
-      // turn only when a reporting checkpoint other than an ordinary delivery
-      // leaf finished, or when no delivery node produced a final answer.
+      // starts the next one. With the session's DAG mode on every completion
+      // gives the parent a turn; with it off only a reporting checkpoint other
+      // than an ordinary delivery leaf, or a missing final answer, does. The
+      // stages must hand over in both modes, so none of them may complete as a
+      // display-only report.
       it("ends with a parent turn instead of a display-only report", async () => {
         const prepared = await compiled(name)
         const finished = prepared.nodes.map((node) =>
@@ -191,10 +193,7 @@ describe("builtin stage specs", () => {
             wakeEligible: node.report_to_parent === true,
           }),
         )
-        const needsTurn =
-          reportingCheckpoints(prepared.config, finished).length > 0 ||
-          selectReportNode(prepared.config, finished) === undefined
-        expect(needsTurn).toBe(true)
+        expect(isDisplayOnlyCompletion(prepared.config, finished)).toBe(false)
       })
     })
   }

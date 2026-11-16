@@ -107,7 +107,7 @@ export function settlePlainTextOutput(text: string | undefined): PlainTextSettle
 }
 
 /** Cross-round and strict-gate context for a block-compiled review decision.
- * Hand-authored review nodes leave every field unset and keep the legacy
+ * Hand-authored review nodes leave every field unset and keep the original
  * verdict consistency contract. */
 export interface ArbitrationSettlementOptions {
   readonly reviewArbitration?: boolean

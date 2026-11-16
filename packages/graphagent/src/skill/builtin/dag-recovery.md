@@ -21,11 +21,12 @@ Use `extend` and `control(replan)` based on observed results:
   replan attempt; prefer it over replan unless the graph must change.
 
 Only `report_to_parent: true` nodes produce checkpoints, at the next actionable
-wake boundary; terminal state also wakes the parent. Do not poll `status`
-merely to wait. The mandatory-action guard covers only live workflows,
-so a checkpoint that terminalizes its workflow delivers its verdict without
-enforcement; the Verdict Disposal Contract governs that case (`extend` remains
-valid after a reporting leaf completed the graph).
+wake boundary; terminal state also wakes the parent, except that with DAG mode
+off a completion reporting only through its delivery leaf is just displayed. Do
+not poll `status` merely to wait. The mandatory-action guard covers only live
+workflows, so a checkpoint that terminalizes its workflow delivers its verdict
+without enforcement; the Verdict Disposal Contract governs that case (`extend`
+remains valid after a reporting leaf completed the graph).
 
 ### Escalation: change approach after repeated failures
 

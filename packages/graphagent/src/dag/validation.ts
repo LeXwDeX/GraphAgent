@@ -821,7 +821,7 @@ export interface StructuralInput {
  * The strict gate fails on a gap; the standard gate reports the same gaps as
  * warnings. A block-compiled document already ran the block compiler's own
  * check at the strict gate, so only persisted graphs and the standard advisory
- * pass re-run it here. Hand-authored legacy graphs carry no block marker and
+ * pass re-run it here. Hand-authored node graphs carry no block marker and
  * are grandfathered (see strictReviewCoverageErrors). */
 function strictReviewCoverageDiagnostics(input: {
   nodes: readonly NodeConfig[]

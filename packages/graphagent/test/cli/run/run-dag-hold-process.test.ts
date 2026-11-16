@@ -110,6 +110,7 @@ const parentPlanMarker = "DAG_FINAL_RESPONSE_PARENT_PLAN"
 const childFinalMarker = "DAG_FINAL_RESPONSE_CHILD"
 const childFinalText = "DAG_FINAL_RESPONSE_RAW_ONCE_52AF"
 const parentPlanText = "The implementation plan is ready."
+const completionTurnText = "The completion turn is handled."
 const finalResponseSpec = `title: cli-final-response
 config:
   name: cli-final-response
@@ -119,6 +120,22 @@ config:
     - id: final
       name: final
       worker_type: general
+      depends_on: []
+      report_to_parent: false
+      prompt_template:
+        inline: "${childFinalMarker}: return the requested final response."
+`
+// DAG mode on fixes the strict review gate at start; a hand-authored node must
+// be a read-only worker to pass it.
+const modeOnFinalSpec = `title: cli-mode-on-final
+config:
+  name: cli-mode-on-final
+  delivery_node: final
+  max_concurrency: 1
+  nodes:
+    - id: final
+      name: final
+      worker_type: explore
       depends_on: []
       report_to_parent: false
       prompt_template:
@@ -329,6 +346,51 @@ describe("opencode run DAG hold (issue 614)", () => {
           expect(parentRequests).toHaveLength(2)
           expect(requests.some((request) => JSON.stringify(request).includes(childFinalText))).toBe(false)
           expect(requests.some((request) => JSON.stringify(request).includes("[DAG Workflow completed]"))).toBe(false)
+        }),
+      180_000,
+    )
+  }
+
+  // #1015: the same delivery leaf with DAG mode on is followed by one completion
+  // turn after its report, so the run holds for that turn and prints its reply
+  // last; with the mode off (above) it ends at the displayed report.
+  for (const format of ["default", "json"] as const) {
+    cliIt.concurrent(
+      `with DAG mode on prints the delivery leaf report once and then the parent's completion turn (${format})`,
+      ({ home, llm, opencode }) =>
+        Effect.gen(function* () {
+          const spec = path.join(home, "wf-final-response-on.yaml")
+          yield* writeSpec(home, "wf-final-response-on.yaml", modeOnFinalSpec)
+          yield* llm.pushMatch(
+            bodyIncludes(parentPlanMarker),
+            reply()
+              .tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
+              .item(),
+          )
+          yield* llm.pushMatch(bodyIncludes(parentPlanMarker), reply().text(parentPlanText).stop().item())
+          yield* llm.pushMatch(bodyIncludes(childFinalMarker), reply().text(childFinalText).stop().item())
+          yield* llm.pushMatch(wakeCompleted, reply().text(completionTurnText).stop().item())
+
+          const result = yield* opencode.run(`${parentPlanMarker}: start the workflow and report the plan`, {
+            format,
+            extraArgs: [...SKIP_PERMISSIONS, "--dag-mode", "on"],
+          })
+          opencode.expectExit(result, 0)
+
+          const text = emittedText(result, opencode, format)
+          expect(text.filter((value) => value === parentPlanText)).toHaveLength(1)
+          expect(text.filter((value) => value === childFinalText)).toHaveLength(1)
+          expect(text.filter((value) => value === completionTurnText)).toHaveLength(1)
+          expect(text.at(-1)).toBe(completionTurnText)
+
+          const requests = (yield* llm.inputs).filter(
+            (request) => !JSON.stringify(request).includes("Generate a title for this conversation"),
+          )
+          // The start, the plan reply, and the completion turn: one more than with the mode off.
+          expect(requests.filter((request) => JSON.stringify(request).includes(parentPlanMarker))).toHaveLength(3)
+          expect(
+            requests.filter((request) => JSON.stringify(request).includes("[DAG Workflow completed]")),
+          ).toHaveLength(1)
         }),
       180_000,
     )

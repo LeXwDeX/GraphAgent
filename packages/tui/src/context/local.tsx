@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createEffect, createMemo, onCleanup } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup, untrack } from "solid-js"
 import { useSync } from "./sync"
 import { useEvent } from "./event"
 import path from "path"
@@ -10,7 +10,6 @@ import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTheme } from "./theme"
-import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 import { errorMessage } from "../util/error"
 
@@ -65,12 +64,24 @@ function definiteRejection(error: unknown, command: boolean) {
   return status !== 404 && status !== 408 && status !== 429
 }
 
+/**
+ * A short message the model and agent state raises (an unknown agent, a model that is not valid). The data layer
+ * does not show it: the composition root in `app.tsx` hands `LocalProvider` a callback that does.
+ */
+export type LocalNotice = {
+  text: string
+  level: "info" | "warning"
+  duration?: number
+}
+
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
-  init: () => {
+  init: (props: { notify: (notice: LocalNotice) => void }) => {
     const sync = useSync()
     const sdk = useSDK()
-    const toast = useToast()
+    // Raising a notice must not make the caller depend on whatever the callback reads: the toast store reads and
+    // writes the same entries, so an effect that notified tracked would run again with every notice it raised.
+    const notify = (notice: LocalNotice) => untrack(() => props.notify(notice))
     const theme = useTheme().theme
     const route = useRoute()
     const paths = useTuiPaths()
@@ -112,7 +123,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         },
         set(name: string) {
           if (!agents().some((x) => x.name === name))
-            return toast.show({
+            return notify({
               text: `Agent not found: ${name}`,
               level: "warning",
               duration: 3000,
@@ -494,7 +505,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         cycleFavorite(direction: 1 | -1) {
           const favorites = modelStore.favorite.filter((item) => isModelValid(item))
           if (!favorites.length) {
-            toast.show({
+            notify({
               text: "Add a favorite model to use this shortcut",
               level: "info",
               duration: 3000,
@@ -528,7 +539,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             (route.data.type === "session" ? route.data.sessionID : undefined) === sessionID &&
             agent.current()?.name === agentName
           if (!isModelValid(model)) {
-            toast.show({
+            notify({
               text: `Model ${model.providerID}/${model.modelID} is not valid`,
               level: "warning",
               duration: 3000,
@@ -567,7 +578,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             } catch (error) {
               if (operation.valid()) rollback(sessionID, operation.revision, agentName)
               if (operation.valid() && operation.state.visibleRevision === operation.revision && matchesSelection())
-                toast.show({
+                notify({
                   text: errorMessage(error),
                   level: "warning",
                   duration: 5000,
@@ -882,7 +893,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         toggleFavorite(model: { providerID: string; modelID: string }) {
           batch(() => {
             if (!isModelValid(model)) {
-              toast.show({
+              notify({
                 text: `Model ${model.providerID}/${model.modelID} is not valid`,
                 level: "warning",
                 duration: 3000,
@@ -981,7 +992,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
                   route.data.sessionID === sessionID &&
                   agent.current()?.name === agentName
                 ) {
-                  toast.show({
+                  notify({
                     text: errorMessage(error),
                     level: "warning",
                     duration: 5000,
@@ -1139,7 +1150,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const value = agent.current()
       if (!value?.model) return
       if (isModelValid(value.model)) return
-      toast.show({
+      notify({
         text: `Agent ${value.name}'s configured model ${value.model.providerID}/${value.model.modelID} is not valid`,
         level: "warning",
         duration: 3000,

@@ -12,6 +12,7 @@ import {
   PAUSE_REASON_BUDGET_EXHAUSTED,
   displayState,
   isNodeTerminalStatus,
+  isTerminal,
   isTerminalWorkflowStatusValue,
   isWorkflowTerminalStatus,
 } from "@graphagent/core/dag/core/types"
@@ -31,7 +32,8 @@ import * as MessageV2 from "@/session/message-v2"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Dag, parseWorkflowConfig } from "../dag"
 import { DagLocation } from "../location"
-import { deliverReport, reportingCheckpoints, selectReportNode, workflowWorktreeText } from "./report-delivery"
+import { DagModeReader } from "../mode-read"
+import { deliverReport, isDisplayOnlyCompletion, selectReportNode, workflowWorktreeText } from "./report-delivery"
 import { workflowWorktreeSettlementPending } from "./worktree-completion"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
@@ -160,6 +162,18 @@ export function workflowSafetyWakeLine(total: number) {
 }
 
 /**
+ * #1015: the wake's note on required nodes a completed workflow left undone
+ * (a gate skipped them). What the parent is told depends on whether the
+ * delivery node produced the final answer: without one the work is likely
+ * unfinished, with one the report may already cover it.
+ */
+export function incompleteRequiredWakeLine(lines: readonly string[], answered: boolean) {
+  return answered
+    ? `\nRequired nodes not completed (the final answer was delivered):\n${lines.join("\n")}\nCheck the delivered report against them; if in-scope work remains, repair and reopen the work with control extend, or start a bounded successor workflow.`
+    : `\nRequired nodes not completed (no final answer was produced):\n${lines.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
+}
+
+/**
  * Single DAG delivery scheduler (E1/D7). It owns both ledgers without
  * unifying them: the durable wake marker (`wake_reported`, admitted ==
  * delivered, #321) and `agent_message` (confirmed by `associate`, not by
@@ -173,6 +187,12 @@ export function workflowSafetyWakeLine(total: number) {
  * through the inbox claim. The inbox's 30-second tick (whose scan lists due
  * paused reminders and queued mailboxes) is the only periodic fallback
  * (#1027 D5).
+ *
+ * Every terminal workflow is delivered to the parent session once. Only a
+ * completed workflow whose parent-visible output is an ordinary delivery leaf
+ * leaves the parent model's turn to the session's DAG mode (#1015): with the
+ * mode on the report is followed by one completion turn, with it off the
+ * report is displayed alone (#891).
  */
 export const make = Effect.fn("DagDelivery.make")(function* (environment: Environment): Effect.fn.Return<Interface> {
   const {
@@ -205,6 +225,26 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   // Cache the receipt only as an optimization. Exact durable message/part
   // lookup below survives a crash between admission and wake marking.
   const deliveredWakeSummaries = new Map<string, string>()
+
+  /**
+   * #1015: whether the session is in DAG mode at this moment. It reads the
+   * durable session row, so a `/dag-mode` switch made during a turn applies to
+   * the next terminal delivery. A failed read counts as off: the conservative
+   * answer never adds a parent turn.
+   */
+  const dagModeOn = Effect.fnUntraced(function* (sessionID: string) {
+    return yield* DagModeReader.durableMode(sessions, SessionID.make(sessionID)).pipe(
+      Effect.map((mode) => mode === "on"),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logDebug("DagDelivery could not read the DAG mode; treating it as off", {
+              sessionID,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+      ),
+    )
+  })
 
   const readWakeBatch = Effect.fn("DagDelivery.readWakeBatch")(function* (sessionID: string) {
     const snapshot = yield* store
@@ -268,26 +308,48 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     const workflowsByID = new Map(snapshot.workflows.map((workflow) => [workflow.id, workflow]))
     const workflows = workflowIDs.map((workflowID) => workflowsByID.get(workflowID))
     // A completed final-response workflow either displays its final report
-    // without a model turn, or owns reporting checkpoints and therefore
-    // needs one completion turn. Durable node evidence decides: a delivery
-    // leaf reports the final answer itself, while every other
-    // `report_to_parent` node remains a parent checkpoint. Without a
-    // completed delivery node there is no final answer, only a result
-    // index: a gate (verify FAIL, review REJECT) skipped the delivery
-    // path and settled the graph as completed so the parent can repair
-    // or reopen it (#294). That outcome always needs a parent turn.
+    // without a model turn, or needs one completion turn. Durable node
+    // evidence decides: a delivery leaf reports the final answer itself,
+    // while every other `report_to_parent` node remains a parent checkpoint.
+    // Without a completed delivery node there is no final answer, only a
+    // result index: a gate (verify FAIL, review REJECT) skipped the delivery
+    // path and settled the graph as completed so the parent can repair or
+    // reopen it (#294). That outcome always needs a parent turn.
+    //
+    // #1015: the display-only outcome is the one the session's DAG mode
+    // overrides. With the mode on, the parent gets the report first and then
+    // one completion turn, so it can continue a staged plan; with it off the
+    // report is all it gets (#891). The mode is read once per batch, and only
+    // when a display-only candidate exists, so every candidate of one batch
+    // shares one answer.
     const finalResponseCompletions = new Map<string, boolean>()
+    let parentInDagMode: boolean | undefined
     for (const workflow of workflows) {
       if (!workflow || workflow.status !== "completed") continue
       const config = parseWorkflowConfig(workflow.config)
       if (!config) continue
       const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
-      finalResponseCompletions.set(
-        workflow.id,
-        reportingCheckpoints(config, nodes).length > 0 || !selectReportNode(config, nodes),
-      )
+      const displayOnly = isDisplayOnlyCompletion(config, nodes)
+      if (displayOnly) parentInDagMode ??= yield* dagModeOn(sessionID)
+      finalResponseCompletions.set(workflow.id, !displayOnly || parentInDagMode === true)
     }
     const needsCompletionTurn = (workflowID: string) => finalResponseCompletions.get(workflowID) === true
+    // #1015: a running workflow whose current nodes have all reached a terminal
+    // status is waiting only for the completion check that publishes its
+    // terminal event. A progress or stalled boundary in that window would hand
+    // the parent a turn about a workflow that finishes a moment later, and the
+    // completion would then owe it a second one. Neither boundary applies
+    // there: the terminal event nudges delivery, and the terminal batch carries
+    // the same rows. Durable rows decide, because the in-memory runtime lags the
+    // node event until its handler settles the node.
+    const completionPending = new Set<string>()
+    for (const workflow of workflows) {
+      if (workflow?.status !== "running") continue
+      const entry = entries(workflow.id)
+      if (!entry || entry.runtime.isPaused() || entry.runtime.isStepMode()) continue
+      const current = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
+      if (current.length > 0 && current.every((node) => isTerminal(node.status))) completionPending.add(workflow.id)
+    }
     // A reporting checkpoint that completed while its downstream nodes
     // are still running is informative, not a stalled/actionable
     // boundary. It must reach the parent as its own coalesced batch
@@ -303,7 +365,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           // Final-response workflows deliver progress checkpoints while
           // downstream work continues.
           const entry = entries(workflow.id)
-          return !!entry && !entry.runtime.isPaused() && !entry.runtime.isStepMode()
+          return (
+            !!entry && !entry.runtime.isPaused() && !entry.runtime.isStepMode() && !completionPending.has(workflow.id)
+          )
         })
         .map((node) => node.workflowId),
     )
@@ -315,6 +379,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       if (entry?.runtime.isPaused() || entry?.runtime.isStepMode()) return true
       if (workflow.status !== "running" || !entry) return false
       if (escalatedWorkflowIDs.has(workflow.id)) return true
+      if (completionPending.has(workflow.id)) return false
       // Delivery boundary uses the runtime's own running set, NOT fiber
       // ownership: between markRunning and fibers.set the spawn path has
       // async yield points, and a wake reading that window would misjudge
@@ -326,9 +391,10 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     })
     const atBoundary = new Set([...boundaryWorkflows.map((workflow) => workflow.id), ...runningReportWorkflowIDs])
     const batch = {
-      // Display-only completion reports never consume node wakes. Their
-      // delivery leaf is the report itself; leave every node row to its
-      // own durable lifecycle instead of acking it under the display path.
+      // Display-only completion reports (DAG mode off) keep their node rows
+      // out of the wake batch: the delivery leaf is the report itself, so
+      // `deliverReport` acknowledges that leaf's wake together with the
+      // report instead of rendering it a second time as a node result.
       nodes: wakeNodes.filter(
         (node) => atBoundary.has(node.workflowId) && finalResponseCompletions.get(node.workflowId) !== false,
       ),
@@ -497,9 +563,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
 
         if ((yield* status.get(SessionID.make(sessionID))).type !== "idle") return admitted
 
-        // Completed final-response workflows display their result without a model turn.
-        // Other decisions in the same snapshot take precedence; their wake excludes
-        // these completed reports so they cannot invite a duplicate summary.
+        // Display-only completions (DAG mode off) show their result without a model
+        // turn. Other decisions in the same snapshot take precedence; their wake
+        // excludes these completed reports so they cannot invite a duplicate summary.
         const completedIDs = new Set(plan.completedReports.map((workflow) => workflow.id))
         const decisions = {
           nodes: batch.nodes.filter((node) => !completedIDs.has(node.workflowId)),
@@ -623,22 +689,23 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           if (total > 0) denialsByWorkflow.set(workflow.id, total)
         }
         // A completed workflow can still leave required work undone when a
-        // gate skipped it; name those nodes so the turn acts on them.
-        const incompleteByWorkflow = new Map<string, string[]>()
+        // gate skipped it; name those nodes so the turn acts on them. The note
+        // says whether the delivery node produced a final answer (#1015).
+        const incompleteByWorkflow = new Map<string, { readonly lines: string[]; readonly answered: boolean }>()
         for (const workflow of batch.workflows) {
           if (workflow.status !== "completed" || !completionIDs.has(workflow.id)) continue
-          const incomplete = (yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)).filter(
-            (node) => node.required && node.status !== "completed",
-          )
+          const current = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
+          const incomplete = current.filter((node) => node.required && node.status !== "completed")
           if (incomplete.length > 0) {
-            incompleteByWorkflow.set(
-              workflow.id,
-              incomplete.map((node) => {
+            const config = parseWorkflowConfig(workflow.config)
+            incompleteByWorkflow.set(workflow.id, {
+              lines: incomplete.map((node) => {
                 const state = displayState(node)
                 const reason = state === "failed" && node.errorClass ? `: ${node.errorClass}` : ""
                 return `- "${node.id}" (${state}${reason})`.slice(0, 300)
               }),
-            )
+              answered: config !== undefined && selectReportNode(config, current) !== undefined,
+            })
           }
         }
         const summaries = [
@@ -677,7 +744,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
             const attribution = failures
               ? `\nFailed nodes:\n${failures.join("\n")}`
               : incomplete
-                ? `\nRequired nodes not completed (no final answer was produced):\n${incomplete.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
+                ? incompleteRequiredWakeLine(incomplete.lines, incomplete.answered)
                 : ""
             const safety = workflowSafetyWakeLine(denialsByWorkflow.get(workflow.id) ?? 0)
             return workflow.status === "paused"

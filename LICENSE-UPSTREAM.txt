@@ -1177,6 +1177,7 @@ packages/tui/src/context/prompt.tsx
 packages/tui/src/context/route.tsx
 packages/tui/src/context/runtime.tsx
 packages/tui/src/context/sdk.tsx
+packages/tui/src/context/session-destination.tsx
 packages/tui/src/context/sync.tsx
 packages/tui/src/context/theme.tsx
 packages/tui/src/context/thinking.ts
@@ -1197,7 +1198,6 @@ packages/tui/src/routes/diff/file-tree.tsx
 packages/tui/src/routes/diff/index.tsx
 packages/tui/src/routes/diff/ui.tsx
 packages/tui/src/routes/home.tsx
-packages/tui/src/routes/home/session-destination.tsx
 packages/tui/src/routes/session/index.tsx
 packages/tui/src/routes/session/permission.tsx
 packages/tui/src/routes/session/question.tsx

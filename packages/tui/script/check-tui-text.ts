@@ -226,7 +226,8 @@ export function checkTuiRetired(options: TextCheckOptions = {}): RetiredCheckRes
  * - `jsx-attr`: a visible JSX attribute (`title`, `placeholder`, ...) set to a literal.
  * - `prop`: a visible object property (`title:`, `label:`, ...) set to a literal; this is
  *   how keymap command titles and list rows carry their text.
- * - `toast`: the `text` property of the object passed to `toast.show(...)`.
+ * - `toast`: the `text` property of the object passed to `toast.show(...)`, or to the `notify(...)`
+ *   callback the data layer raises its notices through (`LocalProvider`; the app turns them into toasts).
  *
  * Only literals that contain an English word (three or more ASCII letters) count.
  * Identifiers, record keys, URLs, command ids and calls such as `t("key")` sit in other
@@ -280,12 +281,16 @@ function propertyName(name: ts.PropertyName) {
   return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined
 }
 
-/** `toast.show({ ... })` and `x.toast.show({ ... })`. */
-function isToastShowArgument(object: ts.ObjectLiteralExpression) {
+/** `toast.show({ ... })` and `x.toast.show({ ... })`, or the `notify({ ... })` callback that hands the same notice on. */
+function isToastArgument(object: ts.ObjectLiteralExpression) {
   const call = object.parent
   if (!ts.isCallExpression(call) || !call.arguments.includes(object)) return false
   const callee = call.expression
-  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "show") return false
+  // The data layer cannot import the toast, so it raises a notice through a callback; the text is the same.
+  if (ts.isIdentifier(callee)) return callee.text === "notify"
+  if (!ts.isPropertyAccessExpression(callee)) return false
+  if (callee.name.text === "notify") return true
+  if (callee.name.text !== "show") return false
   const target = callee.expression
   return (
     (ts.isIdentifier(target) && target.text === "toast") ||
@@ -323,7 +328,7 @@ export function collectTuiEnglish(options: TextCheckOptions = {}): EnglishLitera
         const name = propertyName(node.name)
         if (name && VISIBLE_NAMES.has(name)) {
           for (const literal of visibleLiterals(node.initializer)) record("prop", literal.node, literal.text)
-        } else if (name === "text" && isToastShowArgument(node.parent)) {
+        } else if (name === "text" && isToastArgument(node.parent)) {
           for (const literal of visibleLiterals(node.initializer)) record("toast", literal.node, literal.text)
         }
       }

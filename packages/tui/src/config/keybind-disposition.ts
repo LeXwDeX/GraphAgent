@@ -191,14 +191,16 @@ export const Disposition = {
   theme_mode_lock: keep("global"),
   session_drawer_toggle: added(
     "session",
-    "ctrl+b,<leader>b; registered by the session route only although spec 4.4 lists it as global; the shortcut " +
-      "display prefers <leader>b inside tmux (keymap.tsx displaySequence)",
+    "ctrl+b,<leader>b; registered by the session route only (the #886 close-out corrected spec 4.4, which listed " +
+      "it as global); the shortcut display prefers <leader>b inside tmux (keymap.tsx displaySequence)",
   ),
   scrollbar_toggle: keep("session", CONFIG_TOGGLE),
   status_view: keep("global"),
   view_expand_toggle: added(
     "session",
-    "No command registered yet; the footer only reads its shortcut (spec 4.4 lists ctrl+o as global)",
+    "ctrl+o; registered by the session route, in main and sub-agent views, because the transcript is the only place " +
+      "with blocks to fold (spec 4.4 lists it as global). It opens the most recent folded reasoning, tool output or " +
+      "tool error, and closes the latest once all are open. The footer reads its shortcut from this registration",
   ),
 
   session_export: keep("session"),
@@ -221,7 +223,8 @@ export const Disposition = {
   session_compact: keep("session"),
   session_dagmode_toggle: added(
     "session",
-    "Main-session view only (spec 3.9); command registration ships with the DAG mode key work",
+    "<leader>d; the session route registers it for the main session only (spec 3.9), and the home route registers " +
+      "a hidden twin that only tells the user to start a session first",
   ),
   session_toggle_timestamps: keep("session", CONFIG_TOGGLE),
   session_toggle_generic_tool_output: keep("session", CONFIG_TOGGLE),
