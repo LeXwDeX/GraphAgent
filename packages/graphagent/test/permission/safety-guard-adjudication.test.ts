@@ -471,6 +471,54 @@ it.instance(
 )
 
 it.instance(
+  "resolves symlinks before `..` so link/../target cannot leave the project",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("symlink-dotdot")
+      const directory = yield* InstanceState.directory
+      const outside = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "safety-dotdot-")))
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(outside, { recursive: true, force: true })))
+      // `link` points at `<outside>/child`, so `link/..` is the outside
+      // directory itself; folding `..` lexically would stay in the project.
+      yield* Effect.promise(() => fs.mkdir(path.join(outside, "child")))
+      yield* Effect.promise(() => fs.writeFile(path.join(outside, ".env"), "SECRET=1"))
+      yield* Effect.promise(() => fs.symlink(path.join(outside, "child"), path.join(directory, "link"), "dir"))
+      const run = (command: string) =>
+        ask(childSessionID, {
+          permission: "bash",
+          patterns: [command],
+          metadata: { command, cwd: directory, shell: "bash" },
+        })
+      const edit = (relative: string) =>
+        ask(childSessionID, { permission: "edit", patterns: [relative], metadata: {} })
+
+      // bash follows `link` first, then `..`; the write lands outside.
+      const bashWrite = yield* expectDenied(run("printf x > link/../victim"))
+      expect(bashWrite).toContain("dag_safety:SF-1")
+      const nativeWrite = yield* expectDenied(edit("link/../victim"))
+      expect(nativeWrite).toContain("dag_safety:SF-1")
+      // The read side resolves the same way.
+      const bashRead = yield* expectDenied(run("cat link/../.env"))
+      expect(bashRead).toContain("dag_safety:SF-2")
+      // `.kube/config` is sensitive only after the link is followed; the
+      // literal project path spells no sensitive segment.
+      yield* Effect.promise(() => fs.mkdir(path.join(outside, ".kube")))
+      yield* Effect.promise(() => fs.writeFile(path.join(outside, ".kube", "config"), "apiVersion: v1"))
+      yield* Effect.promise(() => fs.symlink(path.join(outside, ".kube"), path.join(directory, "kubelink"), "dir"))
+      const hiddenRead = yield* expectDenied(run("cat kubelink/config"))
+      expect(hiddenRead).toContain("dag_safety:SF-2")
+
+      // A real `..` inside the project and an inside-pointing link stay allowed.
+      yield* Effect.promise(() => fs.mkdir(path.join(directory, "sub")))
+      yield* run("printf x > sub/../inside")
+      yield* Effect.promise(() => fs.mkdir(path.join(directory, "real")))
+      yield* Effect.promise(() => fs.symlink(path.join(directory, "real"), path.join(directory, "inlink"), "dir"))
+      yield* run("printf x > inlink/inside")
+    }),
+  { git: true },
+)
+
+it.instance(
   "denies reading a sensitive file through a symlink",
   () =>
     Effect.gen(function* () {

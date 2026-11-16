@@ -276,6 +276,35 @@ describe("SF-4 outward release actions", () => {
       ).toBe("SF-4")
     }),
   )
+
+  effect("denies a push whose branch facts an earlier branch change invalidated", () =>
+    Effect.gen(function* () {
+      // The captured branch is feat/work, but HEAD moves before the push.
+      expect((yield* bash("git switch main && git push origin", { git: git() }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git checkout main && git push", { git: git() }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git switch main && git push origin HEAD", { git: git() }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git checkout -b tmp && git push origin HEAD", { git: git() }))?.ruleID).toBe("SF-4")
+      expect((yield* bash("git branch -m newname && git push origin", { git: git() }))?.ruleID).toBe("SF-4")
+      expect(
+        (yield* bash("git symbolic-ref HEAD refs/heads/main && git push origin", { git: git() }))?.ruleID,
+      ).toBe("SF-4")
+      // A prefixed `git -C` change invalidates only that repository.
+      expect((yield* bash("git -C /elsewhere switch main && git push origin", { git: git() }))).toBeUndefined()
+    }),
+  )
+
+  effect("keeps branch facts when nothing moved HEAD", () =>
+    Effect.gen(function* () {
+      expect((yield* bash("git push origin", { git: git() }))).toBeUndefined()
+      expect((yield* bash("git push origin feat/work", { git: git() }))).toBeUndefined()
+      expect((yield* bash("git push origin main", { git: git() }))?.ruleID).toBe("SF-4")
+      // `--` separates pathspecs: these restore files and leave HEAD alone.
+      expect((yield* bash("git checkout -- src/a.ts && git push origin", { git: git() }))).toBeUndefined()
+      expect((yield* bash("git checkout main -- src/a.ts && git push origin", { git: git() }))).toBeUndefined()
+      // One branch change in this repository and one in another line.
+      expect((yield* bash("git switch main && git push origin feat/work", { git: git() }))).toBeUndefined()
+    }),
+  )
 })
 
 describe("SF-1 apply_patch move targets", () => {

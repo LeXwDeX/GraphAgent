@@ -887,11 +887,28 @@ function refspecDestination(refspec: string, git: GitState | undefined) {
   return value
 }
 
-function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known: boolean): Violation | undefined {
+/** True when a refspec's source side is the current branch, spelled `HEAD`. */
+function headRefspec(refspec: string) {
+  const value = refspec.replace(/^\+/, "")
+  const colon = value.indexOf(":")
+  return (colon >= 0 ? value.slice(0, colon) : value) === "HEAD"
+}
+
+function pushViolation(
+  input: EvaluateInput,
+  argv: readonly string[],
+  cwd: string,
+  known: boolean,
+  branchMutated = false,
+): Violation | undefined {
   const invocation = parseGit(argv, cwd, known)
   if (invocation.uncertain || invocation.name !== "push") return undefined
   const args = invocation.args
-  const git = invocation.cwdKnown ? gitFor(input, invocation.cwd) : undefined
+  const facts = invocation.cwdKnown ? gitFor(input, invocation.cwd) : undefined
+  // A preceding command in the same line (`git switch main && git push`) may
+  // have moved HEAD. The facts were captured before execution, so the named
+  // branch no longer proves what a bare push or a `HEAD` refspec publishes.
+  const git = facts && branchMutated ? { ...facts, branch: undefined } : facts
   // Bulk selectors publish every branch or ref, including the default branch,
   // whatever the current branch or the explicit refs say. A wildcard refspec
   // (`refs/heads/*:refs/heads/*`) selects the same set as `--all`.
@@ -972,7 +989,13 @@ function pushViolation(input: EvaluateInput, argv: readonly string[], cwd: strin
         )
       continue
     }
-    if (destination === undefined) return undefined
+    if (destination === undefined) {
+      // `HEAD` names the branch the push runs on; with the branch facts
+      // invalidated, that branch could be the default branch.
+      if (headRefspec(ref))
+        return sf4("git push", "cannot determine the pushed branch of a HEAD push; it could publish the default branch")
+      return undefined
+    }
     if (matchesDefault(destination, git))
       return sf4(
         "git push",
@@ -1052,7 +1075,13 @@ function destructiveViolation(input: EvaluateInput, argv: readonly string[], cwd
   return undefined
 }
 
-function publishViolation(input: EvaluateInput, argv: readonly string[], cwd: string, known: boolean) {
+function publishViolation(
+  input: EvaluateInput,
+  argv: readonly string[],
+  cwd: string,
+  known: boolean,
+  branchMutated = false,
+) {
   const name = commandName(argv)
   const args = argv.slice(1)
   if (["npm", "pnpm", "yarn"].includes(name) && args.includes("publish"))
@@ -1065,7 +1094,7 @@ function publishViolation(input: EvaluateInput, argv: readonly string[], cwd: st
     if (sub === "pr" && (argv[2] ?? "").toLowerCase() === "merge")
       return sf4("gh pr merge", "merging a pull request is a delivery action owned by the main agent and the user")
   }
-  if (name === "git") return pushViolation(input, argv, cwd, known)
+  if (name === "git") return pushViolation(input, argv, cwd, known, branchMutated)
   return undefined
 }
 
@@ -1359,6 +1388,66 @@ async function realPathOf(target: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * Real path of a target with symlinks followed before `..` applies, the way
+ * the kernel resolves it. `path.resolve` folds `..` lexically instead, so
+ * with `link` pointing outside the project, `link/../victim` names the
+ * victim beside the link target, not beside `link`. A missing component is
+ * appended literally: the nearest existing ancestor is the best proof
+ * available, and a command through a nonexistent component fails on its own.
+ * Any other error (permissions, symlink loops) leaves the real location
+ * unproven, so the caller denies.
+ */
+async function physicalPathOf(target: string, cwd: string): Promise<string | undefined> {
+  const parsed = path.parse(target)
+  const absolute = parsed.root !== ""
+  let current: string
+  if (absolute) current = parsed.root
+  else {
+    const base = await fs.realpath(path.resolve(cwd)).catch(() => undefined)
+    if (base === undefined) return undefined
+    current = base
+  }
+  const rest = absolute ? target.slice(parsed.root.length) : target
+  for (const component of rest.split(path.sep)) {
+    if (component === "" || component === ".") continue
+    // `current` is already a real path, so its parent is the physical parent.
+    if (component === "..") {
+      current = path.dirname(current)
+      continue
+    }
+    const next = path.join(current, component)
+    try {
+      current = await fs.realpath(next)
+    } catch (error) {
+      const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined
+      if (code !== "ENOENT" && code !== "ENOTDIR") return undefined
+      current = next
+    }
+  }
+  return current
+}
+
+/** A static shell word, decoded but not path-normalized; undefined when unknowable. */
+function staticShellText(raw: string) {
+  const expanded = expandDecoded(raw)
+  if (expanded === undefined || expanded === "" || expanded.startsWith("~") || DYNAMIC.test(expanded)) return undefined
+  return expanded
+}
+
+/** Physical target of a shell word (write destination or read source). */
+async function shellPhysicalPath(raw: string, cwd: string) {
+  const text = staticShellText(raw)
+  return text === undefined ? undefined : physicalPathOf(text, cwd)
+}
+
+/** Physical target of a native tool path; native paths are literal, not shell words. */
+async function nativePhysicalPath(raw: string, cwd: string) {
+  const text = raw.trim()
+  if (text === "") return undefined
+  return physicalPathOf(process.platform === "win32" ? text.replaceAll("\\", "/") : text, cwd)
+}
+
 async function realRootsOf(input: EvaluateInput): Promise<string[]> {
   const roots = [input.instance?.directory, input.instance?.worktree, ...input.allowRoots].filter(
     (root): root is string => typeof root === "string" && root !== "" && root !== "/",
@@ -1377,7 +1466,7 @@ async function readSymlinkViolation(raw: string, cwd: string, known: boolean, la
   if (target.dynamic || target.path === undefined) return undefined
   // A relative word under an unknown cwd names no provable file.
   if (!known && !path.isAbsolute(expandDecoded(raw) ?? "")) return undefined
-  const real = await realPathOf(target.path)
+  const real = await shellPhysicalPath(raw, cwd)
   // A missing file makes `read` fail on its own; there is nothing to leak.
   if (real === undefined) return undefined
   const category = sensitiveCategory(real)
@@ -1390,7 +1479,7 @@ async function nativeReadSymlinkViolation(input: EvaluateInput) {
   const base = input.instance?.worktree ?? input.cwd
   const target = nativeTarget(input.pattern, base)
   if (target.dynamic || target.path === undefined) return undefined
-  const real = await realPathOf(target.path)
+  const real = await nativePhysicalPath(input.pattern, base)
   if (real === undefined) return undefined
   const category = sensitiveCategory(real)
   if (category) return sf2("read symlink", `reading a ${category} through a symlink is not allowed: ${real}`)
@@ -1439,7 +1528,12 @@ export async function symlinkViolation(
     // Lexical escapes already fail SF-1; only apparently-inside targets need
     // the deeper resolution.
     if (!inside(input, target.path)) continue
-    const real = await realPathOf(target.path)
+    // Resolve the raw spelling physically: symlinks are followed before `..`
+    // applies, unlike the lexical `path.resolve` above.
+    const real =
+      input.permission === "edit"
+        ? await nativePhysicalPath(entry.raw, entry.cwd)
+        : await shellPhysicalPath(entry.raw, entry.cwd)
     if (real === undefined)
       return sf1("symlink write", `cannot resolve the write target through symlinks: ${target.path}`)
     if (!roots.some((root) => FSUtil.contains(root, real)))
@@ -1454,6 +1548,8 @@ interface SegmentContext {
   readonly argv: readonly string[]
   readonly cwd: string
   readonly known: boolean
+  /** An earlier command in the same line may have moved the branch of this directory. */
+  readonly branchMutated?: boolean
   /** A wrapper whose inner command cannot be inspected; deny before classifying. */
   readonly wrapperViolation?: Violation
   /** A user-defined function call whose body cannot be expanded; deny before classifying. */
@@ -1531,6 +1627,68 @@ interface ContextOptions {
   readonly deferred?: boolean
   readonly depth?: number
   readonly calls?: ReadonlySet<string>
+  /** Branch-mutation state shared by nested function-body expansions. */
+  readonly branchState?: BranchState
+}
+
+/** Branch facts gathered before execution become stale when a command moves HEAD. */
+interface BranchState {
+  /** Directories whose branch an earlier command in the line may have moved. */
+  readonly dirs: Set<string>
+  /** A moving command ran under an unproven cwd, so no directory can be named. */
+  unproven: boolean
+}
+
+/** `git checkout` options that move HEAD whatever the pathspec says. */
+const CHECKOUT_BRANCH_OPTIONS = new Set(["-b", "-B", "--detach", "--orphan", "--track", "-t"])
+
+/** Whether `git checkout` switches branches rather than restoring files. */
+function checkoutMovesHead(args: readonly string[]) {
+  if (args.some((arg) => CHECKOUT_BRANCH_OPTIONS.has(arg))) return true
+  // `--` separates pathspecs: `git checkout -- <path>` and
+  // `git checkout <ref> -- <path>` restore files and leave HEAD alone.
+  if (args.includes("--")) return false
+  const first = args.find((arg) => !isFlag(arg))
+  if (first === undefined) return true
+  // `.`-relative words are pathspecs; anything else may name a branch.
+  return !(first === "." || first === ".." || first.startsWith("./") || first.startsWith("../"))
+}
+
+/** Whether `git branch` arguments rename a branch (`-m`, `-M`, `--move`). */
+function branchRenames(args: readonly string[]) {
+  return args.some((arg) => arg === "--move" || (isShortFlag(arg) && /[mM]/.test(arg.slice(1))))
+}
+
+/** Whether `git symbolic-ref` rewrites HEAD to a branch. */
+function symbolicRefMovesHead(args: readonly string[]) {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? ""
+    // `-m`/`--message` takes the reflog message, not the ref.
+    if (arg === "-m" || arg === "--message") {
+      index++
+      continue
+    }
+    if (isFlag(arg)) continue
+    return arg === "HEAD" && (args[index + 1] ?? "").startsWith("refs/heads/")
+  }
+  return false
+}
+
+/**
+ * The repository directory a command may move HEAD in, or undefined when the
+ * command leaves the checked-out branch alone. A later `git push` in the same
+ * line must not trust the branch facts captured before execution.
+ */
+function branchMoveOf(argv: readonly string[], cwd: string, known: boolean) {
+  if (commandName(argv) !== "git") return undefined
+  const invocation = parseGit(argv, cwd, known)
+  if (invocation.uncertain || invocation.name === undefined) return undefined
+  const moves =
+    invocation.name === "switch" ||
+    (invocation.name === "checkout" && checkoutMovesHead(invocation.args)) ||
+    (invocation.name === "branch" && branchRenames(invocation.args)) ||
+    (invocation.name === "symbolic-ref" && symbolicRefMovesHead(invocation.args))
+  return moves ? { cwd: invocation.cwd, known: invocation.cwdKnown } : undefined
 }
 
 /**
@@ -1542,6 +1700,10 @@ interface ContextOptions {
  * the body runs in the caller's shell, so its commands are analyzed against
  * the call-time directory. A call to a function that may `cd` leaves the
  * caller's directory unproven.
+ *
+ * Commands run in order, so a `git switch`/`checkout`/`branch -m`/
+ * `symbolic-ref HEAD` marks its repository directory; a later push there is
+ * flagged `branchMutated` because the git facts predate the branch change.
  */
 function segmentContexts(
   segments: readonly ShellParse.Segment[],
@@ -1552,6 +1714,7 @@ function segmentContexts(
   const functions = options.functions
   const depth = options.depth ?? 0
   const calls = options.calls ?? new Set<string>()
+  const branchState = options.branchState
   const states = new Map<string, { cwd: string; known: boolean }>()
   const stateFor = (scope: string) => {
     for (let current = scope; ; current = parentScope(current)) {
@@ -1576,14 +1739,26 @@ function segmentContexts(
       body !== undefined && (calls.has(called) || depth >= MAX_FUNCTION_DEPTH)
         ? sf3("function call", `cannot statically prove the side effects of the call to "${called}"`)
         : undefined
+    // Read the mutation state before recording this command: a `git push`
+    // after a `git switch` sees the earlier change, the switch itself does not.
+    const branchMutated =
+      branchState !== undefined &&
+      (branchState.unproven || branchState.dirs.has(path.resolve(execution.cwd)))
     out.push({
       segment,
       argv: execution.argv,
       cwd: execution.cwd,
       known: execution.known,
+      ...(branchMutated ? { branchMutated: true } : {}),
       ...(execution.violation ? { wrapperViolation: execution.violation } : {}),
       ...(callViolation ? { callViolation } : {}),
     })
+    const moved = branchState !== undefined ? branchMoveOf(execution.argv, execution.cwd, execution.known) : undefined
+    if (moved !== undefined && branchState !== undefined) {
+      // An unproven cwd cannot name the repository the change landed in.
+      if (moved.known) branchState.dirs.add(path.resolve(moved.cwd))
+      else branchState.unproven = true
+    }
     if (body !== undefined && callViolation === undefined) {
       const nextCalls = new Set(calls)
       nextCalls.add(called)
@@ -1593,6 +1768,7 @@ function segmentContexts(
           deferred: true,
           depth: depth + 1,
           calls: nextCalls,
+          ...(branchState ? { branchState } : {}),
         }),
       )
     }
@@ -1653,7 +1829,8 @@ function bashViolation(input: EvaluateInput): Violation | undefined {
   const segments = input.segments
   if (!segments) return undefined
   const functions = functionTable(segments)
-  const contexts = segmentContexts(segments, input.cwd, input.knownDirectories, { functions })
+  const branchState: BranchState = { dirs: new Set(), unproven: false }
+  const contexts = segmentContexts(segments, input.cwd, input.knownDirectories, { functions, branchState })
   for (let index = 0; index < contexts.length; index++) {
     const context = contexts[index]
     if (!context) continue
@@ -1672,7 +1849,7 @@ function bashViolation(input: EvaluateInput): Violation | undefined {
     if (sensitive) return sensitive
     const destructive = destructiveViolation(input, argv, cwd, known)
     if (destructive) return destructive
-    const publish = publishViolation(input, argv, cwd, known)
+    const publish = publishViolation(input, argv, cwd, known, context.branchMutated === true)
     if (publish) return publish
     if (name === "curl" || name === "wget") {
       const next = contexts[index + 1]
