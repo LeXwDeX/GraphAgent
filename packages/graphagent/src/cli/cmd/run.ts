@@ -3,7 +3,7 @@ import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { LocalPermissionStartup } from "@/permission/local-startup"
 import { ClientSessions } from "@/session/client-sessions"
 import { AppRuntime } from "@/effect/app-runtime"
-import { HookClientLifecycle } from "@/hook/client-lifecycle"
+import { ClientDetach } from "@/session/client-detach"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import { APP_NAME } from "@graphagent/core/brand"
 // CLI entry point for `opencode run` and `opencode --mini`.
@@ -1024,7 +1024,7 @@ export const RunCommand = effectCmd({
       } finally {
         for (const { sessionID, directory } of ClientSessions.list())
           await AppRuntime.runPromise(
-            HookClientLifecycle.endLocalSession({
+            ClientDetach.local({
               sessionID,
               directory,
               reason: interactive ? "prompt_input_exit" : "other",

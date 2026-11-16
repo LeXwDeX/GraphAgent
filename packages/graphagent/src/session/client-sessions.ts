@@ -8,8 +8,9 @@ export * as ClientSessions from "./client-sessions"
 /**
  * Sessions opened by the in-process client (TUI worker or `run`).
  *
- * The registry exists only so client shutdown can end those sessions' local
- * hooks. It is not consulted for authorization: `run` keeps its own
+ * The registry exists only so client shutdown can detach those sessions
+ * (`ClientDetach.local`: clear their live state, then end their local hooks).
+ * It is not consulted for authorization: `run` keeps its own
  * `localSessionIDs` set because authorization is decided before a request
  * reaches the handler that records the session here.
  *
