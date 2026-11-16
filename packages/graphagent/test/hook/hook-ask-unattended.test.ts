@@ -115,7 +115,7 @@ const it = testEffect(
   ),
 )
 
-type ToolResult = { output: string; metadata?: Record<string, unknown> }
+type ToolResult = { title?: string; output: string; metadata?: Record<string, unknown> }
 type Tools = Record<
   string,
   {
@@ -230,6 +230,8 @@ const expectHookAskDenied = (sessionID: SessionID) =>
     // A refused confirmation is a result the model reads, not a stop: the
     // pipeline's hook-stop marker would end the turn.
     expect(denied.output.startsWith("[Tool denied by hook]")).toBe(true)
+    // A complete tool result: a command-driven subtask writes it as it is (#1350).
+    expect(denied.title).toBe("write")
     expect(denied.metadata).toMatchObject({ hookDenied: true })
     expect(denied.metadata?.hookStopped).toBeUndefined()
     expect(executed).toBe(0)

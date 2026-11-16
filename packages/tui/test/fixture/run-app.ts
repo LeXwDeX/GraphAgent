@@ -9,7 +9,7 @@ import type { Session } from "@graphagent/sdk"
 import { dagModeStatus } from "../routes/dag-mode-harness"
 import { tmpdir } from "./fixture"
 import { createTuiResolvedConfig } from "./tui-runtime"
-import { createEventSource, createFetch, directory, json } from "./tui-sdk"
+import { createEventSource, createFetch, directory, json, type FetchHandler } from "./tui-sdk"
 
 const provider = {
   id: "test",
@@ -79,11 +79,15 @@ export async function runApp(options: {
   height?: number
   ambiguousWidth?: 1 | 2
   dagMode?: () => ReturnType<typeof dagModeStatus>
+  /** Extra entries of the persisted kv file, such as a display policy. */
+  kv?: Record<string, unknown>
+  /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
+  handler?: FetchHandler
 }) {
   const tmp = await tmpdir()
   await Bun.write(
     `${tmp.path}/kv.json`,
-    JSON.stringify(options.ambiguousWidth ? { ambiguous_width: options.ambiguousWidth } : {}),
+    JSON.stringify({ ...(options.ambiguousWidth ? { ambiguous_width: options.ambiguousWidth } : {}), ...options.kv }),
   )
   const setup = await createTestRenderer({ width: options.width ?? 120, height: options.height ?? 30 })
   const core = await import("@opentui/core")
@@ -99,6 +103,8 @@ export async function runApp(options: {
       const text = await request.clone().text()
       sent.push({ method: request.method, path: url.pathname, body: text ? JSON.parse(text) : undefined })
     }
+    const custom = await options.handler?.(url, request)
+    if (custom) return custom
     if (url.pathname === "/config") return json({ language: "zh-CN" })
     if (url.pathname === "/agent") return json([agent])
     if (url.pathname === "/session") return json(options.sessions)

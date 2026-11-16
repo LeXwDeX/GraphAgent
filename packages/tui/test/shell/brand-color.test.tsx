@@ -24,10 +24,11 @@ import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
  * Whitelist item -> where it is checked (the input prompt `›` left the list at the #886 close-out):
  * 1. logo AGENT face and top bar `◆`  top bar here; the wordmark is in test/component/logo.test.tsx
  * 2. selected row and panel title     the list panel scenario here
- * 3. running spinner, DAG run segment spinners take their color from the caller; the DAG bar is F4 (#1032)
+ * 3. running spinner, DAG run segment spinners take their color from the caller; the DAG bar is in
+ *                                     test/shell/status-band.test.tsx
  * 4. footer agent name                here
  * 5. footer `◆ DAG` (on)              here
- * 6. status band leading `◆`          F4 (#1032) has not filled the status band slot yet
+ * 6. status band leading `◆`          test/shell/status-band.test.tsx
  */
 
 beforeEach(() => {

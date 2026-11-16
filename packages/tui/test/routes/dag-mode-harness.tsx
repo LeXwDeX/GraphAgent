@@ -11,10 +11,11 @@ import { TuiConfigProvider } from "../../src/config"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider, type ClipboardService } from "../../src/context/clipboard"
 import { EditorContextProvider } from "../../src/context/editor"
+import { useCommands } from "../../src/commands/context"
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
 import { HookStatusProvider } from "../../src/context/hook-status"
-import { KVProvider } from "../../src/context/kv"
+import { KVProvider, useKV } from "../../src/context/kv"
 import { ToastLocalProvider } from "../fixture/tui-local"
 import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
@@ -23,6 +24,7 @@ import { RouteProvider, useRoute, type Route } from "../../src/context/route"
 import { SDKProvider } from "../../src/context/sdk"
 import { SyncProvider, useSync } from "../../src/context/sync"
 import { ThemeProvider } from "../../src/context/theme"
+import type { Ticker } from "../../src/context/ticker"
 import { TickerProvider } from "../../src/context/ticker-context"
 import { GraphagentKeymapProvider, registerGraphagentKeymap, type OpenTuiKeymap } from "../../src/keymap"
 import { FrecencyProvider } from "../../src/prompt/frecency"
@@ -117,6 +119,10 @@ export type MountOptions = {
   keybinds?: Parameters<typeof createTuiResolvedConfig>[0]
   /** Interface language served as the configured `language`; defaults to zh-CN. */
   language?: "zh-CN" | "en"
+  /** Values of the kv file the app starts with, for example `ambiguous_width`; defaults to none. */
+  kv?: Record<string, unknown>
+  /** Replaces the one-second clock, so a test controls the time a view shows and counts who listens to it. */
+  ticker?: Ticker
   /** Serve a primary agent and one connected model so commands carry both. */
   withAgentAndModel?: boolean
   /** Reply to `GET /session/:id/dag-mode`; defaults to an available status. */
@@ -129,6 +135,8 @@ export type MountOptions = {
   clipboard?: ClipboardService
   /** Working directory of the TUI process (export writes there); defaults to the fake server's directory. */
   cwd?: string
+  /** The event source the SDK subscribes to, when a test needs it before the mount returns. */
+  events?: ReturnType<typeof createEventSource>
   width?: number
   height?: number
 }
@@ -141,8 +149,8 @@ export type MountOptions = {
  */
 export async function mountRoute(options: MountOptions) {
   const tmp = await tmpdir()
-  await Bun.write(`${tmp.path}/kv.json`, "{}")
-  const events = createEventSource()
+  await Bun.write(`${tmp.path}/kv.json`, JSON.stringify(options.kv ?? {}))
+  const events = options.events ?? createEventSource()
   const sent: Sent[] = []
   const requested: string[] = []
   const sessions = options.sessions ?? []
@@ -183,14 +191,18 @@ export async function mountRoute(options: MountOptions) {
   let toast!: ReturnType<typeof useToast>
   let route!: ReturnType<typeof useRoute>
   let sync!: ReturnType<typeof useSync>
+  let kv!: ReturnType<typeof useKV>
   let promptRef!: ReturnType<typeof usePromptRef>
+  let registry!: ReturnType<typeof useCommands>
   let bottomZone: BottomZoneStateApi | undefined
 
   function Probe() {
     toast = useToast()
     route = useRoute()
     sync = useSync()
+    kv = useKV()
     promptRef = usePromptRef()
+    registry = useCommands()
     return <box />
   }
 
@@ -208,7 +220,7 @@ export async function mountRoute(options: MountOptions) {
                 <GraphagentKeymapProvider keymap={keymap}>
                   <ArgsProvider>
                     <KVProvider>
-                      <TickerProvider>
+                      <TickerProvider ticker={options.ticker}>
                         <FooterToastProvider>
                           <HookStatusProvider>
                             <RouteProvider initialRoute={options.route}>
@@ -274,6 +286,10 @@ export async function mountRoute(options: MountOptions) {
     toast: () => toast,
     route: () => route,
     sync: () => sync,
+    /** The command registry the views register their handlers in; `run` is what a palette selection does. */
+    registry: () => registry,
+    /** The persisted preferences, for a test that changes one while the view is on screen. */
+    kv: () => kv,
     /** The bottom zone of a view mounted with `frame`. */
     bottomZone: () => bottomZone,
     /** Text in the mounted prompt's draft; `undefined` when no prompt is mounted. */

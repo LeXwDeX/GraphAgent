@@ -1,0 +1,29 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`at 80 and 120 columns draws the rows in zh-CN inside 80 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 完成 · 2 运行中 · 1 失败"`;
+
+exports[`at 80 and 120 columns draws the rows in zh-CN inside 80 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━ ━━━━ ━━━━ ── ── 4/9"`;
+
+exports[`at 80 and 120 columns draws the rows in zh-CN inside 120 columns at ambiguous width 1 1`] = `
+"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 完成 · 第 3/5 波 · 2 运行中 · 1 失败                  +1 个  /dag
+  ◎ 目标  全部依赖升到最新稳定版并通过 CI                               第 6/30 轮 · 等待 watch_pr · 2 个子目标  /goal"
+`;
+
+exports[`at 80 and 120 columns draws the rows in zh-CN inside 120 columns at ambiguous width 2 1`] = `
+"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 完成 · 2 运行中 · 1 失败
+  ◎ 目标  全部依赖升到最新稳定版并通过 CI                            第 6/30 轮 · 等待 watch_pr · 2 个子目标  /goal"
+`;
+
+exports[`at 80 and 120 columns draws the rows in en inside 80 columns at ambiguous width 1 1`] = `"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9"`;
+
+exports[`at 80 and 120 columns draws the rows in en inside 80 columns at ambiguous width 2 1`] = `"  ◆ 依赖升级验证 ━━━━━━ ━━━━ ━━━━ ── ── 4/9"`;
+
+exports[`at 80 and 120 columns draws the rows in en inside 120 columns at ambiguous width 1 1`] = `
+"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 done · wave 3/5 · 2 running · 1 failed              +1 more  /dag
+  ◎ Goal  全部依赖升到最新稳定版并通过 CI                                turn 6/30 · 等待 watch_pr · subgoals 2  /goal"
+`;
+
+exports[`at 80 and 120 columns draws the rows in en inside 120 columns at ambiguous width 2 1`] = `
+"  ◆ 依赖升级验证 ━━━━━━━━━ ━━━━━━ ━━━━━━ ─── ─── 4/9 done · 2 running · 1 failed
+  ◎ Goal  全部依赖升到最新稳定版并通过 CI                             turn 6/30 · 等待 watch_pr · subgoals 2  /goal"
+`;
