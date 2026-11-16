@@ -7,6 +7,7 @@ import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
+import { AgentContract } from "../agent/contract"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import type { ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
@@ -428,6 +429,15 @@ export const TaskTool = Tool.define(
       const next = yield* agent.get(subagentType)
       if (!next) {
         return yield* Effect.fail(new Error(`Unknown agent type: ${subagentType} is not a valid agent type`))
+      }
+      // A composer only plans how a DAG expands; the engine runs it inside a
+      // workflow. Refuse before any session or run exists for it (#1158).
+      if (AgentContract.isComposer(next)) {
+        return yield* Effect.fail(
+          new Error(
+            `Agent type "${subagentType}" is a composer. A composer runs only inside a DAG workflow and cannot be started with the task tool; use the workflow tool instead.`,
+          ),
+        )
       }
 
       const session = params.task_id !== undefined ? yield* sessions.get(SessionID.make(params.task_id)) : undefined

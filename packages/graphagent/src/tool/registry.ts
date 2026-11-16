@@ -52,6 +52,7 @@ import { Instruction } from "../session/instruction"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
+import { AgentContract } from "../agent/contract"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { BackgroundJob } from "@/background/job"
@@ -165,6 +166,9 @@ type AgentCatalogOptions = {
    * agents, so the workflow catalog lists native primaries even though the
    * task subagent catalog and user-defined primary modes stay filtered out. */
   includePrimary?: boolean
+  /** A composer runs only inside a DAG (#1158): the task catalog leaves it out,
+   * the workflow catalog still lists it as a `worker_type`. */
+  excludeComposers?: boolean
 }
 
 export interface Interface {
@@ -374,6 +378,7 @@ export const layer = Layer.effect(
       const description = (yield* agents.list())
         .filter((item) => item.mode !== "primary" || (options.includePrimary && item.native))
         .filter((item) => options.includeHidden || !item.hidden)
+        .filter((item) => !(options.excludeComposers && AgentContract.isComposer(item)))
         .filter((item) => Permission.evaluate("task", item.name, caller.permission).action !== "deny")
         .toSorted((a, b) => a.name.localeCompare(b.name))
         .map(
@@ -423,6 +428,7 @@ export const layer = Layer.effect(
                       heading: "Available agent types:",
                       includeHidden: true,
                       includeModelState: false,
+                      excludeComposers: true,
                     })
                   : undefined,
                 tool.id === WorkflowTool.id
@@ -580,6 +586,7 @@ RequestCache.set(
                   heading: "Available agent types:",
                   includeHidden: true,
                   includeModelState: false,
+                  excludeComposers: true,
                 })
               : undefined,
             builtin.id === WorkflowTool.id
