@@ -128,6 +128,15 @@ export interface NodeSpawnInput {
   graphRev?: number
   /** Runs after durable admission succeeds and before any watcher or execution fiber starts. */
   onAdmitted?: Effect.Effect<void, never>
+  /**
+   * ADR-0008 decision 2: re-read the runner lease before the child session
+   * exists, at the #270 spawn-admission fence and again right before
+   * `sessions.create`. `false` ends the spawn there and leaves nothing behind:
+   * no child session, no worktree, no node event (the node stays queued for
+   * whoever holds the lease now); what the lost lease means for the workflow is
+   * the caller's to act on. Callers that run no loop, so hold no lease, omit it.
+   */
+  leaseHeld?: Effect.Effect<boolean>
   parentSessionID: string
   promptParts: PromptParts
   /** DAG-LOC-01 owner directory — decides workflow ownership. Used as the
@@ -735,10 +744,10 @@ export function spawnNode(
           // from spawning"). Hold the fiber here while the durable workflow
           // row reads `paused`: the node stays queued (never terminalized) and
           // the fiber proceeds on control(resume). A workflow that was deleted
-          // or terminalized during the wait falls through to the adoption
+          // or terminalized during the wait falls through to the lease
           // fence / nodeStarted guard below, which already no-op dead targets.
           // The status read fails open (unreadable ⇒ treat as not paused):
-          // the adoption fence below is the authoritative revalidation, so a
+          // the lease fence below is the authoritative revalidation, so a
           // transient store blip must not kill the spawn fiber here.
           // Effect.suspend defers the call so even a store facade lacking the
           // method surfaces as a captured defect instead of a synchronous throw.
@@ -804,13 +813,14 @@ export function spawnNode(
           // admitted (nodeQueued above) but the child session is about to
           // materialize — a deletion cascade (Session.remove → FK) committed in
           // that window must fence the spawn instead of letting it create an
-          // orphan child for a dead workflow. Re-admit ATOMICALLY right before
-          // sessions.create: the claim matches only while the workflow row exists
-          // and is non-terminal, so a committed deletion matches zero rows and the
-          // spawn aborts before any child session exists (no post-deletion spawn
-          // survives). This is the revalidation that closes the spawn window the
-          // nodeQueued guard alone leaves open between its read and its publish.
-          if (!(yield* dag.store.tryClaimAdoption(input.dagID))) return
+          // orphan child for a dead workflow. Since ADR-0008 the fence is the
+          // runner lease read: it joins the workflow row, so a deleted or
+          // terminal workflow holds no lease and fences exactly as the old
+          // conditional UPDATE did, and a lease another runner took over fences
+          // a zombie runner too. The spawn ends here with no trace (the node
+          // stays queued for the holder). The commit of a finished node's
+          // worktree is not behind this check: that is the write fence of PR3b.
+          if (input.leaseHeld && !(yield* input.leaseHeld)) return
           // #948: model resolution, permit acquisition, and the pause hold all
           // happen before this point, so the scheduling-round workspace check
           // can be stale. Revalidate the shared execution verdict before the
@@ -952,6 +962,10 @@ export function spawnNode(
           const nodeExecutionReal = nodeDirectory ? DagLocation.canonicalDirectory(nodeDirectory) : undefined
           const nodeExecution = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
             inInstance(nodeExecutionReal, effect)
+          // ADR-0008 decision 2: the worktree above can take a while, so read the
+          // lease once more right before the child session exists. A return here
+          // still removes that worktree (the ensuring cleanup below).
+          if (input.leaseHeld && !(yield* input.leaseHeld)) return
           // Permit acquired — only NOW materialize the child session and mark
           // the node running (P0-2). Before this point the node is durably
           // "queued" with no session: a 100-node fan-out holds at most

@@ -714,6 +714,9 @@ const serviceLayer = Layer.effect(
                 nodeID,
                 node,
                 graphRev: entry.graphRev,
+                // ADR-0008 decision 2: the spawn re-reads the lease before its
+                // child session exists; a lost lease evicts the workflow.
+                leaseHeld: runnerLease.verify(dagID, entry),
                 onAdmitted: Effect.gen(function* () {
                   admitted = true
                   entry.runtime.markRunning(nodeID)
@@ -922,9 +925,7 @@ const serviceLayer = Layer.effect(
               Effect.ignore,
             ),
           unregister: (entry, dagID) =>
-            automation
-              .unregister(SessionID.make(entry.parentSessionID), { kind: "dag", id: dagID })
-              .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void))),
+            automation.unregister(SessionID.make(entry.parentSessionID), { kind: "dag", id: dagID }),
         })
 
         // Subscription handlers must never die. dag.ts guards and checkCompletion
@@ -2030,6 +2031,10 @@ const serviceLayer = Layer.effect(
           Effect.forkScoped({ startImmediately: true }),
         )
 
+        // ADR-0008 decision 2: settlement is not behind the lease re-check. It
+        // runs after the workflow ended, and `held` has no lease for a terminal
+        // workflow (the admission guarantee), so a check here would always
+        // refuse; the seam is idempotent and owner-gated instead.
         // #1030 D9-g: settlement runs on the terminal transition, before the
         // wake nudge, so the report/status read model carries its evidence. The
         // seam lives in worktree-completion (reused by E1b #1029 and a future

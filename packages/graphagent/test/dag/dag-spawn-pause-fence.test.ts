@@ -32,7 +32,6 @@ type TrackedEvent = { type: string; nodeID: string }
 
 function makeHarness(
   workflowStatus: (workflowID: string) => string,
-  claimAdoption: () => boolean,
   directory: string | (() => string) = process.cwd(),
   agentWait?: Promise<void>,
   schedulerLayer: Layer.Layer<AgentScheduler.Service> = AgentScheduler.defaultLayer,
@@ -43,7 +42,6 @@ function makeHarness(
   const storeState = { failReads: 0, reads: 0 }
   let createCalls = 0
   const storeStub: Partial<DagStore.Interface> = {
-    tryClaimAdoption: () => Effect.sync(() => claimAdoption()),
     getWorkflow: Effect.fn("s")((workflowID: string) =>
       Effect.suspend(() => {
         storeState.reads++
@@ -168,10 +166,7 @@ function workflowSchedule(workflowID = "wf-1", cap = 1) {
 
 describe("spawnNode budget admission (#1031 M5)", () => {
   it("denies the child session before creation and exhausts the workflow", async () => {
-    const harness = makeHarness(
-      () => "running",
-      () => true,
-    )
+    const harness = makeHarness(() => "running")
     let exhausted = 0
     const budget = Layer.succeed(
       DagBudget.Service,
@@ -207,10 +202,7 @@ describe("spawnNode budget admission (#1031 M5)", () => {
 describe("spawnNode pause fence (#379)", () => {
   it("holds a queued node at the fence while the workflow is paused, then spawns after resume", async () => {
     let paused = true
-    const harness = makeHarness(
-      () => (paused ? "paused" : "running"),
-      () => true,
-    )
+    const harness = makeHarness(() => (paused ? "paused" : "running"))
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -233,11 +225,7 @@ describe("spawnNode pause fence (#379)", () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-pause-workspace-")))
     let paused = true
     try {
-      const harness = makeHarness(
-        () => (paused ? "paused" : "running"),
-        () => true,
-        root,
-      )
+      const harness = makeHarness(() => (paused ? "paused" : "running"), root)
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -266,12 +254,7 @@ describe("spawnNode pause fence (#379)", () => {
       releaseAgent = resolve
     })
     try {
-      const harness = makeHarness(
-        () => "running",
-        () => true,
-        root,
-        agentWait,
-      )
+      const harness = makeHarness(() => "running", root, agentWait)
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -307,11 +290,7 @@ describe("spawnNode pause fence (#379)", () => {
   it("#948: fails the workflow before spawning when the directory disappears during the permit wait", async () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-permit-workspace-")))
     try {
-      const harness = makeHarness(
-        () => "running",
-        () => true,
-        root,
-      )
+      const harness = makeHarness(() => "running", root)
       await Effect.runPromise(
         Effect.scoped(
           Effect.gen(function* () {
@@ -340,11 +319,7 @@ describe("spawnNode pause fence (#379)", () => {
   it("#948: fails closed when the post-wait workflow read keeps failing", async () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dag-read-failure-")))
     try {
-      const harness = makeHarness(
-        () => "running",
-        () => true,
-        root,
-      )
+      const harness = makeHarness(() => "running", root)
       harness.storeState.failReads = 10
       await Effect.runPromise(
         Effect.scoped(
@@ -375,7 +350,6 @@ describe("spawnNode pause fence (#379)", () => {
     try {
       const harness = makeHarness(
         () => (paused ? "paused" : "running"),
-        () => true,
         () => currentDirectory,
       )
       await Effect.runPromise(
@@ -399,14 +373,14 @@ describe("spawnNode pause fence (#379)", () => {
 
   it("exits without creating a session when the workflow terminalizes during the pause hold", async () => {
     let status = "paused"
-    const harness = makeHarness(
-      () => status,
-      () => false,
-    )
+    const harness = makeHarness(() => status)
+    // The lease check reads the lease together with its workflow, so a workflow
+    // that ended holds none (`DagLease.held`).
+    const leaseHeld = Effect.sync(() => status !== "cancelled")
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const result = yield* spawnNode(workflowSchedule(), makeSpawnInput())
+          const result = yield* spawnNode(workflowSchedule(), { ...makeSpawnInput(), leaseHeld })
           yield* Effect.sleep(300)
           expect(harness.createCalls()).toBe(0)
           status = "cancelled"
@@ -419,10 +393,7 @@ describe("spawnNode pause fence (#379)", () => {
   })
 
   it("keeps a node queued past timeout_ms and anchors its budget at permit acquisition", async () => {
-    const harness = makeHarness(
-      () => "running",
-      () => true,
-    )
+    const harness = makeHarness(() => "running")
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -475,7 +446,6 @@ describe("spawnNode pause fence (#379)", () => {
     }
     const harness = makeHarness(
       (workflowID) => (workflowID === "wf-a" && pausedA ? "paused" : "running"),
-      () => true,
       process.cwd(),
       undefined,
       Layer.succeed(AgentScheduler.Service, observed),
@@ -521,5 +491,61 @@ describe("spawnNode pause fence (#379)", () => {
         }),
       ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
     )
+  })
+})
+
+describe("spawnNode lease re-check (ADR-0008 decision 2)", () => {
+  /** A lease check that answers from a script (the last answer repeats) and counts its calls. */
+  const scripted = (...answers: boolean[]) => {
+    const calls = { value: 0 }
+    const held = Effect.sync(() => answers[Math.min(calls.value++, answers.length - 1)] ?? true)
+    return { calls, held }
+  }
+
+  const run = (harness: ReturnType<typeof makeHarness>, input: NodeSpawnInput) =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const result = yield* spawnNode(workflowSchedule(), input)
+          yield* Fiber.await(result.fiber).pipe(Effect.timeout("5 seconds"))
+        }),
+      ).pipe(Effect.provide(harness.fullLayer)) as Effect.Effect<never>,
+    )
+
+  it("creates the child session when the lease is held at both checks", async () => {
+    const harness = makeHarness(() => "running")
+    const lease = scripted(true)
+
+    await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
+
+    expect(harness.createCalls()).toBe(1)
+    expect(harness.events.find((event) => event.type === "nodeCompleted")).toBeDefined()
+    // The fence ahead of the workspace checks and the read right before the child session.
+    expect(lease.calls.value).toBe(2)
+  })
+
+  it("creates no child session and writes no node event when the lease is gone at the fence", async () => {
+    const harness = makeHarness(() => "running")
+    const lease = scripted(false)
+
+    await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
+
+    expect(harness.createCalls()).toBe(0)
+    expect(harness.events).toEqual([])
+    expect(harness.started).toEqual([])
+    expect(harness.failUnrecoverableReasons).toEqual([])
+    expect(lease.calls.value).toBe(1)
+  })
+
+  it("creates no child session when the lease is lost while the attempt is being prepared", async () => {
+    const harness = makeHarness(() => "running")
+    const lease = scripted(true, false)
+
+    await run(harness, { ...makeSpawnInput(), leaseHeld: lease.held })
+
+    expect(harness.createCalls()).toBe(0)
+    expect(harness.events).toEqual([])
+    expect(harness.started).toEqual([])
+    expect(lease.calls.value).toBe(2)
   })
 })

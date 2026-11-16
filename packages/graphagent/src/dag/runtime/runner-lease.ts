@@ -31,6 +31,8 @@ import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
  *     timeout) is transient and is retried at the next tick.
  *   - At a clean exit the instance releases the leases it holds, after it has
  *     interrupted its fibers, so another runner can claim them at once.
+ *   - A spawn re-reads the lease right before it creates a child session
+ *     (`verify`); a lost lease ends the spawn and evicts the workflow.
  *   - `evictor` is the eviction itself: what an instance does with the entry of
  *     a workflow whose lease it lost.
  *
@@ -60,7 +62,7 @@ export interface Evictable extends Held {
   readonly watchers: Map<string, Fiber.Fiber<unknown, unknown>>
 }
 
-export interface Interface {
+export interface Interface<E extends Held = Held> {
   /**
    * Take the lease of `dagID` ahead of driving it. The token to drive under, or
    * `undefined` when this runner may not: another runner holds a live lease, or
@@ -71,6 +73,14 @@ export interface Interface {
   readonly confirm: (dagID: string, token: DagLease.Token) => Effect.Effect<boolean>
   /** Give a claim back unless an entry carries it now. No claim (`undefined`) is nothing to give back. */
   readonly abandon: (dagID: string, token: DagLease.Token | undefined) => Effect.Effect<void>
+  /**
+   * A spawn's re-read right before its child session exists (ADR-0008 decision
+   * 2): whether the entry's token still holds the lease of a live workflow. When
+   * it does not, the lease is lost and the workflow is evicted, from a fiber of
+   * its own: the evictor interrupts the spawn fiber that asks, which therefore
+   * cannot wait for it.
+   */
+  readonly verify: (dagID: string, entry: E) => Effect.Effect<boolean>
 }
 
 /**
@@ -116,9 +126,10 @@ export function make<E extends Held>(input: {
   readonly runnerID: string
   readonly entries: ReadonlyMap<string, E>
   readonly evict: (dagID: string, entry: E) => Effect.Effect<void>
-}): Effect.Effect<Interface, never, Scope.Scope> {
+}): Effect.Effect<Interface<E>, never, Scope.Scope> {
   const { leases, runnerID, entries, evict } = input
   return Effect.gen(function* () {
+    const scope = yield* Scope.Scope
     const release = (dagID: string, token: DagLease.Token, message: string) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis
@@ -133,6 +144,18 @@ export function make<E extends Held>(input: {
       ),
     )
 
+    const evictLost = (dagID: string, entry: E) =>
+      Effect.gen(function* () {
+        yield* Effect.logWarning("DagLoop lost the runner lease of a workflow; evicting it", {
+          dagID,
+          runnerID,
+          epoch: entry.token.epoch,
+        })
+        yield* absorb(evict(dagID, entry), undefined, "DagLoop could not evict a workflow that lost its lease", {
+          dagID,
+        })
+      })
+
     const renewAll = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
       const lost: Array<readonly [string, E]> = []
@@ -146,16 +169,7 @@ export function make<E extends Held>(input: {
         )
         if (!renewed) lost.push([dagID, entry])
       }
-      for (const [dagID, entry] of lost) {
-        yield* Effect.logWarning("DagLoop lost the runner lease of a workflow; evicting it", {
-          dagID,
-          runnerID,
-          epoch: entry.token.epoch,
-        })
-        yield* absorb(evict(dagID, entry), undefined, "DagLoop could not evict a workflow that lost its lease", {
-          dagID,
-        })
-      }
+      for (const [dagID, entry] of lost) yield* evictLost(dagID, entry)
     })
     yield* Effect.sleep(DagLease.RENEWAL_PERIOD_MS).pipe(
       Effect.andThen(renewAll),
@@ -183,6 +197,11 @@ export function make<E extends Held>(input: {
         const entry = entries.get(dagID)
         if (entry !== undefined && sameToken(entry.token, token)) return
         yield* release(dagID, token, "DagLoop could not give back the lease of an abandoned adoption")
+      }),
+      verify: Effect.fn("RunnerLease.verify")(function* (dagID: string, entry: E) {
+        const holds = DagLease.holds(yield* leases.held(dagID), entry.token)
+        if (!holds) yield* evictLost(dagID, entry).pipe(Effect.forkIn(scope))
+        return holds
       }),
     }
   })
@@ -219,5 +238,11 @@ export const evictor = <E extends Evictable>(input: {
         return true
       }),
     )
-    if (evicted) yield* input.unregister(entry, dagID)
+    if (evicted)
+      yield* absorb(
+        input.unregister(entry, dagID),
+        undefined,
+        "DagLoop could not give up the dag registration of an evicted workflow",
+        { dagID },
+      )
   })

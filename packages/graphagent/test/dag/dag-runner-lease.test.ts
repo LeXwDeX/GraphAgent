@@ -20,7 +20,7 @@
  */
 
 import { describe, expect } from "bun:test"
-import { Clock, Deferred, Effect, Exit, Layer, Option, Scope } from "effect"
+import { Clock, Deferred, Effect, Exit, Fiber, Layer, Option, Scope, Semaphore } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { DagLease } from "@graphagent/core/dag/lease"
 import { RunnerLease } from "@/dag/runtime/runner-lease"
@@ -365,6 +365,62 @@ describe("a runner that lost its lease evicts the workflow (ADR-0008 decision 2)
   )
 })
 
+describe("a runner re-reads its lease before it creates a child session (ADR-0008 decision 2)", () => {
+  // `n1 -> n2`: R1 drives n1; the child session of n2 is the next thing it would create.
+  const chain = { nodes: [node("n1"), node("n2", ["n1"])] }
+
+  it.effect("a runner that holds the lease creates the child session of its next node", () =>
+    Effect.gen(function* () {
+      const dual = yield* makeDualRunner()
+      const { dagID, gate } = yield* driveOnR1(dual, chain)
+
+      yield* Deferred.succeed(gate.release, "n1 output")
+      const second = yield* dual.r1.nextPrompt("R1 did not start the child prompt of n2")
+
+      expect(dual.r1.created).toEqual([gate.sessionID, second.sessionID])
+      yield* Deferred.succeed(second.release, "n2 output")
+      yield* completed(dual, dagID)
+      expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r1.identity.id, epoch: 1 })
+    }),
+  )
+
+  it.effect(
+    "a runner that lost the lease creates no child session and writes no failure, and evicts the workflow",
+    () =>
+      Effect.gen(function* () {
+        const dual = yield* makeDualRunner()
+        const { dagID, gate } = yield* driveOnR1(dual, chain)
+        const registered = Effect.map(
+          dual.r1.exclusive.claim(SessionID.make(PARENT_SESSION_ID), { kind: "dag" }),
+          Option.isSome,
+        )
+        expect(yield* registered).toBe(true)
+        // R2 takes the lease while R1 is not looking: R1's own renewal tick is a period away.
+        yield* dual.expireLease(dagID)
+        expect(yield* dual.r2.lease.claim({ dagID, runnerID: dual.r2.identity.id, now: yield* now })).toMatchObject({
+          epoch: 2,
+        })
+        const before = (yield* dual.log(dagID)).length
+
+        // n1 finishes and R1's scheduler goes on to n2: the check right before its child session finds the lease gone.
+        yield* Deferred.succeed(gate.release, "n1 output")
+        yield* pollOnTestClock(
+          Effect.map(registered, (still) => (still ? undefined : true)),
+          "R1 did not evict the workflow after its spawn found the lease gone",
+        )
+
+        expect(dual.r1.created).toEqual([gate.sessionID])
+        const added = (yield* dual.log(dagID)).slice(before).map((event) => event.type)
+        expect(added).toContain("dag.node.queued")
+        expect(added).not.toContain("dag.node.started")
+        expect(added).not.toContain("dag.node.failed")
+        // n2 is left queued for the holder; R1 took nothing back.
+        expect((yield* dual.r2.store.getNode(dagID, "n2"))?.status).toBe("queued")
+        expect(yield* rowOf(dual, dagID)).toMatchObject({ runnerID: dual.r2.identity.id, epoch: 2 })
+      }),
+  )
+})
+
 describe("giving the leases back at a clean exit", () => {
   it.effect("a runner releases the workflows it holds and leaves another runner's alone", () =>
     Effect.gen(function* () {
@@ -525,6 +581,32 @@ describe("RunnerLease over a scripted lease", () => {
     }),
   )
 
+  it.effect(
+    "verify holds while the lease names the entry's token, and evicts the entry from a fiber of its own when it does not",
+    () =>
+      Effect.gen(function* () {
+        const held = new Map<string, DagLease.Lease | undefined>([["dag-a", lease("dag-a", 3)]])
+        const { leases } = scripted({ held: (dagID) => held.get(dagID) })
+        const evicted: string[] = []
+        const entry = { token: token(3) }
+        const runnerLease = yield* started(leases, entries({ "dag-a": token(3) }), evicted)
+
+        expect(yield* runnerLease.verify("dag-a", entry)).toBe(true)
+        yield* drain
+        expect(evicted).toEqual([])
+
+        // Another runner took the lease over.
+        held.set("dag-a", lease("dag-a", 4, "11:other"))
+        expect(yield* runnerLease.verify("dag-a", entry)).toBe(false)
+        yield* drain
+        expect(evicted).toEqual(["dag-a"])
+
+        // The workflow is gone or terminal: no lease to hold, the same verdict.
+        held.set("dag-a", undefined)
+        expect(yield* runnerLease.verify("dag-a", entry)).toBe(false)
+      }),
+  )
+
   it.effect("it renews every entry once per period and evicts the ones whose lease it lost", () =>
     Effect.gen(function* () {
       const { leases, calls } = scripted({ renew: (dagID) => Effect.succeed(dagID !== "dag-lost") })
@@ -607,6 +689,94 @@ describe("RunnerLease over a scripted lease", () => {
       yield* Scope.close(scope, Exit.void)
 
       expect(calls.release.map((call) => call.dagID)).toEqual(["dag-a", "dag-b"])
+    }),
+  )
+})
+
+describe("RunnerLease.evictor", () => {
+  /** An entry with a fiber and a watcher per node, all alive until the evictor interrupts them. */
+  const entryOf = (...nodeIDs: string[]) =>
+    Effect.gen(function* () {
+      const fibers = new Map<string, Fiber.Fiber<unknown, unknown>>()
+      const watchers = new Map<string, Fiber.Fiber<unknown, unknown>>()
+      for (const nodeID of nodeIDs) {
+        fibers.set(nodeID, yield* Effect.forkScoped(Effect.never))
+        watchers.set(nodeID, yield* Effect.forkScoped(Effect.never))
+      }
+      return {
+        token: { runnerID: "10:test", epoch: 1 },
+        parentSessionID: "ses_parent",
+        evalLock: Semaphore.makeUnsafe(1),
+        fibers,
+        watchers,
+      }
+    })
+
+  const evictorOver = (
+    table: Map<string, RunnerLease.Evictable>,
+    log: { readonly aborted: string[]; readonly unregistered: string[] },
+    unregister?: Effect.Effect<void>,
+  ) =>
+    RunnerLease.evictor({
+      entries: table,
+      childOf: (_dagID, nodeID) => Effect.succeed(`ses_${nodeID}`),
+      abort: (_dagID, nodeID, childSessionID) =>
+        Effect.sync(() => void log.aborted.push(`${nodeID}:${childSessionID}`)),
+      unregister: (_entry, dagID) => unregister ?? Effect.sync(() => void log.unregistered.push(dagID)),
+    })
+
+  const interrupted = (fiber: Fiber.Fiber<unknown, unknown>) =>
+    Fiber.await(fiber).pipe(Effect.map((exit) => Exit.isFailure(exit)))
+
+  it.effect(
+    "aborts the children, interrupts the fibers and watchers, drops the entry and gives up the registration, once",
+    () =>
+      Effect.gen(function* () {
+        const entry = yield* entryOf("n1", "n2")
+        const fibers = [...entry.fibers.values(), ...entry.watchers.values()]
+        const table = new Map([["dag-a", entry]])
+        const log = { aborted: [] as string[], unregistered: [] as string[] }
+        const evict = evictorOver(table, log)
+
+        yield* evict("dag-a", entry)
+
+        expect(log.aborted).toEqual(["n1:ses_n1", "n2:ses_n2"])
+        for (const fiber of fibers) expect(yield* interrupted(fiber)).toBe(true)
+        expect(table.has("dag-a")).toBe(false)
+        expect(entry.fibers.size + entry.watchers.size).toBe(0)
+        expect(log.unregistered).toEqual(["dag-a"])
+
+        // A second eviction finds nothing to do.
+        yield* evict("dag-a", entry)
+        expect(log.aborted).toHaveLength(2)
+        expect(log.unregistered).toEqual(["dag-a"])
+      }),
+  )
+
+  it.effect("leaves an entry alone that the table no longer holds", () =>
+    Effect.gen(function* () {
+      const entry = yield* entryOf("n1")
+      const log = { aborted: [] as string[], unregistered: [] as string[] }
+
+      yield* evictorOver(new Map(), log)("dag-a", entry)
+
+      expect(log).toEqual({ aborted: [], unregistered: [] })
+      expect(entry.fibers.size).toBe(1)
+      // Still running: nobody interrupted it.
+      expect(entry.fibers.get("n1")?.pollUnsafe()).toBeUndefined()
+    }),
+  )
+
+  it.effect("a registration that cannot be given up does not fail the eviction", () =>
+    Effect.gen(function* () {
+      const entry = yield* entryOf("n1")
+      const table = new Map([["dag-a", entry]])
+      const log = { aborted: [] as string[], unregistered: [] as string[] }
+
+      yield* evictorOver(table, log, Effect.die(new Error("registry defect")))("dag-a", entry)
+
+      expect(table.has("dag-a")).toBe(false)
+      expect(log.aborted).toEqual(["n1:ses_n1"])
     }),
   )
 })
