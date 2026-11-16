@@ -167,11 +167,12 @@ rest of this document are the original numbering. The revised IDs are the ones u
 ### Evaluation
 
 Plan 6 of #1057 added a real-model evaluation in
-`packages/graphagent/test/live/delegation-timing/`. It is skipped unless `GRAPHAGENT_LIVE_EVAL=1`:
+`packages/graphagent/test/live/delegation-timing/`. It is a script, not part of any test run, and
+it does not load the test preload (which clears standard provider credential variables):
 
 ```sh
 cd packages/graphagent
-GRAPHAGENT_LIVE_EVAL=1 bun test test/live/delegation-timing/delegation-timing.live.test.ts
+GRAPHAGENT_LIVE_EVAL_CONFIG=<path to graphagent.json> bun run test/live/delegation-timing/run.ts
 ```
 
 Each model runs 20 deterministic scenarios (a fixture project plus a scripted user request), three

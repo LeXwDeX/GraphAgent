@@ -882,10 +882,7 @@ export interface EvalOptions {
 
 function requiredConfig(value: string | undefined): string {
   if (value) return value
-  throw new Error(
-    "GRAPHAGENT_LIVE_EVAL_CONFIG must name the graphagent.json(c) to read the providers from; " +
-      "the test preload sandboxes XDG_CONFIG_HOME, so it cannot be found by default",
-  )
+  throw new Error("GRAPHAGENT_LIVE_EVAL_CONFIG must name the graphagent.json(c) to read the providers from")
 }
 
 export function optionsFromEnv(env: Record<string, string | undefined>): EvalOptions {
@@ -899,8 +896,7 @@ export function optionsFromEnv(env: Record<string, string | undefined>): EvalOpt
       .map((item) => item.trim())
       .filter(Boolean)
   return {
-    // Required: the package's test preload points XDG_CONFIG_HOME at a sandbox before this runs, so no
-    // default derived from the environment would find the user's configuration.
+    // Required and explicit: the providers it names are called for real.
     configFile: requiredConfig(env.GRAPHAGENT_LIVE_EVAL_CONFIG),
     models: list("GRAPHAGENT_LIVE_EVAL_MODELS"),
     rounds: number("GRAPHAGENT_LIVE_EVAL_ROUNDS", 3),

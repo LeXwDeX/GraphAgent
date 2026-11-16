@@ -5,7 +5,7 @@
  * Offline checks of the delegation-timing evaluation (Issue #1057, plan 6): the
  * scenario catalogue, the call classification, the verdict and gate rules, the
  * stop hook, the workspace builder and the stub. They call no model; the real
- * evaluation is `delegation-timing.live.test.ts`.
+ * evaluation is the script `run.ts`.
  */
 
 import { describe, expect, test } from "bun:test"
