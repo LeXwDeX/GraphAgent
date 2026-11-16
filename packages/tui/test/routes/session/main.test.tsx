@@ -30,6 +30,7 @@ import { Main } from "../../../src/routes/session"
 import { FooterToastProvider } from "../../../src/ui/toast"
 import { HookStatusProvider } from "../../../src/context/hook-status"
 import { tmpdir } from "../../fixture/fixture"
+import { RouteZone } from "../../fixture/route-frame"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
@@ -178,7 +179,9 @@ async function mountMain(initialPrompt?: string) {
                                                   <BusCounter onReady={(value) => (listeners = value)} />
                                                   <Probe />
                                                   <Show when={mounted()}>
-                                                    <Main />
+                                                    <RouteZone>
+                                                      <Main />
+                                                    </RouteZone>
                                                   </Show>
                                                 </EditorContextProvider>
                                               </PromptRefProvider>

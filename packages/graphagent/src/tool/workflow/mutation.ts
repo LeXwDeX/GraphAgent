@@ -26,6 +26,40 @@ export const parkText = (outcome: DagControl.ParkOutcome, action: "extend" | "re
   return `Workflow state: ${result.actualStatus}. Automatic pause failed; inspect workflow status before retrying or waiting. Pause failure: ${result.failed}`
 }
 
+/** A grouped checkpoint-gate diagnostic: one reporting checkpoint whose
+ * dependents are not gated on its output. */
+const isCheckpointGate = (diagnostic: Diagnostic) =>
+  diagnostic.code === DagValidation.DIAGNOSTIC_CODES.dagInvalid &&
+  /^nodes\[[^\]]+\]$/.test(diagnostic.path) &&
+  diagnostic.message.startsWith("reporting checkpoint")
+
+/**
+ * The retry signal of a checkpoint-gate rejection (#1073): the same fact the
+ * prose states, in a form the parent can act on without re-deriving the rule.
+ * `suggested_fragment` merges the patches of every gate diagnostic by node id;
+ * it is present only when each of them has a mechanical repair, so applying it
+ * as written leaves nothing unfixed. Anything else names no fragment, and the
+ * hint's options stay the way forward.
+ */
+export const checkpointRetrySignal = (diagnostics: readonly Diagnostic[]) => {
+  const gates = diagnostics.filter(isCheckpointGate)
+  if (gates.length === 0) return ""
+  const patches = new Map<string, Record<string, unknown>>()
+  for (const diagnostic of diagnostics)
+    for (const patch of diagnostic.suggested_fragment?.nodes ?? [])
+      patches.set(String(patch.id), { ...patches.get(String(patch.id)), ...patch })
+  const complete = gates.every((gate) => gate.suggested_fragment !== undefined) && patches.size > 0
+  const signal = {
+    error_code: "checkpoint_ungated",
+    diagnostic_code: DagValidation.DIAGNOSTIC_CODES.dagInvalid,
+    retryable: true,
+    ...(complete ? { suggested_fragment: { nodes: [...patches.values()] } } : {}),
+  }
+  return complete
+    ? `\nStructured retry signal (merge each suggested_fragment node into the node with the same id; nothing else changes; do not re-guess): ${JSON.stringify(signal)}`
+    : `\nStructured retry signal (no mechanical fix applies; choose one of the listed options): ${JSON.stringify(signal)}`
+}
+
 /** User-visible message for a classified rejection. The ResumeGuard D12
  * guidance and terminal recovery guidance live here, not in the service:
  * they are tool copy tied to this call site. */
@@ -37,6 +71,8 @@ export const renderRejection = (
     return `${rejection.message}. The workflow stays paused. Inspect workflow status for pause_reason, resolve the blocker, then retry control(resume) or control(step).`
   if (rejection._tag === "Conflict" && rejection.kind === "terminal" && guidance !== undefined)
     return `${rejection.message}. ${guidance}`
+  // The runtime seam's own gate rejection carries the same repair.
+  if (rejection._tag === "Invalid") return `${rejection.message}${checkpointRetrySignal(rejection.diagnostics)}`
   return rejection.message
 }
 
@@ -123,6 +159,7 @@ export const rejectDiagnostics = (
         required_root_key: "fragment",
       })}`
     : ""
+  const checkpoint = checkpointRetrySignal(diagnostics)
   return Effect.gen(function* () {
     // A rejected mutation parks a live workflow durably. When the pause
     // fails, read back the actual state instead of claiming it is parked:
@@ -135,7 +172,9 @@ export const rejectDiagnostics = (
       new Error(
         `${context} rejected by workflow validation:\n${diagnostics
           .map((d) => `- [${d.code}] ${d.path}: ${d.message}${d.hint ? ` (${d.hint})` : ""}`)
-          .join("\n")}${structured}${workflowState ? `\n${workflowState}` : ""}\n${WORKFLOW_RECOVERY.instruction}`,
+          .join(
+            "\n",
+          )}${structured}${checkpoint}${workflowState ? `\n${workflowState}` : ""}\n${WORKFLOW_RECOVERY.instruction}`,
       ),
     )
   })

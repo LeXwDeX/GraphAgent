@@ -34,6 +34,7 @@ import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Main } from "../../../src/routes/session"
 import { FooterToastProvider } from "../../../src/ui/toast"
 import { tmpdir } from "../../fixture/fixture"
+import { RouteZone } from "../../fixture/route-frame"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
@@ -148,7 +149,9 @@ async function mountReceipt(kind: string, values: Record<string, unknown>, text:
                                                 <PromptRefProvider>
                                                   <EditorContextProvider integration={{}}>
                                                     <LocationProvider>
-                                                      <Main />
+                                                      <RouteZone>
+                                                        <Main />
+                                                      </RouteZone>
                                                     </LocationProvider>
                                                   </EditorContextProvider>
                                                 </PromptRefProvider>

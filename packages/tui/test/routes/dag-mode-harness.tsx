@@ -28,8 +28,10 @@ import { GraphagentKeymapProvider, registerGraphagentKeymap, type OpenTuiKeymap 
 import { FrecencyProvider } from "../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../src/prompt/history"
 import { PromptStashProvider } from "../../src/prompt/stash"
+import type { BottomZoneStateApi } from "../../src/shell/bottom-zone"
 import { FooterToastProvider, useToast } from "../../src/ui/toast"
 import { tmpdir } from "../fixture/fixture"
+import { RouteFrame } from "../fixture/route-frame"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json, type FetchHandler } from "../fixture/tui-sdk"
@@ -106,6 +108,11 @@ export type MountOptions = {
   route: Route
   /** The view under test, rendered inside the full provider stack. */
   view: () => JSX.Element
+  /**
+   * Renders the view inside the app frame and its bottom zone. A route draws its prompt in the zone's composer
+   * slot, so a view that needs its input (typing, drafts, autocomplete) has to be mounted this way.
+   */
+  frame?: boolean
   sessions?: readonly Session[]
   keybinds?: Parameters<typeof createTuiResolvedConfig>[0]
   /** Interface language served as the configured `language`; defaults to zh-CN. */
@@ -177,6 +184,7 @@ export async function mountRoute(options: MountOptions) {
   let route!: ReturnType<typeof useRoute>
   let sync!: ReturnType<typeof useSync>
   let promptRef!: ReturnType<typeof usePromptRef>
+  let bottomZone: BottomZoneStateApi | undefined
 
   function Probe() {
     toast = useToast()
@@ -221,7 +229,15 @@ export async function mountRoute(options: MountOptions) {
                                                 <PromptRefProvider>
                                                   <EditorContextProvider integration={{}}>
                                                     <Probe />
-                                                    <LocationProvider>{options.view()}</LocationProvider>
+                                                    <LocationProvider>
+                                                      {options.frame ? (
+                                                        <RouteFrame onZone={(zone) => (bottomZone = zone)}>
+                                                          {options.view()}
+                                                        </RouteFrame>
+                                                      ) : (
+                                                        options.view()
+                                                      )}
+                                                    </LocationProvider>
                                                   </EditorContextProvider>
                                                 </PromptRefProvider>
                                               </PromptHistoryProvider>
@@ -258,6 +274,8 @@ export async function mountRoute(options: MountOptions) {
     toast: () => toast,
     route: () => route,
     sync: () => sync,
+    /** The bottom zone of a view mounted with `frame`. */
+    bottomZone: () => bottomZone,
     /** Text in the mounted prompt's draft; `undefined` when no prompt is mounted. */
     promptDraft: () => promptRef.current?.current.input,
     /** A plain copy of the mounted prompt's draft parts; `undefined` when no prompt is mounted. */

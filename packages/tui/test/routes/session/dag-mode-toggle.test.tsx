@@ -27,7 +27,13 @@ function mountMain(
   initial: string,
   extra: Partial<Parameters<typeof mountRoute>[0]> = {},
 ) {
-  return mountRoute({ route: { type: "session", sessionID: initial }, view: () => <Main />, sessions, ...extra })
+  return mountRoute({
+    route: { type: "session", sessionID: initial },
+    view: () => <Main />,
+    frame: true,
+    sessions,
+    ...extra,
+  })
 }
 
 test("<leader>d on a session with the mode off sends one /dag-mode on command and nothing else", async () => {

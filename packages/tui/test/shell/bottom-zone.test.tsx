@@ -4,6 +4,7 @@
 /** @jsxImportSource @opentui/solid */
 import { BoxRenderable, InputRenderable, Renderable } from "@opentui/core"
 import { afterEach, beforeEach, expect, test } from "bun:test"
+import { onCleanup } from "solid-js"
 import { setLanguage } from "../../src/i18n"
 import { AppFrame, DIMMED_OPACITY } from "../../src/shell/app-frame"
 import { BottomZone, createBottomZoneState, type BottomZoneStateApi } from "../../src/shell/bottom-zone"
@@ -308,6 +309,108 @@ test("the frame dims the main area only while a panel or ask surface is open", a
     await app.renderOnce()
     expect(dimmed()).toHaveLength(0)
     expect(app.captureCharFrame()).toContain("主区内容")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a route installs its composer, a later route replaces it, and a stale removal leaves the new one", () => {
+  const state = createBottomZoneState()
+  expect(state.composer()).toBeUndefined()
+
+  const first = { render: () => <text>first</text> }
+  const second = { render: () => <text>second</text> }
+  const offFirst = state.setComposer(first)
+  expect(state.composer()).toBe(first)
+
+  // The next route mounts before the previous one's cleanup has run: the late removal must not take the
+  // successor's input away.
+  const offSecond = state.setComposer(second)
+  expect(state.composer()).toBe(second)
+  offFirst()
+  expect(state.composer()).toBe(second)
+
+  offSecond()
+  expect(state.composer()).toBeUndefined()
+  // Removing twice is harmless.
+  offSecond()
+  expect(state.composer()).toBeUndefined()
+})
+
+test("an installed composer stays mounted behind a panel and keeps its draft and focus", async () => {
+  await using tmp = await shellState()
+  let state!: BottomZoneStateApi
+  let input: InputRenderable | undefined
+  let created = 0
+
+  function Harness() {
+    state = createBottomZoneState()
+    onCleanup(
+      state.setComposer({
+        render: () => {
+          created++
+          return <Composer onRef={(value) => (input = value)} />
+        },
+      }),
+    )
+    return <BottomZone state={state} />
+  }
+
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  try {
+    await typeInto(app, input!, "draft")
+    expect(created).toBe(1)
+    expect(input!.value).toBe("draft")
+
+    state.host.push({ id: "panel", render: () => <text>面板内容</text> })
+    await Bun.sleep(20)
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("面板内容")
+    expect(app.captureCharFrame()).not.toContain("draft")
+    expect(input!.value).toBe("draft")
+
+    app.mockInput.pressEscape()
+    await Bun.sleep(20)
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("draft")
+    expect(app.renderer.currentFocusedRenderable).toBe(input!)
+    // Hidden and shown again, never rebuilt.
+    expect(created).toBe(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("replacing the composer tears the previous one down and mounts the next", async () => {
+  await using tmp = await shellState()
+  let state!: BottomZoneStateApi
+  const events: string[] = []
+
+  function Mark(props: { name: string }) {
+    events.push(`mount ${props.name}`)
+    onCleanup(() => events.push(`unmount ${props.name}`))
+    return <text>{props.name}</text>
+  }
+
+  let offHome!: () => void
+
+  function Harness() {
+    state = createBottomZoneState()
+    offHome = state.setComposer({ render: () => <Mark name="home" /> })
+    return <BottomZone state={state} />
+  }
+
+  const app = await renderPanel(() => <Harness />, { width: 100, height: 30, state: tmp.path })
+  try {
+    expect(app.captureCharFrame()).toContain("home")
+
+    // Route change: the new route installs first, then the old one's cleanup runs.
+    state.setComposer({ render: () => <Mark name="session" /> })
+    offHome()
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("session")
+    expect(app.captureCharFrame()).not.toContain("home")
+    expect(events).toEqual(["mount home", "unmount home", "mount session"])
   } finally {
     app.renderer.destroy()
   }

@@ -295,9 +295,10 @@ find them in every build and source run. Resolution is project, then global, the
 builtin, and a release snapshot template of the same name replaces a stage spec.
 Each declares the strict gate, pins no model, and keeps its reviewing, verifying,
 and synthesizing nodes read-only; only `stage-implement` writes, through a
-plan-driven `fan_out` coding block (ADR-0004). They are references, not
-parameterized templates: the parent copies one and replaces the objective, the
-instructions, and `config.acceptance`.
+plan-driven `fan_out` coding block (ADR-0004). Each declares template inputs
+(ADR-0007): the parent starts one with `run.start { spec_path, inputs }`, putting
+the request in `objective` and, for implement and review, the acceptance items in
+`acceptance`, instead of copying and rewriting the file.
 
 Whether a completed workflow gives the parent a turn follows the mode
 (`src/dag/runtime/delivery.ts`, #1015). Every terminal workflow reaches the

@@ -4,7 +4,19 @@
 import path from "node:path"
 import { Effect } from "effect"
 import { WorkflowAuthoring } from "../src/dag/authoring"
+import { DagTemplateInputs } from "../src/dag/template-inputs"
+import { DagValidation } from "../src/dag/validation"
 import { discoverDagTemplateFiles, readRuntimeCompat } from "./dag-template-files"
+
+/** The inputs declared by a template's YAML, or none when it does not parse
+ * (the authoring result already reports that). */
+function declaredInputs(content: string) {
+  try {
+    return DagTemplateInputs.declarationsOf(Bun.YAML.parse(content))
+  } catch {
+    return []
+  }
+}
 
 /** One directory-to-validation-result boundary shared by CI and generation. */
 export async function validateDagTemplateDirectory(directory: string) {
@@ -26,14 +38,47 @@ export async function validateDagTemplateDirectory(directory: string) {
   const results = await Promise.all(
     discovery.files.map(async (file) => {
       const content = await Bun.file(path.join(directory, file)).text()
+      const source = { kind: "yaml" as const, source: file, content }
+      // A template is judged on its own: required inputs stand in as samples.
       const result = await Effect.runPromise(
-        authoring.prepare({
-          action: "start",
-          source: { kind: "yaml", source: file, content },
-          profile: "portable",
-        }),
+        authoring.prepare({ action: "start", source, profile: "portable", template: { kind: "sample" } }),
       )
-      return { name: file, content, valid: result.valid, errors: result.errors, warnings: result.warnings }
+      const declares = declaredInputs(content).length > 0
+      // #1073: a template that declares inputs must start from `objective`
+      // alone, the way `run.start { spec_path, inputs: { objective } }` does.
+      const objectiveOnly =
+        result.valid && declares
+          ? await Effect.runPromise(
+              authoring.prepare({
+                action: "start",
+                source,
+                profile: "portable",
+                template: { kind: "values", values: { objective: "Template validation request" } },
+              }),
+            )
+          : undefined
+      const errors = [...result.errors, ...(objectiveOnly?.errors ?? [])]
+      // Without inputs a template cannot start from run.start; the curated set is
+      // moving to declared inputs, so this is a note, not a failure.
+      const noInputs =
+        result.valid && !declares
+          ? [
+              DagValidation.diagnostic({
+                severity: "warning",
+                code: DagValidation.DIAGNOSTIC_CODES.templateInputs,
+                path: "inputs",
+                message: "template declares no inputs, so it can only start as written",
+                hint: "Declare inputs (at least objective) and refer to them as {{name}}",
+              }),
+            ]
+          : []
+      return {
+        name: file,
+        content,
+        valid: errors.length === 0,
+        errors,
+        warnings: [...result.warnings, ...noInputs],
+      }
     }),
   )
   return {

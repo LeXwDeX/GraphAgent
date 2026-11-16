@@ -84,10 +84,10 @@ directory and it gains a **name**:
 
 Resolution takes the first match in that order, so a project file shadows a
 global one with the same name, and both shadow the builtin tier. The builtin
-tier always holds four stage references for DAG mode — `stage-understand`,
-`stage-design`, `stage-implement`, and `stage-review`; read one, retarget its
-objective, instructions, and acceptance items to your task, and start the copy.
-A curated template with the same name replaces a stage reference. The global
+tier always holds four stage specs for DAG mode — `stage-understand`,
+`stage-design`, `stage-implement`, and `stage-review`; each declares template
+inputs (see below), so a stage starts from the request alone. A curated template
+with the same name replaces a stage spec. The global
 scope is maintained by the [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config)
 repository (sync it with a plain `git clone`/`git pull` into your config
 dir). A minimal spec:
@@ -120,6 +120,35 @@ Then just say "run the dependency-audit workflow" — the agent starts it by
 name, no path needed. Ad-hoc specs still work exactly as before: a `spec_path`
 that looks like a path (has a separator or a `.yaml`/`.yml` extension) is read
 relative to the session directory instead of the library.
+
+#### Template inputs
+
+A spec can declare `inputs` and refer to them as `{{name}}`, so the agent fills
+in a few values instead of copying and rewriting the file. `workflow(action="spec",
+operation="list")` shows each template's inputs (`*` marks a required one), and
+the agent starts it with `workflow(action="run", operation="start", spec_path,
+inputs)`:
+
+```yaml
+inputs:
+  objective: {}                      # no default: required
+  paths: { type: array, default: [src] }
+config:
+  name: dependency-audit
+  objective: "Audit dependencies. Request: {{objective}}"
+  blocks:
+    - id: inventory
+      kind: explore
+      instruction: "Inventory the manifests under {{paths}}"
+```
+
+An input is a `string` (the default type), `number`, `boolean`, or `array`; one
+without a `default` is required. Substitution replaces only declared names, so
+the `{{node-id}}` bindings in node prompts keep working. A field that is exactly
+one placeholder takes the input's own type (for example `acceptance:
+"{{acceptance}}"` receives an array); inside longer text a value is rendered as
+plain text. `spec validate` accepts the same `inputs` and reports what a start
+would reject.
 
 ### 3. Let the agent author it
 
