@@ -461,6 +461,8 @@ describe("PreToolUse additionalContext stays with a rejected or failed tool resu
       )
       expect(result.output).toContain("CROSS_AUDIT_DENY")
       expect(result.output).toContain("CROSS_AUDIT_PRE_CTX")
+      // A complete tool result: a command-driven subtask writes it as it is (#1350).
+      expect(result.title).toBe("write")
     }),
   )
 
@@ -484,6 +486,7 @@ describe("PreToolUse additionalContext stays with a rejected or failed tool resu
       )
       expect(result.output).toContain("Tool denied by hook")
       expect(result.output).toContain("CROSS_AUDIT_PRE_CTX")
+      expect(result.title).toBe("write")
     }),
   )
 

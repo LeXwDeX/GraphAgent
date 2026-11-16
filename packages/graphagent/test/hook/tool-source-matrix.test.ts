@@ -495,6 +495,8 @@ describe("tool source matrix", () => {
           const result = yield* Effect.promise(() => callTool(prepared, prepared.originalArgs, "matrix-stop"))
           expect(visibleText(result)).toBe(prepared.expectedStopOutput)
           expect(field(field(result, "metadata"), "hookStopped")).toBe(true)
+          // A complete tool result: a command-driven subtask writes it as it is (#1350).
+          expect(typeof field(result, "title")).toBe("string")
           expect(yield* prepared.executed()).toBe(false)
         }),
       )
