@@ -359,8 +359,9 @@ export const en: Record<MessageKey, string> = {
   "dagmode.prefill.retry": "Please retry node {name} (workflow {id}).",
   "dagmode.prefill.cancelNode": "Please cancel node {name} (workflow {id}).",
   "dagmode.prefill.extendTimeout": "Please extend the timeout of node {name} (workflow {id}).",
-  "dagmode.prefill.relay": "Please relay this to the agent of node {name}:",
-  "dagmode.prefill.coverage": "Please check the coverage of the current workflow and fill in what is not covered.",
+  "dagmode.prefill.relay": "Please relay this to the agent of node {name} (workflow {id}):",
+  "dagmode.prefill.coverage":
+    'Please check the coverage of workflow "{title}" ({id}) and fill in what is not covered.',
   "dagmode.prefill.audit": "Please add one more adversarial review round for the current change.",
   "dagmode.prefill.narrow": 'Please narrow the scope of workflow "{title}" to only:',
   "dagmode.prefill.cancelAll":

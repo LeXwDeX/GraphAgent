@@ -655,6 +655,30 @@ describe("moving around the panel", () => {
     }
   })
 
+  test("a reconnect drops the outputs read before it and reads the open ones again", async () => {
+    const shell = await mountDag()
+    try {
+      await openLoaded(shell)
+      await press(shell, "down")
+      await press(shell, "return")
+      await shell.waitForFrame((frame) => frame.includes('"verdict":"pending"'))
+      expect(shell.server.reads).toEqual([WF, WF])
+
+      // The node completed while the connection was down.
+      shell.server.tables[WF] = pipeline().map((node) =>
+        node.id === "typecheck" ? { ...node, status: "completed", output: { verdict: "ACCEPT" } } : node,
+      )
+      shell.events.reconnect()
+      const after = await shell.waitForFrame((frame) => frame.includes('"verdict":"ACCEPT"'))
+      expect(after).not.toContain('"verdict":"pending"')
+      // One read for the table, one for the open node's output.
+      await waitFor(() => shell.server.reads.length === 4, 10_000)
+      expect(shell.server.reads).toEqual([WF, WF, WF, WF])
+    } finally {
+      await shell.dispose()
+    }
+  })
+
   test("o opens the details of any node, a node with a session included, and shows what the row leaves out", async () => {
     const server = dagServer({
       tables: {
@@ -903,7 +927,7 @@ describe("asking the main agent: the panel only fills in the input", () => {
       await press(shell, "return")
       await waitFor(() => depth(shell) === 0)
       await shell.settle()
-      expect(shell.promptDraft()).toBe("请向节点 typecheck 的 agent 转达：")
+      expect(shell.promptDraft()).toBe("请向节点 typecheck（工作流 wf_alpha）的 agent 转达：")
       expect(shell.writes()).toEqual([])
     } finally {
       await shell.dispose()

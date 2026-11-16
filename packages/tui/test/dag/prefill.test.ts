@@ -185,7 +185,7 @@ describe("dagRequestText: what lands in the input", () => {
 
   test("the four DAG-mode templates read as the design gives them", () => {
     const ctx = { workflow: workflow("running", { coverageCount: 2 }) }
-    expect(dagRequestText("coverage", ctx)).toBe("请检查当前工作流的覆盖范围并补齐未覆盖项。")
+    expect(dagRequestText("coverage", ctx)).toBe("请检查工作流「依赖升级验证」(wf-1) 的覆盖范围并补齐未覆盖项。")
     expect(dagRequestText("audit", ctx)).toBe("请为当前改动再加一轮对抗审核。")
     expect(dagRequestText("narrow", ctx)).toBe("请缩小工作流「依赖升级验证」的范围，只保留：")
     expect(dagRequestText("cancel-all", ctx)).toBe("请取消所有运行中的工作流，并汇报目前的结果与缺口。")
@@ -193,7 +193,7 @@ describe("dagRequestText: what lands in the input", () => {
 
   test("relay and narrow stop where the user goes on writing", () => {
     const ctx = { workflow: workflow("running"), node: node("running") }
-    expect(dagRequestText("relay", ctx)).toBe("请向节点 e2e-windows 的 agent 转达：")
+    expect(dagRequestText("relay", ctx)).toBe("请向节点 e2e-windows（工作流 wf-1）的 agent 转达：")
     for (const kind of ["relay", "narrow"] as const) {
       const text = dagRequestText(kind, ctx)
       expect(text.endsWith("：")).toBe(true)
@@ -208,7 +208,7 @@ describe("dagRequestText: what lands in the input", () => {
       'Please check the current state of workflow "Dependency upgrade" (wf-1) and report progress; if any node failed, tell me why.',
     )
     expect(dagRequestText("retry", ctx)).toBe("Please retry node e2e-windows (workflow wf-1).")
-    expect(dagRequestText("relay", ctx)).toBe("Please relay this to the agent of node e2e-windows:")
+    expect(dagRequestText("relay", ctx)).toBe("Please relay this to the agent of node e2e-windows (workflow wf-1):")
     expect(dagRequestText("narrow", ctx)).toBe('Please narrow the scope of workflow "Dependency upgrade" to only:')
     expect(dagRequestText("cancel-all", ctx)).toBe(
       "Please cancel every running workflow and report the results so far and what is missing.",

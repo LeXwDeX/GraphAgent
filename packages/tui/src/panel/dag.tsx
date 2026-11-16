@@ -77,6 +77,8 @@ export interface DagPanelState {
   /** Outputs read on demand, by `nodeKey`: a node's output is not in its table row. */
   readonly outputs: Accessor<Readonly<Record<string, NodeOutput>>>
   setOutput(key: string, output: NodeOutput): void
+  /** Forget every output read so far: after a reconnect they may predate the node's current state. */
+  clearOutputs(): void
   /**
    * What the user had picked and opened before this panel, taken once at its first mount. The panel's
    * own default is worked out from it, so opening a workflow here never moves the default it started on.
@@ -103,6 +105,7 @@ export function createDagPanelState(): DagPanelState {
       }),
     outputs,
     setOutput: (key, output) => setOutputs((current) => ({ ...current, [key]: output })),
+    clearOutputs: () => setOutputs({}),
     memory: undefined,
   }
 }
@@ -385,6 +388,19 @@ export function DagPanel(props: { state?: DagPanelState }) {
       state.setOutput(key, { status: "failed" })
     }
   }
+
+  // A reconnect may have run nodes on: an output read before it can belong to an earlier state. Drop
+  // them all and read again only the ones whose details are open; closed ones read on their next opening.
+  onCleanup(
+    sync.onResync(() => {
+      const open = [...state.expanded()]
+      state.clearOutputs()
+      for (const key of open) {
+        const [workflowID, nodeID] = key.split("\u0000")
+        if (workflowID && nodeID) void loadOutput(workflowID, nodeID)
+      }
+    }),
+  )
 
   function toggleDetail() {
     const shown = active()
