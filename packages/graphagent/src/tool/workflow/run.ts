@@ -6,6 +6,7 @@ import { Dag } from "@/dag/dag"
 import { DagBudget } from "@/dag/budget"
 import { DagControl } from "@/dag/control"
 import { DagValidation } from "@/dag/validation"
+import { DagWriteGuard } from "@/dag/write-guard"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { SessionID } from "@/session/schema"
 import { createAdmissionRecord } from "@/dag/admission"
@@ -17,6 +18,14 @@ import { requireOwnedWorkflow, rejectDiagnostics, runMutation } from "./mutation
 import type { Metadata, RunParams } from "./schema"
 
 type Authoring = ReturnType<typeof WorkflowAuthoring.make>
+
+/** A start refused by a write-safety rule: nothing was created, and the model
+ * gets a parseable reason like the budget gate's. */
+const refusedStart = (title: string, errorCode: string, message: string, extra: Record<string, unknown> = {}) => ({
+  title,
+  output: JSON.stringify({ workflow_created: false, error_code: errorCode, ...extra, message }, null, 2),
+  metadata: { blocked: true, diagnosticSummary: message },
+})
 
 export interface RunContext {
   readonly dag: Dag.Interface
@@ -95,21 +104,63 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
       }
       if (result.prepared?.action !== "start") return yield* rejectDiagnostics(control, result.errors, "Workflow start")
       const prepared = result.prepared
+      // #1031 M8: the write-safety gates run after authoring and before any
+      // durable row. The plan agent may only start read-only workflows.
+      const writers = DagWriteGuard.writerIDs(prepared.nodes)
+      if (ctx.agent === DagWriteGuard.PLAN_AGENT && writers.length > 0)
+        return refusedStart(
+          "Workflow not started: the plan agent is read-only",
+          "plan_readonly",
+          DagWriteGuard.planRejection("start", writers),
+          { writers },
+        )
+      // A strict workflow with parallel writers defaults to a workflow worktree
+      // when the checkout allows it; the notice says what happened either way.
+      const isolation = DagWriteGuard.defaultIsolation({
+        config: prepared.config,
+        nodes: prepared.nodes,
+        directory: session.directory,
+      })
+      const config =
+        isolation.kind === "apply" ? { ...prepared.config, isolation: "worktree" as const } : prepared.config
+      // Two unisolated writers must not share a workspace across live workflows.
+      const placed = DagWriteGuard.unisolatedWriters(
+        config.isolation === "worktree" ? [] : prepared.nodes,
+        config.workspace ?? session.directory,
+      )
+      if (placed.length > 0) {
+        const conflicts = DagWriteGuard.writeConflicts(yield* DagWriteGuard.liveWriters(dag.store), placed)
+        if (conflicts.length > 0)
+          return refusedStart(
+            "Workflow not started: the workspace is being written by another workflow",
+            "write_conflict",
+            DagWriteGuard.writeConflictMessage("start", conflicts),
+            {
+              conflicts: conflicts.map((conflict) => ({
+                workflow_id: conflict.workflowID,
+                session_id: conflict.sessionID,
+                workspace: conflict.directory,
+                nodes: conflict.liveNodes,
+              })),
+            },
+          )
+      }
       const dagID = yield* dag
         .create({
           projectID: session.projectID,
           sessionID: SessionID.make(sessionID),
           title: prepared.title,
           config: {
-            ...prepared.config,
+            ...config,
             ...(prepared.admission ? { admission: createAdmissionRecord(prepared.admission) } : {}),
           },
         })
         .pipe(Effect.orDie)
-      const mode = prepared.config.mode ?? "standard"
+      const mode = config.mode ?? "standard"
+      const notice = isolation.kind === "none" ? "" : `${isolation.notice}\n`
       return {
-        title: `Workflow started: ${prepared.config.name}`,
-        output: `<workflow id="${dagID}" state="running" mode="${mode}">\n${result.prepared.nodes.length} nodes registered.\n${authoringWarnings(result)}Do not poll this workflow. It runs asynchronously and will wake the parent session when attention is required.\n</workflow>`,
+        title: `Workflow started: ${config.name}`,
+        output: `<workflow id="${dagID}" state="running" mode="${mode}">\n${prepared.nodes.length} nodes registered.\n${notice}${authoringWarnings(result)}Do not poll this workflow. It runs asynchronously and will wake the parent session when attention is required.\n</workflow>`,
         metadata: { workflowId: dagID } as Metadata,
       }
     }
@@ -136,7 +187,7 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
       "extend",
       sessionID,
       "Terminal workflows are immutable except for the additive-extend reopen, which requires the workflow to have completed naturally at a wake-eligible reporting checkpoint (fragment adds new node ids; no early control(complete); no executed node beyond the checkpoint — condition-skipped dependents are fine). For failed workflows, use control(recover) with node_ids and expected_graph_rev from status. Cancelled workflows additionally require explicit resume_cancelled: true.",
-      control.apply(params.workflow_id, { op: "extend", prepared }, { sessionID }),
+      control.apply(params.workflow_id, { op: "extend", prepared }, { sessionID, agent: ctx.agent }),
     )
     const r = outcome.result
     // #381: extend shares replan's resume contract — a paused

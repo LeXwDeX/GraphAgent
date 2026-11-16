@@ -85,6 +85,11 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       const index = readIndex++
       return options.readWorkflow ? options.readWorkflow(index) : Effect.succeed(options.workflow)
     },
+    // #1031 M8: extend, replan and recover work out which nodes they would newly
+    // run and look for other live workflows' writers; the workflow has no rows
+    // and nobody else is live here.
+    getNodes: () => Effect.succeed([]),
+    listByStatus: () => Effect.succeed([]),
   } as unknown as DagStore.Interface
 
   const dagLayer = Layer.mock(Dag.Service, {

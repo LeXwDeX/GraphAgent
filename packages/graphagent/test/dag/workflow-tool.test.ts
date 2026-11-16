@@ -312,6 +312,8 @@ const mockWorkflowConfig = (id: string) =>
   })
 
 const store = Layer.mock(DagStore.Service, {
+  // #1031 M8: start/extend look for other live workflows' writers; none here.
+  listByStatus: () => Effect.succeed([]),
   getWorkflowFailureReason: (id: string) =>
     Effect.succeed(id === "dag_workspace_failed" ? "workspace_missing: /gone/worktree" : undefined),
   getLatestRetarget: (id: string) =>
@@ -2634,6 +2636,70 @@ describe("workflow tool execution", () => {
         expect(String(Cause.squash(result.cause))).toContain("Workflow state: paused (durably parked)")
       }
       expect(published.some((event) => event.type === DagEvent.WorkflowPaused.type)).toBe(true)
+    }),
+  )
+
+  // #1031 M8: the tool hands the turn's agent to DagControl, and the plan agent
+  // may only run read-only nodes. Neither a refused start nor a refused extend
+  // creates, mutates or parks anything.
+  runtime.effect("holds the plan agent to read-only work on start and extend", () =>
+    Effect.gen(function* () {
+      published.length = 0
+      dagCalls.length = 0
+      const workflow = yield* (yield* WorkflowTool).init()
+      const planContext = { ...toolContext(), agent: "plan" }
+      const startPath = yield* writeWorkflowSpec("plan-start-writer", {
+        config: {
+          name: "plan-start-writer",
+          objective: "Implement the change",
+          blocks: [{ id: "impl", kind: "coding" }],
+        },
+      })
+      const started = yield* workflow.execute(
+        Schema.decodeUnknownSync(Parameters)({
+          params: { action: "run", operation: "start", spec_path: startPath },
+        }),
+        planContext,
+      )
+      expect(started.title).toBe("Workflow not started: the plan agent is read-only")
+      expect(JSON.parse(started.output)).toMatchObject({ workflow_created: false, error_code: "plan_readonly" })
+
+      const extendPath = yield* writeWorkflowSpec("plan-extend-writer", {
+        nodes: [
+          {
+            id: "additional",
+            name: "Additional",
+            worker_type: "general",
+            depends_on: [],
+            prompt_template: { inline: "additional" },
+          },
+        ],
+      })
+      const extended = yield* workflow
+        .execute(
+          Schema.decodeUnknownSync(Parameters)({
+            params: { action: "run", operation: "extend", workflow_id: "dag_defaults", spec_path: extendPath },
+          }),
+          planContext,
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(extended)).toBe(true)
+      if (Exit.isFailure(extended)) {
+        expect(String(Cause.squash(extended.cause))).toContain("the plan agent may only run read-only nodes")
+        expect(String(Cause.squash(extended.cause))).toContain("write-capable node(s): additional")
+      }
+      expect(published).toEqual([])
+      expect(dagCalls).not.toContain("extend")
+      expect(dagCalls).not.toContain("pause")
+
+      // The same extend from the build agent lands.
+      const landed = yield* workflow.execute(
+        Schema.decodeUnknownSync(Parameters)({
+          params: { action: "run", operation: "extend", workflow_id: "dag_defaults", spec_path: extendPath },
+        }),
+        toolContext(),
+      )
+      expect(landed.title).toBe("Workflow extended: 1 nodes added")
     }),
   )
 

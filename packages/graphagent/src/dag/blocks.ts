@@ -359,6 +359,22 @@ export function workspaceWritesOf(
   return node?.workspace_writes ?? (isReadOnlyWorker(workerType) ? "deny" : "allow")
 }
 
+/**
+ * #1031 M8: whether a node is a writer, one that can change the workspace.
+ * Block writers (`coding`, `prototype`) always are. Any other node is one when
+ * its worker is not a read-only profile and its effective `workspace_writes`
+ * is not `deny`. The generated fan-out aggregator only reconciles evidence, so
+ * it never counts. The plan-agent gate, the cross-workflow write-conflict check
+ * and the default-isolation decision all use this one definition.
+ */
+export function isWriterNode(
+  node: Pick<NodeConfig, "worker_type" | "block" | "workspace_writes" | "aggregates_writers">,
+): boolean {
+  if (node.aggregates_writers === true) return false
+  if (node.block !== undefined && WRITER_KINDS.has(node.block)) return true
+  return !isReadOnlyProfile(node.worker_type) && workspaceWritesOf(node, node.worker_type) !== "deny"
+}
+
 // Shared execution discipline for every block that runs shell commands. A
 // silent long command reads as hung and invites manual interrupts; keep the
 // rule in one place so all command-heavy contracts stay in sync.

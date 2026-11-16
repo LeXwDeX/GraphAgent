@@ -64,3 +64,38 @@ discipline.
   review route; node ceilings must account for it.
 - Block guide wording and saved-route wording must describe parallel writers
   truthfully; the serialization claim is removed.
+
+## Addendum: conservative write-set intersection (#1031 M8, 2026-11-16)
+
+The engine still cannot see what a writer will touch before it runs (the
+fan-out pre-check of ADR-0004 only compares write sets a planner declared). M8
+needs a decision before anything runs, whether parallel writers should share one
+checkout, so it reads the graph shape instead of the paths:
+
+- A writer is a block `coding`/`prototype` node, or a node whose worker is not a
+  read-only profile and whose effective `workspace_writes` is not `deny`
+  (`DagBlocks.isWriterNode`). The generated aggregator is not a writer.
+- Two writers with no dependency path between them are treated as having
+  intersecting write sets. This is deliberately conservative: a declared
+  disjoint pair is still treated as a possible clash, because the declaration is
+  only as strong as the worker's compliance (see above). A fan-out writer counts
+  as one writer, since the engine admits its package writers only after proving
+  their declared write sets disjoint.
+- A strict workflow with such a pair defaults to workflow-level worktree
+  isolation when the checkout is clean git. A dirty or non-git checkout is not
+  isolated: the start proceeds, and its result tells the parent to keep write
+  sets disjoint (`fan_out`) or to run the writers serially, without committing
+  or stashing the user's changes.
+- Across workflows the same definition decides a clash by directory, not by
+  paths: an unisolated writer is refused when another live workflow still has an
+  unfinished unisolated writer in the same canonical directory. This holds for
+  every request that newly runs a writer: `start`, `extend`, `replan` (added,
+  restarted, and pending or queued replaced nodes), and `recover` (replacement
+  attempts), and for a `retarget` that moves writers into another workflow's
+  worktree (pending and queued nodes, and the running target-sensitive nodes it
+  restarts). A running node counts where it started, so a retarget that leaves
+  it behind does not hide it.
+
+The cost of the conservative reading is isolation (and a branch to merge) for
+some pairs that would never have touched the same file; the benefit is that no
+path prediction is needed and no disjointness claim is trusted.
