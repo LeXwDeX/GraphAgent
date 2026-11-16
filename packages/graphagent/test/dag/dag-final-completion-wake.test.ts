@@ -454,7 +454,7 @@ it("keeps the final report and a completion wake after earlier checkpoint wakes 
   )
 })
 
-it("treats a reporting delivery leaf as display-only and never acknowledges its node wake", async () => {
+it("treats a reporting delivery leaf as display-only and acknowledges its node wake with the report", async () => {
   await runTest(({ dag, store, childPrompts, parentPrompts, reports }) =>
     Effect.gen(function* () {
       const dagID = yield* dag.create({
@@ -479,7 +479,11 @@ it("treats a reporting delivery leaf as display-only and never acknowledges its 
       for (let index = 0; index < 20; index++) yield* Effect.yieldNow
       expect(Option.isNone(yield* Queue.poll(parentPrompts))).toBe(true)
       expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(true)
-      expect((yield* store.getNode(dagID, "final"))?.wakeReported).toBe(false)
+      // The report is the leaf's own output, so the display consumes the leaf's
+      // wake in the same transaction: no unreported row is left for the inbox
+      // tick to scan again and again (#1015). A checkpoint never reaches this
+      // path; a workflow with one takes the report-then-wake path above.
+      expect((yield* store.getNode(dagID, "final"))?.wakeReported).toBe(true)
     }),
   )
 })

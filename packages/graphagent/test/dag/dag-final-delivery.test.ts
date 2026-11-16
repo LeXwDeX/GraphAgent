@@ -327,13 +327,111 @@ it("waits for the worktree settlement before writing a receipt, then adopts the 
   )
 })
 
-it("marks only the workflow completion row and never consumes a node wake", () =>
+it("marks only the workflow completion row when the delivery node owes no wake of its own", () =>
   fixture(({ store, deliver }) =>
     Effect.gen(function* () {
       expect(yield* deliver()).toBe(true)
       expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
       expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(false)
     }),
+  ))
+
+// #1015: the displayed report is the ordinary delivery leaf's own output, so the
+// display consumes the leaf's wake with the completion row. Left behind, that
+// row would stay unreported for good and keep the session on every inbox tick.
+const wakeEligibleLeaf = (database: Database.Interface) =>
+  database.db.update(WorkflowNodeTable).set({ wake_eligible: true }).where(eq(WorkflowNodeTable.id, "final")).run()
+
+it("acknowledges an ordinary delivery leaf's wake together with the completion row", () =>
+  fixture(({ database, store, deliver }) =>
+    Effect.gen(function* () {
+      yield* wakeEligibleLeaf(database)
+      expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(false)
+      expect(yield* deliver()).toBe(true)
+      expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+      expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(true)
+    }),
+  ))
+
+it("rolls the leaf acknowledgement back with the report and commits both on retry", () =>
+  fixture(({ database, store, deliver, crash }) =>
+    Effect.gen(function* () {
+      yield* wakeEligibleLeaf(database)
+      crash(true)
+      expect((yield* deliver().pipe(Effect.exit))._tag).toBe("Failure")
+      expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(false)
+      expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(false)
+      crash(false)
+      expect(yield* deliver()).toBe(true)
+      expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+      expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(true)
+    }),
+  ))
+
+it("adopts a committed receipt and still acknowledges the leaf wake that was left behind", () =>
+  fixture(({ database, store, deliver }) =>
+    Effect.gen(function* () {
+      expect(yield* deliver()).toBe(true)
+      // An older process wrote the receipt and the completion row only.
+      yield* wakeEligibleLeaf(database)
+      yield* database.db.update(WorkflowTable).set({ wake_reported: false }).where(eq(WorkflowTable.id, "wf-1")).run()
+      const parts = yield* database.db.select().from(PartTable)
+      expect(yield* deliver()).toBe(true)
+      expect(yield* database.db.select().from(PartTable)).toHaveLength(parts.length)
+      expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+      expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(true)
+    }),
+  ))
+
+it("leaves the leaf wake to the completion wake when the acknowledgement is deferred", () =>
+  fixture(
+    ({ database, store, deliver }) =>
+      Effect.gen(function* () {
+        yield* wakeEligibleLeaf(database)
+        expect(yield* deliver()).toBe(true)
+        expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(false)
+        expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(false)
+      }),
+    { acknowledge: false },
+  ))
+
+it("never acknowledges a reporting checkpoint's wake with a display", () =>
+  fixture(
+    ({ database, store, deliver }) =>
+      Effect.gen(function* () {
+        yield* wakeEligibleLeaf(database)
+        yield* database.db
+          .insert(WorkflowNodeTable)
+          .values({
+            workflow_id: "wf-1",
+            id: "cp",
+            name: "Checkpoint",
+            worker_type: "general",
+            status: "completed",
+            depends_on: [],
+            output: "checkpoint verdict",
+            seq: 5,
+            wake_eligible: true,
+            time_created: 1,
+            time_updated: 100,
+          })
+          .run()
+        expect(yield* deliver()).toBe(true)
+        expect((yield* store.getWorkflow("wf-1"))?.wakeReported).toBe(true)
+        // The leaf is the report itself; the checkpoint still owes the parent a turn.
+        expect((yield* store.getNode("wf-1", "final"))?.wakeReported).toBe(true)
+        expect((yield* store.getNode("wf-1", "cp"))?.wakeReported).toBe(false)
+      }),
+    {
+      config: {
+        name: "delivery",
+        delivery_node: "final",
+        nodes: [
+          { id: "final", depends_on: [], report_to_parent: true },
+          { id: "cp", depends_on: [], report_to_parent: true },
+        ],
+      },
+    },
   ))
 
 it("attributes the report to the parent model instead of a differing child source", () =>

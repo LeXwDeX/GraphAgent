@@ -31,7 +31,8 @@ import * as MessageV2 from "@/session/message-v2"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Dag, parseWorkflowConfig } from "../dag"
 import { DagLocation } from "../location"
-import { deliverReport, reportingCheckpoints, selectReportNode, workflowWorktreeText } from "./report-delivery"
+import { DagModeReader } from "../mode-read"
+import { deliverReport, isDisplayOnlyCompletion, selectReportNode, workflowWorktreeText } from "./report-delivery"
 import { workflowWorktreeSettlementPending } from "./worktree-completion"
 
 const parseJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
@@ -173,6 +174,12 @@ export function workflowSafetyWakeLine(total: number) {
  * through the inbox claim. The inbox's 30-second tick (whose scan lists due
  * paused reminders and queued mailboxes) is the only periodic fallback
  * (#1027 D5).
+ *
+ * Every terminal workflow is delivered to the parent session once. Only a
+ * completed workflow whose parent-visible output is an ordinary delivery leaf
+ * leaves the parent model's turn to the session's DAG mode (#1015): with the
+ * mode on the report is followed by one completion turn, with it off the
+ * report is displayed alone (#891).
  */
 export const make = Effect.fn("DagDelivery.make")(function* (environment: Environment): Effect.fn.Return<Interface> {
   const {
@@ -205,6 +212,26 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
   // Cache the receipt only as an optimization. Exact durable message/part
   // lookup below survives a crash between admission and wake marking.
   const deliveredWakeSummaries = new Map<string, string>()
+
+  /**
+   * #1015: whether the session is in DAG mode at this moment. It reads the
+   * durable session row, so a `/dag-mode` switch made during a turn applies to
+   * the next terminal delivery. A failed read counts as off: the conservative
+   * answer never adds a parent turn.
+   */
+  const dagModeOn = Effect.fnUntraced(function* (sessionID: string) {
+    return yield* DagModeReader.durableMode(sessions, SessionID.make(sessionID)).pipe(
+      Effect.map((mode) => mode === "on"),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logDebug("DagDelivery could not read the DAG mode; treating it as off", {
+              sessionID,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(false)),
+      ),
+    )
+  })
 
   const readWakeBatch = Effect.fn("DagDelivery.readWakeBatch")(function* (sessionID: string) {
     const snapshot = yield* store
@@ -268,24 +295,30 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     const workflowsByID = new Map(snapshot.workflows.map((workflow) => [workflow.id, workflow]))
     const workflows = workflowIDs.map((workflowID) => workflowsByID.get(workflowID))
     // A completed final-response workflow either displays its final report
-    // without a model turn, or owns reporting checkpoints and therefore
-    // needs one completion turn. Durable node evidence decides: a delivery
-    // leaf reports the final answer itself, while every other
-    // `report_to_parent` node remains a parent checkpoint. Without a
-    // completed delivery node there is no final answer, only a result
-    // index: a gate (verify FAIL, review REJECT) skipped the delivery
-    // path and settled the graph as completed so the parent can repair
-    // or reopen it (#294). That outcome always needs a parent turn.
+    // without a model turn, or needs one completion turn. Durable node
+    // evidence decides: a delivery leaf reports the final answer itself,
+    // while every other `report_to_parent` node remains a parent checkpoint.
+    // Without a completed delivery node there is no final answer, only a
+    // result index: a gate (verify FAIL, review REJECT) skipped the delivery
+    // path and settled the graph as completed so the parent can repair or
+    // reopen it (#294). That outcome always needs a parent turn.
+    //
+    // #1015: the display-only outcome is the one the session's DAG mode
+    // overrides. With the mode on, the parent gets the report first and then
+    // one completion turn, so it can continue a staged plan; with it off the
+    // report is all it gets (#891). The mode is read once per batch, and only
+    // when a display-only candidate exists, so every candidate of one batch
+    // shares one answer.
     const finalResponseCompletions = new Map<string, boolean>()
+    let parentInDagMode: boolean | undefined
     for (const workflow of workflows) {
       if (!workflow || workflow.status !== "completed") continue
       const config = parseWorkflowConfig(workflow.config)
       if (!config) continue
       const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
-      finalResponseCompletions.set(
-        workflow.id,
-        reportingCheckpoints(config, nodes).length > 0 || !selectReportNode(config, nodes),
-      )
+      const displayOnly = isDisplayOnlyCompletion(config, nodes)
+      if (displayOnly) parentInDagMode ??= yield* dagModeOn(sessionID)
+      finalResponseCompletions.set(workflow.id, !displayOnly || parentInDagMode === true)
     }
     const needsCompletionTurn = (workflowID: string) => finalResponseCompletions.get(workflowID) === true
     // A reporting checkpoint that completed while its downstream nodes
@@ -326,9 +359,10 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
     })
     const atBoundary = new Set([...boundaryWorkflows.map((workflow) => workflow.id), ...runningReportWorkflowIDs])
     const batch = {
-      // Display-only completion reports never consume node wakes. Their
-      // delivery leaf is the report itself; leave every node row to its
-      // own durable lifecycle instead of acking it under the display path.
+      // Display-only completion reports (DAG mode off) keep their node rows
+      // out of the wake batch: the delivery leaf is the report itself, so
+      // `deliverReport` acknowledges that leaf's wake together with the
+      // report instead of rendering it a second time as a node result.
       nodes: wakeNodes.filter(
         (node) => atBoundary.has(node.workflowId) && finalResponseCompletions.get(node.workflowId) !== false,
       ),
@@ -497,9 +531,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
 
         if ((yield* status.get(SessionID.make(sessionID))).type !== "idle") return admitted
 
-        // Completed final-response workflows display their result without a model turn.
-        // Other decisions in the same snapshot take precedence; their wake excludes
-        // these completed reports so they cannot invite a duplicate summary.
+        // Display-only completions (DAG mode off) show their result without a model
+        // turn. Other decisions in the same snapshot take precedence; their wake
+        // excludes these completed reports so they cannot invite a duplicate summary.
         const completedIDs = new Set(plan.completedReports.map((workflow) => workflow.id))
         const decisions = {
           nodes: batch.nodes.filter((node) => !completedIDs.has(node.workflowId)),
