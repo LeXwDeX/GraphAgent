@@ -22,6 +22,11 @@
  * Terminal settlement (commit/patch/remove-or-keep) is owned by `DagLoop`'s
  * terminal handler; E1b (#1029) reuses the same `settleWorkflowWorktree` seam.
  *
+ * Write safety (#1031 M8): extend, replan and recover also precheck, before any
+ * mutation and without parking, that the `plan` agent only runs read-only
+ * nodes, and that the writers they would newly run do not share a workspace
+ * with another live workflow's unfinished writers (`DagWriteGuard`).
+ *
  * Lock discipline: `Dag` commands acquire the non-reentrant per-workflow
  * KeyedMutex themselves. This service never calls `Dag` while a mutation is
  * still in flight; the parking readback and the post-mutation resume run only
@@ -37,10 +42,12 @@ import {
   TerminalViolationError,
   isTerminalWorkflowStatusValue,
 } from "@graphagent/core/dag/core/types"
+import type { WorkflowRow } from "@graphagent/core/dag/store"
 import { isRecord } from "@/util/record"
 import { Dag } from "./dag"
 import { ResumeBlockedError, ResumeGuard } from "./resume-guard"
 import { DagValidation, StructuralValidationError } from "./validation"
+import { DagWriteGuard } from "./write-guard"
 import type { PreparedExtend, PreparedReplan } from "./authoring"
 
 // ============================================================================
@@ -77,6 +84,8 @@ export const ControlRejectionKindSchema = Schema.Literals([
   "review-gate",
   "completion-gate",
   "resume-blocked",
+  "plan-readonly",
+  "write-conflict",
   "other",
 ])
 export type ControlRejectionKind = typeof ControlRejectionKindSchema.Type
@@ -139,6 +148,9 @@ export type ControlRequest =
       readonly reason?: string
     }
 
+/** The requests that add work, which the write-safety precheck inspects. */
+type WorkAddingRequest = Extract<ControlRequest, { readonly op: "extend" | "replan" | "recover" }>
+
 /** The success payload of a `Dag.Interface` method. */
 type DagSuccess<K extends keyof Dag.Interface> = Dag.Interface[K] extends (
   ...args: never[]
@@ -177,9 +189,14 @@ export type ControlOutcome =
     }
   | { readonly op: "retarget"; readonly workflowID: string; readonly result: DagSuccess<"retarget"> }
 
-/** The calling session; used only for the workflow owner check. */
+/**
+ * The calling session: the workflow owner check, plus the agent of the calling
+ * turn for the plan-agent write gate (#1031 M8). A caller without an agent is
+ * never held to the plan gate.
+ */
 export interface Caller {
   readonly sessionID: string
+  readonly agent?: string
 }
 
 export interface Interface {
@@ -458,6 +475,61 @@ const make = Effect.gen(function* () {
       diagnostics: [],
     })
 
+  /** The nodes a work-adding request would newly run, or undefined when the
+   * request does not plan (the real mutation then reports why). */
+  const newRuns = (workflow: WorkflowRow, request: WorkAddingRequest) =>
+    Effect.gen(function* () {
+      if (request.op === "extend") return request.prepared.nodes
+      const rows = yield* dag.store.getNodes(workflow.id).pipe(Effect.orDie)
+      if (request.op === "replan") return DagWriteGuard.replanNewRuns(rows, request.prepared.nodes)
+      const config = Dag.parseWorkflowConfig(workflow.config)
+      return config
+        ? DagWriteGuard.recoveryNewRuns({
+            config,
+            rows,
+            nodeIDs: request.nodeIDs,
+            graphRev: workflow.graphRev,
+          })
+        : undefined
+    })
+
+  /**
+   * #1031 M8 write-safety precheck for the ops that add work (extend, replan,
+   * recover). The plan agent may only run read-only nodes, and no request may
+   * newly run an unisolated writer in a workspace another live workflow still
+   * has an unfinished unisolated writer in. Like the resume guard it runs
+   * before any mutation and never parks: a refusal means nothing was attempted.
+   * Yields the refusal, or undefined when the request may proceed.
+   */
+  const writeGuard = (
+    workflow: WorkflowRow,
+    request: ControlRequest,
+    caller: Caller,
+  ): Effect.Effect<ControlConflict | undefined> =>
+    Effect.gen(function* () {
+      if (request.op !== "extend" && request.op !== "replan" && request.op !== "recover") return undefined
+      const runs = yield* newRuns(workflow, request)
+      if (runs === undefined) return undefined
+      const writers = DagWriteGuard.writerIDs(runs)
+      if (writers.length === 0) return undefined
+      if (caller.agent === DagWriteGuard.PLAN_AGENT)
+        return new ControlConflict({
+          kind: "plan-readonly",
+          status: workflow.status,
+          message: DagWriteGuard.planRejection(request.op, writers),
+        })
+      const mine = DagWriteGuard.unisolatedWriters(runs, workflow.executionDirectory ?? workflow.directory)
+      if (mine.length === 0) return undefined
+      const conflicts = DagWriteGuard.writeConflicts(yield* DagWriteGuard.liveWriters(dag.store, workflow.id), mine)
+      return conflicts.length === 0
+        ? undefined
+        : new ControlConflict({
+            kind: "write-conflict",
+            status: workflow.status,
+            message: DagWriteGuard.writeConflictMessage(request.op, conflicts),
+          })
+    })
+
   const applyInternal = (
     dagID: string,
     request: ControlRequest,
@@ -504,6 +576,9 @@ const make = Effect.gen(function* () {
       if (request.op === "extend" && request.prepared.action !== "extend") {
         return yield* Effect.fail(invalidPrepared(dagID, workflow.status, "extend", request.prepared.action))
       }
+
+      const refused = yield* writeGuard(workflow, request, caller)
+      if (refused) return yield* Effect.fail(refused)
 
       const mutation: Effect.Effect<ControlOutcome, Error> = Effect.gen(function* () {
         switch (request.op) {

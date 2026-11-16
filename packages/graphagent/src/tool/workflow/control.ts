@@ -31,7 +31,8 @@ export const controlWorkflow = (context: ControlContext, params: ControlParams):
     const { dag, control, authoring, sessionID, session, ctx } = context
     const wfId = params.workflow_id
     const workflow = yield* requireOwnedWorkflow(dag, wfId, sessionID)
-    const caller = { sessionID }
+    // The turn's agent lets DagControl hold the plan agent to read-only work.
+    const caller = { sessionID, agent: ctx.agent }
     if (params.operation === "recover") {
       const outcome = yield* runControl(
         wfId,

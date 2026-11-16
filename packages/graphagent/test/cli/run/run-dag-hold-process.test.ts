@@ -136,6 +136,8 @@ const mixedDecisionText = "The checkpoint remains paused pending human approval.
 const mixedFinalMarker = "DAG_MIXED_FINAL_REPORT"
 const mixedFinalAnswer = "DAG_MIXED_FINAL_REPORT_RAW_779D"
 const policyGuideMarker = "wf-mixed-decision.yaml"
+// The multi-workflow specs below run side by side in one workspace, so their
+// nodes are read-only: two unisolated writers cannot share it (#1031 M8).
 const mixedFinalSpec = `title: cli-mixed-final-report
 config:
   name: cli-mixed-final-report
@@ -145,6 +147,7 @@ config:
     - id: final
       name: final
       worker_type: general
+      workspace_writes: deny
       depends_on: []
       report_to_parent: false
       prompt_template:
@@ -157,6 +160,7 @@ config:
     - id: gate
       name: gate
       worker_type: general
+      workspace_writes: deny
       depends_on: []
       report_to_parent: true
       output_schema:
@@ -172,6 +176,7 @@ config:
     - id: waiting
       name: waiting
       worker_type: general
+      workspace_writes: deny
       depends_on: [gate]
       condition: 'gate.output.verdict == "replan"'
       prompt_template:
@@ -188,6 +193,7 @@ config:
     - id: final
       name: final
       worker_type: general
+      workspace_writes: deny
       depends_on: []
       report_to_parent: false
       prompt_template:

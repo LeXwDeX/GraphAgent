@@ -42,6 +42,30 @@ Block defaults:
 - `debug` evidence lane -> `explore`; its diagnosis lane -> `general`
 - review lanes, skeptics, the review decision, verification, and synthesis -> `auditor`
 
+## Writers
+
+A node is a writer, one that can change the workspace, when its block is
+`coding` or `prototype`, or when its worker is not a read-only profile
+(`explore`, `plan`, `auditor`, `review`, `verify`, `verification`, or a matching
+`review-*` / `verify-*` / `verification-*` name) and its effective
+`workspace_writes` is not `deny`. The generated fan-out aggregator is never a
+writer. Three engine rules share this one definition:
+
+- The `plan` agent may only run workflows whose newly-running nodes are all
+  read-only. A graph with a writer is refused at `start`, `extend`, `replan`,
+  and `recover`, before anything is created or parked. A `debug` block's
+  diagnosis node runs on `general` by default, which is write-capable: set
+  `worker_type: explore` on the block when the plan agent investigates.
+- Two unisolated writers never share a workspace across live workflows. The
+  later `start`, or an `extend`, `replan`, or `recover` that would newly run such
+  a writer, is refused until the first workflow finishes or the new writers are
+  isolated (a recovery re-runs stored definitions, so it can only wait). Node
+  `isolation: worktree`, a workflow-level worktree, and a different `workspace`
+  all count as separate directories.
+- A strict workflow whose writers include a pair with no dependency path
+  defaults to `isolation: worktree` when the checkout is a clean git
+  repository, and starts unisolated with a warning otherwise.
+
 ## Unattended children
 
 `question` and `plan_exit` are root-only: a `task` subagent or DAG node hides
