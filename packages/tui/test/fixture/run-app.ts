@@ -79,13 +79,15 @@ export async function runApp(options: {
   height?: number
   ambiguousWidth?: 1 | 2
   dagMode?: () => ReturnType<typeof dagModeStatus>
+  /** Extra entries of the persisted kv file, such as a display policy. */
+  kv?: Record<string, unknown>
   /** Extra endpoint replies, consulted before the built-in ones; return nothing to fall through. */
   handler?: FetchHandler
 }) {
   const tmp = await tmpdir()
   await Bun.write(
     `${tmp.path}/kv.json`,
-    JSON.stringify(options.ambiguousWidth ? { ambiguous_width: options.ambiguousWidth } : {}),
+    JSON.stringify({ ...(options.ambiguousWidth ? { ambiguous_width: options.ambiguousWidth } : {}), ...options.kv }),
   )
   const setup = await createTestRenderer({ width: options.width ?? 120, height: options.height ?? 30 })
   const core = await import("@opentui/core")

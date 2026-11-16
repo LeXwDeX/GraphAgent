@@ -11,6 +11,7 @@ import { useTheme } from "../context/theme"
 import { useThinkingMode } from "../context/thinking"
 import { getLanguage, setLanguage, t } from "../i18n"
 import { useDrawer } from "../shell/drawer"
+import { dagBandMode } from "../shell/status-band"
 import { useToast } from "../ui/toast"
 import { usePanelHost } from "./host"
 import { SettingsPanel, type SettingRow, type SettingsTab } from "./settings"
@@ -252,6 +253,18 @@ export function ConfigPanel(props: { activeTab: string; onTab?(id: string): void
       kind: "toggle",
       value: kv.get("conceal_code", true),
       onChange: (next) => kv.set("conceal_code", next),
+    },
+    {
+      id: "dag-band",
+      label: t("panel.config.dagBand"),
+      kind: "choice",
+      value: dagBandMode(kv.get("dag_band", "auto")),
+      options: [
+        { value: "auto", label: t("panel.config.dagBand.auto") },
+        { value: "always", label: t("panel.config.dagBand.always") },
+        { value: "hidden", label: t("panel.config.dagBand.hidden") },
+      ],
+      onChange: (next) => kv.set("dag_band", next),
     },
     {
       id: "ambiguous-width",
