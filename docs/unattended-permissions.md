@@ -62,22 +62,26 @@ DAG 模式开启、档位又不是 `allow` 时，主智能体会在 DAG 模式�
 
 ### `readonly`
 
-这一档下，含有会写入的节点的工作流启动不了：`start`、`extend`、`replan`、`recover`、`retry` 都会拒绝，报错里写明是 `dag.permission` 的缘故。草稿和校验不受影响。如果在写入节点运行中途切到 `readonly`，该节点不会被取消，它之后发出的编辑请求会被拒绝。
+**启动工作。** 这一档下，含有会写入的节点的工作流会被拒绝，对所有调用方一视同仁（不只是 plan agent）。`workflow start` 返回 `error_code: permission_readonly`，`extend`、`replan`、`recover` 以 kind `permission-readonly` 驳回。报错点明是 `dag.permission` 的缘故，列出可写的节点，并提示先把档位切到 `allow` 或 `ask` 再做实现阶段。草稿和校验不受影响，节点全部只读的工作流照常启动。
 
-无人值守会话（包括 `task` 子智能体）得到的工具面是：
+**工具面。** 无人值守会话（包括 `task` 子智能体）得到的是：
 
-- 没有 `edit`、`write`、`apply_patch`。
-- `bash` 只能执行内置 `review` agent 允许的那批只读 git 和 gh 查询（`git diff`、`git log` 之类）。其他命令一律拒绝，`npm test`、`rm`、`git commit` 也不例外。你自己写的 allow 规则放不宽它：想放宽就换档。
-- MCP 工具默认拒绝，除非你的配置按名字放行了那一个工具。`server_*`、`*` 这样的通配符不算。
-- `read`、`grep`、`glob` 和 `agent` 工具照常可用。
+- 没有 `edit`、`write`、`apply_patch`。会话下一次解析工具时这些工具就被隐藏，已经发出的编辑请求在发出时被拒绝。你自己写的 allow 规则放不开它。
+- `bash` 只能执行一份固定名单上的命令，和内置 `review` agent 用的是同一份：`git diff`、`git show`、`git log`、`git status`、`git blame`、`git rev-parse`、`gh pr view`、`gh pr diff`、`glab mr view`、`glab mr diff`。带 `--output` 选项的 `git diff`、`git show`、`git log` 会被拒绝。其他命令一律拒绝，`npm test`、`rm`、`git commit` 也不例外。你自己写的 allow 规则（包括 `bash: "allow"`）放不宽这份名单：想放宽就换档。
+- MCP 工具默认拒绝，除非决定该工具的那条规则（匹配它的最后一条）是你写的、并且恰好点名这一个工具的 allow。`server_*`、`*` 这样的通配符不算，后面再出现的 ask 或 deny 规则也会盖过前面那条精确的 allow。
+- `read`、`grep`、`glob`、`webfetch` 和 `agent` 工具照常按各自的规则工作。
 
-这一档从不询问。需要你批准的调用（比如读项目外的路径）按规则 `RO-1` 拒绝。安全保险清单照常生效，而且排在前面，各按自己的编号拒绝：凭据文件是 SF-2，重复调用是 SF-5，hook 返回 `ask` 是 SF-6。被工具面拒绝的调用只是普通的规则拒绝，不记为安全拦截。
+这一档只收窄。`deny` 规则（你的，或者 agent 自带的）先拒绝，这一档不会解除任何 deny，也不会把任何拒绝变成放行。工具面拒绝的调用是普通的规则拒绝：节点看到的是 `dag.permission is "readonly": workflow nodes cannot edit, write, or patch files.`，或者 `dag.permission is "readonly": this tool call is outside the read-only tool set workflow nodes may use.`，它们不记为安全拦截。
 
-这只是收窄工具面，不是隔离：`bash` 的名单是对命令文本的字面规则，shell 可以经由重定向写文件，没有规则会读到它。
+**从不询问。** 需要你批准的调用（比如读项目外的路径）按规则 `RO-1` 拒绝。和工具面的拒绝不同，`RO-1` 会像 SF 规则一样记在节点上，作为安全拦截：一条 `NodeSafetyDenied` 事件，在 `inspect`、覆盖段和报告里都能看到。安全保险清单照常生效，而且排在前面，各按自己的编号拒绝：凭据文件是 SF-2，重复调用是 SF-5，hook 返回 `ask` 是 SF-6。
+
+**中途切档。** 每次请求都重新读取档位。正在运行的写入节点不会被取消，从它的下一次请求起就按上面的工具面处理。会运行写入节点的新 `start`、`extend`、`replan`、`recover` 从你切档的那一刻起被拒绝。
+
+这只是收窄工具面，不是隔离：`bash` 的名单是对命令文本的字面规则，shell 可以经由重定向写文件，没有规则会读到它（见下文）。
 
 ## 安全保险清单
 
-在 `allow` 档里，以及在 `readonly` 档适用的范围内，无人值守会话的调用要过下面这些规则，每次拒绝都带着编号：
+在 `allow` 和 `readonly` 档里，无人值守会话的调用要过下面这些规则（`ask` 档由你自己判断），每次拒绝都带着编号：
 
 | 编号 | 拒绝                                                                                                                                                         |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -100,6 +104,7 @@ DAG 模式开启、档位又不是 `allow` 时，主智能体会在 DAG 模式�
 - 在 shell 里读凭据文件（`cat .env`、`grep -f`），以及对含有凭据文件的目录做 `grep` 搜索。
 - 任何改变命令原文的写法：`env X=1 git reset --hard`、`command git ...`、变量与函数、`bash -c '...'`、`curl ... | sh`。字面规则表读不到它们。
 - 推送到默认分支（`git push origin main`）：除 force push 外的 `git push` 一律放行。
+- `readonly` 档里，写在被放行命令后面的重定向（`git diff > file`）：`bash` 的名单是对命令文本的字面规则，没有哪条规则会读重定向，所以文件会被写入。这是设计如此（#1031、#1324）。
 - 原生工具周围的文件系统花样：硬链接、检查与访问之间路径被替换、Windows 特有的路径写法，以及 MCP 工具的路径参数。
 
 想要更强的兜底：加 `deny` 规则或 `dag.safety.extra`，在工具前面接外部命令守卫（见下一节），或者在 Docker、虚拟机里运行。

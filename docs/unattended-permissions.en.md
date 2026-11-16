@@ -62,22 +62,26 @@ If you reject a request, that session's current turn ends and the node attempt f
 
 ### `readonly`
 
-A workflow that contains a node which can write cannot start in this tier: `start`, `extend`, `replan`, `recover` and `retry` refuse it, and the message names `dag.permission`. Drafting and validating still work. If you switch to `readonly` while a writing node is running, the node is not cancelled; its later edit requests are refused.
+**Starting work.** A workflow with a node that can write is refused in this tier, for every caller (not only the plan agent). `workflow start` returns `error_code: permission_readonly`. `extend`, `replan` and `recover` are rejected with kind `permission-readonly`. The message names `dag.permission` and the write-capable nodes, and says to switch the tier to `allow` or `ask` before the implementation phase. Drafting and validating still work, and so does a workflow whose nodes are all read-only.
 
-Unattended sessions, `task` subagents included, get this tool surface:
+**Tool surface.** Unattended sessions, `task` subagents included, get:
 
-- No `edit`, `write` or `apply_patch`.
-- `bash` is limited to the read-only git and gh queries that the built-in `review` agent may run (`git diff`, `git log` and similar). Anything else is refused, `npm test`, `rm` and `git commit` included. An allow rule of yours does not widen this: to widen it, change the tier.
-- MCP tools are refused unless your configuration allows that exact tool by name. A wildcard such as `server_*` or `*` does not count.
-- `read`, `grep`, `glob` and the `agent` tool keep working.
+- No `edit`, `write` or `apply_patch`. The tools are hidden the next time the session's tools are resolved, and an edit request that is already in flight is refused when it is made. No allow rule of yours lifts this.
+- `bash` runs only the commands on one fixed list, the same list the built-in `review` agent uses: `git diff`, `git show`, `git log`, `git status`, `git blame`, `git rev-parse`, `gh pr view`, `gh pr diff`, `glab mr view` and `glab mr diff`. `git diff`, `git show` and `git log` with an `--output` option are refused. Anything else is refused too, `npm test`, `rm` and `git commit` included. An allow rule of yours, `bash: "allow"` included, does not widen the list: to widen it, change the tier.
+- MCP tools are refused unless the rule that decides that tool (the last one that matches it) is an allow you wrote that names exactly that tool. A wildcard such as `server_*` or `*` does not count, and a later rule that asks or denies overrides an earlier exact allow.
+- `read`, `grep`, `glob`, `webfetch` and the `agent` tool keep working under their ordinary rules.
 
-Nothing is ever asked in this tier. A call that would need your approval is refused as rule `RO-1` (for example, reading a path outside the project). The safety list still applies and comes first under its own ids: SF-2 for credential files, SF-5 for repeated calls, SF-6 for a hook that answers `ask`. A call that the tool surface refuses is an ordinary rule denial and is not recorded as a safety denial.
+The tier only narrows. A `deny` rule, yours or the agent's own, refuses first and is never lifted by it, and nothing in this tier turns a refusal into an approval. What the surface refuses is an ordinary rule denial: the node sees `dag.permission is "readonly": workflow nodes cannot edit, write, or patch files.` or `dag.permission is "readonly": this tool call is outside the read-only tool set workflow nodes may use.` It is not recorded as a safety denial.
 
-This narrows the tool surface. It is not isolation: the `bash` list is made of literal rules over the command text, and a shell can write through a redirection that no rule reads.
+**Nothing is asked.** A call that would need your approval is refused as rule `RO-1` (for example, reading a path outside the project). Unlike the surface refusals, `RO-1` is recorded on the node as a safety denial, like the SF rules: a `NodeSafetyDenied` event, shown in `inspect`, in the coverage section and in the reports. The safety list still applies and comes first under its own ids: SF-2 for credential files, SF-5 for repeated calls, SF-6 for a hook that answers `ask`.
+
+**Switching mid-run.** The tier is read at every request. A writing node that is already running is not cancelled; from its next request on it is held to the surface above. A new `start`, `extend`, `replan` or `recover` that would run writers is refused from the moment you switch.
+
+This narrows the tool surface. It is not isolation: the `bash` list is made of literal rules over the command text, and a shell can write through a redirection that no rule reads (see below).
 
 ## The safety list
 
-In the `allow` tier, and in `readonly` as far as it applies, an unattended call is checked against these rules. Each refusal names its id:
+In the `allow` and `readonly` tiers an unattended call is checked against these rules (the `ask` tier leaves the judgment to you). Each refusal names its id:
 
 | Id   | Refuses                                                                                                                                                                                                                     |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -100,6 +104,7 @@ These gaps are by design. A list that tried to cover them would have to parse th
 - Reading credential files from the shell (`cat .env`, `grep -f`), and a `grep` over a directory that holds them.
 - Any spelling that changes the command text: `env X=1 git reset --hard`, `command git ...`, variables and functions, `bash -c '...'`, `curl ... | sh`. The literal tables miss them.
 - Pushing to the default branch (`git push origin main`): every push except a force push passes.
+- In the `readonly` tier, a redirection after an allowed command (`git diff > file`): the `bash` list is made of literal rules over the command text, and none of them reads the redirection, so the file is written. This is by design (#1031, #1324).
 - File-system tricks around the native tools: hard links, a path replaced between the check and the access, Windows-specific path forms, and the path arguments of MCP tools.
 
 For more cover: add `deny` rules or `dag.safety.extra` entries, put an external command guard in front of the tools (next section), or run in Docker or a VM.
