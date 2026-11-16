@@ -7,7 +7,9 @@ import {
   DAG_STATE_STYLE,
   DAG_STATE_TABLE,
   dagBarGlyph,
+  dagCurrentWave,
   dagDisplayState,
+  dagElapsedMs,
   dagEscalationLabel,
   dagFinite,
   dagNodeGlyph,
@@ -476,5 +478,70 @@ describe("dagEscalationLabel", () => {
     expect(dagEscalationLabel({ escalatedNodes: 0 })).toBeUndefined()
     expect(dagEscalationLabel({ escalatedNodes: 2 })).toBe("timeout ×2")
     expect(dagEscalationLabel({ escalatedNodes: "Infinity" })).toBeUndefined()
+  })
+})
+
+describe("dagCurrentWave", () => {
+  const at = (status: string, error_class?: string) => ({ status, ...(error_class ? { error_class } : {}) })
+
+  test("no waves, no current wave", () => {
+    expect(dagCurrentWave([])).toBeUndefined()
+  })
+
+  test("is the first wave that still has a node to run or running", () => {
+    expect(dagCurrentWave([[at("completed")], [at("running"), at("completed")], [at("pending")]])).toBe(1)
+    expect(dagCurrentWave([[at("pending")], [at("pending")]])).toBe(0)
+    expect(dagCurrentWave([[at("completed")], [at("queued")]])).toBe(1)
+  })
+
+  test("a settled node of any kind is not work left: failed, skipped, aborted and cancelled all pass", () => {
+    const settled = [at("failed"), at("skipped"), at("aborted"), at("failed", "cancelled")]
+    expect(dagCurrentWave([settled, [at("pending")]])).toBe(1)
+  })
+
+  test("a wave that is all settled behind one that is not does not count", () => {
+    expect(dagCurrentWave([[at("running")], [at("completed")]])).toBe(0)
+  })
+
+  test("once everything has settled it rests on the last wave", () => {
+    expect(dagCurrentWave([[at("completed")], [at("completed")], [at("skipped")]])).toBe(2)
+  })
+
+  test("a status the table does not know counts as work left, like a waiting node", () => {
+    expect(dagCurrentWave([[at("completed")], [at("exotic")]])).toBe(1)
+  })
+})
+
+describe("dagElapsedMs", () => {
+  const ran = (started_at?: number, completed_at?: number) => ({
+    status: completed_at === undefined ? "running" : "completed",
+    ...(started_at === undefined ? {} : { started_at }),
+    ...(completed_at === undefined ? {} : { completed_at }),
+  })
+
+  test("nothing has started, so there is nothing to count", () => {
+    expect(dagElapsedMs([], 9_000, true)).toBeUndefined()
+    expect(dagElapsedMs([ran(), ran()], 9_000, true)).toBeUndefined()
+  })
+
+  test("counts from the earliest start up to now while the workflow is going", () => {
+    expect(dagElapsedMs([ran(4_000, 6_000), ran(2_000), ran()], 9_000, true)).toBe(7_000)
+  })
+
+  test("keeps counting between waves, when every node that started has finished", () => {
+    expect(dagElapsedMs([ran(2_000, 3_000), ran(3_000, 4_000)], 9_000, true)).toBe(7_000)
+  })
+
+  test("stops at the last completion once the workflow is over", () => {
+    expect(dagElapsedMs([ran(2_000, 3_000), ran(3_000, 8_000), ran(2_500, 5_000)], 99_000, false)).toBe(6_000)
+  })
+
+  test("a node still marked running in a workflow that is over does not stretch the count", () => {
+    expect(dagElapsedMs([ran(2_000, 3_000), ran(2_500)], 99_000, false)).toBe(1_000)
+  })
+
+  test("never goes below zero when the clocks disagree", () => {
+    expect(dagElapsedMs([ran(12_000)], 9_000, true)).toBe(0)
+    expect(dagElapsedMs([ran(12_000)], 9_000, false)).toBe(0)
   })
 })

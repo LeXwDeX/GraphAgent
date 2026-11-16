@@ -63,6 +63,7 @@ import { openEditor } from "../../editor"
 import { askConfirm } from "../../ask/local-ask"
 import { TodoItem } from "../../component/todo-item"
 import type { PromptInfo } from "../../component/prompt/history"
+import { dagPanelSpec } from "../../panel/dag"
 import { ForkPanel } from "../../panel/fork"
 import { HooksPanel } from "../../panel/hooks"
 import { MessagePanel } from "../../panel/message"
@@ -615,6 +616,13 @@ export function Main() {
   }
 
   onCleanup(commands.setHandler("hooks.list", () => openBottomPanel("hooks", () => <HooksPanel />)))
+  // `/dag` is read in a root session and in a sub-agent view alike: the panel shows the root's workflows either way.
+  onCleanup(
+    commands.setHandler("dag.open", () => {
+      if (!bottomZone || bottomZone.host.top()?.id === "dag") return
+      bottomZone.host.push(dagPanelSpec())
+    }),
+  )
 
   const windowed = () => isWindowed(rows().length)
 
