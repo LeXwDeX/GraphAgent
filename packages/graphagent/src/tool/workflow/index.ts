@@ -31,7 +31,7 @@ const id = "workflow"
 
 /** Pre-convergence action names. A call carrying one of these explains the
  * exact new shape instead of a bare union-discriminator failure. */
-const LEGACY_ACTIONS: Record<string, string> = {
+const RETIRED_ACTIONS: Record<string, string> = {
   start: 'use {params:{action:"run",operation:"start",spec_path}}',
   extend: 'use {params:{action:"run",operation:"extend",workflow_id,spec_path}}',
   status: 'use {params:{action:"inspect",operation:"status",workflow_id}}',
@@ -52,8 +52,8 @@ const ACTIONS_SUMMARY =
  * action name (control also for `control:<operation>`), so a configured deny
  * such as workflow:{"start":"deny"} must keep matching after actions gained
  * operation groups. Control patterns are unchanged and need no mapping beyond
- * the legacy extend_timeout action. */
-const legacyPermissionPattern = (action: string, operation: string): string | undefined => {
+ * the retired top-level extend_timeout action. */
+const retiredActionPermissionPattern = (action: string, operation: string): string | undefined => {
   if (action !== "control") return operation
   return operation === "extend_timeout" ? "extend_timeout" : undefined
 }
@@ -93,13 +93,13 @@ export const WorkflowTool = Tool.define<
       formatValidationError: (error, input) => {
         const attempted = argumentAction(input)
         const detail = formatSchemaFailures(error, 2, attempted)
-        const legacy =
-          attempted !== undefined && Object.hasOwn(LEGACY_ACTIONS, attempted) ? LEGACY_ACTIONS[attempted] : undefined
+        const retired =
+          attempted !== undefined && Object.hasOwn(RETIRED_ACTIONS, attempted) ? RETIRED_ACTIONS[attempted] : undefined
         const message =
           attempted === "send" || attempted === "receive" || attempted === "observe"
             ? `workflow has no ${attempted} action; use agent {params:{action:"${attempted}", ...}} for messaging and inspect {status} for graph progress.`
-            : legacy !== undefined
-              ? `workflow no longer has a ${attempted} action; ${legacy}.`
+            : retired !== undefined
+              ? `workflow no longer has a ${attempted} action; ${retired}.`
               : "workflow call rejected by the action schema."
         return bound(`${message}${detail ? ` Details: ${detail}.` : ""} ${ACTIONS_SUMMARY}`, 480)
       },
@@ -112,17 +112,17 @@ export const WorkflowTool = Tool.define<
               new Error("Workflow orchestration is available only to the main conversation, not child agents"),
             )
           }
-          const legacyPermission = legacyPermissionPattern(params.action, params.operation)
+          const retiredPattern = retiredActionPermissionPattern(params.action, params.operation)
           yield* ctx.ask({
             permission: id,
             // Both checks apply: a fine-grained allow must never bypass a
-            // pre-existing group deny or approval requirement. The legacy
+            // pre-existing group deny or approval requirement. The retired-action
             // pattern keeps a deny configured against the old bare action
             // name (e.g. start/extend/status) effective after convergence.
             patterns: [
               params.action,
               `${params.action}:${params.operation}`,
-              ...(legacyPermission ? [legacyPermission] : []),
+              ...(retiredPattern ? [retiredPattern] : []),
             ],
             always: ["*"],
             metadata: {

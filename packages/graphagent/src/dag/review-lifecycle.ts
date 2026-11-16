@@ -401,19 +401,19 @@ export function reviewRoundMetrics(
  * accounting), so the round's own dispositions must decide whether the streak
  * extends: a raised round resets it. A round that predates arbitration
  * dispositions has no refuted record, so every stored lane action counts as
- * `legacyRaised`. The prior-round loader and workflow coverage share this
- * accounting.
+ * raised: the caller passes that count as `raisedWithoutDispositions`. The
+ * prior-round loader and workflow coverage share this accounting.
  */
 export function reviewRoundQuietStreak(
   output: unknown,
   enteringQuietRounds: number,
-  legacyRaised = 0,
+  raisedWithoutDispositions = 0,
 ): { newFindings: number; quietRounds: number } {
   const result = structuredRecord(output)
   const rawDispositions = result && Array.isArray(result.dispositions) ? result.dispositions : []
   const newFindings =
     rawDispositions.length === 0
-      ? legacyRaised
+      ? raisedWithoutDispositions
       : rawDispositions
           .map(dispositionRecord)
           .filter((item): item is Disposition => item !== undefined)

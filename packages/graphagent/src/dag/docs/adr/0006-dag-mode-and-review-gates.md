@@ -37,17 +37,17 @@ is not a skill, hook output cannot change it, and the session update endpoint
 rejects `dagMode`. A shell could in principle reach the local HTTP API; that
 soft boundary is shared by every session setting, and L1 forbids it.
 
-The mode changes what the main agent is told and the review gate a started
-workflow gets (decision 5). It does not change permission rules: if the
-workflow tool is disabled or denied, L2 reports DAG mode as unavailable and the
-agent works directly. An explicit instruction in the current message ("work
-directly", "use a workflow") overrides the setting for that request only.
-Switching off cancels nothing: running workflows continue to a terminal state
-and no successor starts unless the user asks. The `dag` policy keys (mode,
-concurrency, node and token limits, safety, permission) are read from the global
-layer only (`PROJECT_SCOPED_DAG_KEYS`, `src/config/config.ts`), so a repository
-cannot turn the mode on, raise a limit, or change what a user's agents may do
-unattended.
+The mode changes what the main agent is told, the review gate a started
+workflow gets, and whether a completed workflow gives it a completion turn
+(decision 5). It does not change permission rules: if the workflow tool is
+disabled or denied, L2 reports DAG mode as unavailable and the agent works
+directly. An explicit instruction in the current message ("work directly", "use
+a workflow") overrides the setting for that request only. Switching off cancels
+nothing: running workflows continue to a terminal state and no successor starts
+unless the user asks. The `dag` policy keys (mode, concurrency, node and token
+limits, safety, permission) are read from the global layer only
+(`PROJECT_SCOPED_DAG_KEYS`, `src/config/config.ts`), so a repository cannot turn
+the mode on, raise a limit, or change what a user's agents may do unattended.
 
 The agent is told in three layers (`src/dag/mode.ts`):
 
@@ -297,11 +297,22 @@ Each declares the strict gate, pins no model, and keeps its reviewing, verifying
 and synthesizing nodes read-only; only `stage-implement` writes, through a
 plan-driven `fan_out` coding block (ADR-0004). They are references, not
 parameterized templates: the parent copies one and replaces the objective, the
-instructions, and `config.acceptance`. Each is built so that completion gives the
-parent a turn. A workflow that ends in an ordinary delivery leaf is displayed
-without waking the parent (`src/dag/runtime/delivery.ts`), which leaves no turn
-in which to read the result and start the next stage; the specs carry a review
-decision, a reporting checkpoint that is not an ordinary delivery leaf.
+instructions, and `config.acceptance`.
+
+Whether a completed workflow gives the parent a turn follows the mode
+(`src/dag/runtime/delivery.ts`, #1015). Every terminal workflow reaches the
+parent once; failed and cancelled workflows, completed ones with a reporting
+checkpoint, and completed ones without a delivered final answer wake it in
+either mode. The one case the mode decides is a workflow that ends in an
+ordinary delivery leaf. With the mode on, its report is delivered and then one
+completion turn wakes the parent, so a staged plan never stops half way. With
+the mode off it is displayed without waking the parent (#891), which leaves no
+turn in which to read the result and start the next stage. Delivery reads the
+durable mode of the parent session at the moment of terminal delivery, not when
+the workflow started or finished, and a failed read counts as off, so it never
+adds a turn. Each stage spec is therefore built to give the parent a turn in
+either mode: it carries a review decision, a reporting checkpoint that is not an
+ordinary delivery leaf.
 
 ### 6. Review and merge policy for this area
 
@@ -346,6 +357,10 @@ decision, a reporting checkpoint that is not an ordinary delivery leaf.
   denies `edit`, `write`, and `apply_patch` but keeps bash.
 - The stage specs are not named in L1, L2, or the built-in skills; the parent
   discovers them with `spec list` and `spec read`.
+- With DAG mode on, a workflow the user simply asked to run and answer costs one
+  extra parent turn after its displayed report; the wake tells the parent to
+  stop without restating the report. With the mode off that request still ends
+  at the displayed report.
 
 ## Alternatives Considered
 

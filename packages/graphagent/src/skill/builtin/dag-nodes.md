@@ -156,7 +156,7 @@ changes sequentially; review converges on its diff.
 | `prompt_template`  | yes      | `{ id: "..." }` or `{ inline: "...", input: {...} }` |
 | `condition`        | no       | One comparison `<dep-id>.output.<field> <op> <value>` over a direct dependency, evaluated before spawn; false skips the node. `op` is `==`, `!=`, `>`, `<`, `>=`, or `<=`; `value` is a number, `true`/`false`/`null`, a bare word, or a quoted string |
 | `input_mapping`    | no       | Map upstream node outputs into template variables |
-| `report_to_parent` | no       | If true, the parent wakes when this node completes or fails; terminal status always wakes the parent |
+| `report_to_parent` | no       | If true, the parent wakes when this node completes or fails |
 | `worker_config`    | no       | `{ timeout_ms }` bounds the node from slot acquisition to completion (default 10 minutes); queued time does not count |
 | `workspace_writes` | no       | `"allow"`/`"deny"`. Deny withholds edit, write, apply_patch; shell keeps agent permission, so reviewers can test. Default deny for `review`/`review-*` and `auditor`, else allow |
 | `output_schema`    | no       | JSON Schema for the node result; the final answer must be exactly one matching JSON value |
@@ -172,8 +172,8 @@ questions, decisions, and collaboration, never for the result.
 ### Result delivery
 
 A completed workflow delivers its selected result to the parent once; do not
-summarize it again. `delivery_node` chooses the result node; a one-leaf
-`synthesize` workflow selects it automatically, otherwise the parent gets a
-deterministic index. When coverage is non-empty, delivery appends the
-engine-owned `Coverage and truncation` (`覆盖与截断` under zh-CN) section;
-`inspect` exposes the same entries.
+summarize it again. In DAG mode you also get one turn after it. `delivery_node`
+chooses the result node; a one-leaf `synthesize` workflow selects it
+automatically, otherwise the parent gets a deterministic index. When coverage
+is non-empty, delivery appends the engine-owned `Coverage and truncation`
+(`覆盖与截断` under zh-CN) section; `inspect` exposes the same entries.

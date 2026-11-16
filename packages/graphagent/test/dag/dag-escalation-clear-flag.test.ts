@@ -15,6 +15,7 @@ import { Session } from "@graphagent/schema/session"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
+import { markNodeWakeReported } from "./fixtures"
 
 function node(id: string, timeoutMs?: number): NodeConfig {
   return {
@@ -191,7 +192,7 @@ describe("two-flag orthogonality: clearing escalation_pending does not suppress 
           const dagID = yield* createWorkflow(dag, "orthogonal-completed", 60_000)
           yield* escalate(dag, dagID)
           // The escalation wake was delivered to the main agent.
-          yield* store.markNodeWakeReported(dagID, "a")
+          yield* markNodeWakeReported(store, dagID, "a")
           const delivered = yield* store.getNode(dagID, "a")
           expect(delivered?.escalationPending).toBe(true)
           expect(delivered?.wakeReported).toBe(true)
