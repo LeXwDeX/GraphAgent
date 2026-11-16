@@ -11,7 +11,7 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { expect } from "bun:test"
-import { Effect, Exit, Layer, Option } from "effect"
+import { Effect, Exit, Layer, Option, Schema } from "effect"
 import * as fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -148,7 +148,7 @@ const watchAsked = Effect.gen(function* () {
   const asked: Array<{ sessionID: string; permission: string }> = []
   const stop = yield* bridgeService.listen((event) => {
     if (event.type === Permission.Event.Asked.type) {
-      const { sessionID, permission } = { ...(event.data as { sessionID: string; permission: string }) }
+      const { sessionID, permission } = Schema.decodeUnknownSync(PermissionV1.Request)(event.data)
       asked.push({ sessionID, permission })
     }
     return Effect.void

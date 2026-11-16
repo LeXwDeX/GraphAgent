@@ -12,7 +12,6 @@
 import { describe, expect, it } from "bun:test"
 import { Cause, Effect, Exit, Layer, Option } from "effect"
 import type { DagStore } from "@graphagent/core/dag/store"
-import { Config } from "@/config/config"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagControl, type ControlConflict, type ControlRejection, type ControlRequest } from "@/dag/control"
 import { TestConfig } from "../fixture/config"
