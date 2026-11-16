@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
+import { Config } from "@/config/config"
 import { Dag } from "@/dag/dag"
 import { DagBudget } from "@/dag/budget"
 import { DagControl } from "@/dag/control"
@@ -107,6 +108,18 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
       // #1031 M8: the write-safety gates run after authoring and before any
       // durable row. The plan agent may only start read-only workflows.
       const writers = DagWriteGuard.writerIDs(prepared.nodes)
+      // #1324 §4: `dag.permission: "readonly"` holds every caller to the same
+      // rule, ahead of and regardless of the plan-agent gate below; the tier
+      // is read fresh (never cached) so a switch reaches the very next start.
+      const globalConfig = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
+      const permissionTier = globalConfig ? ((yield* globalConfig.dagGlobal()).permission ?? "allow") : "allow"
+      if (permissionTier === "readonly" && writers.length > 0)
+        return refusedStart(
+          'Workflow not started: dag.permission is "readonly"',
+          "permission_readonly",
+          DagWriteGuard.readonlyRejection("start", writers),
+          { writers },
+        )
       if (ctx.agent === DagWriteGuard.PLAN_AGENT && writers.length > 0)
         return refusedStart(
           "Workflow not started: the plan agent is read-only",

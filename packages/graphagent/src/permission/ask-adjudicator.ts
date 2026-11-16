@@ -4,6 +4,7 @@
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { SessionID } from "@/session/schema"
 import type { ChildOwner } from "@/session/child/types"
+import type { ChildPolicy } from "@/session/child/policy"
 import { Context, type Effect } from "effect"
 
 /**
@@ -43,6 +44,13 @@ export interface DecideInput {
   readonly forced: boolean
   readonly owner: OwnerKey
   readonly rootSessionID: SessionID
+  /**
+   * The `dag.permission` tier in force for this ask (#1324), read by the
+   * caller from the global configuration at ask time. `allow` is the M7
+   * decision above; `readonly` additionally denies an ask the rules did not
+   * already decide (RO-1). `ask` never reaches here: such a run asks the user.
+   */
+  readonly mode: ChildPolicy.DagPermission
 }
 
 /** `allow` means the pattern needs no question; `deny` becomes a tool error carrying the rule. */

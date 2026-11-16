@@ -29,6 +29,11 @@
  * adds no writer but moves the ones that spawn after it, so it gets the same
  * workspace check against its target directory.
  *
+ * `dag.permission: "readonly"` (#1324 §4) reuses the same writer check, ahead
+ * of and regardless of the plan-agent gate: no caller may newly run a writer
+ * while the tier holds, not only the `plan` agent. `workflow start` applies
+ * the same rule outside this service, since starting is not a `ControlRequest`.
+ *
  * Lock discipline: `Dag` commands acquire the non-reentrant per-workflow
  * KeyedMutex themselves. This service never calls `Dag` while a mutation is
  * still in flight; the parking readback and the post-mutation resume run only
@@ -46,6 +51,7 @@ import {
 } from "@graphagent/core/dag/core/types"
 import type { WorkflowRow } from "@graphagent/core/dag/store"
 import { isRecord } from "@/util/record"
+import { Config } from "@/config/config"
 import { Dag } from "./dag"
 import { ResumeBlockedError, ResumeGuard } from "./resume-guard"
 import { DagValidation, StructuralValidationError } from "./validation"
@@ -87,6 +93,7 @@ export const ControlRejectionKindSchema = Schema.Literals([
   "completion-gate",
   "resume-blocked",
   "plan-readonly",
+  "permission-readonly",
   "write-conflict",
   "other",
 ])
@@ -271,6 +278,11 @@ const withParked = (
 
 const make = Effect.gen(function* () {
   const dag = yield* Dag.Service
+  // Optional like every other service this write-safety precheck reads
+  // defensively (#1324 §4): a harness without one simply never sees the
+  // `readonly` tier, the same fallback `Config.dagGlobal()` has everywhere
+  // else it is read this way.
+  const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
 
   /** Read the persisted workflow status tolerantly: a failed read maps to
    * `unknown` (interrupts still propagate), an absent row to `missing`. */
@@ -520,6 +532,12 @@ const make = Effect.gen(function* () {
    * checked against its target directory. Like the resume guard it runs before
    * any mutation and never parks: a refusal means nothing was attempted. Yields
    * the refusal, or undefined when the request may proceed.
+   *
+   * #1324 §4: `dag.permission: "readonly"` holds every caller, not only the
+   * `plan` agent, to the same writer check, ahead of the plan-agent gate (a
+   * `readonly` global tier is the stricter rule, so it decides first; either
+   * one alone already refuses the request). The tier is read fresh on every
+   * check, never cached, so a mid-run switch reaches the very next call.
    */
   const writeGuard = (
     workflow: WorkflowRow,
@@ -533,12 +551,21 @@ const make = Effect.gen(function* () {
       if (placed === undefined) return undefined
       const writers = DagWriteGuard.writerIDs(placed.nodes)
       if (writers.length === 0) return undefined
-      if (request.op !== "retarget" && caller.agent === DagWriteGuard.PLAN_AGENT)
-        return new ControlConflict({
-          kind: "plan-readonly",
-          status: workflow.status,
-          message: DagWriteGuard.planRejection(request.op, writers),
-        })
+      if (request.op !== "retarget") {
+        const tier = config ? ((yield* config.dagGlobal()).permission ?? "allow") : "allow"
+        if (tier === "readonly")
+          return new ControlConflict({
+            kind: "permission-readonly",
+            status: workflow.status,
+            message: DagWriteGuard.readonlyRejection(request.op, writers),
+          })
+        if (caller.agent === DagWriteGuard.PLAN_AGENT)
+          return new ControlConflict({
+            kind: "plan-readonly",
+            status: workflow.status,
+            message: DagWriteGuard.planRejection(request.op, writers),
+          })
+      }
       const mine = DagWriteGuard.unisolatedWriters(placed.nodes, placed.directory)
       if (mine.length === 0) return undefined
       const conflicts = DagWriteGuard.writeConflicts(yield* DagWriteGuard.liveWriters(dag.store, workflow.id), mine)
@@ -693,5 +720,5 @@ const make = Effect.gen(function* () {
 })
 
 export const layer = Layer.effect(Service, make)
-export const defaultLayer = layer.pipe(Layer.provide(Dag.defaultLayer))
-export const node = LayerNode.make(layer, [Dag.node])
+export const defaultLayer = layer.pipe(Layer.provide(Dag.defaultLayer), Layer.provide(Config.defaultLayer))
+export const node = LayerNode.make(layer, [Dag.node, Config.node])

@@ -130,6 +130,38 @@ function heldByAskTier(request: { permission: string; metadata?: Record<string, 
   return request.permission === "edit" || request.permission === "bash" || request.metadata?.source === "mcp"
 }
 
+/**
+ * Bash commands an unattended session may still run once nothing broader is
+ * allowed: the review persona's own allowlist (`agent.ts`), reused verbatim as
+ * the bash tool face of the `readonly` tier of `dag.permission` (#1324 §4,
+ * Q6). The two share this one constant so neither drifts from the other;
+ * `evaluate` takes the LAST matching rule, so the `--output` denies must stay
+ * after the allowlist to win over it, and both after the leading `"*": deny`.
+ */
+export const READONLY_BASH: PermissionV1.Ruleset = [
+  { permission: "bash", pattern: "*", action: "deny" },
+  { permission: "bash", pattern: "git diff*", action: "allow" },
+  { permission: "bash", pattern: "git show*", action: "allow" },
+  { permission: "bash", pattern: "git log*", action: "allow" },
+  { permission: "bash", pattern: "git status*", action: "allow" },
+  { permission: "bash", pattern: "git blame*", action: "allow" },
+  { permission: "bash", pattern: "git rev-parse*", action: "allow" },
+  { permission: "bash", pattern: "gh pr view*", action: "allow" },
+  { permission: "bash", pattern: "gh pr diff*", action: "allow" },
+  { permission: "bash", pattern: "glab mr view*", action: "allow" },
+  { permission: "bash", pattern: "glab mr diff*", action: "allow" },
+  { permission: "bash", pattern: "git diff*--output*", action: "deny" },
+  { permission: "bash", pattern: "git show*--output*", action: "deny" },
+  { permission: "bash", pattern: "git log*--output*", action: "deny" },
+]
+
+/** The model-facing reason a `readonly`-tier override denial carries. */
+function readonlyOverrideReason(permission: string): string {
+  return permission === "edit"
+    ? `dag.permission is "readonly": workflow nodes cannot edit, write, or patch files.`
+    : `dag.permission is "readonly": this tool call is outside the read-only tool set workflow nodes may use.`
+}
+
 function roleDenialReason(input: {
   role?: string
   permission: string
@@ -330,6 +362,7 @@ export const layer = Layer.effect(
                 forced: force,
                 owner: subject.value.owner,
                 rootSessionID: subject.value.rootSessionID,
+                mode: subject.value.mode,
               })
               if (decision !== "allow")
                 yield* new PermissionV1.DeniedError({
@@ -381,6 +414,23 @@ export const layer = Layer.effect(
         subject.value.mode === "ask" &&
         !force &&
         heldByAskTier(request)
+      // The `readonly` tier (#1324 §4): an unattended session limited to a
+      // read-only tool surface. `readonlyOverride` is evaluated INSTEAD OF the
+      // session's own agent permission for the three classes it replaces, and
+      // nothing (a user's own `allow` included) widens it; everything else
+      // (read, grep, glob, `agent`, …) keeps its ordinary rule. A `force` ask
+      // is left alone: nobody can answer it regardless of tier, and SF-6
+      // already denies it uniformly for every unattended session.
+      const readonlyTier =
+        Option.isSome(subject) && subject.value.unattended && subject.value.mode === "readonly" && !force
+      const readonlyOverride = (pattern: string): PermissionV1.Rule | undefined => {
+        if (!readonlyTier) return undefined
+        if (request.permission === "edit") return { permission: "edit", pattern: "*", action: "deny" }
+        if (request.permission === "bash") return evaluate(request.permission, pattern, READONLY_BASH)
+        if (request.metadata?.source === "mcp" && !userAllowsMcpTool(ruleset, request.permission, userWrote))
+          return { permission: request.permission, pattern: "*", action: "deny" }
+        return undefined
+      }
       const remembered = approved
       const alwaysApproved = (pattern: string) =>
         remembered.some(
@@ -388,27 +438,35 @@ export const layer = Layer.effect(
         )
 
       for (const pattern of request.patterns) {
-        const nativeRule = evaluate(request.permission, pattern, resolved.native)
-        const configuredRule = evaluate(request.permission, pattern, ruleset)
+        // A readonly-tier override, when it applies, stands in for every one
+        // of the three computations below: it is never beaten by a deny the
+        // override itself did not produce, nor by an allow from elsewhere.
+        const override = readonlyOverride(pattern)
+        const nativeRule = override ?? evaluate(request.permission, pattern, resolved.native)
+        const configuredRule = override ?? evaluate(request.permission, pattern, ruleset)
         // Denials are checked BEFORE remembered approvals or any hook result.
         const rule =
           nativeRule.action === "deny"
             ? nativeRule
             : configuredRule.action === "deny" || force
               ? configuredRule
-              : evaluate(request.permission, pattern, ruleset, approved)
+              : override ?? evaluate(request.permission, pattern, ruleset, approved)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
-          const reason = roleDenialReason({
-            role: options?.role,
-            permission: request.permission,
-            patterns: [pattern],
-            native: resolved.native,
-            ruleset,
-            resolvedRuleCount: resolved.rules.length,
-            roleDefaultIndices: options?.roleDefaultIndices ?? [],
-            sessionRuleCount: options?.sessionRuleCount ?? 0,
-          })
+          // A readonly-tier denial is this tier's own rule, not the agent's or
+          // the user's: name the tier instead of guessing whose rule it was.
+          const reason = override
+            ? readonlyOverrideReason(request.permission)
+            : roleDenialReason({
+                role: options?.role,
+                permission: request.permission,
+                patterns: [pattern],
+                native: resolved.native,
+                ruleset,
+                resolvedRuleCount: resolved.rules.length,
+                roleDefaultIndices: options?.roleDefaultIndices ?? [],
+                sessionRuleCount: options?.sessionRuleCount ?? 0,
+              })
           return yield* new PermissionV1.DeniedError({
             ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
             ...(reason ? { reason } : {}),
