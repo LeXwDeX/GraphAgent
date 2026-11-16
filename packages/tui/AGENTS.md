@@ -215,6 +215,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - `.azure-pipelines/ci.yml` 的 Linux 任务运行 `bun run bench:tui`（在 `packages/tui` 下）。
 - 硬计数项和绝对上限项直接失败；其余耗时项对 `test/perf/baseline.json` 按机器系数比较（初值 1.30 倍）。
 - `baseline-f21cabe7f.json` 只作对照，不再更新。更新 `baseline.json` 必须显式 `--update-baseline`，并在 PR 描述写明原因。
+- 夜间 PTY 端到端基准是单独的 Azure 流水线 `.azure-pipelines/nightly-pty.yml`：每晚（和手动）从 `main` 跑 `bun run bench:tui:pty` 五次，对 `test/perf/pty-baseline.json` 输出比值表。它不进入分支保护、不挡 PR，只告警；PTY 基线不在 `baseline.json` 里，更新同样需要评审并在 PR 描述写明原因（见 `test/perf/README.md`）。
 
 ## 6. 扩展点的标准做法
 

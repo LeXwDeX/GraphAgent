@@ -1,0 +1,111 @@
+# ============================================================================
+# Nightly PTY benchmark (Azure Pipelines)
+# ----------------------------------------------------------------------------
+# Purpose : Time the real TUI from spawn to the input box in a pseudo-terminal
+#           and report the ratio against the committed PTY baseline
+#           (packages/tui/test/perf/pty-baseline.json), #1279 / #1025.
+# Trigger : Nightly schedule on main, and manual run (Run pipeline, any branch).
+#           No push or pull request trigger.
+# Gate    : None. This pipeline is not part of branch protection and never
+#           reports on a pull request. A slow or failed measurement only warns:
+#           the run ends "succeeded with issues". Setup failures (checkout,
+#           toolchain, install) still fail the run.
+# Output  : The ratio table on the run summary, and the artifact
+#           tui-pty-<commit>-<attempt> with every run, the table, and
+#           pty-baseline.candidate.json to commit as the new baseline.
+# Agents  : "GitHub-hosted Agents" pool, billed per minute:
+#           ubuntu-24.04-8-core, the class of the Bench (TUI) job in ci.yml.
+# Setup   : Create the pipeline from this file in Azure DevOps once; a YAML
+#           schedule only runs after this file is on main and registered.
+# ============================================================================
+
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger: none
+pr: none
+
+# 19:00 UTC. `always` runs it every night, not only after a commit since the
+# last successful scheduled run, so a quiet week still shows runner drift.
+schedules:
+  - cron: "0 19 * * *"
+    displayName: Nightly (main)
+    branches:
+      include:
+        - main
+    always: true
+
+parameters:
+  - name: repeats
+    displayName: PTY runs per measurement (the median is reported)
+    type: number
+    default: 5
+  - name: warnRatio
+    displayName: Warn above this multiple of the baseline
+    type: number
+    default: 1.5
+
+jobs:
+  - job: pty_nightly
+    displayName: TUI PTY nightly
+    pool:
+      name: GitHub-hosted Agents
+      vmImage: ubuntu-24.04-8-core
+    timeoutInMinutes: 30
+    steps:
+      - checkout: self
+        fetchDepth: 1
+        persistCredentials: false
+      - template: templates/toolchain.yml
+      # Each run is its own process and its own report, so one run that hangs
+      # or crashes leaves the others intact. pty.ts exits 1 when the input box
+      # never shows; that is a warning here, never a failed run.
+      - bash: |
+          set -uo pipefail
+          out="$BUILD_ARTIFACTSTAGINGDIRECTORY/tui-pty"
+          mkdir -p "$out"
+          for run in $(seq 1 "$PTY_REPEATS"); do
+            bun run bench:tui:pty > "$out/run-$run.json" || echo "##vso[task.logissue type=warning]PTY run $run exited with code $?"
+          done
+        displayName: Run PTY benchmark
+        workingDirectory: packages/tui
+        timeoutInMinutes: 15
+        continueOnError: true
+        env:
+          PTY_REPEATS: ${{ parameters.repeats }}
+      # pty-report.ts exits 3 when the table carries warnings (a slower median
+      # or a run that never reached the input box) and 2 when its input is
+      # unusable; only the second is an error.
+      - bash: |
+          set -uo pipefail
+          out="$BUILD_ARTIFACTSTAGINGDIRECTORY/tui-pty"
+          mkdir -p "$out"
+          status=0
+          bun test/perf/pty-report.ts "$out"/run-*.json \
+            --summary="$out/summary.md" \
+            --write-baseline="$out/pty-baseline.candidate.json" \
+            --warn-ratio="$PTY_WARN_RATIO" 2> "$out/warnings.txt" || status=$?
+          cat "$out/warnings.txt" >&2
+          if [ -f "$out/summary.md" ]; then echo "##vso[task.uploadsummary]$out/summary.md"; fi
+          case "$status" in
+            0) ;;
+            3)
+              while IFS= read -r line; do
+                echo "##vso[task.logissue type=warning]${line#warning: }"
+              done < "$out/warnings.txt"
+              echo "##vso[task.complete result=SucceededWithIssues;]PTY benchmark warnings"
+              ;;
+            *)
+              echo "##vso[task.logissue type=error]pty-report exited with code $status"
+              exit "$status"
+              ;;
+          esac
+        displayName: Report ratio against the baseline
+        workingDirectory: packages/tui
+        condition: succeededOrFailed()
+        continueOnError: true
+        env:
+          PTY_WARN_RATIO: ${{ parameters.warnRatio }}
+      - publish: $(Build.ArtifactStagingDirectory)/tui-pty
+        artifact: tui-pty-$(Build.SourceVersion)-$(System.JobAttempt)
+        displayName: Preserve PTY runs, summary and baseline candidate
+        condition: always()
