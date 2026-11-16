@@ -105,10 +105,11 @@ describe("DatabaseMigration", () => {
         })
         expect(
           yield* db.all(
-            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('event', 'project', 'workflow', 'workflow_node', 'agent_message') ORDER BY name`,
+            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('event', 'project', 'workflow', 'workflow_node', 'agent_message', 'dag_runner') ORDER BY name`,
           ),
         ).toEqual([
           { name: "agent_message" },
+          { name: "dag_runner" },
           { name: "event" },
           { name: "project" },
           { name: "workflow" },
@@ -144,10 +145,24 @@ describe("DatabaseMigration", () => {
 
         const tables = (
           yield* db.all<{ name: string }>(
-            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('dag_node_attempt', 'session_turn', 'child_binding', 'child_run') ORDER BY name`,
+            sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('dag_node_attempt', 'dag_runner', 'session_turn', 'child_binding', 'child_run') ORDER BY name`,
           )
         ).map((row) => row.name)
-        expect(tables).toEqual(["child_binding", "child_run", "dag_node_attempt", "session_turn"])
+        expect(tables).toEqual(["child_binding", "child_run", "dag_node_attempt", "dag_runner", "session_turn"])
+        // #1029 (ADR-0008): the runner lease, one row per workflow. It is a source
+        // table that goes away only with its workflow.
+        const runnerColumns = yield* db.all<{ name: string; type: string; notnull: number; pk: number }>(
+          sql`PRAGMA table_info(dag_runner)`,
+        )
+        expect(runnerColumns.map((column) => [column.name, column.type, column.notnull, column.pk])).toEqual([
+          ["dag_id", "TEXT", 0, 1],
+          ["runner_id", "TEXT", 1, 0],
+          ["epoch", "INTEGER", 1, 0],
+          ["expires_at", "INTEGER", 1, 0],
+        ])
+        expect(yield* db.all(sql`PRAGMA foreign_key_list(dag_runner)`)).toMatchObject([
+          { table: "workflow", from: "dag_id", to: "id", on_delete: "CASCADE" },
+        ])
         // #1026: the `pid:nonce` identity of the process that owns an active child run.
         const childRunColumns = yield* db.all<{ name: string; type: string; notnull: number }>(
           sql`PRAGMA table_info(child_run)`,

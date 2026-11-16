@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "4f891420-09ec-4e73-b46a-ac494a796cce",
+  "id": "afdbef23-f080-4e25-9430-b9208f12c305",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -52,6 +52,10 @@
     },
     {
       "name": "dag_node_attempt",
+      "entityType": "tables"
+    },
+    {
+      "name": "dag_runner",
       "entityType": "tables"
     },
     {
@@ -1449,6 +1453,46 @@
       "name": "started_at",
       "entityType": "columns",
       "table": "dag_node_attempt"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "dag_id",
+      "entityType": "columns",
+      "table": "dag_runner"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "runner_id",
+      "entityType": "columns",
+      "table": "dag_runner"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "epoch",
+      "entityType": "columns",
+      "table": "dag_runner"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "table": "dag_runner"
     },
     {
       "type": "text",
@@ -3087,6 +3131,21 @@
     },
     {
       "columns": [
+        "dag_id"
+      ],
+      "tableTo": "workflow",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_dag_runner_dag_id_workflow_id_fk",
+      "entityType": "fks",
+      "table": "dag_runner"
+    },
+    {
+      "columns": [
         "workflow_id"
       ],
       "tableTo": "workflow",
@@ -3388,6 +3447,15 @@
       "nameExplicit": false,
       "name": "credential_pk",
       "table": "credential",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "dag_id"
+      ],
+      "nameExplicit": false,
+      "name": "dag_runner_pk",
+      "table": "dag_runner",
       "entityType": "pks"
     },
     {

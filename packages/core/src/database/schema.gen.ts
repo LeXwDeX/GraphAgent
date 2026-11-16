@@ -196,6 +196,15 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`dag_runner\` (
+          \`dag_id\` text PRIMARY KEY,
+          \`runner_id\` text NOT NULL,
+          \`epoch\` integer NOT NULL,
+          \`expires_at\` integer NOT NULL,
+          CONSTRAINT \`fk_dag_runner_dag_id_workflow_id_fk\` FOREIGN KEY (\`dag_id\`) REFERENCES \`workflow\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`workflow_node\` (
           \`id\` text NOT NULL,
           \`workflow_id\` text NOT NULL,
