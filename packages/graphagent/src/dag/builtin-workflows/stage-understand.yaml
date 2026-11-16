@@ -1,11 +1,14 @@
 # Built-in stage reference 1 of 4 (understand, design, implement, review).
-# Read-only: no block here writes to the workspace. Retarget a copy before
-# starting it: replace config.objective with the request, add the request's
-# scope to each instruction, and keep the three independent angles. The
-# acceptance items are this stage's own deliverable contract, judged by the
-# completeness lane; the ACCEPTANCE section the synthesis returns becomes the
-# next stage's config.acceptance.
+# Read-only: no block here writes to the workspace. Start it with
+# run.start { spec_path: "stage-understand", inputs: { objective } }: the request
+# (with its scope) reaches every child prompt next to the stage's own purpose,
+# and the three independent angles stay. The acceptance items are this stage's
+# own deliverable contract, judged by the completeness lane; the ACCEPTANCE
+# section the synthesis returns becomes the next stage's `acceptance` input.
 title: "Stage: understand (read-only) — independent maps → synthesis → skeptic review"
+inputs:
+  objective:
+    description: The request to understand, in the user's words, with its scope.
 config:
   name: stage-understand
   review_gate: strict
@@ -20,6 +23,7 @@ config:
     Understand the request well enough to design against it: map the code, the
     observable behavior, and the risks from independent angles, then return
     acceptance criteria, constraints, and unknowns for the next stage.
+    Request: {{objective}}
   acceptance:
     - id: AC1
       text: >-

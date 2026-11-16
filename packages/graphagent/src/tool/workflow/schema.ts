@@ -62,6 +62,12 @@ export type Metadata = {
 }
 
 const specPath = Schema.String.annotate({ description: "Saved spec name or path" })
+// Values for the inputs a template declares (spec list shows them). The authoring
+// boundary checks names and types against the declarations, so the wire shape
+// stays open and small.
+const templateInputs = Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
+  description: "Template inputs",
+})
 const workflowID = Dag.ID
 const nodeID = Dag.NodeID
 const op = <const L extends string>(name: L) => Schema.Literal(name)
@@ -194,13 +200,19 @@ const SpecValidate = Schema.Struct({
   profile: Schema.optional(Schema.Literals(["portable", "environment"])).annotate({
     description: "portable checks syntax; environment resolves assets",
   }),
+  inputs: templateInputs,
 })
 
 // ---------------------------------------------------------------------------
 // run: start/extend — create a workflow or grow a live one.
 // ---------------------------------------------------------------------------
 
-const RunStart = Schema.Struct({ action: act("run"), operation: op("start"), spec_path: specPath })
+const RunStart = Schema.Struct({
+  action: act("run"),
+  operation: op("start"),
+  spec_path: specPath,
+  inputs: templateInputs,
+})
 const RunExtend = Schema.Struct({
   action: act("run"),
   operation: op("extend").annotate({ description: "Add nodes/blocks to a live workflow" }),

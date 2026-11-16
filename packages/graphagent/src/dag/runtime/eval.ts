@@ -141,6 +141,21 @@ export function conditionReference(condition: string | undefined): string | null
   return match[1].trim().split(".")[0] || null
 }
 
+/** What one condition reads of a node's output (#1073): the node, the dotted path
+ * below `output` ("" for the whole output), the comparison, and the compared
+ * value as the evaluator reads it. `undefined` when the condition is empty or is
+ * not one comparison. */
+export function conditionRead(
+  condition: string | undefined,
+): { node: string; field: string; op: string; value: unknown } | undefined {
+  if (!condition || condition.trim() === "") return undefined
+  const parsed = parseCondition(condition)
+  if (!parsed.ok) return undefined
+  const [node, ...path] = parsed.lhs.split(".")
+  const field = (path[0] === "output" ? path.slice(1) : path).join(".")
+  return { node, field, op: parsed.op, value: parseValue(parsed.rhs) }
+}
+
 export type InputMappingReference = {
   nodeID: string
   path: string[]
