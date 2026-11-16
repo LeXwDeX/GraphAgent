@@ -298,23 +298,27 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                       deferredToolUse: { id: options.toolCallId, name: item.id, input: args },
                     },
                   }
+                // A refusal settles as a complete tool result, `title` included. The processor would name a
+                // title-less result after its tool, but `handleSubtask` writes `execute`'s result as it is (#1350).
                 if (decision.deniedReason) {
                   yield* hookDenied(item.id, decision.deniedReason)
                   return {
+                    title: item.id,
                     output: withPreContext(
                       `[Tool denied by hook] ${decision.deniedReason}`,
                       preResult.additionalContexts,
                     ),
                     attachments: [],
                     metadata: { hookDenied: true },
-                  }
+                  } satisfies Tool.ExecuteResult
                 }
                 if (decision.stopReason) {
                   return {
+                    title: item.id,
                     output: `[Hook stopped] ${decision.stopReason}`,
                     attachments: [],
                     metadata: { hookStopped: true, stopReason: decision.stopReason },
-                  }
+                  } satisfies Tool.ExecuteResult
                 }
                 if (
                   item.id === "question" &&
@@ -374,10 +378,11 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                   if (outcome === "denied") {
                     const reason = askReason ?? "Denied by user in hook confirmation"
                     return {
+                      title: item.id,
                       output: withPreContext(`[Tool denied by hook] ${reason}`, preResult.additionalContexts),
                       attachments: [],
                       metadata: { hookDenied: true },
-                    }
+                    } satisfies Tool.ExecuteResult
                   }
                   if (Exit.isSuccess(verdict)) decision = { ...decision, effectiveArgs: verdict.value.input }
                   hookConfirmed = true
