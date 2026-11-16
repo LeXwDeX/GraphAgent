@@ -3,7 +3,7 @@
 
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack, type Accessor } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack, type Accessor } from "solid-js"
 import { resolveRootSessionID, sessionTree } from "../ask/ask-queue"
 import { useKV } from "../context/kv"
 import { useProject } from "../context/project"
@@ -53,10 +53,11 @@ import { PANEL_NARROW_WIDTH, type PanelHint, type PanelTab } from "./shell"
 const SOURCE = "dag-panel"
 
 /** What a node's details say about its output, once the user opened them. */
+/** `stamp` is the node's state when the read started (`outputStamp`): a later state makes it stale. */
 type NodeOutput =
-  | { readonly status: "loading" }
-  | { readonly status: "ready"; readonly text: string | undefined }
-  | { readonly status: "failed" }
+  | { readonly status: "loading"; readonly stamp: string }
+  | { readonly status: "ready"; readonly text: string | undefined; readonly stamp: string }
+  | { readonly status: "failed"; readonly stamp: string }
 
 /**
  * What the panel remembers while it is open. The host mounts only the top panel,
@@ -139,6 +140,9 @@ const ACTIVE = new Set(["running", "stepping", "paused"])
 const TAB_LABEL_CELLS = 16
 
 const nodeKey = (workflowID: string, nodeID: string) => `${workflowID}\u0000${nodeID}`
+
+/** What an output read belongs to: a node that changes status or starts another attempt has a new output. */
+const outputStamp = (node: DagNodeRow | undefined) => (node ? `${node.status}\u0000${node.attempt_id ?? ""}` : "")
 
 function statusLabel(status: string) {
   const key: MessageKey | undefined = STATUS_KEYS[status]
@@ -345,7 +349,8 @@ export function DagPanel(props: { state?: DagPanelState }) {
   function detailOf(node: DagNodeRow, workflowID: string) {
     const key = nodeKey(workflowID, node.id)
     if (!state.expanded().has(key)) return undefined
-    const output = state.outputs()[key]
+    const cached = state.outputs()[key]
+    const output = cached?.stamp === outputStamp(node) ? cached : undefined
     const lines: string[] = []
     if (output === undefined || output.status === "loading") lines.push(t("dagmode.panel.detail.output.loading"))
     else if (output.status === "failed") lines.push(t("dagmode.panel.detail.output.failed"))
@@ -369,8 +374,9 @@ export function DagPanel(props: { state?: DagPanelState }) {
   /** A node's output is not in its table row: read it once, the first time its details open. */
   async function loadOutput(workflowID: string, nodeID: string) {
     const key = nodeKey(workflowID, nodeID)
-    if (state.outputs()[key] !== undefined) return
-    state.setOutput(key, { status: "loading" })
+    const stamp = outputStamp(sync.dag.nodes(workflowID)?.find((row) => row.id === nodeID))
+    if (state.outputs()[key]?.stamp === stamp) return
+    state.setOutput(key, { status: "loading", stamp })
     try {
       const response = await sdk.client.dag.nodes(
         { dagID: workflowID },
@@ -380,27 +386,44 @@ export function DagPanel(props: { state?: DagPanelState }) {
       state.setOutput(
         key,
         found
-          ? { status: "ready", text: remoteLine(formatDagOutputPreview(found.output, 400) ?? "") || undefined }
-          : { status: "failed" },
+          ? { status: "ready", text: remoteLine(formatDagOutputPreview(found.output, 400) ?? "") || undefined, stamp }
+          : { status: "failed", stamp },
       )
     } catch (error) {
       TuiLog.write("error", "Loading a DAG node's output failed", { workflowID, nodeID, error: String(error) })
-      state.setOutput(key, { status: "failed" })
+      state.setOutput(key, { status: "failed", stamp })
     }
   }
 
-  // A reconnect may have run nodes on: an output read before it can belong to an earlier state. Drop
-  // them all and read again only the ones whose details are open; closed ones read on their next opening.
-  onCleanup(
-    sync.onResync(() => {
-      const open = [...state.expanded()]
-      state.clearOutputs()
-      for (const key of open) {
+  /**
+   * Open details that need a read: none was made since the last reconnect, or it was made for an earlier
+   * state of the node (it finished, or was retried). A node whose table is not in yet waits for it.
+   */
+  const outputsToRead = createMemo(
+    () =>
+      [...state.expanded()].filter((key) => {
+        const [workflowID, nodeID] = key.split("\u0000")
+        const node = sync.dag.nodes(workflowID ?? "")?.find((row) => row.id === nodeID)
+        if (node === undefined) return false
+        return state.outputs()[key]?.stamp !== outputStamp(node)
+      }),
+    [],
+    { equals: (a, b) => a.length === b.length && a.every((key, index) => key === b[index]) },
+  )
+  // Read them. A read stamps its entry with the node's current state at once, so it leaves the list.
+  createEffect(
+    on(outputsToRead, (keys) => {
+      for (const key of keys) {
         const [workflowID, nodeID] = key.split("\u0000")
         if (workflowID && nodeID) void loadOutput(workflowID, nodeID)
       }
     }),
   )
+
+  // A reconnect may have run nodes on: an output read before it can belong to an earlier state. Drop
+  // them all; the open ones are read again once the reread table is in (`outputsToRead`), closed ones on
+  // their next opening.
+  onCleanup(sync.onResync(() => state.clearOutputs()))
 
   function toggleDetail() {
     const shown = active()
