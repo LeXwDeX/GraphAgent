@@ -872,7 +872,9 @@ export function optionsFromEnv(env: Record<string, string | undefined>): EvalOpt
       .map((item) => item.trim())
       .filter(Boolean)
   return {
-    configFile: env.GRAPHAGENT_LIVE_EVAL_CONFIG || path.join(os.homedir(), ".config/opencode/opencode.json"),
+    configFile:
+      env.GRAPHAGENT_LIVE_EVAL_CONFIG ||
+      path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "graphagent", "graphagent.json"),
     models: list("GRAPHAGENT_LIVE_EVAL_MODELS"),
     rounds: number("GRAPHAGENT_LIVE_EVAL_ROUNDS", 3),
     concurrency: number("GRAPHAGENT_LIVE_EVAL_CONCURRENCY", 4),
