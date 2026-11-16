@@ -915,10 +915,12 @@ export const {
     /**
      * Declare the workflows one display surface (`source`, for example the
      * status band or the `/dag` panel) shows. It replaces what that surface
-     * declared before; an empty list ends it. Calling again with the same
-     * workflows does nothing. Resolves once the interest is confirmed and the
-     * first table reads have started, not when they finish; read the result
-     * with `dag.nodes`.
+     * declared before. A surface must end its declaration with
+     * `watch(source, [])` when it goes away (a component does so on unmount):
+     * the table and the interest stay registered until then. Calling again
+     * with the same workflows does nothing. Resolves once the interest is
+     * confirmed and the first table reads have started, not when they finish;
+     * read the result with `dag.nodes`.
      */
     async function watchDag(source: string, workflows: readonly DagWatch[]) {
       const next = new Map<string, string>()
