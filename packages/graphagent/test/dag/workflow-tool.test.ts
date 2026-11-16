@@ -1878,7 +1878,7 @@ describe("workflow tool execution", () => {
           )
           .pipe(Effect.exit)
         expect(asked, item.group).toHaveLength(1)
-        // The legacy bare action pattern keeps pre-convergence deny rules
+        // The retired-action pattern keeps pre-convergence deny rules
         // effective (see the legacy-deny regression below).
         expect(asked[0]?.patterns, item.group).toEqual([
           item.group,
