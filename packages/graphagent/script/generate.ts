@@ -40,8 +40,10 @@ export const modelsData = await loadModelsData()
  * DAG reference templates compiled into the binary so air-gapped installs
  * ship the curated workflows without network access. The release pipeline
  * clones opencode-dag-config and points DAG_TEMPLATES_DIR at it; when absent
- * (local dev), the binary has no builtin templates and falls back to the
- * project/global workflow library scopes.
+ * (local dev), the binary has no curated templates and falls back to the
+ * project/global workflow library scopes. The engine's own stage specs
+ * (src/dag/builtin-workflows) are imported by src/dag/workflows.ts, so they
+ * are in every build and are not part of this snapshot.
  */
 async function loadDagTemplatesData() {
   const templatesDir = process.env.DAG_TEMPLATES_DIR

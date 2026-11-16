@@ -80,10 +80,14 @@ directory and it gains a **name**:
 | ------- | --------------------------------------------- | --------------------------------------------------------------------- |
 | Project | `.agents/workflows/<name>.yaml`               | This repo, committed with it — the whole team gets the same procedure |
 | Global  | `<config dir>/workflows/<name>.yaml`          | Every project on the machine                                          |
-| Builtin | Compiled into release binaries                | Every release install — the last-resort tier                          |
+| Builtin | Compiled into the binary                      | Every install — stage specs always, curated templates in releases     |
 
 Resolution takes the first match in that order, so a project file shadows a
-global one with the same name, and both shadow the builtin tier. The global
+global one with the same name, and both shadow the builtin tier. The builtin
+tier always holds four stage references for DAG mode — `stage-understand`,
+`stage-design`, `stage-implement`, and `stage-review`; read one, retarget its
+objective, instructions, and acceptance items to your task, and start the copy.
+A curated template with the same name replaces a stage reference. The global
 scope is maintained by the [`opencode-dag-config`](https://github.com/LeXwDeX/opencode-dag-config)
 repository (sync it with a plain `git clone`/`git pull` into your config
 dir). A minimal spec:

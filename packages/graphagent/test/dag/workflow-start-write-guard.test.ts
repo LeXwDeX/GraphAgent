@@ -943,3 +943,55 @@ describe("default worktree isolation on workflow start", () => {
     )
   })
 })
+
+// #1031 M9: the four builtin stage specs through the same real start path. The
+// library resolves them by bare name with no file and no release snapshot.
+describe("the builtin stage specs on workflow start", () => {
+  const readOnlyStages = ["stage-understand", "stage-design", "stage-review"]
+
+  it("lets the plan agent start the read-only stages and refuses the implementation stage", async () => {
+    const dir = repo()
+    await run(
+      { creates: [] },
+      Effect.gen(function* () {
+        yield* seed([["ses_plan", dir]])
+        const caller = { session: "ses_plan", directory: dir, agent: "plan" } as const
+        for (const name of readOnlyStages) {
+          const result = yield* start(caller, name)
+          expect(result.title).toBe(`Workflow started: ${name}`)
+          expect(workflowID(result.output)).toStartWith("dag_")
+        }
+        const refused = yield* start(caller, "stage-implement")
+        expect(refused.title).toBe("Workflow not started: the plan agent is read-only")
+        expect(refusal(refused.output)).toMatchObject({
+          workflow_created: false,
+          error_code: "plan_readonly",
+          writers: ["coding"],
+        })
+      }),
+    )
+  })
+
+  it("starts every stage by name for the build agent under the strict gate", async () => {
+    const dir = repo()
+    await run(
+      { creates: [] },
+      Effect.gen(function* () {
+        yield* seed([["ses_build", dir]])
+        const caller = { session: "ses_build", directory: dir, agent: "build" } as const
+        for (const name of [...readOnlyStages, "stage-implement"]) {
+          const result = yield* start(caller, name)
+          expect(result.title).toBe(`Workflow started: ${name}`)
+        }
+        const workflows = yield* (yield* DagStore.Service).listWorkflows()
+        expect(workflows).toHaveLength(4)
+        const configs = workflows.map((workflow) => parseWorkflowConfig(workflow.config))
+        for (const config of configs) expect(config?.review_gate).toBe("strict")
+        // The implementation stage keeps the acceptance items its completeness lane judges.
+        const implementation = configs.find((config) => config?.name === "stage-implement")
+        expect(implementation?.acceptance?.length ?? 0).toBeGreaterThanOrEqual(1)
+        expect(implementation?.delivery_node).toBe("report")
+      }),
+    )
+  })
+})

@@ -12,9 +12,11 @@
  * Lookup order (first match wins):
  * - project: `<root>/.agents/workflows/<name>.yaml` / `.yml`
  * - global:  `<config dir>/workflows/<name>.yaml` / `.yml`
- * - builtin:  templates compiled into the binary from opencode-dag-config
- *   (the release pipeline injects the snapshot via DAG_TEMPLATES_DIR, so
- *   air-gapped installs still ship the curated templates)
+ * - builtin:  specs compiled into the binary: the engine's own stage specs
+ *   (`builtin-workflows/`, present in source runs and every build) and the
+ *   curated templates from opencode-dag-config (the release pipeline injects
+ *   that snapshot via DAG_TEMPLATES_DIR, so air-gapped installs still ship
+ *   them). A snapshot template replaces a stage spec of the same name.
  *
  * The project root resolves per directory (`dag/paths.ts`), so a nested
  * directory or a linked worktree reads its own `.agents/workflows`. The global
@@ -28,6 +30,7 @@ import { Effect } from "effect"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
 import { DagPaths } from "./paths"
+import { BUILTIN_WORKFLOWS } from "./builtin-workflows"
 import { isRecord } from "@/util/record"
 
 // Injected by the build (build.ts define), mirrors GRAPHAGENT_MODELS_DEV.
@@ -54,12 +57,16 @@ export interface Entry {
   readonly blocks?: number
 }
 
-/** Builtin templates compiled into the binary from opencode-dag-config. */
+/**
+ * Builtin specs compiled into the binary: the engine's stage specs plus the
+ * release snapshot of opencode-dag-config templates. The stage specs are
+ * defaults, so a snapshot template with the same name replaces one.
+ */
 export function builtinTemplates(): Record<string, string> {
   // The build replaces the identifier via define; bare source/test runs have
   // no global binding, so guard instead of throwing a ReferenceError.
-  if (typeof GRAPHAGENT_DAG_TEMPLATES === "undefined") return {}
-  return GRAPHAGENT_DAG_TEMPLATES
+  if (typeof GRAPHAGENT_DAG_TEMPLATES === "undefined") return { ...BUILTIN_WORKFLOWS }
+  return { ...BUILTIN_WORKFLOWS, ...GRAPHAGENT_DAG_TEMPLATES }
 }
 
 const BUILTIN_PREFIX = "builtin://"
