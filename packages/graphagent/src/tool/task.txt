@@ -7,11 +7,17 @@ Delegate a self-contained task to a subagent. Use this for broad, open-ended exp
 - Pass task_id to resume a previous session with its history.
 
 Choosing foreground or background:
-- Foreground (default) when any holds: you need the result for your next step; the work needs the
-  user's input or confirmation; it changes shared session state; or it is quick (seconds).
-- Background only when all hold: you can keep working without the result; the agent only reads, or
-  writes files you will not touch; it takes minutes; its result fits in one message.
-- Reviews and audits of finished work are good background tasks. Research that decides your next
-  edit is not.
+- When the user says they will keep working on something else while this is done ("meanwhile",
+  "at the same time", "I'll keep working on ...", "no need to wait"), or asks for background, do
+  not do that work yourself in this turn: delegate it with background:true, provided the agent only
+  reads, or writes files neither you nor the user will touch, and its result fits in one message.
+  Delegate first: do not read files or run commands to investigate that work beforehand; pass on
+  the user's request and what you already know, and the agent gathers its own context. Then reply
+  briefly and end your turn; the result arrives as a message.
+- Otherwise use foreground (the default). Always foreground when: you need the result for your next
+  step; the work needs the user's input or confirmation; it changes shared session state; or it is
+  a quick lookup you can answer directly.
+- Reviews, audits, and test or type-check runs of finished work are good background tasks. Research
+  that decides your next edit is not.
 - Never run two writers on the same files. Never background a task and then wait for it with
   sleep or polling; if nothing else is left, end your turn and the result will arrive as a message.
