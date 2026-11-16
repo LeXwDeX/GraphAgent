@@ -92,3 +92,4 @@ Workflow Orchestration turns one user objective into one durable DAG. Its model-
 - [ADR-0003: Reporting checkpoint gating at the authoring boundary](docs/adr/0003-reporting-checkpoint-gating.md)
 - [ADR-0004: Plan-driven fan-out of implementation writers](docs/adr/0004-plan-driven-fan-out.md)
 - [ADR-0005: DAG guidance as built-in skills](docs/adr/0005-dag-guidance-skills.md)
+- [ADR-0006: DAG mode and review gates](docs/adr/0006-dag-mode-and-review-gates.md)
