@@ -25,6 +25,7 @@ import {
   renderReport,
   type Decision,
   type RunRecord,
+  withWorkspaceCheck,
 } from "./classify"
 import {
   applyEdits,
@@ -34,6 +35,8 @@ import {
   hostEnv,
   parseOriginConfig,
   referencedEnv,
+  resolveFileReferences,
+  selectScenarios,
   startStub,
   workspaceDigest,
 } from "./harness"
@@ -464,6 +467,47 @@ describe("workspace and stub", () => {
       expect(stub.unmatched()).toBe(1)
     } finally {
       stub.stop()
+    }
+  })
+})
+
+describe("the workspace is the final word on edits", () => {
+  const decision = { outcome: "none" as const, tasks: [], edits: 0 }
+  test("a run that changed the workspace counts as an edit, whatever its calls were classified as", () => {
+    expect(withWorkspaceCheck(decision, true)).toMatchObject({ outcome: "edit", edits: 1 })
+    expect(withWorkspaceCheck({ ...decision, outcome: "exec" }, true).outcome).toBe("edit")
+  })
+  test("an unchanged workspace and a failed run keep their decision", () => {
+    expect(withWorkspaceCheck(decision, false)).toBe(decision)
+    const failed = { ...decision, outcome: "error" as const }
+    expect(withWorkspaceCheck(failed, true)).toBe(failed)
+  })
+})
+
+describe("scenario selection", () => {
+  test("an unknown id is an error, not an empty and passing run", () => {
+    expect(() => selectScenarios(["f1-login-fix", "no-such-scenario"])).toThrow("no-such-scenario")
+  })
+  test("no selection runs every scenario; a known selection runs just those", () => {
+    expect(selectScenarios(undefined)).toHaveLength(20)
+    expect(selectScenarios(["b1-review-merged-auth"]).map((scenario) => scenario.id)).toEqual(["b1-review-merged-auth"])
+  })
+})
+
+describe("provider file references", () => {
+  test("{file:} resolves next to the original config and {env:} is kept", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gaeval-ref-"))
+    try {
+      await fs.writeFile(path.join(dir, "key.txt"), "secret-from-file\n")
+      const origin = {
+        providers: { p: { options: { apiKey: "{file:./key.txt}", baseURL: "{env:SOME_BASE_URL}" } } },
+      }
+      const resolved = await resolveFileReferences(origin, path.join(dir, "graphagent.json"))
+      expect(resolved.providers.p).toEqual({
+        options: { apiKey: "secret-from-file", baseURL: "{env:SOME_BASE_URL}" },
+      })
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
     }
   })
 })

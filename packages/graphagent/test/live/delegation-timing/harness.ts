@@ -28,6 +28,7 @@
  */
 
 import { ChildNotice } from "@/session/child/notice"
+import { ConfigVariable } from "@graphagent/core/config/variable"
 import { parse as parseJsonc } from "jsonc-parser"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -42,6 +43,7 @@ import {
   type Decision,
   type RunRecord,
   type ToolCall,
+  withWorkspaceCheck,
 } from "./classify"
 import { SCENARIOS, expectationOf, type FileEdit, type Scenario } from "./scenarios"
 
@@ -817,16 +819,22 @@ async function attempt(ctx: RunContext, scenario: Scenario, number: number): Pro
     const scoped = messages.slice(scopeStart)
     const failure = scoped.find((message) => message.error)?.error
     const steps = stepsOf(scoped)
-    const decision = decide({
-      calls: callsOf(scoped),
-      steps,
-      stepCap: ctx.stepCap,
-      ...(failure ? { error: failure } : {}),
-    })
     const changed = (await workspaceDigest(dir)) !== before
+    const decision = withWorkspaceCheck(
+      decide({
+        calls: callsOf(scoped),
+        steps,
+        stepCap: ctx.stepCap,
+        ...(failure ? { error: failure } : {}),
+      }),
+      changed,
+    )
     if (ctx.transcripts) {
       await fs.writeFile(
-        path.join(ctx.transcripts, `${fileSafe(ctx.model.modelID)}-r${ctx.round}-${scenario.id}-${number}.json`),
+        path.join(
+          ctx.transcripts,
+          `${fileSafe(ctx.model.providerID)}--${fileSafe(ctx.model.modelID)}-r${ctx.round}-${scenario.id}-${number}.json`,
+        ),
         JSON.stringify(digest(messages), null, 2),
       )
     }
@@ -986,6 +994,37 @@ async function runRound(input: {
   }
 }
 
+/**
+ * `{file:...}` references in the provider blocks, resolved where the original config lives: the
+ * host reads its config from an environment variable, with another home, so a relative or `~/`
+ * path would point somewhere else there. `{env:...}` references are kept as they are; the host
+ * receives those variables through its environment allow-list.
+ */
+export async function resolveFileReferences(origin: OriginConfig, configFile: string): Promise<OriginConfig> {
+  const keepEnv = new Proxy({} as Record<string, string>, { get: (_, name) => `{env:${String(name)}}` })
+  const providers: Record<string, Record<string, unknown>> = {}
+  for (const [id, block] of Object.entries(origin.providers)) {
+    const text = await ConfigVariable.substitute({
+      type: "path",
+      path: configFile,
+      text: JSON.stringify(block),
+      env: keepEnv,
+    })
+    const resolved: unknown = JSON.parse(text)
+    providers[id] = isRecord(resolved) ? resolved : block
+  }
+  return { ...origin, providers }
+}
+
+/** The scenarios asked for; an unknown id or an empty selection is an error, never a silent pass. */
+export function selectScenarios(ids: readonly string[] | undefined): readonly Scenario[] {
+  if (!ids?.length) return SCENARIOS
+  const known = new Set(SCENARIOS.map((scenario) => scenario.id))
+  const unknown = ids.filter((id) => !known.has(id))
+  if (unknown.length > 0) throw new Error(`unknown scenario ids: ${unknown.join(", ")}`)
+  return SCENARIOS.filter((scenario) => ids.includes(scenario.id))
+}
+
 export interface EvalResult {
   readonly records: readonly RunRecord[]
   readonly report: string
@@ -996,12 +1035,13 @@ export async function evaluate(
   options: EvalOptions,
   log: (line: string) => void = () => undefined,
 ): Promise<EvalResult> {
-  const origin = parseOriginConfig(await fs.readFile(options.configFile, "utf8"))
+  const origin = await resolveFileReferences(
+    parseOriginConfig(await fs.readFile(options.configFile, "utf8")),
+    options.configFile,
+  )
   const models = discoverModels(origin, options.models)
   if (models.length === 0) throw new Error("no QWEN, GLM or DeepSeek model is configured")
-  const scenarios = options.scenarios?.length
-    ? SCENARIOS.filter((scenario) => options.scenarios?.includes(scenario.id))
-    : SCENARIOS
+  const scenarios = selectScenarios(options.scenarios)
   const outDir = options.outDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), "graphagent-live-eval-")))
   await fs.mkdir(outDir, { recursive: true })
   const lines = path.join(outDir, "runs.jsonl")

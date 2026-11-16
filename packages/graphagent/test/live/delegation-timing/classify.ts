@@ -541,6 +541,16 @@ export function decide(input: {
   return { outcome, tasks, edits, first: first.call }
 }
 
+/**
+ * The workspace is the final word on edits. Classifying shell commands can only approximate which
+ * ones write (`sort -o`, `git diff --output`, ...); a run that changed the workspace edited it,
+ * whatever the classification said, so it counts as an edit and can never pass as read-only.
+ */
+export function withWorkspaceCheck(decision: Decision, changed: boolean): Decision {
+  if (!changed || decision.outcome === "error") return decision
+  return { ...decision, outcome: "edit", edits: Math.max(decision.edits, 1) }
+}
+
 export interface Expectation {
   readonly class: ScenarioClass
   /** Outcomes that count as accurate. */
