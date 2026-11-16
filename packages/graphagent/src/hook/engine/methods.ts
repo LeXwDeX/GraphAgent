@@ -19,6 +19,7 @@ import { SessionID } from "@/session/schema"
 import * as Log from "@/util/log"
 import type { SessionHooks, ScopedHooksInput } from "../session-hooks"
 import type { HookEvent } from "../types"
+import { allDisabled, enabledMatchers, enabledSession, fileSide, sideDisabled } from "./disabled"
 import { advanceRewakeGeneration, rewakeTokenValid, staticWatchPaths } from "./state"
 import type { State } from "./state"
 
@@ -81,16 +82,20 @@ export function makeServiceMethods(
 ) {
   const list = Effect.fn("SettingsHook.list")(function* () {
     const s = yield* InstanceState.get(state)
-    // The kill switch disables every trigger; reporting the configured
-    // entries would advertise hooks and background wakes that never run.
-    return s.settings.disableAllHooks === true ? [] : s.hooksList
+    // A hook that `disableAllHooks` switched off never triggers; reporting it
+    // would advertise hooks and background wakes that never run.
+    if (s.settings.hooksDisabled === undefined) return s.hooksList
+    return s.hooksList.filter((summary) => !sideDisabled(s.settings, fileSide(summary.scope)))
   })
 
   const hasEvent = Effect.fn("SettingsHook.hasEvent")(function* (event: HookEvent, sessionID?: SessionID | string) {
     const s = yield* InstanceState.get(state)
-    if (s.settings.disableAllHooks === true) return false
-    if ((s.settings.hooks?.[event]?.length ?? 0) > 0) return true
-    return sessionID ? yield* sessionHooks.hasForEvent(SessionID.make(sessionID), event) : false
+    if (allDisabled(s.settings)) return false
+    if (enabledMatchers(s.settings, s.settings.hooks?.[event] ?? []).length > 0) return true
+    if (!sessionID) return false
+    const id = SessionID.make(sessionID)
+    if (s.settings.hooksDisabled === undefined) return yield* sessionHooks.hasForEvent(id, event)
+    return enabledSession(s.settings, yield* sessionHooks.list(id, event)).length > 0
   })
 
   const drainAsync = Effect.fn("SettingsHook.drainAsync")(function* (sessionID: SessionID | string) {
@@ -126,7 +131,7 @@ export function makeServiceMethods(
 
   const fileWatchPaths = Effect.fn("SettingsHook.fileWatchPaths")(function* () {
     const s = yield* InstanceState.get(state)
-    return s.settings.disableAllHooks === true ? [] : staticWatchPaths(s.settings)
+    return staticWatchPaths(s.settings)
   })
 
   const sessionEndTimeout = Effect.fn("SettingsHook.sessionEndTimeout")(function* () {

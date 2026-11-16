@@ -49,6 +49,7 @@ export type {
   HookJSONOutput,
   HookPayload,
   HookSpecificOutput,
+  HooksDisabled,
   HookSummary,
   HookSource,
   HookSourceScope,

@@ -60,6 +60,7 @@ import {
   stopContinuationCount,
 } from "./state"
 import type { State } from "./state"
+import { allDisabled, enabledGroups, enabledSession } from "./disabled"
 import { entryEligible, compileGroup, groupMatches, handlerKey } from "./plan"
 import { HookIndexByEvent } from "../index-by-event"
 import type { CompiledMatcher } from "../match"
@@ -257,10 +258,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
           stateObj.settings = candidate.settings
           stateObj.hooksList = candidate.summaries
           stateObj.untrusted = candidate.untrusted
-          if (fileWatch)
-            yield* fileWatch.refreshStatic(
-              candidate.settings.disableAllHooks === true ? [] : staticWatchPaths(candidate.settings),
-            )
+          if (fileWatch) yield* fileWatch.refreshStatic(staticWatchPaths(candidate.settings))
           return candidate.settings
         })
         const handle = watchSettings(
@@ -293,10 +291,7 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
                   stateObj.settings = next.settings
                   stateObj.hooksList = next.summaries
                   stateObj.untrusted = next.untrusted
-                  if (fileWatch)
-                    yield* fileWatch.refreshStatic(
-                      next.settings.disableAllHooks === true ? [] : staticWatchPaths(next.settings),
-                    )
+                  if (fileWatch) yield* fileWatch.refreshStatic(staticWatchPaths(next.settings))
                 }
                 yield* reconcileScoped(instCtx)
               }),
@@ -407,14 +402,22 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       // s.settings is already cached on the InstanceState, so the file-side
       // probe is a property access. The session probe is O(1) (Map.get +
       // .some over the session's own array, typically empty).
+      //
+      // `disableAllHooks` applies by the layer that wrote it: a global true ends
+      // the trigger here, for every hook. A project or local true only removes
+      // the hooks the project side defines (file groups below, session hooks
+      // after listing); the global side keeps running.
       const sessionEvent: HookEvent = payload.event
-      if (s.settings.disableAllHooks === true) {
+      if (allDisabled(s.settings)) {
         log.info("trigger short-circuit", { event: payload.event, reason: "disableAllHooks" })
         if (payload.event === "SessionEnd" && ctx.sessionID) yield* clearEndedSession(s, ctx.sessionID)
         observePrepare()
         return result
       }
-      const fileGroups = HookIndexByEvent.groups(HookIndexByEvent.of(s.settings), payload.event)
+      const fileGroups = enabledGroups(
+        s.settings,
+        HookIndexByEvent.groups(HookIndexByEvent.of(s.settings), payload.event),
+      )
       const hasFile = fileGroups.length > 0
       const hasSession = ctx.sessionID
         ? yield* sessionHooks.hasForEvent(SessionID.make(ctx.sessionID), sessionEvent)
@@ -454,18 +457,23 @@ export const makeEngine: (deps: EngineDeps) => Effect.Effect<Interface, never, S
       // running inside a sub-agent and fires `Stop`, look up SubagentStop
       // session hooks. Settings-file lookup still uses payload.event verbatim
       // (the on-disk chain is already correctly addressed by callers).
-      const sessionEntries = ctx.sessionID
-        ? yield* sessionHooks.list(SessionID.make(ctx.sessionID), sessionEvent)
-        : ([] as readonly SessionHookEntry[])
+      const sessionEntries = enabledSession(
+        s.settings,
+        ctx.sessionID
+          ? yield* sessionHooks.list(SessionID.make(ctx.sessionID), sessionEvent)
+          : ([] as readonly SessionHookEntry[]),
+      )
       // Task publishes its terminal SubagentStop from the parent session, but
       // frontmatter belongs to the child session. Include only that child's
       // agent-scoped entries; unrelated dynamic hooks cannot cross sessions.
-      const childAgentEntries =
+      const childAgentEntries = enabledSession(
+        s.settings,
         payload.event === "SubagentStop" && payload.agentID
           ? (yield* sessionHooks.list(SessionID.make(payload.agentID), "SubagentStop")).filter(
               (entry) => entry.kind === "agent" && entry.child,
             )
-          : []
+          : [],
+      )
 
       const matchers: RunMatcher[] = [
         ...fileGroups.map(({ group, test }) => {

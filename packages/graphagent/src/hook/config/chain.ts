@@ -12,7 +12,7 @@ import os from "os"
 import { Global } from "@graphagent/core/global"
 import { APP_NAME, PROJECT_DIR } from "@graphagent/core/brand"
 import { hasProjectLayer } from "@/project/project-root"
-import type { HookCommand, HookSourceScope, HookSummary, Settings } from "../types"
+import type { HookCommand, HooksDisabled, HookSourceScope, HookSummary, Settings } from "../types"
 import { commandText, httpUrl, promptText } from "../exec/command"
 import { canRewake, isHookEvent, readJSONFile, warnUnsupportedFields } from "./load"
 
@@ -125,10 +125,26 @@ function mergeAllowlist(
 }
 
 /**
+ * Fold the layers' `disableAllHooks` values into the two facts the engine
+ * applies by hook layer: the global layer switched every hook off, or a project
+ * or local layer switched off the hooks the project side defines. Only a `true`
+ * is recorded. A `false` is no value at all, so it never switches anything back
+ * on: a project or local layer cannot undo the global layer's switch, nor
+ * another project-side `true`. `undefined` while no layer wrote `true`.
+ */
+function mergeDisabled(layers: ReadonlyArray<HookLayer>): HooksDisabled | undefined {
+  const switchedOff = layers.filter(({ settings }) => settings.disableAllHooks === true)
+  const global = switchedOff.some(({ scope }) => scope === "global")
+  const project = switchedOff.some(({ scope }) => scope !== "global")
+  return global || project ? { global, project } : undefined
+}
+
+/**
  * Concat-merge hook matchers across layers. Later layers append after earlier
  * ones (matches CC's merge semantics — does NOT replace by matcher key).
  * Allowlists are not concatenated: they intersect across layers so a stricter
- * project/local layer can only narrow the global ceiling.
+ * project/local layer can only narrow the global ceiling. `disableAllHooks` is
+ * not merged into one boolean either; see `mergeDisabled`.
  */
 // Exported for unit testing only; not part of the public surface.
 export function mergeSettings(layers: ReadonlyArray<HookLayer>): Settings {
@@ -141,8 +157,8 @@ export function mergeSettings(layers: ReadonlyArray<HookLayer>): Settings {
       acc.push(...(matchers ?? []))
     }
   }
-  for (const { settings: layer } of layers)
-    if (layer.disableAllHooks !== undefined) out.disableAllHooks = layer.disableAllHooks
+  const hooksDisabled = mergeDisabled(layers)
+  if (hooksDisabled !== undefined) out.hooksDisabled = hooksDisabled
   const allowedHttpHookUrls = mergeAllowlist(layers, (settings) => settings.allowedHttpHookUrls)
   if (allowedHttpHookUrls !== undefined) out.allowedHttpHookUrls = allowedHttpHookUrls
   const httpHookAllowedEnvVars = mergeAllowlist(layers, (settings) => settings.httpHookAllowedEnvVars)
