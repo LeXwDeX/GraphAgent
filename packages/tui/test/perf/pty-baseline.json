@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "scenario": "boot-to-prompt",
+  "elapsedMs": 2263.06,
+  "samples": [
+    2301.84,
+    2263.06,
+    2223.35,
+    2277.11,
+    2155.9
+  ],
+  "expected": "Ask anything",
+  "commit": "dbf5429ccf26a0fe0841f19957f1c264083c0b70",
+  "generatedAt": "2026-11-16T14:59:03.426Z",
+  "bun": "1.4.4",
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro",
+    "cpuCount": 14
+  }
+}
