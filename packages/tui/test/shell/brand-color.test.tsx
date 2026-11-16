@@ -21,14 +21,13 @@ import { ShellContexts, renderFirstFrame, shellState } from "./contexts"
  * other token. This file checks the rendered skeleton: it paints the frame, collects every run
  * of cells colored with the brand value and compares the runs with the whitelist.
  *
- * Whitelist item -> where it is checked:
+ * Whitelist item -> where it is checked (the input prompt `›` left the list at the #886 close-out):
  * 1. logo AGENT face and top bar `◆`  top bar here; the wordmark is in test/component/logo.test.tsx
- * 2. input prompt `›`                 the prompt draws no `›` today, nothing to paint
- * 3. selected row and panel title     the list panel scenario here
- * 4. running spinner, DAG run segment spinners take their color from the caller; the DAG bar is F4 (#1032)
- * 5. footer agent name                here
- * 6. footer `◆ DAG` (on)              here
- * 7. status band leading `◆`          F4 (#1032) has not filled the status band slot yet
+ * 2. selected row and panel title     the list panel scenario here
+ * 3. running spinner, DAG run segment spinners take their color from the caller; the DAG bar is F4 (#1032)
+ * 4. footer agent name                here
+ * 5. footer `◆ DAG` (on)              here
+ * 6. status band leading `◆`          F4 (#1032) has not filled the status band slot yet
  */
 
 beforeEach(() => {
