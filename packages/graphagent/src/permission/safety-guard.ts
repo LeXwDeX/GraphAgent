@@ -48,11 +48,15 @@ import { TRUNCATION_DIR } from "@/tool/truncation-dir"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { Global } from "@graphagent/core/global"
+import { Location } from "@graphagent/core/location"
+import { LocationServiceMap } from "@graphagent/core/location-layer"
+import { PluginV2 } from "@graphagent/core/plugin"
+import { Reference } from "@graphagent/core/reference"
+import { AbsolutePath } from "@graphagent/core/schema"
 import { Wildcard } from "@graphagent/core/util/wildcard"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { DateTime, Effect, Layer, Option, Schema } from "effect"
 import * as fs from "node:fs/promises"
-import os from "node:os"
 import path from "node:path"
 import { AskAdjudicator, type DecideInput, type Decision } from "./ask-adjudicator"
 import { isRecord } from "@/util/record"
@@ -318,12 +322,31 @@ function editMoveTargets(metadata: Record<string, unknown> | undefined): string[
   return out
 }
 
+/**
+ * The spelling a native write/edit tool writes through. Its permission pattern
+ * is `path.relative(worktree, filepath)`, which has already folded `link/..`
+ * away, while the kernel follows `link` before it applies `..`; the tool hands
+ * over the original absolute path in `metadata.filepath`. apply_patch is not
+ * affected: it resolves every path lexically before it writes, so its patterns
+ * already are the written paths, and its `filepath` is only a display string.
+ */
+function writtenSpelling(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (metadata === undefined || Array.isArray(metadata.files)) return undefined
+  const raw = metadata.filepath
+  return typeof raw === "string" && path.isAbsolute(slashes(raw.trim())) ? raw : undefined
+}
+
 /** SF-1 (a): edit, write and apply_patch targets, move destinations included. */
 function editViolation(input: EvaluateInput): Violation | undefined {
   const base = input.instance?.worktree ?? input.cwd
   const target = literalPath(input.pattern, base)
   if (target === undefined) return denial(SF_1, "edit", `cannot determine the write target of "${input.pattern}"`)
   if (!inside(input, target)) return denial(SF_1, "edit", writeOutside(target))
+  // The pattern is only the tool's display of the path; the spelling it writes
+  // through must pass the same boundary.
+  const spelled = writtenSpelling(input.metadata)
+  const written = spelled === undefined ? undefined : literalPath(spelled, base)
+  if (written !== undefined && !inside(input, written)) return denial(SF_1, "edit", writeOutside(written))
   // apply_patch names only the source in the permission patterns; a move
   // writes its destination, so that path must pass the same boundary.
   for (const raw of editMoveTargets(input.metadata)) {
@@ -435,6 +458,12 @@ export function evaluate(input: EvaluateInput): Violation | undefined {
   return builtinViolation(input) ?? extraViolation(input)
 }
 
+/** A filesystem error that only says the entry is not there; any other leaves the real location unproven. */
+function missingEntry(error: unknown) {
+  const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined
+  return code === "ENOENT" || code === "ENOTDIR"
+}
+
 /** Real path of the nearest existing ancestor plus the not-yet-created components. */
 async function realPathOf(target: string): Promise<string | undefined> {
   let current = path.resolve(target)
@@ -445,8 +474,7 @@ async function realPathOf(target: string): Promise<string | undefined> {
     } catch (error) {
       // Only a missing component may be appended blindly. Permission errors
       // and symlink loops leave the real location unproven, so deny.
-      const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined
-      if (code !== "ENOENT" && code !== "ENOTDIR") return undefined
+      if (!missingEntry(error)) return undefined
       const parent = path.dirname(current)
       if (parent === current) return undefined
       tail.push(path.basename(current))
@@ -454,6 +482,24 @@ async function realPathOf(target: string): Promise<string | undefined> {
     }
   }
 }
+
+/**
+ * Where the symlink at `file` points; `null` when there is none (the entry is
+ * simply missing), `undefined` when that cannot be told.
+ */
+async function linkTargetOf(file: string): Promise<string | null | undefined> {
+  try {
+    return (await fs.lstat(file)).isSymbolicLink() ? await fs.readlink(file) : null
+  } catch (error) {
+    return missingEntry(error) ? null : undefined
+  }
+}
+
+/** Windows paths may carry either separator; anywhere else a backslash is an ordinary file-name byte. */
+const SEPARATORS = process.platform === "win32" ? /[\\/]/ : "/"
+
+/** Symlinks with a missing target one walk may expand: the kernel's own limit (`MAXSYMLINKS`). */
+const MAX_LINK_HOPS = 40
 
 /**
  * Real path of a target with symlinks followed before `..` applies, the way
@@ -464,8 +510,20 @@ async function realPathOf(target: string): Promise<string | undefined> {
  * available, and a call through a nonexistent component fails on its own.
  * Any other error (permissions, symlink loops) leaves the real location
  * unproven, so the caller denies.
+ *
+ * With `dangling` (a write target) a symlink whose own target is missing is
+ * followed too. `realpath` calls it missing, but opening it for writing
+ * creates the target, so that is where the write lands and the rest of the path
+ * goes on from there; a relative target starts at the directory holding the
+ * link. A walk that needs more than `MAX_LINK_HOPS` of them (a loop that never
+ * settles) is unproven. A read does not follow them: opening a missing target
+ * fails on its own.
  */
-async function physicalPathOf(target: string, cwd: string): Promise<string | undefined> {
+async function physicalPathOf(
+  target: string,
+  cwd: string,
+  options: { readonly dangling?: boolean } = {},
+): Promise<string | undefined> {
   const parsed = path.parse(target)
   const absolute = parsed.root !== ""
   let current: string
@@ -475,8 +533,9 @@ async function physicalPathOf(target: string, cwd: string): Promise<string | und
     if (base === undefined) return undefined
     current = base
   }
-  const rest = absolute ? target.slice(parsed.root.length) : target
-  for (const component of rest.split(path.sep)) {
+  const pending = (absolute ? target.slice(parsed.root.length) : target).split(SEPARATORS)
+  let hops = 0
+  for (let component = pending.shift(); component !== undefined; component = pending.shift()) {
     if (component === "" || component === ".") continue
     // `current` is already a real path, so its parent is the physical parent.
     if (component === "..") {
@@ -484,22 +543,35 @@ async function physicalPathOf(target: string, cwd: string): Promise<string | und
       continue
     }
     const next = path.join(current, component)
-    try {
-      current = await fs.realpath(next)
-    } catch (error) {
-      const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined
-      if (code !== "ENOENT" && code !== "ENOTDIR") return undefined
-      current = next
+    const real = await fs.realpath(next).catch((error: unknown) => (missingEntry(error) ? null : undefined))
+    if (real === undefined) return undefined
+    if (real !== null) {
+      current = real
+      continue
     }
+    // Missing, or a link to something that is.
+    const link = options.dangling ? await linkTargetOf(next) : null
+    if (link === undefined) return undefined
+    if (link === null) {
+      current = next
+      continue
+    }
+    if (++hops > MAX_LINK_HOPS) return undefined
+    const root = path.parse(link).root
+    if (root !== "") current = root
+    pending.unshift(...link.slice(root.length).split(SEPARATORS))
   }
   return current
 }
 
-/** Physical target of a native tool path; native paths are literal, not shell words. */
-async function nativePhysicalPath(raw: string, base: string) {
+/**
+ * Physical target of a native tool path; native paths are literal, not shell
+ * words. `dangling` is for write targets, see `physicalPathOf`.
+ */
+async function nativePhysicalPath(raw: string, base: string, options: { readonly dangling?: boolean } = {}) {
   const text = slashes(raw.trim())
   if (text === "") return undefined
-  return physicalPathOf(text, base)
+  return physicalPathOf(text, base, options)
 }
 
 async function realRootsOf(input: EvaluateInput): Promise<string[]> {
@@ -514,7 +586,7 @@ async function realRootsOf(input: EvaluateInput): Promise<string[]> {
  * A read whose real target is sensitive even though its spelling is not:
  * `read public.txt` where `public.txt` links to `.env` reads the environment
  * file the lexical check already refuses by name. A missing file makes the
- * tool fail on its own; there is nothing to leak.
+ * tool fail on its own, a link to one included; there is nothing to leak.
  */
 async function sensitiveLinkViolation(raw: string, base: string, label: string) {
   const real = await nativePhysicalPath(raw, base)
@@ -527,7 +599,8 @@ async function sensitiveLinkViolation(raw: string, base: string, label: string) 
  * A lexical boundary check cannot see symlinks. Resolve the existing path
  * components and refuse an edit whose real location leaves every allowed
  * root, and a read, grep or glob whose real target is a sensitive file. New
- * files are covered through their nearest existing parent.
+ * files are covered through their nearest existing parent, and a symlink to a
+ * file that does not exist yet through the place a write would create it.
  */
 export async function symlinkViolation(
   input: EvaluateInput,
@@ -545,15 +618,23 @@ export async function symlinkViolation(
 
   const base = input.instance?.worktree ?? input.cwd
   const roots = await realRootsOf(input)
-  const raws = [input.pattern, ...(options.moves === false ? [] : editMoveTargets(input.metadata))]
+  // The pattern is folded (`link/../x` arrives as `x`); the spelling the tool
+  // writes through, when it hands one over, is what the kernel resolves.
+  const spelled = writtenSpelling(input.metadata)
+  const raws = [
+    input.pattern,
+    ...(spelled === undefined ? [] : [spelled]),
+    ...(options.moves === false ? [] : editMoveTargets(input.metadata)),
+  ]
   for (const raw of raws) {
     const target = literalPath(raw, base)
     // Lexical escapes already fail SF-1; only apparently-inside targets need
     // the deeper resolution.
     if (target === undefined || !inside(input, target)) continue
     // Resolve the raw spelling physically: symlinks are followed before `..`
-    // applies, unlike the lexical `path.resolve` above.
-    const real = await nativePhysicalPath(raw, base)
+    // applies, unlike the lexical `path.resolve` above, and a link to a file
+    // that does not exist yet lands the write where it would create it.
+    const real = await nativePhysicalPath(raw, base, { dangling: true })
     if (real === undefined)
       return denial(SF_1, "symlink write", `cannot resolve the write target through symlinks: ${target}`)
     if (!roots.some((root) => FSUtil.contains(root, real)))
@@ -562,27 +643,8 @@ export async function symlinkViolation(
   return undefined
 }
 
-/** Local `references` entries are writable whitelist roots, like `agent.ts`. */
-export function referenceRoots(value: { readonly references?: unknown; readonly reference?: unknown }, root: string) {
-  const out: string[] = []
-  const entries = [value.references, value.reference].filter(isRecord)
-  for (const record of entries) {
-    for (const entry of Object.values(record)) {
-      const raw =
-        typeof entry === "string" ? entry : isRecord(entry) && typeof entry.path === "string" ? entry.path : undefined
-      if (!raw) continue
-      if (!(raw.startsWith(".") || raw.startsWith("/") || raw.startsWith("~"))) continue
-      out.push(
-        raw.startsWith("~/")
-          ? path.join(os.homedir(), raw.slice(2))
-          : path.isAbsolute(raw)
-            ? raw
-            : path.resolve(root, raw),
-      )
-    }
-  }
-  return out
-}
+/** The plugin that turns the merged `references` config into `Reference` sources. */
+const REFERENCE_PLUGIN = PluginV2.ID.make("core/config-reference")
 
 function summaryOf(violation: Violation) {
   const text = `${violation.ruleID} ${violation.label}: ${violation.reason}`
@@ -592,6 +654,36 @@ function summaryOf(violation: Violation) {
 export const layer = Layer.effect(
   AskAdjudicator.Service,
   Effect.gen(function* () {
+    // Optional like every other service the guard reads: a composition without
+    // the location services (a bare test harness) still builds, and then has no
+    // reference roots.
+    const locations = Option.getOrUndefined(yield* Effect.serviceOption(LocationServiceMap))
+
+    /**
+     * The `references` directories the agent defaults allow, resolved the way
+     * `agent.ts` does: wait for `core/config-reference`, then list the
+     * location's `Reference` service. The merged config cannot stand in for it.
+     * The plugin anchors a relative path at the document that declared it (a
+     * user-level `references: { docs: "../docs" }` is `~/.config/docs`, not
+     * `<project>/../docs`) and materializes git sources, and neither survives
+     * the merge. Whatever is missing or fails yields no root: a guess from the
+     * project root would allow the wrong directory.
+     */
+    const referenceRoots = (config: Config.Interface, instance: InstanceContext | undefined) =>
+      Effect.gen(function* () {
+        if (!locations || !instance) return [] as string[]
+        const configured = yield* config.get()
+        if (Object.keys(configured.references ?? configured.reference ?? {}).length === 0) return []
+        return yield* Effect.gen(function* () {
+          yield* (yield* PluginV2.Service).wait(REFERENCE_PLUGIN)
+          return (yield* (yield* Reference.Service).list()).map((reference): string => reference.path)
+        }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(instance.directory) }))))
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("DAG safety guard could not list references", { cause }).pipe(Effect.as([] as string[])),
+        ),
+      )
+
     const decide = (input: DecideInput): Effect.Effect<Decision> =>
       Effect.gen(function* () {
         const metadata = input.request.metadata as Record<string, unknown> | undefined
@@ -602,14 +694,12 @@ export const layer = Layer.effect(
           : []
         const skill = Option.getOrUndefined(yield* Effect.serviceOption(Skill.Service))
         const skillDirs = skill ? yield* skill.dirs().pipe(Effect.orElseSucceed(() => [] as string[])) : []
-        const references = config
-          ? yield* config
-              .get()
-              .pipe(
-                Effect.map((value) => referenceRoots(value, instance?.root ?? instance?.directory ?? process.cwd())),
-              )
-              .pipe(Effect.orElseSucceed(() => [] as string[]))
-          : []
+        // Only a write is judged against these roots, and an explicit allow or a
+        // forced ask never reaches that judgment.
+        const references =
+          config && input.request.permission === "edit" && !input.forced && !input.rule.explicit
+            ? yield* referenceRoots(config, instance)
+            : []
 
         const request: EvaluateInput = {
           permission: input.request.permission,
@@ -661,5 +751,8 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer
-export const node = LayerNode.make(layer, [])
+// The guard reads the location services optionally (see `layer`), so only these
+// two compositions decide whether it can resolve references; both provide them.
+export const defaultLayer = layer.pipe(Layer.provide(LocationServiceMap.layer))
+const locationServiceMapNode = LayerNode.make(LocationServiceMap.layer, [])
+export const node = LayerNode.make(layer, [locationServiceMapNode])

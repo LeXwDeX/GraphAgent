@@ -102,6 +102,17 @@ describe("SF-1 (a): edit, write and apply_patch targets", () => {
     ).toBeUndefined()
   })
 
+  it("holds the spelling a write or edit tool writes through to the same boundary as its pattern", () => {
+    expect(edit("src/a.ts", { filepath: `${root}/src/a.ts` })).toBeUndefined()
+    // The pattern is only the tool's display of the path it writes.
+    expect(edit("src/a.ts", { filepath: "/repo/outside/a.ts" })?.ruleID).toBe("SF-1")
+    expect(edit("src/a.ts", { filepath: `${root}/../outside/a.ts` })?.ruleID).toBe("SF-1")
+    // apply_patch sends its relative paths joined, next to the per-file list.
+    expect(
+      edit("src/a.ts", { filepath: "src/a.ts, src/b.ts", files: [{ type: "update", filePath: `${root}/src/a.ts` }] }),
+    ).toBeUndefined()
+  })
+
   it("keeps native paths literal: apostrophes, dollars and brackets are file-name bytes", () => {
     expect(edit("docs/user's-guide.md")).toBeUndefined()
     expect(edit("app/routes/users.$userId.tsx")).toBeUndefined()
@@ -508,6 +519,114 @@ describe("symlinks", () => {
       expect((await check("link/../victim"))?.ruleID).toBe("SF-1")
       // A real `..` inside the project is fine.
       expect(await check("sub/../inside")).toBeUndefined()
+    })
+  })
+
+  it("resolves the spelling write and edit write through, not the pattern they fold it into", async () => {
+    await withProject(async (dir, outside) => {
+      // `link` points at `<outside>/child`: on disk `<project>/link/../victim` is
+      // `<outside>/victim`. write.ts and edit.ts send `path.relative(worktree,
+      // filepath)` as the pattern, which folds the spelling to `victim`, and the
+      // original absolute path as `metadata.filepath`.
+      await fs.mkdir(path.join(outside, "child"))
+      await fs.symlink(path.join(outside, "child"), path.join(dir, "link"), "dir")
+      await fs.mkdir(path.join(dir, "sub"))
+      await fs.mkdir(path.join(dir, "deep", "inner"), { recursive: true })
+      await fs.symlink(path.join(dir, "deep", "inner"), path.join(dir, "back"), "dir")
+      // Not `path.join`: it would fold the `..` this case is about.
+      const asked = (filepath: string) =>
+        inProject(dir, { permission: "edit", pattern: path.relative(dir, filepath), metadata: { filepath, diff: "" } })
+
+      const escape = asked(`${dir}/link/../victim`)
+      expect(escape.pattern).toBe("victim")
+      // Folded, the request looks inside the project to the lexical pass.
+      expect(evaluate(escape)).toBeUndefined()
+      expect(await symlinkViolation(escape)).toMatchObject({ ruleID: "SF-1", label: "symlink write" })
+      // The same escape for a file that does not exist yet.
+      expect((await symlinkViolation(asked(`${dir}/link/../new/victim`)))?.ruleID).toBe("SF-1")
+
+      // Without a symlink in the way the spelling is what its pattern says.
+      const plain = asked(`${dir}/sub/../ok.txt`)
+      expect(evaluate(plain)).toBeUndefined()
+      expect(await symlinkViolation(plain)).toBeUndefined()
+      // A link that stays inside the project is followed to where it really goes.
+      expect(await symlinkViolation(asked(`${dir}/back/../ok.txt`))).toBeUndefined()
+      // apply_patch resolves each path before it writes and lists relative
+      // display paths, so there is no spelling to follow.
+      expect(
+        await symlinkViolation(
+          inProject(dir, {
+            permission: "edit",
+            pattern: "victim",
+            metadata: { filepath: "link/../victim", files: [{ type: "update", filePath: `${dir}/victim` }] },
+          }),
+        ),
+      ).toBeUndefined()
+    })
+  })
+
+  it("follows a symlink whose target does not exist yet to where a write would create it", async () => {
+    await withProject(async (dir, outside) => {
+      // `realpath` calls these links missing, but opening one for writing
+      // creates the file its target names.
+      await fs.symlink(path.join(outside, "newfile"), path.join(dir, "dl"))
+      // A relative target starts at the directory holding the link.
+      await fs.symlink(path.join("..", "outside", "newrel"), path.join(dir, "rl"))
+      await fs.symlink("dl", path.join(dir, "chain"))
+      await fs.symlink(path.join(outside, "missing", "deeper", "file.txt"), path.join(dir, "deep"))
+      // The same links pointing into the project are ordinary new files.
+      await fs.symlink(path.join(dir, "new.txt"), path.join(dir, "dl2"))
+      await fs.symlink("new2.txt", path.join(dir, "rl2"))
+      const check = (pattern: string, metadata: Record<string, unknown> = { filepath: path.join(dir, pattern) }) =>
+        symlinkViolation(inProject(dir, { permission: "edit", pattern, metadata }))
+
+      expect(await check("dl")).toMatchObject({ ruleID: "SF-1", label: "symlink write" })
+      expect((await check("dl"))?.reason).toContain(path.join(outside, "newfile"))
+      expect((await check("rl"))?.reason).toContain(path.join(outside, "newrel"))
+      // A link to a link to a missing target, and a target whose directories are missing too.
+      expect((await check("chain"))?.reason).toContain(path.join(outside, "newfile"))
+      expect((await check("deep"))?.reason).toContain(path.join(outside, "missing", "deeper", "file.txt"))
+      // Whatever is written below such a link continues from its target.
+      expect((await check("dl/below.txt"))?.reason).toContain(path.join(outside, "newfile", "below.txt"))
+      // An apply_patch move destination is a write target as well.
+      const moved = await check("src/a.ts", { files: [{ type: "move", filePath: "src/a.ts", movePath: "dl" }] })
+      expect(moved?.ruleID).toBe("SF-1")
+
+      expect(await check("dl2")).toBeUndefined()
+      expect(await check("rl2")).toBeUndefined()
+    })
+  })
+
+  it("treats a walk through symlinks that never settle as unproven", async () => {
+    await withProject(async (dir) => {
+      // `nonexistent/..` keeps `realpath` at "missing", and every expansion of
+      // the link needs the link again; a <-> b is a plain loop.
+      await fs.symlink("nonexistent/../loop", path.join(dir, "loop"))
+      await fs.symlink("b", path.join(dir, "a"))
+      await fs.symlink("a", path.join(dir, "b"))
+      for (const pattern of ["loop", "a"]) {
+        const input = inProject(dir, { permission: "edit", pattern, metadata: { filepath: path.join(dir, pattern) } })
+        const violation = await symlinkViolation(input)
+        expect(violation).toMatchObject({ ruleID: "SF-1", label: "symlink write" })
+        expect(violation?.reason).toContain("cannot resolve the write target")
+      }
+    })
+  })
+
+  it("leaves a read through a link to a missing credential file alone: there is nothing to leak", async () => {
+    await withProject(async (dir, outside) => {
+      await fs.symlink(".env", path.join(dir, "envlink"))
+      await fs.symlink(path.join(outside, ".ssh", "id_rsa"), path.join(dir, "sshlink"))
+      const read = (pattern: string) => symlinkViolation(inProject(dir, { permission: "read", pattern }))
+      const grep = (search: string) =>
+        symlinkViolation(inProject(dir, { permission: "grep", pattern: "x", metadata: { path: search } }))
+
+      expect(await read("envlink")).toBeUndefined()
+      expect(await read("sshlink")).toBeUndefined()
+      expect(await grep("envlink")).toBeUndefined()
+      // Once the target exists the read is judged by it, as before.
+      await fs.writeFile(path.join(dir, ".env"), "SECRET=1")
+      expect(await read("envlink")).toMatchObject({ ruleID: "SF-2", label: "read symlink" })
     })
   })
 

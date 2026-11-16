@@ -674,6 +674,56 @@ it.instance(
 )
 
 it.instance(
+  "denies a write whose original spelling is link/.. even though its folded permission pattern is inside",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("symlink-spelling")
+      const directory = yield* InstanceState.directory
+      const outside = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "safety-spelling-")))
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(outside, { recursive: true, force: true })))
+      yield* Effect.promise(() => fs.mkdir(path.join(outside, "child")))
+      yield* Effect.promise(() => fs.symlink(path.join(outside, "child"), path.join(directory, "link"), "dir"))
+      yield* Effect.promise(() => fs.mkdir(path.join(directory, "sub")))
+
+      // The request write.ts and edit.ts build: the pattern is
+      // `path.relative(worktree, filepath)`, folded, and the spelling the file
+      // is written through rides along as `metadata.filepath`.
+      const asWritten = (filepath: string) => {
+        const pattern = path.relative(directory, filepath)
+        return edit(childSessionID, pattern, { metadata: { filepath, diff: "" } })
+      }
+      // On disk this is `<outside>/victim`; folded it reads `victim`.
+      const escape = `${directory}/link/../victim`
+      expect(path.relative(directory, escape)).toBe("victim")
+      expect(yield* expectDenied(asWritten(escape))).toContain("dag_safety:SF-1")
+      // Without a link in the way the same shape is an ordinary write.
+      yield* asWritten(`${directory}/sub/../ok.txt`)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "denies a write through a symlink whose target does not exist yet when that target is outside the project",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("symlink-dangling")
+      const directory = yield* InstanceState.directory
+      const outside = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "safety-dangling-")))
+      yield* Effect.addFinalizer(() => Effect.promise(() => fs.rm(outside, { recursive: true, force: true })))
+      // Both targets are missing: `realpath` reports each link as missing itself.
+      yield* Effect.promise(() => fs.symlink(path.join(outside, "newfile"), path.join(directory, "dl")))
+      yield* Effect.promise(() => fs.symlink(path.join(directory, "new.txt"), path.join(directory, "dl2")))
+
+      const asWritten = (filepath: string) =>
+        edit(childSessionID, path.relative(directory, filepath), { metadata: { filepath, diff: "" } })
+      expect(yield* expectDenied(asWritten(`${directory}/dl`))).toContain("dag_safety:SF-1")
+      // The same shape into the project is an ordinary new file.
+      yield* asWritten(`${directory}/dl2`)
+    }),
+  { git: true },
+)
+
+it.instance(
   "denies reading a sensitive file through a symlink",
   () =>
     Effect.gen(function* () {

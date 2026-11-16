@@ -28,13 +28,17 @@ import { SessionProjector } from "@graphagent/core/session/projector"
 import { LLMEvent } from "@graphagent/llm"
 import { LLMClient } from "@graphagent/llm/route"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
+import type { LanguageModelV3StreamPart } from "@ai-sdk/provider"
 import { jsonSchema, tool, type Tool } from "ai"
+import { MockLanguageModelV3 } from "ai/test"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { ProviderAdapters } from "@/provider/adapter/registry"
 import { AgentScheduler } from "@/session/agent-scheduler"
+import { ChildRegistry } from "@/session/child/registry"
+import type { ChildPermissionPolicy } from "@/session/child/types"
 import { ToolInputRejectedError } from "../../src/session/llm/ai-sdk"
 
 const summary = Layer.succeed(
@@ -1016,3 +1020,277 @@ nativeDoom.it.effect(
     { config: cfg },
   ),
 )
+
+// ---------------------------------------------------------------------------
+// SF-5 on the default AI SDK runtime: the SDK dispatches a call while the
+// processor is still handling its `tool-call` event
+// ---------------------------------------------------------------------------
+
+/**
+ * One model response: the identical `lookup` call three times. The AI SDK
+ * starts running the calls as soon as the response has finished, concurrently
+ * with the processor handling the `tool-call` events, so a tool can be
+ * dispatched before the doom-loop check of its call has settled.
+ */
+const identicalCallsModel = new MockLanguageModelV3({
+  doStream: async () => ({
+    stream: new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        controller.enqueue({ type: "stream-start", warnings: [] })
+        for (const id of ["call-a", "call-b", "call-c"])
+          controller.enqueue({ type: "tool-call", toolCallId: id, toolName: "lookup", input: '{"query":"x"}' })
+        controller.enqueue({
+          type: "finish",
+          finishReason: { unified: "tool-calls", raw: "tool_calls" },
+          usage: {
+            inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+            outputTokens: { total: 1, text: 1, reasoning: 0 },
+          },
+        })
+        controller.close()
+      },
+    }),
+  }),
+})
+
+/**
+ * Drives the real LLM layer on the AI SDK runtime (the default) with a scripted
+ * language model, so the SDK itself dispatches the tools. The doom-loop ask of
+ * the third call settles only after the SDK has dispatched that call, or after
+ * `graceMs` without it doing so (`hang`: never): the slow processor of the race.
+ * `order` records when each tool ran and when the ask settled.
+ */
+function sdkIdenticalCalls(outcome: "deny" | "allow" | "hang", graceMs: number) {
+  const order: string[] = []
+  const dispatched = Promise.withResolvers<void>()
+  const asked = Promise.withResolvers<void>()
+  const lookup = tool({
+    description: "Lookup",
+    inputSchema: jsonSchema({ type: "object", properties: { query: { type: "string" } }, required: ["query"] }),
+    execute: async (_input: unknown, options: { toolCallId: string }) => {
+      order.push(`run:${options.toolCallId}`)
+      if (options.toolCallId === "call-c") dispatched.resolve()
+      return { ok: true }
+    },
+  })
+  const doomLoop = Effect.sync(() => asked.resolve()).pipe(
+    Effect.andThen(
+      outcome === "hang" ? Effect.never : Effect.promise(() => Promise.race([dispatched.promise, Bun.sleep(graceMs)])),
+    ),
+    Effect.andThen(Effect.sync(() => order.push("ask"))),
+    Effect.andThen(
+      outcome === "deny"
+        ? Effect.fail(new PermissionV1.DeniedError({ ruleset: [], reason: "dag_safety:SF-5: denied by test" }))
+        : Effect.void,
+    ),
+  )
+  const permission = Layer.mock(Permission.Service, {
+    ask: (request) => (request.permission === "doom_loop" ? doomLoop : Effect.void),
+  })
+  // Only `getLanguage` is scripted; the model catalog and credentials stay real.
+  const provider = Layer.effect(
+    Provider.Service,
+    Effect.gen(function* () {
+      const real = yield* Provider.Service
+      return Provider.Service.of({ ...real, getLanguage: () => Effect.succeed(identicalCallsModel) })
+    }),
+  ).pipe(Layer.provide(Provider.defaultLayer))
+  const client = Layer.succeed(
+    LLMClient.Service,
+    LLMClient.Service.of({
+      prepare: () => Effect.die(new Error("AI SDK test does not prepare")),
+      stream: () => Stream.die(new Error("AI SDK test does not stream natively")),
+      generate: () => Effect.die(new Error("AI SDK test does not generate")),
+    }),
+  )
+  const llm = LLM.layer.pipe(
+    Layer.provide(Auth.defaultLayer),
+    Layer.provide(Config.defaultLayer),
+    Layer.provide(provider),
+    Layer.provide(ProviderAdapters.defaultLayer),
+    Layer.provide(client),
+    Layer.provide(RuntimeFlags.layer({ experimentalNativeLlm: false })),
+    Layer.provide(AgentScheduler.defaultLayer),
+  )
+  const it = testEffect(
+    LayerNode.buildLayer(root, {
+      replacements: [...replacements, LayerNode.replace(LLM.node, llm), LayerNode.replace(Permission.node, permission)],
+    }),
+  )
+  return { it, order, lookup, asked: asked.promise }
+}
+
+/** Registers `sessionID` as the session of an active child run until the scope ends. */
+const childRun = (sessionID: SessionID, parentSessionID: SessionID, permission: ChildPermissionPolicy) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const owner = { kind: "dag_node" as const, workflowID: "dag_gate", nodeID: "n01", attempt: 0 }
+      const entry = ChildRegistry.create({
+        id: `crun_gate_${sessionID}`,
+        childSessionID: sessionID,
+        parentSessionID,
+        ownerKind: owner.kind,
+        ownerKey: owner,
+        permission,
+        detached: false,
+        directory: undefined,
+        owner: {},
+      })
+      expect(ChildRegistry.register(entry)).toBe(true)
+      return entry
+    }),
+    (entry) =>
+      Effect.sync(() => {
+        ChildRegistry.end(entry, { type: "completed" })
+        ChildRegistry.release(entry)
+      }),
+  )
+
+const sdkDoom = sdkIdenticalCalls("deny", 250)
+
+sdkDoom.it.effect(
+  "session.processor does not run an SF-5-denied call the AI SDK dispatched before the denial",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        yield* childRun(chat.id, SessionID.make("ses_gate_root"), { ask: "auto" })
+        const parent = yield* user(chat.id, "keep trying")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle
+          .process({ ...input(chat.id, parent, mdl), tools: { lookup: sdkDoom.lookup } })
+          .pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("90 seconds")
+        const result = yield* Fiber.join(run)
+
+        // The denied call never reached the tool; the previous two did.
+        expect(sdkDoom.order.filter((entry) => entry.startsWith("run:")).toSorted()).toEqual([
+          "run:call-a",
+          "run:call-b",
+        ])
+        // The model still sees the denial as that call's tool error, and the
+        // turn continues instead of stopping.
+        expect(result).toBe("continue")
+        expect(msg.error).toBeUndefined()
+        const calls = toolParts(yield* MessageV2.parts(msg.id))
+        expect(calls).toHaveLength(3)
+        expect(calls.find((part) => part.callID === "call-a")?.state.status).toBe("completed")
+        expect(calls.find((part) => part.callID === "call-b")?.state.status).toBe("completed")
+        const denied = calls.find((part) => part.callID === "call-c")
+        expect(denied?.state.status).toBe("error")
+        if (denied?.state.status === "error") expect(denied.state.error).toContain("dag_safety:SF-5")
+      }),
+    { config: cfg },
+  ),
+)
+
+const sdkParked = sdkIdenticalCalls("hang", 0)
+
+sdkParked.it.effect(
+  "session.processor never runs an AI SDK call parked for its verdict once the turn is interrupted",
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const unhandled: unknown[] = []
+        const record = (reason: unknown) => unhandled.push(reason)
+        process.on("unhandledRejection", record)
+        yield* Effect.addFinalizer(() => Effect.sync(() => process.off("unhandledRejection", record)))
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        yield* childRun(chat.id, SessionID.make("ses_gate_root"), { ask: "auto" })
+        const parent = yield* user(chat.id, "keep trying")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const run = yield* handle
+          .process({ ...input(chat.id, parent, mdl), tools: { lookup: sdkParked.lookup } })
+          .pipe(Effect.forkChild)
+        // The doom-loop check of the third call never settles: the SDK has
+        // dispatched it and its `execute` is parked on the verdict.
+        yield* Effect.promise(() => sdkParked.asked)
+        yield* Effect.promise(() => Bun.sleep(100))
+        const parked = sdkParked.order.toSorted()
+
+        // The processor's cleanup waits on the test clock, so assert only once
+        // the interruption has completed.
+        const interrupting = yield* Fiber.interrupt(run).pipe(Effect.forkChild)
+        yield* TestClock.adjust("90 seconds")
+        yield* Fiber.join(interrupting)
+        // The interrupted request is over: the parked call must not run late,
+        // and abandoning its wait leaves nothing unhandled behind.
+        yield* Effect.promise(() => Bun.sleep(100))
+        expect(parked).toEqual(["run:call-a", "run:call-b"])
+        expect(sdkParked.order.toSorted()).toEqual(["run:call-a", "run:call-b"])
+        expect(unhandled).toEqual([])
+      }),
+    { config: cfg },
+  ),
+)
+
+// Only a run nobody answers asks for can still receive a safety denial, so only
+// such a run holds `execute` for the verdict. Every other session keeps running
+// its tools while the doom-loop prompt (which may wait for a person) is open.
+for (const item of [
+  { name: "a DAG node run", permission: { ask: "auto" }, dagMode: undefined, held: true },
+  { name: "a task child of a root in DAG mode", permission: { ask: "root-dag-mode" }, dagMode: "on", held: true },
+  {
+    name: "a task child of a root outside DAG mode",
+    permission: { ask: "root-dag-mode" },
+    dagMode: "off",
+    held: false,
+  },
+  { name: "a child run that asks its user", permission: { ask: "user" }, dagMode: undefined, held: false },
+  { name: "a session without a child run", permission: undefined, dagMode: undefined, held: false },
+] satisfies ReadonlyArray<{
+  name: string
+  permission: ChildPermissionPolicy | undefined
+  dagMode: "on" | "off" | undefined
+  held: boolean
+}>) {
+  // A held call can only be seen to wait out the grace period; a call that runs
+  // does so right after the response, so its grace period is never spent.
+  const sdk = sdkIdenticalCalls("allow", item.held ? 250 : 5000)
+  sdk.it.effect(
+    `session.processor ${item.held ? "holds" : "does not hold"} AI SDK tool calls for the doom-loop verdict of ${item.name}`,
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+          const root = yield* session.create(item.dagMode ? { dagMode: item.dagMode } : {})
+          const chat = yield* session.create({})
+          if (item.permission) yield* childRun(chat.id, root.id, item.permission)
+          const parent = yield* user(chat.id, "keep trying")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+          const run = yield* handle
+            .process({ ...input(chat.id, parent, mdl), tools: { lookup: sdk.lookup } })
+            .pipe(Effect.forkChild)
+          yield* Effect.yieldNow
+          yield* TestClock.adjust("90 seconds")
+          const result = yield* Fiber.join(run)
+
+          // The ask settled by itself in both cases and every call ran: what
+          // differs is whether the third call ran before or after the ask.
+          expect(result).toBe("continue")
+          expect(sdk.order.filter((entry) => entry.startsWith("run:")).toSorted()).toEqual([
+            "run:call-a",
+            "run:call-b",
+            "run:call-c",
+          ])
+          const calls = toolParts(yield* MessageV2.parts(msg.id))
+          expect(calls.map((part) => part.state.status)).toEqual(["completed", "completed", "completed"])
+          const ranBeforeAsk = sdk.order.indexOf("run:call-c") < sdk.order.indexOf("ask")
+          expect(ranBeforeAsk).toBe(!item.held)
+        }),
+      { config: cfg },
+    ),
+  )
+}

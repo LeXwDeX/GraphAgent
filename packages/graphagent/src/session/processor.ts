@@ -27,6 +27,7 @@ import {
   INCOMPLETE_REASONING_RESPONSE_MESSAGE,
 } from "./retry"
 import { ToolInputRejectedError } from "./llm/ai-sdk"
+import { ChildPolicy } from "./child/policy"
 import { hookToolStop } from "@/hook/trigger-result"
 import { CompactionTimeoutError, watchCompactionStream } from "./compaction-timeout"
 import { SessionStatus } from "./status"
@@ -117,11 +118,74 @@ interface ProcessorContext extends Input {
 type StreamEvent = LLMEvent
 
 /**
+ * The verdict of every tool call of one provider request (SF-5): the processor
+ * settles a call once its doom-loop check is through, and the tool's `execute`
+ * reads the verdict before running. The AI SDK dispatches a tool concurrently
+ * with the processor handling the same `tool-call` event, so `execute` may come
+ * first; "no verdict yet" must never read as "admitted". Whoever arrives first
+ * creates the call's slot.
+ *
+ * `wait` says whether a verdict can still arrive late. For a session that asks
+ * its user (the doom-loop prompt can take minutes) nothing can deny the call
+ * and `execute` must not queue behind that prompt, so an unsettled call is
+ * admitted at once; an unattended run waits for the verdict. The native runtime
+ * dispatches a call only after the processor handled its event, so it always
+ * finds the verdict settled.
+ *
+ * @internal Exported for testing
+ */
+export function makeToolCallGate(options: { readonly wait: boolean }) {
+  interface Slot {
+    /** Set once the processor settled the call: the denial reason, or undefined when admitted. */
+    settled?: { readonly denied: string | undefined }
+    /** Created when `execute` arrives before the verdict and has to wait. */
+    waiter?: PromiseWithResolvers<string | undefined>
+  }
+  const slots = new Map<string, Slot>()
+  let closed = false
+  const slotOf = (id: string) => {
+    const existing = slots.get(id)
+    if (existing) return existing
+    const created: Slot = {}
+    slots.set(id, created)
+    return created
+  }
+  return {
+    /** Processor side. The first settlement of a call wins; none is accepted after `close`. */
+    settle: (id: string, denied?: string) => {
+      if (closed) return
+      const slot = slotOf(id)
+      if (slot.settled) return
+      slot.settled = { denied }
+      slot.waiter?.resolve(denied)
+    },
+    /** `execute` side: the reason when denied, undefined when admitted, a promise while the verdict is pending. */
+    verdict: (id: string): string | undefined | Promise<string | undefined> => {
+      const settled = slots.get(id)?.settled
+      if (settled) return settled.denied
+      if (!options.wait) return undefined
+      if (closed) return Promise.reject(new DOMException("Aborted", "AbortError"))
+      const slot = slotOf(id)
+      slot.waiter ??= Promise.withResolvers<string | undefined>()
+      return slot.waiter.promise
+    },
+    /** The request is over (ended, failed or interrupted): no pending `execute` may stay parked. */
+    close: () => {
+      closed = true
+      for (const slot of slots.values()) slot.waiter?.reject(new DOMException("Aborted", "AbortError"))
+    },
+  }
+}
+
+type ToolCallGate = ReturnType<typeof makeToolCallGate>
+
+/**
  * The unattended safety list's SF-5 denial is a recoverable tool error: the
  * node sees the reason and can choose another path. Every other doom-loop
  * outcome (user rejection, interrupt, ...) keeps its turn-ending semantics.
  */
 const settleDoomLoop = (
+  gate: ToolCallGate | undefined,
   ctx: ProcessorContext,
   value: { readonly id: string },
   check: Effect.Effect<void, unknown>,
@@ -129,7 +193,10 @@ const settleDoomLoop = (
 ) =>
   Effect.gen(function* () {
     const doom = yield* check.pipe(Effect.exit)
-    if (Exit.isSuccess(doom)) return
+    if (Exit.isSuccess(doom)) {
+      gate?.settle(value.id)
+      return
+    }
     const failure = Cause.findErrorOption(doom.cause)
     const denial = Option.isSome(failure) ? failure.value : undefined
     if (!(denial instanceof PermissionV1.DeniedError) || !(denial.reason ?? "").startsWith("dag_safety:SF-5")) {
@@ -137,22 +204,11 @@ const settleDoomLoop = (
       return
     }
     ctx.attempt.pendingToolExecutions.delete(value.id)
-    // The tool executes after this handler; the execution gate reads this
-    // entry and throws instead of dispatching the denied call.
-    deniedCallsOf(ctx).set(value.id, denial.message)
+    // The tool's execution gate reads this verdict and throws instead of
+    // dispatching the denied call.
+    gate?.settle(value.id, denial.message)
     yield* fail(value.id, denial)
   })
-
-/** Calls the safety guard denied before execution (SF-5), by call id. */
-const deniedCalls = new WeakMap<ProcessorContext, Map<string, string>>()
-
-function deniedCallsOf(ctx: ProcessorContext) {
-  const existing = deniedCalls.get(ctx)
-  if (existing) return existing
-  const created = new Map<string, string>()
-  deniedCalls.set(ctx, created)
-  return created
-}
 
 function hasReasoningMetadata(value: unknown): boolean {
   const pending = [value]
@@ -244,6 +300,21 @@ export const layer = Layer.effect(
       })
     })
 
+    // Whether permission asks of this session are settled without a user, so a
+    // safety denial (SF-5) can still reach a call after the SDK dispatched it.
+    // The question `Permission.ask` answers through `ChildPolicy.askOf`; the
+    // root's DAG mode is read through the session service here.
+    const unattended = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const subject = ChildPolicy.subjectOf(sessionID)
+      if (Option.isNone(subject)) return false
+      const { ask } = subject.value.permission
+      if (ask !== "root-dag-mode") return ask === "auto"
+      return yield* session.get(subject.value.rootSessionID).pipe(
+        Effect.map((root) => root.dagMode === "on"),
+        Effect.orElseSucceed(() => false),
+      )
+    })
+
     // Resize image attachments; the ones that cannot be resized are left out and counted in the output text.
     const normalizeToolOutput = Effect.fnUntraced(function* (rawOutput: ToolOutput) {
       const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
@@ -290,6 +361,8 @@ export const layer = Layer.effect(
       }
       let aborted = false
       let deferred = false
+      /** Verdicts of the current provider request's tool calls; replaced for every attempt. */
+      let toolGate: ToolCallGate | undefined
       let displayPending = ""
       let displayIndex = 0
       let displayFinished = false
@@ -504,7 +577,7 @@ export const layer = Layer.effect(
                 : value.providerMetadata,
             }))
 
-            yield* settleDoomLoop(ctx, value, checkDoomLoop(ctx, value, input), failToolCall)
+            yield* settleDoomLoop(toolGate, ctx, value, checkDoomLoop(ctx, value, input), failToolCall)
             return
           }
 
@@ -905,9 +978,15 @@ export const layer = Layer.effect(
             beginAttempt(ctx)
             yield* status.set(ctx.sessionID, { type: "busy" })
             const generation = ++attemptGeneration
+            // SF-5: a call the safety list denied must not execute. The SDK may
+            // dispatch it before the verdict exists, so an unattended run holds
+            // `execute` until the doom-loop check has settled the call.
+            const gate = makeToolCallGate({ wait: yield* unattended(ctx.sessionID) })
+            toolGate = gate
             const source = llm.stream({
               ...streamInput,
-              sessionRetry: true, onToolCallDenied: (id) => deniedCallsOf(ctx).get(id), // SF-5
+              sessionRetry: true,
+              toolCallVerdict: gate.verdict,
               onThinkingInvalidated: (blocks) =>
                 Effect.gen(function* () {
                   const invalidated = new Set(blocks)
@@ -954,6 +1033,13 @@ export const layer = Layer.effect(
               Stream.tap((event) => handleEvent(event)),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
+              // Whatever ended the request, no `execute` stays parked on a verdict.
+              Effect.ensuring(
+                Effect.sync(() => {
+                  gate.close()
+                  if (toolGate === gate) toolGate = undefined
+                }),
+              ),
             )
 
             // Detect an incomplete response before cleanup loses the
