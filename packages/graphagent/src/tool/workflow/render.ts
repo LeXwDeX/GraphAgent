@@ -184,7 +184,7 @@ export function renderStatus(input: {
   // #1031 M6 / #1027 D6b: review counters from the arbitration decisions that
   // carry persisted round markers. The workflow summary's `quality` is computed
   // by this same function, so the panel and this result agree.
-  const reviewQuality = DagQuality.reviewMetrics({ config, nodes })
+  const reviewQuality = DagQuality.reviewMetrics({ config, workflowID: workflow.id, nodes })
   // #946: workflow-level isolation view. Kept worktrees stay
   // visible until an operator removes them; conflicts are a
   // report, never an automatic merge. Superseded attempts come

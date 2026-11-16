@@ -20,8 +20,18 @@ import { DagCoverage } from "@/dag/coverage"
 import type { WorkflowConfig } from "@/dag/dag"
 import { DagQuality } from "@/dag/quality"
 import { DagSummaryDerived } from "@/dag/summary-derived"
+import { testEffect } from "../lib/effect"
 import { makeWorkflowRow } from "./fixtures"
-import { accepted, roundOne, rowsFor, strictConfig, type Outputs } from "./review-fixtures"
+import {
+  accepted,
+  chainsConfig,
+  chainsOutputs,
+  roundOne,
+  rowsFor,
+  strictConfig,
+  WORKFLOW_ID,
+  type Outputs,
+} from "./review-fixtures"
 
 const withExtras = (config: WorkflowConfig): WorkflowConfig => ({
   ...config,
@@ -72,10 +82,11 @@ const extraOutputs: Outputs = {
   guarded: { output: { summary: "continued" } },
 }
 
-function storeLayer() {
-  const database = Database.layerFromPath(":memory:")
-  return Layer.merge(database, DagStore.layer.pipe(Layer.provide(database)))
-}
+// Each test builds its own in-memory database and store from these shared layers.
+const database = Database.layerFromPath(":memory:")
+const it = testEffect(Layer.merge(database, DagStore.layer.pipe(Layer.provide(database))))
+// The memo works over a store it is handed, so its tests need no services.
+const pure = testEffect(Layer.empty)
 
 function seed(config: WorkflowConfig, outputs: Outputs) {
   return Effect.gen(function* () {
@@ -100,7 +111,7 @@ function seed(config: WorkflowConfig, outputs: Outputs) {
     yield* db
       .insert(WorkflowTable)
       .values({
-        id: "dag_review",
+        id: WORKFLOW_ID,
         project_id: Project.ID.make("project-1"),
         session_id: SessionSchema.ID.make("ses_parent"),
         title: "Review",
@@ -118,7 +129,7 @@ function seed(config: WorkflowConfig, outputs: Outputs) {
       .values(
         rowsFor(config, outputs).map((row, index) => ({
           id: row.id,
-          workflow_id: "dag_review",
+          workflow_id: WORKFLOW_ID,
           name: row.name,
           worker_type: row.workerType,
           status: row.status,
@@ -147,71 +158,86 @@ function seed(config: WorkflowConfig, outputs: Outputs) {
 describe("DagSummaryDerived.forWorkflows (#1027 D6b)", () => {
   // The implementation's fingerprint is read for the bound check, so it must
   // be among the outputs the selective read loads.
-  test("finds a review bound to the implementation through the selective read", async () => {
-    const config = strictConfig()
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        yield* seed(config, accepted)
-        const workflow = (yield* store.listBySession("ses_parent"))[0]
-        const full = yield* store.getCurrentNodes("dag_review")
-        const derived = (yield* DagSummaryDerived.forWorkflows(store, [workflow])).get("dag_review")
-        expect(derived?.quality).toEqual(DagQuality.workflowQuality({ config, nodes: full }))
-        expect(derived?.quality).toMatchObject({ reviewBound: true, reviews: 1, raised: 0, quietRounds: 1 })
-      }).pipe(Effect.provide(storeLayer()), Effect.scoped),
-    )
-  })
+  it.effect("finds a review bound to the implementation through the selective read", () =>
+    Effect.gen(function* () {
+      const config = strictConfig()
+      const store = yield* DagStore.Service
+      yield* seed(config, accepted)
+      const workflow = (yield* store.listBySession("ses_parent"))[0]
+      const full = yield* store.getCurrentNodes(WORKFLOW_ID)
+      const derived = (yield* DagSummaryDerived.forWorkflows(store, [workflow])).get(WORKFLOW_ID)
+      expect(derived?.quality).toEqual(DagQuality.workflowQuality({ config, workflowID: WORKFLOW_ID, nodes: full }))
+      expect(derived?.quality).toMatchObject({ reviewBound: true, reviews: 1, raised: 0, quietRounds: 1 })
+    }),
+  )
 
-  test("derives the numbers inspect computes from the full rows, loading almost no output", async () => {
-    const config = withExtras(strictConfig())
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        yield* seed(config, extraOutputs)
-        const workflow = (yield* store.listBySession("ses_parent"))[0]
+  it.effect("derives the numbers inspect computes from the full rows, loading almost no output", () =>
+    Effect.gen(function* () {
+      const config = withExtras(strictConfig())
+      const store = yield* DagStore.Service
+      yield* seed(config, extraOutputs)
+      const workflow = (yield* store.listBySession("ses_parent"))[0]
 
-        // What `inspect status` runs: every current row with every output.
-        const full = yield* store.getCurrentNodes("dag_review")
-        const expected = {
-          coverageCount: DagCoverage.workflowCoverage({
-            config,
-            nodes: full,
-            workflow: { status: workflow.status, pauseReason: workflow.pauseReason },
-          }).length,
-          quality: DagQuality.workflowQuality({ config, nodes: full }),
-        }
-        const derived = (yield* DagSummaryDerived.forWorkflows(store, [workflow])).get("dag_review")
+      // What `inspect status` runs: every current row with every output.
+      const full = yield* store.getCurrentNodes(WORKFLOW_ID)
+      const expected = {
+        coverageCount: DagCoverage.workflowCoverage({
+          config,
+          nodes: full,
+          workflow: { status: workflow.status, pauseReason: workflow.pauseReason },
+        }).length,
+        quality: DagQuality.workflowQuality({ config, workflowID: WORKFLOW_ID, nodes: full }),
+      }
+      const derived = (yield* DagSummaryDerived.forWorkflows(store, [workflow])).get(WORKFLOW_ID)
 
-        expect(derived).toEqual(expected)
-        // A failed node, a lane gap, and a denied tool call; plus the rejected
-        // round's quality, with the skeptic's finding.
-        expect(derived?.coverageCount).toBe(3)
-        expect(derived?.quality).toMatchObject({ reviews: 1, raised: 5, refuted: 1, skepticRefutations: 1 })
+      expect(derived).toEqual(expected)
+      // A failed node, a lane gap, and a denied tool call; plus the rejected
+      // round's quality, with the skeptic's finding.
+      expect(derived?.coverageCount).toBe(3)
+      expect(derived?.quality).toMatchObject({ reviews: 1, raised: 5, refuted: 1, skepticRefutations: 1 })
 
-        // The 40 KB report never came back; the review nodes and the gap did.
-        const rows = yield* store.getSummaryNodes({ workflowIds: ["dag_review"], outputs: new Set() })
-        expect(rows.find((row) => row.id === "report")?.output).toBeUndefined()
-        expect(rows.find((row) => row.id === "scan")?.output).toBeDefined()
-      }).pipe(Effect.provide(storeLayer()), Effect.scoped),
-    )
-  })
+      // The 40 KB report never came back; the review nodes and the gap did.
+      const rows = yield* store.getSummaryNodes({ workflowIds: [WORKFLOW_ID], outputs: new Set() })
+      expect(rows.find((row) => row.id === "report")?.output).toBeUndefined()
+      expect(rows.find((row) => row.id === "scan")?.output).toBeDefined()
+    }),
+  )
 
-  test("derives nothing for an empty list and nulls quality for a workflow without a review", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        expect((yield* DagSummaryDerived.forWorkflows(store, [])).size).toBe(0)
+  // Every chain's decisions and lanes are named, so the selective read gives the
+  // same chain accounting as the full rows: the later rounds of one review do
+  // not hide what an earlier review left open.
+  it.effect("reads every review chain through the selective read", () =>
+    Effect.gen(function* () {
+      const config = chainsConfig()
+      const store = yield* DagStore.Service
+      yield* seed(config, chainsOutputs)
+      const workflow = (yield* store.listBySession("ses_parent"))[0]
+      const full = yield* store.getCurrentNodes(WORKFLOW_ID)
+      const derived = (yield* DagSummaryDerived.forWorkflows(store, [workflow])).get(WORKFLOW_ID)
+      expect(derived?.quality).toEqual(DagQuality.workflowQuality({ config, workflowID: WORKFLOW_ID, nodes: full }))
+      expect(derived?.quality).toMatchObject({
+        reviews: 5,
+        stillOpen: 1,
+        quietRounds: 1,
+        completeness: { covered: 1, total: 2, unlisted: 2 },
+      })
+    }),
+  )
 
-        const plain = { name: "plain", nodes: strictConfig().nodes.filter((node) => node.block === "coding") }
-        yield* seed(plain, { implementation: { output: { fingerprint: "fp" } } })
-        const workflow = (yield* store.listBySession("ses_parent"))[0]
-        expect((yield* DagSummaryDerived.forWorkflows(store, [workflow])).get("dag_review")).toEqual({
-          coverageCount: 0,
-          quality: null,
-        })
-      }).pipe(Effect.provide(storeLayer()), Effect.scoped),
-    )
-  })
+  it.effect("derives nothing for an empty list and nulls quality for a workflow without a review", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      expect((yield* DagSummaryDerived.forWorkflows(store, [])).size).toBe(0)
+
+      const plain = { name: "plain", nodes: strictConfig().nodes.filter((node) => node.block === "coding") }
+      yield* seed(plain, { implementation: { output: { fingerprint: "fp" } } })
+      const workflow = (yield* store.listBySession("ses_parent"))[0]
+      expect((yield* DagSummaryDerived.forWorkflows(store, [workflow])).get(WORKFLOW_ID)).toEqual({
+        coverageCount: 0,
+        quality: null,
+      })
+    }),
+  )
 })
 
 describe("DagSummaryDerived memo (#1027 D6b)", () => {
@@ -258,60 +284,68 @@ describe("DagSummaryDerived memo (#1027 D6b)", () => {
   }
 
   const resolve = (h: ReturnType<typeof harness>, ids: string[], session = "ses_parent") =>
-    Effect.runPromise(h.memo.resolve(h.store, session, ids))
+    h.memo.resolve(h.store, session, ids)
 
-  test("derives every workflow once, then keeps values while the change marker holds", async () => {
-    const h = harness()
-    const first = await resolve(h, ["wf-a", "wf-b"])
-    expect(h.state.reads).toEqual([["wf-a", "wf-b"]])
-    expect(first.get("wf-a")?.quality).toMatchObject({ reviews: 1 })
-    expect(first.get("wf-b")?.quality).toMatchObject({ reviews: 0 })
+  pure.effect("derives every workflow once, then keeps values while the change marker holds", () =>
+    Effect.gen(function* () {
+      const h = harness()
+      const first = yield* resolve(h, ["wf-a", "wf-b"])
+      expect(h.state.reads).toEqual([["wf-a", "wf-b"]])
+      expect(first.get("wf-a")?.quality).toMatchObject({ reviews: 1 })
+      expect(first.get("wf-b")?.quality).toMatchObject({ reviews: 0 })
 
-    const second = await resolve(h, ["wf-a", "wf-b"])
-    expect(h.state.reads).toHaveLength(1)
-    expect(second.get("wf-a")).toBe(first.get("wf-a"))
-  })
+      const second = yield* resolve(h, ["wf-a", "wf-b"])
+      expect(h.state.reads).toHaveLength(1)
+      expect(second.get("wf-a")).toBe(first.get("wf-a"))
+    }),
+  )
 
-  test("re-derives only the workflow whose marker moved", async () => {
-    const h = harness()
-    await resolve(h, ["wf-a", "wf-b"])
-    // wf-b's review round completes and its marker moves; wf-a is untouched.
-    h.state.nodes = [...lite("wf-a", roundOne), ...lite("wf-b", roundOne)]
-    h.state.revisions.set("wf-b", "2")
-    const result = await resolve(h, ["wf-a", "wf-b"])
-    expect(h.state.reads).toEqual([["wf-a", "wf-b"], ["wf-b"]])
-    expect(result.get("wf-b")?.quality).toMatchObject({ reviews: 1, raised: 5 })
-  })
+  pure.effect("re-derives only the workflow whose marker moved", () =>
+    Effect.gen(function* () {
+      const h = harness()
+      yield* resolve(h, ["wf-a", "wf-b"])
+      // wf-b's review round completes and its marker moves; wf-a is untouched.
+      h.state.nodes = [...lite("wf-a", roundOne), ...lite("wf-b", roundOne)]
+      h.state.revisions.set("wf-b", "2")
+      const result = yield* resolve(h, ["wf-a", "wf-b"])
+      expect(h.state.reads).toEqual([["wf-a", "wf-b"], ["wf-b"]])
+      expect(result.get("wf-b")?.quality).toMatchObject({ reviews: 1, raised: 5 })
+    }),
+  )
 
-  test("derives again each time for a workflow with no marker", async () => {
-    const h = harness()
-    h.state.revisions.clear()
-    await resolve(h, ["wf-a"])
-    await resolve(h, ["wf-a"])
-    expect(h.state.reads).toEqual([["wf-a"], ["wf-a"]])
-  })
+  pure.effect("derives again each time for a workflow with no marker", () =>
+    Effect.gen(function* () {
+      const h = harness()
+      h.state.revisions.clear()
+      yield* resolve(h, ["wf-a"])
+      yield* resolve(h, ["wf-a"])
+      expect(h.state.reads).toEqual([["wf-a"], ["wf-a"]])
+    }),
+  )
 
-  test("forgets a workflow that left the session, and never reads for an empty one", async () => {
-    const h = harness()
-    await resolve(h, ["wf-a", "wf-b"])
-    await resolve(h, ["wf-b"])
-    // wf-a left the list, so its entry was dropped and must be derived afresh.
-    await resolve(h, ["wf-a", "wf-b"])
-    expect(h.state.reads).toEqual([["wf-a", "wf-b"], ["wf-a"]])
+  pure.effect("forgets a workflow that left the session, and never reads for an empty one", () =>
+    Effect.gen(function* () {
+      const h = harness()
+      yield* resolve(h, ["wf-a", "wf-b"])
+      yield* resolve(h, ["wf-b"])
+      // wf-a left the list, so its entry was dropped and must be derived afresh.
+      yield* resolve(h, ["wf-a", "wf-b"])
+      expect(h.state.reads).toEqual([["wf-a", "wf-b"], ["wf-a"]])
 
-    // An empty list reads nothing, and another session's list leaves this
-    // session's entries alone.
-    const before = h.state.markerReads
-    expect((await resolve(h, [], "ses_other")).size).toBe(0)
-    expect(h.state.markerReads).toBe(before)
-    await resolve(h, ["wf-a", "wf-b"])
-    expect(h.state.reads).toHaveLength(2)
+      // An empty list reads nothing, and another session's list leaves this
+      // session's entries alone.
+      const before = h.state.markerReads
+      expect((yield* resolve(h, [], "ses_other")).size).toBe(0)
+      expect(h.state.markerReads).toBe(before)
+      yield* resolve(h, ["wf-a", "wf-b"])
+      expect(h.state.reads).toHaveLength(2)
 
-    // A session that lost every workflow drops its entries too.
-    expect((await resolve(h, [])).size).toBe(0)
-    await resolve(h, ["wf-a", "wf-b"])
-    expect(h.state.reads).toHaveLength(3)
-  })
+      // A session that lost every workflow drops its entries too.
+      expect((yield* resolve(h, [])).size).toBe(0)
+      yield* resolve(h, ["wf-a", "wf-b"])
+      expect(h.state.reads).toHaveLength(3)
+    }),
+  )
 })
 
 describe("DagSummaryDerived.toWire (#1027 D6b)", () => {

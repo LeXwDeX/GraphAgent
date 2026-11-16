@@ -26,16 +26,18 @@ export const WorkflowQuality = Schema.Struct({
   fixed: NonNegativeInt,
   /** Claims refuted at arbitration plus prior findings resolved as refuted. */
   refuted: NonNegativeInt,
-  /** Findings the latest arbitration left open (`still_open`). */
+  /** Findings the latest arbitration of each review chain left open (`still_open`). A chain is a
+   * review and its later rounds, linked by `prior_round`; independent reviews add up. */
   stillOpen: NonNegativeInt,
   /** New findings on skeptic lanes that arbitration upheld. */
   skepticRefutations: NonNegativeInt,
   /** Arbitrated rounds in this workflow. */
   rounds: NonNegativeInt,
-  /** Trailing rounds without a new upheld finding. */
+  /** Trailing rounds without a new upheld finding; with several review chains, the quietest chain's. */
   quietRounds: NonNegativeInt,
-  /** The latest completed completeness lane against the declared acceptance
-   * items; null when no completeness lane has completed. */
+  /** Each review chain's latest completed completeness lane, merged against the
+   * declared acceptance items (an item is covered only when every lane that judged
+   * it called it covered); null when no completeness lane has completed. */
   completeness: Schema.NullOr(
     Schema.Struct({
       covered: NonNegativeInt,

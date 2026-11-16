@@ -14,6 +14,15 @@
  * Counters reuse the accounting of the review loop: a completed decision is a
  * round, `raised` is the lane actions it arbitrated, and fixed/refuted/open
  * come from its `resolved` list.
+ *
+ * A workflow can hold several independent reviews (a design review and a diff
+ * review, or one per implementation), and a later round of one review is a new
+ * decision that continues an earlier one through `prior_round`. Those linked
+ * decisions form one review chain; every other decision is a chain of its own.
+ * What is still open, how long a review has been quiet, and what completeness
+ * judged are properties of a chain's latest completed round, so they are read
+ * per chain and then combined: open findings add up, the quiet streak is the
+ * quietest chain's, and completeness is merged per acceptance item.
  */
 export * as DagQuality from "./quality"
 
@@ -74,6 +83,8 @@ export function outputNodeIDs(config: WorkflowConfig): string[] {
  */
 export function reviewMetrics(input: {
   readonly config: WorkflowConfig | undefined
+  /** The workflow's own id: only a `prior_round` that names it links two decisions here. */
+  readonly workflowID: string
   readonly nodes: readonly QualityNode[]
 }): ReviewMetrics | undefined {
   const config = input.config
@@ -106,6 +117,16 @@ export function reviewMetrics(input: {
     config.nodes.filter((node) => node.review_lane?.startsWith("skeptic-")).map((node) => node.id),
   )
 
+  // The completed rounds of each review chain, in round order (`completed` is
+  // already sorted, so each chain's indexes are too).
+  const chainOf = chainKeys(decisions, input.workflowID)
+  const chains = new Map<string, number[]>()
+  completed.forEach((entry, index) => {
+    const key = chainOf.get(entry.definition.id) ?? entry.definition.id
+    chains.set(key, [...(chains.get(key) ?? []), index])
+  })
+  const perChain = [...chains.values()]
+
   return {
     newFindingsPerRound: summary.newFindingsPerRound,
     quality: {
@@ -114,21 +135,57 @@ export function reviewMetrics(input: {
       raised: summary.raised,
       fixed: summary.fixed,
       refuted: summary.refuted + summary.resolvedRefuted,
-      // A finding still open for several rounds is re-listed by every
-      // `resolved`, so the cumulative total would count it once per round:
-      // what remains open is what the latest arbitration left open.
-      stillOpen: rounds.at(-1)?.stillOpen ?? 0,
+      // A finding still open for several rounds is re-listed by every `resolved`
+      // of its chain, so a cumulative total would count it once per round: what
+      // a chain leaves open is what its latest arbitration left open. Each chain
+      // stands alone, so the workflow's open findings are the sum over chains.
+      stillOpen: perChain.reduce((total, indexes) => total + rounds[indexes[indexes.length - 1]].stillOpen, 0),
       skepticRefutations: completed.reduce((total, { row }) => total + reviewLaneFindings(row?.output, skeptics), 0),
       rounds: summary.rounds,
-      quietRounds: summary.quietRounds,
-      completeness: completenessOf(
+      // The streak is a chain's own trailing run of rounds without a new upheld
+      // finding. Several chains are quiet only as long as the quietest one.
+      quietRounds:
+        perChain.length === 0
+          ? 0
+          : Math.min(...perChain.map((indexes) => reviewRoundSummary(indexes.map((i) => rounds[i])).quietRounds)),
+      completeness: mergeCompleteness(
         config,
-        rows,
-        definitions,
-        completed.map((entry) => entry.dependencies),
+        perChain.flatMap((indexes) => {
+          const lane = completenessLane(
+            rows,
+            definitions,
+            indexes.map((i) => completed[i].dependencies),
+          )
+          return lane ? [lane] : []
+        }),
       ),
     },
   }
+}
+
+/**
+ * The review chain each decision belongs to, keyed by the chain's first
+ * decision. A decision that continues another decision of this workflow through
+ * `prior_round` joins that decision's chain; a `prior_round` naming another
+ * workflow (a successor workflow continuing an earlier review) starts a chain
+ * here, since the earlier rounds are not part of this workflow. Cycles stop at
+ * the first decision seen twice.
+ */
+function chainKeys(decisions: readonly NodeConfig[], workflowID: string): ReadonlyMap<string, string> {
+  const byID = new Map(decisions.map((decision) => [decision.id, decision]))
+  const head = (decision: NodeConfig) => {
+    const seen = new Set<string>()
+    let current = decision
+    while (!seen.has(current.id)) {
+      seen.add(current.id)
+      const prior = current.prior_round
+      const parent = prior?.workflow_id === workflowID ? byID.get(prior.review_id) : undefined
+      if (!parent) break
+      current = parent
+    }
+    return current.id
+  }
+  return new Map(decisions.map((decision) => [decision.id, head(decision)]))
 }
 
 /**
@@ -137,6 +194,7 @@ export function reviewMetrics(input: {
  */
 export function workflowQuality(input: {
   readonly config: WorkflowConfig | undefined
+  readonly workflowID: string
   readonly nodes: readonly QualityNode[]
 }): WorkflowQuality | null {
   if (!input.config || !strictReviewGate(input.config)) return null
@@ -145,8 +203,10 @@ export function workflowQuality(input: {
 
 /**
  * One quality across several workflows (the session-level read): counts add up,
- * a bound review anywhere counts as bound, and the quiet streak is the longest
- * one. Null when no workflow reports quality.
+ * a bound review anywhere counts as bound, and the quiet streak is the quietest
+ * workflow's among those that have arbitrated a round (the same "quiet only as
+ * long as the quietest" rule as chains within a workflow). Null when no workflow
+ * reports quality.
  */
 export function combine(items: readonly WorkflowQuality[]): WorkflowQuality | null {
   if (items.length === 0) return null
@@ -161,7 +221,7 @@ export function combine(items: readonly WorkflowQuality[]): WorkflowQuality | nu
     stillOpen: total((item) => item.stillOpen),
     skepticRefutations: total((item) => item.skepticRefutations),
     rounds: total((item) => item.rounds),
-    quietRounds: Math.max(...items.map((item) => item.quietRounds)),
+    quietRounds: quietestStreak(items),
     completeness:
       completeness.length === 0
         ? null
@@ -173,19 +233,28 @@ export function combine(items: readonly WorkflowQuality[]): WorkflowQuality | nu
   }
 }
 
+function quietestStreak(items: readonly WorkflowQuality[]): number {
+  const streaks = items.filter((item) => item.reviews > 0).map((item) => item.quietRounds)
+  return streaks.length === 0 ? 0 : Math.min(...streaks)
+}
+
+/** One completeness lane's judgement: the status of each acceptance item it judged, and what it listed. */
+interface CompletenessLane {
+  readonly judged: ReadonlyMap<string, string>
+  readonly unlisted: readonly string[]
+}
+
 /**
- * M3 completeness from the latest arbitrated round whose completeness lane
- * completed. The denominator is the declared acceptance list, so an item the
- * lane never judged still counts against it; without a declared list the lane's
- * own judged items are all there is.
+ * The completeness lane of a chain's latest arbitrated round that has one that
+ * completed. `rounds` holds the dependencies of the chain's completed decisions,
+ * oldest first.
  */
-function completenessOf(
-  config: WorkflowConfig,
+function completenessLane(
   rows: ReadonlyMap<string, QualityNode>,
   definitions: ReadonlyMap<string, NodeConfig>,
-  dependencies: readonly (readonly string[])[],
-): WorkflowQuality["completeness"] {
-  for (const lanes of dependencies.toReversed()) {
+  rounds: readonly (readonly string[])[],
+): CompletenessLane | undefined {
+  for (const lanes of rounds.toReversed()) {
     for (const id of lanes) {
       if (definitions.get(id)?.review_lane !== "completeness") continue
       const lane = rows.get(id)
@@ -197,16 +266,43 @@ function completenessOf(
         if (isRecord(entry) && typeof entry.id === "string" && typeof entry.status === "string")
           judged.set(entry.id, entry.status)
       }
-      const declared = config.acceptance ? [...new Set(config.acceptance.map((item) => item.id))] : undefined
       return {
-        covered: declared
-          ? declared.filter((itemID) => judged.get(itemID) === "covered").length
-          : [...judged.values()].filter((status) => status === "covered").length,
-        total: declared ? declared.length : judged.size,
-        unlisted: (Array.isArray(output.unlisted) ? output.unlisted : []).filter((item) => typeof item === "string")
-          .length,
+        judged,
+        unlisted: (Array.isArray(output.unlisted) ? output.unlisted : []).filter((item) => typeof item === "string"),
       }
     }
   }
-  return null
+  return undefined
+}
+
+/**
+ * M3 completeness over the latest completeness lane of each review chain. The
+ * denominator is the declared acceptance list, so an item no lane judged still
+ * counts against it; without a declared list it is the items the lanes judged.
+ * Every chain judges the same workflow-level items, so they are merged by item
+ * rather than added up, which would count an item once per chain: an item is
+ * covered only when every lane that judged it called it covered, and an
+ * expectation that several lanes listed is one unlisted expectation. A single
+ * chain reads as its lane alone. Null when no chain has a completed lane.
+ */
+function mergeCompleteness(
+  config: WorkflowConfig,
+  lanes: readonly CompletenessLane[],
+): WorkflowQuality["completeness"] {
+  if (lanes.length === 0) return null
+  const ids = config.acceptance
+    ? [...new Set(config.acceptance.map((item) => item.id))]
+    : [...new Set(lanes.flatMap((lane) => [...lane.judged.keys()]))]
+  const covered = ids.filter((id) => {
+    const verdicts = lanes.flatMap((lane) => {
+      const status = lane.judged.get(id)
+      return status === undefined ? [] : [status]
+    })
+    return verdicts.length > 0 && verdicts.every((status) => status === "covered")
+  })
+  return {
+    covered: covered.length,
+    total: ids.length,
+    unlisted: new Set(lanes.flatMap((lane) => lane.unlisted)).size,
+  }
 }

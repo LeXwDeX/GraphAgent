@@ -14,19 +14,31 @@ import { makeWorkflowRow } from "./fixtures"
 import {
   accepted,
   acceptedDecision,
+  chainsConfig,
+  chainsOutputs,
   completeness,
   disposition,
   lane,
   roundOne,
   roundOneDecision,
+  roundOutputs,
   rowsFor,
   strictConfig,
   withRound,
+  WORKFLOW_ID,
   type Outputs,
 } from "./review-fixtures"
 
 const quality = (config: WorkflowConfig, outputs: Outputs) =>
-  DagQuality.workflowQuality({ config, nodes: rowsFor(config, outputs) })
+  DagQuality.workflowQuality({ config, workflowID: WORKFLOW_ID, nodes: rowsFor(config, outputs) })
+
+/** `config` with the decision `id` continuing the review `review` (of `workflow`, this one by default). */
+const link = (config: WorkflowConfig, id: string, review: string, workflow = WORKFLOW_ID): WorkflowConfig => ({
+  ...config,
+  nodes: config.nodes.map((node) =>
+    node.id === id ? { ...node, prior_round: { workflow_id: workflow, review_id: review } } : node,
+  ),
+})
 
 describe("workflow quality (#1027 D6b)", () => {
   it("counts one arbitrated round: reviews, raised/refuted, skeptic findings, completeness", () => {
@@ -52,7 +64,9 @@ describe("workflow quality (#1027 D6b)", () => {
     // The same graph under deep mode is strict without a review_gate.
     expect(quality({ ...standard, mode: "deep" }, roundOne)).not.toBeNull()
     // `inspect` still shows the counters for a standard workflow with a review.
-    expect(DagQuality.reviewMetrics({ config: standard, nodes: rowsFor(standard, roundOne) })).toBeDefined()
+    expect(
+      DagQuality.reviewMetrics({ config: standard, workflowID: WORKFLOW_ID, nodes: rowsFor(standard, roundOne) }),
+    ).toBeDefined()
 
     const noReview = {
       ...strictConfig(),
@@ -60,7 +74,7 @@ describe("workflow quality (#1027 D6b)", () => {
     }
     expect(quality(noReview, roundOne)).toBeNull()
     expect(quality({ ...strictConfig(), nodes: [] }, {})).toBeNull()
-    expect(DagQuality.workflowQuality({ config: undefined, nodes: [] })).toBeNull()
+    expect(DagQuality.workflowQuality({ config: undefined, workflowID: WORKFLOW_ID, nodes: [] })).toBeNull()
   })
 
   it("does not count a decision that has not completed as a round", () => {
@@ -73,7 +87,8 @@ describe("workflow quality (#1027 D6b)", () => {
   })
 
   it("accumulates rounds, and counts what is still open once, not once per round", () => {
-    const config = withRound(withRound(strictConfig(), "decision2", 2), "decision3", 3)
+    // Three rounds of one review: each continues the one before through prior_round.
+    const config = withRound(withRound(strictConfig(), "decision2", 2, "decision"), "decision3", 3, "decision2")
     const outputs: Outputs = {
       ...roundOne,
       "decision2--standards": { output: lane("Fix C") },
@@ -109,7 +124,7 @@ describe("workflow quality (#1027 D6b)", () => {
         },
       },
     }
-    const metrics = DagQuality.reviewMetrics({ config, nodes: rowsFor(config, outputs) })!
+    const metrics = DagQuality.reviewMetrics({ config, workflowID: WORKFLOW_ID, nodes: rowsFor(config, outputs) })!
     expect(metrics.newFindingsPerRound).toEqual([4, 1, 0])
     expect(metrics.quality).toEqual({
       reviewBound: false,
@@ -222,8 +237,103 @@ describe("workflow quality (#1027 D6b)", () => {
       stillOpen: 0,
       skepticRefutations: 2,
       rounds: 2,
-      quietRounds: 2,
+      // Every review has been quiet for at least the quietest one's streak.
+      quietRounds: 0,
       completeness: { covered: 3, total: 4, unlisted: 1 },
+    })
+
+    // A workflow that has not arbitrated a round yet has no streak to be quietest.
+    const idle: WorkflowQuality = { ...one, reviews: 0, rounds: 0, quietRounds: 0, completeness: null }
+    expect(DagQuality.combine([bound, idle])?.quietRounds).toBe(2)
+  })
+
+  describe("independent review chains in one workflow", () => {
+    // Chain A is `decision` and its continuation `decision2`; chain B is a separate
+    // block `other` with `other2` and `other3` (see `chainsConfig`).
+    const chains = chainsConfig
+    const outputs = chainsOutputs
+
+    it("sums what each chain's latest round left open instead of reading the last decision alone", () => {
+      const config = chains()
+      const metrics = DagQuality.reviewMetrics({ config, workflowID: WORKFLOW_ID, nodes: rowsFor(config, outputs) })!
+      expect(metrics.newFindingsPerRound).toEqual([1, 1, 0, 0, 0])
+      expect(metrics.quality).toEqual({
+        reviewBound: false,
+        reviews: 5,
+        raised: 2,
+        fixed: 1,
+        refuted: 0,
+        // A's latest round (decision2) left one finding open; B's (other3) none.
+        stillOpen: 1,
+        skepticRefutations: 0,
+        rounds: 5,
+        // A has been quiet for one round, B for two: every chain for at least one.
+        quietRounds: 1,
+        // Each chain's latest completeness lane, merged by acceptance item: AC2 is
+        // missing in A, so it is not covered; the shared "Edge case" counts once.
+        completeness: { covered: 1, total: 2, unlisted: 2 },
+      })
+    })
+
+    it("reports the same chain accounting through inspect status", () => {
+      const config = chains()
+      const rows = rowsFor(config, outputs)
+      const status = JSON.parse(
+        renderStatus({ workflow: makeWorkflowRow({ config: JSON.stringify(config) }), nodes: rows, allNodes: rows })
+          .output,
+      ).review_quality
+      expect(status).toMatchObject({
+        reviews: 5,
+        still_open: 1,
+        quiet_rounds: 1,
+        completeness: { covered: 1, total: 2, unlisted: 2 },
+      })
+    })
+
+    it("keeps a chain at its latest completed round while a later round is still running", () => {
+      const config = chains()
+      // A's second round has not completed, so A's open finding is round one's.
+      const running: Outputs = {
+        ...outputs,
+        ...roundOutputs("decision", {
+          lanes: { standards: lane("Fix A") },
+          decision: {
+            dispositions: [disposition("decision--standards", 0, "upheld")],
+            resolved: [{ ref: "wf-prev/decision--standards/0", how: "still_open", evidence: "carried over" }],
+          },
+        }),
+        decision2: { status: "running" },
+      }
+      expect(quality(config, running)).toMatchObject({ reviews: 4, stillOpen: 1 })
+    })
+
+    it("treats a round that continues another workflow's review as a chain of its own", () => {
+      const open = { resolved: [{ ref: "wf-prev/decision--standards/0", how: "still_open", evidence: "waiting" }] }
+      const outputs: Outputs = {
+        implementation: roundOne.implementation,
+        verification: roundOne.verification,
+        ...roundOutputs("decision", { decision: open }),
+        ...roundOutputs("decision2", { decision: { resolved: [] } }),
+      }
+      // Continuing a review of this workflow: the later round is the chain's latest.
+      expect(quality(withRound(strictConfig(), "decision2", 2, "decision"), outputs)?.stillOpen).toBe(0)
+      // Continuing another workflow's review starts a separate chain here, so the
+      // first block's open finding is still counted.
+      expect(quality(withRound(strictConfig(), "decision2", 2, "decision", "wf-elsewhere"), outputs)?.stillOpen).toBe(1)
+    })
+
+    it("terminates on a prior_round that points at itself or loops", () => {
+      const base = withRound(strictConfig(), "decision2", 2)
+      const outputs: Outputs = {
+        implementation: roundOne.implementation,
+        verification: roundOne.verification,
+        ...roundOutputs("decision", { decision: {} }),
+        ...roundOutputs("decision2", { decision: {} }),
+      }
+      const self = link(base, "decision", "decision")
+      expect(quality(self, outputs)).toMatchObject({ reviews: 2 })
+      const loop = link(link(base, "decision", "decision2"), "decision2", "decision")
+      expect(quality(loop, outputs)).toMatchObject({ reviews: 2 })
     })
   })
 
@@ -242,7 +352,7 @@ describe("workflow quality (#1027 D6b)", () => {
   // D6 acceptance: the panel's `quality` and the tool result's `review_quality`
   // are one computation, checked on one fixture.
   it("agrees with inspect status on the same fixture", () => {
-    const config = withRound(strictConfig(), "decision2", 2)
+    const config = withRound(strictConfig(), "decision2", 2, "decision")
     const outputs: Outputs = {
       ...roundOne,
       "decision2--standards": { output: lane("Fix C") },

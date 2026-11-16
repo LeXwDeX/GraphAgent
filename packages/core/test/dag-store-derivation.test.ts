@@ -12,7 +12,7 @@
  *   output only where a computation reads it, so a large report node never
  *   rides along.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect } from "bun:test"
 import { and, eq } from "drizzle-orm"
 import { DateTime, Effect, Layer } from "effect"
 import { Database } from "@graphagent/core/database/database"
@@ -27,14 +27,15 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { SessionSchema } from "@graphagent/core/session/schema"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { DagEvent } from "@graphagent/schema/dag-event"
+import { testEffect } from "./lib/effect"
 
-function layer() {
-  const database = Database.layerFromPath(":memory:")
-  const eventLayer = EventV2.layer.pipe(Layer.provide(database))
-  const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, eventLayer)))
-  const store = DagStore.layer.pipe(Layer.provide(database))
-  return Layer.mergeAll(database, eventLayer, projector, store)
-}
+// Each test builds its own in-memory database, event log, projector and store
+// from these shared layers.
+const database = Database.layerFromPath(":memory:")
+const eventLayer = EventV2.layer.pipe(Layer.provide(database))
+const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, eventLayer)))
+const store = DagStore.layer.pipe(Layer.provide(database))
+const it = testEffect(Layer.mergeAll(database, eventLayer, projector, store))
 
 const workflow = (id: string, seq: number) => ({
   id,
@@ -72,26 +73,32 @@ const node = (
   ...(output === undefined ? {} : { output }),
 })
 
+/** The project and session every workflow below belongs to. */
+const seedSession = Effect.gen(function* () {
+  const { db } = yield* Database.Service
+  yield* db
+    .insert(ProjectTable)
+    .values({ id: Project.ID.make("project-1"), worktree: AbsolutePath.make(process.cwd()), sandboxes: [] })
+    .run()
+    .pipe(Effect.orDie)
+  yield* db
+    .insert(SessionTable)
+    .values({
+      id: SessionSchema.ID.make("ses_parent"),
+      project_id: Project.ID.make("project-1"),
+      slug: "parent",
+      directory: AbsolutePath.make(process.cwd()),
+      title: "Parent",
+      version: "test",
+    })
+    .run()
+    .pipe(Effect.orDie)
+})
+
 function seed(rows: (workflowId: string) => ReturnType<typeof node>[] = (id) => [node(id, "n1", "pending", 1)]) {
   return Effect.gen(function* () {
     const { db } = yield* Database.Service
-    yield* db
-      .insert(ProjectTable)
-      .values({ id: Project.ID.make("project-1"), worktree: AbsolutePath.make(process.cwd()), sandboxes: [] })
-      .run()
-      .pipe(Effect.orDie)
-    yield* db
-      .insert(SessionTable)
-      .values({
-        id: SessionSchema.ID.make("ses_parent"),
-        project_id: Project.ID.make("project-1"),
-        slug: "parent",
-        directory: AbsolutePath.make(process.cwd()),
-        title: "Parent",
-        version: "test",
-      })
-      .run()
-      .pipe(Effect.orDie)
+    yield* seedSession
     yield* db
       .insert(WorkflowTable)
       .values([workflow("dag_a", 1), workflow("dag_b", 1)])
@@ -111,108 +118,103 @@ const eqNode = (workflowId: string, id: string) =>
   and(eq(WorkflowNodeTable.workflow_id, workflowId), eq(WorkflowNodeTable.id, id))
 
 describe("DagStore.getWorkflowRevisions (#1027 D6b)", () => {
-  test("is stable while nothing changes and differs per workflow", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        yield* seed()
-        const first = yield* store.getWorkflowRevisions("ses_parent")
-        const second = yield* store.getWorkflowRevisions("ses_parent")
-        expect([...first.keys()].toSorted()).toEqual(["dag_a", "dag_b"])
-        expect(second).toEqual(first)
-        expect((yield* store.getWorkflowRevisions("ses_missing")).size).toBe(0)
-      }).pipe(Effect.provide(layer()), Effect.scoped),
-    )
-  })
+  it.effect("is stable while nothing changes and differs per workflow", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      yield* seed()
+      const first = yield* store.getWorkflowRevisions("ses_parent")
+      const second = yield* store.getWorkflowRevisions("ses_parent")
+      expect([...first.keys()].toSorted()).toEqual(["dag_a", "dag_b"])
+      expect(second).toEqual(first)
+      expect((yield* store.getWorkflowRevisions("ses_missing")).size).toBe(0)
+    }),
+  )
 
-  test("moves for every projected event that can change coverage or quality, and only for its workflow", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        const events = yield* EventV2.Service
-        yield* seed()
-        const dagID = DagEvent.DagID.make("dag_a")
-        const nodeID = DagEvent.NodeID.make("n1")
-        const marker = (id: string) => store.getWorkflowRevisions("ses_parent").pipe(Effect.map((all) => all.get(id)))
-        const untouched = yield* marker("dag_b")
+  // Published events go through the real projector, so this runs on the live clock.
+  it.live("moves for every projected event that can change coverage or quality, and only for its workflow", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      const events = yield* EventV2.Service
+      yield* seed()
+      const dagID = DagEvent.DagID.make("dag_a")
+      const nodeID = DagEvent.NodeID.make("n1")
+      const marker = (id: string) => store.getWorkflowRevisions("ses_parent").pipe(Effect.map((all) => all.get(id)))
+      const untouched = yield* marker("dag_b")
 
-        const steps: ReadonlyArray<readonly [string, Effect.Effect<unknown>]> = [
-          [
-            "node started",
-            events.publish(DagEvent.NodeStarted, {
-              dagID,
-              nodeID,
-              childSessionID: SessionSchema.ID.make("ses_child"),
-              timestamp: at(10),
-            }),
-          ],
-          [
-            "safety denial",
-            events.publish(DagEvent.NodeSafetyDenied, {
-              dagID,
-              nodeID,
-              attempt: 0,
-              ruleID: "SF-3",
-              permission: "bash",
-              summary: "git reset --hard",
-              timestamp: at(20),
-            }),
-          ],
-          [
-            "node completed",
-            events.publish(DagEvent.NodeCompleted, {
-              dagID,
-              nodeID,
-              output: { not_examined: ["unread"] },
-              durationMs: 1,
-              timestamp: at(30),
-            }),
-          ],
-          [
-            "workflow config update",
-            events.publish(DagEvent.WorkflowConfigUpdated, {
-              dagID,
-              config: '{"name":"x","nodes":[]}',
-              timestamp: at(40),
-            }),
-          ],
-          [
-            "workflow paused",
-            events.publish(DagEvent.WorkflowPaused, { dagID, reason: "budget_exhausted", timestamp: at(50) }),
-          ],
-        ]
-        let previous = yield* marker("dag_a")
-        for (const [label, step] of steps) {
-          yield* step
-          const next = yield* marker("dag_a")
-          expect(next, label).not.toBe(previous)
-          previous = next
-        }
-        expect(yield* marker("dag_b")).toBe(untouched)
-      }).pipe(Effect.provide(layer()), Effect.scoped),
-    )
-  })
+      const steps: ReadonlyArray<readonly [string, Effect.Effect<unknown>]> = [
+        [
+          "node started",
+          events.publish(DagEvent.NodeStarted, {
+            dagID,
+            nodeID,
+            childSessionID: SessionSchema.ID.make("ses_child"),
+            timestamp: at(10),
+          }),
+        ],
+        [
+          "safety denial",
+          events.publish(DagEvent.NodeSafetyDenied, {
+            dagID,
+            nodeID,
+            attempt: 0,
+            ruleID: "SF-3",
+            permission: "bash",
+            summary: "git reset --hard",
+            timestamp: at(20),
+          }),
+        ],
+        [
+          "node completed",
+          events.publish(DagEvent.NodeCompleted, {
+            dagID,
+            nodeID,
+            output: { not_examined: ["unread"] },
+            durationMs: 1,
+            timestamp: at(30),
+          }),
+        ],
+        [
+          "workflow config update",
+          events.publish(DagEvent.WorkflowConfigUpdated, {
+            dagID,
+            config: '{"name":"x","nodes":[]}',
+            timestamp: at(40),
+          }),
+        ],
+        [
+          "workflow paused",
+          events.publish(DagEvent.WorkflowPaused, { dagID, reason: "budget_exhausted", timestamp: at(50) }),
+        ],
+      ]
+      let previous = yield* marker("dag_a")
+      for (const [label, step] of steps) {
+        yield* step
+        const next = yield* marker("dag_a")
+        expect(next, label).not.toBe(previous)
+        previous = next
+      }
+      expect(yield* marker("dag_b")).toBe(untouched)
+    }),
+  )
 
-  test("ignores superseded rows, whose changes never reach the current graph", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        const { db } = yield* Database.Service
-        yield* seed((id) => [node(id, "n1", "pending", 1), node(id, "old", "failed", 2, undefined, true)])
-        const before = yield* store.getWorkflowRevisions("ses_parent")
-        yield* db
-          .update(WorkflowNodeTable)
-          .set({ seq: 99, time_updated: 99_999 })
-          .where(
-            // The superseded row only.
-            eqNode("dag_a", "old"),
-          )
-          .run()
-          .pipe(Effect.orDie)
-        expect(yield* store.getWorkflowRevisions("ses_parent")).toEqual(before)
-      }).pipe(Effect.provide(layer()), Effect.scoped),
-    )
-  })
+  it.effect("ignores superseded rows, whose changes never reach the current graph", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      const { db } = yield* Database.Service
+      yield* seed((id) => [node(id, "n1", "pending", 1), node(id, "old", "failed", 2, undefined, true)])
+      const before = yield* store.getWorkflowRevisions("ses_parent")
+      yield* db
+        .update(WorkflowNodeTable)
+        .set({ seq: 99, time_updated: 99_999 })
+        .where(
+          // The superseded row only.
+          eqNode("dag_a", "old"),
+        )
+        .run()
+        .pipe(Effect.orDie)
+      expect(yield* store.getWorkflowRevisions("ses_parent")).toEqual(before)
+    }),
+  )
 })
 
 describe("DagStore.getSummaryNodes (#1027 D6b)", () => {
@@ -226,87 +228,81 @@ describe("DagStore.getSummaryNodes (#1027 D6b)", () => {
     node(id, "old", "failed", 6, { text: "replaced" }, true),
   ]
 
-  test("returns the current graph of every requested workflow in one call", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        yield* seed(rows)
-        const result = yield* store.getSummaryNodes({ workflowIds: ["dag_a", "dag_b"], outputs: new Set() })
-        expect(
-          result
-            .filter((row) => row.workflowId === "dag_a")
-            .map((row) => row.id)
-            .toSorted(),
-        ).toEqual(["child", "gap", "lane", "report", "running"])
-        expect(result.some((row) => row.id === "old")).toBe(false)
-        expect(result.some((row) => row.superseded)).toBe(false)
-        expect(result.find((row) => row.workflowId === "dag_b" && row.id === "child")?.dependsOn).toEqual(["lane"])
-        expect(yield* store.getSummaryNodes({ workflowIds: [], outputs: new Set() })).toEqual([])
-        expect(yield* store.getSummaryNodes({ workflowIds: ["dag_missing"], outputs: new Set() })).toEqual([])
-      }).pipe(Effect.provide(layer()), Effect.scoped),
-    )
-  })
+  it.effect("returns the current graph of every requested workflow in one call", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      yield* seed(rows)
+      const result = yield* store.getSummaryNodes({ workflowIds: ["dag_a", "dag_b"], outputs: new Set() })
+      expect(
+        result
+          .filter((row) => row.workflowId === "dag_a")
+          .map((row) => row.id)
+          .toSorted(),
+      ).toEqual(["child", "gap", "lane", "report", "running"])
+      expect(result.some((row) => row.id === "old")).toBe(false)
+      expect(result.some((row) => row.superseded)).toBe(false)
+      expect(result.find((row) => row.workflowId === "dag_b" && row.id === "child")?.dependsOn).toEqual(["lane"])
+      expect(yield* store.getSummaryNodes({ workflowIds: [], outputs: new Set() })).toEqual([])
+      expect(yield* store.getSummaryNodes({ workflowIds: ["dag_missing"], outputs: new Set() })).toEqual([])
+    }),
+  )
 
-  test("loads an output only for a named node of its own workflow or one that mentions not_examined", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        yield* seed(rows)
-        const result = yield* store.getSummaryNodes({
-          workflowIds: ["dag_a", "dag_b"],
-          // Named for dag_a only: the same node id in dag_b must not load.
-          outputs: new Set([summaryNodeKey("dag_a", "lane"), summaryNodeKey("dag_a", "child")]),
-        })
-        const out = (workflowId: string, id: string) =>
-          result.find((row) => row.workflowId === workflowId && row.id === id)
-        expect(out("dag_a", "lane")?.output).toEqual({ required_actions: ["fix it"] })
-        expect(out("dag_a", "child")?.output).toEqual({ verdict: "ACCEPT" })
-        expect(out("dag_b", "lane")?.output).toBeUndefined()
-        // A report nobody named stays out; a node that mentions not_examined comes
-        // along because coverage reads it from any node.
-        expect(out("dag_a", "report")?.output).toBeUndefined()
-        expect(out("dag_a", "gap")?.output).toEqual({ summary: "partial", not_examined: ["unread package"] })
-        expect(out("dag_b", "gap")?.output).toEqual({ summary: "partial", not_examined: ["unread package"] })
-        expect(out("dag_a", "running")?.output).toBeUndefined()
-        // No output key at all, not a present-but-undefined one, for unloaded rows.
-        expect("output" in out("dag_a", "report")!).toBe(false)
-      }).pipe(Effect.provide(layer()), Effect.scoped),
-    )
-  })
+  it.effect("loads an output only for a named node of its own workflow or one that mentions not_examined", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      yield* seed(rows)
+      const result = yield* store.getSummaryNodes({
+        workflowIds: ["dag_a", "dag_b"],
+        // Named for dag_a only: the same node id in dag_b must not load.
+        outputs: new Set([summaryNodeKey("dag_a", "lane"), summaryNodeKey("dag_a", "child")]),
+      })
+      const out = (workflowId: string, id: string) =>
+        result.find((row) => row.workflowId === workflowId && row.id === id)
+      expect(out("dag_a", "lane")?.output).toEqual({ required_actions: ["fix it"] })
+      expect(out("dag_a", "child")?.output).toEqual({ verdict: "ACCEPT" })
+      expect(out("dag_b", "lane")?.output).toBeUndefined()
+      // A report nobody named stays out; a node that mentions not_examined comes
+      // along because coverage reads it from any node.
+      expect(out("dag_a", "report")?.output).toBeUndefined()
+      expect(out("dag_a", "gap")?.output).toEqual({ summary: "partial", not_examined: ["unread package"] })
+      expect(out("dag_b", "gap")?.output).toEqual({ summary: "partial", not_examined: ["unread package"] })
+      expect(out("dag_a", "running")?.output).toBeUndefined()
+      // No output key at all, not a present-but-undefined one, for unloaded rows.
+      expect("output" in out("dag_a", "report")!).toBe(false)
+    }),
+  )
 
-  test("carries the columns coverage reads", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const store = yield* DagStore.Service
-        const { db } = yield* Database.Service
-        yield* seed((id) => [node(id, "n1", "failed", 1)])
-        yield* db
-          .update(WorkflowNodeTable)
-          .set({
-            error_reason: "boom",
-            error_class: "exec_failed",
-            stale_target: true,
-            safety_denials: {
-              items: [{ attempt: 0, ruleID: "SF-3", permission: "bash", summary: "reset", at: 1 }],
-              total: 1,
-            },
-          })
-          .where(eqNode("dag_a", "n1"))
-          .run()
-          .pipe(Effect.orDie)
-        const row = (yield* store.getSummaryNodes({ workflowIds: ["dag_a"], outputs: new Set() }))[0]
-        expect(row).toMatchObject({
-          id: "n1",
-          workflowId: "dag_a",
-          status: "failed",
-          errorReason: "boom",
-          errorClass: "exec_failed",
-          staleTarget: true,
-          safetyDenials: { total: 1 },
+  it.effect("carries the columns coverage reads", () =>
+    Effect.gen(function* () {
+      const store = yield* DagStore.Service
+      const { db } = yield* Database.Service
+      yield* seed((id) => [node(id, "n1", "failed", 1)])
+      yield* db
+        .update(WorkflowNodeTable)
+        .set({
+          error_reason: "boom",
+          error_class: "exec_failed",
+          stale_target: true,
+          safety_denials: {
+            items: [{ attempt: 0, ruleID: "SF-3", permission: "bash", summary: "reset", at: 1 }],
+            total: 1,
+          },
         })
-      }).pipe(Effect.provide(layer()), Effect.scoped),
-    )
-  })
+        .where(eqNode("dag_a", "n1"))
+        .run()
+        .pipe(Effect.orDie)
+      const row = (yield* store.getSummaryNodes({ workflowIds: ["dag_a"], outputs: new Set() }))[0]
+      expect(row).toMatchObject({
+        id: "n1",
+        workflowId: "dag_a",
+        status: "failed",
+        errorReason: "boom",
+        errorClass: "exec_failed",
+        staleTarget: true,
+        safetyDenials: { total: 1 },
+      })
+    }),
+  )
 })
 
 describe("derivation reads stay constant in size (#1027 D6b)", () => {
@@ -314,23 +310,7 @@ describe("derivation reads stay constant in size (#1027 D6b)", () => {
   const seedMany = (workflows: number, nodes: number) =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.make("project-1"), worktree: AbsolutePath.make(process.cwd()), sandboxes: [] })
-        .run()
-        .pipe(Effect.orDie)
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: SessionSchema.ID.make("ses_parent"),
-          project_id: Project.ID.make("project-1"),
-          slug: "parent",
-          directory: AbsolutePath.make(process.cwd()),
-          title: "Parent",
-          version: "test",
-        })
-        .run()
-        .pipe(Effect.orDie)
+      yield* seedSession
       const ids = Array.from({ length: workflows }, (_, index) => `dag_${index}`)
       yield* db
         .insert(WorkflowTable)
@@ -349,8 +329,12 @@ describe("derivation reads stay constant in size (#1027 D6b)", () => {
       return ids
     })
 
-  const statements = async (workflows: number, nodes: number) =>
-    Effect.runPromise(
+  // The same statement count whatever the size: a small session and a large one.
+  for (const [workflows, nodes] of [
+    [1, 5],
+    [20, 50],
+  ] as const) {
+    it.effect(`one statement per read for ${workflows} workflow(s) of ${nodes} nodes`, () =>
       Effect.gen(function* () {
         const store = yield* DagStore.Service
         const ids = yield* seedMany(workflows, nodes)
@@ -367,14 +351,8 @@ describe("derivation reads stay constant in size (#1027 D6b)", () => {
         const end = DatabaseMetrics.snapshot().sqlCount
         expect(revisions.size).toBe(workflows)
         expect(rows).toHaveLength(workflows * nodes)
-        return { revisions: middle - start, nodes: end - middle }
-      }).pipe(Effect.provide(layer()), Effect.scoped),
+        expect({ revisions: middle - start, nodes: end - middle }).toEqual({ revisions: 1, nodes: 1 })
+      }),
     )
-
-  test("one statement per read whatever the workflow and node counts", async () => {
-    const small = await statements(1, 5)
-    const large = await statements(20, 50)
-    expect(small).toEqual({ revisions: 1, nodes: 1 })
-    expect(large).toEqual(small)
-  })
+  }
 })

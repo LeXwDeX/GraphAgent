@@ -36,8 +36,22 @@ export const strictConfig = (): WorkflowConfig => ({
   ),
 })
 
-/** The same review block again under `to`, as an extend that adds a later round. */
-export const withRound = (config: WorkflowConfig, to: string, round: number): WorkflowConfig => {
+/** The id `makeWorkflowRow` gives a workflow, and the one `prior_round` names to stay in it. */
+export const WORKFLOW_ID = "wf-1"
+
+/**
+ * The same review block again under `to`, as an extend that adds a later round.
+ * Without `prior` it is an independent review of its own; with `prior` (the
+ * review id of an earlier round) it continues that review through `prior_round`,
+ * in this workflow unless `priorWorkflow` names another.
+ */
+export const withRound = (
+  config: WorkflowConfig,
+  to: string,
+  round: number,
+  prior?: string,
+  priorWorkflow = WORKFLOW_ID,
+): WorkflowConfig => {
   const rename = (id: string) => (id === "decision" ? to : id.startsWith("decision--") ? `${to}${id.slice(8)}` : id)
   const clones = config.nodes
     .filter((node) => node.id === "decision" || node.id.startsWith("decision--"))
@@ -45,7 +59,12 @@ export const withRound = (config: WorkflowConfig, to: string, round: number): Wo
       ...node,
       id: rename(node.id),
       depends_on: node.depends_on.map(rename),
-      ...(node.id === "decision" ? { review_round: round } : {}),
+      ...(node.id === "decision"
+        ? {
+            review_round: round,
+            ...(prior === undefined ? {} : { prior_round: { workflow_id: priorWorkflow, review_id: prior } }),
+          }
+        : {}),
     }))
   return { ...config, nodes: [...config.nodes, ...clones] }
 }
@@ -93,6 +112,39 @@ export const lane = (...actions: string[]) => ({
   required_actions: actions,
 })
 
+/** A completeness lane's judgement of each acceptance item, without the actions it would raise. */
+export const judgement = (status: Record<string, "covered" | "partial" | "missing">, unlisted: string[] = []) => ({
+  verdict: "ACCEPT",
+  required_actions: [],
+  acceptance: Object.entries(status).map(([id, state]) => ({ id, status: state, evidence: "seen" })),
+  unlisted,
+})
+
+/**
+ * The outputs of one finished review round under `id`: clean lanes unless a
+ * lane is given, and the arbitration `decision` over them. Round outputs are
+ * compared by their accounting here, not by the arbitration contract.
+ */
+export const roundOutputs = (
+  id: string,
+  input: { decision: Record<string, unknown>; lanes?: Partial<Record<"standards" | "completeness", unknown>> },
+): Outputs => ({
+  [`${id}--standards`]: { output: input.lanes?.standards ?? lane() },
+  [`${id}--intent`]: { output: lane() },
+  [`${id}--completeness`]: { output: input.lanes?.completeness ?? judgement({ AC1: "covered", AC2: "covered" }) },
+  [`${id}--skeptic-1`]: { output: lane() },
+  [id]: {
+    output: {
+      verdict: "REJECT",
+      implementation_fingerprint: "fp-1",
+      required_actions: [],
+      dispositions: [],
+      resolved: [],
+      ...input.decision,
+    },
+  },
+})
+
 /** The round-one arbitration: four upheld new findings (one a skeptic's) and one refuted claim. */
 export const roundOneDecision = {
   verdict: "REJECT",
@@ -138,4 +190,45 @@ export const accepted: Outputs = {
   "decision--skeptic-1": { output: lane() },
   decision: { output: acceptedDecision },
   final: { output: { summary: "ready" } },
+}
+
+/**
+ * Two independent reviews in one workflow. Chain A is the block `decision` and
+ * its continuation `decision2`; chain B is a separate block `other` with the
+ * continuations `other2` and `other3`. B runs the later rounds, so the last
+ * decision of the workflow is B's, while A is the chain that still has an open
+ * finding.
+ */
+export const chainsConfig = (): WorkflowConfig =>
+  withRound(
+    withRound(withRound(withRound(strictConfig(), "decision2", 2, "decision"), "other", 1), "other2", 2, "other"),
+    "other3",
+    3,
+    "other2",
+  )
+
+export const chainsOutputs: Outputs = {
+  implementation: roundOne.implementation,
+  verification: roundOne.verification,
+  ...roundOutputs("decision", {
+    lanes: { standards: lane("Fix A") },
+    decision: { dispositions: [disposition("decision--standards", 0, "upheld")] },
+  }),
+  ...roundOutputs("decision2", {
+    lanes: { completeness: judgement({ AC1: "covered", AC2: "missing" }, ["Edge case"]) },
+    decision: {
+      resolved: [{ ref: `${WORKFLOW_ID}/decision--standards/0`, how: "still_open", evidence: "waiting on the API" }],
+    },
+  }),
+  ...roundOutputs("other", {
+    lanes: { standards: lane("Fix B") },
+    decision: { dispositions: [disposition("other--standards", 0, "upheld")] },
+  }),
+  ...roundOutputs("other2", {
+    decision: { resolved: [{ ref: `${WORKFLOW_ID}/other--standards/0`, how: "fixed", evidence: "src/b.ts" }] },
+  }),
+  ...roundOutputs("other3", {
+    lanes: { completeness: judgement({ AC1: "covered", AC2: "covered" }, ["Edge case", "Other"]) },
+    decision: {},
+  }),
 }

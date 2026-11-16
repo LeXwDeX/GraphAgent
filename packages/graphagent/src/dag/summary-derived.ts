@@ -42,7 +42,7 @@ function deriveWith(
       nodes,
       workflow: { status: workflow.status, pauseReason: workflow.pauseReason },
     }).length,
-    quality: DagQuality.workflowQuality({ config, nodes }),
+    quality: DagQuality.workflowQuality({ config, workflowID: workflow.id, nodes }),
   }
 }
 
