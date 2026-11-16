@@ -68,6 +68,7 @@ const decide = (target: string) =>
       forced: false,
       owner: { kind: "task", toolCallID: "call_safety_references" },
       rootSessionID,
+      mode: "allow",
     })
   })
 
