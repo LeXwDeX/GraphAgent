@@ -1,4 +1,5 @@
 import { isRecord } from "@/util/record"
+import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { LocalPermissionStartup } from "@/permission/local-startup"
 import { ClientSessions } from "@/session/client-sessions"
 import { AppRuntime } from "@/effect/app-runtime"
@@ -29,6 +30,7 @@ import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { DagHold } from "./run/dag-hold"
 import { interactiveMarkable, nonInteractiveMarkable, type LocalFetchMark } from "./run/authorization"
+import { askedPermission, locationHeaders, permissionAnswerer } from "./run/permission-answer"
 import { sessionTree } from "./run/permission-tree"
 import { MessageID } from "@/session/schema"
 
@@ -638,6 +640,33 @@ export const RunCommand = effectCmd({
             if (!found.data) throw new Error(`session ${id} not found`)
             return found.data.parentID ?? undefined
           })
+          const warn = (line: string) => UI.println(UI.Style.TEXT_WARNING_BOLD + "!", UI.Style.TEXT_NORMAL + line)
+          const answer = permissionAnswerer({
+            sessionID,
+            tree,
+            approveOwn: args["dangerously-skip-permissions"],
+            say: warn,
+            reply: async (requestID, reply, location) => {
+              const result = await client.permission.reply(
+                { requestID, reply },
+                location ? { headers: locationHeaders(location) } : undefined,
+              )
+              if (result.error) warn(`permission request ${requestID} could not be answered`)
+            },
+          })
+          // A node that runs in another directory (isolated in a worktree, or bound to one) asks
+          // there. The server filters the event stream by the client's directory, so that request
+          // never reaches this stream; the process-wide bus carries every directory's events, and
+          // the answer goes to the directory that holds the request (#1324).
+          const onBus = (event: GlobalEvent) => {
+            if (!isRecord(event.payload) || event.payload.type !== "permission.asked") return
+            const request = askedPermission(event.payload.properties)
+            if (!request) return
+            answer(request, { directory: event.directory, workspace: event.workspace }).catch((cause) =>
+              warn(`permission request ${request.id} could not be answered: ${formatRunError(cause)}`),
+            )
+          }
+          GlobalBus.on("event", onBus)
           let error: string | undefined
           // Issue 614: consumer-only DAG hold. Sample dag.bySession on the
           // busy/idle transitions of the target session and on the DAG summary
@@ -747,33 +776,13 @@ export const RunCommand = effectCmd({
                 }
               }
 
-              if (event.type === "permission.asked") {
-                const permission = event.properties
-                // The run answers for its whole session tree: a workflow node or a task agent asks
-                // as a session of its own, and nobody else could answer it here (#1324).
-                const own = permission.sessionID === sessionID
-                if (!own && !(await tree.has(permission.sessionID))) continue
-
-                // The skip flag covers the session the run drives; descendants are never approved by it.
-                if (own && args["dangerously-skip-permissions"]) {
-                  await client.permission.reply({
-                    requestID: permission.id,
-                    reply: "once",
-                  })
-                } else {
-                  UI.println(
-                    UI.Style.TEXT_WARNING_BOLD + "!",
-                    UI.Style.TEXT_NORMAL +
-                      `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); auto-rejecting`,
-                  )
-                  await client.permission.reply({
-                    requestID: permission.id,
-                    reply: "reject",
-                  })
-                }
-              }
+              // The run answers for its whole session tree: a workflow node or a task agent asks
+              // as a session of its own, and nobody else could answer it here (#1324). The skip
+              // flag covers the session the run drives; descendants are never approved by it.
+              if (event.type === "permission.asked") await answer(event.properties)
             }
           } finally {
+            GlobalBus.off("event", onBus)
             stop()
           }
           return error

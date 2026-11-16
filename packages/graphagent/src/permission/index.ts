@@ -373,8 +373,8 @@ export const layer = Layer.effect(
       // step confirmed. Its edit, bash and MCP calls go to the user, and a call
       // is only settled by the user's own allow (a concrete pattern; for an MCP
       // tool, an allow naming exactly that tool) or by an "always" reply of this
-      // same session. A forced ask already reaches the user, so it stays on its
-      // own path.
+      // same session; a rule that asks is no exception. A forced ask already
+      // reaches the user, so it stays on its own path.
       const askTier =
         Option.isSome(subject) &&
         subject.value.unattended &&
@@ -428,16 +428,17 @@ export const layer = Layer.effect(
           forced = false
           continue
         }
-        // An allow nobody wrote for this call does not settle it under the ask
-        // tier: it becomes a rule-level ask, which neither a hook allow nor
-        // `acceptEdits` may skip. The user's own allow and an "always" reply
-        // of this session still do.
+        // Under the ask tier every question these requests raise is the user's to
+        // answer, so it is a rule-level ask, which neither a hook allow (PreToolUse
+        // or PermissionRequest) nor `acceptEdits` may skip: an allow nobody wrote
+        // for the call, and any rule that asks, `"*": "ask"` and the default
+        // question when no rule matches included (neither counts as an explicit
+        // ask below). The user's own allow and an "always" reply of this session
+        // settle a call, as they always did.
         const needsConfirmation =
           askTier &&
-          rule.action === "allow" &&
-          !explicitAllow(pattern, rule) &&
-          !userAllowsTool(pattern) &&
-          !alwaysApproved(pattern)
+          (rule.action === "ask" ||
+            (!explicitAllow(pattern, rule) && !userAllowsTool(pattern) && !alwaysApproved(pattern)))
         if (rule.action === "allow" && !needsConfirmation) continue
         if (!force && policy.mode === "bypassPermissions" && (yield* capabilities.has(request.sessionID))) continue
         const explicitAsk =

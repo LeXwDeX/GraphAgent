@@ -16,6 +16,7 @@ import path from "node:path"
 import { Config } from "@/config/config"
 import { AppLayer } from "@/effect/app-runtime"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SettingsHook } from "@/hook"
 import { Permission, type AskOptions } from "@/permission"
 import { AskAdjudicator } from "@/permission/ask-adjudicator"
 import { SafetyGuard } from "@/permission/safety-guard"
@@ -109,6 +110,8 @@ interface Extra {
   readonly ruleset?: Rules
   readonly always?: readonly string[]
   readonly options?: AskOptions
+  /** Leave the agent default out: no rule matches unless `ruleset` has one. */
+  readonly bare?: boolean
 }
 
 /** The agent default every real session carries: `"*": "allow"`. It is not the user's own allow. */
@@ -127,7 +130,7 @@ const ask = (
         patterns: [...input.patterns],
         always: [...(input.always ?? [])],
         metadata: input.metadata ?? {},
-        ruleset: [agentDefault, ...(input.ruleset ?? [])],
+        ruleset: [...(input.bare ? [] : [agentDefault]), ...(input.ruleset ?? [])],
       },
       input.options,
     )
@@ -145,6 +148,7 @@ const mcp = (sessionID: SessionID, tool: string, extra: Extra = {}) =>
 
 const allow = (permission: string, pattern: string) => ({ permission, pattern, action: "allow" as const })
 const deny = (permission: string, pattern: string) => ({ permission, pattern, action: "deny" as const })
+const askRule = (permission: string, pattern: string) => ({ permission, pattern, action: "ask" as const })
 
 /** Every `permission.asked` event the run publishes. */
 const watchAsked = Effect.gen(function* () {
@@ -565,6 +569,137 @@ it.instance(
 )
 
 it.instance(
+  "ask tier: a rule that asks is held like any unsettled call; a hook allow and acceptEdits cannot skip it",
+  () =>
+    Effect.gen(function* () {
+      const asked = yield* watchAsked
+      const permission = yield* Permission.Service
+      const { childSessionID } = yield* makeRun("node-ask-rule")
+      const tool = "github_create_issue"
+
+      yield* withTier(
+        "ask",
+        Effect.gen(function* () {
+          // `"*": "ask"` is no explicit ask (permission `*` covers every key), and neither is the
+          // question left when no rule matches at all: under the ask tier both are the user's to answer.
+          for (const extra of [{ ruleset: [askRule("*", "*")] }, { bare: true }]) {
+            for (const [key, calling] of [
+              ["bash", bash(childSessionID, "echo hi", { ...extra, options: { hookAllowed: true } })],
+              ["edit", edit(childSessionID, "src/a.ts", { ...extra, options: { hookAllowed: true } })],
+              [tool, mcp(childSessionID, tool, { ...extra, options: { hookAllowed: true } })],
+            ] as const) {
+              const pending = yield* waitsForUser(calling, childSessionID, key)
+              yield* pending.reply("once")
+            }
+          }
+
+          // The session policy `acceptEdits` accepts edits only where nobody asks: here somebody does.
+          yield* permission.applyHookUpdates(childSessionID, [
+            { type: "setMode", mode: "acceptEdits", destination: "session" },
+          ])
+          const accepted = yield* waitsForUser(
+            edit(childSessionID, "src/b.ts", { ruleset: [askRule("*", "*")] }),
+            childSessionID,
+            "edit",
+          )
+          yield* accepted.reply("once")
+          const acceptedBare = yield* waitsForUser(
+            edit(childSessionID, "src/c.ts", { bare: true }),
+            childSessionID,
+            "edit",
+          )
+          yield* acceptedBare.reply("once")
+          yield* permission.clearHookPolicy(childSessionID)
+        }),
+      )
+      expect(asked).toHaveLength(8)
+
+      // `hookPermissions.mode: dontAsk` still refuses what would have been asked.
+      yield* withTier(
+        "ask",
+        Effect.gen(function* () {
+          const refused = yield* failsWithout(bash(childSessionID, "echo refused", { ruleset: [askRule("*", "*")] }))
+          expect(refused.error).toBeInstanceOf(PermissionV1.RejectedError)
+        }),
+        "dontAsk",
+      )
+      expect(asked).toHaveLength(8)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask tier: an explicit allow after a rule that asks, and an always reply, still settle the call",
+  () =>
+    withTier(
+      "ask",
+      Effect.gen(function* () {
+        const asked = yield* watchAsked
+        const first = yield* makeRun("node-ask-rule-allow-a")
+        const second = yield* makeRun("node-ask-rule-allow-b")
+
+        // The user's own allow, written after the general question, decides: `evaluate` takes the last match.
+        yield* settlesAlone(
+          bash(first.childSessionID, "bun test --bail", { ruleset: [askRule("*", "*"), allow("bash", "bun test*")] }),
+        )
+        // Written before it, the allow is overridden and the question stays.
+        const overridden = yield* waitsForUser(
+          bash(first.childSessionID, "bun test --bail", { ruleset: [allow("bash", "bun test*"), askRule("*", "*")] }),
+          first.childSessionID,
+          "bash",
+        )
+        yield* overridden.reply("once")
+
+        // An "always" reply settles the pattern for this session even under `"*": "ask"`; another session still asks.
+        const rules = { ruleset: [askRule("*", "*")] }
+        const pending = yield* waitsForUser(
+          bash(first.childSessionID, "bun test a", rules),
+          first.childSessionID,
+          "bash",
+        )
+        expect(Exit.isSuccess(yield* pending.reply("always"))).toBe(true)
+        yield* settlesAlone(bash(first.childSessionID, "bun test b", rules))
+        const elsewhere = yield* waitsForUser(
+          bash(second.childSessionID, "bun test c", rules),
+          second.childSessionID,
+          "bash",
+        )
+        yield* elsewhere.reply("once")
+
+        // A deny rule after the question still denies without asking.
+        yield* failsWithout(bash(first.childSessionID, "rm x", { ruleset: [askRule("*", "*"), deny("bash", "rm *")] }))
+        expect(asked).toHaveLength(3)
+      }),
+    ),
+  { git: true },
+)
+
+it.instance(
+  "the default tier leaves a rule that asks alone: an unattended node is settled, an attended session keeps its hook allow",
+  () =>
+    Effect.gen(function* () {
+      const asked = yield* watchAsked
+      const { childSessionID } = yield* makeRun("node-ask-rule-default")
+      const attended = SessionID.make("ses_dag_ask_attended_rule")
+
+      // The adjudicator settles a node's configured question without bothering the user.
+      yield* withTier(undefined, settlesAlone(bash(childSessionID, "echo hi", { ruleset: [askRule("*", "*")] })))
+      // Under the ask tier an attended session is untouched: a hook allow skips a general question, as it always did.
+      yield* withTier(
+        "ask",
+        Effect.gen(function* () {
+          yield* settlesAlone(
+            bash(attended, "echo hi", { ruleset: [askRule("*", "*")], options: { hookAllowed: true } }),
+          )
+          yield* settlesAlone(edit(attended, "src/a.ts", { bare: true, options: { hookAllowed: true } }))
+        }),
+      )
+      expect(asked).toEqual([])
+    }),
+  { git: true },
+)
+
+it.instance(
   "ask tier: the user's rejection ends the call with a rejection and settles nothing else",
   () =>
     withTier(
@@ -766,6 +901,77 @@ recordingIt.instance(
         { permission: "bash", rule: { action: "allow", explicit: false } },
       ])
     }),
+  { git: true },
+)
+
+/**
+ * A PermissionRequest hook is the other way an automation answers "allow". Like a
+ * PreToolUse allow it may settle a general question, but not one the ask tier
+ * holds for the user.
+ */
+const hookAnswer: { current: "allow" | undefined } = { current: undefined }
+const allowingHook = Layer.succeed(
+  SettingsHook.Service,
+  SettingsHook.Service.of({
+    trigger: (payload) =>
+      Effect.sync(() => ({
+        additionalContexts: [],
+        systemMessages: [],
+        ...(payload.event === "PermissionRequest" && hookAnswer.current
+          ? { permissionRequestDecision: { behavior: hookAnswer.current } }
+          : {}),
+      })),
+    list: () => Effect.succeed([]),
+  }),
+)
+const hookedIt = testEffect(
+  Layer.mergeAll(
+    Permission.layer.pipe(
+      Layer.provide(database),
+      Layer.provide(bridge),
+      Layer.provide(SafetyGuard.layer),
+      Layer.provide(configLayer),
+      Layer.provide(allowingHook),
+    ),
+    database,
+    events,
+    bridge,
+  ),
+)
+
+hookedIt.instance(
+  "ask tier: a PermissionRequest hook that allows cannot skip a question the tier holds",
+  () =>
+    Effect.gen(function* () {
+      hookAnswer.current = "allow"
+      const asked = yield* watchAsked
+      const { childSessionID } = yield* makeRun("node-hook-allow")
+
+      yield* withTier(
+        "ask",
+        Effect.gen(function* () {
+          // An allow nobody wrote for the call, a general question and no rule at all: all the user's to answer.
+          for (const extra of [{}, { ruleset: [askRule("*", "*")] }, { bare: true }]) {
+            const pending = yield* waitsForUser(bash(childSessionID, "echo hi", extra), childSessionID, "bash")
+            yield* pending.reply("once")
+          }
+        }),
+      )
+      expect(asked).toHaveLength(3)
+
+      // The same hook still answers an attended session's general question, as it always did.
+      yield* withTier(
+        "ask",
+        settlesAlone(bash(SessionID.make("ses_dag_ask_attended_hook"), "echo hi", { ruleset: [askRule("*", "*")] })),
+      )
+      expect(asked).toHaveLength(3)
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          hookAnswer.current = undefined
+        }),
+      ),
+    ),
   { git: true },
 )
 
