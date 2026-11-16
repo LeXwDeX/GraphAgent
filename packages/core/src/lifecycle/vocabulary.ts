@@ -77,6 +77,23 @@ const TABLE = {
     // pr_watch row is the only record of them (#1071).
     authority: "mixed",
   },
+  reminder: {
+    // `scheduled` waits for its `fire_at`, `due` is owed to the session until
+    // the turn boundary delivers it, `delivered` is the one-shot result. A
+    // repeating reminder returns from `due` to `scheduled` instead (#1072).
+    values: ["scheduled", "due", "delivered", "cancelled"],
+    phases: {
+      scheduled: "pending",
+      due: "settling",
+      delivered: "succeeded",
+      cancelled: "cancelled",
+    },
+    terminal: ["delivered", "cancelled"],
+    settled: ["delivered"],
+    // The clock holds nothing but the next wake-up time; the durable
+    // `reminder` row is the only record of a reminder (#1072).
+    authority: "durable",
+  },
   goal: {
     values: ["active", "waiting", "paused", "done"],
     phases: { active: "running", waiting: "waiting", paused: "paused", done: "succeeded" },

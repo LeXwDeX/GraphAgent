@@ -21,6 +21,7 @@ import { Turns } from "@/session/turns"
 import { ChildRuns } from "@/session/child/run"
 import { ChildResults } from "@/session/child/result-source"
 import { PrWatchSource } from "@/pr-watch/source"
+import { ReminderSource } from "@/reminder/source"
 
 export { Service } from "./bootstrap-service"
 export type { Interface } from "./bootstrap-service"
@@ -119,6 +120,13 @@ export const layer = Layer.effect(
         if (database._tag === "Some")
           yield* PrWatchSource.init({ inbox: inbox.value, database: database.value, scope }).pipe(
             Effect.catchCause((cause) => Effect.logWarning("pr watch source init failed", { cause })),
+          )
+        // User reminders (#1072): the deliverable half of the durable `reminder`
+        // rows the process-level clock moves to due. Registered before the inbox
+        // arms its tick so the startup scan's drains are backed by it.
+        if (database._tag === "Some")
+          yield* ReminderSource.init({ inbox: inbox.value, database: database.value, scope }).pipe(
+            Effect.catchCause((cause) => Effect.logWarning("reminder source init failed", { cause })),
           )
         yield* inbox.value
           .init()

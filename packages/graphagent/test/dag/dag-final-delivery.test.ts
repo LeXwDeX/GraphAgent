@@ -613,7 +613,7 @@ for (const state of ["error", "unfinished", "wrong-parent", "dag-report"] as con
     ))
 }
 
-for (const command of ["memory", "goal", "subgoal", "dag-mode"])
+for (const command of ["memory", "goal", "subgoal", "dag-mode", "remind"])
   it(`delivers after a completed local /${command} without an assistant response`, () =>
     fixture(({ sessions, store, deliver }) =>
       Effect.gen(function* () {

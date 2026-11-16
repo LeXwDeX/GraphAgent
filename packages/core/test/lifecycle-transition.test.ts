@@ -8,6 +8,7 @@ import {
   GOAL_TRANSITION_TABLE,
   JOB_TRANSITION_TABLE,
   PR_WATCH_TRANSITION_TABLE,
+  REMINDER_TRANSITION_TABLE,
   TURN_TRANSITION_TABLE,
   type TransitionTable,
 } from "@graphagent/core/lifecycle/transition"
@@ -196,6 +197,51 @@ describe("pr_watch transitions", () => {
     expect(checkTransition(PR_WATCH_TRANSITION_TABLE, { expect: "watching", to: "watching" })).toEqual({
       kind: "duplicate",
     })
+  })
+})
+
+describe("reminder transitions", () => {
+  it("creates into scheduled and walks pending -> settling -> succeeded", () => {
+    expect(checkTransition(REMINDER_TRANSITION_TABLE, { expect: null, to: "scheduled" })).toEqual({
+      kind: "allowed",
+      phase: "pending",
+    })
+    expect(checkTransition(REMINDER_TRANSITION_TABLE, { expect: "scheduled", to: "due" })).toEqual({
+      kind: "allowed",
+      phase: "settling",
+    })
+    expect(checkTransition(REMINDER_TRANSITION_TABLE, { expect: "due", to: "delivered" })).toEqual({
+      kind: "allowed",
+      phase: "succeeded",
+    })
+  })
+
+  it("lets a repeating reminder return to scheduled after delivery", () => {
+    expect(checkTransition(REMINDER_TRANSITION_TABLE, { expect: "due", to: "scheduled" })).toEqual({
+      kind: "allowed",
+      phase: "pending",
+    })
+  })
+
+  it("lets either live value be cancelled", () => {
+    for (const from of ["scheduled", "due"])
+      expect(checkTransition(REMINDER_TRANSITION_TABLE, { expect: from, to: "cancelled" }), from).toEqual({
+        kind: "allowed",
+        phase: "cancelled",
+      })
+  })
+
+  it("does not deliver a reminder that never came due and leaves terminal values empty", () => {
+    expect(checkTransition(REMINDER_TRANSITION_TABLE, { expect: "scheduled", to: "delivered" })).toEqual({
+      kind: "invalid",
+      allowed: ["due", "cancelled"],
+    })
+    for (const terminal of VOCABULARY.reminder.terminal)
+      expect(REMINDER_TRANSITION_TABLE.next(terminal), terminal).toEqual([])
+  })
+
+  it("reports a repeated status as duplicate", () => {
+    expect(checkTransition(REMINDER_TRANSITION_TABLE, { expect: "due", to: "due" })).toEqual({ kind: "duplicate" })
   })
 })
 

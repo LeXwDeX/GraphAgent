@@ -80,12 +80,20 @@ describe("MessageV2.isAutomationMessage", () => {
     }
   })
 
-  test("recognizes background results and PR-watch notices by their metadata", () => {
+  test("recognizes background results, PR-watch notices and delivered user reminders by their metadata", () => {
     for (const metadata of [
       { backgroundResult: { status: "completed", title: "background task" } },
       { prWatch: { watchID: "pr_1", outcome: "passed" } },
+      { reminder: { reminderID: "rmd_1", fireAt: 1, creator: "user", delayedMinutes: 0 } },
     ])
       expect(MessageV2.isAutomationMessage(user("msg_meta", "notice", { synthetic: true, metadata }))).toBe(true)
+  })
+
+  test("a user-typed line that quotes the reminder metadata key is not automated", () => {
+    // The marker is the synthetic part the clock's delivery writes; a typed message has none.
+    expect(
+      MessageV2.isAutomationMessage(user("msg_typed", "remind me", { metadata: { reminder: { reminderID: "rmd_1" } } })),
+    ).toBe(false)
   })
 
   test("a user-authored message never matches, even when it quotes a marker", () => {
@@ -183,6 +191,25 @@ describe("DagModeReminder.forRequest (#1031 M2 L3)", () => {
             eligible: true,
           }),
         ).toBeUndefined()
+    }),
+  )
+
+  runtime.instance("never attaches to a delivered user reminder, and a /remind exchange is a local command", () =>
+    Effect.gen(function* () {
+      const reminders = yield* DagModeReminder.Service
+      const sessionID = SessionID.make("ses_l3_12")
+      const delivered = user("msg_l3_12", "[Reminder rmd_1] The user scheduled this for later.", {
+        synthetic: true,
+        metadata: { reminder: { reminderID: "rmd_1", fireAt: 1, creator: "user", delayedMinutes: 0 } },
+      })
+      expect(yield* reminders.forRequest({ sessionID, messages: [delivered], eligible: true })).toBeUndefined()
+
+      const command = user("msg_l3_13", "/remind 30m stand up", { ignored: true, metadata: { command: "remind" } })
+      expect(MessageV2.isLocalCommand(command)).toBe(true)
+      const messages = [user("msg_l3_14", "real request"), command]
+      expect(
+        yield* reminders.forRequest({ sessionID: SessionID.make("ses_l3_14"), messages, eligible: true }),
+      ).toBe(DagMode.REMINDER)
     }),
   )
 
