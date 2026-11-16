@@ -3,6 +3,11 @@ import { mkdir, writeFile } from "node:fs/promises"
 import path from "path"
 import { Effect } from "effect"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { Database } from "@graphagent/core/database/database"
+import { Project } from "@graphagent/core/project"
+import { ProjectTable } from "@graphagent/core/project/sql"
+import { AbsolutePath } from "@graphagent/core/schema"
+import { SessionTable } from "@graphagent/core/session/sql"
 import { ToolRegistry, definitionKey } from "@/tool/registry"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -21,11 +26,15 @@ import { ProviderTest } from "../fake/provider"
 import { SystemPrompt } from "@/session/system"
 import { SessionReminders } from "@/session/reminders"
 
+/** The `dag.permission` tier the fake global configuration reports (#1324); `undefined` is the `allow` default. */
+const permissionTier: { tier: "allow" | "ask" | "readonly" | undefined } = { tier: undefined }
+
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".agents")])),
+  dagGlobal: () => Effect.sync(() => (permissionTier.tier ? { permission: permissionTier.tier } : {})),
 })
 
-const root = LayerNode.group([ToolRegistry.node, Agent.node])
+const root = LayerNode.group([ToolRegistry.node, Agent.node, Database.node])
 const replacements = [
   LayerNode.replace(Config.node, configLayer),
   LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer()),
@@ -231,6 +240,152 @@ describe("tool.registry", () => {
       })
       expect(allowed.map((resolved) => resolved.id)).toContain("edit")
     }),
+  )
+
+  it.instance(
+    "hides workspace-writing tools from a DAG node under the readonly tier, with no static workspaceWrites deny",
+    () =>
+      Effect.gen(function* () {
+        const registry = yield* ToolRegistry.Service
+        const agents = yield* Agent.Service
+        const build = yield* agents.get("build")
+        if (!build) throw new Error("build agent not found")
+        const directory = yield* InstanceState.directory
+        const parentID = SessionID.make(`ses_registry_ro_parent_${crypto.randomUUID()}`)
+        const childID = SessionID.make(`ses_registry_ro_child_${crypto.randomUUID()}`)
+        const session = {
+          id: childID,
+          parentID,
+          slug: "registry-readonly-tier",
+          projectID: ProjectV2.ID.global,
+          directory,
+          title: "registry readonly tier",
+          version: "1.0.0",
+          time: { created: 1, updated: 1 },
+        } as Session.Info
+        // No `workspaceWrites: "deny"` here: the node's own worker profile
+        // would normally keep its editing tools. Only the global tier hides them.
+        const entry = ChildRegistry.create({
+          id: `crun_${crypto.randomUUID()}`,
+          childSessionID: childID,
+          parentSessionID: parentID,
+          ownerKind: "dag_node",
+          ownerKey: { kind: "dag_node", workflowID: "wf_registry_ro", nodeID: "impl", attempt: 0 },
+          permission: { ask: "auto" },
+          detached: false,
+          directory: undefined,
+          owner: {},
+        })
+        expect(ChildRegistry.register(entry)).toBe(true)
+
+        yield* Effect.gen(function* () {
+          permissionTier.tier = "readonly"
+          const model = ProviderTest.model({ id: ModelV2.ID.make("gpt-oss-120b") })
+          const entries = yield* registry.resolve({ model, agent: build, session })
+          const ids = entries.map((resolved) => resolved.id)
+          expect(ids).toContain("bash")
+          expect(ids).not.toContain("edit")
+          expect(ids).not.toContain("write")
+          expect(ids).not.toContain("apply_patch")
+
+          // Switching back to `allow` is picked up on the very next resolve.
+          permissionTier.tier = "allow"
+          const allowed = yield* registry.resolve({ model, agent: build, session })
+          expect(allowed.map((resolved) => resolved.id)).toContain("edit")
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              permissionTier.tier = undefined
+              ChildRegistry.end(entry, { type: "completed" })
+              ChildRegistry.release(entry)
+            }),
+          ),
+        )
+      }),
+  )
+
+  it.instance(
+    "hides workspace-writing tools from a task child while its root is in DAG mode under the readonly tier",
+    () =>
+      Effect.gen(function* () {
+        const registry = yield* ToolRegistry.Service
+        const agents = yield* Agent.Service
+        const build = yield* agents.get("build")
+        if (!build) throw new Error("build agent not found")
+        const directory = yield* InstanceState.directory
+        const rootID = SessionID.make(`ses_registry_ro_task_root_${crypto.randomUUID()}`)
+        const childID = SessionID.make(`ses_registry_ro_task_child_${crypto.randomUUID()}`)
+        const session = {
+          id: childID,
+          parentID: rootID,
+          slug: "registry-readonly-task",
+          projectID: ProjectV2.ID.global,
+          directory,
+          title: "registry readonly task",
+          version: "1.0.0",
+          time: { created: 1, updated: 1 },
+        } as Session.Info
+        const entry = ChildRegistry.create({
+          id: `crun_${crypto.randomUUID()}`,
+          childSessionID: childID,
+          parentSessionID: rootID,
+          ownerKind: "task",
+          ownerKey: { kind: "task", toolCallID: "call_registry_ro_task" },
+          permission: { ask: "root-dag-mode" },
+          detached: false,
+          directory: undefined,
+          owner: {},
+        })
+        expect(ChildRegistry.register(entry)).toBe(true)
+
+        const { db } = yield* Database.Service
+        const projectID = Project.ID.make("prj_registry_ro_task")
+        const setRootDagMode = (mode: "on" | "off") =>
+          Effect.gen(function* () {
+            yield* db
+              .insert(ProjectTable)
+              .values({ id: projectID, worktree: AbsolutePath.make(directory), sandboxes: [] })
+              .onConflictDoNothing()
+              .run()
+              .pipe(Effect.orDie)
+            yield* db
+              .insert(SessionTable)
+              .values({
+                id: rootID,
+                project_id: projectID,
+                slug: "registry-readonly-task-root",
+                directory: AbsolutePath.make(directory),
+                title: "registry readonly task root",
+                version: "0",
+                dag_mode: mode,
+              })
+              .onConflictDoUpdate({ target: SessionTable.id, set: { dag_mode: mode } })
+              .run()
+              .pipe(Effect.orDie)
+          })
+
+        yield* Effect.gen(function* () {
+          permissionTier.tier = "readonly"
+          const model = ProviderTest.model({ id: ModelV2.ID.make("gpt-oss-120b") })
+
+          yield* setRootDagMode("on")
+          const unattended = yield* registry.resolve({ model, agent: build, session })
+          expect(unattended.map((resolved) => resolved.id)).not.toContain("edit")
+
+          // DAG mode off: the task child is attended, and the readonly tier does not touch it.
+          yield* setRootDagMode("off")
+          const attended = yield* registry.resolve({ model, agent: build, session })
+          expect(attended.map((resolved) => resolved.id)).toContain("edit")
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              permissionTier.tier = undefined
+              ChildRegistry.end(entry, { type: "completed" })
+              ChildRegistry.release(entry)
+            }),
+          ),
+        )
+      }),
   )
 
   it.instance("resolves entries deterministically in registration order", () =>

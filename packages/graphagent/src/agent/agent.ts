@@ -250,28 +250,13 @@ export const layer = Layer.effect(
                 // Read-only workers still need the session bootstrap path.
                 skill: "allow",
                 "*_initial_instructions": "allow",
-                bash: {
-                  "*": "deny",
-                  "git diff*": "allow",
-                  "git show*": "allow",
-                  "git log*": "allow",
-                  "git status*": "allow",
-                  "git blame*": "allow",
-                  "git rev-parse*": "allow",
-                  "gh pr view*": "allow",
-                  "gh pr diff*": "allow",
-                  "glab mr view*": "allow",
-                  "glab mr diff*": "allow",
-                  // `evaluate` takes the LAST matching rule, so output-writing
-                  // variants must follow the allowlist to win. `*` covers the
-                  // option at any position (`git diff --cached --output=...`)
-                  // and the separated form (`git diff --output file`).
-                  "git diff*--output*": "deny",
-                  "git show*--output*": "deny",
-                  "git log*--output*": "deny",
-                },
                 external_directory: readonlyExternalDirectory,
               }),
+              // The bash allowlist below (`*` deny, then the read-only git/gh
+              // commands, then the `--output` denies that must follow them to
+              // win) is shared with the `readonly` tier of `dag.permission`
+              // (#1324 §4, Q6): `Permission.READONLY_BASH`.
+              Permission.READONLY_BASH,
               user,
             ),
             description:

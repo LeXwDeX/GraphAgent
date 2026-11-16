@@ -17,7 +17,11 @@
  * 3. A match in the built-in list (SF-1..5) or in `dag.safety.extra` (SX-n)
  *    denies the call. The node receives a tool error carrying the rule and
  *    keeps running; no permission request, no second wake.
- * 4. Everything else, including the ask the rules produced, is allowed.
+ * 4. Everything else, including the ask the rules produced, is allowed under
+ *    the `allow` tier of `dag.permission`. Under `readonly` (#1324), an ask
+ *    the list did not already decide is itself denied, as RO-1: nobody can
+ *    fetch the approval it would need. `mode` carries the tier into this
+ *    decision; it never widens what SF-1..5/SX-n already denied.
  *
  * The list is a net for the mistakes of an honest agent, not a security
  * boundary (there is no sandbox). It decides from structured facts only: the
@@ -100,6 +104,11 @@ const SF_3 = "SF-3"
 const SF_4 = "SF-4"
 const SF_5 = "SF-5"
 const SF_6 = "SF-6"
+/** #1324 §4: the `readonly` tier's catch-all. Fires only after SF-1..5/SX-n and
+ * the symlink checks found nothing, and only for a pattern whose rule would
+ * otherwise have asked. */
+const RO_1 = "RO-1"
+const RO_1_REASON = "this call would need user approval, which read-only workflow nodes cannot obtain"
 
 const FINAL =
   "Do not retry this call; choose another approach, or complete the rest of your task and mention this in your final response."
@@ -754,11 +763,20 @@ export const layer = Layer.effect(
         }
         // Symlink resolution runs only when the lexical checks found nothing.
         // Move targets are checked once per ask, not once per permission pattern.
+        // RO-1 (#1324 §4) is checked last: the built-in list and the symlink
+        // resolver above already decide every SF-1..5/SX-n case, and only a
+        // `readonly`-tier pattern whose rule would otherwise have asked falls
+        // through to it. `ruleAction` here can be "ask" only when `evaluate`
+        // did not already return SF-6 (forced) or pass it as explicit, so
+        // neither condition needs to be repeated.
         const violation =
           evaluate(request) ??
           (yield* Effect.promise(() =>
             symlinkViolation(request, { moves: input.request.patterns[0] === input.pattern }),
-          ).pipe(Effect.orElseSucceed(() => undefined)))
+          ).pipe(Effect.orElseSucceed(() => undefined))) ??
+          (input.mode === "readonly" && request.ruleAction === "ask"
+            ? denial(RO_1, request.permission, RO_1_REASON)
+            : undefined)
         if (!violation) return "allow" as const
 
         if (input.owner.kind === "dag_node") {
