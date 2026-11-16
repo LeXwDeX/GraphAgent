@@ -90,6 +90,17 @@ export function planRejection(action: PlanAction, writers: readonly string[]): s
   return `Workflow ${action} rejected: the plan agent may only run read-only nodes, but this ${action} would run write-capable node(s): ${writers.join(", ")}. Switch to build before running the implementation phase (plan_exit asks the user to switch).`
 }
 
+/**
+ * The model-facing refusal for a request that would run writers while
+ * `dag.permission` is `readonly` (#1324 §4). Unlike the plan-agent gate above,
+ * this holds for every caller: the tier, not the calling agent, decides it. A
+ * retarget adds no writer, so it is checked by `planRejection`'s caller the
+ * same way (not this one) and only against the workspace conflict.
+ */
+export function readonlyRejection(action: PlanAction, writers: readonly string[]): string {
+  return `Workflow ${action} rejected: dag.permission is "readonly", so workflow nodes may only be read-only, but this ${action} would run write-capable node(s): ${writers.join(", ")}. Switch dag.permission to "allow" or "ask" before running the implementation phase.`
+}
+
 type FragmentRow = Pick<DagStore.NodeRow, "id" | "status" | "dependsOn" | "superseded">
 
 const nodeStatusOf = (value: string): NodeStatus | undefined =>

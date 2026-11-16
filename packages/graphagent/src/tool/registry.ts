@@ -29,6 +29,7 @@ import { DagBudget } from "@/dag/budget"
 import { DagControl } from "@/dag/control"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { ChildRegistry } from "@/session/child/registry"
+import { ChildPolicy } from "@/session/child/policy"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { Provider } from "@/provider/provider"
@@ -38,7 +39,7 @@ import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { usesApplyPatch } from "./editing-tools"
-import { Effect, Layer, Context } from "effect"
+import { Effect, Layer, Context, Option } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
@@ -249,6 +250,12 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const mcp = yield* MCP.Service
     const events = yield* EventV2Bridge.Service
+    // #1324: resolving the `readonly` tier's tool face for a task child needs
+    // the root session's live `dag_mode`, read the same way `ChildPolicy.askOf`
+    // reads it elsewhere. Optional like every other service this registry
+    // reads defensively: a harness without one just never sees a task child
+    // turn unattended by that route (a DAG node's own run already says so).
+    const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
@@ -478,8 +485,23 @@ export const layer = Layer.effect(
       // `unknown` tools keep the agent's own permission, so a reviewer can
       // still run tests. Read per request: the policy belongs to the active
       // child run of this process, not to the cached definitions.
+      //
+      // #1324 §4: the `readonly` tier of `dag.permission` hides the same
+      // tools for every unattended session (a DAG node, or a task child while
+      // its root is in DAG mode), whatever the owning node's own worker
+      // profile says. The tier is read fresh here, never cached, so a switch
+      // to `readonly` hides edit/write/apply_patch from the session's very
+      // next tool resolution; a request already in flight is still refused at
+      // ask time (`Permission.ask`'s readonly override). `ChildPolicy.askOf`
+      // is only consulted once the tier is actually `readonly`, so the common
+      // `allow` tier costs no extra read.
+      const readonlyTier = (yield* config.dagGlobal()).permission === "readonly"
+      const readonlyPolicy = readonlyTier
+        ? yield* ChildPolicy.askOf(database?.db)(input.session.id, "readonly")
+        : Option.none()
       const workspaceWritesDenied =
-        ChildRegistry.subjectOf(input.session.id)?.permission.workspaceWrites === "deny"
+        ChildRegistry.subjectOf(input.session.id)?.permission.workspaceWrites === "deny" ||
+        (Option.isSome(readonlyPolicy) && readonlyPolicy.value.unattended)
       const usePatch = usesApplyPatch(ModelV2.ID.make(model.api.id))
       const entries = new Map<string, ToolEntry>()
 

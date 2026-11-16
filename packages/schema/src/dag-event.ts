@@ -526,7 +526,10 @@ export const NodeSafetyDenied = Event.define({
     /**
      * `SF-1..6` for the built-in safety list (outside-project writes, credential
      * reads, destructive and publishing commands, repeated calls, calls that
-     * need user confirmation), `SX-n` for `dag.safety.extra`.
+     * need user confirmation), `SX-n` for `dag.safety.extra`, `RO-1` for a call
+     * that would need user approval under the read-only `dag.permission` tier,
+     * and `HOOK` for a call a PreToolUse hook denied (#1324; its summary is the
+     * hook's reason, cut to 200 characters). The value is free text, not an enum.
      */
     ruleID: Schema.String,
     /** Permission key that was being adjudicated. */

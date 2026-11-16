@@ -188,6 +188,11 @@ export interface Deps {
   agentService: Agent.Interface | undefined
   questionHookAnswers: WeakMap<ToolExecutionOptions, ReadonlyArray<ReadonlyArray<string>>>
   hookContext: (toolName?: string) => Effect.Effect<Omit<SettingsHook.ToolHookContext, "sessionID">>
+  /**
+   * A PreToolUse hook denied this tool's call (a deny verdict, exit 2, or a guard that failed closed). Records
+   * it on the node's safety evidence when the session is a DAG node; a refused hook confirmation is not one.
+   */
+  hookDenied: (toolName: string, reason: string) => Effect.Effect<void>
   reportInterrupt: (toolName: string, args: unknown, toolUseID: string) => Effect.Effect<void>
   recordSettlement: (entry: ToolEntry, callID: string) => Effect.Effect<void>
   recordInput: (callID: string, args: Record<string, unknown>) => Effect.Effect<void>
@@ -236,6 +241,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
     recordSettlement,
     reportInterrupt,
     hookContext,
+    hookDenied,
     entries,
   } = deps
 
@@ -293,6 +299,7 @@ export const builtinTools = Effect.fn("ToolPipeline.builtinTools")(function* (
                     },
                   }
                 if (decision.deniedReason) {
+                  yield* hookDenied(item.id, decision.deniedReason)
                   return {
                     output: withPreContext(
                       `[Tool denied by hook] ${decision.deniedReason}`,
@@ -659,6 +666,7 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
     recordSettlement,
     reportInterrupt,
     hookContext,
+    hookDenied,
     resourceHookState,
     entries,
   } = deps
@@ -904,12 +912,14 @@ export const mcpResourceTools = Effect.fn("ToolPipeline.mcpResourceTools")(funct
                   deferredToolUse: { id: opts.toolCallId, name, input: original },
                 },
               }
-            if (decision.deniedReason)
+            if (decision.deniedReason) {
+              yield* hookDenied(name, decision.deniedReason)
               return {
                 title: "",
                 output: withPreContext(`[Tool denied by hook] ${decision.deniedReason}`, pre.additionalContexts),
                 metadata: { hookDenied: true },
               }
+            }
             if (decision.stopReason)
               return {
                 title: "",
@@ -1064,8 +1074,19 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
   deps: Deps,
   tools: Record<string, AITool>,
 ) {
-  const { input, run, hooks, permission, context, truncate, recordSettlement, reportInterrupt, hookContext, entries } =
-    deps
+  const {
+    input,
+    run,
+    hooks,
+    permission,
+    context,
+    truncate,
+    recordSettlement,
+    reportInterrupt,
+    hookContext,
+    hookDenied,
+    entries,
+  } = deps
 
   for (const entry of entries) {
     if (!isMcpEntry(entry)) continue
@@ -1113,6 +1134,7 @@ export const mcpServerTools = Effect.fn("ToolPipeline.mcpServerTools")(function*
                 metadata: { hookDeferred: true, deferredToolUse: { id: opts.toolCallId, name: key, input: args } },
               }
             if (decision.deniedReason) {
+              yield* hookDenied(key, decision.deniedReason)
               return {
                 content: [
                   {

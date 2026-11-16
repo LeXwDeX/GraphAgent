@@ -130,6 +130,58 @@ function heldByAskTier(request: { permission: string; metadata?: Record<string, 
   return request.permission === "edit" || request.permission === "bash" || request.metadata?.source === "mcp"
 }
 
+/**
+ * The run policy of an asking child session, under the `dag.permission` tier in
+ * force right now (#1324). The tier is read from the global `dag` section on
+ * every call and never cached, so a switch reaches a node that is already
+ * running. A session with no active child run (every root session, a finished
+ * child) has no policy, and nothing is read for it. `config` and `database` are
+ * the caller's optional services: without a database a task child's root DAG
+ * mode cannot be read, and the child counts as attended. `Permission.ask` and
+ * the hook guard (`HookGuard.permissionMode`) share this one reading.
+ */
+export const runPolicyOf = (deps: {
+  readonly config: Pick<Config.Interface, "dagGlobal"> | undefined
+  readonly database: Pick<Database.Interface, "db"> | undefined
+}) =>
+  Effect.fnUntraced(function* (sessionID: PermissionV1.Request["sessionID"]) {
+    if (Option.isNone(ChildPolicy.subjectOf(sessionID))) return Option.none<ChildPolicy.AskPolicy>()
+    const tier = deps.config ? ((yield* deps.config.dagGlobal()).permission ?? "allow") : "allow"
+    return yield* ChildPolicy.askOf(deps.database?.db)(sessionID, tier)
+  })
+
+/**
+ * Bash commands an unattended session may still run once nothing broader is
+ * allowed: the review persona's own allowlist (`agent.ts`), reused verbatim as
+ * the bash tool face of the `readonly` tier of `dag.permission` (#1324 §4,
+ * Q6). The two share this one constant so neither drifts from the other;
+ * `evaluate` takes the LAST matching rule, so the `--output` denies must stay
+ * after the allowlist to win over it, and both after the leading `"*": deny`.
+ */
+export const READONLY_BASH: PermissionV1.Ruleset = [
+  { permission: "bash", pattern: "*", action: "deny" },
+  { permission: "bash", pattern: "git diff*", action: "allow" },
+  { permission: "bash", pattern: "git show*", action: "allow" },
+  { permission: "bash", pattern: "git log*", action: "allow" },
+  { permission: "bash", pattern: "git status*", action: "allow" },
+  { permission: "bash", pattern: "git blame*", action: "allow" },
+  { permission: "bash", pattern: "git rev-parse*", action: "allow" },
+  { permission: "bash", pattern: "gh pr view*", action: "allow" },
+  { permission: "bash", pattern: "gh pr diff*", action: "allow" },
+  { permission: "bash", pattern: "glab mr view*", action: "allow" },
+  { permission: "bash", pattern: "glab mr diff*", action: "allow" },
+  { permission: "bash", pattern: "git diff*--output*", action: "deny" },
+  { permission: "bash", pattern: "git show*--output*", action: "deny" },
+  { permission: "bash", pattern: "git log*--output*", action: "deny" },
+]
+
+/** The model-facing reason a `readonly`-tier override denial carries. */
+function readonlyOverrideReason(permission: string): string {
+  return permission === "edit"
+    ? `dag.permission is "readonly": workflow nodes cannot edit, write, or patch files.`
+    : `dag.permission is "readonly": this tool call is outside the read-only tool set workflow nodes may use.`
+}
+
 function roleDenialReason(input: {
   role?: string
   permission: string
@@ -280,16 +332,9 @@ export const layer = Layer.effect(
       }
     })
 
-    // The run policy of an asking session, under the `dag.permission` tier in
-    // force right now (#1324). The tier is read from the global `dag` section on
-    // every ask and never cached, so a switch reaches a node that is already
-    // running. A session with no active child run (every root session, a
-    // finished child) has no policy, and nothing is read for it.
-    const runPolicyOf = Effect.fnUntraced(function* (sessionID: PermissionV1.Request["sessionID"]) {
-      if (Option.isNone(ChildPolicy.subjectOf(sessionID))) return Option.none<ChildPolicy.AskPolicy>()
-      const tier = config ? ((yield* config.dagGlobal()).permission ?? "allow") : "allow"
-      return yield* ChildPolicy.askOf(database?.db)(sessionID, tier)
-    })
+    // The run policy of an asking session (see `runPolicyOf`), over the
+    // configuration and database this layer was built with.
+    const policyOf = runPolicyOf({ config, database })
 
     const ask = Effect.fn("Permission.ask")(function* (input: PermissionV1.AskInput, options?: AskOptions) {
       const current = yield* InstanceState.get(state)
@@ -312,7 +357,7 @@ export const layer = Layer.effect(
       // Read once per ask: the run policy of the asking child session (a task's
       // root dag mode may have changed) under the `dag.permission` tier in force
       // now. The tier is never cached, so a switch reaches a node's next ask.
-      const subject = yield* runPolicyOf(request.sessionID)
+      const subject = yield* policyOf(request.sessionID)
       // A run whose policy is `auto` never reaches the user (Issue #1026, PR4
       // seam; E4 supplies the decision). `adjudicate` settles one pattern of
       // such a run: an allow needs no question, a denial ends the ask as a
@@ -330,6 +375,7 @@ export const layer = Layer.effect(
                 forced: force,
                 owner: subject.value.owner,
                 rootSessionID: subject.value.rootSessionID,
+                mode: subject.value.mode,
               })
               if (decision !== "allow")
                 yield* new PermissionV1.DeniedError({
@@ -381,6 +427,25 @@ export const layer = Layer.effect(
         subject.value.mode === "ask" &&
         !force &&
         heldByAskTier(request)
+      // The `readonly` tier (#1324 §4): an unattended session limited to a
+      // read-only tool surface. `readonlyOverride` narrows the three classes
+      // it covers — it is consulted only once the agent's own and the user's
+      // configured rules have both cleared a pattern (neither denies it), so
+      // it can add a denial of its own but never lifts one that already won
+      // for another reason, and a user's own `allow` never widens it either.
+      // Everything else (read, grep, glob, `agent`, …) keeps its ordinary
+      // rule. A `force` ask is left alone: nobody can answer it regardless of
+      // tier, and SF-6 already denies it uniformly for every unattended run.
+      const readonlyTier =
+        Option.isSome(subject) && subject.value.unattended && subject.value.mode === "readonly" && !force
+      const readonlyOverride = (pattern: string): PermissionV1.Rule | undefined => {
+        if (!readonlyTier) return undefined
+        if (request.permission === "edit") return { permission: "edit", pattern: "*", action: "deny" }
+        if (request.permission === "bash") return evaluate(request.permission, pattern, READONLY_BASH)
+        if (request.metadata?.source === "mcp" && !userAllowsMcpTool(ruleset, request.permission, userWrote))
+          return { permission: request.permission, pattern: "*", action: "deny" }
+        return undefined
+      }
       const remembered = approved
       const alwaysApproved = (pattern: string) =>
         remembered.some(
@@ -390,25 +455,36 @@ export const layer = Layer.effect(
       for (const pattern of request.patterns) {
         const nativeRule = evaluate(request.permission, pattern, resolved.native)
         const configuredRule = evaluate(request.permission, pattern, ruleset)
-        // Denials are checked BEFORE remembered approvals or any hook result.
+        // Denials are checked BEFORE remembered approvals, any hook result, or
+        // a readonly-tier override: a deny the agent's own permission or the
+        // user wrote always wins over `readonlyOverride`, which only narrows
+        // what is left of the call — it never lifts a deny that already
+        // applies for another reason (Codex #1334 P1).
+        const override = readonlyOverride(pattern)
         const rule =
           nativeRule.action === "deny"
             ? nativeRule
             : configuredRule.action === "deny" || force
               ? configuredRule
-              : evaluate(request.permission, pattern, ruleset, approved)
+              : (override ?? evaluate(request.permission, pattern, ruleset, approved))
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
-          const reason = roleDenialReason({
-            role: options?.role,
-            permission: request.permission,
-            patterns: [pattern],
-            native: resolved.native,
-            ruleset,
-            resolvedRuleCount: resolved.rules.length,
-            roleDefaultIndices: options?.roleDefaultIndices ?? [],
-            sessionRuleCount: options?.sessionRuleCount ?? 0,
-          })
+          // A readonly-tier denial is this tier's own rule, not the agent's or
+          // the user's: name the tier only when the override itself produced
+          // this particular denial, never when a deny elsewhere already won.
+          const reason =
+            rule === override
+              ? readonlyOverrideReason(request.permission)
+              : roleDenialReason({
+                  role: options?.role,
+                  permission: request.permission,
+                  patterns: [pattern],
+                  native: resolved.native,
+                  ruleset,
+                  resolvedRuleCount: resolved.rules.length,
+                  roleDefaultIndices: options?.roleDefaultIndices ?? [],
+                  sessionRuleCount: options?.sessionRuleCount ?? 0,
+                })
           return yield* new PermissionV1.DeniedError({
             ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
             ...(reason ? { reason } : {}),
@@ -738,7 +814,13 @@ export function merge(...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule[] 
 const EDIT_TOOLS = ["edit", "write", "apply_patch"]
 const READ_TOOLS = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
 
-function permissionName(tool: string) {
+/**
+ * The permission key a tool's calls ask under: the file tools share `edit`, the
+ * MCP resource tools `read`, and every other tool, an MCP server tool included,
+ * is its own key. Tool advertisement (`disabled`) and the hook guard's record of
+ * a denied call (`HookGuard.permissionKey`) read the same table.
+ */
+export function permissionName(tool: string) {
   return EDIT_TOOLS.includes(tool) ? "edit" : READ_TOOLS.includes(tool) ? "read" : tool
 }
 
