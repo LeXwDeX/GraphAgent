@@ -13,7 +13,7 @@ import { EditorContextProvider } from "../../../src/context/editor"
 import { EpilogueProvider } from "../../../src/context/epilogue"
 import { ExitProvider } from "../../../src/context/exit"
 import { KVProvider } from "../../../src/context/kv"
-import { LocalProvider } from "../../../src/context/local"
+import { ToastLocalProvider } from "../../fixture/tui-local"
 import { ProjectProvider } from "../../../src/context/project"
 import { PromptRefProvider } from "../../../src/context/prompt"
 import { RouteProvider, useRoute } from "../../../src/context/route"
@@ -169,7 +169,7 @@ async function mountMain(initialPrompt?: string) {
                                 <ProjectProvider>
                                   <SyncProvider>
                                     <ThemeProvider mode="dark">
-                                      <LocalProvider>
+                                      <ToastLocalProvider>
                                         <PromptStashProvider>
                                           <FrecencyProvider>
                                             <PromptHistoryProvider>
@@ -185,7 +185,7 @@ async function mountMain(initialPrompt?: string) {
                                             </PromptHistoryProvider>
                                           </FrecencyProvider>
                                         </PromptStashProvider>
-                                      </LocalProvider>
+                                      </ToastLocalProvider>
                                     </ThemeProvider>
                                   </SyncProvider>
                                 </ProjectProvider>

@@ -5,9 +5,9 @@ import { createMemo, type Accessor } from "solid-js"
 import { InstallationVersion } from "@graphagent/core/installation/version"
 import { useSync } from "../../context/sync"
 import { useTuiPaths } from "../../context/runtime"
+import { useHomeSessionDestination } from "../../context/session-destination"
 import { abbreviateHome } from "../../runtime"
 import type { FooterMeta } from "../../shell/footer"
-import { useHomeSessionDestination } from "./session-destination"
 
 /**
  * Home route information rendered in the footer meta row: the destination

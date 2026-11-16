@@ -36,6 +36,12 @@ test("every exemption names the Issue that removes it", () => {
   for (const entry of EXEMPTIONS) expect(entry.issue).toMatch(/\(#\d+\)/)
 })
 
+// #886 acceptance 34: the F series is closed out, so no legacy import is left to excuse. New code fixes its
+// import (inject a callback, move the module to the layer that owns it) instead of adding an entry.
+test("the exemption list is empty", () => {
+  expect(EXEMPTIONS).toEqual([])
+})
+
 function exportTarget(value: unknown) {
   if (typeof value === "string") return value
   if (typeof value !== "object" || value === null) return undefined

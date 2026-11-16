@@ -14,7 +14,7 @@ import { EditorContextProvider } from "../../../src/context/editor"
 import { EpilogueProvider } from "../../../src/context/epilogue"
 import { ExitProvider } from "../../../src/context/exit"
 import { KVProvider } from "../../../src/context/kv"
-import { LocalProvider } from "../../../src/context/local"
+import { ToastLocalProvider } from "../../fixture/tui-local"
 import { LocationProvider } from "../../../src/context/location"
 import { ProjectProvider } from "../../../src/context/project"
 import { PromptRefProvider } from "../../../src/context/prompt"
@@ -180,7 +180,7 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                                   <ProjectProvider>
                                     <SyncProvider>
                                       <ThemeProvider mode="dark">
-                                        <LocalProvider>
+                                        <ToastLocalProvider>
                                           <PromptStashProvider>
                                             <FrecencyProvider>
                                               <PromptHistoryProvider>
@@ -195,7 +195,7 @@ test("renders both DAG delivery text parts once and keeps a following user turn 
                                               </PromptHistoryProvider>
                                             </FrecencyProvider>
                                           </PromptStashProvider>
-                                        </LocalProvider>
+                                        </ToastLocalProvider>
                                       </ThemeProvider>
                                     </SyncProvider>
                                   </ProjectProvider>
