@@ -4313,8 +4313,13 @@ describe("workflow tool saved workflows", () => {
     ),
   )
 
-  runtime.effect("list explains where to save a spec when the library is empty", () =>
-    withGlobalConfigDir((globalDir) =>
+  // #1031 M9: the runtime ships four stage specs in the builtin scope, so the
+  // library is never empty — a source run lists them without any file or
+  // release snapshot.
+  const stageSpecs = ["stage-design", "stage-implement", "stage-review", "stage-understand"]
+
+  runtime.effect("list shows the four builtin stage specs, all startable, when the library has no files", () =>
+    withGlobalConfigDir(() =>
       Effect.gen(function* () {
         // A previous case may have seeded the project scope — start clean.
         yield* Effect.promise(() =>
@@ -4325,9 +4330,59 @@ describe("workflow tool saved workflows", () => {
 
         const result = yield* workflow.execute({ params: { action: "spec", operation: "list" } }, contextWith([]))
 
-        expect(result.title).toBe("No saved workflows")
-        expect(result.output).toContain(path.join(workflowSpecDirectory, ".agents", "workflows"))
-        expect(result.output).toContain(path.join(globalDir, "workflows"))
+        expect(result.title).toBe("4 saved workflows")
+        for (const name of stageSpecs) {
+          expect(result.output).toContain(`${name} [builtin] — Stage: `)
+          expect(result.output).toContain(`path: builtin://${name}`)
+        }
+        // Each row ran its portable check at listing time.
+        expect(result.output).not.toContain("not startable")
+      }),
+    ),
+  )
+
+  runtime.effect("read and validate resolve every builtin stage spec by name and by its builtin:// path", () =>
+    withGlobalConfigDir(() =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() =>
+          fs.rm(path.join(workflowSpecDirectory, ".agents", "workflows"), { recursive: true, force: true }),
+        )
+        const info = yield* WorkflowTool
+        const workflow = yield* info.init()
+
+        for (const name of stageSpecs) {
+          const read = yield* workflow.execute(
+            { params: { action: "spec", operation: "read", spec_path: name } },
+            contextWith([]),
+          )
+          const payload = JSON.parse(read.output)
+          expect(payload.spec.config.name).toBe(name)
+          expect(payload.spec.config.review_gate).toBe("strict")
+          expect(payload.validation).toMatchObject({ valid: true, errors: [], warnings: [] })
+
+          // Builtin paths validate under the portable profile by default; the
+          // environment profile additionally resolves every worker type.
+          for (const profile of [undefined, "environment"] as const) {
+            const validated = yield* workflow.execute(
+              {
+                params: {
+                  action: "spec",
+                  operation: "validate",
+                  spec_path: `builtin://${name}`,
+                  ...(profile ? { profile } : {}),
+                },
+              },
+              contextWith([]),
+            )
+            expect(JSON.parse(validated.output)).toMatchObject({
+              source: `builtin://${name}`,
+              profile: profile ?? "portable",
+              valid: true,
+              errors: [],
+              warnings: [],
+            })
+          }
+        }
       }),
     ),
   )
