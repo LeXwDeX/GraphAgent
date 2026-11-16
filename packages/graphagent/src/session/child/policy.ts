@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { Database } from "@graphagent/core/database/database"
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import { Effect, Option } from "effect"
 import { SessionID } from "../schema"
 import { ChildRegistry as Registry } from "./registry"
@@ -34,32 +35,62 @@ export function subjectOf(childSessionID: SessionID): Option.Option<Subject> {
 
 export type EffectiveAsk = "user" | "auto"
 
+/** The user's `dag.permission` tier (#1324), read by the caller from the global configuration at ask time. */
+export type DagPermission = ConfigV1.DagPermission
+
+/** The DAG mode of a root session, read when a task child's policy is `root-dag-mode`. */
+export type RootDagMode = (rootSessionID: SessionID) => Effect.Effect<"on" | "off">
+
 /**
- * The ask policy that governs one child session now. `user` for a session with
- * no active run of this process (the SDK, a finished child), so an ask always
- * reaches the user; `auto` only for a run that chose it (a DAG node) or whose
- * root session currently runs in DAG mode (a task child).
+ * What decides one ask of a child session, in two steps (#1324 §1).
  *
- * `db` is optional: a build without a database (unit fixtures, harnesses)
- * resolves a dynamic policy conservatively to `user`.
+ * Step one, `unattended`: nobody answers this session's asks by default. True
+ * for a run that chose `auto` (a DAG node) and for a run whose root session
+ * currently runs in DAG mode (a task child). Step two, `ask`: who answers. A
+ * session that is not unattended asks `user`; an unattended one is settled
+ * automatically (`auto`) unless the tier is `ask`, which hands the question to
+ * the user. `mode` is the tier this verdict was made under and only means
+ * something while `unattended`.
  */
-export const askOf =
-  (db: Database.Interface["db"] | undefined) =>
-  (childSessionID: SessionID): Effect.Effect<Option.Option<Subject & { readonly ask: EffectiveAsk }>> =>
+export interface AskPolicy extends Subject {
+  readonly unattended: boolean
+  readonly mode: DagPermission
+  readonly ask: EffectiveAsk
+}
+
+/**
+ * The ask policy that governs one child session now. No value for a session
+ * with no active run of this process (the SDK, a finished child): its asks
+ * always reach the user. Everything else follows `AskPolicy`.
+ *
+ * `rootMode` reads the root session's DAG mode; without one (unit fixtures,
+ * harnesses with no database) a dynamic policy resolves conservatively to
+ * attended. The tier is a parameter, not read here: the caller owns the
+ * configuration and reads it at the moment of the ask.
+ */
+export const askWith =
+  (rootMode: RootDagMode | undefined) =>
+  (childSessionID: SessionID, mode: DagPermission = "allow"): Effect.Effect<Option.Option<AskPolicy>> =>
     Effect.suspend(() => {
       const found = subjectOf(childSessionID)
       if (Option.isNone(found)) return Effect.succeed(Option.none())
       const subject = found.value
-      const ask: Effect.Effect<EffectiveAsk> =
+      const unattended: Effect.Effect<boolean> =
         subject.permission.ask === "root-dag-mode"
-          ? db
-            ? Store.dagModeOf(db, subject.rootSessionID).pipe(
-                Effect.map((mode) => (mode === "on" ? "auto" : "user") as EffectiveAsk),
-                Effect.orElseSucceed(() => "user" as const),
-              )
-            : Effect.succeed("user" as const)
-          : Effect.succeed(subject.permission.ask)
-      return ask.pipe(Effect.map((value) => Option.some({ ...subject, ask: value })))
+          ? rootMode
+            ? rootMode(subject.rootSessionID).pipe(Effect.map((root) => root === "on"))
+            : Effect.succeed(false)
+          : Effect.succeed(subject.permission.ask === "auto")
+      return unattended.pipe(
+        Effect.map((value): Option.Option<AskPolicy> => {
+          const ask: EffectiveAsk = value && mode !== "ask" ? "auto" : "user"
+          return Option.some({ ...subject, unattended: value, mode, ask })
+        }),
+      )
     })
+
+/** `askWith` over the root session's row in the child-run database; `db` is optional for builds without one. */
+export const askOf = (db: Database.Interface["db"] | undefined) =>
+  askWith(db ? (rootSessionID) => Store.dagModeOf(db, rootSessionID) : undefined)
 
 export * as ChildPolicy from "./policy"

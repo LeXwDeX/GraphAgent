@@ -14,6 +14,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Database } from "@graphagent/core/database/database"
 import { ChildPolicy } from "@/session/child/policy"
 import { AskAdjudicator } from "./ask-adjudicator"
+import { userAllowsMcpTool } from "./mcp-allow"
 import { SafetyGuard } from "./safety-guard"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { type TriggerResult } from "@/hook/trigger-result"
@@ -117,6 +118,16 @@ function matchingRuleIndex(permission: string, pattern: string, ruleset: Permiss
     if (rule && Wildcard.match(permission, rule.permission) && Wildcard.match(pattern, rule.pattern)) return index
   }
   return -1
+}
+
+/**
+ * The requests the `ask` tier of `dag.permission` (#1324) hands to the user: the
+ * edit key (edit, write and apply_patch share it), the bash key, and MCP server
+ * tools. MCP is told by the `source` mark `SessionTools` puts on those requests;
+ * a key that merely looks like an MCP tool name is not one.
+ */
+function heldByAskTier(request: { permission: string; metadata?: Record<string, unknown> }) {
+  return request.permission === "edit" || request.permission === "bash" || request.metadata?.source === "mcp"
 }
 
 function roleDenialReason(input: {
@@ -269,6 +280,17 @@ export const layer = Layer.effect(
       }
     })
 
+    // The run policy of an asking session, under the `dag.permission` tier in
+    // force right now (#1324). The tier is read from the global `dag` section on
+    // every ask and never cached, so a switch reaches a node that is already
+    // running. A session with no active child run (every root session, a
+    // finished child) has no policy, and nothing is read for it.
+    const runPolicyOf = Effect.fnUntraced(function* (sessionID: PermissionV1.Request["sessionID"]) {
+      if (Option.isNone(ChildPolicy.subjectOf(sessionID))) return Option.none<ChildPolicy.AskPolicy>()
+      const tier = config ? ((yield* config.dagGlobal()).permission ?? "allow") : "allow"
+      return yield* ChildPolicy.askOf(database?.db)(sessionID, tier)
+    })
+
     const ask = Effect.fn("Permission.ask")(function* (input: PermissionV1.AskInput, options?: AskOptions) {
       const current = yield* InstanceState.get(state)
       const { pending } = current
@@ -287,9 +309,10 @@ export const layer = Layer.effect(
       let forced = force
       let needsAsk = false
       let explicitAskRequired = false
-      // Read once per ask, and only when an adjudicator exists: the run policy
-      // of the asking child session (a task's root dag mode may have changed).
-      const subject = adjudicator ? yield* ChildPolicy.askOf(database?.db)(request.sessionID) : Option.none()
+      // Read once per ask: the run policy of the asking child session (a task's
+      // root dag mode may have changed) under the `dag.permission` tier in force
+      // now. The tier is never cached, so a switch reaches a node's next ask.
+      const subject = yield* runPolicyOf(request.sessionID)
       // A run whose policy is `auto` never reaches the user (Issue #1026, PR4
       // seam; E4 supplies the decision). `adjudicate` settles one pattern of
       // such a run: an allow needs no question, a denial ends the ask as a
@@ -315,6 +338,54 @@ export const layer = Layer.effect(
                 })
             })
           : undefined
+
+      // Whether the rule at `index` is one the user wrote. A resolved policy
+      // reports its user-rule indices; a direct caller's own ruleset is the
+      // user's by construction; a resolved policy without provenance proves
+      // nothing, so the safety list still applies.
+      const userWrote = (index: number) =>
+        resolved.userRuleIndices !== undefined
+          ? resolved.userRuleIndices.includes(index)
+          : options?.resolveRuleset === undefined && index < originalRuleset.length
+      // Explicit means the user wrote this allow, for something specific: a
+      // role/default allow is not theirs, and neither is a whole-key wildcard
+      // (`bash: "allow"` has pattern `*`; permission `*` covers every key),
+      // which would switch the safety list off wholesale.
+      const explicitAllow = (pattern: string, rule: PermissionV1.Rule) => {
+        const index = matchingRuleIndex(request.permission, pattern, ruleset)
+        const matched = ruleset[index]
+        return (
+          rule.action === "allow" &&
+          matched?.action === "allow" &&
+          matched.permission !== "*" &&
+          matched.pattern !== "*" &&
+          userWrote(index)
+        )
+      }
+      // An MCP request has no concrete pattern (it is always `*`), so what the
+      // user can write for it is an allow naming exactly that tool. Only the ask
+      // tier below counts it; the safety list's `explicit` is not widened.
+      const userAllowsTool = (pattern: string) =>
+        request.metadata?.source === "mcp" &&
+        pattern === "*" &&
+        userAllowsMcpTool(ruleset, request.permission, userWrote)
+      // The `ask` tier (#1324): an unattended session whose user wants every
+      // step confirmed. Its edit, bash and MCP calls go to the user, and a call
+      // is only settled by the user's own allow (a concrete pattern; for an MCP
+      // tool, an allow naming exactly that tool) or by an "always" reply of this
+      // same session; a rule that asks is no exception. A forced ask already
+      // reaches the user, so it stays on its own path.
+      const askTier =
+        Option.isSome(subject) &&
+        subject.value.unattended &&
+        subject.value.mode === "ask" &&
+        !force &&
+        heldByAskTier(request)
+      const remembered = approved
+      const alwaysApproved = (pattern: string) =>
+        remembered.some(
+          (entry) => Wildcard.match(request.permission, entry.permission) && Wildcard.match(pattern, entry.pattern),
+        )
 
       for (const pattern of request.patterns) {
         const nativeRule = evaluate(request.permission, pattern, resolved.native)
@@ -348,38 +419,37 @@ export const layer = Layer.effect(
         // `forced` that this is a force ask only a human could settle (it is
         // adjudicated like any other pattern, never skipped).
         if (adjudicate) {
-          const index = matchingRuleIndex(request.permission, pattern, ruleset)
-          const matched = ruleset[index]
-          // Explicit means the user wrote this allow, for something specific:
-          // a role/default allow is not theirs, and neither is a whole-key
-          // wildcard (`bash: "allow"` has pattern `*`; permission `*` covers
-          // every key), which would switch the safety list off wholesale. A
-          // resolved policy reports its user-rule indices; a direct caller's
-          // own ruleset is explicit by construction; a resolved policy without
-          // provenance proves nothing, so the safety list still applies.
-          const explicit =
-            rule.action === "allow" &&
-            matched?.action === "allow" &&
-            matched.permission !== "*" &&
-            matched.pattern !== "*" &&
-            (resolved.userRuleIndices !== undefined
-              ? resolved.userRuleIndices.includes(index)
-              : options?.resolveRuleset === undefined && index < originalRuleset.length)
-          yield* adjudicate(pattern, { action: rule.action === "allow" ? "allow" : "ask", explicit })
+          yield* adjudicate(pattern, {
+            action: rule.action === "allow" ? "allow" : "ask",
+            explicit: explicitAllow(pattern, rule),
+          })
           // The adjudicator settled this pattern; a forced ask no longer
           // needs its dialog for it.
           forced = false
           continue
         }
-        if (rule.action === "allow") continue
+        // Under the ask tier every question these requests raise is the user's to
+        // answer, so it is a rule-level ask, which neither a hook allow (PreToolUse
+        // or PermissionRequest) nor `acceptEdits` may skip: an allow nobody wrote
+        // for the call, and any rule that asks, `"*": "ask"` and the default
+        // question when no rule matches included (neither counts as an explicit
+        // ask below). The user's own allow and an "always" reply of this session
+        // settle a call, as they always did.
+        const needsConfirmation =
+          askTier &&
+          (rule.action === "ask" ||
+            (!explicitAllow(pattern, rule) && !userAllowsTool(pattern) && !alwaysApproved(pattern)))
+        if (rule.action === "allow" && !needsConfirmation) continue
         if (!force && policy.mode === "bypassPermissions" && (yield* capabilities.has(request.sessionID))) continue
-        const explicitAsk = ruleset.some(
-          (entry) =>
-            entry.action === "ask" &&
-            entry.permission !== "*" &&
-            Wildcard.match(request.permission, entry.permission) &&
-            Wildcard.match(pattern, entry.pattern),
-        )
+        const explicitAsk =
+          needsConfirmation ||
+          ruleset.some(
+            (entry) =>
+              entry.action === "ask" &&
+              entry.permission !== "*" &&
+              Wildcard.match(request.permission, entry.permission) &&
+              Wildcard.match(pattern, entry.pattern),
+          )
         explicitAskRequired ||= explicitAsk
         // This guard is reached only AFTER both native and configured deny branches.
         // A hook allow may skip an implicit question, never a rule-level/forced ask.
