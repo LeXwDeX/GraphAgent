@@ -3,16 +3,22 @@
 
 // #1031 M8: the write-safety precheck inside DagControl. The plan agent may only
 // run read-only nodes through extend/replan/recover, and none of the three may
-// newly run a writer next to another live workflow's unfinished writer. Like the
-// resume guard, a refusal parks nothing and mutates nothing. A recording mock Dag
-// (no database) shows exactly which Dag methods a request reached.
+// newly run a writer next to another live workflow's unfinished writer; a
+// retarget may not move one there either. Like the resume guard, a refusal parks
+// nothing and mutates nothing. A recording mock Dag (no database) shows exactly
+// which Dag methods a request reached.
 // oxlint-disable typescript-eslint/no-unsafe-type-assertion -- The store double
 // implements only the reads the precheck makes.
 import { describe, expect, it } from "bun:test"
+import { $ } from "bun"
 import { Cause, Effect, Exit, Layer, Option } from "effect"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagControl, type ControlConflict, type ControlRejection, type ControlRequest } from "@/dag/control"
+import { tmpdir } from "../fixture/fixture"
 import { makeNodeRow, makeWorkflowRow } from "./fixtures"
 
 const caller = (agent?: string) => ({ sessionID: "ses_parent", ...(agent ? { agent } : {}) })
@@ -77,6 +83,7 @@ function harness(fixture: Fixture) {
     replan: record("replan", { cancel: [], restart: [], replace: [], add: [], ignore: [] }),
     extend: record("extend", { cancel: [], restart: [], replace: [], add: [], ignore: [] }),
     recover: record("recover", { replacements: [], superseded: [], reused: [], preserved: [], graphRev: 2 }),
+    retarget: record("retarget", { nodes: [], toFingerprint: { kind: "none" }, graphRev: 2 }),
   })
   return { calls, reads, layer: DagControl.layer.pipe(Layer.provide(dag)) }
 }
@@ -108,6 +115,35 @@ function conflictOf<A>(exit: Exit.Exit<A, ControlRejection>): ControlConflict {
 const extendOf = (...nodes: NodeConfig[]): ControlRequest => ({ op: "extend", prepared: { action: "extend", nodes } })
 const replanOf = (...nodes: NodeConfig[]): ControlRequest => ({ op: "replan", prepared: { action: "replan", nodes } })
 const recoverOf = (...nodeIDs: string[]): ControlRequest => ({ op: "recover", nodeIDs, expectedGraphRev: 1 })
+const retargetOf = (workspace: string | undefined, nodeIDs?: readonly string[]): ControlRequest => ({
+  op: "retarget",
+  ...(workspace !== undefined ? { workspace } : {}),
+  ...(nodeIDs !== undefined ? { nodeIDs } : {}),
+})
+
+/** A retarget needs a real linked worktree: the target must belong to the same
+ * git project and be listed by `git worktree list`. */
+async function repoWithLinkedWorktree() {
+  let linked = ""
+  const tmp = await tmpdir({
+    git: true,
+    init: async (directory) => {
+      linked = path.join(os.tmpdir(), `retarget-linked-${Math.random().toString(36).slice(2)}`)
+      await $`git worktree add --detach ${linked} HEAD`.cwd(directory).quiet()
+      // macOS temp paths resolve through /private; match git's canonical form.
+      linked = await fs.realpath(linked)
+    },
+    dispose: async () => {
+      if (!linked) return
+      try {
+        await $`git worktree remove --force ${linked}`.quiet()
+      } catch {
+        // The sandbox cleanup removes leftovers.
+      }
+    },
+  })
+  return { tmp, linked }
+}
 
 const running = (...nodes: NodeConfig[]) => workflowRow("wf-1", "running", nodes)
 
@@ -517,5 +553,221 @@ describe("DagControl cross-workflow write conflicts on extend, replan and recove
     })
     expect(conflictOf(await apply(recover, recoverOf("impl"), "plan")).kind).toBe("plan-readonly")
     expect(recover.reads).toEqual([])
+  })
+})
+
+describe("DagControl cross-workflow write conflicts on retarget", () => {
+  const otherIn = (
+    directory: string,
+    nodes: NodeConfig[] = [def("x")],
+    rows: DagStore.NodeRow[] = [makeNodeRow({ id: "x", status: "running" })],
+    extra: Partial<DagStore.WorkflowRow> = {},
+  ) => ({ workflow: workflowRow("wf-2", "running", nodes, { directory, ...extra }), rows })
+
+  it("refuses a retarget that moves a pending or queued writer next to another workflow's writer", async () => {
+    for (const status of ["pending", "queued"]) {
+      const { tmp, linked } = await repoWithLinkedWorktree()
+      await using _ = tmp
+      const h = harness({
+        workflow: workflowRow("wf-1", "running", [def("impl")], { directory: tmp.path }),
+        rows: [makeNodeRow({ id: "impl", status })],
+        others: [otherIn(linked)],
+      })
+      const rejection = conflictOf(await apply(h, retargetOf(linked), "build"))
+      expect(rejection.kind).toBe("write-conflict")
+      expect(rejection.status).toBe("running")
+      expect(rejection.parked).toBeUndefined()
+      expect(rejection.message).toContain("Workflow retarget rejected")
+      expect(rejection.message).toContain(`workspace "${linked}"`)
+      expect(rejection.message).toContain("workflow wf-2 (session ses_wf-2")
+      expect(rejection.message).toContain("this retarget would move write-capable node(s) there (impl)")
+      expect(rejection.message).toContain("retarget to a linked worktree no other live workflow is writing")
+      expect(rejection.message).toContain("isolation: worktree with a replan")
+      expect(rejection.message).toContain("wait for that workflow to finish")
+      expect(h.calls).toEqual([])
+      expect(h.reads).toEqual(["pending", "running", "paused", "stepping"])
+    }
+  })
+
+  it("counts the other workflow by where it runs: its execution directory, or where a running node started", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const mine = () => workflowRow("wf-1", "running", [def("impl")], { directory: tmp.path })
+    const rows = [makeNodeRow({ id: "impl", status: "pending" })]
+    const bound = harness({
+      workflow: mine(),
+      rows,
+      others: [otherIn(tmp.path, [def("x")], undefined, { executionDirectory: linked })],
+    })
+    expect(conflictOf(await apply(bound, retargetOf(linked), "build")).message).toContain("workflow wf-2")
+    // A workflow that was itself retargeted away still has a running writer where it started.
+    const started = harness({
+      workflow: mine(),
+      rows,
+      others: [
+        otherIn(tmp.path, [def("x")], [makeNodeRow({ id: "x", status: "running", directory: linked })], {
+          executionDirectory: path.join(tmp.path, "moved-elsewhere"),
+        }),
+      ],
+    })
+    expect(conflictOf(await apply(started, retargetOf(linked), "build")).message).toContain("workflow wf-2")
+  })
+
+  it("moves the running target-sensitive writers it restarts, as narrowed by node_ids", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const nodes = [
+      def("impl", { target_sensitive: true }),
+      def("judge", { worker_type: "auditor", target_sensitive: true }),
+    ]
+    const rows = [
+      makeNodeRow({ id: "impl", status: "running" }),
+      makeNodeRow({ id: "judge", status: "running", workerType: "auditor" }),
+    ]
+    const fixture = () => ({
+      workflow: workflowRow("wf-1", "running", nodes, { directory: tmp.path }),
+      rows,
+      others: [otherIn(linked)],
+    })
+    for (const nodeIDs of [undefined, ["impl"], ["impl", "judge"]]) {
+      const h = harness(fixture())
+      expect(conflictOf(await apply(h, retargetOf(linked, nodeIDs), "build")).message).toContain("(impl)")
+      expect(h.calls).toEqual([])
+    }
+    // Restarting only the judge moves no writer.
+    const judge = harness(fixture())
+    expect(Exit.isSuccess(await apply(judge, retargetOf(linked, ["judge"]), "build"))).toBe(true)
+    expect(judge.reads).toEqual([])
+    expect(judge.calls).toEqual(["retarget:wf-1"])
+    // node_ids the real retarget would reject are left to it.
+    for (const nodeIDs of [[], ["ghost"]]) {
+      const h = harness(fixture())
+      expect(Exit.isSuccess(await apply(h, retargetOf(linked, nodeIDs), "build"))).toBe(true)
+      expect(h.reads).toEqual([])
+      expect(h.calls).toEqual(["retarget:wf-1"])
+    }
+  })
+
+  it("leaves a running writer it does not restart where it is", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const h = harness({
+      workflow: workflowRow("wf-1", "running", [def("impl")], { directory: tmp.path }),
+      rows: [makeNodeRow({ id: "impl", status: "running" })],
+      others: [otherIn(linked)],
+    })
+    expect(Exit.isSuccess(await apply(h, retargetOf(linked), "build"))).toBe(true)
+    expect(h.reads).toEqual([])
+    expect(h.calls).toEqual(["retarget:wf-1"])
+  })
+
+  it("lets a retarget through when nothing it moves can clash", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const mine = (nodes: NodeConfig[], rows: DagStore.NodeRow[]) => ({
+      workflow: workflowRow("wf-1", "running", nodes, { directory: tmp.path }),
+      rows,
+    })
+    const pending = (...ids: string[]) => ids.map((id) => makeNodeRow({ id, status: "pending" }))
+    const scenarios: ReadonlyArray<readonly [string, ReturnType<typeof mine>, ReturnType<typeof otherIn>]> = [
+      [
+        "the other writer has finished",
+        mine([def("impl")], pending("impl")),
+        otherIn(linked, [def("x")], [makeNodeRow({ id: "x", status: "completed" })]),
+      ],
+      [
+        "the other writer runs in its own worktree",
+        mine([def("impl")], pending("impl")),
+        otherIn(linked, [def("x", { isolation: "worktree" })]),
+      ],
+      [
+        "the other workflow only reads",
+        mine([def("impl")], pending("impl")),
+        otherIn(linked, [def("x", { worker_type: "explore" })]),
+      ],
+      [
+        "the other workflow works elsewhere",
+        mine([def("impl")], pending("impl")),
+        otherIn(path.join(tmp.path, "elsewhere")),
+      ],
+      ["the moved nodes only read", mine([def("scan", { worker_type: "explore" })], pending("scan")), otherIn(linked)],
+      [
+        "the moved writer has its own worktree",
+        mine([def("impl", { isolation: "worktree" })], pending("impl")),
+        otherIn(linked),
+      ],
+      [
+        "the moved writer has its own workspace",
+        mine([def("impl", { workspace: tmp.path })], pending("impl")),
+        otherIn(linked),
+      ],
+    ]
+    for (const [, fixture, other] of scenarios) {
+      const h = harness({ ...fixture, others: [other] })
+      expect(Exit.isSuccess(await apply(h, retargetOf(linked), "build"))).toBe(true)
+      expect(h.calls).toEqual(["retarget:wf-1"])
+    }
+  })
+
+  it("lets a retarget through that rebinds nothing, and leaves a retarget the real mutation will refuse to it", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const nodes = [def("impl")]
+    const rows = [makeNodeRow({ id: "impl", status: "pending" })]
+    const clash = [otherIn(linked), otherIn(tmp.path)]
+    const cases: ReadonlyArray<readonly [string, DagStore.WorkflowRow, ControlRequest]> = [
+      [
+        "no workspace (only the fingerprint)",
+        workflowRow("wf-1", "running", nodes, { directory: tmp.path }),
+        retargetOf(undefined),
+      ],
+      [
+        "the workflow's own directory",
+        workflowRow("wf-1", "running", nodes, { directory: tmp.path }),
+        retargetOf(tmp.path),
+      ],
+      [
+        "its own bound worktree",
+        workflowRow("wf-1", "running", nodes, { directory: tmp.path, executionDirectory: linked }),
+        retargetOf(linked),
+      ],
+      [
+        "an unresolvable workspace",
+        workflowRow("wf-1", "running", nodes, { directory: tmp.path }),
+        retargetOf(path.join(tmp.path, "missing")),
+      ],
+      ["a terminal workflow", workflowRow("wf-1", "failed", nodes, { directory: tmp.path }), retargetOf(linked)],
+      [
+        "a workflow-level worktree",
+        workflowRow("wf-1", "running", nodes, {
+          directory: tmp.path,
+          config: JSON.stringify({ name: "wf-1", isolation: "worktree", nodes }),
+        }),
+        retargetOf(linked),
+      ],
+    ]
+    for (const [, workflow, request] of cases) {
+      const h = harness({ workflow, rows, others: clash })
+      expect(Exit.isSuccess(await apply(h, request, "build"))).toBe(true)
+      expect(h.reads).toEqual([])
+      expect(h.calls).toEqual(["retarget:wf-1"])
+    }
+  })
+
+  it("is not held to the plan gate, but still to the workspace check", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const fixture = (others: ReturnType<typeof otherIn>[]) => ({
+      workflow: workflowRow("wf-1", "running", [def("impl")], { directory: tmp.path }),
+      rows: [makeNodeRow({ id: "impl", status: "pending" })],
+      others,
+    })
+    // The plan agent adds no writer by retargeting one that already exists.
+    const free = harness(fixture([]))
+    expect(Exit.isSuccess(await apply(free, retargetOf(linked), "plan"))).toBe(true)
+    expect(free.calls).toEqual(["retarget:wf-1"])
+    const clash = harness(fixture([otherIn(linked)]))
+    expect(conflictOf(await apply(clash, retargetOf(linked), "plan")).kind).toBe("write-conflict")
+    expect(clash.calls).toEqual([])
   })
 })

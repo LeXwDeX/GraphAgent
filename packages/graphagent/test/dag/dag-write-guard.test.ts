@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test"
 import { Effect } from "effect"
 import { $ } from "bun"
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import type { DagStore } from "@graphagent/core/dag/store"
 import type { NodeConfig, WorkflowConfig } from "@/dag/dag"
@@ -161,6 +162,13 @@ describe("DagWriteGuard messages", () => {
     expect(recover).toContain("this recover also writes there (c)")
     expect(recover).toContain("wait for that workflow to finish, then recover again")
     expect(recover).not.toContain("isolation: worktree")
+    // A retarget moves nodes rather than adding them, and can be redirected.
+    const retarget = DagWriteGuard.writeConflictMessage("retarget", [conflict])
+    expect(retarget).toContain("Workflow retarget rejected")
+    expect(retarget).toContain("this retarget would move write-capable node(s) there (c)")
+    expect(retarget).toContain("retarget to a linked worktree no other live workflow is writing")
+    expect(retarget).toContain("isolation: worktree with a replan")
+    expect(retarget).toContain("wait for that workflow to finish")
   })
 })
 
@@ -359,6 +367,30 @@ describe("DagWriteGuard.liveWriters", () => {
     ])
   })
 
+  it("attributes a running node to the directory it started in, not the rebound execution directory", async () => {
+    // A retarget rebinds the execution directory but does not move an attempt
+    // that is already running; only the nodes that spawn afterwards follow it.
+    const store = fakeStore(
+      [
+        workflow("moved", "running", [def("started"), def("waiting"), def("unrecorded")], {
+          executionDirectory: "/nope/new",
+        }),
+      ],
+      {
+        moved: [
+          makeNodeRow({ id: "started", status: "running", directory: "/nope/old" }),
+          makeNodeRow({ id: "waiting", status: "pending" }),
+          makeNodeRow({ id: "unrecorded", status: "running", directory: null }),
+        ],
+      },
+    )
+    const groups = await Effect.runPromise(DagWriteGuard.liveWriters(store))
+    expect(groups.map((group) => [group.directory, group.nodeIDs])).toEqual([
+      ["/nope/old", ["started"]],
+      ["/nope/new", ["waiting", "unrecorded"]],
+    ])
+  })
+
   it("skips node-isolated writers, the excluded workflow, and workflows whose config cannot be read", async () => {
     const store = fakeStore(
       [
@@ -374,6 +406,126 @@ describe("DagWriteGuard.liveWriters", () => {
       },
     )
     expect(await Effect.runPromise(DagWriteGuard.liveWriters(store, "mine"))).toEqual([])
+  })
+})
+
+describe("DagWriteGuard.retargetPlacement", () => {
+  // A retarget needs a real linked worktree: the target must belong to the same
+  // git project and be listed by `git worktree list`.
+  const repoWithLinkedWorktree = async () => {
+    let linked = ""
+    const tmp = await tmpdir({
+      git: true,
+      init: async (directory) => {
+        linked = path.join(os.tmpdir(), `retarget-linked-${Math.random().toString(36).slice(2)}`)
+        await $`git worktree add --detach ${linked} HEAD`.cwd(directory).quiet()
+        // macOS temp paths resolve through /private; match git's canonical form.
+        linked = await fs.realpath(linked)
+      },
+      dispose: async () => {
+        if (!linked) return
+        try {
+          await $`git worktree remove --force ${linked}`.quiet()
+        } catch {
+          // The sandbox cleanup removes leftovers.
+        }
+      },
+    })
+    return { tmp, linked }
+  }
+
+  const workflowOf = (directory: string, nodes: NodeConfig[], extra: Record<string, unknown> = {}) => ({
+    status: "running",
+    directory,
+    executionDirectory: null,
+    config: JSON.stringify({ name: "wf", nodes }),
+    ...extra,
+  })
+  const row = (id: string, status: string, extra: Partial<DagStore.NodeRow> = {}) =>
+    makeNodeRow({ id, status, ...extra })
+
+  it("moves the pending and queued nodes that have no workspace of their own", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const placement = DagWriteGuard.retargetPlacement({
+      workflow: workflowOf(tmp.path, [
+        def("a"),
+        def("b"),
+        def("own", { workspace: tmp.path }),
+        def("done"),
+        def("running"),
+        def("old"),
+      ]),
+      rows: [
+        row("a", "pending"),
+        row("b", "queued"),
+        row("own", "pending"),
+        row("done", "completed"),
+        row("running", "running"),
+        row("old", "pending", { superseded: true }),
+      ],
+      workspace: linked,
+      nodeIDs: undefined,
+    })
+    expect(placement?.directory).toBe(linked)
+    expect(placement?.nodes.map((node) => node.id)).toEqual(["a", "b"])
+  })
+
+  it("also moves the running target-sensitive nodes the retarget restarts, as narrowed by node_ids", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const workflow = workflowOf(tmp.path, [
+      def("impl", { target_sensitive: true }),
+      def("judge", { worker_type: "auditor", target_sensitive: true }),
+      def("reviewer", { worker_type: "review" }),
+      def("plain"),
+    ])
+    const rows = [
+      row("impl", "running"),
+      row("judge", "running", { workerType: "auditor" }),
+      row("reviewer", "running", { workerType: "review" }),
+      row("plain", "running"),
+    ]
+    const moved = (nodeIDs: readonly string[] | undefined) =>
+      DagWriteGuard.retargetPlacement({ workflow, rows, workspace: linked, nodeIDs })?.nodes.map((node) => node.id)
+    // A running node that is not target-sensitive keeps running where it is.
+    expect(moved(undefined)).toEqual(["impl", "judge", "reviewer"])
+    expect(moved(["judge"])).toEqual(["judge"])
+    expect(moved(["impl", "reviewer"])).toEqual(["impl", "reviewer"])
+    // node_ids the real retarget would reject are left to it.
+    expect(moved([])).toBeUndefined()
+    expect(moved(["plain"])).toBeUndefined()
+    expect(moved(["ghost"])).toBeUndefined()
+  })
+
+  it("is undefined whenever the retarget rebinds nothing or will not apply", async () => {
+    const { tmp, linked } = await repoWithLinkedWorktree()
+    await using _ = tmp
+    const nodes = [def("a")]
+    const rows = [row("a", "pending")]
+    const place = (workflow: ReturnType<typeof workflowOf>, workspace: string | undefined) =>
+      DagWriteGuard.retargetPlacement({ workflow, rows, workspace, nodeIDs: undefined })
+    expect(place(workflowOf(tmp.path, nodes), linked)).toBeDefined()
+    // No workspace: only the fingerprint can change.
+    expect(place(workflowOf(tmp.path, nodes), undefined)).toBeUndefined()
+    // Terminal, workflow-isolated, or unreadable workflows are for the real retarget to refuse.
+    expect(place(workflowOf(tmp.path, nodes, { status: "failed" }), linked)).toBeUndefined()
+    expect(
+      place(
+        workflowOf(tmp.path, nodes, { config: JSON.stringify({ name: "wf", isolation: "worktree", nodes }) }),
+        linked,
+      ),
+    ).toBeUndefined()
+    expect(place(workflowOf(tmp.path, nodes, { config: "not json" }), linked)).toBeUndefined()
+    // The target must resolve to a linked worktree of the same project.
+    expect(place(workflowOf(tmp.path, nodes), "relative/path")).toBeUndefined()
+    expect(place(workflowOf(tmp.path, nodes), path.join(tmp.path, "missing"))).toBeUndefined()
+    expect(place(workflowOf(tmp.path, nodes), os.tmpdir())).toBeUndefined()
+    // The workflow's own execution directory is not a move, whichever way it is bound.
+    expect(place(workflowOf(tmp.path, nodes), tmp.path)).toBeUndefined()
+    expect(place(workflowOf(tmp.path, nodes, { executionDirectory: linked }), linked)).toBeUndefined()
+    // ...but the owner checkout is a move for a workflow bound to the linked worktree.
+    expect(place(workflowOf(tmp.path, nodes, { executionDirectory: linked }), tmp.path)?.directory).toBe(tmp.path)
   })
 })
 

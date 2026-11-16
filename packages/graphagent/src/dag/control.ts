@@ -25,7 +25,9 @@
  * Write safety (#1031 M8): extend, replan and recover also precheck, before any
  * mutation and without parking, that the `plan` agent only runs read-only
  * nodes, and that the writers they would newly run do not share a workspace
- * with another live workflow's unfinished writers (`DagWriteGuard`).
+ * with another live workflow's unfinished writers (`DagWriteGuard`). A retarget
+ * adds no writer but moves the ones that spawn after it, so it gets the same
+ * workspace check against its target directory.
  *
  * Lock discipline: `Dag` commands acquire the non-reentrant per-workflow
  * KeyedMutex themselves. This service never calls `Dag` while a mutation is
@@ -148,8 +150,9 @@ export type ControlRequest =
       readonly reason?: string
     }
 
-/** The requests that add work, which the write-safety precheck inspects. */
-type WorkAddingRequest = Extract<ControlRequest, { readonly op: "extend" | "replan" | "recover" }>
+/** The requests that add work, or (a retarget) move it, which the write-safety
+ * precheck inspects. */
+type WorkPlacingRequest = Extract<ControlRequest, { readonly op: "extend" | "replan" | "recover" | "retarget" }>
 
 /** The success payload of a `Dag.Interface` method. */
 type DagSuccess<K extends keyof Dag.Interface> = Dag.Interface[K] extends (
@@ -475,15 +478,29 @@ const make = Effect.gen(function* () {
       diagnostics: [],
     })
 
-  /** The nodes a work-adding request would newly run, or undefined when the
-   * request does not plan (the real mutation then reports why). */
-  const newRuns = (workflow: WorkflowRow, request: WorkAddingRequest) =>
+  /** The nodes a request would newly run (a retarget: move) and the directory
+   * those without their own workspace run in, or undefined when the request
+   * does not plan (the real mutation then reports why). */
+  const placement = (workflow: WorkflowRow, request: WorkPlacingRequest) =>
     Effect.gen(function* () {
-      if (request.op === "extend") return request.prepared.nodes
+      const home = workflow.executionDirectory ?? workflow.directory
+      if (request.op === "extend") return { nodes: request.prepared.nodes, directory: home }
+      // A retarget without a workspace rebinds nothing.
+      if (request.op === "retarget" && request.workspace === undefined) return undefined
       const rows = yield* dag.store.getNodes(workflow.id).pipe(Effect.orDie)
-      if (request.op === "replan") return DagWriteGuard.replanNewRuns(rows, request.prepared.nodes)
+      if (request.op === "retarget")
+        return DagWriteGuard.retargetPlacement({
+          workflow,
+          rows,
+          workspace: request.workspace,
+          nodeIDs: request.nodeIDs,
+        })
+      if (request.op === "replan") {
+        const nodes = DagWriteGuard.replanNewRuns(rows, request.prepared.nodes)
+        return nodes === undefined ? undefined : { nodes, directory: home }
+      }
       const config = Dag.parseWorkflowConfig(workflow.config)
-      return config
+      const nodes = config
         ? DagWriteGuard.recoveryNewRuns({
             config,
             rows,
@@ -491,15 +508,18 @@ const make = Effect.gen(function* () {
             graphRev: workflow.graphRev,
           })
         : undefined
+      return nodes === undefined ? undefined : { nodes, directory: home }
     })
 
   /**
    * #1031 M8 write-safety precheck for the ops that add work (extend, replan,
-   * recover). The plan agent may only run read-only nodes, and no request may
-   * newly run an unisolated writer in a workspace another live workflow still
-   * has an unfinished unisolated writer in. Like the resume guard it runs
-   * before any mutation and never parks: a refusal means nothing was attempted.
-   * Yields the refusal, or undefined when the request may proceed.
+   * recover) or move it (retarget). The plan agent may only run read-only
+   * nodes, and no request may newly run an unisolated writer in a workspace
+   * another live workflow still has an unfinished unisolated writer in. A
+   * retarget adds no writer, so the plan gate does not apply to it; it is
+   * checked against its target directory. Like the resume guard it runs before
+   * any mutation and never parks: a refusal means nothing was attempted. Yields
+   * the refusal, or undefined when the request may proceed.
    */
   const writeGuard = (
     workflow: WorkflowRow,
@@ -507,18 +527,19 @@ const make = Effect.gen(function* () {
     caller: Caller,
   ): Effect.Effect<ControlConflict | undefined> =>
     Effect.gen(function* () {
-      if (request.op !== "extend" && request.op !== "replan" && request.op !== "recover") return undefined
-      const runs = yield* newRuns(workflow, request)
-      if (runs === undefined) return undefined
-      const writers = DagWriteGuard.writerIDs(runs)
+      if (request.op !== "extend" && request.op !== "replan" && request.op !== "recover" && request.op !== "retarget")
+        return undefined
+      const placed = yield* placement(workflow, request)
+      if (placed === undefined) return undefined
+      const writers = DagWriteGuard.writerIDs(placed.nodes)
       if (writers.length === 0) return undefined
-      if (caller.agent === DagWriteGuard.PLAN_AGENT)
+      if (request.op !== "retarget" && caller.agent === DagWriteGuard.PLAN_AGENT)
         return new ControlConflict({
           kind: "plan-readonly",
           status: workflow.status,
           message: DagWriteGuard.planRejection(request.op, writers),
         })
-      const mine = DagWriteGuard.unisolatedWriters(runs, workflow.executionDirectory ?? workflow.directory)
+      const mine = DagWriteGuard.unisolatedWriters(placed.nodes, placed.directory)
       if (mine.length === 0) return undefined
       const conflicts = DagWriteGuard.writeConflicts(yield* DagWriteGuard.liveWriters(dag.store, workflow.id), mine)
       return conflicts.length === 0

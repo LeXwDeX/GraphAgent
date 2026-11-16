@@ -91,7 +91,10 @@ checkout, so it reads the graph shape instead of the paths:
   unfinished unisolated writer in the same canonical directory. This holds for
   every request that newly runs a writer: `start`, `extend`, `replan` (added,
   restarted, and pending or queued replaced nodes), and `recover` (replacement
-  attempts).
+  attempts), and for a `retarget` that moves writers into another workflow's
+  worktree (pending and queued nodes, and the running target-sensitive nodes it
+  restarts). A running node counts where it started, so a retarget that leaves
+  it behind does not hide it.
 
 The cost of the conservative reading is isolation (and a branch to merge) for
 some pairs that would never have touched the same file; the benefit is that no

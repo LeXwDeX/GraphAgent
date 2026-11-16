@@ -10,9 +10,9 @@
  *    `DagControl` extend/replan/recover prechecks refuse a graph whose
  *    newly-running nodes include a writer.
  * 2. Two unisolated writers never share one workspace across live workflows.
- *    `run.start` and the `DagControl` extend/replan/recover prechecks refuse a
- *    request that would newly run a writer beside another live workflow's
- *    unfinished writer.
+ *    `run.start` and the `DagControl` extend/replan/recover/retarget prechecks
+ *    refuse a request that would newly run, or move, a writer beside another
+ *    live workflow's unfinished writer.
  * 3. A strict workflow with parallel writers defaults to workflow-level
  *    worktree isolation, but only from a clean git checkout.
  *
@@ -24,12 +24,13 @@
 
 import { Effect } from "effect"
 import { planReplan } from "@graphagent/core/dag/core/replan"
-import { NodeStatus } from "@graphagent/core/dag/core/types"
+import { NodeStatus, isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
 import type { DagStore } from "@graphagent/core/dag/store"
 import { DagBlocks } from "./blocks"
 import { DEFAULT_WORKFLOW_CONFIG, parseWorkflowConfig, type NodeConfig, type WorkflowConfig } from "./dag"
 import { DagLocation } from "./location"
 import { planRecovery } from "./recovery-plan"
+import { targetSensitiveNode } from "./review-lifecycle"
 import { DagValidation } from "./validation"
 
 /** The agent whose turns may only start read-only work. */
@@ -78,10 +79,14 @@ export function hasUnorderedWriters(nodes: readonly OrderedShape[]): boolean {
 // Plan agent
 // ============================================================================
 
-export type WriteAction = "start" | "extend" | "replan" | "recover"
+/** The requests that add work, which the plan agent may not use for writers. */
+export type PlanAction = "start" | "extend" | "replan" | "recover"
+/** The requests that can put a writer into a workspace: the above, and a
+ * retarget, which moves the writers that spawn after it. */
+export type WriteAction = PlanAction | "retarget"
 
 /** The model-facing refusal for a plan-agent request that would run writers. */
-export function planRejection(action: WriteAction, writers: readonly string[]): string {
+export function planRejection(action: PlanAction, writers: readonly string[]): string {
   return `Workflow ${action} rejected: the plan agent may only run read-only nodes, but this ${action} would run write-capable node(s): ${writers.join(", ")}. Switch to build before running the implementation phase (plan_exit asks the user to switch).`
 }
 
@@ -150,6 +155,60 @@ export function recoveryNewRuns(input: {
 }
 
 // ============================================================================
+// Retarget
+// ============================================================================
+
+/** The nodes a retarget moves and the directory they run in afterwards. */
+export interface RetargetPlacement {
+  readonly nodes: NodeConfig[]
+  readonly directory: string
+}
+
+/**
+ * Where a retarget puts writers. It rebinds the workflow's execution directory,
+ * and a node that spawns afterwards runs there unless it carries its own
+ * `workspace`: that is every pending or queued node, plus the running
+ * target-sensitive nodes the retarget itself restarts (`node_ids` narrows
+ * those). A running node it does not restart keeps running where it started.
+ * Undefined when nothing moves or the retarget will not apply (no `workspace`,
+ * a terminal or workflow-isolated workflow, an unresolvable or unchanged
+ * target, or `node_ids` the retarget would reject); the real retarget then
+ * reports why.
+ */
+export function retargetPlacement(input: {
+  readonly workflow: Pick<DagStore.WorkflowRow, "status" | "directory" | "executionDirectory" | "config">
+  readonly rows: readonly DagStore.NodeRow[]
+  readonly workspace: string | undefined
+  readonly nodeIDs: readonly string[] | undefined
+}): RetargetPlacement | undefined {
+  const { workflow, rows, nodeIDs } = input
+  if (input.workspace === undefined || isTerminalWorkflowStatusValue(workflow.status)) return undefined
+  const config = parseWorkflowConfig(workflow.config)
+  if (!config || config.isolation === "worktree") return undefined
+  const target = DagLocation.resolveWorkspace(input.workspace, workflow.directory)
+  if (target._tag !== "ok") return undefined
+  const current = workflow.executionDirectory ?? workflow.directory
+  if (DagLocation.canonicalDirectory(target.directory) === DagLocation.canonicalDirectory(current)) return undefined
+  const definitions = new Map(config.nodes.map((node) => [node.id, node]))
+  const sensitive = rows.filter(
+    (row) => row.status === "running" && targetSensitiveNode(definitions.get(row.id), row.workerType),
+  )
+  if (nodeIDs !== undefined && (nodeIDs.length === 0 || nodeIDs.some((id) => !sensitive.some((row) => row.id === id))))
+    return undefined
+  const restarted = nodeIDs === undefined ? sensitive : sensitive.filter((row) => nodeIDs.includes(row.id))
+  const moving = new Set([
+    ...rows
+      .filter((row) => !row.superseded && (row.status === "pending" || row.status === "queued"))
+      .map((row) => row.id),
+    ...restarted.map((row) => row.id),
+  ])
+  return {
+    nodes: config.nodes.filter((node) => moving.has(node.id) && node.workspace === undefined),
+    directory: target.directory,
+  }
+}
+
+// ============================================================================
 // Cross-workflow write conflicts
 // ============================================================================
 
@@ -171,7 +230,9 @@ export interface LiveWriters {
  * session. A paused workflow counts: its pending writers run on resume. A node
  * runs in `node.workspace`, else the workflow's execution directory, else its
  * owner directory; a workflow-level worktree is such an execution directory, so
- * an isolated workflow never overlaps a checkout it does not share.
+ * an isolated workflow never overlaps a checkout it does not share. A running
+ * node is where it started (`NodeRow.directory`): a retarget rebinds the
+ * execution directory but does not move an attempt that is already running.
  */
 export function liveWriters(store: DagStore.Interface, exclude?: string): Effect.Effect<LiveWriters[]> {
   return Effect.gen(function* () {
@@ -181,14 +242,19 @@ export function liveWriters(store: DagStore.Interface, exclude?: string): Effect
       if (workflow.id === exclude) continue
       const config = parseWorkflowConfig(workflow.config)
       if (!config) continue
-      const unfinished = new Set(
+      const unfinished = new Map(
         (yield* store.getCurrentNodes(workflow.id))
           .filter((row) => UNFINISHED_STATUSES.has(row.status))
-          .map((row) => row.id),
+          .map((row) => [row.id, row] as const),
       )
       const home = workflow.executionDirectory ?? workflow.directory
       const placed = unisolatedWriters(
-        config.nodes.filter((node) => unfinished.has(node.id)),
+        config.nodes.flatMap((node) => {
+          const row = unfinished.get(node.id)
+          if (row === undefined) return []
+          const started = row.status === "running" && row.directory ? row.directory : undefined
+          return [{ ...node, workspace: started ?? node.workspace }]
+        }),
         home,
       )
       for (const directory of new Set(placed.map((writer) => writer.directory))) {
@@ -250,7 +316,8 @@ export function writeConflicts(live: readonly LiveWriters[], mine: readonly Plac
 }
 
 /** What the parent can do about a refused write conflict, by request. A
- * recovery re-runs the stored node definitions, so it has no isolation to add. */
+ * recovery re-runs the stored node definitions, so it has no isolation to add;
+ * a retarget moves nodes, so isolating them takes a replan. */
 const CONFLICT_REMEDY: Record<WriteAction, string> = {
   start: "set config.isolation: worktree (needs a clean git checkout), or wait for that workflow to finish.",
   extend:
@@ -258,13 +325,16 @@ const CONFLICT_REMEDY: Record<WriteAction, string> = {
   replan:
     "give the added, restarted or replaced write-capable node(s) isolation: worktree (needs a clean git checkout), or wait for that workflow to finish.",
   recover: "wait for that workflow to finish, then recover again.",
+  retarget:
+    "retarget to a linked worktree no other live workflow is writing, give the write-capable node(s) it would move isolation: worktree with a replan (needs a clean git checkout), or wait for that workflow to finish.",
 }
 
 /** The model-facing refusal for a request that would share a workspace. */
 export function writeConflictMessage(action: WriteAction, conflicts: readonly WriteConflict[]): string {
+  const effect = action === "retarget" ? "would move write-capable node(s) there" : "also writes there"
   const clauses = conflicts.map(
     (conflict) =>
-      `workspace "${conflict.directory}" is being written by workflow ${conflict.workflowID} (session ${conflict.sessionID}; unfinished write-capable node(s): ${conflict.liveNodes.join(", ")}), and this ${action} also writes there (${conflict.newNodes.join(", ")})`,
+      `workspace "${conflict.directory}" is being written by workflow ${conflict.workflowID} (session ${conflict.sessionID}; unfinished write-capable node(s): ${conflict.liveNodes.join(", ")}), and this ${action} ${effect} (${conflict.newNodes.join(", ")})`,
   )
   return `Workflow ${action} rejected: ${clauses.join("; ")}. Two unisolated writers must not share a workspace: ${CONFLICT_REMEDY[action]}`
 }

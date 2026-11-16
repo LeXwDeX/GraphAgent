@@ -59,7 +59,10 @@ writer. Three engine rules share this one definition:
 - Two unisolated writers never share a workspace across live workflows. The
   later `start`, or an `extend`, `replan`, or `recover` that would newly run such
   a writer, is refused until the first workflow finishes or the new writers are
-  isolated (a recovery re-runs stored definitions, so it can only wait). Node
+  isolated (a recovery re-runs stored definitions, so it can only wait). A
+  `retarget` is refused when it would move writers into a worktree another live
+  workflow is writing: the pending and queued nodes without their own
+  `workspace`, and the running target-sensitive nodes it restarts. Node
   `isolation: worktree`, a workflow-level worktree, and a different `workspace`
   all count as separate directories.
 - A strict workflow whose writers include a pair with no dependency path

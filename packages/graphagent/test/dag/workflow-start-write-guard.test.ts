@@ -215,7 +215,24 @@ const replan = (caller: Caller, workflowID: string, specPath: string) =>
     )
   })
 
-/** The error message a refused extend or replan surfaces to the model. */
+const retarget = (caller: Caller, workflowID: string, workspace: string) =>
+  Effect.gen(function* () {
+    const dag = yield* Dag.Service
+    const control = yield* DagControl.Service
+    return yield* controlWorkflow(
+      {
+        dag,
+        control,
+        authoring,
+        sessionID: caller.session,
+        session: { directory: caller.directory, projectID, model: undefined },
+        ctx: toolContext(caller.session, caller.agent ?? "build"),
+      },
+      { action: "control", operation: "retarget", workflow_id: workflowID, workspace } as ControlParams,
+    )
+  })
+
+/** The error message a refused extend, replan or retarget surfaces to the model. */
 const failureText = <A, R>(effect: Effect.Effect<A, never, R>) =>
   Effect.gen(function* () {
     const exit = yield* Effect.exit(effect)
@@ -625,6 +642,48 @@ describe("cross-workflow write conflicts on workflow start", () => {
           specs({ fragment: { name: "fragment", nodes: [{ ...patch, isolation: "worktree" }] } }),
         )
         expect(isolated.title).toContain("Workflow replanned")
+      }),
+    )
+  })
+
+  it("refuses a retarget that moves a writer into a worktree another workflow is writing", async () => {
+    // Two unisolated workflows in different worktrees of one project do not
+    // clash; a retarget must not be the way to make them.
+    const dir = repo()
+    const linkedPath = path.join(tmpdir(), `write-guard-retarget-${Math.random().toString(36).slice(2)}`)
+    roots.push(linkedPath)
+    git(dir, ["worktree", "add", "--detach", linkedPath, "HEAD"])
+    const linked = DagLocation.canonicalDirectory(linkedPath)
+    await run(
+      { creates: [] },
+      Effect.gen(function* () {
+        yield* seed([
+          ["ses_a", dir],
+          ["ses_b", linked],
+        ])
+        const first = workflowID(
+          (yield* start({ session: "ses_a", directory: dir }, specs(writerSpec("first")))).output,
+        )
+        const second = workflowID(
+          (yield* start({ session: "ses_b", directory: linked }, specs(writerSpec("second")))).output,
+        )
+        const dagStore = yield* DagStore.Service
+        const { db } = yield* Database.Service
+        const eventsBefore = (yield* db.select().from(EventTable).all()).length
+        const text = yield* failureText(retarget({ session: "ses_a", directory: dir }, first, linked))
+        expect(text).toContain("Workflow retarget rejected")
+        expect(text).toContain(`workflow ${second}`)
+        expect(text).toContain("this retarget would move write-capable node(s) there (impl)")
+        // Refused before any mutation: still running, still bound to its own checkout.
+        const refused = yield* dagStore.getWorkflow(first)
+        expect(refused?.status).toBe("running")
+        expect(refused?.executionDirectory ?? null).toBeNull()
+        expect((yield* db.select().from(EventTable).all()).length).toBe(eventsBefore)
+        // Once the other workflow has stopped writing there, the same retarget lands.
+        yield* (yield* Dag.Service).cancel(second)
+        const landed = yield* retarget({ session: "ses_a", directory: dir }, first, linked)
+        expect(landed.title).toContain("Workflow retargeted")
+        expect((yield* dagStore.getWorkflow(first))?.executionDirectory).toBe(linked)
       }),
     )
   })
