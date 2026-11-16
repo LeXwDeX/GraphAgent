@@ -187,6 +187,26 @@ export const DagNodeAttemptTable = sqliteTable(
 )
 
 /**
+ * #1029 (ADR-0008): the runner lease, one row per workflow. `runner_id` is the
+ * `pid:nonce` of the engine process that drives the workflow; its token is
+ * `(runner_id, epoch)`. `epoch` grows with every takeover from another runner
+ * and never otherwise; `expires_at` (epoch ms) makes the row claimable once it
+ * has passed. A workflow with no row is unowned.
+ *
+ * A source table like the mailbox tables, not a projection: only `DagLease`
+ * writes it, and DAG event replay neither writes nor clears it. It lives and
+ * dies with its workflow (ON DELETE CASCADE), so no row outlives it.
+ */
+export const DagRunnerTable = sqliteTable("dag_runner", {
+  dag_id: text()
+    .primaryKey()
+    .references(() => WorkflowTable.id, { onDelete: "cascade" }),
+  runner_id: text().notNull(),
+  epoch: integer().notNull(),
+  expires_at: integer().notNull(),
+})
+
+/**
  * Reserved audit table. The physical table exists via the 20260702 migration
  * but NOTHING writes or reads it yet — the read surface was removed from
  * DagStore as dead code. Keep the definition so the drizzle schema matches
