@@ -8,6 +8,7 @@ import { Agent } from "../../src/agent/agent"
 import { AgentContract } from "../../src/agent/contract"
 import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
+import { DagBlocks } from "../../src/dag/blocks"
 import { DagEnvironmentCatalogs } from "../../src/dag/environment-catalogs"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Provider } from "../../src/provider/provider"
@@ -56,9 +57,27 @@ it.instance("built-in agents carry the contracts the Issue assigns them", () =>
     const agents = yield* load((svc) => svc.list())
     const declared = Object.fromEntries(agents.map((agent) => [agent.name, agent.contract]))
 
-    expect(declared.explore).toEqual({ role: "worker", visibility: "public" })
+    // `explore` keeps free-text task calls: its artifact is for composed runs (`output.task: false`).
+    expect(declared.explore).toEqual({
+      role: "worker",
+      visibility: "public",
+      output: { artifact: "code_findings", task: false },
+    })
+    // The auditor's output is the DAG review lane's schema (#1031), not a catalog artifact.
     expect(declared.auditor).toEqual({ role: "worker", visibility: "public", failure: "fail" })
     expect(declared.review).toEqual({ role: "worker", visibility: "private" })
+    expect(declared.researcher).toEqual({
+      role: "worker",
+      visibility: "public",
+      output: { artifact: "research_findings" },
+    })
+    expect(declared.architect).toEqual({
+      role: "worker",
+      visibility: "public",
+      output: { artifact: "architecture_proposal" },
+    })
+    // The prototyper writes, so it is private; its failure is derived, not declared.
+    expect(declared.prototyper).toEqual({ role: "worker", visibility: "private", output: { artifact: "prototype" } })
     // Everything else declares nothing and takes the defaults.
     for (const name of ["build", "plan", "general", "compaction", "title", "summary"]) {
       expect(declared[name]).toBeUndefined()
@@ -74,9 +93,34 @@ it.instance("effective contract snapshot of the built-in catalog", () =>
       general: { role: "worker", visibility: "private", failure: "fail" },
       // plan edits only its own plan file and is a read-only profile for the DAG.
       plan: { role: "worker", visibility: "private", failure: "skip" },
-      explore: { role: "worker", visibility: "public", failure: "skip" },
+      explore: {
+        role: "worker",
+        visibility: "public",
+        failure: "skip",
+        output: { artifact: "code_findings", task: false },
+      },
       review: { role: "worker", visibility: "private", failure: "skip" },
       auditor: { role: "worker", visibility: "public", failure: "fail" },
+      // The other workers leave `output.task` out, so task calls owe their artifact: the effective view says so.
+      researcher: {
+        role: "worker",
+        visibility: "public",
+        failure: "skip",
+        output: { artifact: "research_findings", task: true },
+      },
+      architect: {
+        role: "worker",
+        visibility: "public",
+        failure: "skip",
+        output: { artifact: "architecture_proposal", task: true },
+      },
+      // A writer: its failure is the workflow's failure.
+      prototyper: {
+        role: "worker",
+        visibility: "private",
+        failure: "fail",
+        output: { artifact: "prototype", task: true },
+      },
       compaction: { role: "worker", visibility: "private", failure: "skip" },
       title: { role: "worker", visibility: "private", failure: "skip" },
       summary: { role: "worker", visibility: "private", failure: "skip" },
@@ -99,8 +143,13 @@ it.instance(
       const explore = yield* load((svc) => svc.get("explore"))
       const review = yield* load((svc) => svc.get("review"))
       const auditor = yield* load((svc) => svc.get("auditor"))
-      // `failure` is added; role and visibility are inherited.
-      expect(explore?.contract).toEqual({ role: "worker", visibility: "public", failure: "fail" })
+      // `failure` is added; role, visibility and the artifact, with its opt-out of task calls, are inherited.
+      expect(explore?.contract).toEqual({
+        role: "worker",
+        visibility: "public",
+        failure: "fail",
+        output: { artifact: "code_findings", task: false },
+      })
       // `visibility` is rewritten; the inherited role stays.
       expect(review?.contract).toEqual({ role: "worker", visibility: "public" })
       expect(AgentContract.effective(review!).visibility).toBe("public")
@@ -173,6 +222,72 @@ it.instance("an agent markdown file declares its contract in the frontmatter", (
   }),
 )
 
+it.instance(
+  "a user override that restates explore's output owes the artifact to task calls again",
+  () =>
+    Effect.gen(function* () {
+      const explore = yield* load((svc) => svc.get("explore"))
+      if (!explore) throw new Error("Expected the explore agent")
+      // `output` is replaced as a unit: the opt-out was part of the built-in declaration, so it goes with it.
+      expect(explore.contract?.output).toEqual({ artifact: "code_findings" })
+      expect(AgentContract.effective(explore).output).toEqual({ artifact: "code_findings", task: true })
+      expect(AgentContract.taskArtifact(explore)).toBe("code_findings")
+    }),
+  { config: { agent: { explore: { contract: { output: { artifact: "code_findings" } } } } } },
+)
+
+it.instance(
+  "a user override can keep or restore the opt-out explicitly",
+  () =>
+    Effect.gen(function* () {
+      const explore = yield* load((svc) => svc.get("explore"))
+      const scribe = yield* load((svc) => svc.get("scribe"))
+      if (!explore || !scribe) throw new Error("Expected the agents")
+      expect(AgentContract.taskArtifact(explore)).toBeUndefined()
+      expect(AgentContract.effective(explore).output).toEqual({ artifact: "code_findings", task: false })
+      expect(AgentContract.taskArtifact(scribe)).toBeUndefined()
+      expect(AgentContract.effective(scribe).output).toEqual({ artifact: "project_map", task: false })
+    }),
+  {
+    config: {
+      agent: {
+        explore: { contract: { output: { artifact: "code_findings", task: false } } },
+        scribe: {
+          mode: "subagent",
+          description: "Maps a codebase in free text",
+          contract: { output: { artifact: "project_map", task: false } },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "an agent that declares an artifact the catalog does not hold is diagnosed and logged",
+  () =>
+    Effect.gen(function* () {
+      const { result: agents, lines } = yield* warnings(load((svc) => svc.list()))
+      const diagnostics = AgentContract.diagnose(agents)
+      expect(diagnostics.map((item) => [item.agent, item.code])).toEqual([["oddity", "artifact_unknown"]])
+      expect(diagnostics[0]?.message).toContain('agent "oddity"')
+      expect(diagnostics[0]?.message).toContain('"no_such_type"')
+      expect(diagnostics[0]?.message).toContain("code_findings")
+      // The same sentence reaches the log channel when the catalog is built.
+      expect(lines.some((line) => line.includes('agent "oddity" declares output artifact "no_such_type"'))).toBe(true)
+    }),
+  {
+    config: {
+      agent: {
+        oddity: {
+          mode: "subagent",
+          description: "Declares an artifact the catalog does not have",
+          contract: { output: { artifact: "no_such_type" } },
+        },
+      },
+    },
+  },
+)
+
 it.instance("a user explore.md that opens edit makes explore private and is diagnosed", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
@@ -190,7 +305,11 @@ it.instance("a user explore.md that opens edit makes explore private and is diag
     if (!explore) throw new Error("Expected the explore agent")
 
     // The declaration is inherited untouched; the effective view downgrades it.
-    expect(explore.contract).toEqual({ role: "worker", visibility: "public" })
+    expect(explore.contract).toEqual({
+      role: "worker",
+      visibility: "public",
+      output: { artifact: "code_findings", task: false },
+    })
     expect(AgentContract.effective(explore).visibility).toBe("private")
 
     const diagnostics = AgentContract.diagnose(agents)
@@ -208,9 +327,16 @@ it.instance(
     Effect.gen(function* () {
       const agents = yield* load((svc) => svc.list())
       const effective = effectiveByName(agents)
-      expect(effective.explore?.visibility).toBe("private")
-      expect(effective.auditor?.visibility).toBe("private")
-      expect(AgentContract.diagnose(agents).map((item) => item.agent)).toEqual(["auditor", "explore"])
+      for (const name of ["explore", "auditor", "researcher", "architect"]) {
+        expect(effective[name]?.visibility, name).toBe("private")
+      }
+      // The prototyper and review declared private already: nothing to diagnose for them.
+      expect(AgentContract.diagnose(agents).map((item) => item.agent)).toEqual([
+        "architect",
+        "auditor",
+        "explore",
+        "researcher",
+      ])
     }),
   { config: { permission: { edit: "allow" } } },
 )
@@ -255,6 +381,65 @@ it.instance(
 )
 
 it.instance(
+  "the new read-only workers are expandable dispatch targets; the writer never is",
+  () =>
+    Effect.gen(function* () {
+      const agents = yield* load((svc) => svc.list())
+      expect(AgentContract.composerAvailability(agents, "scout")).toEqual({
+        available: true,
+        dispatch: ["researcher", "architect", "explore"],
+      })
+      const blocked = AgentContract.composerAvailability(agents, "forge")
+      expect(blocked.available).toBe(false)
+      if (blocked.available) return
+      expect(blocked.reason).toContain('composer "forge" is unavailable')
+      expect(blocked.reason).toContain('agent "prototyper" can write files')
+      // Only the unusable composer is diagnosed; the built-in workers are not.
+      expect(AgentContract.diagnose(agents).map((item) => [item.agent, item.code])).toEqual([
+        ["forge", "composer_unavailable"],
+      ])
+    }),
+  {
+    config: {
+      agent: {
+        scout: {
+          mode: "subagent",
+          description: "Fans a question out to the read-only workers",
+          contract: {
+            role: "composer",
+            compose: { pattern: "fan_out", dispatch: ["researcher", "architect", "explore"], fallback: "researcher" },
+          },
+        },
+        forge: {
+          mode: "subagent",
+          description: "Tries to dispatch the prototyper",
+          contract: {
+            role: "composer",
+            compose: { pattern: "fan_out", dispatch: ["prototyper"], fallback: "prototyper" },
+          },
+        },
+      },
+    },
+  },
+)
+
+it.instance("the DAG's static read-only profile list covers every visible built-in agent that cannot write", () =>
+  Effect.gen(function* () {
+    const agents = yield* load((svc) => svc.list())
+    // A built-in that cannot write but is missing from the static list would be treated as a writer by
+    // the plan-agent gate, the strict gate and default isolation: register it in `READ_ONLY_PROFILES`.
+    const missing = agents
+      .filter((agent) => agent.native === true && agent.hidden !== true)
+      .filter((agent) => !AgentContract.isWriterAgent(agent) && !DagBlocks.isReadOnlyProfile(agent.name))
+      .map((agent) => agent.name)
+    expect(missing).toEqual([])
+    // And the other way: nothing in the list is a built-in that can write.
+    const writers = agents.filter((agent) => agent.native === true && AgentContract.isWriterAgent(agent))
+    expect(writers.filter((agent) => DagBlocks.isReadOnlyProfile(agent.name)).map((agent) => agent.name)).toEqual([])
+  }),
+)
+
+it.instance(
   "the DAG writer catalog and the agent contract use one writer definition",
   () =>
     Effect.gen(function* () {
@@ -269,6 +454,14 @@ it.instance(
       expect(writers).toContain("explore")
       expect(writers).not.toContain("auditor")
       expect(writers).not.toContain("plan")
+      // The prototyper's edit window is a pattern-scoped allow: it still writes. The read-only workers do not.
+      expect(writers).toContain("prototyper")
+      expect(writers).not.toContain("researcher")
+      expect(writers).not.toContain("architect")
+      // Every block's default worker is a real catalog entry, so a bare `prototype` block validates.
+      for (const kind of DagBlocks.WORKFLOW_BLOCK_KINDS) {
+        expect(environment.worker_types?.has(DagBlocks.defaultBlockWorker(kind)), kind).toBe(true)
+      }
     }),
   { config: { agent: { explore: { permission: { edit: "allow" } } } } },
 )

@@ -8,6 +8,7 @@ import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { AgentContract } from "../agent/contract"
+import { ResultContract } from "../agent/result-contract"
 import { deriveSubagentSessionPermission, subagentDefaultDeniedTools } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import type { ChildRunHandle, ChildRunOutcome, ChildRunReport, ChildRuns } from "../session/child/run"
@@ -439,6 +440,12 @@ export const TaskTool = Tool.define(
           ),
         )
       }
+      // An agent that declares an artifact owes its final answer in that shape (#1158). Resolved before any
+      // session exists, so a declaration the catalog cannot honor fails the call cleanly.
+      const declared = ResultContract.resolve(next)
+      if (declared.kind === "unknown")
+        return yield* Effect.fail(new Error(ResultContract.unknownMessage(subagentType, declared.artifact)))
+      const resultContract = declared.kind === "contract" ? declared.contract : undefined
 
       const session = params.task_id !== undefined ? yield* sessions.get(SessionID.make(params.task_id)) : undefined
       // A task_id resumes a task session this conversation started, nothing else:
@@ -585,6 +592,40 @@ export const TaskTool = Tool.define(
         metadata,
       })
 
+      // The artifact contract on the final answer. An answer that is not the artifact goes back to the same child
+      // once, as a synthetic turn that names what is wrong, and the task fails if the correction still is not.
+      // Without an `output.artifact` there is no contract and this is never asked.
+      const satisfy = Effect.fn("TaskTool.satisfyResultContract")(function* (
+        contract: ResultContract.Contract,
+        text: string,
+      ): Effect.fn.Return<{ text: string; error?: Error }> {
+        const first = ResultContract.check(text, contract)
+        if (first.ok) return { text }
+        const corrected = yield* children.prompt(
+          {
+            messageID: MessageID.ascending(),
+            sessionID: nextSession.id,
+            model: { modelID: model.modelID, providerID: model.providerID },
+            variant: next.model ? undefined : variant,
+            agent: next.name,
+            parts: [{ type: "text", synthetic: true, text: ResultContract.repairPrompt(contract, first.reason) }],
+          },
+          { continueToolBudget: true },
+        )
+        const failure = providerFailure(corrected, text)
+        if (failure) return { text, error: failure }
+        const settled = settle(corrected, text)
+        if (settled.error) return { text: settled.text, error: settled.error }
+        const second = ResultContract.check(settled.text, contract)
+        if (second.ok) return { text: settled.text }
+        return {
+          text: settled.text,
+          error: new Error(
+            `${ResultContract.failureMessage(contract, second.reason)}. Partial output:\n${settled.text}. Continue: task task_id="${nextSession.id}" prompt="Resubmit your final answer as one JSON value that satisfies the ${contract.artifact} artifact contract."`,
+          ),
+        }
+      })
+
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         if (scopedAgent.hooks !== undefined && settingsHook?.registerScoped)
           yield* settingsHook.registerScoped(nextSession.id, {
@@ -606,7 +647,11 @@ export const TaskTool = Tool.define(
           yield* SettingsHook.landSystemMessages(result, { sessionID: nextSession.id })
           startContexts = result.additionalContexts
         }
-        const parts = yield* children.resolvePromptParts(prompt)
+        const resolved = yield* children.resolvePromptParts(prompt)
+        // The contract follows the caller's own request, which stays as written.
+        const parts = resultContract
+          ? [...resolved, { type: "text" as const, text: ResultContract.prompt(resultContract) }]
+          : resolved
         // Queue immediately before the first prompt (after parts resolved) so a failed resolve leaves no
         // stale queued context; admission of the child's first message drains it.
         if (startCtx) {
@@ -659,7 +704,10 @@ export const TaskTool = Tool.define(
         }
         const settled = settle(result, prior)
         if (settled.error) return yield* Effect.fail(settled.error)
-        return settled.text
+        if (resultContract === undefined) return settled.text
+        const owed = yield* satisfy(resultContract, settled.text)
+        if (owed.error) return yield* Effect.fail(owed.error)
+        return owed.text
       })
 
       // The child-run slot covers the whole subagent run, and task runs only
@@ -985,9 +1033,21 @@ export const TaskTool = Tool.define(
               }
               break
             }
+            // The continued answer owes the artifact too.
+            const owed =
+              resultContract === undefined ? { text: settled.text } : yield* satisfy(resultContract, settled.text)
+            if (owed.error) {
+              lastStillBlocked = false
+              claim.failure = owed.error.message
+              output = {
+                ...output,
+                output: renderOutput({ sessionID: nextSession.id, state: "error", text: owed.error.message }),
+              }
+              break
+            }
             output = {
               ...output,
-              output: renderOutput({ sessionID: nextSession.id, state: "completed", text: settled.text }),
+              output: renderOutput({ sessionID: nextSession.id, state: "completed", text: owed.text }),
             }
           }
           if (lastStillBlocked) {
