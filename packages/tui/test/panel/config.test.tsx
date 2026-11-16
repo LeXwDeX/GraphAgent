@@ -171,7 +171,7 @@ test("every interface toggle writes its documented kv key", async () => {
   }
 })
 
-test("drawer, ambiguous width and language rows write their stores", async () => {
+test("drawer, DAG band, ambiguous width and language rows write their stores", async () => {
   let kv!: AppPanelTestContext["kv"]
   const { app, tmp, updates } = await renderConfig({ setup: (context) => ((kv = context.kv), undefined) })
   try {
@@ -179,7 +179,18 @@ test("drawer, ambiguous width and language rows write their stores", async () =>
     await enter(app)
     expect(kv.get("drawer_mode", "hidden")).toBe("auto")
 
+    // The DAG band row sits after the code-block row; its three values cycle in the order the row lists them.
     await down(app, 2)
+    expect(app.captureCharFrame()).toContain("DAG 状态带")
+    expect(kv.get("dag_band", "auto")).toBe("auto")
+    await enter(app)
+    expect(kv.get("dag_band", "auto")).toBe("always")
+    await enter(app)
+    expect(kv.get("dag_band", "auto")).toBe("hidden")
+    await enter(app)
+    expect(kv.get("dag_band", "auto")).toBe("auto")
+
+    await down(app)
     await enter(app)
     expect(kv.get("ambiguous_width", 1)).toBe(2)
 
@@ -198,7 +209,7 @@ test("drawer, ambiguous width and language rows write their stores", async () =>
 test("an unset language shows the inferred value as automatic", async () => {
   const { app, tmp, updates } = await renderConfig()
   try {
-    await down(app, 16)
+    await down(app, 17)
     expect(app.captureCharFrame()).toContain("自动")
     await enter(app)
     await settle(app)
@@ -293,7 +304,7 @@ test("configuration rows are read-only without the global write endpoint", async
     expect(updates).toEqual([])
 
     await left(app)
-    await down(app, 16)
+    await down(app, 17)
     await enter(app)
     expect(getLanguage()).toBe("zh-CN")
     expect(updates).toEqual([])
