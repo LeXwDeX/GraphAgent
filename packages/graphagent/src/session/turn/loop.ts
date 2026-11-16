@@ -363,7 +363,11 @@ function makeDeferredResumer(deps: LoopDeps) {
   })
 }
 
-type TaskRunResult = { readonly kind: "none" | "continue" | "finish" }
+/**
+ * `stop`: a hook stopped the subtask (`continue:false`). The turn ends like a blocked model attempt, and the Stop
+ * gate settles it. `finish` ends the turn at once; `continue` loops back for the next step.
+ */
+type TaskRunResult = { readonly kind: "none" | "continue" | "stop" | "finish" }
 
 function makeTaskRunner(deps: LoopDeps) {
   const { prepareFns, compaction } = deps
@@ -376,7 +380,7 @@ function makeTaskRunner(deps: LoopDeps) {
     msgs: SessionV1.WithParts[]
   }): Effect.fn.Return<TaskRunResult> {
     if (input.task?.type === "subtask") {
-      yield* prepareFns.handleSubtask({
+      const { stopped } = yield* prepareFns.handleSubtask({
         task: input.task,
         model: input.model,
         lastUser: input.lastUser,
@@ -384,7 +388,7 @@ function makeTaskRunner(deps: LoopDeps) {
         session: input.session,
         msgs: input.msgs,
       })
-      return { kind: "continue" }
+      return { kind: stopped ? "stop" : "continue" }
     }
     if (input.task?.type === "compaction") {
       const result = yield* compaction.process({
@@ -972,6 +976,8 @@ function makeStepRunner(deps: LoopDeps) {
       msgs: input.msgs,
     })
     if (task.kind === "continue") return { kind: "continue", state }
+    // What a blocked model attempt leaves behind: the turn is stopped and late input cannot extend it.
+    if (task.kind === "stop") return { kind: "continue", state: State.markStopped(State.blockAgentInput(state)) }
     if (task.kind === "finish") return { kind: "finish", state, outcome: { type: "completed" } }
     const overflow = yield* overflowGate({
       sessionID: input.sessionID,
