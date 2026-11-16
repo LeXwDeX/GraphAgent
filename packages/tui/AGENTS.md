@@ -41,7 +41,7 @@ packages/tui/src/
                         #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
   session/              # 会话级辅助：prefill.ts（已落地）；siblings.ts、navigate.ts（F5，未落地）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
-  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4，未落地）
+  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts（F4 已落地）；prefill.ts（F4，未落地）
   pr/                   # state.ts：prLineState 纯函数（F6，未落地；目录尚不存在）
   theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
@@ -66,7 +66,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `config/`：键位 `Definitions`、`CommandMap` 与处置表（F1）。
 - `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
 - `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
-- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`，`bar.ts`、`prefill.ts` 随 F4；`pr/` 随 F6 新建。
+- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`，`prefill.ts` 随 F4；`pr/` 随 F6 新建。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
 - `session/`：会话级辅助函数。目前只有预填落地 `prefill.ts`；同级排序 `siblings.ts`、导航 `navigate.ts` 随 F5。
