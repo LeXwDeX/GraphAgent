@@ -30,6 +30,16 @@ const LogLevelRef = Schema.Literals(["DEBUG", "INFO", "WARN", "ERROR"]).annotate
 })
 
 /**
+ * How the permission asks of unattended DAG sessions (workflow nodes, and task
+ * agents while their root session is in DAG mode) are settled (#1324):
+ * `allow` settles them automatically behind the safety list, `ask` holds edits,
+ * commands and MCP calls for the user, `readonly` limits the sessions to a
+ * read-only tool surface.
+ */
+export const DagPermission = Schema.Literals(["allow", "ask", "readonly"])
+export type DagPermission = typeof DagPermission.Type
+
+/**
  * DAG workflow settings declared by #884. `model` and `thinking_depth` resolve
  * per directory with project over user precedence
  * (`packages/graphagent/src/config/dag-section.ts`); every other key is global
@@ -103,6 +113,10 @@ export const Dag = Schema.Struct({
     }),
   ).annotate({
     description: "DAG safety rules. Global config only: values from project-level configuration are ignored.",
+  }),
+  permission: Schema.optional(DagPermission).annotate({
+    description:
+      'Permission tier of unattended DAG sessions: workflow nodes, and task agents while their session is in DAG mode. "allow" (default) settles every call automatically and denies what the safety list matches; "ask" holds each edit, command and MCP call for your approval; "readonly" limits the sessions to a read-only tool surface. Global config only: values from project-level configuration are ignored.',
   }),
 }).annotate({
   description:

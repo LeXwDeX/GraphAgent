@@ -303,19 +303,18 @@ export const layer = Layer.effect(
       })
     })
 
-    // Whether permission asks of this session are settled without a user, so a
-    // safety denial (SF-5) can still reach a call after the SDK dispatched it.
-    // The question `Permission.ask` answers through `ChildPolicy.askOf`; the
-    // root's DAG mode is read through the session service here.
+    // Whether this session is unattended, so a safety denial (SF-5) can still
+    // reach a call after the SDK dispatched it. Step one of the verdict
+    // `Permission.ask` gets from `ChildPolicy` (the tier decides only who answers
+    // after it); the root's DAG mode is read through the session service here.
     const unattended = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const subject = ChildPolicy.subjectOf(sessionID)
-      if (Option.isNone(subject)) return false
-      const { ask } = subject.value.permission
-      if (ask !== "root-dag-mode") return ask === "auto"
-      return yield* session.get(subject.value.rootSessionID).pipe(
-        Effect.map((root) => root.dagMode === "on"),
-        Effect.orElseSucceed(() => false),
-      )
+      const verdict = yield* ChildPolicy.askWith((rootSessionID) =>
+        session.get(rootSessionID).pipe(
+          Effect.map((root) => (root.dagMode === "on" ? ("on" as const) : ("off" as const))),
+          Effect.orElseSucceed(() => "off" as const),
+        ),
+      )(sessionID)
+      return Option.isSome(verdict) && verdict.value.unattended
     })
 
     // SF-5: a call the safety list denied must not execute. The SDK may

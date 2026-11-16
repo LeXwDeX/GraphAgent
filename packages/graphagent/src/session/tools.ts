@@ -89,6 +89,11 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     const source = entriesByID.get(toolName)?.source
     return source?.kind === "mcp" && source.requiresUserInteraction
   }
+  // The `dag.permission: "ask"` tier hands MCP server tools to the user (#1324). A request
+  // cannot tell such a tool from a built-in by its key, so the mark is made here, from the
+  // registry entry; permission evaluation trusts `metadata.source` and nothing else.
+  const isMcpTool = (toolName: string | undefined) =>
+    toolName !== undefined && entriesByID.get(toolName)?.source.kind === "mcp"
   // Tool identity for hook matching. The engine derives transcript,
   // environment and prompt identity lazily from the session, so the pipeline
   // only supplies the executing session and the tool/MCP binding.
@@ -199,6 +204,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
         .ask(
           {
             ...req,
+            ...(isMcpTool(toolName) ? { metadata: { ...req.metadata, source: "mcp" } } : {}),
             sessionID: input.session.id,
             tool: { messageID: input.processor.message.id, callID: options.toolCallId },
             ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),

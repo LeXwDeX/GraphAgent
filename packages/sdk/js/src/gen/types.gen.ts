@@ -1509,6 +1509,7 @@ export type Config = {
         reason?: string
       }>
     }
+    permission?: "allow" | "ask" | "readonly"
   }
 }
 

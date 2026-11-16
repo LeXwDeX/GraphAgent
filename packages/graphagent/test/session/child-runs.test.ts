@@ -316,6 +316,163 @@ describe("dag node runs", () => {
   )
 })
 
+// #1324 §1: two steps. Step one says whether the session is unattended (a DAG
+// node, or a task child of a root in DAG mode); step two turns the caller's
+// `dag.permission` tier into who answers: the user for `ask`, the adjudicator
+// for `allow` and `readonly`. The caller passes the tier, read at ask time.
+describe("askOf: unattended verdict and tier (#1324)", () => {
+  const tiers = [
+    ["allow", "auto"],
+    ["ask", "user"],
+    ["readonly", "auto"],
+  ] as const
+
+  it.effect("a DAG node is unattended under every tier; the tier decides who answers", () =>
+    Effect.gen(function* () {
+      const { db, scoped, newChild } = yield* setup("tier-node")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: { kind: "dag_node" as const, workflowID: "wf", nodeID: "n01", attempt: 0 },
+        detached: false,
+        permission: { ask: "auto" },
+      })
+
+      for (const [mode, ask] of tiers) {
+        expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child, mode))).toMatchObject({
+          unattended: true,
+          mode,
+          ask,
+        })
+      }
+      // No tier given: the default.
+      expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child))).toMatchObject({
+        unattended: true,
+        mode: "allow",
+        ask: "auto",
+      })
+
+      yield* handle.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("a task child follows the root's DAG mode; with it off the tier changes nothing", () =>
+    Effect.gen(function* () {
+      const { db, scoped, parent, newChild } = yield* setup("tier-task")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: taskOwner,
+        detached: true,
+        permission: { ask: "root-dag-mode" },
+      })
+
+      // DAG mode off: an ordinary child whose asks reach the user, whatever the tier.
+      for (const [mode] of tiers) {
+        const verdict = Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child, mode))
+        expect(verdict).toMatchObject({ unattended: false, ask: "user" })
+      }
+
+      // DAG mode on: unattended like a node, and the tier decides who answers.
+      yield* db.update(SessionTable).set({ dag_mode: "on" }).where(eq(SessionTable.id, parent)).run().pipe(Effect.orDie)
+      for (const [mode, ask] of tiers) {
+        expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child, mode))).toMatchObject({
+          unattended: true,
+          mode,
+          ask,
+        })
+      }
+
+      // Switched off again: the very next verdict is attended.
+      yield* db
+        .update(SessionTable)
+        .set({ dag_mode: "off" })
+        .where(eq(SessionTable.id, parent))
+        .run()
+        .pipe(Effect.orDie)
+      expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child, "readonly"))).toMatchObject({
+        unattended: false,
+        ask: "user",
+      })
+
+      yield* handle.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("a run that asks its user, and a session without a run, are never unattended", () =>
+    Effect.gen(function* () {
+      const { db, scoped, newChild } = yield* setup("tier-user")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: taskOwner,
+        detached: true,
+        permission: { ask: "user" },
+      })
+      for (const [mode] of tiers) {
+        expect(Option.getOrUndefined(yield* ChildPolicy.askOf(db)(child, mode))).toMatchObject({
+          unattended: false,
+          ask: "user",
+        })
+      }
+      yield* handle.settle({ type: "completed" })
+
+      // The run is over: no subject at all, so there is nothing to ask the policy about.
+      expect(Option.isNone(yield* ChildPolicy.askOf(db)(child, "ask"))).toBe(true)
+      expect(Option.isNone(yield* ChildPolicy.askOf(db)(childID("never-ran"), "readonly"))).toBe(true)
+    }),
+  )
+
+  it.effect("without a database a task child is conservatively attended", () =>
+    Effect.gen(function* () {
+      const { scoped, newChild } = yield* setup("tier-nodb")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: taskOwner,
+        detached: true,
+        permission: { ask: "root-dag-mode" },
+      })
+      expect(Option.getOrUndefined(yield* ChildPolicy.askOf(undefined)(child, "readonly"))).toMatchObject({
+        unattended: false,
+        ask: "user",
+      })
+      yield* handle.settle({ type: "completed" })
+    }),
+  )
+
+  it.effect("askWith reads the root's DAG mode from the reader it is given", () =>
+    Effect.gen(function* () {
+      const { scoped, parent, newChild } = yield* setup("tier-reader")
+      const child = yield* newChild()
+      const handle = yield* scoped.start({
+        childSessionID: child,
+        owner: taskOwner,
+        detached: true,
+        permission: { ask: "root-dag-mode" },
+      })
+      const asked: string[] = []
+      const mode: { current: "on" | "off" } = { current: "off" }
+      const ask = ChildPolicy.askWith((root) =>
+        Effect.sync(() => {
+          asked.push(root)
+          return mode.current
+        }),
+      )
+      expect(Option.getOrUndefined(yield* ask(child))).toMatchObject({ unattended: false, ask: "user" })
+      mode.current = "on"
+      expect(Option.getOrUndefined(yield* ask(child, "ask"))).toMatchObject({
+        unattended: true,
+        mode: "ask",
+        ask: "user",
+      })
+      // Only the root session is asked about, once per verdict.
+      expect(asked).toEqual([parent, parent])
+      yield* handle.settle({ type: "completed" })
+    }),
+  )
+})
+
 describe("run settlement races", () => {
   it.effect("settles exactly once: the later settlement loses and changes nothing", () =>
     Effect.gen(function* () {

@@ -132,6 +132,162 @@ describe("DagMode.state (L2)", () => {
   })
 })
 
+// #1324: the user's tier for unattended permissions. The model-visible wording
+// is fixed by the Issue and must not drift; L1 stays a constant text, and L2
+// states the tier only when it is not the default.
+describe("DagMode unattended permission tier (#1324)", () => {
+  const sha256 = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex")
+
+  const OLD_SENTENCE =
+    "Node permission prompts never reach the user: a node call that matches the safety list is denied with a reason and the node continues, and you are told in the report."
+  const NEW_SENTENCE =
+    "Node permission prompts are never yours to answer. By default they do not reach the user: a node call that matches the safety list is denied with a reason and the node continues, and you are told in the report. Under other user settings a node may wait for the user's approval or be limited to read-only tools; the dag_mode block states the setting when it is not the default."
+  const ASK_LINE =
+    "Node permissions: ask. Each node edit, command, or MCP call waits for the user's approval; expect waits and keep graphs small."
+  const READONLY_LINE =
+    "Node permissions: read-only. Nodes cannot edit files, and can run only read-only git and gh queries; plan research and review work only."
+
+  /**
+   * L2 texts as they were before the tier existed: byte length and SHA-256 of
+   * `DagMode.state(...).parts.join("\n")`. The default tier must reproduce
+   * every one of them byte for byte.
+   */
+  const BEFORE_L2 = {
+    base: { facts, bytes: 2333, sha256: "4fe703430844969b8f5a0397620142dd9f8653bbc98bf9d07fe7770eee295a8d" },
+    unlimited: {
+      facts: { ...facts, budget: null },
+      bytes: 2329,
+      sha256: "0b5c435430b4ef77c841f7f1ac680e6dd9bd1c7a3e0411a3ff006659fa75c3c0",
+    },
+    planAndNoninteractive: {
+      facts: { ...facts, plan: true, noninteractive: true },
+      bytes: 2622,
+      sha256: "a4b3674b873dd254ea7a4a83bd6bbc34f7b30ee0df7840b4b5fc05dc4fc2f3e9",
+    },
+    exhausted: {
+      facts: {
+        ...facts,
+        plan: true,
+        noninteractive: true,
+        budgetState: { used: 1200, cacheRead: 10, budget: 1000, warnRatio: 0.8, tier: "exhausted" as const },
+      },
+      bytes: 2840,
+      sha256: "88ca67353d7762cbb6e8e3b5565fca6e10e1491b0b7577721a3254f095d32bd9",
+    },
+    warn: {
+      facts: {
+        ...facts,
+        budgetState: { used: 850, cacheRead: 10, budget: 1000, warnRatio: 0.8, tier: "warn" as const },
+      },
+      bytes: 2414,
+      sha256: "f47c038c14f7c3f6d3facae53d62b6e7f3ae712f5b3b6cff4300b5d34318257e",
+    },
+    unavailable: {
+      facts: { ...facts, unavailable: "start_denied" as const },
+      bytes: 107,
+      sha256: "9104950a4761221cee34e926271efbcb5685357b922e4447590a542d4847e967",
+    },
+  }
+
+  test("L1 carries the tier-aware sentence verbatim and nothing else changed", () => {
+    expect(DagMode.SYSTEM).toContain(NEW_SENTENCE)
+    expect(DagMode.SYSTEM).not.toContain(OLD_SENTENCE)
+    // Swapping the sentence back must give the L1 text of the previous release.
+    expect(sha256(DagMode.SYSTEM.replace(NEW_SENTENCE, OLD_SENTENCE))).toBe(
+      "4845f706c2e57ccb5e162fd8662d5128e66dac3c26d3c40e926587f0d7251f39",
+    )
+  })
+
+  test("the default tier leaves L2 byte for byte as it was", () => {
+    for (const [name, before] of Object.entries(BEFORE_L2)) {
+      const implicit = DagMode.state(before.facts).parts.join("\n")
+      const explicit = DagMode.state({ ...before.facts, permission: "allow" }).parts.join("\n")
+      expect([name, Buffer.byteLength(implicit), sha256(implicit)]).toEqual([name, before.bytes, before.sha256])
+      expect(explicit).toBe(implicit)
+    }
+  })
+
+  test("ask and readonly append their own line to the ON block", () => {
+    for (const [name, before] of Object.entries(BEFORE_L2)) {
+      if ("unavailable" in before.facts) continue
+      const allow = DagMode.state(before.facts).parts.join("\n")
+      const ask = DagMode.state({ ...before.facts, permission: "ask" }).parts.join("\n")
+      const readonly = DagMode.state({ ...before.facts, permission: "readonly" }).parts.join("\n")
+      expect([name, ask]).toEqual([name, `${allow}\n${ASK_LINE}`])
+      expect([name, readonly]).toEqual([name, `${allow}\n${READONLY_LINE}`])
+    }
+  })
+
+  test("an ON block that cannot run workflows states no tier", () => {
+    for (const permission of ["ask", "readonly"] as const) {
+      const text = DagMode.state({ ...facts, unavailable: "start_denied", permission }).parts.join("\n")
+      expect(text).toBe(
+        "DAG mode: ON but unavailable (start_denied). Work directly and tell the user once that DAG mode cannot run.",
+      )
+    }
+  })
+
+  test("the OFF block never names the tier", () => {
+    for (const permission of ["allow", "ask", "readonly"] as const) {
+      const slot = DagMode.state({ ...facts, mode: "off", permission })
+      expect(slot.parts).toEqual([])
+      expect(slot.cleared).toContain("DAG mode: OFF")
+      expect(slot.cleared).not.toContain("Node permissions")
+    }
+  })
+
+  test("the slot follows each published snapshot and nothing republishes it by itself", () => {
+    const sessionID = SessionID.make("ses_dag_mode_tier_switch")
+    const slotText = () =>
+      EngineProcess.runtimes.runtimeSlots
+        .list(sessionID)
+        .find((item) => item.key === "dag_mode")
+        ?.parts.join("\n")
+
+    DagMode.set(sessionID, { ...facts, permission: "ask" })
+    expect(slotText()).toContain(ASK_LINE)
+
+    // A tier switch in the global configuration publishes nothing: the slot
+    // keeps its text until the request builder publishes the next snapshot.
+    expect(slotText()).toContain(ASK_LINE)
+
+    DagMode.set(sessionID, { ...facts, permission: "readonly" })
+    expect(slotText()).toContain(READONLY_LINE)
+    expect(slotText()).not.toContain(ASK_LINE)
+
+    DagMode.set(sessionID, { ...facts, permission: "allow" })
+    expect(slotText()).not.toContain("Node permissions")
+  })
+
+  // L2 rides in runtime context on every request, so its size is capped: 2.3 KB under
+  // the default tier (#1031 M2), kept byte for byte, and 2.5 KB under ask and readonly,
+  // whose one extra line (127 and 137 bytes, newline included) cannot fit the 22 bytes
+  // of headroom the default text leaves (#1324).
+  const CAP = { allow: 2.3 * 1024, ask: 2.5 * 1024, readonly: 2.5 * 1024 } as const
+
+  test("the tier lines are the only growth over the default tier", () => {
+    const allow = Buffer.byteLength(DagMode.state(facts).parts.join("\n"))
+    const ask = Buffer.byteLength(DagMode.state({ ...facts, permission: "ask" }).parts.join("\n"))
+    const readonly = Buffer.byteLength(DagMode.state({ ...facts, permission: "readonly" }).parts.join("\n"))
+    expect(ask - allow).toBe(1 + Buffer.byteLength(ASK_LINE))
+    expect(readonly - allow).toBe(1 + Buffer.byteLength(READONLY_LINE))
+  })
+
+  // A variant whose default text already passes 2.3 KB (the plan and non-interactive notes, a
+  // budget warning) was over the cap before the tier existed and stays as it was, so the cap is
+  // asserted for every variant that fits it today: the test facts and the unlimited budget.
+  test("L2 stays within its tier's cap: 2.3 KB for allow, 2.5 KB for ask and readonly", () => {
+    const fitting = Object.entries(BEFORE_L2).filter(([, before]) => before.bytes <= CAP.allow)
+    expect(fitting.map(([name]) => name)).toEqual(expect.arrayContaining(["base", "unlimited"]))
+    for (const [name, before] of fitting) {
+      for (const tier of ["allow", "ask", "readonly"] as const) {
+        const bytes = Buffer.byteLength(DagMode.state({ ...before.facts, permission: tier }).parts.join("\n"))
+        expect([name, tier, bytes <= CAP[tier]]).toEqual([name, tier, true])
+      }
+    }
+  })
+})
+
 describe("DagMode.REMINDER (L3)", () => {
   test("is static, short, and scopes a direct-work request to itself", () => {
     expect(DagMode.REMINDER).toContain("Follow the latest dag_mode context")
