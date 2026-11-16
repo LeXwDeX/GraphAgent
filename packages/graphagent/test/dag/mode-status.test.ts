@@ -74,6 +74,27 @@ describe("DAG mode status schema", () => {
     expect(Schema.decodeUnknownSync(DagModeStatus.Status)(status)).toEqual(status)
   })
 
+  // #1027 D6b: the session read carries the same quality a workflow summary does.
+  test("decodes a combined review quality and rejects a malformed one", () => {
+    const quality = {
+      reviewBound: true,
+      reviews: 2,
+      raised: 7,
+      fixed: 5,
+      refuted: 2,
+      stillOpen: 0,
+      skepticRefutations: 1,
+      rounds: 2,
+      quietRounds: 1,
+      completeness: { covered: 3, total: 3, unlisted: 0 },
+    }
+    expect(Schema.decodeUnknownSync(DagModeStatus.Status)({ ...status, quality }).quality).toEqual(quality)
+    expect(() =>
+      Schema.decodeUnknownSync(DagModeStatus.Status)({ ...status, quality: { ...quality, raised: -1 } }),
+    ).toThrow()
+    expect(() => Schema.decodeUnknownSync(DagModeStatus.Status)({ ...status, quality: { reviews: 1 } })).toThrow()
+  })
+
   test("decodes every unavailable reason and rejects unknown ones", () => {
     for (const reason of ["start_denied", "workflow_tool_disabled", "model_no_tool_calling", "no_worker"] as const) {
       expect(

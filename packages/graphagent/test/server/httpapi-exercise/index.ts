@@ -884,7 +884,9 @@ const scenarios: Scenario[] = [
       check(typeof body.limits.concurrency === "number", "concurrency limit should be numeric")
       check(typeof body.limits.maxTotalNodes === "number", "node limit should be numeric")
       check(body.limits.running === 0, "no workflow nodes should be running")
-      check(body.quality === null, "quality summary is null until E2 D6 lands")
+      // #1027 D6b: quality combines the session's strict review workflows; a
+      // fresh session has none.
+      check(body.quality === null, "a session without a strict review workflow has no quality summary")
     }),
   http.protected
     .patch("/session/{sessionID}", "session.update")
@@ -1985,6 +1987,10 @@ const scenarios: Scenario[] = [
             ],
           }),
         ),
+        // #1027 D6b: a failed node is one coverage entry the summary must count.
+        Effect.flatMap((dag) =>
+          ctx.dagFailNode(dag.dagID, "b", "node exceeded timeout of 600000ms", "timeout").pipe(Effect.as(dag)),
+        ),
       ),
     )
     .at((ctx) => ({
@@ -2009,8 +2015,7 @@ const scenarios: Scenario[] = [
         check(typeof summary.title === "string", "summary should have title")
         check(typeof summary.escalatedNodes === "number", "summary should have escalatedNodes")
         // #1027 D6a: usage is summed from the attempt ledger; a fresh fixture
-        // has no attempts. Cache reads are separate, and quality/coverage are
-        // fixed-shape placeholders until D6b computes them.
+        // has no attempts. Cache reads are separate.
         check(
           typeof summary.tokens === "number" && summary.tokens >= 0,
           "summary should have tokens as a non-negative number",
@@ -2020,8 +2025,11 @@ const scenarios: Scenario[] = [
           "summary should have tokensCacheRead as a non-negative number",
         )
         check(summary.checkpointPending === false, "a fresh fixture is not checkpoint-pending")
-        check(summary.coverageCount === 0, "D6a fixes coverageCount at 0")
-        check(summary.quality === null, "D6a fixes quality at null")
+        // #1027 D6b: coverage counts the engine's entries for the snapshot (the
+        // failed node b); quality is null outside the strict review gate.
+        check(summary.failedNodes === 1, "the failed node should be counted")
+        check(summary.coverageCount === 1, "a failed node should be one coverage entry")
+        check(summary.quality === null, "a workflow outside the strict review gate has no quality")
         // #468: graphRev is the topology invalidation token — an equal-count
         // replan bumps it alone so TUI signatures can detect the change.
         check(typeof summary.graphRev === "number", "summary should have graphRev")

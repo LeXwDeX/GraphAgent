@@ -16,6 +16,8 @@ import { BackgroundLifecycle } from "@/background/lifecycle"
 import { GoalLifecycle } from "@/goal/lifecycle"
 import { PrWatchLifecycle } from "@/pr-watch/lifecycle"
 import { PrWatchPoller } from "@/pr-watch/poller"
+import { ReminderClock } from "@/reminder/clock"
+import { ReminderLifecycle } from "@/reminder/lifecycle"
 import { Lifecycle } from "@/lifecycle/service"
 import { RuntimeJobRecovery } from "@/background/recovery"
 import { DagStore } from "@graphagent/core/dag/store"
@@ -216,6 +218,14 @@ export const app = LayerNode.group([
   // rows; the per-row CAS makes concurrent pollers convergent (one poll and
   // one transition per observation), so the duplicate is safe.
   PrWatchPoller.node,
+  // #1072: reminder-domain resolver, same placement as the PR-watch one above.
+  ReminderLifecycle.node,
+  // #1072: the process-level reminder clock. `/remind` resolves it through
+  // `serviceOption` from the request context, and the sidecar and headless
+  // paths build this graph without AppLayer, so it must be listed here too. A
+  // second instance in the same process shares the durable rows; the per-row
+  // CAS makes concurrent clocks convergent.
+  ReminderClock.node,
   Dag.node,
   DagMessages.node,
   SessionRunState.node,

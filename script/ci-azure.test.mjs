@@ -76,7 +76,7 @@ await test("Azure Pipelines runs development CI and GitHub Actions runs release 
     ["release-fork.yml", "windows-e2e.yml"],
     ".github/workflows holds the release and Windows E2E",
   )
-  for (const file of ["ci.yml", "nix-verify.yml", "release.yml", "templates/toolchain.yml"])
+  for (const file of ["ci.yml", "nix-verify.yml", "nightly-pty.yml", "release.yml", "templates/toolchain.yml"])
     assert(existsSync(new URL(`../.azure-pipelines/${file}`, import.meta.url)), file)
   const release = read(".azure-pipelines/release.yml")
   assert.match(release, /\ntrigger: none\npr: none\n/, "the Azure release fallback is manual only")
@@ -89,8 +89,35 @@ await test("Azure Pipelines runs development CI and GitHub Actions runs release 
   assert.match(nix, /\n  paths:\n    include:\n      - flake\.nix\n/)
 })
 
+// #1279: the PTY end-to-end benchmark runs nightly and by hand, and reports; it is not a gate.
+await test("the nightly PTY benchmark is a scheduled warning, not a gate", () => {
+  const nightly = read(".azure-pipelines/nightly-pty.yml")
+  assert.match(nightly, /\ntrigger: none\npr: none\n/, "no push or pull request trigger")
+  assert.match(
+    nightly,
+    /\nschedules:\n  - cron: "[^"\n]+"\n[^\n]*\n    branches:\n      include:\n        - main\n    always: true\n/,
+    "a nightly schedule on main that does not wait for a commit",
+  )
+  assert(nightly.includes("bun run bench:tui:pty"), "runs the PTY benchmark")
+  assert(nightly.includes("bun test/perf/pty-report.ts"), "writes the ratio table")
+  assert(nightly.includes("##vso[task.uploadsummary]"), "puts the table on the run summary")
+  assert.match(nightly, /- publish: [^\n]+\n\s+artifact: tui-pty-/, "uploads the runs as an artifact")
+  // The benchmark and the report only warn; a failed measurement must not turn the run red.
+  const steps = nightly.split("\n      - ")
+  for (const name of ["Run PTY benchmark", "Report ratio against the baseline"]) {
+    const step = steps.find((block) => block.includes(`displayName: ${name}\n`))
+    assert(step?.includes("continueOnError: true"), `${name} only warns`)
+  }
+  assert.doesNotMatch(nightly, /\ndependencies:|\n\s+dependsOn:/, "nothing waits on the nightly")
+  // The PR pipeline stays free of it: no schedule, no PTY step, no job the aggregate depends on.
+  assert.doesNotMatch(ci, /\nschedules:/)
+  assert(!ci.includes("bench:tui:pty") && !ci.includes("nightly"), "ci.yml does not run the nightly benchmark")
+  assert(existsSync(new URL("../packages/tui/test/perf/pty-report.ts", import.meta.url)), "the table script exists")
+  assert(existsSync(new URL("../packages/tui/test/perf/pty-baseline.json", import.meta.url)), "the PTY baseline exists")
+})
+
 await test("every job runs on the per-minute GitHub-hosted Agents pool", () => {
-  for (const file of ["ci.yml", "nix-verify.yml", "release.yml"]) {
+  for (const file of ["ci.yml", "nix-verify.yml", "nightly-pty.yml", "release.yml"]) {
     const pipeline = read(`.azure-pipelines/${file}`)
     const pools = pipeline.match(/\n\s+pool:\n[^\n]+/g) ?? []
     assert(pools.length > 0, file)

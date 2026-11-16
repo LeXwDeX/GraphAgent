@@ -1232,11 +1232,11 @@ export function isIgnoredUser(message: {
 
 /**
  * Commands the server answers without a model turn (#1031 M1): /memory,
- * /goal status, /subgoal and /dag-mode. Their whole exchange is ignored
- * presentation state, so they must not become the `lastUser` a turn or the
- * report-delivery check is measured against.
+ * /goal status, /subgoal, /dag-mode and /remind. Their whole exchange is
+ * ignored presentation state, so they must not become the `lastUser` a turn or
+ * the report-delivery check is measured against.
  */
-const LOCAL_COMMANDS = new Set(["memory", "goal", "subgoal", "dag-mode"])
+const LOCAL_COMMANDS = new Set(["memory", "goal", "subgoal", "dag-mode", "remind"])
 
 export function isLocalCommand(message: { info: { role: string }; parts?: readonly unknown[] }) {
   if (message.info.role !== "user" || !message.parts?.length) return false
@@ -1257,9 +1257,9 @@ export function isLocalCommand(message: { info: { role: string }; parts?: readon
 /**
  * Markers of user-role messages an automation admitted (#1031 M2): DAG result
  * deliveries, workflow wakes, node mailbox messages, goal continuations, and
- * background results or PR-watch notices. Each carries synthetic text only, so
- * a genuine user message cannot match even if it quotes a marker. L3 reminders
- * must not attach to these.
+ * background results, PR-watch notices and delivered user reminders. Each
+ * carries synthetic text only, so a genuine user message cannot match even if
+ * it quotes a marker. L3 reminders must not attach to these.
  */
 const AUTOMATION_MARKERS = [
   "[DAG Workflow ",
@@ -1272,7 +1272,7 @@ const AUTOMATION_MARKERS = [
   // #1031 M5: the engine-generated budget-raise wake.
   "budget raised by the user;",
 ]
-const AUTOMATION_METADATA = ["backgroundResult", "prWatch"]
+const AUTOMATION_METADATA = ["backgroundResult", "prWatch", "reminder"]
 const AGENT_MESSAGE_PREFIX = '{"kind":"dag_agent_message"'
 
 export function isAutomationMessage(message: { info: { role: string }; parts?: readonly unknown[] }) {

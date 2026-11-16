@@ -129,13 +129,7 @@ A plain run measures the fixtures and prints JSON, taking the median across repe
 
 `baseline-f21cabe7f.json` is the historical reference from before the OpenTUI upgrade and must not be updated. The current gate uses `baseline.json`. Update a baseline only as part of a reviewed gate change.
 
-The nightly PTY measurement is intentionally separate from the PR benchmark:
-
-```sh
-TUI_PTY_COMMAND=bun TUI_PTY_ARGS='run dev' bun test/perf/pty.ts
-```
-
-It reports the ratio against `TUI_PTY_BASELINE` when that file is supplied. The PTY script uses the Bun PTY driver and does not change `packages/graphagent/test/lib/pty.bun.ts`.
+The nightly PTY measurement is intentionally separate from the PR benchmark; see [Nightly PTY measurement](#nightly-pty-measurement).
 
 ## Related tests
 
@@ -144,6 +138,31 @@ The former standalone `interaction-render` and `reasoning-render` micro-benchmar
 ## CI
 
 `.azure-pipelines/ci.yml` defines the `Bench (TUI)` job on an 8-core GitHub-hosted runner. It runs `bun run bench:tui -- --repeats=5 --enforce`, so both hard counters and the baseline comparison fail inside that job. The job is part of the `Unit Tests (linux)` aggregate gate.
+
+## Nightly PTY measurement
+
+The benchmark above drives the real components through a test renderer. The PTY measurement is the other end: the real TUI (`bun run dev` from the repository root) in a pseudo-terminal, timed from spawn to the frame that shows the input box. It never gates a PR.
+
+```sh
+bun run bench:tui:pty                                  # one run: one JSON report on stdout
+bun test/perf/pty-report.ts run-1.json run-2.json ...  # the median of the runs against pty-baseline.json, as a markdown table
+```
+
+- `pty.ts` waits for the input box placeholder, `Ask anything` (`TUI_PTY_EXPECTED`). It is not `>`: the box has no prompt glyph, and the first `>` in the stream is the renderer's terminal query, about a second before any frame is drawn.
+- A run starts from the repository root whatever the caller's directory, on throwaway state (`GRAPHAGENT_TEST_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, no project config, no model fetch), so the number does not depend on the providers or sessions of whoever runs it. `XDG_CACHE_HOME` stays, because bun keeps its transpile cache there and a cold cache adds about 400 ms to the first boot; the median of several runs absorbs that. `TUI_PTY_COMMAND`, `TUI_PTY_ARGS`, `TUI_PTY_TIMEOUT_MS` (default 30 s) and `TUI_PTY_BASELINE` (a file whose `elapsedMs` is reported as `relative`) override the defaults. A run that never reaches the input box exits 1 with `elapsedMs: null` and the tail of what the process printed.
+- `pty-report.ts` compares the median of the runs with `test/perf/pty-baseline.json`. The baseline is not in `baseline.json`: that file holds the in-process scenarios and has no entry for a boot. The report prints the table, writes it with `--summary=<file>`, writes the baseline the runs would make with `--write-baseline=<file>`, and moves the limit (1.50) with `--warn-ratio=<n>`. Exit code 3 means the table carries warnings (a ratio above the limit, or a run that did not reach the input box); 2 means unusable input.
+- A boot time moves with the machine, so a baseline from another platform shows its ratio and never warns. The committed baseline was captured on macOS arm64; the nightly writes `pty-baseline.candidate.json` to its artifact, and committing that file as `pty-baseline.json` gives the agent's platform a baseline of its own.
+
+`.azure-pipelines/nightly-pty.yml` is a separate Azure pipeline (`trigger: none`, `pr: none`). It runs `bench:tui:pty` five times at 19:00 UTC every night on `main`, and on demand from any branch (`repeats` and `warnRatio` are run parameters), puts the table on the run summary and uploads the runs, the table and the baseline candidate as the `tui-pty-<commit>-<attempt>` artifact. It is not part of the `Unit Tests (linux)` aggregate or of branch protection, and a slow or failed measurement only warns: the run ends "succeeded with issues". The pipeline has to be created once in Azure DevOps from that file; a YAML schedule runs only after the file is on `main`.
+
+To update the baseline, run the measurement five times on the machine class of the nightly and write the result:
+
+```sh
+for i in 1 2 3 4 5; do bun run bench:tui:pty > pty-run-$i.json; done
+bun test/perf/pty-report.ts pty-run-*.json --write-baseline=test/perf/pty-baseline.json
+```
+
+As with `baseline.json`, change it only in a reviewed change and give the reason in the PR description.
 
 ## CPU profiles
 

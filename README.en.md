@@ -34,6 +34,7 @@ v2.0 is in development and about to be released. Progress is tracked on the [mil
 | Reasoning shaping 🧪             | Experimental, off by default                                                                                                                                                                            |
 | Project memory                   | `/memory`; stores only what the user confirmed; shared by all worktrees of a project                                                                                                                    |
 | Goal / Loop                      | `/goal`, `/subgoal`; an external judge checks progress; turn budget                                                                                                                                     |
+| Reminders                        | `/remind`; persistent reminders; delivered once the current turn ends if the session is busy; one missed while closed is delivered after a restart                                                      |
 | Hooks                            | Compatible with the Claude Code hooks protocol                                                                                                                                                          |
 | Context management               | Tool-output limits, a tool-call cap, long-session compaction                                                                                                                                            |
 
@@ -68,6 +69,29 @@ With `/memory on`, GraphAgent stores preferences, decisions and terminology per 
 ### Goal and Loop
 
 `/goal <goal>` has the agent work one goal across turns in the current session, and `/subgoal` manages sub-goals. After each turn an external judge rules on progress: `done` ends it, `continue` runs another turn. There is a turn budget (default 20); when it runs out the goal pauses and can be resumed. State is persisted and survives restarts.
+
+### Reminders
+
+`/remind` sets a reminder on the current session. When it comes due, it is delivered into the session as a message and the agent tells you:
+
+```text
+/remind 30m Check the CI result
+/remind 2h Reply to the review comments
+/remind 09:00 Sync progress before standup
+/remind tomorrow 09:00 Send the weekly report
+/remind every 1h Stand up and stretch
+/remind list
+/remind cancel rmd_1a2b3c4d
+```
+
+- `30m`, `2h`: a duration from now. The only units are `m` (minutes) and `h` (hours).
+- `09:00`: that time of day today, or tomorrow if it has already passed. `tomorrow 09:00` (`明天 09:00` also works) is that time tomorrow. Times of day use the machine's local time zone.
+- `every 1h`: a repeating reminder. The first one is due one interval from now, then once per interval; the shortest interval is 5 minutes.
+- `/remind list` shows this session's pending reminders, and `/remind cancel <id>` cancels one. Ids look like `rmd_xxxxxxxx` and appear in the receipt when you create a reminder and in `list`.
+
+Reminders are persisted, so they survive a restart, and they are deleted along with their session. If the session is idle when a reminder comes due, it is delivered then; if the session is busy, it waits until the current turn ends. Each due time is delivered once. A reminder that came due while GraphAgent was closed is delivered once, the next time GraphAgent starts in the session's directory; a repeating reminder delivers only its latest missed occurrence and then keeps its original schedule. A delivery that is a minute or more late says how late it is. The message carries the reminder text unchanged and asks the agent to tell you first and, if the text is work to do, to go on and do it.
+
+Only you can create reminders, with this command; the model has no tool for it. They apply to the main session only, and a child session refuses the command.
 
 ### Hooks
 

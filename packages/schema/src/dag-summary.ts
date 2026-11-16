@@ -10,19 +10,34 @@ import { NonNegativeInt } from "./schema"
 import { NodeSafetyDenials } from "./dag-event"
 
 /** #1027 D6: review-quality counters for the `/dag` panel, computed by the
- * same rule as the workflow inspection status. `null` when the workflow is
- * not strict or has no reviews yet. */
+ * same function as the `review_quality` block of the workflow inspection
+ * status. `null` when the workflow is not strict or has no review decision;
+ * on the session DAG mode status the counters are combined over the
+ * session's workflows. Only block-compiled review decisions are counted. */
 export const WorkflowQuality = Schema.Struct({
-  /** A binding ACCEPT decision exists for the final target fingerprint. */
+  /** A completed ACCEPT decision judged the current implementation fingerprint
+   * and no later writer builds on it (the engine's M1 review-bound check). */
   reviewBound: Schema.Boolean,
+  /** Review decisions that completed (a round is counted once arbitrated). */
   reviews: NonNegativeInt,
+  /** Lane required actions the completed decisions arbitrated. */
   raised: NonNegativeInt,
+  /** Prior findings the arbitration resolved as fixed. */
   fixed: NonNegativeInt,
+  /** Claims refuted at arbitration plus prior findings resolved as refuted. */
   refuted: NonNegativeInt,
+  /** Findings the latest arbitration of each review chain left open (`still_open`). A chain is a
+   * review and its later rounds, linked by `prior_round`; independent reviews add up. */
   stillOpen: NonNegativeInt,
+  /** New findings on skeptic lanes that arbitration upheld. */
   skepticRefutations: NonNegativeInt,
+  /** Arbitrated rounds in this workflow. */
   rounds: NonNegativeInt,
+  /** Trailing rounds without a new upheld finding; with several review chains, the quietest chain's. */
   quietRounds: NonNegativeInt,
+  /** Each review chain's latest completed completeness lane, merged against the
+   * declared acceptance items (an item is covered only when every lane that judged
+   * it called it covered); null when no completeness lane has completed. */
   completeness: Schema.NullOr(
     Schema.Struct({
       covered: NonNegativeInt,
@@ -57,19 +72,22 @@ export const WorkflowSummary = Schema.Struct({
   // timeout-pending. Already-adjudicated (extended) nodes are excluded.
   escalatedNodes: Schema.Number,
   // #1027 D6: optional so an older client still decodes a newer server's
-  // event. The consumer contract fixes the names and types; D6b fills
-  // `quality` and `coverageCount` once their owner Issues define the sources.
+  // event. The consumer contract fixes the names and types.
   /** Σ input + cache write + output + reasoning across every attempt's child session. */
   tokens: Schema.optional(NonNegativeInt),
   /** Cache reads tracked separately; they are not part of the token budget. */
   tokensCacheRead: Schema.optional(NonNegativeInt),
   /** DAG-wide running child slots in this process (not this workflow's). */
   concurrencyRunning: Schema.optional(NonNegativeInt),
-  /** Coverage entries (skipped/failed/cancelled/aborted nodes and unread pages); 0 = none. */
+  /** Coverage entries `inspect` lists for the workflow snapshot (skipped,
+   * failed, cancelled, or aborted nodes, a declined fan-out, lane gaps, safety
+   * denials, a budget pause, a review loop stop); 0 = none. Result pages a
+   * reader stopped short of belong to one read, not the workflow, so they are
+   * not counted. */
   coverageCount: Schema.optional(NonNegativeInt),
   /** A durable checkpoint pause is waiting for the main agent. */
   checkpointPending: Schema.optional(Schema.Boolean),
-  /** Review quality; null until the review-aggregation owner lands (D6b). */
+  /** Review quality; null outside the strict review gate or without a review decision. */
   quality: Schema.optional(Schema.NullOr(WorkflowQuality)),
 }).annotate({ identifier: "DagWorkflowSummary" })
 export type WorkflowSummary = typeof WorkflowSummary.Type

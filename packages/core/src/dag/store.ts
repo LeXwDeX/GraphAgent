@@ -161,6 +161,30 @@ export interface WorkflowSummary {
   checkpointPending: boolean
 }
 
+/**
+ * #1027 D6b: one current-revision node row as summary derivation reads it.
+ * Only the fields coverage and review quality consume, so a large report
+ * output is never loaded for a node that does not need it. `output` is the
+ * parsed JSON value like `NodeRow.output` and is present only where
+ * `getSummaryNodes` was asked for it.
+ */
+export interface SummaryNodeRow {
+  id: string
+  workflowId: string
+  status: string
+  dependsOn: string[]
+  errorReason: string | null
+  errorClass: string | null
+  safetyDenials: DagEvent.NodeSafetyDenials | null
+  staleTarget: boolean | null
+  /** Always false: only the current graph revision is read. */
+  superseded: false
+  output?: unknown
+}
+
+/** The key a `getSummaryNodes` `outputs` entry is matched against. */
+export const summaryNodeKey = (workflowId: string, nodeId: string) => `${workflowId}\u001f${nodeId}`
+
 const mapWorkflow = (r: typeof WorkflowTable.$inferSelect): WorkflowRow => ({
   id: r.id,
   projectId: r.project_id,
@@ -287,6 +311,28 @@ export interface Interface {
   readonly getWorkflowSummaries: (sessionId: string) => Effect.Effect<WorkflowSummary[]>
   /** Parent-session view of `getWorkflowSummaries`; same aggregation and ordering. */
   readonly listSummariesByParent: (sessionId: string) => Effect.Effect<WorkflowSummary[]>
+  /**
+   * #1027 D6b: an opaque change marker per workflow of one session, in one
+   * statement. It differs whenever an event was projected for the workflow
+   * (the workflow row and every current node row carry the latest durable
+   * event seq and update time), so a value derived from the workflow's config
+   * and node rows stays valid exactly as long as the marker does. The marker
+   * is only ever compared for equality.
+   */
+  readonly getWorkflowRevisions: (sessionId: string) => Effect.Effect<ReadonlyMap<string, string>>
+  /**
+   * #1027 D6b: the current-graph node rows summary-derived values (coverage
+   * count, review quality) are computed from, for several workflows, in one
+   * statement regardless of how many workflows or nodes they hold. Light
+   * columns come back for every node. A node's `output` is loaded only when
+   * its `summaryNodeKey` is in `outputs`, or when its stored output mentions
+   * `not_examined` (a coverage source on any node); a large report node is
+   * otherwise never read.
+   */
+  readonly getSummaryNodes: (input: {
+    readonly workflowIds: readonly string[]
+    readonly outputs: ReadonlySet<string>
+  }) => Effect.Effect<SummaryNodeRow[]>
   /**
    * #1027 D6: the workflow whose attempt ledger owns this child session.
    * Optional for lightweight store doubles. The summary publisher uses it to
@@ -586,6 +632,78 @@ export const layer = Layer.effect(
 
       getWorkflowSummaries: summariesByParent,
       listSummariesByParent: summariesByParent,
+
+      // One grouped pass over the session's workflows and their current nodes.
+      // Both seq and update time are folded in: every projection stamps the
+      // event seq and the event time on the row it writes, so either moving
+      // is enough to invalidate a derived value.
+      getWorkflowRevisions: Effect.fn("DagStore.getWorkflowRevisions")(function* (sessionId) {
+        const rows = yield* db
+          .select({
+            id: WorkflowTable.id,
+            seq: WorkflowTable.seq,
+            timeUpdated: WorkflowTable.time_updated,
+            nodeSeq: max(WorkflowNodeTable.seq),
+            nodeTimeUpdated: max(WorkflowNodeTable.time_updated),
+          })
+          .from(WorkflowTable)
+          .leftJoin(
+            WorkflowNodeTable,
+            and(eq(WorkflowNodeTable.workflow_id, WorkflowTable.id), eq(WorkflowNodeTable.superseded, false)),
+          )
+          .where(eq(WorkflowTable.session_id, sessionId))
+          .groupBy(WorkflowTable.id)
+          .all()
+          .pipe(Effect.orDie)
+        return new Map(
+          rows.map((row) => [row.id, `${row.seq}.${row.nodeSeq ?? 0}.${row.timeUpdated}.${row.nodeTimeUpdated ?? 0}`]),
+        )
+      }),
+
+      // The CASE keeps the (possibly large) output column out of the result
+      // for every node the caller did not name: the coverage prefilter is a
+      // plain substring test, and `workflowCoverage` re-checks exactly.
+      getSummaryNodes: Effect.fn("DagStore.getSummaryNodes")(function* (input) {
+        if (input.workflowIds.length === 0) return []
+        const named =
+          input.outputs.size === 0
+            ? sql`0`
+            : inArray(sql`${WorkflowNodeTable.workflow_id} || char(31) || ${WorkflowNodeTable.id}`, [...input.outputs])
+        const mentionsGap = sql`instr(${WorkflowNodeTable.output}, 'not_examined') > 0`
+        const rows = yield* db
+          .select({
+            id: WorkflowNodeTable.id,
+            workflowId: WorkflowNodeTable.workflow_id,
+            status: WorkflowNodeTable.status,
+            dependsOn: WorkflowNodeTable.depends_on,
+            errorReason: WorkflowNodeTable.error_reason,
+            errorClass: WorkflowNodeTable.error_class,
+            safetyDenials: WorkflowNodeTable.safety_denials,
+            staleTarget: WorkflowNodeTable.stale_target,
+            output: sql<string | null>`CASE WHEN ${named} OR ${mentionsGap} THEN ${WorkflowNodeTable.output} END`,
+          })
+          .from(WorkflowNodeTable)
+          .where(
+            and(
+              inArray(WorkflowNodeTable.workflow_id, [...input.workflowIds]),
+              eq(WorkflowNodeTable.superseded, false),
+            ),
+          )
+          .all()
+          .pipe(Effect.orDie)
+        return rows.map((row): SummaryNodeRow => ({
+          id: row.id,
+          workflowId: row.workflowId,
+          status: row.status,
+          dependsOn: row.dependsOn,
+          errorReason: row.errorReason,
+          errorClass: row.errorClass,
+          safetyDenials: row.safetyDenials,
+          staleTarget: row.staleTarget,
+          superseded: false,
+          ...(row.output === null ? {} : { output: JSON.parse(row.output) as unknown }),
+        }))
+      }),
 
       getNodes: Effect.fn("DagStore.getNodes")(function* (workflowId) {
         const rows = yield* db

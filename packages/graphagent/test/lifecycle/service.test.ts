@@ -143,6 +143,38 @@ describe("lifecycle transition", () => {
     }),
   )
 
+  it.live("registers the reminder table: delivered ends a one-shot, scheduled loops a repeating reminder", () =>
+    Effect.gen(function* () {
+      const lifecycle = yield* Lifecycle.Service
+
+      expect(
+        yield* lifecycle
+          .transition({ ref: ref("reminder", "rmd-1"), expect: null, to: "scheduled", sessionID: "ses_reminder" })
+          .pipe(Effect.provideService(InstanceRef, instance)),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle.transition({ ref: ref("reminder", "rmd-1"), expect: "scheduled", to: "due" }),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle.transition({ ref: ref("reminder", "rmd-1"), expect: "due", to: "delivered" }),
+      ).toEqual({ published: true })
+      // A delivered one-shot reminder never fires again.
+      expect(
+        yield* lifecycle.transition({ ref: ref("reminder", "rmd-1"), expect: "delivered", to: "scheduled" }),
+      ).toEqual({ published: false, reason: "invalid" })
+      // A repeating reminder returns to waiting after its delivery; either live value can be cancelled.
+      expect(
+        yield* lifecycle.transition({ ref: ref("reminder", "rmd-2"), expect: "due", to: "scheduled" }),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle.transition({ ref: ref("reminder", "rmd-3"), expect: "scheduled", to: "cancelled" }),
+      ).toEqual({ published: true })
+      expect(
+        yield* lifecycle.transition({ ref: ref("reminder", "rmd-4"), expect: "scheduled", to: "delivered" }),
+      ).toEqual({ published: false, reason: "invalid" })
+    }),
+  )
+
   it.live("carries the declared from, phase, reason and session", () =>
     Effect.gen(function* () {
       const lifecycle = yield* Lifecycle.Service
