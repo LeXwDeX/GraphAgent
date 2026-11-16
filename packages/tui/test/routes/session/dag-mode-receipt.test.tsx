@@ -15,7 +15,7 @@ import { EditorContextProvider } from "../../../src/context/editor"
 import { EpilogueProvider } from "../../../src/context/epilogue"
 import { ExitProvider } from "../../../src/context/exit"
 import { KVProvider } from "../../../src/context/kv"
-import { LocalProvider } from "../../../src/context/local"
+import { ToastLocalProvider } from "../../fixture/tui-local"
 import { LocationProvider } from "../../../src/context/location"
 import { ProjectProvider } from "../../../src/context/project"
 import { PromptRefProvider } from "../../../src/context/prompt"
@@ -141,7 +141,7 @@ async function mountReceipt(kind: string, values: Record<string, unknown>, text:
                                   <ProjectProvider>
                                     <SyncProvider>
                                       <ThemeProvider mode="dark">
-                                        <LocalProvider>
+                                        <ToastLocalProvider>
                                           <PromptStashProvider>
                                             <FrecencyProvider>
                                               <PromptHistoryProvider>
@@ -155,7 +155,7 @@ async function mountReceipt(kind: string, values: Record<string, unknown>, text:
                                               </PromptHistoryProvider>
                                             </FrecencyProvider>
                                           </PromptStashProvider>
-                                        </LocalProvider>
+                                        </ToastLocalProvider>
                                       </ThemeProvider>
                                     </SyncProvider>
                                   </ProjectProvider>

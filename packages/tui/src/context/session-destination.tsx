@@ -7,8 +7,8 @@ import {
   type ParentProps,
   type Setter,
 } from "solid-js"
-import { useSync } from "../../context/sync"
-import { useTuiPaths } from "../../context/runtime"
+import { useSync } from "./sync"
+import { useTuiPaths } from "./runtime"
 
 export type HomeSessionDestination = { type: "directory"; directory: string; subdirectory: boolean } | { type: "new" }
 

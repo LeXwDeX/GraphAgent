@@ -30,18 +30,12 @@ export interface CheckOptions {
 }
 
 /**
- * Existing violations. Every entry names the F Issue that removes it; the list must
- * be empty when the F series is complete. `findStaleExemptions` fails an entry whose
- * import is gone, so an entry is deleted together with the import it covered.
+ * Existing violations. Every entry names the F Issue that removes it. The list is empty
+ * since #886 closed out (acceptance 34) and `test/architecture.test.ts` keeps it that way:
+ * new code fixes the import instead of adding an entry. The mechanism stays for the tests
+ * that build synthetic trees; `findStaleExemptions` fails an entry whose import is gone.
  */
-export const EXEMPTIONS: readonly Exemption[] = [
-  { file: "context/local.tsx", target: "ui/toast", issue: "F3 (#1020): toast moves to the footer" },
-  {
-    file: "component/prompt/move.tsx",
-    target: "routes/home/session-destination",
-    issue: "F5 (#1033): session navigation",
-  },
-]
+export const EXEMPTIONS: readonly Exemption[] = []
 
 interface Rule {
   groups?: readonly string[]

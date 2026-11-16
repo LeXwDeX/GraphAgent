@@ -14,7 +14,7 @@ import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
 import { HookStatusProvider } from "../../src/context/hook-status"
 import { KVProvider } from "../../src/context/kv"
-import { LocalProvider } from "../../src/context/local"
+import { ToastLocalProvider } from "./tui-local"
 import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
 import { PromptRefProvider } from "../../src/context/prompt"
@@ -88,7 +88,7 @@ export async function mountSessionMain(input: {
                                   <ProjectProvider>
                                     <SyncProvider>
                                       <ThemeProvider mode="dark">
-                                        <LocalProvider>
+                                        <ToastLocalProvider>
                                           <PromptStashProvider>
                                             <FrecencyProvider>
                                               <PromptHistoryProvider>
@@ -102,7 +102,7 @@ export async function mountSessionMain(input: {
                                               </PromptHistoryProvider>
                                             </FrecencyProvider>
                                           </PromptStashProvider>
-                                        </LocalProvider>
+                                        </ToastLocalProvider>
                                       </ThemeProvider>
                                     </SyncProvider>
                                   </ProjectProvider>
