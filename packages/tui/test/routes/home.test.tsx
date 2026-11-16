@@ -16,6 +16,7 @@ function mountHome(extra: Partial<Parameters<typeof mountRoute>[0]> = {}) {
   return mountRoute({
     route: { type: "home" },
     view: () => <Home />,
+    frame: true,
     sessions: [sessionFixture("ses_other")],
     ...extra,
   })

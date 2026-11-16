@@ -582,6 +582,32 @@ export function Main() {
   })
   onCleanup(() => bottomZone?.setAsk([]))
 
+  // The input belongs to the bottom zone, below the status band and above the footer, not to this column
+  // (#1032 D1). The route keeps its wiring: the closure below runs inside the zone but reads this route's
+  // draft binding, submit scroll and ask state. The zone creates it outside this route's provider tree, so the
+  // session's location (the directory its `@` file search runs in) is provided again here. A sub-agent view has
+  // no input.
+  const offComposer = bottomZone?.setComposer({
+    render: () => (
+      <Show when={session() && visible()}>
+        <LocationProvider location={location()}>
+          <box width="100%" flexShrink={0} paddingLeft={2} paddingRight={2} paddingBottom={1}>
+            <Prompt
+              visible={!disabled()}
+              ref={bind}
+              disabled={disabled()}
+              onSubmit={() => {
+                toBottom()
+              }}
+              sessionID={route.sessionID}
+            />
+          </box>
+        </LocationProvider>
+      </Show>
+    ),
+  })
+  onCleanup(() => offComposer?.())
+
   function openBottomPanel(id: string, render: () => JSX.Element) {
     if (!bottomZone) return
     if (bottomZone.host.top()?.id === id) return
@@ -1628,22 +1654,9 @@ export function Main() {
                   />
                 </Show>
               </scrollbox>
-              <box flexShrink={0}>
-                <Show when={session()?.parentID}>
-                  <SubagentFooter />
-                </Show>
-                <Show when={visible()}>
-                  <Prompt
-                    visible={visible() && !disabled()}
-                    ref={bind}
-                    disabled={disabled()}
-                    onSubmit={() => {
-                      toBottom()
-                    }}
-                    sessionID={route.sessionID}
-                  />
-                </Show>
-              </box>
+              <Show when={session()?.parentID}>
+                <SubagentFooter />
+              </Show>
             </Show>
           </box>
         </box>

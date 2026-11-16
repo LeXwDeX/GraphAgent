@@ -482,3 +482,57 @@ for (const order of DRAWER_ORDERS) {
     if (sceneMain) expectDimmed(sceneMain.fg, referenceMainColor)
   })
 }
+
+test("builds each slot once and mounts exactly that copy", async () => {
+  await using tmp = await shellState()
+  const built = { statusBand: 0, bottomZone: 0, drawer: 0 }
+  function Slot(props: { name: keyof typeof built }) {
+    built[props.name]++
+    // A second copy would not show up on screen, only in the count and in what it keeps running.
+    return <text>{props.name}</text>
+  }
+  // The slots are written as JSX in the props, so the frame builds them when it reads them: a frame that reads
+  // a slot twice builds it twice.
+  const app = await testRender(
+    () => (
+      <ShellContexts state={tmp.path}>
+        <AppFrame
+          statusBand={<Slot name="statusBand" />}
+          bottomZone={<Slot name="bottomZone" />}
+          drawer={<Slot name="drawer" />}
+        >
+          <text>主区内容</text>
+        </AppFrame>
+      </ShellContexts>
+    ),
+    { width: 100, height: 30 },
+  )
+  try {
+    await renderFirstFrame(app)
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("statusBand")
+    expect(frame).toContain("bottomZone")
+    expect(frame).toContain("drawer")
+    expect(built).toEqual({ statusBand: 1, bottomZone: 1, drawer: 1 })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("an empty slot adds nothing to the frame", async () => {
+  await using tmp = await shellState()
+  const app = await renderFrame(
+    () => ({ footer: { agent: "build", agentAction: "tab", hints }, children: <text>主区内容</text> }),
+    { width: 80, height: 24, state: tmp.path },
+  )
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("主区内容")
+    expect(frame).not.toContain("状态带")
+    expect(frame).not.toContain("底区")
+    expectWithin(frame, 80, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})

@@ -39,6 +39,17 @@ export interface AskRequest {
   render(): JSX.Element
 }
 
+/**
+ * The input area a route puts in the bottom zone. The route that owns the input installs it with `setComposer`
+ * and keeps all of its wiring (draft seeding, submit, focus); the zone only decides where it sits and when it
+ * is visible. The content is created inside the zone, outside the route's own provider tree: it sees the
+ * app-level contexts, and a context the route provides for its children (the session's location) has to be
+ * provided again by `render`.
+ */
+export interface ComposerSpec {
+  render(): JSX.Element
+}
+
 /** Active bottom-zone surface: ask wins over panel, and panel wins over composer. */
 export type BottomState =
   | { kind: "composer"; aside?: AsidePanelSpec }
@@ -59,6 +70,14 @@ export interface BottomZoneStateApi {
   dimmed: Accessor<boolean>
   /** The composer stays mounted through every state so drafts survive. */
   composerVisible: Accessor<boolean>
+  /** The composer the active route installed; none while no route has one (the diff view, isolated renders). */
+  composer: Accessor<ComposerSpec | undefined>
+  /**
+   * Installs the active route's composer, replacing the previous route's. The returned function removes it
+   * again, unless another route has installed its own since: a route that unmounts after its successor has
+   * mounted must not take the successor's input away.
+   */
+  setComposer(spec: ComposerSpec): () => void
   openAside(spec: AsidePanelSpec): void
   closeAside(): AsidePanelSpec | undefined
   /** Appends local requests; the head is shown first and panels are suspended. */
@@ -78,6 +97,7 @@ export interface BottomZoneStateApi {
 export function createBottomZoneState(options: BottomZoneOptions = {}): BottomZoneStateApi {
   const host = options.host ?? createPanelHost()
   const [aside, setAside] = createSignal<AsidePanelSpec | undefined>(options.aside)
+  const [composer, setComposerSpec] = createSignal<ComposerSpec | undefined>()
   // Declarative entries mirror the server ask stores; local entries belong to
   // surrounding UI (confirm/choice in PR4b). The declarative head answers first.
   const [declarative, setDeclarative] = createSignal(options.ask ?? [])
@@ -98,6 +118,11 @@ export function createBottomZoneState(options: BottomZoneOptions = {}): BottomZo
     aside,
     dimmed: () => state().kind !== "composer",
     composerVisible: () => state().kind === "composer",
+    composer,
+    setComposer(spec) {
+      setComposerSpec(() => spec)
+      return () => setComposerSpec((current) => (current === spec ? undefined : current))
+    },
     openAside(spec) {
       setAside(spec)
     },
@@ -143,8 +168,11 @@ export function createBottomZoneState(options: BottomZoneOptions = {}): BottomZo
 
 export interface BottomZoneProps {
   state: BottomZoneStateApi
-  /** Input area; it remains mounted while hidden so the draft is preserved. */
-  composer: JSX.Element
+  /**
+   * Fixed input area for hosts without a route that installs one; it is rendered ahead of the installed
+   * composer. Either stays mounted while hidden so the draft is preserved.
+   */
+  composer?: JSX.Element
 }
 
 const BottomZoneContext = createContext<BottomZoneStateApi>()
@@ -257,6 +285,9 @@ export function BottomZone(props: BottomZoneProps) {
         </Show>
         <box width="100%" flexShrink={0} visible={props.state.composerVisible()}>
           {props.composer}
+          <Show when={props.state.composer()} keyed>
+            {(spec) => spec.render()}
+          </Show>
         </box>
         <Show when={props.state.state().kind === "panel"}>
           <PanelHost host={props.state.host} />

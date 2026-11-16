@@ -1138,7 +1138,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             dag: dagIndicator(),
             right: footerStatus(),
           }}
-          bottomZone={<BottomZone state={bottomZone} composer={<></>} />}
+          bottomZone={<BottomZone state={bottomZone} />}
           dimmed={bottomZone.dimmed}
           drawer={drawerContent()}
         >

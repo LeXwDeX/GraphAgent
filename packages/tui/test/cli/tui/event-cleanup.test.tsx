@@ -33,6 +33,7 @@ import { Main } from "../../../src/routes/session"
 import { FooterToastProvider } from "../../../src/ui/toast"
 import { HookStatusProvider } from "../../../src/context/hook-status"
 import { tmpdir } from "../../fixture/fixture"
+import { RouteZone } from "../../fixture/route-frame"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
@@ -291,7 +292,9 @@ async function mountRoute(view: "session" | "prompt", messages: unknown[] = [], 
                                                     <SyncProbe onSync={(value) => (sync = value)} />
                                                     <Show when={mounted()}>
                                                       {view === "session" ? (
-                                                        <Main />
+                                                        <RouteZone>
+                                                          <Main />
+                                                        </RouteZone>
                                                       ) : (
                                                         <Prompt sessionID={routeSessionID} />
                                                       )}

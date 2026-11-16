@@ -21,9 +21,10 @@ export type SessionShellOptions = {
 
 /**
  * The session screen of the app: a trimmed copy of `app.tsx` with `AppFrame`, `BottomZone` and
- * `Main` wired as in the app, but without `Home`, `Diff` and the footer content, inside the
- * provider stack of `mountRoute`. The drawer shows a stand-in marker: the real drawer content
- * needs the whole sidebar data set, and the shell tests only need the overlay.
+ * `Main` wired as in the app (the route installs its prompt in the zone), but without `Home`,
+ * `Diff` and the footer content, inside the provider stack of `mountRoute`. The drawer shows a
+ * stand-in marker: the real drawer content needs the whole sidebar data set, and the shell tests
+ * only need the overlay.
  *
  * Waits for the sync bootstrap before returning: seeding store entries earlier lets the
  * bootstrap's reconcile wipe them again.
@@ -46,11 +47,7 @@ export async function mountSessionShell(options: SessionShellOptions = {}) {
       const drawerContent = createMemo(() => (drawer.visible() ? <text>抽屉</text> : undefined))
       return (
         <BottomZoneProvider state={bottomZone}>
-          <AppFrame
-            dimmed={bottomZone.dimmed}
-            bottomZone={<BottomZone state={bottomZone} composer={<></>} />}
-            drawer={drawerContent()}
-          >
+          <AppFrame dimmed={bottomZone.dimmed} bottomZone={<BottomZone state={bottomZone} />} drawer={drawerContent()}>
             <Main />
           </AppFrame>
         </BottomZoneProvider>

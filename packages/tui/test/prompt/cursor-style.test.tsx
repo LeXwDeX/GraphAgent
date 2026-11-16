@@ -29,13 +29,14 @@ async function expectSteadyCursor(options: MountOptions) {
 }
 
 test("the home prompt draws a steady block cursor", async () => {
-  await expectSteadyCursor({ route: { type: "home" }, view: () => <Home /> })
+  await expectSteadyCursor({ route: { type: "home" }, view: () => <Home />, frame: true })
 })
 
 test("the session prompt draws a steady block cursor", async () => {
   await expectSteadyCursor({
     route: { type: "session", sessionID: "ses_cursor" },
     view: () => <Main />,
+    frame: true,
     sessions: [sessionFixture("ses_cursor")],
   })
 })
