@@ -1295,11 +1295,16 @@ function downstreamOf(nodes: readonly NodeConfig[], from: readonly NodeConfig[])
  *
  * `gated` are the nodes the repair adds a condition to, across every checkpoint
  * of the graph: the patches are applied together, and every checkpoint may
- * reject at once. Nodes that already carry a condition may be skipped as well,
- * so the cascade is judged with them skipped both before and after, and a failure
- * that exists without the repair is not charged to it. A gated node whose
- * `skip_ok` is unset is not listed, since the repair sets it; one that says
- * `skip_ok: false` is, since that is a choice the repair would overturn.
+ * reject at once. Nodes that already carry a condition may or may not run, and
+ * which of them do is unknown here, so a node is listed whenever some outcome of
+ * those conditions lets the repair skip it: it is downstream of a gated node and
+ * is skipped once every conditional node and every gated node is. That
+ * over-approximates on purpose, since withholding a patch is safe and offering
+ * a wrong one is not. A node outside the gated nodes' downstream keeps the same
+ * fate with or without the repair, so a hazard there is not charged to it. A
+ * gated node whose `skip_ok` is unset is not listed, since the repair sets it;
+ * one that says `skip_ok: false` is, since that is a choice the repair would
+ * overturn.
  */
 function newSkipGaps(
   nodes: readonly NodeConfig[],
@@ -1307,20 +1312,17 @@ function newSkipGaps(
   defaults?: { readonly required?: boolean },
 ): string[] {
   const conditional = nodes.filter((node) => node.condition !== undefined && node.condition.trim() !== "")
-  const failing = (skipped: ReadonlySet<string>) =>
-    new Set(
-      nodes
-        .filter(
-          (node) => skipped.has(node.id) && (node.required ?? defaults?.required ?? false) && node.skip_ok !== true,
-        )
-        .map((node) => node.id),
-    )
-  const before = failing(skippedByGate(nodes, conditional))
-  const after = failing(skippedByGate(nodes, [...conditional, ...gated]))
+  const reach = downstreamOf(nodes, gated)
+  const skippable = skippedByGate(nodes, [...conditional, ...gated])
   const gatedIDs = new Set(gated.map((node) => node.id))
   return nodes
     .filter(
-      (node) => after.has(node.id) && !before.has(node.id) && !(gatedIDs.has(node.id) && node.skip_ok === undefined),
+      (node) =>
+        reach.has(node.id) &&
+        skippable.has(node.id) &&
+        (node.required ?? defaults?.required ?? false) &&
+        node.skip_ok !== true &&
+        !(gatedIDs.has(node.id) && node.skip_ok === undefined),
     )
     .map((node) => node.id)
 }

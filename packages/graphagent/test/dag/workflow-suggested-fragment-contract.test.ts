@@ -209,6 +209,31 @@ describe("a patch is withheld when a rejected verdict would skip a node it does 
     expect(diagnostic?.hint).not.toContain("`ok`")
   })
 
+  it("does not assume an existing condition below a gated node is false", () => {
+    const declared = () => node("gate", [], { report_to_parent: true, output_schema: verdictSchema })
+    // When `act` reports ready, `finish` runs and the chain completes; after the repair a rejection
+    // skips `act` and cascades into `finish`, so the repair is what makes it fail.
+    const direct = [
+      declared(),
+      node("act", ["gate"], { required: true }),
+      node("finish", ["act"], { required: true, condition: "act.output.ready == true" }),
+    ]
+    const withheld = gateDiagnostic(DagValidation.checkpointGateDiagnostics(direct))
+    expect(withheld?.suggested_fragment).toBeUndefined()
+    expect(withheld?.hint).toContain("`finish`")
+
+    // The same through a conditional node in between: `finish` itself carries no condition.
+    const through = [
+      declared(),
+      node("act", ["gate"], { required: true }),
+      node("check", ["act"], { required: false, condition: "act.output.ready == true" }),
+      node("finish", ["check"], { required: true }),
+    ]
+    const hidden = gateDiagnostic(DagValidation.checkpointGateDiagnostics(through))
+    expect(hidden?.suggested_fragment).toBeUndefined()
+    expect(hidden?.hint).toContain("`finish`")
+  })
+
   it("applies the same contract to a fragment that follows a live checkpoint", async () => {
     const live = {
       terminal: false,

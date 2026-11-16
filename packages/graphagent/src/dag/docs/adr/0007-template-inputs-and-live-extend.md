@@ -107,10 +107,12 @@ when all of these hold:
    on the rejected branch. The patch is offered only when every node a rejected
    verdict would skip, directly or through that cascade, is already optional or
    `skip_ok`. The nodes are judged for all checkpoints of the graph together,
-   since the patches are applied together and each checkpoint may reject, and
-   only failures the repair itself causes count: a skip hazard already in the
-   fragment is not charged to it. A gated node that says `skip_ok: false` is left
-   to the caller too.
+   since the patches are applied together and each checkpoint may reject. A
+   condition that already exists below a gated node is not assumed false: any
+   required node downstream of a gated node that some outcome of those conditions
+   lets the rejection skip withholds the patch. Only a hazard outside that
+   downstream, which the repair cannot touch, is not charged to it. A gated node
+   that says `skip_ok: false` is left to the caller too.
 
 When (3) fails no patch is given, and the hint lists the nodes to make
 `skip_ok: true` or `required: false`. Giving other nodes `skip_ok` would change
