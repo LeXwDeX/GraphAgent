@@ -304,6 +304,52 @@ export function dagBarGlyph(status: string, errorClass?: string): DagBarGlyph {
   return dagStateStyle(status, errorClass).bar
 }
 
+/** Display states a node can still leave by running: a wave with one of them is not finished. */
+const WORK_LEFT_STATES: ReadonlySet<DagDisplayState | undefined> = new Set([
+  "pending",
+  "queued",
+  "running",
+  // A status the table does not know could still be waiting.
+  undefined,
+])
+
+/**
+ * Index of the wave a workflow is working on: the first one with a node still to
+ * run or running. A node that failed, was skipped, aborted or cancelled has
+ * settled and does not hold its wave open. Once everything has settled it is the
+ * last wave; with no waves there is none.
+ */
+export function dagCurrentWave(
+  waves: readonly (readonly { readonly status: string; readonly error_class?: string }[])[],
+): number | undefined {
+  if (waves.length === 0) return undefined
+  const current = waves.findIndex((wave) =>
+    wave.some((node) => WORK_LEFT_STATES.has(dagDisplayState(node.status, node.error_class))),
+  )
+  return current === -1 ? waves.length - 1 : current
+}
+
+/**
+ * Time a workflow has been going, in milliseconds: from the earliest node start
+ * up to `now` while the workflow is `active` (between two waves too, when every
+ * node that started has finished), or up to the last completion once it is over.
+ * Undefined until a node has started; never negative.
+ */
+export function dagElapsedMs(
+  nodes: readonly Pick<DagNodeRow, "started_at" | "completed_at">[],
+  now: number,
+  active: boolean,
+): number | undefined {
+  let first: number | undefined
+  let last: number | undefined
+  for (const node of nodes) {
+    if (node.started_at !== undefined && (first === undefined || node.started_at < first)) first = node.started_at
+    if (node.completed_at !== undefined && (last === undefined || node.completed_at > last)) last = node.completed_at
+  }
+  if (first === undefined) return undefined
+  return Math.max(0, (active ? now : (last ?? first)) - first)
+}
+
 /** Workflow statuses that are still going: the main agent has not finished with them. */
 const ACTIVE_WORKFLOW_STATUSES: ReadonlySet<string> = new Set(["running", "stepping", "paused"])
 
