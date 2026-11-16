@@ -12,8 +12,9 @@ Choosing foreground or background:
   not do that work yourself in this turn: delegate it with background:true, provided the agent only
   reads, or writes files neither you nor the user will touch, and its result fits in one message.
   Delegate first: do not read files or run commands to investigate that work beforehand; pass on
-  the user's request and what you already know, and the agent gathers its own context. Then reply
-  briefly and end your turn; the result arrives as a message.
+  the user's request and what you already know, and the agent gathers its own context. Then carry
+  on with any foreground work the user also asked for; if none is left, reply briefly and end your
+  turn. The result arrives as a message.
 - Otherwise use foreground (the default). Always foreground when: you need the result for your next
   step; the work needs the user's input or confirmation; it changes shared session state; or it is
   a quick lookup you can answer directly.

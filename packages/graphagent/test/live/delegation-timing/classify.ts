@@ -287,6 +287,11 @@ function parseShell(command: string): readonly Segment[] {
       }
       continue
     }
+    // An unquoted `#` that starts a word comments out the rest of the line; inside a word it is literal.
+    if (char === "#" && !hasWord) {
+      while (i + 1 < command.length && command[i + 1] !== "\n") i++
+      continue
+    }
     if (char === "'" || char === '"') {
       quote = char
       hasWord = true

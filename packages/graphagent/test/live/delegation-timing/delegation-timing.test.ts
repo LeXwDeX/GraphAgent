@@ -33,6 +33,7 @@ import {
   discoverModels,
   hostConfig,
   hostEnv,
+  optionsFromEnv,
   parseOriginConfig,
   referencedEnv,
   resolveFileReferences,
@@ -509,5 +510,35 @@ describe("provider file references", () => {
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("shell comments", () => {
+  test("a comment line or trailing comment does not change a read-only command", () => {
+    expect(classifyShell("# Inspect the project\nls -la")).toBe("read")
+    expect(classifyShell("ls -la # list everything")).toBe("read")
+  })
+  test("a # inside a word or quotes is literal", () => {
+    expect(classifyShell("grep -n 'a#b' README.md")).toBe("read")
+    expect(classifyShell("echo a#b > notes.txt")).toBe("edit")
+  })
+})
+
+describe("evaluation counts", () => {
+  test("a fractional, zero or non-numeric count is rejected; unset keeps the default", () => {
+    const base = { GRAPHAGENT_LIVE_EVAL_CONFIG: "/x/graphagent.json" }
+    for (const bad of ["0.5", "0", "-1", "abc"]) {
+      expect(() => optionsFromEnv({ ...base, GRAPHAGENT_LIVE_EVAL_ROUNDS: bad })).toThrow("positive integer")
+      expect(() => optionsFromEnv({ ...base, GRAPHAGENT_LIVE_EVAL_CONCURRENCY: bad })).toThrow("positive integer")
+    }
+    expect(optionsFromEnv(base).rounds).toBe(3)
+    expect(optionsFromEnv({ ...base, GRAPHAGENT_LIVE_EVAL_ROUNDS: "2" }).rounds).toBe(2)
+  })
+})
+
+describe("host isolation", () => {
+  test("system-managed configuration points at an empty task-owned directory", () => {
+    const env = hostEnv({ home: "/tmp/h", config: {}, passthrough: {} })
+    expect(env.GRAPHAGENT_TEST_MANAGED_CONFIG_DIR).toBe(path.join("/tmp/h", "managed"))
   })
 })

@@ -337,6 +337,9 @@ export function hostEnv(input: {
     XDG_CACHE_HOME: path.join(input.home, ".cache"),
     GRAPHAGENT_CONFIG_CONTENT: JSON.stringify(input.config),
     GRAPHAGENT_DB: path.join(input.home, "isolated.db"),
+    // System-managed configuration (for example /etc/graphagent) is merged after the content above;
+    // an empty, task-owned directory keeps it out of the experiment.
+    GRAPHAGENT_TEST_MANAGED_CONFIG_DIR: path.join(input.home, "managed"),
     GRAPHAGENT_DISABLE_PROJECT_CONFIG: "1",
     GRAPHAGENT_DISABLE_AUTOCOMPACT: "1",
     GRAPHAGENT_DISABLE_MODELS_FETCH: "1",
@@ -894,9 +897,14 @@ function requiredConfig(value: string | undefined): string {
 }
 
 export function optionsFromEnv(env: Record<string, string | undefined>): EvalOptions {
+  // Counts must be positive integers: a fraction would run no round, or start no worker, and a run
+  // with no records would pass every gate without testing anything.
   const number = (name: string, fallback: number) => {
-    const value = Number(env[name])
-    return Number.isFinite(value) && value > 0 ? value : fallback
+    const raw = env[name]
+    if (raw === undefined || raw.trim() === "") return fallback
+    const value = Number(raw)
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer, got "${raw}"`)
+    return value
   }
   const list = (name: string) =>
     env[name]
