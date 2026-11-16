@@ -243,28 +243,30 @@ it.instance(
   { config: { experimental: { primary_tools: ["lsp"] } } },
 )
 
-it.instance("a worker's own rules, not the session's, decide what it can write, on either path", () =>
-  Effect.gen(function* () {
-    const agents = yield* Agent.Service
-    const prototyper = yield* agents.get("prototyper")
-    const researcher = yield* agents.get("researcher")
-    if (!prototyper || !researcher) throw new Error("Expected the first-batch agents")
-    // The parent's `edit: allow` is not inherited by either path (only denies and external_directory are).
-    const task = yield* viaTask("researcher", "research_findings")
-    const node = yield* viaNode(researcher, [])
-    for (const rules of [task, node]) {
-      expect(rules.some((rule) => rule.permission === "edit")).toBe(false)
-      // The researcher's own rules still refuse the edit, merged the way a turn merges them.
-      expect(Permission.evaluate("edit", "src/a.ts", Permission.merge(researcher.permission, rules)).action).toBe(
-        "deny",
-      )
-      expect(
-        Permission.evaluate("edit", "prototypes/a/b.ts", Permission.merge(prototyper.permission, rules)).action,
-      ).toBe("allow")
-      expect(Permission.evaluate("edit", "src/a.ts", Permission.merge(prototyper.permission, rules)).action).toBe(
-        "deny",
-      )
-    }
-  }),
+it.instance(
+  "a worker's own rules, not the session's, decide what it can write, on either path",
+  () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const prototyper = yield* agents.get("prototyper")
+      const researcher = yield* agents.get("researcher")
+      if (!prototyper || !researcher) throw new Error("Expected the first-batch agents")
+      // The parent's `edit: allow` is not inherited by either path (only denies and external_directory are).
+      const task = yield* viaTask("researcher", "research_findings")
+      const node = yield* viaNode(researcher, [])
+      for (const rules of [task, node]) {
+        expect(rules.some((rule) => rule.permission === "edit")).toBe(false)
+        // The researcher's own rules still refuse the edit, merged the way a turn merges them.
+        expect(Permission.evaluate("edit", "src/a.ts", Permission.merge(researcher.permission, rules)).action).toBe(
+          "deny",
+        )
+        expect(
+          Permission.evaluate("edit", "prototypes/a/b.ts", Permission.merge(prototyper.permission, rules)).action,
+        ).toBe("allow")
+        expect(Permission.evaluate("edit", "src/a.ts", Permission.merge(prototyper.permission, rules)).action).toBe(
+          "deny",
+        )
+      }
+    }),
   { git: true },
 )
