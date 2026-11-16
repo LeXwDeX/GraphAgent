@@ -48,9 +48,12 @@
 // `busyActive` still holds this turn's active work. That combination gets one
 // grace idle poll, which lets the in-flight admission make the session busy; a
 // display-only completion with no owed turn settles after the same single
-// grace poll. A grace poll depends on no incoming event, so the hold exposes
-// `needsRecheck` and the event-driven wrapper schedules exactly that one extra
-// check — otherwise the run would wait for an event that never arrives.
+// grace poll. Only a session with DAG mode off has such completions: with the
+// mode on every completed workflow owes one turn after its report (#1015), and
+// the same grace poll covers that window. A grace poll depends on no incoming
+// event, so the hold exposes `needsRecheck` and the event-driven wrapper
+// schedules exactly that one extra check — otherwise the run would wait for an
+// event that never arrives.
 //
 // Degradation is deliberately silent and matches pre-614 behavior for the DAG
 // list itself:

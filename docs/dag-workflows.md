@@ -150,7 +150,7 @@ Each node declares:
 | `condition`        | Expression over upstream outputs; false → node skipped, pure descendants cascade-skip               |
 | `output_schema`    | JSON Schema; the child agent's final answer must be exactly one JSON value matching it              |
 | `required`         | Failure of a required node fails the workflow                                                       |
-| `report_to_parent` | Wake the parent agent when this node reaches a terminal state                                       |
+| `report_to_parent` | Wake the parent agent when this node reaches a terminal state; with DAG mode off, a delivery leaf's report is only displayed |
 | `review`           | `design` or `diff` review phase with an implementation-fingerprint contract (below)                 |
 
 Workflow-level knobs: `max_concurrency` (default 5), `max_node_replan_attempts` (5), `max_total_nodes` (the lower of the workflow's declaration and the user's global `dag.max_total_nodes`, default 100), per-node `timeout_ms` (default 10 min, counted from permit acquisition; time spent queued does not count and a queued node never times out).
@@ -160,7 +160,7 @@ Workflow-level knobs: `max_concurrency` (default 5), `max_node_replan_attempts` 
 - Nodes spawn as real child sessions through the same code path as the `task` tool, wave by wave in dependency order, bounded by a concurrency semaphore. A node is durably `queued` at admission and the child session only materializes inside the permit, so a 100-node fan-out never creates 100 sessions at once.
 - Dynamic replanning, pause-first: `pause` freezes scheduling, `replan` merges a fragment atomically, and `resume` continues. `control(recover)` replaces selected nodes and their downstream attempts in the same failed or paused workflow, using `expected_graph_rev` to reject stale requests. Old attempts remain immutable. Cancelled workflows require explicit resume intent. `extend` appends nodes and may reopen a naturally completed workflow at a reporting checkpoint.
 - Step mode runs one node at a time for debugging.
-- The parent does not poll. Synthetic messages wake it when a `report_to_parent` node or the workflow terminalizes. Checkpoint nodes emit a normalized verdict (`ACCEPT` / `REVISE` / `REJECT` / `BLOCKED`), and the disposal contract governs what happens next. Iteration is a bounded, verdict-driven replan wave; the graph never contains a cyclic edge.
+- The parent does not poll. Synthetic messages wake it when a `report_to_parent` node or the workflow terminalizes. With DAG mode on, every completed workflow is followed by one turn after its delivered report; with it off, a workflow that completes through its delivery leaf alone only displays that report. Checkpoint nodes emit a normalized verdict (`ACCEPT` / `REVISE` / `REJECT` / `BLOCKED`), and the disposal contract governs what happens next. Iteration is a bounded, verdict-driven replan wave; the graph never contains a cyclic edge.
 
 ### Revisions
 

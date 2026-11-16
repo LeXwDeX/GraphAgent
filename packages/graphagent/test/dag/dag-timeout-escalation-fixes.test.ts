@@ -28,7 +28,7 @@ import { InstanceRef } from "@/effect/instance-ref"
 import { reconcileWorkflow } from "@/dag/runtime/recovery"
 import { makeDeadlineWatcher } from "@/dag/runtime/spawn"
 import { Truncate } from "@/tool/truncate"
-import { makeNodeRow } from "./fixtures"
+import { makeNodeRow, markNodeWakeReported } from "./fixtures"
 import { pollWithTimeout } from "../lib/effect"
 import { mockSessionPrompt } from "../lib/child-runs"
 
@@ -510,7 +510,7 @@ describe("Dag timeout escalation fixes (unit)", () => {
           // A delivered escalation authorizes control(extend_timeout). Move a
           // 60-second deadline to one second from now while its watcher sleeps.
           yield* dag.nodeTimeoutEscalated(dagID, "a", "ses_child_1", 1)
-          yield* store.markNodeWakeReported(dagID, "a")
+          yield* markNodeWakeReported(store, dagID, "a")
           const workflowTool = yield* (yield* WorkflowTool).init()
           const result = yield* workflowTool.execute(
             {

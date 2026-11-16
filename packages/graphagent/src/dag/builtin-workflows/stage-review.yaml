@@ -6,8 +6,8 @@
 # unique ids; the single item below is only a default). Add the security or
 # performance lens when the change triggers them. No delivery_node on purpose:
 # the review decision is a reporting checkpoint, so the parent gets a turn with
-# its verdict when the workflow ends, and the delivered report is the result
-# index.
+# its verdict when the workflow ends (with DAG mode off too), and the delivered
+# report is the result index.
 title: "Stage: review (read-only) — pinned change → required checks → lenses and skeptics"
 config:
   name: stage-review
