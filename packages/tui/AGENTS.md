@@ -26,7 +26,7 @@ packages/tui/src/
                         #   drawer（开关与浮层容器）、status-band（槽位）；bottom-zone（F3）；pr-line（F6，未落地）
   panel/                # 面板模板与具体面板（F3）：
                         #   shell.tsx（PanelShell）、list.tsx、settings.tsx、detail.tsx、host.tsx（PanelHost）
-                        #   具体面板 panel/<名>.tsx，如 panel/sessions.tsx；panel/dag.tsx（F4，未落地）
+                        #   具体面板 panel/<名>.tsx，如 panel/sessions.tsx；panel/dag.tsx（F4 已落地）
   ask/                  # ask-queue.ts：询问区队列；local.tsx、local-ask.tsx：confirm/choice（F3）
   commands/             # registry.ts、server-args.ts（另有 catalog.ts、context.tsx、palette.ts）：/ 命令注册表（F3）；
                         #   命令 run 回调可经 useSDK() 发写请求
@@ -41,7 +41,7 @@ packages/tui/src/
                         #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
   session/              # 会话级辅助：prefill.ts（已落地）；siblings.ts、navigate.ts（F5，未落地）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
-  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts（F4 已落地）；prefill.ts（F4，未落地）
+  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4 已落地）
   pr/                   # state.ts：prLineState 纯函数（F6，未落地；目录尚不存在）
   theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
@@ -63,13 +63,13 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；状态带内容（F4）与 `pr-line`（F6）未落地。
   - 输入框（`Prompt`）画在 `bottom-zone` 的输入框槽里：主区 → 状态带槽 → 输入框 → 页脚，抽屉只覆盖主区（F4 PR0，#1032）。`home`、`session` 路由在 setup 里调用 `useBottomZoneOptional()?.setComposer({ render })` 装入自己的 `Prompt`（草稿、提交、焦点的接线仍留在路由里），卸载时调用返回的撤销函数（只撤销自己装的那一份）。`render` 在槽里创建，不在路由的 provider 树里，只能读到应用级 context；路由自己提供的（会话的 `LocationProvider`，`@` 文件搜索靠它定位目录）要在 `render` 里重新提供。
   - `AppFrame` 的 `statusBand`、`bottomZone`、`drawer` 经 `Slot` 只构造一次：直接写 `<Show when={props.x}>{props.x}</Show>` 会把 prop 里的 JSX 构造两次，多出来的一份不上屏却一直在跑（面板、输入框、key layer 都会重复）。
-- `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`panel/dag.tsx` 随 F4。
+- `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`/dag` 面板 `panel/dag.tsx` 已落地（F4）。
 - `ask/`：权限、提问、`confirm`、`choice` 的队列（F3）。权限与提问的展示组件在 `routes/session/`（`permission.tsx`、`question.tsx`），经 `ask-surface.tsx` 汇入队列；`confirm`、`choice` 的展示组件在 `ask/local.tsx`，调用入口 `askConfirm`、`askChoice` 在 `ask/local-ask.tsx`。
 - `commands/`：内置与服务端命令的统一注册表（F3）。
 - `config/`：键位 `Definitions`、`CommandMap` 与处置表（F1）。
 - `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
 - `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
-- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`，`prefill.ts` 随 F4；`pr/` 随 F6 新建。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
+- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`；`pr/` 随 F6 新建。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
 - `session/`：会话级辅助函数。目前只有预填落地 `prefill.ts`；同级排序 `siblings.ts`、导航 `navigate.ts` 随 F5。
