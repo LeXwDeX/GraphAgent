@@ -1592,10 +1592,16 @@ export const {
     }
     onResync(guardedRefreshDagSummaries)
     // #1032: every shown workflow reads its table again, from an empty buffer.
-    onResync(() => {
+    // A shown workflow with no feed yet is one whose interest the worker never
+    // confirmed: declaring it again would be a no-op, so the reconnect registers
+    // the interest again and reads it only after the worker confirms.
+    onResync(async () => {
+      let unconfirmed = false
       for (const workflowID of dagWatched().keys()) {
         if (dagFeeds.has(workflowID)) readDagNodes(workflowID, true)
+        else unconfirmed = true
       }
+      if (unconfirmed) await applyDagWatches()
     })
     // The settled-turn slice has no read-back: a turn that settled during the
     // disconnect is unknown, and an old outcome must not pass for the latest.

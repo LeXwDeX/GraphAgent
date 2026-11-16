@@ -511,6 +511,29 @@ describe("tui sync dag node tables", () => {
     })
   })
 
+  test("a watch whose interest the worker never confirmed is registered again on reconnect, then read", async () => {
+    const route = tableRoute({ [wf]: [wire("a")] })
+    await withMount(route, async ({ interest, reconnect, sdk, sync }) => {
+      const submit = sdk.setInterest
+      let failing = true
+      sdk.setInterest = (full) => (failing ? Promise.reject(new Error("worker gone")) : submit(full))
+
+      await sync.dag.watch("band", shown())
+      expect(route.reads).toEqual([])
+
+      // The same surface declaring the same workflow again does nothing by contract.
+      await sync.dag.watch("band", shown())
+      expect(route.reads).toEqual([])
+
+      // Connectivity returns: the watch is still declared, so it registers and then reads.
+      failing = false
+      reconnect()
+      await wait(() => sync.dag.nodes(wf) !== undefined)
+      expect(route.reads).toEqual([wf])
+      expect(interest.at(-1)).toEqual([sid])
+    })
+  })
+
   test("a deleted owner session ends its watches", async () => {
     const route = tableRoute({ [wf]: [wire("a")] })
     await withMount(route, async ({ emit, interest, sdk, sync }) => {
