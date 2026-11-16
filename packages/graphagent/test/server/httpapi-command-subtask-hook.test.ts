@@ -14,7 +14,9 @@
 // to, so the command asks the model once more (the summary round).
 // `continue:false` means stop: the processor ends a model turn on the result's
 // `hookStopped` metadata, and the command turn ends there too, with no summary
-// round.
+// round. A PostToolUseFailure hook stops a call the other way round: the call
+// fails, and the failure itself carries the stop (`HookToolStop`), which the
+// processor reads off the error. The command turn ends on that too.
 import { afterEach, describe, expect } from "bun:test"
 import { join } from "node:path"
 import { SessionV1 } from "@graphagent/core/v1/session"
@@ -28,6 +30,7 @@ import { InstanceStore } from "../../src/project/instance-store"
 import { Project } from "../../src/project/project"
 import { SessionPaths } from "../../src/server/routes/instance/httpapi/groups/session"
 import { Session } from "@/session/session"
+import { SessionRetry } from "@/session/retry"
 import type { SessionID } from "../../src/session/schema"
 import { resetDatabase } from "../fixture/db"
 import { hookCommand } from "../fixture/claude-hook"
@@ -76,9 +79,16 @@ function post(route: string, directory: string, body: unknown) {
 
 const route = (template: string, sessionID: SessionID) => template.replace(":sessionID", sessionID)
 
+// A hook the session carries for the task call: the event it answers and the JSON its command prints.
+interface Policy {
+  readonly event: "PreToolUse" | "PostToolUseFailure"
+  readonly hook: unknown
+}
+
 // The refusal as the hook protocol writes it; both are plain command hooks.
 const deny = {
   name: "a deny verdict",
+  event: "PreToolUse",
   hook: {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -92,6 +102,7 @@ const deny = {
 
 const stop = {
   name: "continue:false",
+  event: "PreToolUse",
   hook: { continue: false, stopReason: "budget exhausted" },
   output: "[Hook stopped] budget exhausted",
   metadata: { hookStopped: true, stopReason: "budget exhausted" },
@@ -99,7 +110,14 @@ const stop = {
 
 const refusals = [deny, stop] as const
 
-type Refusal = (typeof refusals)[number]
+// The call itself fails (see `failChild`) and PostToolUseFailure sees the failure. This hook stops the turn on it...
+const failureStop = {
+  event: "PostToolUseFailure",
+  hook: { continue: false, stopReason: "STOPPED-AFTER-FAILURE" },
+} as const
+
+// ...and this one has no opinion about it.
+const failureSeen = { event: "PostToolUseFailure", hook: {} } as const
 
 // A Stop hook that records each run and always asks for another turn.
 const keepGoing = hookCommand(`
@@ -107,7 +125,37 @@ const keepGoing = hookCommand(`
   console.log(JSON.stringify({ decision: "block", reason: "KEEP-GOING" }))
 `)
 
-function refusedSession(directory: string, refusal: Refusal, stopHook?: string) {
+// A foreground subtask command, so that its `task` call runs a real child session.
+const withInspect = (url: string) => ({
+  ...testProviderConfig(url),
+  command: {
+    inspect: {
+      template: "inspect the repository",
+      description: "inspect the repository",
+      agent: "general",
+      subtask: true,
+    },
+  },
+})
+
+// A child run asks the provider this often before it gives up and fails the `task` call.
+const CHILD_REQUESTS = SessionRetry.RETRY_MAX_RETRIES + 1
+
+const failChild = Effect.gen(function* () {
+  const llm = yield* TestLLMServer
+  for (let request = 0; request < CHILD_REQUESTS; request++)
+    yield* llm.error(503, { error: { message: "subagent request rejected" } }, { "retry-after-ms": "0" })
+})
+
+// What a run adds to the plain refused call: a Stop hook the session carries, the slash command to run,
+// and a child run that fails.
+interface Run {
+  readonly stopHook?: string
+  readonly command?: string
+  readonly childFails?: boolean
+}
+
+function refusedSession(directory: string, refusal: Policy, stopHook?: string) {
   return Effect.gen(function* () {
     const session = yield* Session.use
       .create({
@@ -116,7 +164,7 @@ function refusedSession(directory: string, refusal: Refusal, stopHook?: string) 
       })
       .pipe(provideInstanceEffect(directory))
     const hook = yield* post(route(SessionPaths.hook, session.id), directory, {
-      event: "PreToolUse",
+      event: refusal.event,
       hooks: [
         { type: "command", command: hookCommand(`console.log(JSON.stringify(${JSON.stringify(refusal.hook)}))`) },
       ],
@@ -134,15 +182,16 @@ function refusedSession(directory: string, refusal: Refusal, stopHook?: string) 
 }
 
 // `/review` makes its own `task` call; the model is only asked afterwards, if at all.
-function viaCommand(directory: string, refusal: Refusal, stopHook?: string) {
+function viaCommand(directory: string, refusal: Policy, run: Run = {}) {
   return Effect.gen(function* () {
     const llm = yield* TestLLMServer
     yield* llm.reset
+    if (run.childFails) yield* failChild
     // The answer to the summary round, if the command asks for one.
     yield* llm.text("summarized")
-    const session = yield* refusedSession(directory, refusal, stopHook)
+    const session = yield* refusedSession(directory, refusal, run.stopHook)
     const response = yield* post(route(SessionPaths.command, session.id), directory, {
-      command: "review",
+      command: run.command ?? "review",
       arguments: "",
       model: "test/test-model",
     })
@@ -152,13 +201,14 @@ function viaCommand(directory: string, refusal: Refusal, stopHook?: string) {
 }
 
 // The same `task` call issued by the model: its first request is the call itself.
-function viaModel(directory: string, refusal: Refusal, stopHook?: string) {
+function viaModel(directory: string, refusal: Policy, run: Run = {}) {
   return Effect.gen(function* () {
     const llm = yield* TestLLMServer
     yield* llm.reset
     yield* llm.tool("task", { description: "inspect bug", prompt: "look into it", subagent_type: "general" })
+    if (run.childFails) yield* failChild
     yield* llm.text("done")
-    const session = yield* refusedSession(directory, refusal, stopHook)
+    const session = yield* refusedSession(directory, refusal, run.stopHook)
     const response = yield* post(route(SessionPaths.prompt, session.id), directory, {
       agent: "build",
       model: { providerID: "test", modelID: "test-model" },
@@ -284,11 +334,11 @@ describe("command turn after a subtask refused by a PreToolUse hook (#1351)", ()
       const modelDir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
 
       // The Stop hook still observes the stopped turn once, but a blocked turn cannot continue.
-      const commanded = yield* viaCommand(commandDir, stop, keepGoing)
+      const commanded = yield* viaCommand(commandDir, stop, { stopHook: keepGoing })
       expect(commanded.calls).toBe(0)
       expect(yield* stopRuns(commandDir)).toBe(1)
 
-      const prompted = yield* viaModel(modelDir, stop, keepGoing)
+      const prompted = yield* viaModel(modelDir, stop, { stopHook: keepGoing })
       expect(prompted.calls).toBe(1)
       expect(yield* stopRuns(modelDir)).toBe(1)
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
@@ -308,6 +358,50 @@ describe("command turn after a subtask refused by a PreToolUse hook (#1351)", ()
       // The model path: the request that issues the call, then the one that reads the refusal.
       const prompted = yield* viaModel(directory, deny)
       expect(prompted.calls).toBe(2)
+      yield* idle(directory)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
+  )
+})
+
+describe("command turn after a subtask that fails under a PostToolUseFailure hook (#1351)", () => {
+  it.live("continue:false ends the turn at the failed subtask, as it does after a model-issued call", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: withInspect(llm.url) })
+
+      const commanded = yield* viaCommand(directory, failureStop, { command: "inspect", childFails: true })
+      // The call failed and the hook's stop is on the failure.
+      const [part] = yield* taskPart(directory, commanded.session.id)
+      expect(part.state.status).toBe("error")
+      if (part.state.status === "error") expect(part.state.error).toContain("STOPPED-AFTER-FAILURE")
+      // The turn ends there: the child run's requests are the only ones, and no summary prompt is left behind.
+      expect(commanded.calls).toBe(CHILD_REQUESTS)
+      expect(yield* roles(directory, commanded.session.id)).toEqual(["user", "assistant"])
+      yield* idle(directory)
+
+      // The model path: the request that issues the call, the child run's requests, and the turn ends on the failure.
+      const prompted = yield* viaModel(directory, failureStop, { childFails: true })
+      expect(prompted.calls).toBe(1 + CHILD_REQUESTS)
+      yield* idle(directory)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
+  )
+
+  it.live("a failure nothing stops lets the turn go on with one summary round, as after a model-issued call", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: withInspect(llm.url) })
+
+      const commanded = yield* viaCommand(directory, failureSeen, { command: "inspect", childFails: true })
+      const [part] = yield* taskPart(directory, commanded.session.id)
+      expect(part.state.status).toBe("error")
+      // The failure is a result the model may report: exactly one more request, answering the summary prompt.
+      expect(commanded.calls).toBe(CHILD_REQUESTS + 1)
+      expect(yield* roles(directory, commanded.session.id)).toEqual(["user", "assistant", "user", "assistant"])
+      yield* idle(directory)
+
+      // The model path: the request that issues the call, the child run's requests, then the one that reads the failure.
+      const prompted = yield* viaModel(directory, failureSeen, { childFails: true })
+      expect(prompted.calls).toBe(1 + CHILD_REQUESTS + 1)
       yield* idle(directory)
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
   )

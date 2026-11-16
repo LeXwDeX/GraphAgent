@@ -49,6 +49,7 @@ import { SettingsHook } from "@/hook"
 import type { HookPayload } from "@/hook"
 import { HookModelMetrics } from "@/hook/model-metrics"
 import { HookTranscript } from "@/hook/transcript"
+import { hookToolStop } from "@/hook/trigger-result"
 import type { Question } from "@/question"
 import { InstanceState } from "@/effect/instance-state"
 import { MessageID, PartID, SessionID } from "../schema"
@@ -400,11 +401,16 @@ function resolveMcpResource(input: {
 }
 
 /**
- * A hook `continue:false` marks the settled tool result `hookStopped`. The processor ends a model turn on that mark;
- * a subtask ends its turn on it too, with no summary round, so a command's turn stops where a model's would (#1351).
+ * A hook `continue:false` stops the call in one of two shapes: the settled tool result is marked `hookStopped`
+ * (PreToolUse, PostToolUse), or the failure is a `HookToolStop` (PostToolUseFailure). The processor ends a model turn
+ * on either; a subtask ends its turn on them too, with no summary round, so a command's turn stops where a model's
+ * would (#1351).
  */
-function hookStopped(part: SessionV1.ToolPart) {
-  return part.state.status === "completed" && part.state.metadata.hookStopped === true
+function hookStopped(part: SessionV1.ToolPart, failure: unknown) {
+  return (
+    (part.state.status === "completed" && part.state.metadata.hookStopped === true) ||
+    hookToolStop(failure) !== undefined
+  )
 }
 
 /** After a command-driven subtask, ask the parent to summarize the tool output and continue. */
@@ -1171,7 +1177,7 @@ export function makePrepare(deps: PrepareDeps) {
       } satisfies SessionV1.ToolPart)
     }
 
-    const stopped = hookStopped(part)
+    const stopped = hookStopped(part, error)
     if (task.command && !stopped) yield* appendTaskSummaryPrompt({ sessions, sessionID, lastUser })
     return { stopped }
   })
