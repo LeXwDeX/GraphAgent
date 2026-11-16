@@ -15,7 +15,7 @@ import { useCommands } from "../../src/commands/context"
 import { EpilogueProvider } from "../../src/context/epilogue"
 import { ExitProvider } from "../../src/context/exit"
 import { HookStatusProvider } from "../../src/context/hook-status"
-import { KVProvider } from "../../src/context/kv"
+import { KVProvider, useKV } from "../../src/context/kv"
 import { ToastLocalProvider } from "../fixture/tui-local"
 import { LocationProvider } from "../../src/context/location"
 import { ProjectProvider } from "../../src/context/project"
@@ -135,6 +135,8 @@ export type MountOptions = {
   clipboard?: ClipboardService
   /** Working directory of the TUI process (export writes there); defaults to the fake server's directory. */
   cwd?: string
+  /** The event source the SDK subscribes to, when a test needs it before the mount returns. */
+  events?: ReturnType<typeof createEventSource>
   width?: number
   height?: number
 }
@@ -148,7 +150,7 @@ export type MountOptions = {
 export async function mountRoute(options: MountOptions) {
   const tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, JSON.stringify(options.kv ?? {}))
-  const events = createEventSource()
+  const events = options.events ?? createEventSource()
   const sent: Sent[] = []
   const requested: string[] = []
   const sessions = options.sessions ?? []
@@ -189,6 +191,7 @@ export async function mountRoute(options: MountOptions) {
   let toast!: ReturnType<typeof useToast>
   let route!: ReturnType<typeof useRoute>
   let sync!: ReturnType<typeof useSync>
+  let kv!: ReturnType<typeof useKV>
   let promptRef!: ReturnType<typeof usePromptRef>
   let registry!: ReturnType<typeof useCommands>
   let bottomZone: BottomZoneStateApi | undefined
@@ -197,6 +200,7 @@ export async function mountRoute(options: MountOptions) {
     toast = useToast()
     route = useRoute()
     sync = useSync()
+    kv = useKV()
     promptRef = usePromptRef()
     registry = useCommands()
     return <box />
@@ -284,6 +288,8 @@ export async function mountRoute(options: MountOptions) {
     sync: () => sync,
     /** The command registry the views register their handlers in; `run` is what a palette selection does. */
     registry: () => registry,
+    /** The persisted preferences, for a test that changes one while the view is on screen. */
+    kv: () => kv,
     /** The bottom zone of a view mounted with `frame`. */
     bottomZone: () => bottomZone,
     /** Text in the mounted prompt's draft; `undefined` when no prompt is mounted. */
