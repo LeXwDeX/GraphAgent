@@ -1,0 +1,118 @@
+# Built-in stage reference 2 of 4 (understand, design, implement, review).
+# Read-only jury: three independent plans, each written from a different design
+# stance, feed one judge that scores them blind, and a skeptic then attacks the
+# selected design. Retarget a copy before starting it: put the request, the
+# acceptance criteria, and the constraints from the understand stage into
+# config.objective and the instructions, and add the criteria as further
+# config.acceptance items (1-50, unique ids) beside the three below, which are
+# this stage's own deliverable contract. Swap a plan for a prototype only when a
+# runnable falsifier decides the question; a prototype writes, so under the
+# strict gate it needs verify and a diff review, and it should run in an
+# isolated worktree.
+title: "Stage: design (read-only) — anonymous option jury → scored judgment → skeptic review"
+config:
+  name: stage-design
+  review_gate: strict
+  max_concurrency: 4
+  max_node_replan_attempts: 3
+  max_total_nodes: 14
+  node_defaults:
+    worker_config:
+      timeout_ms: 1800000
+  delivery_node: judgment
+  objective: >-
+    Choose a design for the understood request: compare independent options on
+    evidence, then return the selected design, a scored comparison, and the
+    rejected options with their reasons.
+  acceptance:
+    - id: AC1
+      text: >-
+        The selected design satisfies every acceptance criterion and constraint
+        supplied for this stage.
+    - id: AC2
+      text: >-
+        Every score in the comparison carries evidence, and every rejected
+        option states the decisive reason it lost.
+    - id: AC3
+      text: >-
+        Every decision that belongs to the user is listed as a decision, not
+        decided inside the design.
+  blocks:
+    - id: design-context
+      kind: explore
+      instruction: >-
+        Map the seams the design must fit: the existing interfaces, invariants,
+        and ownership around the change, the conventions and prior decisions
+        (decision records, context files) that bind it, and the tests that would
+        pin new behavior. Cite file and line. Do not propose a design.
+
+    - id: option-a
+      kind: plan
+      depends_on: [design-context]
+      required: false
+      instruction: >-
+        Design for the smallest change that satisfies every acceptance
+        criterion: reuse existing seams, add the fewest new concepts, and keep
+        the blast radius small. Return one self-contained proposal covering the
+        interface, invariants, data flow, failure handling, tests, migration,
+        and work packages with write sets, plus the evidence that would prove it
+        wrong. Do not name or hint at the stance you were given.
+
+    - id: option-b
+      kind: plan
+      depends_on: [design-context]
+      required: false
+      instruction: >-
+        Design for failure first: put crash, recovery, concurrency,
+        compatibility, and migration behavior at the center, and accept more
+        change where it removes a class of failures. Return one self-contained
+        proposal covering the interface, invariants, data flow, failure
+        handling, tests, migration, and work packages with write sets, plus the
+        evidence that would prove it wrong. Do not name or hint at the stance
+        you were given.
+
+    - id: option-c
+      kind: plan
+      depends_on: [design-context]
+      required: false
+      instruction: >-
+        Design as if the most natural module boundary were wrong: propose the
+        decomposition that would win under that assumption and the evidence
+        that would show it does. Return one self-contained proposal covering the
+        interface, invariants, data flow, failure handling, tests, migration,
+        and work packages with write sets, plus the evidence that would prove it
+        wrong. Do not name or hint at the stance you were given.
+
+    - id: judgment
+      kind: synthesize
+      depends_on: [option-a, option-b, option-c]
+      report_to_parent: false
+      instruction: >-
+        Judge the options blind: they carry only anonymous labels, so do not
+        infer authorship or favor an option by its order. Score each option from
+        1 to 5 on fit to the acceptance criteria, change locality and blast
+        radius, interface depth (how much complexity sits behind a small owning
+        interface), failure and recovery behavior, compatibility and migration,
+        and testability. Attach exact evidence to every score (file and line, or
+        a quoted sentence of the option); a score without evidence does not
+        count. Select the highest total, or override the ranking and give the
+        evidence that justifies the override. Do not invent consensus; if fewer
+        than two options completed, say so and stop at a recommendation that
+        names the gap. Return SELECTED (interface, invariants, data flow,
+        failure handling, tests, migration, work packages with write sets),
+        SCORES (option by criterion, with evidence), REJECTED (each option and
+        the decisive reason), RISKS (what remains open), and DECISIONS (choices
+        that belong to the user).
+
+    - id: design-review
+      kind: review
+      depends_on: [judgment]
+      lenses: [intent, completeness]
+      skeptics: 1
+      instruction: >-
+        Attack the selected design, not the repository: check that it satisfies
+        every acceptance criterion and constraint supplied for this stage, that
+        every cited file, line, and document exists and says what is claimed,
+        that each score follows from its evidence, and that no rejected option
+        lost to a strawman. A design the evidence does not support, or a user
+        decision hidden inside it, is a required action.

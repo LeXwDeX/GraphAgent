@@ -36,6 +36,27 @@ const writeGlobal = (file: string, content: string) =>
     .mkdir(path.join(globalDir, "workflows"), { recursive: true })
     .then(() => fs.writeFile(path.join(globalDir, "workflows", file), content))
 
+/** The four stage specs the runtime itself ships in the builtin scope. */
+const STAGE_SPECS = ["stage-design", "stage-implement", "stage-review", "stage-understand"]
+
+/** Entries backed by project or global files; the builtin scope has its own tests. */
+const fileEntries = (entries: readonly DagWorkflows.Entry[]) => entries.filter((entry) => entry.scope !== "builtin")
+
+/** Run `body` with the build-injected release snapshot set (or absent, as in a
+ * source run), then restore whatever was there. */
+async function withReleaseSnapshot<A>(snapshot: Record<string, string> | undefined, body: () => Promise<A>) {
+  const globals = globalThis as Record<string, unknown>
+  const previous = globals.GRAPHAGENT_DAG_TEMPLATES
+  if (snapshot === undefined) delete globals.GRAPHAGENT_DAG_TEMPLATES
+  else globals.GRAPHAGENT_DAG_TEMPLATES = snapshot
+  try {
+    return await body()
+  } finally {
+    if (previous === undefined) delete globals.GRAPHAGENT_DAG_TEMPLATES
+    else globals.GRAPHAGENT_DAG_TEMPLATES = previous
+  }
+}
+
 beforeEach(async () => {
   dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "dag-workflows-")))
   projectDir = path.join(dir, "project")
@@ -210,8 +231,9 @@ describe("DagWorkflows.resolve", () => {
 })
 
 describe("DagWorkflows.list", () => {
-  it("returns nothing when neither scope exists", async () => {
-    expect(await Effect.runPromise(DagWorkflows.list(projectDir))).toEqual([])
+  it("has no file-backed entries when neither file scope exists", async () => {
+    const entries = await Effect.runPromise(DagWorkflows.list(projectDir))
+    expect(fileEntries(entries)).toEqual([])
   })
 
   it("merges both scopes, sorted by name, project shadowing global", async () => {
@@ -220,7 +242,7 @@ describe("DagWorkflows.list", () => {
     await writeProject("shared.yaml", spec("project-shared", 2))
     await writeProject("a-first.yaml", spec("a-first", 1))
 
-    const entries = await Effect.runPromise(DagWorkflows.list(projectDir))
+    const entries = fileEntries(await Effect.runPromise(DagWorkflows.list(projectDir)))
     expect(entries.map((entry) => [entry.name, entry.scope])).toEqual([
       ["a-first", "project"],
       ["only-global", "global"],
@@ -235,14 +257,107 @@ describe("DagWorkflows.list", () => {
     await writeProject("notes.md", "not a spec")
     await fs.mkdir(path.join(projectDir, ".agents", "workflows", "nested.yaml"), { recursive: true })
 
-    const entries = await Effect.runPromise(DagWorkflows.list(projectDir))
+    const entries = fileEntries(await Effect.runPromise(DagWorkflows.list(projectDir)))
     expect(entries.map((entry) => entry.name)).toEqual(["real"])
   })
 
   it("leaves title undefined when the spec declares none", async () => {
     await writeProject("untitled.yaml", "config:\n  name: from-config\n  nodes: []")
-    const entries = await Effect.runPromise(DagWorkflows.list(projectDir))
+    const entries = fileEntries(await Effect.runPromise(DagWorkflows.list(projectDir)))
     expect(entries[0]?.title).toBeUndefined()
     expect(entries[0]?.nodes).toBe(0)
+  })
+})
+
+describe("DagWorkflows builtin stage specs", () => {
+  it("lists the four stage specs in a source run with no library files and no release snapshot", async () => {
+    const entries = await withReleaseSnapshot(undefined, () => Effect.runPromise(DagWorkflows.list(projectDir)))
+
+    expect(entries.map((entry) => [entry.name, entry.scope, entry.path])).toEqual(
+      STAGE_SPECS.map((name) => [name, "builtin", `builtin://${name}`]),
+    )
+    for (const entry of entries) {
+      // The listing metadata is what the parent selects from before reading;
+      // the listing truncates with an ellipsis, so neither may hit its bound.
+      expect(entry.title).toBeTruthy()
+      expect(entry.title).not.toEndWith("…")
+      expect(entry.objective).toBeTruthy()
+      expect(entry.objective).not.toEndWith("…")
+      expect(entry.blocks).toBeGreaterThan(0)
+      expect(entry.content).toBeTruthy()
+    }
+  })
+
+  it("resolves every stage spec by name to a builtin entry carrying its content", async () => {
+    await withReleaseSnapshot(undefined, async () => {
+      for (const name of STAGE_SPECS) {
+        const entry = await Effect.runPromise(DagWorkflows.resolve(name, projectDir))
+        expect(entry?.scope).toBe("builtin")
+        expect(entry?.path).toBe(`builtin://${name}`)
+        expect(entry?.content).toBe(DagWorkflows.builtinTemplates()[name])
+      }
+    })
+  })
+
+  it("lets a project file shadow a stage spec of the same name", async () => {
+    await writeProject("stage-design.yaml", spec("project-design", 2))
+    await withReleaseSnapshot(undefined, async () => {
+      const resolved = await Effect.runPromise(DagWorkflows.resolve("stage-design", projectDir))
+      expect(resolved?.scope).toBe("project")
+      expect(resolved?.title).toBe("project-design title")
+
+      const entries = await Effect.runPromise(DagWorkflows.list(projectDir))
+      expect(entries.map((entry) => [entry.name, entry.scope])).toEqual([
+        ["stage-design", "project"],
+        ["stage-implement", "builtin"],
+        ["stage-review", "builtin"],
+        ["stage-understand", "builtin"],
+      ])
+    })
+  })
+
+  it("lets a global file shadow a stage spec, and a project file shadow both", async () => {
+    await writeGlobal("stage-review.yaml", spec("global-review", 1))
+    await withReleaseSnapshot(undefined, async () => {
+      const global = await Effect.runPromise(DagWorkflows.resolve("stage-review", projectDir))
+      expect(global?.scope).toBe("global")
+      expect(global?.title).toBe("global-review title")
+
+      await writeProject("stage-review.yaml", spec("project-review", 1))
+      const project = await Effect.runPromise(DagWorkflows.resolve("stage-review", projectDir))
+      expect(project?.scope).toBe("project")
+      expect(project?.title).toBe("project-review title")
+    })
+  })
+
+  it("lets a release snapshot template replace a stage spec and adds its own names beside them", async () => {
+    await withReleaseSnapshot(
+      { "stage-implement": spec("snapshot-implement", 3), "curated-route": spec("curated-route", 1) },
+      async () => {
+        const entries = await Effect.runPromise(DagWorkflows.list(projectDir))
+        expect(entries.map((entry) => [entry.name, entry.scope])).toEqual([
+          ["curated-route", "builtin"],
+          ["stage-design", "builtin"],
+          ["stage-implement", "builtin"],
+          ["stage-review", "builtin"],
+          ["stage-understand", "builtin"],
+        ])
+        expect(entries.find((entry) => entry.name === "stage-implement")?.title).toBe("snapshot-implement title")
+        expect(entries.find((entry) => entry.name === "stage-design")?.title).not.toContain("snapshot")
+
+        const replaced = await Effect.runPromise(DagWorkflows.resolve("stage-implement", projectDir))
+        expect(replaced?.scope).toBe("builtin")
+        expect(replaced?.nodes).toBe(3)
+      },
+    )
+  })
+
+  it("lets a project file shadow a snapshot template that replaced a stage spec", async () => {
+    await writeProject("stage-implement.yaml", spec("project-implement", 1))
+    await withReleaseSnapshot({ "stage-implement": spec("snapshot-implement", 3) }, async () => {
+      const entry = await Effect.runPromise(DagWorkflows.resolve("stage-implement", projectDir))
+      expect(entry?.scope).toBe("project")
+      expect(entry?.title).toBe("project-implement title")
+    })
   })
 })

@@ -145,12 +145,10 @@ export function loadAuthoringSource(
   )
 }
 
-/** Directories (and the builtin fallback, when the release ships templates) a
- * bare workflow name may resolve from — for "not found" / empty-library hints. */
+/** Directories and the builtin scope (the engine's stage specs, always
+ * present) a bare workflow name may resolve from — for "not found" hints. */
 export function searchedScopes(directory: string) {
-  const scopes = DagWorkflows.searchPaths(directory)
-  if (Object.keys(DagWorkflows.builtinTemplates()).length > 0) scopes.push("the release's builtin templates")
-  return scopes.join(" and ")
+  return [...DagWorkflows.searchPaths(directory), "the builtin workflows"].join(" and ")
 }
 
 function resolveSpecPath(specPath: string, directory: string, projectID: string, ctx: Tool.Context) {

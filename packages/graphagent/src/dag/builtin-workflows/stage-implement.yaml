@@ -1,0 +1,90 @@
+# Built-in stage reference 3 of 4 (understand, design, implement, review).
+# The only writing stage. The plan decides how many slices run in parallel
+# (fan_out); verification and a fingerprint-bound strict review follow, and the
+# report is the stage artifact (fingerprint, changed files, verify evidence,
+# review dispositions). Retarget a copy before starting it: put the selected
+# design in config.objective and the instructions, and replace config.acceptance
+# with the acceptance items from the understand stage (1-50, unique ids); the
+# single item below is only a default.
+title: "Stage: implement — map → plan-sized slices → verify → strict review → report"
+config:
+  name: stage-implement
+  review_gate: strict
+  max_concurrency: 6
+  max_node_replan_attempts: 3
+  max_total_nodes: 32
+  node_defaults:
+    worker_config:
+      timeout_ms: 1800000
+  objective: >-
+    Implement the selected design: change only what the acceptance criteria
+    require, prove it with deterministic checks, and have the result reviewed
+    against those criteria.
+  acceptance:
+    - id: AC1
+      text: >-
+        The change delivers the behavior described in the workflow objective and
+        breaks no required repository check.
+  blocks:
+    - id: map
+      kind: explore
+      instruction: >-
+        Ground the implementation before any edit: the files, seams, and tests
+        the design touches; the repository gates the change triggers (typecheck,
+        lint, test and generated-output commands); and any change already
+        present in the working tree. Cite file and line. Report drift between
+        the design and the code instead of resolving it.
+
+    - id: plan
+      kind: plan
+      depends_on: [map]
+      instruction: >-
+        Turn the design into work packages that are genuinely independent: split
+        only where write sets cannot overlap, keep consumer, migration,
+        generated-artifact, and delivery wiring in its own package, and give
+        each package the failing check it must establish first. Stop and report
+        instead of inventing a product decision.
+
+    - id: coding
+      kind: coding
+      depends_on: [plan]
+      fan_out: plan
+      instruction: >-
+        Implement only the assigned package and its write set, test-first at
+        the public seam. Never weaken or delete a check to make it pass, and
+        report contract drift instead of redesigning another package's work.
+
+    - id: verify
+      kind: verify
+      depends_on: [coding]
+      instruction: >-
+        Run the focused checks and every repository gate the change triggers
+        (frozen install, typecheck, lint, tests, generated outputs, migrations,
+        packaging), and judge each acceptance criterion with deterministic
+        evidence. Record exact commands and raw results; a required check that
+        did not run counts as a failure.
+
+    - id: review
+      kind: review
+      depends_on: [verify]
+      lenses: [standards, intent, completeness]
+      skeptics: 2
+      instruction: >-
+        Review the complete change as the next maintainer would: architecture
+        and repository rules, user-visible behavior against the acceptance
+        criteria, test sensitivity (would each new check fail without the
+        change), generated outputs and migrations, and residual risk. Report only
+        findings you can demonstrate, and keep suggestions out of the required
+        actions.
+
+    - id: report
+      kind: synthesize
+      depends_on: [review]
+      instruction: >-
+        Write the stage artifact for the parent. IMPLEMENTATION: the fingerprint
+        and changed files exactly as reviewed. VERIFICATION: exact commands and
+        results. REVIEW: the verdict and every finding with its disposition
+        (fixed, refuted with evidence, or still open). COVERAGE: anything
+        skipped, failed, or not examined. RESIDUAL: open risks and work
+        deliberately deferred. Add nothing the dependency outputs do not
+        support, and do not write files.
