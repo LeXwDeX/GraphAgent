@@ -10,21 +10,23 @@ import { HookTranscript } from "./transcript"
 import { HookConfigChange } from "./config-change"
 import { HookFileWatch } from "./file-watch"
 
-/** A local client detaches a specific session; directory disposal alone is not a session end. */
-export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(function* (input: {
-  sessionID: string
-  directory: string
-  reason: "other" | "prompt_input_exit" | "resume" | "clear" | "logout"
-}) {
+export type Reason = "other" | "prompt_input_exit" | "resume" | "clear" | "logout"
+
+export interface EndInput {
+  readonly sessionID: string
+  readonly directory: string
+  readonly reason: Reason
+}
+
+/**
+ * A local client detaches a specific session; directory disposal alone is not a session end.
+ *
+ * This ends the session's hooks and drops the state the hooks hold. The session's own state
+ * (live status, client attention) is not touched here: `ClientDetach.local` clears it first.
+ */
+export const endLocalSession = Effect.fn("HookClientLifecycle.endLocalSession")(function* (input: EndInput) {
   const instance = yield* (yield* InstanceStore.Service).load({ directory: input.directory })
   return yield* Effect.gen(function* () {
-    const [{ SessionAttention }, { SessionStatus }] = yield* Effect.promise(() =>
-      Promise.all([import("@/notification/attention"), import("@/session/status")]),
-    )
-    const attention = Option.getOrUndefined(yield* Effect.serviceOption(SessionAttention.Service))
-    const status = Option.getOrUndefined(yield* Effect.serviceOption(SessionStatus.Service))
-    if (status?.clear) yield* status.clear(SessionID.make(input.sessionID))
-    if (attention) yield* attention.clear(input.sessionID)
     const lifecycle = Option.getOrUndefined(yield* Effect.serviceOption(HookLifecycle.Service))
     const { SettingsHook } = yield* Effect.promise(() => import("./index"))
     const settings = yield* SettingsHook.Service

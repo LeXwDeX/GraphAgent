@@ -1,5 +1,5 @@
 import "./worker-console"
-import { HookClientLifecycle } from "@/hook/client-lifecycle"
+import { ClientDetach } from "@/session/client-detach"
 import { Logging } from "@graphagent/core/observability/logging"
 
 import { Server } from "@/server/server"
@@ -108,7 +108,7 @@ export const rpc = {
     )
     for (const { sessionID, directory } of ClientSessions.list())
       await AppRuntime.runPromise(
-        HookClientLifecycle.endLocalSession({ sessionID, directory, reason: "prompt_input_exit" }).pipe(
+        ClientDetach.local({ sessionID, directory, reason: "prompt_input_exit" }).pipe(
           Effect.catchCause(() => Effect.void),
         ),
       )
