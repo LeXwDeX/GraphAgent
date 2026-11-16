@@ -1,0 +1,9 @@
+import { capitalize } from "../utils/strings"
+import { theme } from "./theme"
+
+export type ButtonVariant = "primary" | "secondary"
+
+export function renderButton(label: string, variant: ButtonVariant = "secondary"): string {
+  const background = variant === "primary" ? theme.accent : theme.surface
+  return `<button style="background:${background}">${capitalize(label)}</button>`
+}

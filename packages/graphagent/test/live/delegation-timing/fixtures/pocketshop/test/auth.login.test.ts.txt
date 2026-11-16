@@ -1,0 +1,15 @@
+import { expect, test } from "bun:test"
+import { login } from "../src/auth"
+
+test("a known user with the right password gets a session", () => {
+  const result = login("ada@example.com", "correct horse")
+  expect(result.ok).toBe(true)
+})
+
+test("an unknown email is rejected", () => {
+  expect(login("nobody@example.com", "x")).toEqual({ ok: false, reason: "UNKNOWN_USER" })
+})
+
+test("a wrong password is rejected", () => {
+  expect(login("ada@example.com", "wrong")).toEqual({ ok: false, reason: "INVALID_CREDENTIALS" })
+})

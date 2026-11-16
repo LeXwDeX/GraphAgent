@@ -1,0 +1,13 @@
+/** Runs `task` up to `attempts` times, waiting `delayMs` between failures. */
+export async function withRetry<T>(task: () => Promise<T>, attempts = 3, delayMs = 200): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await task()
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+  throw lastError
+}

@@ -1,0 +1,4 @@
+2026-09-03T08:12:44Z INFO  login ok user=u_101
+2026-09-03T08:15:02Z INFO  login ok user=u_102
+2026-09-17T11:40:19Z WARN  login failed reason=UNKNOWN_USER email=bob@example.com
+2026-09-28T16:02:51Z INFO  login ok user=u_102

@@ -1,0 +1,6 @@
+# TODO (2025)
+
+- [x] split the API into route modules
+- [ ] replace left-pad with String.prototype.padStart
+- [ ] drop dayjs once formatDate covers every call site
+- [ ] move the nightly report script to the new scheduler

@@ -1,0 +1,21 @@
+import { createHmac, timingSafeEqual } from "node:crypto"
+
+const SECRET = process.env.TOKEN_SECRET ?? "dev-secret"
+
+function mac(body: string): string {
+  return createHmac("sha256", SECRET).update(body).digest("base64url")
+}
+
+export function signToken(payload: Record<string, unknown>): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url")
+  return `${body}.${mac(body)}`
+}
+
+export function verifyToken(token: string): Record<string, unknown> | undefined {
+  const [body, given] = token.split(".")
+  if (!body || !given) return undefined
+  const expected = mac(body)
+  if (given.length !== expected.length) return undefined
+  if (!timingSafeEqual(Buffer.from(given), Buffer.from(expected))) return undefined
+  return JSON.parse(Buffer.from(body, "base64url").toString("utf8"))
+}
