@@ -95,6 +95,33 @@ it.instance("plan agent denies the general subagent by default", () =>
   }),
 )
 
+it.instance("plan agent cannot start the writer subagents: general and prototyper are denied by default", () =>
+  Effect.gen(function* () {
+    const plan = yield* load((svc) => svc.get("plan"))
+    expect(plan).toBeDefined()
+    for (const writer of ["general", "prototyper"]) {
+      expect(Permission.evaluate("task", writer, plan!.permission).action, writer).toBe("deny")
+    }
+    // The read-only workers stay available, and so do custom subagents.
+    for (const reader of ["explore", "researcher", "architect", "auditor", "custom"]) {
+      expect(Permission.evaluate("task", reader, plan!.permission).action, reader).toBe("allow")
+    }
+  }),
+)
+
+it.instance(
+  "user permission can allow the prototyper subagent from plan mode",
+  () =>
+    Effect.gen(function* () {
+      const plan = yield* load((svc) => svc.get("plan"))
+      expect(plan).toBeDefined()
+      expect(Permission.evaluate("task", "prototyper", plan!.permission).action).toBe("allow")
+      // The other writer stays denied: the user lifted one rule, not the profile.
+      expect(Permission.evaluate("task", "general", plan!.permission).action).toBe("deny")
+    }),
+  { config: { permission: { task: { prototyper: "allow" } } } },
+)
+
 it.instance(
   "user permission can allow the general subagent from plan mode",
   () =>

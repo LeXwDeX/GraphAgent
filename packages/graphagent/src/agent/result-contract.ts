@@ -3,12 +3,14 @@
 
 import { validateAgainstSchema } from "@/dag/runtime/schema-validator"
 import { AgentArtifact } from "./artifact"
-import type { Subject } from "./contract"
+import { AgentContract, type Subject } from "./contract"
 
 /**
  * The result contract of a worker run through the `task` tool (#1158): an agent
  * that declares `contract.output.artifact` owes its final answer as that
- * artifact, one JSON value. The contract is the artifact's schema plus three
+ * artifact, one JSON value, unless it opts out with `output.task: false` (the
+ * built-in `explore` does: its task calls stay free text, and the artifact is
+ * for composed runs). The contract is the artifact's schema plus three
  * functions: how the worker is told (`prompt`), how the answer is judged
  * (`check`) and how a miss is sent back (`repairPrompt`).
  *
@@ -33,9 +35,12 @@ export type Resolution =
   /** The agent declares an artifact the catalog does not hold. */
   | { readonly kind: "unknown"; readonly artifact: string }
 
-/** What `agent` owes a task caller, read from its declared contract. */
+/**
+ * What `agent` owes a task caller, read from its declared contract: nothing
+ * when it declares no artifact or opts out with `output.task: false`.
+ */
 export function resolve(agent: Pick<Subject, "contract">): Resolution {
-  const artifact = agent.contract?.output?.artifact
+  const artifact = AgentContract.taskArtifact(agent)
   if (artifact === undefined) return { kind: "none" }
   const schema = AgentArtifact.schema(artifact)
   if (schema === undefined) return { kind: "unknown", artifact }

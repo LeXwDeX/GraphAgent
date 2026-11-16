@@ -30,6 +30,23 @@ describe("result contract of a worker", () => {
     })
   })
 
+  it("owes nothing to a task call when the contract opts out with output.task false", () => {
+    expect(ResultContract.resolve({ contract: { output: { artifact: "code_findings", task: false } } })).toEqual({
+      kind: "none",
+    })
+    // The opt-out also spares the call an artifact name the catalog does not hold: the catalog diagnoses that.
+    expect(ResultContract.resolve({ contract: { output: { artifact: "no_such_type", task: false } } })).toEqual({
+      kind: "none",
+    })
+  })
+
+  it("keeps the contract when the flag says true or says nothing", () => {
+    for (const output of [{ artifact: "code_findings" }, { artifact: "code_findings", task: true }]) {
+      const resolved = ResultContract.resolve({ contract: { output } })
+      expect(resolved.kind).toBe("contract")
+    }
+  })
+
   it("reports an artifact the catalog does not hold, naming the agent and what is known", () => {
     expect(ResultContract.resolve({ contract: { output: { artifact: "no_such_type" } } })).toEqual({
       kind: "unknown",

@@ -209,8 +209,10 @@ export const layer = Layer.effect(
               Permission.fromConfig({
                 question: "allow",
                 plan_exit: "allow",
+                // Plan mode starts no writer: general can edit anywhere, prototyper under prototypes/.
                 task: {
                   general: "deny",
+                  prototyper: "deny",
                 },
                 external_directory: {
                   [path.join(Global.Path.data, "plans", "*")]: "allow",
@@ -248,7 +250,9 @@ export const layer = Layer.effect(
             options: {},
             mode: "subagent",
             native: true,
-            contract: { role: "worker", visibility: "public", output: { artifact: "code_findings" } },
+            // `task: false`: a task call to explore stays free text and is not checked; the artifact is what a
+            // composed run (a composer's expanded child) is held to.
+            contract: { role: "worker", visibility: "public", output: { artifact: "code_findings", task: false } },
           },
           researcher: {
             name: "researcher",
