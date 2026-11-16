@@ -4,6 +4,55 @@ import { Schema, SchemaGetter } from "effect"
 import { PositiveInt } from "../../schema"
 import { ConfigPermissionV1 } from "./permission"
 
+// Agent contract (#1158): what an agent is for and who may compose it. Every
+// field is optional here: a declaration is merged onto the agent it overrides,
+// and the defaults (worker, private, failure derived from the write profile)
+// are filled by `AgentContract.effective` in the runtime.
+const ContractCompose = Schema.Struct({
+  pattern: Schema.Literals(["fan_out", "recursive_split"]).annotate({
+    description: "How the composer expands a plan: fan_out (one layer of parallel workers) or recursive_split.",
+  }),
+  dispatch: Schema.mutable(Schema.Array(Schema.String)).annotate({
+    description:
+      "Agents this composer may expand into. Only agents that exist, are public and are read-only when the plan is made are used.",
+  }),
+  fallback: Schema.String.annotate({
+    description: "Worker that takes the whole task when a plan cannot be expanded. Must be listed in dispatch.",
+  }),
+}).check(
+  Schema.makeFilter((compose) =>
+    compose.dispatch.includes(compose.fallback)
+      ? undefined
+      : { path: ["fallback"], issue: `fallback "${compose.fallback}" must be one of the agents listed in dispatch` },
+  ),
+)
+
+export const Contract = Schema.Struct({
+  role: Schema.optional(Schema.Literals(["worker", "composer"])).annotate({
+    description:
+      "worker (default) does the work itself and is a valid task subagent. composer only plans how a DAG expands work and runs only inside a DAG, never through the task tool.",
+  }),
+  visibility: Schema.optional(Schema.Literals(["public", "private"])).annotate({
+    description:
+      "private (default): only the main agent, the user or a template places the agent in a graph. public: a composer may dispatch it. A public agent must be read-only; one whose permission rules allow writing is treated as private.",
+  }),
+  output: Schema.optional(Schema.Struct({ artifact: Schema.String })).annotate({
+    description: "The artifact type this agent produces.",
+  }),
+  failure: Schema.optional(Schema.Literals(["skip", "fail"])).annotate({
+    description:
+      "skip: the work may be skipped when it fails. fail: its failure is the workflow's failure. Defaults to fail for agents that can write files and skip for read-only agents.",
+  }),
+  compose: Schema.optional(ContractCompose).annotate({
+    description: "Composer only: what the composer may expand into. Replaced as a whole when overridden.",
+  }),
+}).annotate({
+  identifier: "AgentContract",
+  description:
+    "Declares an agent's role, visibility, artifact and failure semantics. Permissions stay in `permission`; whether an agent is read-only is derived from it.",
+})
+export type Contract = Schema.Schema.Type<typeof Contract>
+
 const Color = Schema.Union([
   Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/u)),
   Schema.Literals(["primary", "secondary", "accent", "success", "warning", "error", "info"]),
@@ -37,6 +86,7 @@ const AgentSchema = Schema.StructWithRest(
     }),
     maxSteps: Schema.optional(PositiveInt).annotate({ description: "@deprecated Use 'steps' field instead." }),
     permission: Schema.optional(ConfigPermissionV1.Info),
+    contract: Schema.optional(Contract),
   }),
   [Schema.Record(Schema.String, Schema.Any)],
 )
@@ -59,6 +109,7 @@ const KNOWN_KEYS = new Set([
   "maxSteps",
   "options",
   "permission",
+  "contract",
   "disable",
   "tools",
 ])
