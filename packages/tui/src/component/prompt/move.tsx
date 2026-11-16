@@ -9,7 +9,7 @@ import { MoveSessionPanel, type MoveSessionSelection } from "../../panel/move-se
 import { t } from "../../i18n"
 import { showWorkspaceFileChanges } from "../../panel/workspace-file-changes"
 import { useBottomZoneOptional } from "../../shell/bottom-zone"
-import { useHomeSessionDestination } from "../../routes/home/session-destination"
+import { useHomeSessionDestination } from "../../context/session-destination"
 import { useProject } from "../../context/project"
 import { useTicker } from "../../context/ticker-context"
 

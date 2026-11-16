@@ -294,3 +294,64 @@ test("<leader>d asks the server once and the footer follows the session update",
     await app.stop()
   }
 })
+
+// The shared right slot belongs to a leader hint, a toast or a running hook. With none of them the footer lists
+// the key hints: the hook progress used to sit in the slot even while idle and kept them off every session route.
+test("the session footer lists the key hints, the expand shortcut among them, while nothing holds the shared slot", async () => {
+  const app = await runApp({
+    sessions: [sessionFixture(mainID)],
+    args: { continue: true },
+    width: 140,
+    height: 30,
+  })
+  try {
+    const frame = await waitForFrame(
+      app.setup,
+      (value) => footerRow(value).includes("ctrl+o 展开输出"),
+      "the expand shortcut in the footer",
+    )
+    expect(footerRow(frame)).toContain("ctrl+p 命令")
+    expect(footerRow(frame)).toContain("展开输出")
+    expect(footerRow(frame)).toContain("? 快捷键")
+    expect(cellWidth(footerRow(frame), 1)).toBeLessThanOrEqual(140)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a running hook takes the shared slot from the key hints and gives it back when it ends", async () => {
+  const app = await runApp({ sessions: [sessionFixture(mainID)], args: { continue: true }, width: 140, height: 30 })
+  const hook = (phase: "started" | "finished") => ({
+    directory,
+    payload: {
+      id: `evt_app_hook_${phase}`,
+      type: "session.hook.status" as const,
+      properties: {
+        sessionID: mainID,
+        hookID: "policy",
+        event: "PreToolUse",
+        descriptor: "policy check",
+        phase,
+        timeoutMs: 30_000,
+        cancellable: true,
+        startedAt: Date.now(),
+      },
+    },
+  })
+  try {
+    await waitForFrame(app.setup, (value) => footerRow(value).includes("ctrl+o 展开输出"), "the key hints")
+
+    app.events.emit(hook("started"))
+    const running = await waitForFrame(
+      app.setup,
+      (value) => footerRow(value).includes("hook policy check"),
+      "the hook progress",
+    )
+    expect(footerRow(running)).not.toContain("ctrl+o 展开输出")
+
+    app.events.emit(hook("finished"))
+    await waitForFrame(app.setup, (value) => footerRow(value).includes("ctrl+o 展开输出"), "the key hints again")
+  } finally {
+    await app.stop()
+  }
+})

@@ -129,6 +129,27 @@ test("finds visible properties and toast text, and nothing else in object litera
   ])
 })
 
+// The data layer cannot import the toast, so `LocalProvider` raises its notices through a `notify` callback that
+// the app turns into toasts. The literals keep counting as toast text: moving a call behind the callback must not
+// make them drop out of the ratchet unless they are translated.
+test("finds the text of a notice handed to a notify callback", async () => {
+  const root = await fixture({
+    "context/c.ts": [
+      'notify({ text: "Agent not found", level: "warning" })',
+      "props.notify({ text: `Model ${id} is not valid`, level: 'warning' })",
+      'notify({ text: t("local.agent.missing"), level: "warning" })',
+      'notify("Not an object literal")',
+      'notifier({ text: "Not the callback" })',
+      'attention.notify({ message: "Not a notice text" })',
+      "",
+    ].join("\n"),
+  })
+  expect(found(collectTuiEnglish({ root }))).toEqual([
+    "context/c.ts toast Agent not found",
+    "context/c.ts toast Model ${} is not valid",
+  ])
+})
+
 test("skips the message tables by default", async () => {
   const root = await fixture({
     "i18n/en.ts": `export const en = { entry: { title: "Translated text" } }\n`,

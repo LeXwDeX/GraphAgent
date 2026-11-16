@@ -11,7 +11,8 @@ import { TuiKeybind } from "../../src/config/keybind"
 import { ArgsProvider } from "../../src/context/args"
 import { ClipboardProvider } from "../../src/context/clipboard"
 import { ExitProvider } from "../../src/context/exit"
-import { LocalProvider, useLocal } from "../../src/context/local"
+import { useLocal } from "../../src/context/local"
+import { ToastLocalProvider } from "../fixture/tui-local"
 import { LocationProvider } from "../../src/context/location"
 import { BtwProvider, useBtw, type BtwController } from "../../src/context/btw"
 import { ProjectProvider, useProject } from "../../src/context/project"
@@ -166,7 +167,7 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
                           <ProjectProvider>
                             <SyncProvider>
                               <ThemeProvider mode="dark">
-                                <LocalProvider>
+                                <ToastLocalProvider>
                                   <BtwProvider>
                                     <LocationProvider>
                                       <PromptStashProvider>
@@ -186,7 +187,7 @@ export function AppPanelContexts(props: AppPanelContextsProps) {
                                       </PromptStashProvider>
                                     </LocationProvider>
                                   </BtwProvider>
-                                </LocalProvider>
+                                </ToastLocalProvider>
                               </ThemeProvider>
                             </SyncProvider>
                           </ProjectProvider>

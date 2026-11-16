@@ -44,24 +44,20 @@ function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   }
 }
 
-function KeymapHarness(props: ParentProps<{ overrides?: TuiKeybind.KeybindOverrides }>) {
+/**
+ * `expand` registers `view.expand.toggle` the way the session route does. Without it the command has no binding, as
+ * on the home route, and the footer leaves the hint out.
+ */
+function KeymapHarness(props: ParentProps<{ overrides?: TuiKeybind.KeybindOverrides; expand?: boolean }>) {
   const renderer = useRenderer()
   const keymap = createDefaultOpenTuiKeymap(renderer)
   const config = createResolvedKeymapConfig(props.overrides)
   const offKeymap = registerGraphagentKeymap(keymap, renderer, config)
+  const names = ["agent.cycle", "command.palette.show", "session.drawer.toggle", "help.show"]
+  if (props.expand) names.push("view.expand.toggle")
   const offLayer = keymap.registerLayer({
-    commands: [
-      { name: "agent.cycle", run() {} },
-      { name: "command.palette.show", run() {} },
-      { name: "session.drawer.toggle", run() {} },
-      { name: "help.show", run() {} },
-    ],
-    bindings: config.keybinds.gather("app", [
-      "agent.cycle",
-      "command.palette.show",
-      "session.drawer.toggle",
-      "help.show",
-    ]),
+    commands: names.map((name) => ({ name, run() {} })),
+    bindings: config.keybinds.gather("app", names),
   })
   onCleanup(() => {
     offLayer()
@@ -77,12 +73,20 @@ function FooterFromKeymap() {
 
 async function render(
   component: () => JSX.Element,
-  options: { width: number; height?: number; state: string; overrides?: TuiKeybind.KeybindOverrides },
+  options: {
+    width: number
+    height?: number
+    state: string
+    overrides?: TuiKeybind.KeybindOverrides
+    expand?: boolean
+  },
 ) {
   const app = await testRender(
     () => (
       <ShellContexts state={options.state}>
-        <KeymapHarness overrides={options.overrides}>{component()}</KeymapHarness>
+        <KeymapHarness overrides={options.overrides} expand={options.expand}>
+          {component()}
+        </KeymapHarness>
       </ShellContexts>
     ),
     { width: options.width, height: options.height ?? 1 },
@@ -183,6 +187,44 @@ test("builds hints from registered keymap bindings", async () => {
     expect(frame).toContain("? 快捷键")
     expect(frame).not.toContain("展开输出")
     expectWithin(frame, 120, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("lists the expand shortcut once the session route registers its command", async () => {
+  await using tmp = await shellState()
+  const app = await render(() => <FooterFromKeymap />, { width: 120, state: tmp.path, expand: true })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("ctrl+b 侧边栏")
+    expect(frame).toContain("ctrl+o 展开输出")
+    expect(frame).toContain("? 快捷键")
+    // The hint sits between the drawer and the help hints, as the Issue's footer shows them.
+    expect(frame.indexOf("侧边栏")).toBeLessThan(frame.indexOf("展开输出"))
+    expect(frame.indexOf("展开输出")).toBeLessThan(frame.indexOf("快捷键"))
+    expectWithin(frame, 120, 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the expand hint follows the language and a rebound key", async () => {
+  await using tmp = await shellState()
+  setLanguage("en")
+  const app = await render(() => <FooterFromKeymap />, {
+    width: 120,
+    state: tmp.path,
+    expand: true,
+    overrides: { view_expand_toggle: "f7" },
+  })
+
+  try {
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("f7 expand output")
+    expect(frame).not.toContain("ctrl+o")
+    expect(frame).not.toContain("展开输出")
   } finally {
     app.renderer.destroy()
   }
