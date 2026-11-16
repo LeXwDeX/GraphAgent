@@ -26,13 +26,13 @@ child work; stop or isolate a child writer before taking over its files.
 
 ## Permissions
 
-DAG node attempts and task children of a DAG-on root are unattended: they never
-raise a user dialog. Deny rules win first. A call matching the built-in safety
-list (SF-1 outside-project writes, SF-2 sensitive reads, SF-3 destructive
-commands, SF-4 releases, SF-5 repeated identical calls) is a tool error and the
-node or task continues. Global `dag.safety.extra` adds denials (SX-n), never
-allows. A user-written explicit allow wins over both; role and default wildcard
-allows do not. Everything else is auto-approved.
+DAG nodes and task children of a DAG-on root are unattended. Deny rules win
+first; a safety-list hit is a tool error naming the rule and reason; the child
+continues. Everything else is auto-approved. The list guards against honest
+mistakes, not adversarial input; it is not a sandbox. It refuses SF-1 edits and
+shell paths outside the project, SF-2 credential file reads, SF-3 destructive
+commands (`git reset --hard`), SF-4 publishing (`npm publish`), SF-5 repeated
+identical calls, SF-6 calls needing user confirmation.
 
 ## Agent communication
 

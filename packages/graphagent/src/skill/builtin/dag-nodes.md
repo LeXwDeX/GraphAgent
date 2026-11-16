@@ -89,14 +89,14 @@ low-level nodes, which use the `review` field. Block decisions also submit
 ## Permissions
 
 A running node is unattended: it never asks the user. `question`/`plan_exit` are
-root-only, so it asks its parent via `agent.send` (a task child states the need
-in its final answer). Deny rules win; a call matching the DAG safety list
-(SF-1..5) or global `dag.safety.extra` (SX-n) becomes a tool error and the node
-continues; an ordinary ask is auto-approved and a user-written explicit allow
-wins. Each denial is recorded as the `NodeSafetyDenied` event on its
-`safety_denials` (20 entries plus a total), shown by `inspect` and coverage
-("safety denied"), and counted in the terminal wake and report; it never wakes
-the parent by itself, and a denied call is not retried.
+root-only, so it asks its parent via `agent.send` (a task child asks in its
+final answer). After a safety-list denial (skill dag-policy) it does not retry:
+it changes approach (outside files are read with `read`, not the shell), or
+finishes the rest and says so. Publishing, merging, and default-branch pushes
+are for the parent and user: commit locally and report. Global
+`dag.safety.extra` adds SX-n denials; a user-written allow with a concrete
+pattern lifts any rule but SF-6. Each denial is recorded on the node's
+`safety_denials` and shown by `inspect`, coverage, and the wake and report.
 
 ## Prompt Templates
 

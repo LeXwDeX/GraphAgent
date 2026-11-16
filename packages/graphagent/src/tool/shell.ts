@@ -7,12 +7,14 @@ import * as Tool from "./tool"
 import path from "path"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
-import type { Node } from "web-tree-sitter"
+import { lazy } from "@/util/lazy"
+import { Language, type Node } from "web-tree-sitter"
 import { BackgroundJob } from "@/background/job"
 import { Identifier } from "@graphagent/core/id/id"
 import type { TaskPromptOps } from "./task"
 
 import { FSUtil } from "@graphagent/core/fs-util"
+import { fileURLToPath } from "url"
 import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Shell } from "@graphagent/core/shell"
@@ -22,7 +24,6 @@ import * as Truncate from "./truncate"
 import { ChildProcess } from "effect/process"
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner"
 import { ShellPrompt, SHELL_TAIL_LINES, type Parameters } from "./shell/prompt"
-import { commands, parse, parts, source, unquote, type Part } from "./shell/parse"
 import { BashArity } from "@/permission/arity"
 import { Session } from "@/session/session"
 import { PrWatchAuto } from "@/pr-watch/auto"
@@ -100,6 +101,11 @@ const CMD_FILES = new Set([
 const FLAGS = new Set(["-destination", "-literalpath", "-path"])
 const SWITCHES = new Set(["-confirm", "-debug", "-force", "-nonewline", "-recurse", "-verbose", "-whatif"])
 
+type Part = {
+  type: string
+  text: string
+}
+
 type Scan = {
   dirs: Set<string>
   patterns: Set<string>
@@ -109,6 +115,57 @@ type Scan = {
 type Chunk = {
   text: string
   size: number
+}
+
+const resolveWasm = (asset: string) => {
+  if (asset.startsWith("file://")) return fileURLToPath(asset)
+  if (asset.startsWith("/") || /^[a-z]:/i.test(asset)) return asset
+  const url = new URL(asset, import.meta.url)
+  return fileURLToPath(url)
+}
+
+function parts(node: Node) {
+  const out: Part[] = []
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i)
+    if (!child) continue
+    if (child.type === "command_elements") {
+      for (let j = 0; j < child.childCount; j++) {
+        const item = child.child(j)
+        if (!item || item.type === "command_argument_sep" || item.type === "redirection") continue
+        out.push({ type: item.type, text: item.text })
+      }
+      continue
+    }
+    if (
+      child.type !== "command_name" &&
+      child.type !== "command_name_expr" &&
+      child.type !== "word" &&
+      child.type !== "string" &&
+      child.type !== "raw_string" &&
+      child.type !== "concatenation"
+    ) {
+      continue
+    }
+    out.push({ type: child.type, text: child.text })
+  }
+  return out
+}
+
+function source(node: Node) {
+  return (node.parent?.type === "redirected_statement" ? node.parent.text : node.text).trim()
+}
+
+function commands(node: Node) {
+  return node.descendantsOfType("command").filter((child): child is Node => Boolean(child))
+}
+
+function unquote(text: string) {
+  if (text.length < 2) return text
+  const first = text[0]
+  const last = text[text.length - 1]
+  if ((first === '"' || first === "'") && first === last) return text.slice(1, -1)
+  return text
 }
 
 function home(text: string) {
@@ -283,11 +340,13 @@ export function trimPartialHead(raw: string): { text: string; partialHead: boole
   return { text: raw.slice(boundary + 1), partialHead: false }
 }
 
-const ask = Effect.fn("ShellTool.ask")(function* (
-  ctx: Tool.Context,
-  scan: Scan,
-  input: { command: string; cwd: string; shell: string },
-) {
+const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
+  const tree = yield* Effect.promise(() => parser().then((p) => (ps ? p.ps : p.bash).parse(command)))
+  if (!tree) throw new Error("Failed to parse command")
+  return tree
+})
+
+const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan, input: { command: string }) {
   if (scan.dirs.size > 0) {
     const directories = Array.from(scan.dirs)
     const globs = directories.map((dir) => {
@@ -300,10 +359,9 @@ const ask = Effect.fn("ShellTool.ask")(function* (
       always: globs,
       metadata: {
         command: input.command,
-        cwd: input.cwd,
-        shell: input.shell,
         directories,
         patterns: globs,
+        tool: "bash",
       },
     })
   }
@@ -315,10 +373,6 @@ const ask = Effect.fn("ShellTool.ask")(function* (
     always: Array.from(scan.always),
     metadata: {
       command: input.command,
-      // #1031 M7: the safety guard resolves relative write and read targets
-      // against the directory this command actually runs in.
-      cwd: input.cwd,
-      shell: input.shell,
     },
   })
 })
@@ -347,6 +401,33 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     stderr: "pipe",
   })
 }
+const parser = lazy(async () => {
+  const { Parser } = await import("web-tree-sitter")
+  const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
+    with: { type: "wasm" },
+  })
+  const treePath = resolveWasm(treeWasm)
+  await Parser.init({
+    locateFile() {
+      return treePath
+    },
+  })
+  const { default: bashWasm } = await import("tree-sitter-bash/tree-sitter-bash.wasm" as string, {
+    with: { type: "wasm" },
+  })
+  const { default: psWasm } = await import("tree-sitter-powershell/tree-sitter-powershell.wasm" as string, {
+    with: { type: "wasm" },
+  })
+  const bashPath = resolveWasm(bashWasm)
+  const psPath = resolveWasm(psWasm)
+  const [bashLanguage, psLanguage] = await Promise.all([Language.load(bashPath), Language.load(psPath)])
+  const bash = new Parser()
+  bash.setLanguage(bashLanguage)
+  const ps = new Parser()
+  ps.setLanguage(psLanguage)
+  return { bash, ps }
+})
+
 export const ShellTool = Tool.define(
   ShellID.ToolID,
   Effect.gen(function* () {
@@ -879,7 +960,7 @@ export const ShellTool = Tool.define(
                   )
                   const scan = yield* collect(tree.rootNode, cwd, ps, shell, instanceCtx)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
-                  yield* ask(ctx, scan, { command: params.command, cwd, shell: name })
+                  yield* ask(ctx, scan, params)
                 }),
               )
 

@@ -523,7 +523,11 @@ export const NodeSafetyDenied = Event.define({
     nodeID: NodeID,
     /** Execution attempt that produced the call (the row's replan-attempt ordinal). */
     attempt: NonNegativeInt,
-    /** `SF-1..5` for the built-in safety list, `SX-n` for `dag.safety.extra`. */
+    /**
+     * `SF-1..6` for the built-in safety list (outside-project writes, credential
+     * reads, destructive and publishing commands, repeated calls, calls that
+     * need user confirmation), `SX-n` for `dag.safety.extra`.
+     */
     ruleID: Schema.String,
     /** Permission key that was being adjudicated. */
     permission: Schema.String,

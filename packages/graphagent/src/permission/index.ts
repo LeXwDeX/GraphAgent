@@ -290,6 +290,31 @@ export const layer = Layer.effect(
       // Read once per ask, and only when an adjudicator exists: the run policy
       // of the asking child session (a task's root dag mode may have changed).
       const subject = adjudicator ? yield* ChildPolicy.askOf(database?.db)(request.sessionID) : Option.none()
+      // A run whose policy is `auto` never reaches the user (Issue #1026, PR4
+      // seam; E4 supplies the decision). `adjudicate` settles one pattern of
+      // such a run: an allow needs no question, a denial ends the ask as a
+      // tool error carrying the safety rule. Without a registered service, or
+      // for a run that asks the user, it is absent and nothing happens here.
+      const adjudicate =
+        adjudicator && Option.isSome(subject) && subject.value.ask === "auto"
+          ? Effect.fnUntraced(function* (pattern: string, rule: AskAdjudicator.AskRule) {
+              const decision = yield* adjudicator.decide({
+                request: { permission: request.permission, patterns: request.patterns, metadata: request.metadata },
+                pattern,
+                rule,
+                // The request's own option, not the `forced` flag that an earlier
+                // pattern's allow clears: the request stays forced for every pattern.
+                forced: force,
+                owner: subject.value.owner,
+                rootSessionID: subject.value.rootSessionID,
+              })
+              if (decision !== "allow")
+                yield* new PermissionV1.DeniedError({
+                  ruleset: ruleset.filter((entry) => Wildcard.match(request.permission, entry.permission)),
+                  reason: `dag_safety:${decision.deny.ruleID}: ${decision.deny.reason}`,
+                })
+            })
+          : undefined
 
       for (const pattern of request.patterns) {
         const nativeRule = evaluate(request.permission, pattern, resolved.native)
@@ -318,40 +343,33 @@ export const layer = Layer.effect(
             ...(reason ? { reason } : {}),
           })
         }
-        // A run whose policy is `auto` never reaches the user (Issue #1026,
-        // PR4 seam; E4 supplies the decision). Deny rules above always win;
-        // `explicit` tells the adjudicator whether the matching allow is the
-        // user's own, not a role/default rule. Without a registered service
-        // nothing happens here.
-        if (adjudicator && Option.isSome(subject) && subject.value.ask === "auto") {
+        // Deny rules above always win. `explicit` tells the adjudicator whether
+        // the matching allow is the user's own, not a role/default rule, and
+        // `forced` that this is a force ask only a human could settle (it is
+        // adjudicated like any other pattern, never skipped).
+        if (adjudicate) {
           const index = matchingRuleIndex(request.permission, pattern, ruleset)
-          // Explicit means the user wrote this allow. A resolved policy reports
-          // its user-rule indices; a direct caller's own ruleset is explicit by
-          // construction; a resolved policy without provenance proves nothing,
-          // so the safety list still applies.
+          const matched = ruleset[index]
+          // Explicit means the user wrote this allow, for something specific:
+          // a role/default allow is not theirs, and neither is a whole-key
+          // wildcard (`bash: "allow"` has pattern `*`; permission `*` covers
+          // every key), which would switch the safety list off wholesale. A
+          // resolved policy reports its user-rule indices; a direct caller's
+          // own ruleset is explicit by construction; a resolved policy without
+          // provenance proves nothing, so the safety list still applies.
           const explicit =
             rule.action === "allow" &&
-            index >= 0 &&
+            matched?.action === "allow" &&
+            matched.permission !== "*" &&
+            matched.pattern !== "*" &&
             (resolved.userRuleIndices !== undefined
               ? resolved.userRuleIndices.includes(index)
               : options?.resolveRuleset === undefined && index < originalRuleset.length)
-          const decision = yield* adjudicator.decide({
-            request: { permission: request.permission, patterns: request.patterns, metadata: request.metadata },
-            pattern,
-            rule: { action: rule.action === "allow" ? "allow" : "ask", explicit },
-            owner: subject.value.owner,
-            rootSessionID: subject.value.rootSessionID,
-          })
-          if (decision === "allow") {
-            // The adjudicator settled this pattern; a forced ask no longer
-            // needs its dialog for it.
-            forced = false
-            continue
-          }
-          return yield* new PermissionV1.DeniedError({
-            ruleset: ruleset.filter((entry) => Wildcard.match(request.permission, entry.permission)),
-            reason: `dag_safety:${decision.deny.ruleID}: ${decision.deny.reason}`,
-          })
+          yield* adjudicate(pattern, { action: rule.action === "allow" ? "allow" : "ask", explicit })
+          // The adjudicator settled this pattern; a forced ask no longer
+          // needs its dialog for it.
+          forced = false
+          continue
         }
         if (rule.action === "allow") continue
         if (!force && policy.mode === "bypassPermissions" && (yield* capabilities.has(request.sessionID))) continue
@@ -376,6 +394,12 @@ export const layer = Layer.effect(
         )
           continue
         needsAsk = true
+      }
+      // A force ask without patterns never enters the loop, yet only a human
+      // could settle it: the adjudicator gets it once, as the whole-key pattern.
+      if (adjudicate && force && request.patterns.length === 0) {
+        yield* adjudicate("*", { action: "ask", explicit: false })
+        forced = false
       }
       if (forced) needsAsk = true
 

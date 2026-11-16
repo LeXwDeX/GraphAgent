@@ -215,13 +215,122 @@ it.instance(
 )
 
 it.instance(
-  "a user-written allow reaches the adjudicator as an explicit rule, and a forced ask is adjudicated too",
+  "a user-written allow with a concrete pattern reaches the adjudicator as an explicit rule",
   () =>
     Effect.gen(function* () {
       decisions.length = 0
       const { childSessionID } = yield* makeRun("explicit")
-      yield* ask(childSessionID, [{ permission: "bash", pattern: "*", action: "allow" }], true)
-      expect(decisions.at(-1)).toMatchObject({ rule: { action: "allow", explicit: true } })
+      yield* ask(childSessionID, [{ permission: "bash", pattern: "rm -rf /tmp/*", action: "allow" }])
+      expect(decisions.at(-1)).toMatchObject({ rule: { action: "allow", explicit: true }, forced: false })
+    }),
+  { git: true },
+)
+
+it.instance(
+  "a whole-key wildcard allow is not explicit: neither a pattern of * nor a permission of *",
+  () =>
+    Effect.gen(function* () {
+      decisions.length = 0
+      const { childSessionID } = yield* makeRun("wildcard")
+      yield* ask(childSessionID, [{ permission: "bash", pattern: "*", action: "allow" }])
+      expect(decisions.at(-1)).toMatchObject({ rule: { action: "allow", explicit: false } })
+      yield* ask(childSessionID, [{ permission: "*", pattern: "rm -rf /tmp/*", action: "allow" }])
+      expect(decisions.at(-1)).toMatchObject({ rule: { action: "allow", explicit: false } })
+      // Not a user rule at all: the matching ask is not an allow either.
+      yield* ask(childSessionID, [{ permission: "bash", pattern: "rm -rf /tmp/*", action: "ask" }])
+      expect(decisions.at(-1)).toMatchObject({ rule: { action: "ask", explicit: false } })
+    }),
+  { git: true },
+)
+
+it.instance(
+  "a forced ask is adjudicated like any other and reaches the adjudicator marked forced for every pattern",
+  () =>
+    Effect.gen(function* () {
+      decisions.length = 0
+      const { childSessionID } = yield* makeRun("forced")
+      const permission = yield* Permission.Service
+      yield* ask(childSessionID, [{ permission: "bash", pattern: "rm -rf /tmp/*", action: "allow" }], true)
+      expect(decisions.at(-1)).toMatchObject({ forced: true, rule: { action: "allow", explicit: true } })
+
+      // The adjudicator allowed it, so the forced ask needs no dialog; the
+      // second pattern still sees a forced request after the first one's allow.
+      decisions.length = 0
+      yield* permission.ask(
+        {
+          sessionID: childSessionID,
+          permission: "bash",
+          patterns: ["first", "second"],
+          always: [],
+          metadata: {},
+          ruleset: [],
+        },
+        { force: true },
+      )
+      expect(decisions.map((entry) => [entry.pattern, entry.forced])).toEqual([
+        ["first", true],
+        ["second", true],
+      ])
+      expect(yield* permission.list()).toEqual([])
+
+      // An unforced ask carries the opposite mark.
+      decisions.length = 0
+      yield* ask(childSessionID)
+      expect(decisions.at(-1)?.forced).toBe(false)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "an adjudicator denial of a forced ask is a tool error and never a pending request",
+  () =>
+    Effect.gen(function* () {
+      const { childSessionID } = yield* makeRun("forced-deny")
+      const permission = yield* Permission.Service
+      decision = { deny: { ruleID: "SF-6", reason: "needs a human" } }
+      const exit = yield* ask(childSessionID, [], true).pipe(Effect.exit)
+      decision = "allow"
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(String(exit.cause)).toContain("dag_safety:SF-6")
+      expect(yield* permission.list()).toEqual([])
+    }),
+  { git: true },
+)
+
+it.instance(
+  "a forced ask with no patterns is adjudicated once, as the whole-key pattern",
+  () =>
+    Effect.gen(function* () {
+      decisions.length = 0
+      const { childSessionID } = yield* makeRun("forced-empty")
+      const permission = yield* Permission.Service
+      const forcedEmpty = permission.ask(
+        { sessionID: childSessionID, permission: "bash", patterns: [], always: [], metadata: {}, ruleset: [] },
+        { force: true },
+      )
+
+      // The adjudicator allowed it: the forced ask is settled without a dialog.
+      yield* forcedEmpty
+      expect(decisions).toHaveLength(1)
+      expect(decisions[0]).toMatchObject({
+        request: { permission: "bash", patterns: [] },
+        pattern: "*",
+        rule: { action: "ask", explicit: false },
+        forced: true,
+        owner: { kind: "dag_node", workflowID: "wf", nodeID: "n01" },
+        rootSessionID,
+      })
+      expect(yield* permission.list()).toEqual([])
+
+      // A denial is a tool error carrying the safety rule, never a pending request.
+      decisions.length = 0
+      decision = { deny: { ruleID: "SF-6", reason: "needs a human" } }
+      const exit = yield* forcedEmpty.pipe(Effect.exit)
+      decision = "allow"
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(String(exit.cause)).toContain("dag_safety:SF-6")
+      expect(decisions).toHaveLength(1)
+      expect(yield* permission.list()).toEqual([])
     }),
   { git: true },
 )

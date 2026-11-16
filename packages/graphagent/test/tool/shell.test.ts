@@ -18,6 +18,7 @@ import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
 import { testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
+import { SafetyGuard } from "@/permission/safety-guard"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
 import { BackgroundJob } from "@/background/job"
@@ -974,6 +975,47 @@ describe("tool.shell permissions", () => {
       )
     }),
   )
+
+  // #1031 M7: the DAG safety guard tells a shell-raised external_directory
+  // request from a native tool's by this marker alone.
+  each("marks its external_directory requests as raised by the shell tool", () => {
+    if (process.platform === "win32") return Effect.void
+    return Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      const outer = yield* tmpdirScoped()
+      yield* runIn(
+        tmp,
+        Effect.gen(function* () {
+          for (const [args, directory] of [
+            [{ command: "rm -rf /var/outside/x" }, "/var/outside"],
+            [{ command: "cat /etc/hosts" }, "/etc"],
+            // The working directory outside the project is the same kind of request.
+            [{ command: "echo ok", workdir: outer }, outer],
+          ] as const) {
+            const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+            yield* fail({ ...args }, capture(requests, new Error("stop after permission")))
+            const request = requests.find((r) => r.permission === "external_directory")
+            expect(request?.metadata).toMatchObject({ command: args.command, directories: [directory], tool: "bash" })
+            // Unattended, with no default allow covering the directory, the
+            // guard refuses it as a write outside the project.
+            const hit = SafetyGuard.evaluate({
+              permission: "external_directory",
+              pattern: request?.patterns[0] ?? "",
+              metadata: request?.metadata,
+              forced: false,
+              ruleAction: "ask",
+              explicit: false,
+              cwd: tmp,
+              instance: undefined,
+              allowRoots: [],
+              extra: [],
+            })
+            expect(hit?.ruleID).toBe("SF-1")
+          }
+        }),
+      )
+    })
+  })
 
   each("does not ask for external_directory permission when rm inside project", () =>
     Effect.gen(function* () {

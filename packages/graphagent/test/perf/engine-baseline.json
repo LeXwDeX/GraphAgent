@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "collectedAt": "2026-11-15T16:51:03.857Z",
-  "commit": "31165b0cf30778ae079bae29b45e9cc97ae169e4",
+  "collectedAt": "2026-11-15T12:52:00.124Z",
+  "commit": "1b8078fd7553beb7af1443d2af8483b7b9cb4014",
   "scenarios": {
     "S1": {
       "perTurn": {
         "sql.read": 56,
         "sql.write": 25,
         "commits": 11,
-        "json.parseBytes": 70419,
-        "json.encodeBytes": 4499,
-        "sha256Bytes": 4177,
+        "json.parseBytes": 70271,
+        "json.encodeBytes": 4492,
+        "sha256Bytes": 4170,
         "git.spawns": 4,
         "snapshot.lockWaits": 0,
         "events.durable": 11,
@@ -22,9 +22,9 @@
         "sql.read": 32,
         "sql.write": 14,
         "commits": 6,
-        "json.parseBytes": 46798,
-        "json.encodeBytes": 2577,
-        "sha256Bytes": 2255,
+        "json.parseBytes": 46698,
+        "json.encodeBytes": 2573,
+        "sha256Bytes": 2251,
         "git.spawns": 0,
         "snapshot.lockWaits": 0,
         "events.durable": 6,
@@ -39,7 +39,7 @@
           "messageCount": 51,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "d1351a493629d49a",
+          "prefixHash": "a85347d9688705a6",
           "toolChoice": "auto"
         }
       ],
@@ -54,9 +54,9 @@
         "sql.read": 252,
         "sql.write": 81,
         "commits": 36,
-        "json.parseBytes": 1604742,
-        "json.encodeBytes": 137553,
-        "sha256Bytes": 82794,
+        "json.parseBytes": 1604792,
+        "json.encodeBytes": 137572,
+        "sha256Bytes": 82813,
         "git.spawns": 12,
         "snapshot.lockWaits": 0,
         "events.durable": 37,
@@ -68,9 +68,9 @@
         "sql.read": 59,
         "sql.write": 21,
         "commits": 9,
-        "json.parseBytes": 468728,
-        "json.encodeBytes": 3943,
-        "sha256Bytes": 3725,
+        "json.parseBytes": 468748,
+        "json.encodeBytes": 3949,
+        "sha256Bytes": 3731,
         "git.spawns": 4,
         "snapshot.lockWaits": 0,
         "events.durable": 10,
@@ -101,7 +101,7 @@
           "messageCount": 5,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "da4bd673fcd8f61d",
+          "prefixHash": "31efd107b98e2fcb",
           "toolChoice": "auto"
         }
       ],
@@ -116,9 +116,9 @@
         "sql.read": 86,
         "sql.write": 33,
         "commits": 15,
-        "json.parseBytes": 151571,
-        "json.encodeBytes": 4660,
-        "sha256Bytes": 4324,
+        "json.parseBytes": 151563,
+        "json.encodeBytes": 4651,
+        "sha256Bytes": 4315,
         "git.spawns": 4,
         "snapshot.lockWaits": 0,
         "events.durable": 13,
@@ -130,9 +130,9 @@
         "sql.read": 36,
         "sql.write": 14,
         "commits": 6,
-        "json.parseBytes": 61603,
-        "json.encodeBytes": 2565,
-        "sha256Bytes": 2229,
+        "json.parseBytes": 61597,
+        "json.encodeBytes": 2561,
+        "sha256Bytes": 2225,
         "git.spawns": 0,
         "snapshot.lockWaits": 0,
         "events.durable": 6,
@@ -159,21 +159,21 @@
     },
     "S5": {
       "perTurn": {
-        "sql.read": 3266,
+        "sql.read": 3268,
         "sql.write": 1674,
-        "commits": 650,
-        "json.parseBytes": 535500,
-        "json.encodeBytes": 258838,
-        "sha256Bytes": 247890,
-        "git.spawns": 52,
-        "snapshot.lockWaits": 30,
+        "commits": 651,
+        "json.parseBytes": 536199,
+        "json.encodeBytes": 258857,
+        "sha256Bytes": 247909,
+        "git.spawns": 56,
+        "snapshot.lockWaits": 29,
         "events.durable": 624,
         "events.ephemeral": 68,
         "convert.messages": 34,
         "schema.fromSchema": 0
       },
       "perStep": {
-        "sql.read": 1,
+        "sql.read": 0,
         "sql.write": 0,
         "commits": 0,
         "json.parseBytes": 0,
@@ -193,7 +193,7 @@
           "messageCount": 3,
           "toolsHash": "45c67a26b9221fc5",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "ba2e925388dbf17d",
+          "prefixHash": "3b18410e177e010d",
           "toolChoice": "auto"
         },
         {
@@ -201,7 +201,7 @@
           "messageCount": 3,
           "toolsHash": "45c67a26b9221fc5",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "8271638462814200",
+          "prefixHash": "e43cba29a3bde108",
           "toolChoice": "auto"
         },
         {
@@ -209,7 +209,7 @@
           "messageCount": 3,
           "toolsHash": "45c67a26b9221fc5",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "20e3ffbd923113f4",
+          "prefixHash": "e6b6ef0fcf880e6a",
           "toolChoice": "auto"
         },
         {
@@ -217,7 +217,7 @@
           "messageCount": 3,
           "toolsHash": "45c67a26b9221fc5",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "17d5f5aa9cccbadd",
+          "prefixHash": "c3f55288858dc854",
           "toolChoice": "auto"
         },
         {
@@ -225,7 +225,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "9790b777d6338c50",
+          "prefixHash": "15531bd74456473c",
           "toolChoice": "auto"
         },
         {
@@ -233,7 +233,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "9790b777d6338c50",
+          "prefixHash": "15531bd74456473c",
           "toolChoice": "auto"
         },
         {
@@ -241,7 +241,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "9790b777d6338c50",
+          "prefixHash": "15531bd74456473c",
           "toolChoice": "auto"
         },
         {
@@ -249,7 +249,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "f82c6780af1a862b",
+          "prefixHash": "557514d7e57bcd3e",
           "toolChoice": "auto"
         },
         {
@@ -257,7 +257,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "94f8d03a47df3c74",
+          "prefixHash": "b7c33c6282aacf7f",
           "toolChoice": "auto"
         },
         {
@@ -265,7 +265,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "3d0690f2d9a5ad88",
+          "prefixHash": "2f634faa7d055a0d",
           "toolChoice": "auto"
         },
         {
@@ -273,7 +273,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "a8da3b9118170c6f",
+          "prefixHash": "4f0d3a24dd4a75f3",
           "toolChoice": "auto"
         },
         {
@@ -281,7 +281,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5f16fed51fa5d50d",
+          "prefixHash": "e1b7feb0cd2820f0",
           "toolChoice": "auto"
         },
         {
@@ -289,7 +289,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "f82c6780af1a862b",
+          "prefixHash": "557514d7e57bcd3e",
           "toolChoice": "auto"
         },
         {
@@ -297,7 +297,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "94f8d03a47df3c74",
+          "prefixHash": "b7c33c6282aacf7f",
           "toolChoice": "auto"
         },
         {
@@ -305,7 +305,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "3d0690f2d9a5ad88",
+          "prefixHash": "2f634faa7d055a0d",
           "toolChoice": "auto"
         },
         {
@@ -313,7 +313,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "a8da3b9118170c6f",
+          "prefixHash": "4f0d3a24dd4a75f3",
           "toolChoice": "auto"
         },
         {
@@ -321,7 +321,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5f16fed51fa5d50d",
+          "prefixHash": "e1b7feb0cd2820f0",
           "toolChoice": "auto"
         },
         {
@@ -329,7 +329,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "f82c6780af1a862b",
+          "prefixHash": "557514d7e57bcd3e",
           "toolChoice": "auto"
         },
         {
@@ -337,7 +337,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "94f8d03a47df3c74",
+          "prefixHash": "b7c33c6282aacf7f",
           "toolChoice": "auto"
         },
         {
@@ -345,7 +345,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "d1c52336aad41859",
+          "prefixHash": "76a82bbf0d3ba42e",
           "toolChoice": "auto"
         },
         {
@@ -353,7 +353,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "b853c9ac6aa1f516",
+          "prefixHash": "cdfce5096ed740d4",
           "toolChoice": "auto"
         },
         {
@@ -361,7 +361,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "3d0690f2d9a5ad88",
+          "prefixHash": "2f634faa7d055a0d",
           "toolChoice": "auto"
         },
         {
@@ -369,7 +369,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "2b8f78bdfecf407d",
+          "prefixHash": "9f8651085b2fa0be",
           "toolChoice": "auto"
         },
         {
@@ -377,7 +377,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "a8da3b9118170c6f",
+          "prefixHash": "4f0d3a24dd4a75f3",
           "toolChoice": "auto"
         },
         {
@@ -385,7 +385,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "d1c52336aad41859",
+          "prefixHash": "e1b7feb0cd2820f0",
           "toolChoice": "auto"
         },
         {
@@ -393,7 +393,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "5f16fed51fa5d50d",
+          "prefixHash": "76a82bbf0d3ba42e",
           "toolChoice": "auto"
         },
         {
@@ -401,7 +401,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "d1c52336aad41859",
+          "prefixHash": "cdfce5096ed740d4",
           "toolChoice": "auto"
         },
         {
@@ -409,7 +409,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "b853c9ac6aa1f516",
+          "prefixHash": "9f8651085b2fa0be",
           "toolChoice": "auto"
         },
         {
@@ -417,7 +417,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "2b8f78bdfecf407d",
+          "prefixHash": "cdfce5096ed740d4",
           "toolChoice": "auto"
         },
         {
@@ -425,7 +425,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "b853c9ac6aa1f516",
+          "prefixHash": "76a82bbf0d3ba42e",
           "toolChoice": "auto"
         },
         {
@@ -433,7 +433,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "2b8f78bdfecf407d",
+          "prefixHash": "9f8651085b2fa0be",
           "toolChoice": "auto"
         },
         {
@@ -441,7 +441,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "2dbef49b3d49ef02",
+          "prefixHash": "b05b2368fd778dfe",
           "toolChoice": "auto"
         },
         {
@@ -449,7 +449,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "2dbef49b3d49ef02",
+          "prefixHash": "b05b2368fd778dfe",
           "toolChoice": "auto"
         },
         {
@@ -457,7 +457,7 @@
           "messageCount": 3,
           "toolsHash": "82d5eb5b16b8a941",
           "systemHash": "f254f7e7ea20f0df",
-          "prefixHash": "2dbef49b3d49ef02",
+          "prefixHash": "b05b2368fd778dfe",
           "toolChoice": "auto"
         }
       ],
@@ -478,8 +478,8 @@
         "sql.write": 56,
         "commits": 25,
         "json.parseBytes": 36224,
-        "json.encodeBytes": 1198579,
-        "sha256Bytes": 13582,
+        "json.encodeBytes": 1198578,
+        "sha256Bytes": 13581,
         "git.spawns": 16,
         "snapshot.lockWaits": 0,
         "events.durable": 24,
@@ -508,7 +508,7 @@
           "messageCount": 3,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "7de58e153449144a",
+          "prefixHash": "9813488f7911e292",
           "toolChoice": "auto"
         },
         {
@@ -516,7 +516,7 @@
           "messageCount": 5,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "217b2c8ec63f8687",
+          "prefixHash": "699585276bbfcb57",
           "toolChoice": "auto"
         }
       ],
@@ -534,8 +534,8 @@
         "sql.write": 104,
         "commits": 45,
         "json.parseBytes": 2400244,
-        "json.encodeBytes": 142241,
-        "sha256Bytes": 87494,
+        "json.encodeBytes": 142239,
+        "sha256Bytes": 87492,
         "git.spawns": 31,
         "snapshot.lockWaits": 0,
         "events.durable": 48,
@@ -580,7 +580,7 @@
           "messageCount": 5,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "14fc79cef7cd8e0c",
-          "prefixHash": "14e2842fe59c6a03",
+          "prefixHash": "d4115938dd9c9be8",
           "toolChoice": "auto"
         },
         {
@@ -588,7 +588,7 @@
           "messageCount": 7,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "14fc79cef7cd8e0c",
-          "prefixHash": "2151f2fa73ed0675",
+          "prefixHash": "d5625cbd6feb6eb5",
           "toolChoice": "auto"
         }
       ],
@@ -636,7 +636,7 @@
           "messageCount": 3,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "f0a8b3eb93963472",
+          "prefixHash": "aac44e4b6694528c",
           "toolChoice": "auto"
         },
         {
@@ -644,7 +644,7 @@
           "messageCount": 5,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "d93c65c1ef954cf9",
+          "prefixHash": "d4b6e472121bdc94",
           "toolChoice": "auto"
         },
         {
@@ -652,7 +652,7 @@
           "messageCount": 7,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "90f1d0656535272f",
+          "prefixHash": "ebf840d8b5cbedad",
           "toolChoice": "auto"
         },
         {
@@ -660,7 +660,7 @@
           "messageCount": 9,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -668,7 +668,7 @@
           "messageCount": 11,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -676,7 +676,7 @@
           "messageCount": 13,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -684,7 +684,7 @@
           "messageCount": 15,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -692,7 +692,7 @@
           "messageCount": 17,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -700,7 +700,7 @@
           "messageCount": 19,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -708,7 +708,7 @@
           "messageCount": 21,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -716,7 +716,7 @@
           "messageCount": 23,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -724,7 +724,7 @@
           "messageCount": 25,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -732,7 +732,7 @@
           "messageCount": 27,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -740,7 +740,7 @@
           "messageCount": 29,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -748,7 +748,7 @@
           "messageCount": 31,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -756,7 +756,7 @@
           "messageCount": 33,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -764,7 +764,7 @@
           "messageCount": 35,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -772,7 +772,7 @@
           "messageCount": 37,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -780,7 +780,7 @@
           "messageCount": 39,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -788,7 +788,7 @@
           "messageCount": 41,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         },
         {
@@ -796,7 +796,7 @@
           "messageCount": 44,
           "toolsHash": "ef0c792197ac18be",
           "systemHash": "dea1399335d1a9df",
-          "prefixHash": "1cec2edca9e310db",
+          "prefixHash": "0b0ac9b74d882e01",
           "toolChoice": "auto"
         }
       ],
