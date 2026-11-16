@@ -29,7 +29,7 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
 
 /**
- * Issue #1070, step 1: every hook event fires the expected number of times.
+ * Issue #1070: every hook event fires the expected number of times.
  *
  * Each scenario drives one deterministic transition sequence through the real
  * turn pipeline with a capture command hooked on every supported event (the
@@ -355,12 +355,12 @@ describe("hook event trigger counts", () => {
     ),
   )
 
-  test("the scenarios exercise every event that is bound to a canonical transition", () => {
+  test("the scenarios exercise every event that has a lifecycle source", () => {
     const exercised = new Set(
       SCENARIOS.flatMap((scenario) => Object.keys(scenario.expected)).map((key) => key.split("@")[0]),
     )
     const bound = Object.entries(HOOK_BINDINGS)
-      .filter(([, binding]) => binding.transition.kind === "lifecycle")
+      .filter(([, binding]) => binding.source.kind === "lifecycle")
       .map(([event]) => event)
     expect(bound.filter((event) => !exercised.has(event))).toEqual([])
   })
