@@ -41,7 +41,7 @@ packages/tui/src/
                         #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
   session/              # 会话级辅助：prefill.ts（已落地）；siblings.ts、navigate.ts（F5，未落地）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
-  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4，未落地）
+  dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts（F4 已落地）；prefill.ts（F4，未落地）
   pr/                   # state.ts：prLineState 纯函数（F6，未落地；目录尚不存在）
   theme/                # index.ts、schema.ts、assets/graphagent.json（F1 1）
   i18n/                 # index.ts（t()）、zh-CN.ts、en.ts、receipt.ts（F1 3.6、3.9）
@@ -54,6 +54,7 @@ packages/tui/test/      # 镜像 src/ 路径（src/dag/model.ts → test/dag/mod
   architecture.test.ts  # 依赖方向检查，调用 script/check-tui-imports.ts（F1）
   source-guards.test.ts # 源码文本守卫（第 10 节）
   i18n/                 # 文案表、硬编码文案、品牌词与已下线功能、英文文案棘轮的测试
+  preload.ts            # 测试进程的隔离：HOME 与 XDG 数据目录指到临时目录（bunfig.toml 的 [test] preload，第 10 节）
 packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-text-baseline.txt
 ```
 
@@ -68,7 +69,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `config/`：键位 `Definitions`、`CommandMap` 与处置表（F1）。
 - `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
 - `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
-- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`，`bar.ts`、`prefill.ts` 随 F4；`pr/` 随 F6 新建。
+- `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`，`prefill.ts` 随 F4；`pr/` 随 F6 新建。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
 - `session/`：会话级辅助函数。目前只有预填落地 `prefill.ts`；同级排序 `siblings.ts`、导航 `navigate.ts` 随 F5。
@@ -387,6 +388,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 命令（`packages/tui` 下）：`bun run typecheck`（`tsgo --noEmit`）、`bun test`、`bun run bench:tui`。涉及 `run` 模式消费点的 PR 另跑 `cd packages/graphagent && bun run typecheck && bun test test/cli/cmd/run`。
 - 渲染测试用 `testRender`（`@opentui/solid`）。快照尺寸：面板、状态带、抽屉、页脚等组件 80×24 与 120×40；骨架测试 80×24、100×30、140×40；宽 < 60 或高 < 12 断言只渲染"终端太小"。
 - SDK 用 `test/fixture/tui-sdk.ts` 的假实现。写请求计数是第一类断言：只读视图断言写请求为 0；有写入口的断言恰好 N 次。
+- 测试进程不碰用户真实的目录：`test/preload.ts`（`bunfig.toml` 的 `[test] preload`）在任何 `src/` import 之前，把 `GRAPHAGENT_TEST_HOME` 与 `XDG_*` 指到一个临时目录，整个测试结束后删除。原因是 `@graphagent/core/global` 首次 import 时就按 XDG 变量定下 `Global.Path.*` 并建目录，`TuiLog` 的日志文件也在其中，不隔离的话错误路径会往已安装版本的真实日志里追加。新增测试不得读写真实的 HOME 与 XDG 目录；`test/util/log.test.ts` 守住 `TuiLog` 的目标路径。
 - 时间用 `@opentui/core` 的 `ManualClock` 推进，不用真实睡眠。`grep -n "setTimeout\|sleep" packages/tui/test/perf/scenarios.ts` 为空。
 - 帧数用 `CliRenderEvents.FRAME` 或 `getStats().frameCount`；其余计数用 `test/perf/counters.ts`（`registerLayer`、选择器求值、`frames()`、store 写入）。
 - 读帧不能和渲染抢：原生缓冲还在呈现上一帧时，`captureCharFrame()`、`captureSpans()` 会抛 `OutputBusy`。先 `await renderOnce()` 再读；等待画面出现用 `test/routes/dag-mode-harness.tsx` 的 `waitForFrame`，一次性读取用 `readFrame`/`readSpans`（遇到 `OutputBusy` 会重新渲染再试），不要在 `waitFor` 里裸轮询 `captureCharFrame()`。会抛错的挂载要在失败时销毁渲染器（`mountRoute`、`mountSessionShell` 已经这样做），否则它的定时器和帧会继续跑，拖慢并连累同一进程里后面的用例。
