@@ -1,5 +1,5 @@
 import { Prompt, type PromptRef } from "../component/prompt"
-import { createEffect, createMemo, createSignal, onMount } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { Logo } from "../component/logo"
 import { useSync } from "../context/sync"
 import { useArgs } from "../context/args"
@@ -11,6 +11,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { useTuiConfig } from "../config"
 import { t } from "../i18n"
 import { GRAPHAGENT_BASE_MODE, useBindings } from "../keymap"
+import { useBottomZoneOptional } from "../shell/bottom-zone"
 import { useToast } from "../ui/toast"
 
 let once = false
@@ -30,6 +31,7 @@ export function Home() {
   const dimensions = useTerminalDimensions()
   const tuiConfig = useTuiConfig()
   const toast = useToast()
+  const bottomZone = useBottomZoneOptional()
   const promptMaxWidth = createMemo(() => {
     const configured = tuiConfig.prompt?.max_width
     if (configured === "auto") return Math.max(75, Math.floor(dimensions().width * 0.7))
@@ -85,16 +87,33 @@ export function Home() {
     r.submit()
   })
 
+  // The input belongs to the bottom zone, below the main area and above the footer (#1032 D1); only the logo is
+  // left here. The closure runs inside the zone but reads this route's draft binding.
+  const offComposer = bottomZone?.setComposer({
+    render: () => (
+      <box
+        width="100%"
+        flexShrink={0}
+        alignItems="center"
+        paddingLeft={2}
+        paddingRight={2}
+        paddingTop={1}
+        paddingBottom={1}
+      >
+        <box width="100%" maxWidth={promptMaxWidth()} flexShrink={0}>
+          <Prompt ref={bind} placeholders={placeholder} />
+        </box>
+      </box>
+    ),
+  })
+  onCleanup(() => offComposer?.())
+
   return (
     <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2}>
       <box flexGrow={1} minHeight={0} />
       <box height={4} minHeight={0} flexShrink={1} />
       <box flexShrink={0}>
         <Logo />
-      </box>
-      <box height={1} minHeight={0} flexShrink={1} />
-      <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
-        <Prompt ref={bind} placeholders={placeholder} />
       </box>
       <box flexGrow={1} minHeight={0} />
     </box>

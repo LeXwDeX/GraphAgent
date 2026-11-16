@@ -221,7 +221,7 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
       <AppFrame
         topBar={{ path: directory }}
         footer={{ agent: "build", dag: dagIndicator() }}
-        bottomZone={<BottomZone state={props.bottomZone} composer={<></>} />}
+        bottomZone={<BottomZone state={props.bottomZone} />}
       >
         <Show when={options.routes} fallback={<Main />}>
           <Switch>
@@ -239,8 +239,8 @@ export async function mountHarness(fixture: PerfFixture, options: HarnessOptions
 
   function Harness() {
     const renderer = useRenderer()
-    // The real app owns the bottom-zone state above AppFrame; the composer is
-    // rendered by Main's session route, not by the frame (#1025 P17/P17b).
+    // The real app owns the bottom-zone state above AppFrame; the session route
+    // installs its composer in the zone (#1025 P17/P17b, #1032 D1).
     const bottomZone = createBottomZoneState()
     state.bottomZone = bottomZone
     keymap = createDefaultOpenTuiKeymap(renderer)
