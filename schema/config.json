@@ -1415,6 +1415,15 @@
               },
               "additionalProperties": true,
               "description": "DAG safety rules. Global config only: values from project-level configuration are ignored."
+            },
+            "permission": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "ask",
+                "readonly"
+              ],
+              "description": "Permission tier of unattended DAG sessions: workflow nodes, and task agents while their session is in DAG mode. \"allow\" (default) settles every call automatically and denies what the safety list matches; \"ask\" holds each edit, command and MCP call for your approval; \"readonly\" limits the sessions to a read-only tool surface. Global config only: values from project-level configuration are ignored."
             }
           },
           "additionalProperties": true,

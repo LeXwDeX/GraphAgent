@@ -29,6 +29,7 @@ import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { DagHold } from "./run/dag-hold"
 import { interactiveMarkable, nonInteractiveMarkable, type LocalFetchMark } from "./run/authorization"
+import { sessionTree } from "./run/permission-tree"
 import { MessageID } from "@/session/schema"
 
 type ModelInput = Parameters<Client["session"]["prompt"]>[0]["model"]
@@ -278,6 +279,9 @@ export const RunCommand = effectCmd({
     const localInstance = yield* InstanceRef
     const { SettingsHook } = yield* Effect.promise(() => import("@/hook"))
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
+    // #1324: the permission tier of unattended sessions tells this run what happens to a node's question.
+    const { Config } = yield* Effect.promise(() => import("@/config/config"))
+    const dagPermission = (yield* Config.use.dagGlobal()).permission
     yield* Effect.promise(async () => {
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const interactive = args.mini
@@ -629,6 +633,11 @@ export const RunCommand = effectCmd({
           keepAlive?: () => boolean,
         ) {
           const toggles = new Map<string, boolean>()
+          const tree = sessionTree(sessionID, async (id) => {
+            const found = await client.session.get({ sessionID: id })
+            if (!found.data) throw new Error(`session ${id} not found`)
+            return found.data.parentID ?? undefined
+          })
           let error: string | undefined
           // Issue 614: consumer-only DAG hold. Sample dag.bySession on the
           // busy/idle transitions of the target session and on the DAG summary
@@ -740,9 +749,13 @@ export const RunCommand = effectCmd({
 
               if (event.type === "permission.asked") {
                 const permission = event.properties
-                if (permission.sessionID !== sessionID) continue
+                // The run answers for its whole session tree: a workflow node or a task agent asks
+                // as a session of its own, and nobody else could answer it here (#1324).
+                const own = permission.sessionID === sessionID
+                if (!own && !(await tree.has(permission.sessionID))) continue
 
-                if (args["dangerously-skip-permissions"]) {
+                // The skip flag covers the session the run drives; descendants are never approved by it.
+                if (own && args["dangerously-skip-permissions"]) {
                   await client.permission.reply({
                     requestID: permission.id,
                     reply: "once",
@@ -781,6 +794,12 @@ export const RunCommand = effectCmd({
           // --init-only runs Setup plus the session's startup SessionStart and
           // exits without starting a conversation.
           if (args["init-only"]) return undefined
+          if (dagPermission === "ask")
+            UI.println(
+              UI.Style.TEXT_WARNING_BOLD + "!",
+              UI.Style.TEXT_NORMAL +
+                'dag.permission is "ask": a workflow node or task agent that edits, runs a command or calls an MCP tool needs approval, and a non-interactive run rejects those requests',
+            )
           const model = pick(args.model)
           let subscription!: AbortController
           let completed!: Promise<string | undefined | void>

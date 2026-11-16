@@ -16,6 +16,7 @@
  * slot that follows the live switch, limits and budget) and L3 (`REMINDER`, a
  * one-per-turn tail note the session prompt service latches).
  */
+import type { ConfigV1 } from "@graphagent/core/v1/config/config"
 import type { DagMode as DagModeType } from "@graphagent/schema/dag-mode"
 import { EngineProcess } from "@/session/engine-process"
 import type { RuntimeSlots } from "@/session/runtime-slots"
@@ -33,7 +34,7 @@ export const KEY = "dag_mode"
  */
 export const SYSTEM = [
   "# DAG workflows",
-  "You can run workflows through the workflow tool: dependency graphs of agent nodes with parallel workers, worktree isolation, multi-lens review and arbitration, adversarial skeptics, structured outputs, replanning, and recovery. Nodes report only to you and never ask the user; relay what the user needs to know, and answer node messages with the agent tool. Node permission prompts never reach the user: a node call that matches the safety list is denied with a reason and the node continues, and you are told in the report. The workflow view in the interface is read-only: when the user asks to change a workflow, check it and act through the workflow tool.",
+  "You can run workflows through the workflow tool: dependency graphs of agent nodes with parallel workers, worktree isolation, multi-lens review and arbitration, adversarial skeptics, structured outputs, replanning, and recovery. Nodes report only to you and never ask the user; relay what the user needs to know, and answer node messages with the agent tool. Node permission prompts are never yours to answer. By default they do not reach the user: a node call that matches the safety list is denied with a reason and the node continues, and you are told in the report. Under other user settings a node may wait for the user's approval or be limited to read-only tools; the dag_mode block states the setting when it is not the default. The workflow view in the interface is read-only: when the user asks to change a workflow, check it and act through the workflow tool.",
   "DAG mode is a per-session setting that only the user can change, with a user-only command; the latest dag_mode <runtime_context> block reports it. When it reports ON, treat it as the user's standing instruction for this session and orchestrate as it describes. When it reports OFF, or no dag_mode block is present, start a workflow only when the user explicitly asks, in a message or with /dag-auto. An explicit instruction in the current user message (work directly, or use a workflow) overrides the setting for that request. Never change DAG mode or the DAG budget yourself, by any means.",
   "Load the dag-auto skill before authoring a workflow. Model tiers come from the dag configuration; nodes do not pin models.",
 ].join("\n")
@@ -100,6 +101,8 @@ export interface Snapshot {
   readonly plan?: boolean
   /** A non-interactive run must not decide product questions. */
   readonly noninteractive?: boolean
+  /** `dag.permission` (#1324); L2 states a tier other than the default `allow`. */
+  readonly permission?: ConfigV1.DagPermission
 }
 
 const belts = (input: Snapshot) => [
@@ -140,6 +143,24 @@ function budgetLines(budget: BudgetState | undefined): string[] {
   return []
 }
 
+/**
+ * #1324: the user's tier for unattended permissions, stated when it is not the
+ * default so the main agent can plan around waits or a read-only tool surface.
+ * The default tier adds nothing, which keeps L2 byte for byte as it was (within
+ * 2.3 KB); the one line this adds keeps ask and readonly within 2.5 KB.
+ */
+function permissionLines(permission: Snapshot["permission"]): string[] {
+  if (permission === "ask")
+    return [
+      "Node permissions: ask. Each node edit, command, or MCP call waits for the user's approval; expect waits and keep graphs small.",
+    ]
+  if (permission === "readonly")
+    return [
+      "Node permissions: read-only. Nodes cannot edit files, and can run only read-only git and gh queries; plan research and review work only.",
+    ]
+  return []
+}
+
 function onText(input: Snapshot): string {
   if (input.unavailable)
     return `DAG mode: ON but unavailable (${input.unavailable}). Work directly and tell the user once that DAG mode cannot run.`
@@ -147,6 +168,7 @@ function onText(input: Snapshot): string {
     "DAG mode: ON (set by the user for this session).",
     ...belts(input),
     ...budgetLines(input.budgetState),
+    ...permissionLines(input.permission),
   ].join("\n")
 }
 

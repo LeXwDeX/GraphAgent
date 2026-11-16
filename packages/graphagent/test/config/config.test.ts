@@ -1860,6 +1860,93 @@ describe("DAG settings: policy keys are global-only, model tiers are project-sco
       }),
     ),
   )
+
+  // #1324: the permission tier of unattended sessions. `allow` is the default
+  // and the only value that may be left out; the tier is global-only like every
+  // other execution-policy key.
+  describe("dag.permission (#1324)", () => {
+    it.effect("is absent by default, which every reader treats as allow", () =>
+      withConfigTree(
+        { global: { dag: { concurrency: 7 } } },
+        Effect.gen(function* () {
+          expect((yield* Config.use.dagGlobal()).permission).toBeUndefined()
+          expect((yield* Config.use.get()).dag?.permission).toBeUndefined()
+        }),
+      ),
+    )
+
+    for (const permission of ["allow", "ask", "readonly"] as const) {
+      it.effect(`takes ${permission} from the global layer`, () =>
+        withConfigTree(
+          { global: { dag: { permission } } },
+          Effect.gen(function* () {
+            expect((yield* Config.use.get()).dag?.permission).toBe(permission)
+            expect((yield* Config.use.dagGlobal()).permission).toBe(permission)
+          }),
+        ),
+      )
+    }
+
+    it.effect("rejects a value that is not one of the three tiers", () =>
+      withConfigTree(
+        { global: { dag: { permission: "yolo" } } },
+        Effect.gen(function* () {
+          const exit = yield* Config.use.get().pipe(Effect.exit)
+          expect(Exit.isFailure(exit)).toBe(true)
+          expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain("permission")
+        }),
+      ),
+    )
+
+    it.effect("ignores a project value in settings.json and settings.local.json, and says which file and key", () =>
+      withConfigTree(
+        {
+          global: { dag: { permission: "allow" } },
+          project: { dag: { permission: "ask", model: { standard: "project/small" } } },
+          local: { dag: { permission: "readonly" } },
+        },
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          // The global value stands and the project's model tier still merges.
+          expect((yield* Config.use.get()).dag).toEqual({
+            permission: "allow",
+            model: { standard: "project/small" },
+          })
+          expect((yield* Config.use.dagGlobal()).permission).toBe("allow")
+          const logs = JSON.stringify(yield* logLines)
+          expect(logs).toContain(warning)
+          expect(logs).toContain(path.join(test.directory, ".agents", "settings.json"))
+          expect(logs).toContain(path.join(test.directory, ".agents", "settings.local.json"))
+          expect(logs).toContain("dag.permission")
+        }),
+      ),
+    )
+
+    it.effect("a project-only value leaves the tier at its default", () =>
+      withConfigTree(
+        { project: { dag: { permission: "readonly" } } },
+        Effect.gen(function* () {
+          expect((yield* Config.use.get()).dag).toBeUndefined()
+          expect((yield* Config.use.dagGlobal()).permission).toBeUndefined()
+        }),
+      ),
+    )
+
+    it.effect("a global write changes what the next read sees, and back", () =>
+      withConfigTree(
+        { global: { dag: { concurrency: 7 } } },
+        Effect.gen(function* () {
+          expect((yield* Config.use.dagGlobal()).permission).toBeUndefined()
+          yield* Config.use.updateGlobal({ dag: { permission: "ask" } })
+          expect((yield* Config.use.dagGlobal()).permission).toBe("ask")
+          yield* Config.use.updateGlobal({ dag: { permission: "allow" } })
+          expect((yield* Config.use.dagGlobal()).permission).toBe("allow")
+          // The sibling keys of the section were left alone.
+          expect((yield* Config.use.dagGlobal()).concurrency).toBe(7)
+        }),
+      ),
+    )
+  })
 })
 
 // parseManagedPlist unit tests — pure function, no OS interaction

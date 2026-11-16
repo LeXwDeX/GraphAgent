@@ -64,8 +64,9 @@ const CONFIG_SCHEMA_URL = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/
 // values are stripped before merging; dag.model and dag.thinking_depth are
 // deliberately absent (they resolve per directory in config/dag-section.ts).
 // The warning is deduplicated per process because every directory instance
-// re-reads the same project files.
-const PROJECT_SCOPED_DAG_KEYS = ["mode", "concurrency", "max_total_nodes", "budget", "safety"] as const
+// re-reads the same project files. `permission` (#1324) is the tier of unattended
+// permissions: a shared project file must not loosen or tighten it for its user.
+const PROJECT_SCOPED_DAG_KEYS = ["mode", "concurrency", "max_total_nodes", "budget", "safety", "permission"] as const
 const warnedProjectDagKeys = new Set<string>()
 
 // Project settings are not the home of hook or MCP definitions; those have

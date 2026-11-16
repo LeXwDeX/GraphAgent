@@ -8111,6 +8111,98 @@ it.instance("marks DAG mode unavailable when the message switches the workflow t
   }),
 )
 
+// #1324: the tier is a global-only key, so the test hands it over through the
+// global configuration (a project file cannot carry it). The instance was
+// built before the body runs, so the global layer is invalidated to read it.
+const withGlobalDag = <A, E, R>(dag: unknown, body: Effect.Effect<A, E, R>) =>
+  Effect.acquireUseRelease(
+    Effect.gen(function* () {
+      const previous = process.env.GRAPHAGENT_CONFIG_CONTENT
+      process.env.GRAPHAGENT_CONFIG_CONTENT = JSON.stringify({ dag })
+      yield* Config.use.invalidate().pipe(Effect.orDie)
+      return previous
+    }),
+    () => body,
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.GRAPHAGENT_CONFIG_CONTENT
+        else process.env.GRAPHAGENT_CONFIG_CONTENT = previous
+      }),
+  )
+
+for (const [tier, line] of [
+  [
+    "ask",
+    "Node permissions: ask. Each node edit, command, or MCP call waits for the user's approval; expect waits and keep graphs small.",
+  ],
+  [
+    "readonly",
+    "Node permissions: read-only. Nodes cannot edit files, and can run only read-only git and gh queries; plan research and review work only.",
+  ],
+] as const) {
+  it.instance(`states the ${tier} tier in the DAG mode block, and only while DAG mode is on (#1324)`, () =>
+    withGlobalDag(
+      { permission: tier },
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig(providerCfg)
+        const { prompt, sessions, chat } = yield* boot()
+        yield* sessions.setDagMode({ sessionID: chat.id, mode: "on" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "orchestrate this request" }],
+        })
+        yield* llm.text("on done")
+        yield* prompt.loop({ sessionID: chat.id })
+
+        yield* sessions.setDagMode({ sessionID: chat.id, mode: "off" })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "answer directly" }],
+        })
+        yield* llm.text("off done")
+        yield* prompt.loop({ sessionID: chat.id })
+
+        const requests = (yield* llm.inputs).map((input) => requestMessages(input))
+        expect(requests).toHaveLength(2)
+        const onConversation = JSON.stringify(requests[0]?.conversation)
+        expect(onConversation).toContain("DAG mode: ON (set by the user for this session).")
+        expect(onConversation).toContain(line)
+        // L1 stays the constant text; the tier is stated by L2 alone.
+        expect(requests[0]?.system).not.toContain(line)
+        // The block that clears DAG mode adds no mention: the one left in the
+        // history is the earlier ON block.
+        const offConversation = JSON.stringify(requests[1]?.conversation)
+        expect(offConversation).toContain("DAG mode: OFF.")
+        expect(offConversation.split(line)).toHaveLength(2)
+      }),
+    ),
+  )
+}
+
+it.instance("states no tier in the DAG mode block under the default tier (#1324)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const { prompt, sessions, chat } = yield* boot()
+    yield* sessions.setDagMode({ sessionID: chat.id, mode: "on" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "orchestrate this request" }],
+    })
+    yield* llm.text("on done")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const conversation = JSON.stringify(requestMessages((yield* llm.inputs)[0]).conversation)
+    expect(conversation).toContain("DAG mode: ON (set by the user for this session).")
+    expect(conversation).not.toContain("Node permissions")
+  }),
+)
+
 withMemoryContext.instance("does not inject MEMORY data into child agent sessions", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

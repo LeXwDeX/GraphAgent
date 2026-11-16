@@ -557,6 +557,8 @@ interface DagRequestFacts {
   readonly budget: number | null
   readonly concurrency: number
   readonly maxTotalNodes: number
+  /** `dag.permission` as configured now (#1324); L2 states it unless it is the default. */
+  readonly permission?: ConfigV1.DagPermission
 }
 
 /**
@@ -602,6 +604,7 @@ const dagRequestFacts = Effect.fnUntraced(function* (input: {
     budget: live.budgetUnlimited ? null : (live.budgetTokens ?? dag.budget?.tokens ?? null),
     concurrency: dag.concurrency ?? DEFAULT_LIMITS.dagConcurrency,
     maxTotalNodes: dag.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
+    ...(dag.permission ? { permission: dag.permission } : {}),
   }
 })
 
@@ -622,6 +625,7 @@ function publishDagMode(input: {
     ...(input.facts.unavailable ? { unavailable: input.facts.unavailable } : {}),
     ...(input.agent.name === "plan" ? { plan: true } : {}),
     ...(input.user.hookMode === "noninteractive" ? { noninteractive: true } : {}),
+    ...(input.facts.permission ? { permission: input.facts.permission } : {}),
   })
 }
 
