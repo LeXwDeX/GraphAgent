@@ -54,7 +54,7 @@ The `agent` tool carries observation and messages between the main agent and DAG
 
 `/review` uses the built-in read-only `review` agent: it can read files, search, query LSP, and run read-only git and forge commands; it cannot edit files, spawn sub-tasks, or run commands that mutate files. The command runs in the background by default and hands its findings back to the main agent, which relays them.
 
-The `task` tool decides foreground versus background from prompt criteria, not from a code heuristic. Foreground when the work needs the user's input or confirmation, changes state shared with the main agent, is the direct input to the next step, or takes seconds. Background only when it does not block the next step, only reads or writes files the main agent will not touch, takes minutes, and its result fits in one message.
+The `task` tool decides foreground versus background from prompt criteria, not from a code heuristic. Foreground is the default, and always applies when the work needs the user's input or confirmation, changes state shared with the main agent, is the direct input to the next step, or is a quick lookup the main agent can answer directly. Background applies only when all of these hold: you say you will keep working on something else meanwhile ("at the same time", "no need to wait") or ask for background; the delegated work is read-only or writes files neither you nor the main agent will touch; its result fits in one message. The main agent then delegates before investigating anything itself, replies briefly, and the result arrives later as a message. Rationale and evaluation results are in [ADR 0003](./docs/adr/0003-task-execution-classification.md).
 
 ### Reasoning shaping
 
