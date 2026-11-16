@@ -1082,7 +1082,11 @@ export type AgentContract = {
   role?: "worker" | "composer"
   visibility?: "public" | "private"
   output?: {
+    /**
+     * The artifact type name.
+     */
     artifact: string
+    task?: boolean
   }
   failure?: "skip" | "fail"
   compose?: {

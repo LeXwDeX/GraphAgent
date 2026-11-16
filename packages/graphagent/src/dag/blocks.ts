@@ -412,8 +412,18 @@ const WRITER_KINDS = new Set<WorkflowBlockKind>(["coding", "prototype"])
 /** Read-only profiles may judge but never change the workspace. Strict review
  * lanes and arbitration must use one of these; anything else is treated as
  * write-capable. Mirrors the isolation validation's static catalog so a block
- * compile and a persisted graph agree. */
-const READ_ONLY_PROFILES = new Set(["plan", "explore", "auditor", "review", "verify", "verification"])
+ * compile and a persisted graph agree. The built-in read-only workers
+ * `researcher` and `architect` (#1158) are profiles like `explore`. */
+const READ_ONLY_PROFILES = new Set([
+  "plan",
+  "explore",
+  "auditor",
+  "review",
+  "verify",
+  "verification",
+  "researcher",
+  "architect",
+])
 
 export function isReadOnlyProfile(workerType: string) {
   return READ_ONLY_PROFILES.has(workerType) || /^(?:review|verify|verification)-/.test(workerType)
@@ -426,8 +436,11 @@ export function isReviewWorker(workerType: string) {
   return workerType === "review" || workerType.startsWith("review-")
 }
 
+/** The `researcher` (#1158) has no shell and no file tool, so, like the auditor, it
+ * can never write the workspace. `explore` and `architect` keep a shell and are
+ * not listed: they are read-only profiles that still run with writes allowed. */
 export function isReadOnlyWorker(workerType: string) {
-  return isReviewWorker(workerType) || workerType === "auditor"
+  return isReviewWorker(workerType) || workerType === "auditor" || workerType === "researcher"
 }
 
 /** The effective workspace-write policy of a node. An explicit
@@ -978,7 +991,9 @@ function node(input: {
 export function defaultBlockWorker(kind: WorkflowBlockKind) {
   if (kind === "explore") return "explore"
   if (kind === "plan") return "plan"
-  if (kind === "coding" || kind === "prototype") return "build"
+  if (kind === "coding") return "build"
+  // A prototype is one disposable experiment: the prototyper writes only under prototypes/ (#1158).
+  if (kind === "prototype") return "prototyper"
   // Judging work is read-only: verification, synthesis, and review lanes run on
   // the built-in auditor. A synthesize that must write declares worker_type.
   if (kind === "verify" || kind === "synthesize") return "auditor"

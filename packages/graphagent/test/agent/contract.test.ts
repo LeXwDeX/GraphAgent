@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, test } from "bun:test"
+import { AgentArtifact } from "@/agent/artifact"
 import { AgentContract } from "@/agent/contract"
 import { ConfigParse } from "@/config/parse"
 import { Permission } from "@/permission"
@@ -107,13 +108,35 @@ describe("effective", () => {
       output: { artifact: "survey_report" },
       compose: compose(["explore"], "explore"),
     } satisfies AgentContract.Declared
+    // The task flag is a default the effective view fills: on.
     expect(AgentContract.effective(agent("surveyor", { contract: declared }))).toEqual({
       role: "composer",
       visibility: "private",
       failure: "skip",
-      output: { artifact: "survey_report" },
+      output: { artifact: "survey_report", task: true },
       compose: compose(["explore"], "explore"),
     })
+  })
+
+  test("an artifact is owed to task calls unless the contract says output.task is false", () => {
+    const outputOf = (output: NonNullable<AgentContract.Declared["output"]>) =>
+      AgentContract.effective(agent("worker", { contract: { output } })).output
+    expect(outputOf({ artifact: "code_findings" })).toEqual({ artifact: "code_findings", task: true })
+    expect(outputOf({ artifact: "code_findings", task: true })).toEqual({ artifact: "code_findings", task: true })
+    expect(outputOf({ artifact: "code_findings", task: false })).toEqual({ artifact: "code_findings", task: false })
+    // No artifact, nothing owed.
+    expect(AgentContract.effective(agent("worker")).output).toBeUndefined()
+  })
+
+  test("taskArtifact names what a task call owes: the declared artifact, unless the agent opts out", () => {
+    const owed = (contract?: AgentContract.Declared) => AgentContract.taskArtifact(agent("worker", { contract }))
+    expect(owed()).toBeUndefined()
+    expect(owed({ role: "worker" })).toBeUndefined()
+    expect(owed({ output: { artifact: "research_findings" } })).toBe("research_findings")
+    expect(owed({ output: { artifact: "research_findings", task: true } })).toBe("research_findings")
+    expect(owed({ output: { artifact: "code_findings", task: false } })).toBeUndefined()
+    // The flag is read from the declaration alone: it needs no rules to be evaluated.
+    expect(AgentContract.taskArtifact({ contract: { output: { artifact: "code_findings" } } })).toBe("code_findings")
   })
 
   test("isComposer reads the declared role without evaluating rules", () => {
@@ -138,6 +161,20 @@ describe("merge", () => {
     const base = { role: "composer", compose: compose(["explore", "researcher"], "researcher") } as const
     const merged = AgentContract.merge(base, { compose: compose(["explore"], "explore") })
     expect(merged?.compose).toEqual(compose(["explore"], "explore"))
+  })
+
+  test("output is replaced as a unit, the task flag with it", () => {
+    const base = { output: { artifact: "code_findings", task: false } } satisfies AgentContract.Declared
+    // Restating the artifact without the flag drops the opt-out: the default, owed to task calls, applies again.
+    expect(AgentContract.merge(base, { output: { artifact: "code_findings" } })?.output).toEqual({
+      artifact: "code_findings",
+    })
+    expect(AgentContract.merge(base, { output: { artifact: "project_map", task: true } })?.output).toEqual({
+      artifact: "project_map",
+      task: true,
+    })
+    // An override that says nothing about output keeps the opt-out.
+    expect(AgentContract.merge(base, { failure: "fail" })?.output).toEqual({ artifact: "code_findings", task: false })
   })
 
   test("a missing side keeps the other and does not mutate its inputs", () => {
@@ -287,6 +324,37 @@ describe("diagnose", () => {
     expect(diagnostics[0]?.message).toContain('"ghost" does not exist')
   })
 
+  test("reports an output artifact the catalog does not hold, naming the agent and the artifact", () => {
+    const diagnostics = AgentContract.diagnose([
+      agent("oddity", { contract: { output: { artifact: "no_such_type" } } }),
+    ])
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0]?.agent).toBe("oddity")
+    expect(diagnostics[0]?.code).toBe("artifact_unknown")
+    expect(diagnostics[0]?.message).toContain('agent "oddity"')
+    expect(diagnostics[0]?.message).toContain('"no_such_type"')
+    // It says what the catalog does hold, so the fix is a lookup away.
+    for (const name of AgentArtifact.names()) expect(diagnostics[0]?.message).toContain(name)
+  })
+
+  test("an artifact the catalog holds is no diagnostic, and opting out of task calls does not hide an unknown one", () => {
+    expect(
+      AgentContract.diagnose([agent("scribe", { contract: { output: { artifact: "project_map", task: false } } })]),
+    ).toEqual([])
+    // A composed run reads the same declaration, so an unknown type is wrong whether or not task calls owe it.
+    const diagnostics = AgentContract.diagnose([
+      agent("scribe", { contract: { output: { artifact: "no_such_type", task: false } } }),
+    ])
+    expect(diagnostics.map((item) => [item.agent, item.code])).toEqual([["scribe", "artifact_unknown"]])
+  })
+
+  test("reports each problem of one agent, ordered by code", () => {
+    const diagnostics = AgentContract.diagnose([
+      agent("builder", { permission: open, contract: { visibility: "public", output: { artifact: "no_such_type" } } }),
+    ])
+    expect(diagnostics.map((item) => item.code)).toEqual(["artifact_unknown", "public_writable"])
+  })
+
   test("is ordered by agent name so repeated builds log the same lines", () => {
     const diagnostics = AgentContract.diagnose([
       agent("zeta", { permission: open, contract: { visibility: "public" } }),
@@ -327,6 +395,19 @@ describe("config schema", () => {
     }
     throw new Error("expected the agent config to be rejected")
   }
+
+  test("accepts the task flag on an output, and rejects anything but a boolean there", () => {
+    expect(parse({ contract: { output: { artifact: "code_findings", task: false } } }).contract?.output).toEqual({
+      artifact: "code_findings",
+      task: false,
+    })
+    expect(parse({ contract: { output: { artifact: "code_findings" } } }).contract?.output).toEqual({
+      artifact: "code_findings",
+    })
+    rejected({ contract: { output: { artifact: "code_findings", task: "no" } } })
+    // The flag qualifies an artifact; it cannot stand alone.
+    rejected({ contract: { output: { task: false } } })
+  })
 
   test("rejects a fallback that is not part of dispatch", () => {
     const message = rejected({

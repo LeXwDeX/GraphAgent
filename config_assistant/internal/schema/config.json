@@ -111,14 +111,19 @@
           "type": "object",
           "properties": {
             "artifact": {
-              "type": "string"
+              "type": "string",
+              "description": "The artifact type name."
+            },
+            "task": {
+              "type": "boolean",
+              "description": "Whether a task call to this agent owes the artifact: the worker is asked for it and its answer is checked and corrected once. Defaults to true. false keeps task calls free text; the artifact still serves composed runs."
             }
           },
           "required": [
             "artifact"
           ],
           "additionalProperties": true,
-          "description": "The artifact type this agent produces."
+          "description": "The artifact type this agent produces, and whether task calls owe it. Replaced as a whole when overridden."
         },
         "failure": {
           "type": "string",
