@@ -196,6 +196,14 @@ export const {
       dagNodes: {
         [workflowID: string]: DagMerge.Feed
       }
+      /**
+       * What the user did in the `/dag` panel, per session tree (keyed by its root session): the workflow
+       * they picked and the ones they opened. Memory only, never sent or persisted, so a reconnect has
+       * nothing to refresh; the status band follows it (#1032 2.5).
+       */
+      dag_focus: {
+        [rootSessionID: string]: { chosen?: string; acknowledged: string[] }
+      }
       /** The latest settled turn per session; a reconnect clears it, since nothing can read it back. */
       turn_settled: {
         [sessionID: string]: SettledTurn
@@ -250,6 +258,7 @@ export const {
       vcs: undefined,
       dag: {},
       dagNodes: {},
+      dag_focus: {},
       turn_settled: {},
       summary: {},
       hydrated: [],
@@ -517,6 +526,7 @@ export const {
           delete draft.goal[sessionID]
           delete draft.session_diff[sessionID]
           delete draft.dag[sessionID]
+          delete draft.dag_focus[sessionID]
           delete draft.turn_settled[sessionID]
           delete draft.session_status[sessionID]
           delete draft.session_load_errors[sessionID]
@@ -1836,6 +1846,35 @@ export const {
         nodes(workflowID: string) {
           const feed = store.dagNodes[workflowID]
           return feed ? DagMerge.snapshotOf(feed)?.nodes : undefined
+        },
+        /**
+         * What the user did in the `/dag` panel, per session tree, keyed by its root session. The panel
+         * writes it and the status band reads it to follow the panel; it lives here so both see one
+         * answer. Memory only: nothing is sent, and a reconnect leaves it alone.
+         */
+        focus: {
+          /** The workflow the user picked in the panel, if any; it may no longer exist. */
+          chosen(rootSessionID: string): string | undefined {
+            return store.dag_focus[rootSessionID]?.chosen
+          },
+          /** The workflows the user opened in the panel. */
+          acknowledged(rootSessionID: string): ReadonlySet<string> {
+            return new Set(store.dag_focus[rootSessionID]?.acknowledged)
+          },
+          choose(rootSessionID: string, workflowID: string) {
+            if (store.dag_focus[rootSessionID]?.chosen === workflowID) return
+            setStore("dag_focus", rootSessionID, (current) => ({
+              chosen: workflowID,
+              acknowledged: current?.acknowledged ?? [],
+            }))
+          },
+          acknowledge(rootSessionID: string, workflowID: string) {
+            if (store.dag_focus[rootSessionID]?.acknowledged.includes(workflowID)) return
+            setStore("dag_focus", rootSessionID, (current) => ({
+              ...(current?.chosen !== undefined ? { chosen: current.chosen } : {}),
+              acknowledged: [...(current?.acknowledged ?? []), workflowID],
+            }))
+          },
         },
       },
       /** #1040: project-layer trust entries and decisions. */

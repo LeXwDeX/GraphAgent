@@ -65,3 +65,110 @@ export function computeWaves<T extends DagWaveNode>(nodes: readonly T[]): DagWav
   unplaced.sort((a, b) => a.name.localeCompare(b.name))
   return { waves, unplaced }
 }
+
+/** Why a node is outside every wave. */
+export type DagUnplacedReason =
+  /** The node is part of a dependency cycle; a node that depends on itself is a cycle of one. */
+  | { readonly kind: "cycle" }
+  /** Not in a cycle itself, but waits (directly or through other nodes) on one: `via` is the nearest cycle member's id. */
+  | { readonly kind: "downstream"; readonly via: string }
+
+/**
+ * Explain the nodes `computeWaves` left out. Pass its `unplaced`: every node in
+ * it either sits on a dependency cycle or depends, through nodes of the same
+ * list, on one, and a dependency on a node that is not in the list never
+ * counts. Anything that is neither (a list that is not an `unplaced`) gets no
+ * entry.
+ *
+ * The cycle members are the strongly connected components with more than one
+ * node or a self-dependency. A node downstream of a cycle is tied to the
+ * nearest member, walking dependents outwards from all of them at once; equally
+ * near members are told apart by name, so the answer does not depend on the
+ * order the nodes come in. Both walks are iterative and linear in nodes and
+ * dependencies: a restored workflow can be long, and a recursion would run out
+ * of stack on a long chain.
+ */
+export function dagUnplacedReasons(unplaced: readonly DagWaveNode[]): ReadonlyMap<string, DagUnplacedReason> {
+  const nodes = unplaced.toSorted((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+  const count = nodes.length
+  const position = new Map(nodes.map((node, index) => [node.id, index]))
+  // Dependencies inside the list, as positions: ascending, so also in name order.
+  const deps = nodes.map((node) => {
+    const inside = new Set<number>()
+    for (const dep of node.depends_on) {
+      const at = position.get(dep)
+      if (at !== undefined) inside.add(at)
+    }
+    return [...inside].toSorted((a, b) => a - b)
+  })
+
+  // Tarjan's strongly connected components, with the recursion unrolled into an explicit stack of
+  // [node, next dependency to visit].
+  const cyclic = Array.from({ length: count }, () => false)
+  const discovered = Array.from({ length: count }, () => -1)
+  const lowest = Array.from({ length: count }, () => 0)
+  const open = Array.from({ length: count }, () => false)
+  const stack: number[] = []
+  let clock = 0
+  for (let start = 0; start < count; start++) {
+    if (discovered[start] !== -1) continue
+    discovered[start] = lowest[start] = clock++
+    stack.push(start)
+    open[start] = true
+    const walk: Array<[node: number, next: number]> = [[start, 0]]
+    while (walk.length > 0) {
+      const frame = walk[walk.length - 1]
+      const node = frame[0]
+      if (frame[1] < deps[node].length) {
+        const dep = deps[node][frame[1]++]
+        if (discovered[dep] === -1) {
+          discovered[dep] = lowest[dep] = clock++
+          stack.push(dep)
+          open[dep] = true
+          walk.push([dep, 0])
+        } else if (open[dep]) {
+          lowest[node] = Math.min(lowest[node], discovered[dep])
+        }
+        continue
+      }
+      walk.pop()
+      const parent = walk.at(-1)?.[0]
+      if (parent !== undefined) lowest[parent] = Math.min(lowest[parent], lowest[node])
+      if (lowest[node] !== discovered[node]) continue
+      const members: number[] = []
+      let member: number
+      do {
+        member = stack.pop()!
+        open[member] = false
+        members.push(member)
+      } while (member !== node)
+      if (members.length > 1 || deps[node].includes(node)) for (const each of members) cyclic[each] = true
+    }
+  }
+
+  // Dependents, in name order, to walk outwards from the cycle members.
+  const dependents: number[][] = nodes.map(() => [])
+  for (let index = 0; index < count; index++) for (const dep of deps[index]) dependents[dep].push(index)
+  const via = Array.from({ length: count }, () => -1)
+  const queue: number[] = []
+  for (let index = 0; index < count; index++) {
+    if (!cyclic[index]) continue
+    via[index] = index
+    queue.push(index)
+  }
+  for (let head = 0; head < queue.length; head++) {
+    const node = queue[head]
+    for (const dependent of dependents[node]) {
+      if (via[dependent] !== -1) continue
+      via[dependent] = via[node]
+      queue.push(dependent)
+    }
+  }
+
+  const reasons = new Map<string, DagUnplacedReason>()
+  for (const [index, node] of nodes.entries()) {
+    if (cyclic[index]) reasons.set(node.id, { kind: "cycle" })
+    else if (via[index] !== -1) reasons.set(node.id, { kind: "downstream", via: nodes[via[index]].id })
+  }
+  return reasons
+}

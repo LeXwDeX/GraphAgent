@@ -17,7 +17,7 @@ export type SessionShellOptions = {
   sessionID?: string
   /** Sessions the server lists; defaults to just the one above. */
   sessions?: readonly Session[]
-} & Pick<MountOptions, "handler" | "clipboard" | "cwd" | "keybinds" | "width" | "height">
+} & Pick<MountOptions, "handler" | "clipboard" | "cwd" | "keybinds" | "width" | "height" | "language" | "kv" | "ticker">
 
 /**
  * The session screen of the app: a trimmed copy of `app.tsx` with `AppFrame`, `BottomZone` and
@@ -41,6 +41,9 @@ export async function mountSessionShell(options: SessionShellOptions = {}) {
     keybinds: options.keybinds,
     width: options.width,
     height: options.height,
+    language: options.language,
+    kv: options.kv,
+    ticker: options.ticker,
     view: () => {
       bottomZone = createBottomZoneState()
       drawer = useDrawer()
