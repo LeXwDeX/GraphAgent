@@ -155,6 +155,34 @@ describe("task tool and composers", () => {
     { config: composerConfig },
   )
 
+  it.instance("the task and workflow catalogs of the plan agent hide the writer subagents it may not start", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const plan = yield* agent.get("plan")
+      const build = yield* agent.get("build")
+      if (!plan || !build) throw new Error("Expected the plan and build agents")
+      const registry = yield* ToolRegistry.Service
+      const describe = (caller: Agent.Info, id: string) =>
+        registry
+          .tools({ ...ref, agent: caller })
+          .pipe(Effect.map((tools) => tools.find((tool) => tool.id === id)?.description ?? ""))
+
+      // Both catalogs filter by the caller's `task` rules: what plan may not start, it is not offered.
+      for (const id of [TaskTool.id, WorkflowTool.id]) {
+        const fromPlan = yield* describe(plan, id)
+        for (const writer of ["general", "prototyper"])
+          expect(fromPlan, `${id}: ${writer}`).not.toContain(`- ${writer}:`)
+        for (const reader of ["explore", "researcher", "architect"])
+          expect(fromPlan, `${id}: ${reader}`).toContain(`- ${reader}:`)
+
+        // The main agent sees every worker, the writers included.
+        const fromBuild = yield* describe(build, id)
+        for (const worker of ["general", "prototyper", "explore", "researcher", "architect"])
+          expect(fromBuild, `${id}: ${worker}`).toContain(`- ${worker}:`)
+      }
+    }),
+  )
+
   it.instance(
     "the resolved tool definitions (turn path) apply the same composer filter",
     () =>

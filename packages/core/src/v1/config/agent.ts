@@ -6,8 +6,9 @@ import { ConfigPermissionV1 } from "./permission"
 
 // Agent contract (#1158): what an agent is for and who may compose it. Every
 // field is optional here: a declaration is merged onto the agent it overrides,
-// and the defaults (worker, private, failure derived from the write profile)
-// are filled by `AgentContract.effective` in the runtime.
+// and the defaults (worker, private, failure derived from the write profile,
+// an artifact owed to task calls) are filled by `AgentContract.effective` in
+// the runtime.
 const ContractCompose = Schema.Struct({
   pattern: Schema.Literals(["fan_out", "recursive_split"]).annotate({
     description: "How the composer expands a plan: fan_out (one layer of parallel workers) or recursive_split.",
@@ -36,8 +37,17 @@ export const Contract = Schema.Struct({
     description:
       "private (default): only the main agent, the user or a template places the agent in a graph. public: a composer may dispatch it. A public agent must be read-only; one whose permission rules allow writing is treated as private.",
   }),
-  output: Schema.optional(Schema.Struct({ artifact: Schema.String })).annotate({
-    description: "The artifact type this agent produces.",
+  output: Schema.optional(
+    Schema.Struct({
+      artifact: Schema.String.annotate({ description: "The artifact type name." }),
+      task: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Whether a task call to this agent owes the artifact: the worker is asked for it and its answer is checked and corrected once. Defaults to true. false keeps task calls free text; the artifact still serves composed runs.",
+      }),
+    }),
+  ).annotate({
+    description:
+      "The artifact type this agent produces, and whether task calls owe it. Replaced as a whole when overridden.",
   }),
   failure: Schema.optional(Schema.Literals(["skip", "fail"])).annotate({
     description:

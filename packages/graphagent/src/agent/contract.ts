@@ -5,6 +5,7 @@ import type { ConfigAgentV1 } from "@graphagent/core/v1/config/agent"
 import type { PermissionV1 } from "@graphagent/core/v1/permission"
 import type { DeepMutable } from "@graphagent/core/schema"
 import { Permission } from "@/permission"
+import { AgentArtifact } from "./artifact"
 
 /**
  * Agent contracts (#1158): the role, visibility and failure semantics an agent
@@ -37,7 +38,8 @@ export interface Effective {
   /** `public` only while the agent is read-only; a writer is always `private`. */
   readonly visibility: "public" | "private"
   readonly failure: "skip" | "fail"
-  readonly output?: NonNullable<Declared["output"]>
+  /** The artifact the agent produces; `task` says whether a `task` call owes it (on unless the contract opts out). */
+  readonly output?: { readonly artifact: string; readonly task: boolean }
   readonly compose?: Compose
 }
 
@@ -61,10 +63,26 @@ export function isComposer(agent: Pick<Subject, "contract">): boolean {
   return agent.contract?.role === "composer"
 }
 
+// A worker that declares an artifact owes it to `task` callers unless it says `output.task: false`.
+const owedToTask = (output: NonNullable<Declared["output"]>) => output.task !== false
+
+/**
+ * The artifact a `task` call to the agent owes its caller: the declared
+ * `output.artifact`, unless the contract opts out with `output.task: false`
+ * (the artifact then serves composed runs only and task calls stay free text).
+ * Reads the declaration alone: no rules are evaluated.
+ */
+export function taskArtifact(agent: Pick<Subject, "contract">): string | undefined {
+  const output = agent.contract?.output
+  return output !== undefined && owedToTask(output) ? output.artifact : undefined
+}
+
 /**
  * Applies `override` on top of `base`, field by field: a field the override
- * does not set is inherited. `output` and `compose` are replaced whole, so a
- * `fallback` can never be paired with a `dispatch` list it was not written for.
+ * does not set is inherited. `output` and `compose` are replaced whole: a
+ * `fallback` can never be paired with a `dispatch` list it was not written for,
+ * and restating an `output` without `task` drops an opt-out the base declared,
+ * so the default (task calls owe the artifact) applies again.
  */
 export function merge(base: Declared | undefined, override: Declared | undefined): Declared | undefined {
   if (base === undefined && override === undefined) return undefined
@@ -78,9 +96,10 @@ export function merge(base: Declared | undefined, override: Declared | undefined
 }
 
 /**
- * The contract an agent actually has: defaults filled (worker, private, and a
+ * The contract an agent actually has: defaults filled (worker, private, a
  * `failure` derived from the write profile: a writer must succeed, a read-only
- * agent may be skipped), and `public` honoured only while the agent is read-only.
+ * agent may be skipped, and an artifact owed to task calls), and `public`
+ * honoured only while the agent is read-only.
  */
 export function effective(agent: Subject): Effective {
   const declared = agent.contract
@@ -89,7 +108,7 @@ export function effective(agent: Subject): Effective {
     role: declared?.role ?? "worker",
     visibility: declared?.visibility === "public" && !writer ? "public" : "private",
     failure: declared?.failure ?? (writer ? "fail" : "skip"),
-    ...(declared?.output ? { output: declared.output } : {}),
+    ...(declared?.output ? { output: { artifact: declared.output.artifact, task: owedToTask(declared.output) } } : {}),
     ...(declared?.compose ? { compose: declared.compose } : {}),
   }
 }
@@ -159,7 +178,7 @@ export function composerAvailability(catalog: readonly Subject[], name: string):
   return { available: true, dispatch: usable }
 }
 
-export type DiagnosticCode = "public_writable" | "composer_unavailable"
+export type DiagnosticCode = "public_writable" | "composer_unavailable" | "artifact_unknown"
 
 export interface Diagnostic {
   readonly agent: string
@@ -168,9 +187,10 @@ export interface Diagnostic {
 }
 
 /**
- * The catalog diagnostics: a `public` agent that can write (treated as private)
- * and a composer that cannot be used. Ordered by agent so a rebuilt catalog
- * logs the same lines in the same order.
+ * The catalog diagnostics: a `public` agent that can write (treated as private),
+ * a composer that cannot be used, and an agent that declares an output artifact
+ * the artifact catalog does not hold. Ordered by agent so a rebuilt catalog logs
+ * the same lines in the same order.
  */
 export function diagnose(catalog: readonly Subject[]): Diagnostic[] {
   const found: Diagnostic[] = []
@@ -189,6 +209,15 @@ export function diagnose(catalog: readonly Subject[]): Diagnostic[] {
       const availability = composerAvailability(catalog, agent.name)
       if (!availability.available)
         found.push({ agent: agent.name, code: "composer_unavailable", message: availability.reason })
+    }
+    // Whether or not task calls owe it: a composed run reads the same declaration.
+    const artifact = agent.contract?.output?.artifact
+    if (artifact !== undefined && !AgentArtifact.has(artifact)) {
+      found.push({
+        agent: agent.name,
+        code: "artifact_unknown",
+        message: `agent "${agent.name}" declares output artifact "${artifact}", which is not in the artifact catalog (known: ${AgentArtifact.names().join(", ")})`,
+      })
     }
   }
   return found.toSorted((a, b) => a.agent.localeCompare(b.agent) || a.code.localeCompare(b.code))

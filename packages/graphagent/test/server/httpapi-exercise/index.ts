@@ -158,6 +158,24 @@ const scenarios: Scenario[] = [
       object(explore.contract)
       check(explore.contract.role === "worker", "agent list should carry the explore contract role")
       check(explore.contract.visibility === "public", "agent list should carry the explore contract visibility")
+      object(explore.contract.output)
+      check(explore.contract.output.artifact === "code_findings", "agent list should carry the explore artifact type")
+      check(explore.contract.output.task === false, "agent list should carry that explore keeps task calls free text")
+      // The first-batch workers (#1158) are listed with their contracts: the writer is private.
+      for (const [name, visibility, artifact] of [
+        ["researcher", "public", "research_findings"],
+        ["architect", "public", "architecture_proposal"],
+        ["prototyper", "private", "prototype"],
+      ] as const) {
+        const worker = body.find((item) => isRecord(item) && item.name === name)
+        object(worker)
+        object(worker.contract)
+        check(worker.contract.visibility === visibility, `agent list should carry the ${name} contract visibility`)
+        object(worker.contract.output)
+        check(worker.contract.output.artifact === artifact, `agent list should carry the ${name} artifact type`)
+        // Left out, so task calls owe the artifact.
+        check(worker.contract.output.task === undefined, `agent list should leave the ${name} task flag at its default`)
+      }
       const build = body.find((item) => isRecord(item) && item.name === "build")
       object(build)
       check(build.contract === undefined, "an agent without a declared contract should omit the contract field")

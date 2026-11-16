@@ -23,7 +23,7 @@
 packages/tui/src/
   app.tsx               # provider 树与 AppFrame 装配（F1 3.3）
   shell/                # 骨架（F1）：app-frame、top-bar、footer（及 footer-status、dag-indicator、hook-progress）、
-                        #   drawer（开关与浮层容器）、status-band（槽位）；bottom-zone（F3）；pr-line（F6，未落地）
+                        #   drawer（开关与浮层容器）、status-band（槽位，F4 的 DAG 行与目标行）；bottom-zone（F3）；pr-line（F6，未落地）
   panel/                # 面板模板与具体面板（F3）：
                         #   shell.tsx（PanelShell）、list.tsx、settings.tsx、detail.tsx、host.tsx（PanelHost）
                         #   具体面板 panel/<名>.tsx，如 panel/sessions.tsx；panel/dag.tsx（F4 已落地）
@@ -60,7 +60,7 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 
 目录职责（一句话）与落地 Issue：
 
-- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；状态带内容（F4）与 `pr-line`（F6）未落地。
+- `shell/`：整屏固定列布局的各区域组件。F1 已落骨架（`app-frame`、`top-bar`、`footer`、`drawer`、`status-band` 槽位），F3 已落 `bottom-zone`；状态带的 DAG 行与目标行已落地（F4 PR2，#1032），其余行（PR、信任）与 `pr-line`（F6）未落地。
   - 输入框（`Prompt`）画在 `bottom-zone` 的输入框槽里：主区 → 状态带槽 → 输入框 → 页脚，抽屉只覆盖主区（F4 PR0，#1032）。`home`、`session` 路由在 setup 里调用 `useBottomZoneOptional()?.setComposer({ render })` 装入自己的 `Prompt`（草稿、提交、焦点的接线仍留在路由里），卸载时调用返回的撤销函数（只撤销自己装的那一份）。`render` 在槽里创建，不在路由的 provider 树里，只能读到应用级 context；路由自己提供的（会话的 `LocationProvider`，`@` 文件搜索靠它定位目录）要在 `render` 里重新提供。
   - `AppFrame` 的 `statusBand`、`bottomZone`、`drawer` 经 `Slot` 只构造一次：直接写 `<Show when={props.x}>{props.x}</Show>` 会把 prop 里的 JSX 构造两次，多出来的一份不上屏却一直在跑（面板、输入框、key layer 都会重复）。
 - `panel/`：面板底板 `PanelShell` 与三个模板，加 `PanelHost`（栈式，已替代 `DialogProvider`），以及各具体面板，均已落地（F3）。功能的纯逻辑放功能目录（`dag/`、`pr/`），不放 `panel/`；`/dag` 面板 `panel/dag.tsx` 已落地（F4）。
@@ -127,7 +127,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 不可见会话只留 `SessionSummary`，完整消息只在 `hydrated`（LRU，基础上限 `HYDRATED_MAX = 4`，实际上限 `max(HYDRATED_MAX, 父链长度 + 1)`）里。当前会话与全部祖先不被驱逐。`session.deleted` 要同时清 `message`、`part`、`summary`、`hydrated`。
 - 进入会话的固定顺序：向 interest 聚合器登记 → `await setInterest` 确认 → `sync.session.sync(sessionID)` → 之后的事件与快照幂等合并。
 - interest 只经唯一聚合器 `context/interest.ts` 登记（来源键：当前会话与父链、F5 子 agent 视图、F4 正在显示的工作流的归属会话）。聚合后每帧至多一次 `setInterest`。检查：`grep -rn "setInterest" packages/tui/src` 只命中 `context/interest.ts` 与 `context/` 内的接入处。
-- 重连：唯一入口是 `context/sync.tsx` 提供的 `onResync(fn)` 注册表；F4、F6 等功能注册各自的刷新函数，不自建重连监听。`reconnected` 后所有 `hydrated` 会话重新 `sync`，buffer 清空，已加载会话的摘要由快照重建；其余数据片（`dag` 汇总、`goal`、`pr_watch`、`dagNodes`）各自全量刷新。快照加载与重连刷新不得触发 toast（F6 2.4）。新增数据片必须在同一 PR 里向 `onResync` 注册刷新函数。
+- 重连：唯一入口是 `context/sync.tsx` 提供的 `onResync(fn)` 注册表；F4、F6 等功能注册各自的刷新函数，不自建重连监听。`reconnected` 后所有 `hydrated` 会话重新 `sync`，buffer 清空，已加载会话的摘要由快照重建；其余数据片（`dag` 汇总、`goal`、`pr_watch`、`dagNodes`）各自全量刷新。快照加载与重连刷新不得触发 toast（F6 2.4）。新增数据片必须在同一 PR 里向 `onResync` 注册刷新函数；只存在客户端内存、服务端没有读口的片除外，如 `dag_focus`（用户在 `/dag` 面板里选过、打开过的工作流，按根会话记，会话删除时清掉），没有可刷新的东西。
 - 禁止轮询 DAG 节点或 PR 状态。拉取触发点只有：首次需要、`resync`、`graphRev` 跳变、重连（F4 2.1）。
 
 ### 新增一种服务端事件的接入步骤
@@ -279,7 +279,9 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 高度 0–2 行，不占用时高度为 0，不留空行。属于根会话；子 agent 视图显示根会话的工作流与目标；home 不显示。
 - 窄终端（< 100 列）合并为一行。行的优先级与让位顺序以 F4（#1032）方案 1 和 F6（#1036）2.2 为准：DAG 行行尾先让位的是 `/dag` 提示 → 预算段 → 费用 → 并发段 → 阶段名 → 计数压缩 → 标题截断；进度条与模式标记（≤ 8 列）、非警示 PR 短标记（≤ 14 列）不让位。PR 警示态一定单独占一行，窄终端单行时 PR 警示 > DAG > 目标。
 - 只读：点击 DAG 行只打开 `/dag`；点击 PR 行只用系统浏览器打开 URL。
-- 无 `setInterval`、无定时拉取；已用时间用 `ticker.second`。
+- DAG 行（F4 PR2）：显示策略 kv `dag_band`（`auto` 默认，有活跃或未确认失败的工作流才显示；`always`；`hidden`），`always` 且没有工作流时显示一行“没有工作流”；`/dag` 面板（panel id `dag`）打开时隐藏，目标行不受影响。主工作流用 `selectMainWorkflow`，其余折叠成行尾 `+N 个`；用户在面板里选过、打开过的工作流记在 `sync.dag.focus`（面板写，状态带只读）。当前波用 `dagCurrentWave`，进度条用 `layoutDagBar`，节点表未加载时按汇总计数画。点击 DAG 行经命令注册表执行 `dag.open`。状态带由 `app.tsx` 以表达式传给 `AppFrame` 的 `statusBand`，不经 memo：槽在 `BottomZoneProvider` 里创建它，它才读得到面板栈。让位：先去 `/dag` 提示，再 `+N 个`，再波次，再把计数压成 `n/m`，再把标题截到 12 列；这之后进度条才收窄，并取走剩余的全部宽度。颜色：行首 `◆` 用 `primary`，进度条按状态 token，说明文字 `textMuted`，分隔符与提示 `textDim`，失败数 `error`、暂停 `statusPaused`；运行中的数量不用品牌色。
+- 目标行（F4 PR2）：有目标就显示，不受 `dag_band` 控制；`waiting`、`paused` 带 `pausedReason` 时原因用 `warning` 色占状态位。让位：先去 `/goal` 提示，再截目标文字（至少留 12 列），再去子目标计数，最后去轮数。窄终端只显示一行，DAG 行优先，没有 DAG 行时才显示目标行。目标文字、原因、工作流标题都经 `util/remote-text.ts` 的 `remoteLine` 去转义。
+- 无 `setInterval`、无定时拉取；已用时间用 `ticker.second`。状态带本身不订阅 `ticker`：运行段是静态字符。
 - 新增一行或一类标记时：写出显示条件、颜色 token、窄屏让位位置，并在 F4/F6 对应方案里登记（修订本文）。
 
 抽屉（`shell/drawer.tsx`）：

@@ -27,6 +27,7 @@ const TOOL_NAMES = [
   "bash",
   "webfetch",
   "websearch",
+  "lsp",
   "todowrite",
   "task",
   "skill",
@@ -143,6 +144,60 @@ describe("DAG worker tool profiles", () => {
         expect(tools).toContain(allowed)
       }
       for (const denied of ["edit", "write", "apply_patch", "todowrite", "task", "question", "plan_exit"]) {
+        expect(tools).not.toContain(denied)
+      }
+    }),
+  )
+
+  it.instance("advertises only the research tools for the built-in researcher", () =>
+    Effect.gen(function* () {
+      const researcher = yield* (yield* Agent.Service).get("researcher")
+      expect(researcher).toBeDefined()
+      const tools = advertised(researcher!, childPermission(researcher!))
+      for (const allowed of ["read", "grep", "glob", "webfetch", "websearch", "skill", "serena_initial_instructions"]) {
+        expect(tools).toContain(allowed)
+      }
+      // No shell, no write, no language server, nothing that dispatches.
+      for (const denied of [
+        "bash",
+        "edit",
+        "write",
+        "apply_patch",
+        "lsp",
+        "todowrite",
+        "task",
+        "question",
+        "plan_exit",
+      ]) {
+        expect(tools).not.toContain(denied)
+      }
+    }),
+  )
+
+  it.instance("gives the architect the explore profile plus the language server", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const architect = yield* agents.get("architect")
+      const explore = yield* agents.get("explore")
+      expect(architect && explore).toBeDefined()
+      const tools = advertised(architect!, childPermission(architect!))
+      expect(tools.toSorted()).toEqual([...advertised(explore!, childPermission(explore!)), "lsp"].toSorted())
+      for (const denied of ["edit", "write", "apply_patch", "todowrite", "task", "question", "plan_exit"]) {
+        expect(tools).not.toContain(denied)
+      }
+    }),
+  )
+
+  it.instance("lets the prototyper write and run while its edit window stays pattern-scoped", () =>
+    Effect.gen(function* () {
+      const prototyper = yield* (yield* Agent.Service).get("prototyper")
+      expect(prototyper).toBeDefined()
+      const tools = advertised(prototyper!, childPermission(prototyper!))
+      // The file tools stay advertised because some calls (under prototypes/) can pass.
+      for (const allowed of ["read", "grep", "glob", "bash", "edit", "write", "apply_patch", "skill"]) {
+        expect(tools).toContain(allowed)
+      }
+      for (const denied of ["lsp", "todowrite", "task", "question", "plan_exit"]) {
         expect(tools).not.toContain(denied)
       }
     }),

@@ -64,6 +64,7 @@ import { useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
 import { dagIndicatorReserve } from "./shell/dag-indicator"
 import { HookProgress } from "./shell/hook-progress"
+import { SessionStatusBand } from "./shell/status-band"
 import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
@@ -1106,6 +1107,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     return <SessionDrawer sessionID={route.data.sessionID} />
   })
 
+  // The status band is passed to the frame as an expression, not built in a memo here: the frame's slot creates it
+  // inside the bottom zone's provider, which is where it reads the panel stack. Only a session route has one; home
+  // and the diff view leave the slot empty.
   return (
     <BottomZoneProvider state={bottomZone}>
       <box
@@ -1138,6 +1142,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             dag: dagIndicator(),
             right: footerStatus(),
           }}
+          statusBand={route.data.type === "session" ? <SessionStatusBand /> : undefined}
           bottomZone={<BottomZone state={bottomZone} />}
           dimmed={bottomZone.dimmed}
           drawer={drawerContent()}
