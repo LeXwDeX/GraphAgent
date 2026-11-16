@@ -8,7 +8,15 @@
 // finished tool part carrying the reason, shaped exactly like the part a model
 // issued `task` call gets from the same hook. Before the fix the result had no
 // `title`, the part write failed schema validation and the route answered 500.
+//
+// #1351: the refusal also decides how the command's turn goes on, and that
+// matches the model path. A deny verdict is a tool result the model may react
+// to, so the command asks the model once more (the summary round).
+// `continue:false` means stop: the processor ends a model turn on the result's
+// `hookStopped` metadata, and the command turn ends there too, with no summary
+// round.
 import { afterEach, describe, expect } from "bun:test"
+import { join } from "node:path"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { Ripgrep } from "@graphagent/core/ripgrep"
@@ -24,7 +32,7 @@ import type { SessionID } from "../../src/session/schema"
 import { resetDatabase } from "../fixture/db"
 import { hookCommand } from "../fixture/claude-hook"
 import { disposeAllInstances, provideInstanceEffect, tmpdirScoped } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { isRecord } from "@/util/record"
@@ -69,30 +77,37 @@ function post(route: string, directory: string, body: unknown) {
 const route = (template: string, sessionID: SessionID) => template.replace(":sessionID", sessionID)
 
 // The refusal as the hook protocol writes it; both are plain command hooks.
-const refusals = [
-  {
-    name: "a deny verdict",
-    hook: {
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: "subagents are off limits",
-      },
+const deny = {
+  name: "a deny verdict",
+  hook: {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "subagents are off limits",
     },
-    output: "[Tool denied by hook] subagents are off limits",
-    metadata: { hookDenied: true },
   },
-  {
-    name: "continue:false",
-    hook: { continue: false, stopReason: "budget exhausted" },
-    output: "[Hook stopped] budget exhausted",
-    metadata: { hookStopped: true, stopReason: "budget exhausted" },
-  },
-] as const
+  output: "[Tool denied by hook] subagents are off limits",
+  metadata: { hookDenied: true },
+} as const
+
+const stop = {
+  name: "continue:false",
+  hook: { continue: false, stopReason: "budget exhausted" },
+  output: "[Hook stopped] budget exhausted",
+  metadata: { hookStopped: true, stopReason: "budget exhausted" },
+} as const
+
+const refusals = [deny, stop] as const
 
 type Refusal = (typeof refusals)[number]
 
-function refusedSession(directory: string, refusal: Refusal) {
+// A Stop hook that records each run and always asks for another turn.
+const keepGoing = hookCommand(`
+  require("node:fs").appendFileSync(require("node:path").join(process.env.CLAUDE_PROJECT_DIR, "stop-runs.log"), "ran\\n");
+  console.log(JSON.stringify({ decision: "block", reason: "KEEP-GOING" }))
+`)
+
+function refusedSession(directory: string, refusal: Refusal, stopHook?: string) {
   return Effect.gen(function* () {
     const session = yield* Session.use
       .create({
@@ -107,14 +122,60 @@ function refusedSession(directory: string, refusal: Refusal) {
       ],
     })
     expect(hook.status).toBe(200)
+    if (stopHook) {
+      const added = yield* post(route(SessionPaths.hook, session.id), directory, {
+        event: "Stop",
+        hooks: [{ type: "command", command: stopHook }],
+      })
+      expect(added.status).toBe(200)
+    }
     return session
   })
 }
 
+// `/review` makes its own `task` call; the model is only asked afterwards, if at all.
+function viaCommand(directory: string, refusal: Refusal, stopHook?: string) {
+  return Effect.gen(function* () {
+    const llm = yield* TestLLMServer
+    yield* llm.reset
+    // The answer to the summary round, if the command asks for one.
+    yield* llm.text("summarized")
+    const session = yield* refusedSession(directory, refusal, stopHook)
+    const response = yield* post(route(SessionPaths.command, session.id), directory, {
+      command: "review",
+      arguments: "",
+      model: "test/test-model",
+    })
+    expect(response.status).toBe(200)
+    return { session, body: yield* response.json, calls: yield* llm.calls }
+  })
+}
+
+// The same `task` call issued by the model: its first request is the call itself.
+function viaModel(directory: string, refusal: Refusal, stopHook?: string) {
+  return Effect.gen(function* () {
+    const llm = yield* TestLLMServer
+    yield* llm.reset
+    yield* llm.tool("task", { description: "inspect bug", prompt: "look into it", subagent_type: "general" })
+    yield* llm.text("done")
+    const session = yield* refusedSession(directory, refusal, stopHook)
+    const response = yield* post(route(SessionPaths.prompt, session.id), directory, {
+      agent: "build",
+      model: { providerID: "test", modelID: "test-model" },
+      parts: [{ type: "text", text: "run the task" }],
+    })
+    expect(response.status).toBe(200)
+    yield* response.json
+    return { session, calls: yield* llm.calls }
+  })
+}
+
+function transcript(directory: string, sessionID: SessionID) {
+  return Session.use.messages({ sessionID }).pipe(provideInstanceEffect(directory), Effect.orDie)
+}
+
 function taskPart(directory: string, sessionID: SessionID) {
-  return Session.use.messages({ sessionID }).pipe(
-    provideInstanceEffect(directory),
-    Effect.orDie,
+  return transcript(directory, sessionID).pipe(
     Effect.map((messages) =>
       messages
         .filter((message) => message.info.role === "assistant")
@@ -123,6 +184,31 @@ function taskPart(directory: string, sessionID: SessionID) {
     ),
   )
 }
+
+const roles = (directory: string, sessionID: SessionID) =>
+  transcript(directory, sessionID).pipe(Effect.map((messages) => messages.map((message) => message.info.role)))
+
+// How often `keepGoing` ran in this directory.
+const stopRuns = (directory: string) =>
+  Effect.promise(() =>
+    Bun.file(join(directory, "stop-runs.log"))
+      .text()
+      .catch(() => ""),
+  ).pipe(Effect.map((log) => log.split("\n").filter(Boolean).length))
+
+// The runner publishes idle once the turn is over; an idle session has no status entry.
+const idle = (directory: string) =>
+  pollWithTimeout(
+    Effect.gen(function* () {
+      const response = yield* request(SessionPaths.status, {
+        method: "GET",
+        headers: { "x-graphagent-directory": directory },
+      })
+      const statuses = yield* response.json
+      return isRecord(statuses) && Object.keys(statuses).length === 0 ? (true as const) : undefined
+    }),
+    "the session never went idle",
+  )
 
 // What a client reads off the part; time, input and ids differ by construction.
 function shape(part: SessionV1.ToolPart) {
@@ -136,18 +222,9 @@ describe("command-driven subtask refused by a PreToolUse hook (#1350)", () => {
     it.live(`${refusal.name} finishes the tool part and the command route answers normally`, () =>
       Effect.gen(function* () {
         const llm = yield* TestLLMServer
-        // The command's own follow-up turn, after the refused subtask.
-        yield* llm.text("summarized")
         const directory = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
-        const session = yield* refusedSession(directory, refusal)
 
-        const response = yield* post(route(SessionPaths.command, session.id), directory, {
-          command: "review",
-          arguments: "",
-          model: "test/test-model",
-        })
-        expect(response.status).toBe(200)
-        const body = yield* response.json
+        const { session, body } = yield* viaCommand(directory, refusal)
         expect(isRecord(body) && isRecord(body.info) ? body.info.role : undefined).toBe("assistant")
 
         const parts = yield* taskPart(directory, session.id)
@@ -166,37 +243,72 @@ describe("command-driven subtask refused by a PreToolUse hook (#1350)", () => {
     it.live(`${refusal.name} leaves the same part as a model-issued task call`, () =>
       Effect.gen(function* () {
         const llm = yield* TestLLMServer
-        yield* llm.text("summarized")
         const directory = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
 
-        const viaCommand = yield* refusedSession(directory, refusal)
-        const commanded = yield* post(route(SessionPaths.command, viaCommand.id), directory, {
-          command: "review",
-          arguments: "",
-          model: "test/test-model",
-        })
-        expect(commanded.status).toBe(200)
-        yield* commanded.json
+        const commanded = yield* viaCommand(directory, refusal)
+        const prompted = yield* viaModel(directory, refusal)
 
-        // Whether or not the command asked the model for a follow-up turn, the
-        // model-issued run starts from its own script.
-        yield* llm.reset
-        yield* llm.tool("task", { description: "inspect bug", prompt: "look into it", subagent_type: "general" })
-        yield* llm.text("done")
-        const viaModel = yield* refusedSession(directory, refusal)
-        const prompted = yield* post(route(SessionPaths.prompt, viaModel.id), directory, {
-          agent: "build",
-          model: { providerID: "test", modelID: "test-model" },
-          parts: [{ type: "text", text: "run the task" }],
-        })
-        expect(prompted.status).toBe(200)
-        yield* prompted.json
-
-        const [fromCommand] = yield* taskPart(directory, viaCommand.id)
-        const [fromModel] = yield* taskPart(directory, viaModel.id)
+        const [fromCommand] = yield* taskPart(directory, commanded.session.id)
+        const [fromModel] = yield* taskPart(directory, prompted.session.id)
         expect(shape(fromCommand)).toEqual(shape(fromModel))
         expect(shape(fromCommand)).toMatchObject({ status: "completed", output: refusal.output })
       }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
     )
   }
+})
+
+describe("command turn after a subtask refused by a PreToolUse hook (#1351)", () => {
+  it.live("continue:false ends the turn at the subtask, as it does after a model-issued call", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+
+      const commanded = yield* viaCommand(directory, stop)
+      // No summary round: the model is never asked, and no summary prompt is left in the transcript.
+      expect(commanded.calls).toBe(0)
+      expect(yield* roles(directory, commanded.session.id)).toEqual(["user", "assistant"])
+      yield* idle(directory)
+
+      // The model path: its only request is the one that issues the call, and the turn ends on the result.
+      const prompted = yield* viaModel(directory, stop)
+      expect(prompted.calls).toBe(1)
+      expect(yield* roles(directory, prompted.session.id)).toEqual(["user", "assistant"])
+      yield* idle(directory)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
+  )
+
+  it.live("continue:false is final: a Stop hook asking for another turn cannot reopen it", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const commandDir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+      const modelDir = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+
+      // The Stop hook still observes the stopped turn once, but a blocked turn cannot continue.
+      const commanded = yield* viaCommand(commandDir, stop, keepGoing)
+      expect(commanded.calls).toBe(0)
+      expect(yield* stopRuns(commandDir)).toBe(1)
+
+      const prompted = yield* viaModel(modelDir, stop, keepGoing)
+      expect(prompted.calls).toBe(1)
+      expect(yield* stopRuns(modelDir)).toBe(1)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
+  )
+
+  it.live("a deny verdict lets the turn go on with one summary round, as it does after a model-issued call", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const directory = yield* tmpdirScoped({ git: true, config: testProviderConfig(llm.url) })
+
+      const commanded = yield* viaCommand(directory, deny)
+      // The refusal is a result the model may react to: exactly one more request, answering the summary prompt.
+      expect(commanded.calls).toBe(1)
+      expect(yield* roles(directory, commanded.session.id)).toEqual(["user", "assistant", "user", "assistant"])
+      yield* idle(directory)
+
+      // The model path: the request that issues the call, then the one that reads the refusal.
+      const prompted = yield* viaModel(directory, deny)
+      expect(prompted.calls).toBe(2)
+      yield* idle(directory)
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
+  )
 })

@@ -399,6 +399,14 @@ function resolveMcpResource(input: {
   })
 }
 
+/**
+ * A hook `continue:false` marks the settled tool result `hookStopped`. The processor ends a model turn on that mark;
+ * a subtask ends its turn on it too, with no summary round, so a command's turn stops where a model's would (#1351).
+ */
+function hookStopped(part: SessionV1.ToolPart) {
+  return part.state.status === "completed" && part.state.metadata.hookStopped === true
+}
+
 /** After a command-driven subtask, ask the parent to summarize the tool output and continue. */
 function appendTaskSummaryPrompt(input: {
   readonly sessions: Session.Interface
@@ -1133,7 +1141,7 @@ export function makePrepare(deps: PrepareDeps) {
     yield* sessions.updateMessage(assistantMessage)
 
     if (result && part.state.status === "running") {
-      yield* sessions.updatePart({
+      part = yield* sessions.updatePart({
         ...part,
         state: {
           status: "completed",
@@ -1163,9 +1171,9 @@ export function makePrepare(deps: PrepareDeps) {
       } satisfies SessionV1.ToolPart)
     }
 
-    if (!task.command) return
-
-    yield* appendTaskSummaryPrompt({ sessions, sessionID, lastUser })
+    const stopped = hookStopped(part)
+    if (task.command && !stopped) yield* appendTaskSummaryPrompt({ sessions, sessionID, lastUser })
+    return { stopped }
   })
 
   const getModel = Effect.fn("SessionPrompt.getModel")(function* (
