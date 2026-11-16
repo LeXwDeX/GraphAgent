@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test"
 import { WorkflowRuntime } from "@graphagent/core/dag/core/scheduling"
 import { DagBlocks } from "@/dag/blocks"
 import { DagConfig } from "@/dag/config"
+import { DagValidation } from "@/dag/validation"
 
 describe("workflow blocks", () => {
   it("compiles a staged route and carries objective, instructions, and dependencies", () => {
@@ -140,6 +141,27 @@ describe("workflow blocks", () => {
     for (const dependent of nodes.filter((node) => node.depends_on.includes("verify"))) {
       expect(dependent.condition).toBe('verify.output.verdict == "PASS"')
     }
+  })
+
+  // A condition is evaluated against a node's direct dependencies only, so the
+  // arbitration of a review that follows another review must list that review
+  // too: without it the condition resolved to nothing and authoring refused the
+  // pair (#1073).
+  it("makes the arbitration of a review that follows a review depend on the gate its condition reads", () => {
+    const nodes = DagBlocks.compileWorkflowBlocks({
+      objective: "Review twice",
+      blocks: [
+        { id: "scan", kind: "explore" },
+        { id: "first", kind: "review", depends_on: ["scan"] },
+        { id: "second", kind: "review", depends_on: ["first"] },
+      ],
+    })
+    const decision = nodes.find((node) => node.id === "second")
+    expect(decision?.condition).toBe('first.output.verdict == "ACCEPT"')
+    expect(decision?.depends_on).toEqual(["second--standards", "second--intent", "first"])
+    for (const lane of nodes.filter((node) => node.id.startsWith("second--")))
+      expect(lane.depends_on).toEqual(["first"])
+    expect(DagValidation.conditionReferenceErrors(nodes)).toEqual([])
   })
 
   it("keeps a verification with an ungated dependent non-reporting", () => {

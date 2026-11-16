@@ -148,7 +148,29 @@ describe("workflow provider-facing schema", () => {
       "action",
       "operation",
       "spec_path",
+      "inputs",
     ])
+  })
+
+  // #1073: a template starts from `inputs` beside its spec_path. The value is an
+  // open object on the wire (the authoring boundary checks it against the spec's
+  // declarations), optional, and carried only by the two actions that can
+  // instantiate a template.
+  test("start and validate carry an optional object-typed inputs, and no other branch does", () => {
+    const transformed = ProviderTransform.schema(
+      openaiModel,
+      ToolJsonSchema.fromSchema(Parameters as never),
+    ) as JsonSchemaNode
+    for (const operation of ["start", "validate"]) {
+      const branch = branchByOperation(transformed, operation)[0]
+      expect(record(branch).inputs?.type, operation).toBe("object")
+      expect(branch.required, operation).not.toContain("inputs")
+    }
+    for (const branch of branches(transformed)) {
+      const operation = (branch.properties?.operation?.enum as string[] | undefined)?.[0]
+      if (operation === "start" || operation === "validate") continue
+      expect(Object.keys(branch.properties ?? {}), String(operation)).not.toContain("inputs")
+    }
   })
 
   test("pins the removed Skill-dependent block surface as red evidence", async () => {

@@ -30,6 +30,7 @@ async function mountHome(list: readonly ReferenceInfo[] = references) {
   const harness = await mountRoute({
     route: { type: "home" },
     view: () => <Home />,
+    frame: true,
     handler: (url) => {
       if (url.pathname === "/reference") return json(list)
       // Typing `@` also searches files; the popup under test only needs it to answer.

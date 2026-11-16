@@ -174,8 +174,10 @@ export function renderStatus(input: {
   coverage?: readonly DagCoverage.CoverageEntry[]
   /** #1031 M6: durable usage the parent's final report quotes. */
   usage?: { readonly nodeCount: number; readonly tokens: number; readonly tokensCacheRead: number }
+  /** #1073: what a later extend runs into (node quota, terminal state, graph form). */
+  constraints?: object
 }): Tool.ExecuteResult {
-  const { workflow, nodes, allNodes, failureReason, latestRetarget, childRuns, coverage, usage } = input
+  const { workflow, nodes, allNodes, failureReason, latestRetarget, childRuns, coverage, usage, constraints } = input
   const config = Dag.parseWorkflowConfig(workflow.config)
   // A completed graph can still carry an unresolved review verdict
   // (REJECT checkpoint, issue #294); surface it explicitly instead
@@ -270,6 +272,7 @@ export function renderStatus(input: {
         graph_rev: workflow.graphRev,
         session_id: workflow.sessionId,
         mode: config?.mode ?? "standard",
+        ...(constraints ? { constraints } : {}),
         ...(reviewQuality
           ? {
               review_quality: {

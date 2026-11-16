@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Effect } from "effect"
+import { NODE_TERMINAL_STATUS_VALUES } from "@graphagent/schema/dag-status"
 import { Dag } from "@/dag/dag"
 import { WorkflowAuthoring } from "@/dag/authoring"
-import type { PriorFinding, PriorRound } from "@/dag/blocks"
+import type { LiveNode, PriorFinding, PriorRound } from "@/dag/blocks"
 import { reviewRoundQuietStreak } from "@/dag/review-lifecycle"
 import { normalizeOutput } from "@/dag/runtime/verdict"
 import { isRecord } from "@/util/record"
@@ -141,9 +142,26 @@ export const priorRoundLoader =
       }
     })
 
+const TERMINAL_NODE_STATUSES: ReadonlySet<string> = new Set(NODE_TERMINAL_STATUS_VALUES)
+
+/** The live workflow's nodes as their persisted definitions, each marked settled
+ * or not (#1073). A superseded revision is not part of the graph a fragment
+ * attaches to, so only current rows count. */
+const liveNodesOf = (dag: Dag.Interface, workflowID: string, config: ReturnType<typeof Dag.parseWorkflowConfig>) =>
+  Effect.gen(function* () {
+    const rows = yield* dag.store.getCurrentNodes(workflowID).pipe(Effect.orDie)
+    const status = new Map(rows.map((row) => [row.id, row.status]))
+    return (config?.nodes ?? []).flatMap((definition): LiveNode[] => {
+      const current = status.get(definition.id)
+      return current === undefined ? [] : [{ definition, terminal: TERMINAL_NODE_STATUSES.has(current) }]
+    })
+  })
+
 /** Assemble the authoring context shared by extend and replan from a live
  * workflow: its persisted node defaults and workspace, its current node IDs as
- * the known dependency set, and the spec source at `specPath`. */
+ * the known dependency set, and the spec source at `specPath`. An extend also
+ * reads the live nodes, so a block that depends on a reporting checkpoint is
+ * gated like it would be inside one start document. */
 export const prepareMutation = (
   dag: Dag.Interface,
   authoring: Authoring,
@@ -169,6 +187,7 @@ export const prepareMutation = (
     // the current session mode: switching DAG mode after start must not change
     // the gate level of a live workflow.
     const reviewGate = workflowConfig?.review_gate ?? (workflowConfig?.mode === "deep" ? "strict" : undefined)
+    const liveNodes = input.action === "extend" ? yield* liveNodesOf(dag, input.workflow.id, workflowConfig) : undefined
     return yield* authoring.prepare({
       action: input.action,
       source,
@@ -180,5 +199,6 @@ export const prepareMutation = (
       ...(reviewGate !== undefined ? { review_gate: reviewGate } : {}),
       ...(workflowConfig?.acceptance !== undefined ? { acceptance: workflowConfig.acceptance } : {}),
       prior_rounds: priorRoundLoader(dag, input.sessionID),
+      ...(liveNodes !== undefined ? { live_nodes: liveNodes } : {}),
     })
   })

@@ -295,7 +295,7 @@ async function mountRoute(
                                                           {(state) => (
                                                             <BottomZoneProvider state={state()}>
                                                               {routeView()}
-                                                              <BottomZone state={state()} composer={<></>} />
+                                                              <BottomZone state={state()} />
                                                             </BottomZoneProvider>
                                                           )}
                                                         </Show>

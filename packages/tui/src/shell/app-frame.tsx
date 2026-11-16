@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { createMemo, Show, type JSX } from "solid-js"
+import { children as resolveChildren, createMemo, Show, type JSX } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { t } from "../i18n"
@@ -41,7 +41,7 @@ export type AppFrameProps = {
   footer?: AppFrameFooter
   /** Zero to two status lines above the bottom zone (F4). */
   statusBand?: JSX.Element
-  /** Input, panel, or ask queue above the footer (F3). */
+  /** The composer, a panel, or the ask queue above the footer (F3); routes install the composer in it. */
   bottomZone?: JSX.Element
   /** Right-edge overlay between the top bar and the bottom zone (F4). */
   drawer?: JSX.Element
@@ -51,9 +51,22 @@ export type AppFrameProps = {
 }
 
 /**
+ * Mounts one slot prop. A prop that holds JSX builds its element again on every read, and `Show` reads `when` and
+ * its children separately, so `<Show when={props.slot}>{props.slot}</Show>` created each slot twice: the second
+ * copy was mounted, the first stayed alive and detached, rendering its own panels and prompt and registering its
+ * own key layers. The slot is resolved once here and `when` and the content share the result.
+ */
+function Slot(props: { content?: JSX.Element; wrap?: (content: JSX.Element) => JSX.Element }) {
+  const content = resolveChildren(() => props.content)
+  return <Show when={content()}>{props.wrap ? props.wrap(content()) : content()}</Show>
+}
+
+/**
  * Fixed column shell: one top bar row and one blank row, the main area, the
  * status band, the bottom zone, and a one-row footer. The drawer overlays the
- * right edge of the main/status area without changing layout widths.
+ * right edge of the main/status area without changing layout widths. It ends
+ * where the main area ends, so the bottom zone (the composer, a panel or an ask
+ * surface) and the footer are never covered.
  *
  * Dimming is an `opacity` on the main and status rows, not a translucent box
  * laid over them: OpenTUI's alpha fill blanks every cell that holds a wide
@@ -87,15 +100,11 @@ export function AppFrame(props: AppFrameProps) {
             <box flexGrow={1} minHeight={0} flexDirection="column">
               {props.children}
             </box>
-            <Show when={props.statusBand}>
-              <StatusBand>{props.statusBand}</StatusBand>
-            </Show>
+            <Slot content={props.statusBand} wrap={(content) => <StatusBand>{content}</StatusBand>} />
           </box>
-          <Show when={props.drawer}>
-            <Drawer>{props.drawer}</Drawer>
-          </Show>
+          <Slot content={props.drawer} wrap={(content) => <Drawer>{content}</Drawer>} />
         </box>
-        <Show when={props.bottomZone}>{props.bottomZone}</Show>
+        <Slot content={props.bottomZone} />
         <Footer
           agent={props.footer?.agent}
           agentAction={props.footer?.agentAction}

@@ -15,6 +15,7 @@ async function mountJump(extra: Partial<MountOptions> = {}) {
   const harness = await mountRoute({
     route: { type: "session", sessionID },
     view: () => <Main />,
+    frame: true,
     sessions: [sessionFixture(sessionID)],
     ...extra,
   })

@@ -164,7 +164,7 @@ interface Caller {
   readonly agent?: string
 }
 
-const start = (caller: Caller, specPath: string) =>
+const start = (caller: Caller, specPath: string, inputs?: Record<string, unknown>) =>
   Effect.gen(function* () {
     const dag = yield* Dag.Service
     const control = yield* DagControl.Service
@@ -177,7 +177,7 @@ const start = (caller: Caller, specPath: string) =>
         session: { directory: caller.directory, projectID, model: undefined },
         ctx: toolContext(caller.session, caller.agent ?? "build"),
       },
-      { action: "run", operation: "start", spec_path: specPath } as RunParams,
+      { action: "run", operation: "start", spec_path: specPath, ...(inputs ? { inputs } : {}) } as RunParams,
     )
   })
 
@@ -948,6 +948,8 @@ describe("default worktree isolation on workflow start", () => {
 // library resolves them by bare name with no file and no release snapshot.
 describe("the builtin stage specs on workflow start", () => {
   const readOnlyStages = ["stage-understand", "stage-design", "stage-review"]
+  // #1073: a stage starts from its request alone.
+  const stageInputs = { objective: "Make recovery durable" }
 
   it("lets the plan agent start the read-only stages and refuses the implementation stage", async () => {
     const dir = repo()
@@ -957,11 +959,11 @@ describe("the builtin stage specs on workflow start", () => {
         yield* seed([["ses_plan", dir]])
         const caller = { session: "ses_plan", directory: dir, agent: "plan" } as const
         for (const name of readOnlyStages) {
-          const result = yield* start(caller, name)
+          const result = yield* start(caller, name, stageInputs)
           expect(result.title).toBe(`Workflow started: ${name}`)
           expect(workflowID(result.output)).toStartWith("dag_")
         }
-        const refused = yield* start(caller, "stage-implement")
+        const refused = yield* start(caller, "stage-implement", stageInputs)
         expect(refused.title).toBe("Workflow not started: the plan agent is read-only")
         expect(refusal(refused.output)).toMatchObject({
           workflow_created: false,
@@ -980,7 +982,7 @@ describe("the builtin stage specs on workflow start", () => {
         yield* seed([["ses_build", dir]])
         const caller = { session: "ses_build", directory: dir, agent: "build" } as const
         for (const name of [...readOnlyStages, "stage-implement"]) {
-          const result = yield* start(caller, name)
+          const result = yield* start(caller, name, stageInputs)
           expect(result.title).toBe(`Workflow started: ${name}`)
         }
         const workflows = yield* (yield* DagStore.Service).listWorkflows()

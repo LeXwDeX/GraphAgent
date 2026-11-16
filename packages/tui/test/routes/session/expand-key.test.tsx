@@ -33,7 +33,7 @@ function Screen(props: { session: boolean }) {
     <BottomZoneProvider state={bottomZone}>
       <AppFrame
         footer={{ agent: "build", agentAction: keys().agent, hints: keys().hints }}
-        bottomZone={<BottomZone state={bottomZone} composer={<></>} />}
+        bottomZone={<BottomZone state={bottomZone} />}
       >
         <Show when={props.session}>
           <Main />
