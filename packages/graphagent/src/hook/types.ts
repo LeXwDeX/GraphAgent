@@ -203,6 +203,21 @@ export interface HookMatcher {
   hooks: HookCommand[]
 }
 
+/**
+ * What the layers' `disableAllHooks: true` values switched off, by the layer that wrote them.
+ * Recorded by `mergeSettings`; the engine applies it to each hook by the side it is defined on
+ * (hooks files by `__source.scope`, scoped skill/agent hooks by their `source`).
+ */
+export interface HooksDisabled {
+  /** The global layer wrote true: every hook is off, whichever layer defines it. */
+  readonly global: boolean
+  /**
+   * The project or local layer wrote true: hooks defined on the project side are off, global
+   * hooks keep running. Independent of project trust and of whether Git tracks the file.
+   */
+  readonly project: boolean
+}
+
 export interface Settings {
   hooks?: Partial<Record<HookEvent, HookMatcher[]>>
   /** Optional local settings guard for HTTP hook destinations. Empty denies all. */
@@ -210,11 +225,13 @@ export interface Settings {
   /** Optional global ceiling for environment interpolation in HTTP headers. */
   httpHookAllowedEnvVars?: string[]
   /**
-   * Temporarily switches every hook off, including session-scoped skill and agent hooks. The
-   * value left after layer precedence applies decides (global, then project, then local), so
-   * a project can override a user-level `true` with `false` (reference 714).
+   * One layer's own `disableAllHooks` value, as its file wrote it. The merged chain keeps no
+   * single boolean: `mergeSettings` folds the layers into `hooksDisabled`, so a later layer's
+   * value never replaces an earlier layer's.
    */
   disableAllHooks?: boolean
+  /** Merged chain only; absent while no layer wrote `disableAllHooks: true`. */
+  hooksDisabled?: HooksDisabled
 }
 
 /**
