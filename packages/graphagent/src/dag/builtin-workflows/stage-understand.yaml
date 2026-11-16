@@ -1,0 +1,94 @@
+# Built-in stage reference 1 of 4 (understand, design, implement, review).
+# Read-only: no block here writes to the workspace. Retarget a copy before
+# starting it: replace config.objective with the request, add the request's
+# scope to each instruction, and keep the three independent angles. The
+# acceptance items are this stage's own deliverable contract, judged by the
+# completeness lane; the ACCEPTANCE section the synthesis returns becomes the
+# next stage's config.acceptance.
+title: "Stage: understand (read-only) — independent maps → synthesis → skeptic review"
+config:
+  name: stage-understand
+  review_gate: strict
+  max_concurrency: 4
+  max_node_replan_attempts: 3
+  max_total_nodes: 14
+  node_defaults:
+    worker_config:
+      timeout_ms: 1800000
+  delivery_node: understanding
+  objective: >-
+    Understand the request well enough to design against it: map the code, the
+    observable behavior, and the risks from independent angles, then return
+    acceptance criteria, constraints, and unknowns for the next stage.
+  acceptance:
+    - id: AC1
+      text: >-
+        Every proposed acceptance criterion is one verifiable statement with a
+        stable id (AC1..ACn) that traces to the request or to cited evidence.
+    - id: AC2
+      text: >-
+        Every constraint names the evidence that imposes it (file and line,
+        document, or issue) and whether it is hard or soft.
+    - id: AC3
+      text: >-
+        Every unknown states whether it blocks design and the cheapest way to
+        resolve it, and no product decision is hidden inside a criterion.
+  blocks:
+    - id: code-map
+      kind: explore
+      instruction: >-
+        Map the code that owns the requested behavior: owning modules and entry
+        points, callers and consumers, state and persistence, the tests that pin
+        it and their seams, generated artifacts, and the repository rules that
+        apply. Cite file and line for every claim, separate confirmed facts from
+        inferences, and list what you could not find.
+
+    - id: behavior-map
+      kind: explore
+      instruction: >-
+        Describe the behavior from the outside: what a user or caller observes
+        today, the public contracts it touches (commands, HTTP or SDK shapes,
+        schemas, events, docs), and what the request would change for them. Use
+        the originating issue, decision records, docs, and tests as intent
+        evidence, quote the decisive line, and flag where the evidence
+        contradicts the request or leaves it ambiguous.
+
+    - id: risk-map
+      kind: explore
+      instruction: >-
+        Find what could go wrong: concurrency and ordering, persistence and
+        recovery, compatibility and migration, security and permission
+        boundaries, performance and resource limits, and slow or flaky checks.
+        Include prior bugs, reverted attempts, and open issues in the same area.
+        Bind every risk to a trigger and the evidence that makes it real; omit
+        generic risks.
+
+    - id: understanding
+      kind: synthesize
+      depends_on: [code-map, behavior-map, risk-map]
+      report_to_parent: false
+      instruction: >-
+        Combine the three maps into one understanding for the design stage.
+        Resolve conflicts by evidence strength and say which side lost and why;
+        mark what is confirmed, inferred, or unknown; if a map is missing, name
+        the gap instead of filling it. Return exactly four labelled sections.
+        ACCEPTANCE: a YAML-ready list of { id, text } with ids AC1..ACn, each
+        text one verifiable statement that traces to the request or cited
+        evidence. CONSTRAINTS: each with its evidence (file and line, document,
+        or issue) and whether it is hard or soft. UNKNOWNS: each with whether it
+        blocks design and the cheapest way to resolve it. SCOPE: what is in,
+        what is out, and any product decision that belongs to the user. Do not
+        design the solution.
+
+    - id: understanding-review
+      kind: review
+      depends_on: [understanding]
+      lenses: [intent, completeness]
+      skeptics: 1
+      instruction: >-
+        Attack the understanding, not the repository: check that each proposed
+        acceptance criterion follows from the request, that every cited file,
+        line, and document exists and says what is claimed, and that no material
+        constraint, unknown, or hidden product decision is missing. A criterion
+        nobody can verify, or one the request does not support, is a required
+        action.

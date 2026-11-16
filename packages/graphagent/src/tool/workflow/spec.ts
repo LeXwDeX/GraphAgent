@@ -7,7 +7,7 @@ import { DagWorkflows } from "@/dag/workflows"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import type { Tool } from "../tool"
 import { WORKFLOW_RECOVERY, blockedMetadata, validationOutput } from "./render"
-import { entryContent, loadSpecFile, readDraftSpec, searchedScopes, writeDraftSpec } from "./files"
+import { entryContent, loadSpecFile, readDraftSpec, writeDraftSpec } from "./files"
 import type { DraftGraphType, Metadata } from "./schema"
 
 type Authoring = ReturnType<typeof WorkflowAuthoring.make>
@@ -42,14 +42,9 @@ export const portableEntryCheck = (authoring: Authoring, entry: DagWorkflows.Ent
 
 export const listSpecs = (authoring: Authoring, directory: string): Effect.Effect<Tool.ExecuteResult> =>
   Effect.gen(function* () {
+    // The builtin scope always holds the engine's stage specs, so the listing
+    // is never empty.
     const entries = yield* DagWorkflows.list(directory)
-    if (entries.length === 0) {
-      return {
-        title: "No saved workflows",
-        output: `The workflow library is empty. Searched ${searchedScopes(directory)}. Save a spec as <name>.yaml in one of those directories to start it later by name.`,
-        metadata: {},
-      }
-    }
     const rows: string[] = []
     for (const entry of entries) {
       const check = yield* portableEntryCheck(authoring, entry)

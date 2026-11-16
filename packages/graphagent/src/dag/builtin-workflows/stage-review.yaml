@@ -1,0 +1,62 @@
+# Built-in stage reference 4 of 4 (understand, design, implement, review).
+# Read-only: reviews a finished change and reports; it never fixes. Retarget a
+# copy before starting it: put the fixed point (commit, range, or working-tree
+# state), the originating request, and the acceptance items from the earlier
+# stages into config.objective, the instructions, and config.acceptance (1-50,
+# unique ids; the single item below is only a default). Add the security or
+# performance lens when the change triggers them. No delivery_node on purpose:
+# the review decision is a reporting checkpoint, so the parent gets a turn with
+# its verdict when the workflow ends, and the delivered report is the result
+# index.
+title: "Stage: review (read-only) — pinned change → required checks → lenses and skeptics"
+config:
+  name: stage-review
+  review_gate: strict
+  max_concurrency: 6
+  max_node_replan_attempts: 3
+  max_total_nodes: 14
+  node_defaults:
+    worker_config:
+      timeout_ms: 1800000
+  objective: >-
+    Review a finished change independently against the repository's standards,
+    the confirmed intent, and its acceptance criteria, then report
+    evidence-backed findings without fixing anything.
+  acceptance:
+    - id: AC1
+      text: >-
+        The change delivers the behavior described in the workflow objective and
+        breaks no required repository check.
+  blocks:
+    - id: pin
+      kind: explore
+      required: true
+      instruction: >-
+        Pin what is under review: resolve the supplied fixed point to a full
+        commit (or record the working-tree state), then record HEAD, the diff and
+        commits, the originating request and its acceptance criteria, the
+        standards sources that apply, the touched modules, and the checks the
+        diff triggers. Fail on an unresolvable reference, an empty diff, or
+        missing intent.
+
+    - id: checks
+      kind: verify
+      instruction: >-
+        Run every documented check the diff triggers (typecheck, tests,
+        generated outputs, migrations, contracts, packaging, security) and
+        record exact commands and raw results. No implementation block precedes
+        this verification, so bind the evidence to the pinned HEAD commit
+        instead of an implementation fingerprint. A failing check is evidence,
+        not a task: do not fix anything.
+
+    - id: review
+      kind: review
+      depends_on: [pin, checks]
+      lenses: [standards, intent, completeness, tests]
+      skeptics: 2
+      instruction: >-
+        Judge the change as it stands. Report only findings you can demonstrate
+        from the diff, the code, or a check result; separate blocking items from
+        suggestions, and defects the change introduced from ones that already
+        existed. Do not edit anything; state each required action precisely
+        enough to act on, without writing the fix.
