@@ -10,7 +10,8 @@
 // receipt and the wake mark (or just after the wake was admitted) and restarts
 // over the same database.
 import { describe, expect, it } from "bun:test"
-import { Effect, Fiber, Layer, Option, Scope } from "effect"
+import { Effect, Fiber, Layer, Option, Scope, Semaphore } from "effect"
+import { WorkflowRuntime, type SchedulingNode } from "@graphagent/core/dag/core/scheduling"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
 import { Database } from "@graphagent/core/database/database"
@@ -94,6 +95,8 @@ interface Control {
   admission: Admission
   /** Admissions that reached the model-facing boundary. */
   admissions: number
+  /** The text of each admitted wake prompt. */
+  texts: string[]
   /** `Session.get` calls, the DAG mode read included. */
   reads: number
   /** Fails the next `Session.get` once, as a typed error or as a defect. */
@@ -159,6 +162,7 @@ function graph(control: Control) {
         prepareTurn: ((input: SessionPrompt.PromptInput, persistAdmission?: Effect.Effect<void>) =>
           Effect.gen(function* () {
             control.admissions += 1
+            control.texts.push(input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"))
             if (control.admission === "park-before-persist") return yield* Effect.never
             const messageID = input.messageID ?? MessageID.ascending()
             yield* db
@@ -211,7 +215,14 @@ function graph(control: Control) {
   )
 }
 
-function startDelivery() {
+/** What the loop keeps for a live workflow, with the runtime in whatever state a test needs. */
+const liveEntry = (nodes: readonly SchedulingNode[]): DagDelivery.Entry => ({
+  runtime: new WorkflowRuntime([...nodes], 5),
+  evalLock: Semaphore.makeUnsafe(1),
+  fibers: new Map(),
+})
+
+function startDelivery(entries: (dagID: string) => DagDelivery.Entry | undefined = () => undefined) {
   return Effect.gen(function* () {
     return yield* DagDelivery.make({
       directory: DIRECTORY,
@@ -227,7 +238,7 @@ function startDelivery() {
       events: yield* EventV2Bridge.Service,
       messages: undefined,
       inbox: undefined,
-      entries: () => undefined,
+      entries,
       lastAssistantMessage: () => Effect.succeed(undefined),
     })
   })
@@ -257,8 +268,12 @@ const seedParent = (mode: "on" | "off") =>
       .pipe(Effect.orDie)
   })
 
-/** A workflow whose single delivery leaf completed, written through the engine's own events. */
-const completedLeaf = (title: string, report: boolean) =>
+/**
+ * A workflow whose single delivery leaf completed, written through the engine's
+ * own events. The workflow itself is still running: this is the window between
+ * the last node's event and the completion check that publishes the terminal one.
+ */
+const leafDone = (title: string, report: boolean) =>
   Effect.gen(function* () {
     const dag = yield* Dag.Service
     const dagID = yield* dag.create({
@@ -284,6 +299,14 @@ const completedLeaf = (title: string, report: boolean) =>
     yield* dag.nodeQueued(dagID, "final")
     yield* dag.nodeStarted(dagID, "final", `ses_child_${title}`, Date.now() + 60_000, report)
     yield* dag.nodeCompleted(dagID, "final", `${title} answer`)
+    return dagID
+  })
+
+/** A completed workflow whose only parent-visible output is its delivery leaf. */
+const completedLeaf = (title: string, report: boolean) =>
+  Effect.gen(function* () {
+    const dag = yield* Dag.Service
+    const dagID = yield* leafDone(title, report)
     yield* dag.complete(dagID)
     return dagID
   })
@@ -324,7 +347,7 @@ const run = <A, E>(
 describe("DagDelivery reads the DAG mode at the terminal boundary", () => {
   for (const failure of ["typed", "defect"] as const) {
     it(`treats a DAG mode it cannot read (${failure}) as off, then follows the row once it can`, () => {
-      const control: Control = { admission: "persist", admissions: 0, reads: 0 }
+      const control: Control = { admission: "persist", admissions: 0, texts: [], reads: 0 }
       return run(
         control,
         Effect.gen(function* () {
@@ -355,7 +378,7 @@ describe("DagDelivery reads the DAG mode at the terminal boundary", () => {
   }
 
   it("does not read the DAG mode when no display-only completion is waiting", () => {
-    const control: Control = { admission: "persist", admissions: 0, reads: 0 }
+    const control: Control = { admission: "persist", admissions: 0, texts: [], reads: 0 }
     return run(
       control,
       Effect.gen(function* () {
@@ -404,7 +427,7 @@ describe("DagDelivery in DAG mode: a process that dies mid-delivery restarts wit
   ]
   for (const crash of crashes) {
     it(crash.name, () => {
-      const control: Control = { admission: crash.admission, admissions: 0, reads: 0 }
+      const control: Control = { admission: crash.admission, admissions: 0, texts: [], reads: 0 }
       return run(
         control,
         Effect.gen(function* () {
@@ -437,4 +460,94 @@ describe("DagDelivery in DAG mode: a process that dies mid-delivery restarts wit
       )
     })
   }
+})
+
+describe("DagDelivery while a workflow is about to complete (#1015)", () => {
+  const windows = [
+    { name: "before the loop settled the node", status: "running" },
+    { name: "after the loop settled the node", status: "satisfied" },
+  ] as const
+  for (const window of windows) {
+    it(`gives no turn between the last node and the workflow completing (${window.name}), then wakes once`, () => {
+      const control: Control = { admission: "persist", admissions: 0, texts: [], reads: 0 }
+      return run(
+        control,
+        Effect.gen(function* () {
+          const dag = yield* Dag.Service
+          const store = yield* DagStore.Service
+          yield* seedParent("on")
+          const dagID = yield* leafDone("leaf", true)
+          // The node event is durable and the loop has not published the workflow's
+          // yet. A drain here (the parent went idle, or the inbox tick fired) must
+          // not hand the parent a progress or stalled turn about a workflow that
+          // finishes a moment later: the completion owes the only turn.
+          const delivery = yield* startDelivery(() =>
+            liveEntry([{ id: "final", dependsOn: [], required: true, status: window.status }]),
+          )
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("running")
+          yield* delivery.drain(PARENT)
+          yield* delivery.drain(PARENT)
+          expect(control.admissions).toBe(0)
+          expect((yield* store.getNode(dagID, "final"))?.wakeReported).toBe(false)
+          expect(yield* answerParts).toHaveLength(0)
+
+          yield* dag.complete(dagID)
+          yield* delivery.drain(PARENT)
+          expect(control.admissions).toBe(1)
+          expect(control.texts[0]).toContain("[DAG Workflow completed]")
+          expect(control.texts[0]).toContain('Node "final" completed: leaf answer')
+          expect(yield* answerParts).toHaveLength(1)
+          expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(true)
+          expect((yield* store.getNode(dagID, "final"))?.wakeReported).toBe(true)
+
+          yield* delivery.drain(PARENT)
+          expect(control.admissions).toBe(1)
+        }),
+      )
+    })
+  }
+
+  it("still delivers a checkpoint's progress turn while a sibling node keeps running", () => {
+    const control: Control = { admission: "persist", admissions: 0, texts: [], reads: 0 }
+    return run(
+      control,
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        yield* seedParent("on")
+        const node = (id: string, report: boolean) => ({
+          id,
+          name: id,
+          worker_type: "build",
+          depends_on: [],
+          required: true,
+          prompt_template: { inline: id },
+          report_to_parent: report,
+        })
+        const dagID = yield* dag.create({
+          projectID: PROJECT_ID,
+          sessionID: PARENT,
+          title: "Checkpoint",
+          config: { name: "checkpoint", nodes: [node("cp", true), node("work", false)] },
+        })
+        yield* dag.nodeQueued(dagID, "cp")
+        yield* dag.nodeStarted(dagID, "cp", "ses_child_cp", Date.now() + 60_000, true)
+        yield* dag.nodeQueued(dagID, "work")
+        yield* dag.nodeStarted(dagID, "work", "ses_child_work", Date.now() + 60_000, false)
+        yield* dag.nodeCompleted(dagID, "cp", "checkpoint verdict")
+
+        const delivery = yield* startDelivery(() =>
+          liveEntry([
+            { id: "cp", dependsOn: [], required: true, status: "satisfied" },
+            { id: "work", dependsOn: [], required: true, status: "running" },
+          ]),
+        )
+        yield* delivery.drain(PARENT)
+        expect(control.admissions).toBe(1)
+        expect(control.texts[0]).toContain('Node "cp" completed: checkpoint verdict')
+        expect((yield* store.getNode(dagID, "cp"))?.wakeReported).toBe(true)
+        expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(false)
+      }),
+    )
+  })
 })

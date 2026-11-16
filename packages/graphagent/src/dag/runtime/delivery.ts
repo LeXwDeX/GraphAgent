@@ -12,6 +12,7 @@ import {
   PAUSE_REASON_BUDGET_EXHAUSTED,
   displayState,
   isNodeTerminalStatus,
+  isTerminal,
   isTerminalWorkflowStatusValue,
   isWorkflowTerminalStatus,
 } from "@graphagent/core/dag/core/types"
@@ -321,6 +322,22 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       finalResponseCompletions.set(workflow.id, !displayOnly || parentInDagMode === true)
     }
     const needsCompletionTurn = (workflowID: string) => finalResponseCompletions.get(workflowID) === true
+    // #1015: a running workflow whose current nodes have all reached a terminal
+    // status is waiting only for the completion check that publishes its
+    // terminal event. A progress or stalled boundary in that window would hand
+    // the parent a turn about a workflow that finishes a moment later, and the
+    // completion would then owe it a second one. Neither boundary applies
+    // there: the terminal event nudges delivery, and the terminal batch carries
+    // the same rows. Durable rows decide, because the in-memory runtime lags the
+    // node event until its handler settles the node.
+    const completionPending = new Set<string>()
+    for (const workflow of workflows) {
+      if (workflow?.status !== "running") continue
+      const entry = entries(workflow.id)
+      if (!entry || entry.runtime.isPaused() || entry.runtime.isStepMode()) continue
+      const current = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
+      if (current.length > 0 && current.every((node) => isTerminal(node.status))) completionPending.add(workflow.id)
+    }
     // A reporting checkpoint that completed while its downstream nodes
     // are still running is informative, not a stalled/actionable
     // boundary. It must reach the parent as its own coalesced batch
@@ -336,7 +353,9 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           // Final-response workflows deliver progress checkpoints while
           // downstream work continues.
           const entry = entries(workflow.id)
-          return !!entry && !entry.runtime.isPaused() && !entry.runtime.isStepMode()
+          return (
+            !!entry && !entry.runtime.isPaused() && !entry.runtime.isStepMode() && !completionPending.has(workflow.id)
+          )
         })
         .map((node) => node.workflowId),
     )
@@ -348,6 +367,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
       if (entry?.runtime.isPaused() || entry?.runtime.isStepMode()) return true
       if (workflow.status !== "running" || !entry) return false
       if (escalatedWorkflowIDs.has(workflow.id)) return true
+      if (completionPending.has(workflow.id)) return false
       // Delivery boundary uses the runtime's own running set, NOT fiber
       // ownership: between markRunning and fibers.set the spawn path has
       // async yield points, and a wake reading that window would misjudge

@@ -64,6 +64,12 @@ interface ParentGate {
 interface Queues {
   readonly children: Queue.Queue<ChildGate>
   readonly parent: Queue.Queue<ParentGate>
+  /**
+   * Holds the loop's workflow completion check open. While `gate` is set, the
+   * first `settleCompletion` announces itself on `entered` and waits for the
+   * gate: the last node is durable, the workflow is still running.
+   */
+  readonly completion: { gate: Deferred.Deferred<void> | undefined; readonly entered: Queue.Queue<void> }
 }
 
 function takeWithin<A>(queue: Queue.Queue<A>, message: string, timeout: "2 seconds" | "5 seconds" = "5 seconds") {
@@ -122,7 +128,27 @@ function harness(queues: Queues) {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const transcript = SessionProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const rawDag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  // The loop publishes a workflow's terminal event from `settleCompletion`;
+  // holding it leaves the window between the last node's event and that one.
+  const dag = Layer.effect(
+    Dag.Service,
+    Effect.gen(function* () {
+      const inner = yield* Dag.Service
+      return Dag.Service.of({
+        ...inner,
+        settleCompletion: (dagID, options) =>
+          Effect.gen(function* () {
+            const gate = queues.completion.gate
+            if (gate) {
+              yield* Queue.offer(queues.completion.entered, undefined)
+              yield* Deferred.await(gate)
+            }
+            return yield* inner.settleCompletion(dagID, options)
+          }),
+      })
+    }),
+  ).pipe(Layer.provide(rawDag))
   const base = Layer.mergeAll(
     database,
     events,
@@ -215,6 +241,7 @@ function runTest<A>(mode: "on" | "off", test: (services: Services) => Effect.Eff
     const queues: Queues = {
       children: yield* Queue.unbounded<ChildGate>(),
       parent: yield* Queue.unbounded<ParentGate>(),
+      completion: { gate: undefined, entered: yield* Queue.unbounded<void>() },
     }
     return yield* Effect.gen(function* () {
       const dag = yield* Dag.Service
@@ -514,6 +541,43 @@ describe("DAG mode on: every terminal workflow wakes the parent exactly once", (
         yield* Deferred.succeed(wake.release, undefined)
         yield* noMorePrompts(services)
         expect(yield* answers(services)).toEqual(["answer while busy"])
+      }),
+    ))
+
+  it("adds no second turn when a drain runs between the last node and the workflow completing", () =>
+    runTest("on", (services) =>
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>()
+        services.queues.completion.gate = gate
+        const dagID = yield* start(services, "Completing", {
+          name: "completing",
+          delivery_node: "final",
+          nodes: [node("final", { report: true })],
+        })
+        yield* release((yield* gates(services, 1)).get("final"), "answer")
+        // The node's event is durable and the loop is inside its completion check.
+        yield* takeWithin(services.queues.completion.entered, "the completion check was never reached")
+        expect((yield* services.store.getNode(dagID, "final"))?.status).toBe("completed")
+        expect((yield* services.store.getWorkflow(dagID))?.status).toBe("running")
+
+        // The parent goes idle, the trigger the inbox tick and every other nudge share.
+        yield* services.status.set(PARENT, { type: "busy" })
+        yield* services.status.set(PARENT, { type: "idle" })
+        yield* noMorePrompts(services)
+        expect(yield* answers(services)).toEqual([])
+        expect((yield* services.store.getNode(dagID, "final"))?.wakeReported).toBe(false)
+
+        services.queues.completion.gate = undefined
+        yield* Deferred.succeed(gate, undefined)
+        const wake = yield* takeWithin(services.queues.parent, "the completed workflow did not wake the parent")
+        expect(wake.reports).toBe(1)
+        expect(wake.text).toContain("[DAG Workflow completed]")
+        expect(wake.text).toContain('Node "final" completed: answer')
+        // A workflow that is still running would be told to act on it.
+        expect(wake.text).not.toContain("Act on these workflows")
+        yield* Deferred.succeed(wake.release, undefined)
+        yield* noMorePrompts(services)
+        expect(yield* unreported(services)).toEqual({ workflows: [], nodes: [] })
       }),
     ))
 
