@@ -266,4 +266,5 @@ it.instance("a worker's own rules, not the session's, decide what it can write, 
       )
     }
   }),
+  { git: true },
 )

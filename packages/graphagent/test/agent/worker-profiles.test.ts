@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
-import { afterEach, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Agent } from "../../src/agent/agent"
@@ -141,40 +141,43 @@ it.instance("the architect has the explore profile plus the language server, and
   }),
 )
 
-it.instance("the prototyper writes only under prototypes/ and may run what it builds", () =>
-  Effect.gen(function* () {
-    const prototyper = yield* agentNamed("prototyper")
-    expect(prototyper.mode).toBe("subagent")
-    expect(prototyper.native).toBe(true)
-    expect(prototyper.prompt?.length ?? 0).toBeGreaterThan(0)
+it.instance(
+  "the prototyper writes only under prototypes/ and may run what it builds",
+  () =>
+    Effect.gen(function* () {
+      const prototyper = yield* agentNamed("prototyper")
+      expect(prototyper.mode).toBe("subagent")
+      expect(prototyper.native).toBe(true)
+      expect(prototyper.prompt?.length ?? 0).toBeGreaterThan(0)
 
-    // Inside the node workspace's prototypes/ directory an edit passes.
-    for (const path of ["prototypes/lru-cache/replay.ts", "prototypes/a.ts", "prototypes/a/b/c/d.json"]) {
-      expect(Permission.evaluate("edit", path, prototyper.permission).action, path).toBe("allow")
-    }
-    // Everywhere else it is refused: product code, tests, config, lookalike directories, other roots.
-    for (const path of [
-      "src/index.ts",
-      "package.json",
-      ".env",
-      "prototypes-old/a.ts",
-      "my-prototypes/a.ts",
-      "docs/prototypes/a.ts",
-      "../other/prototypes/a.ts",
-      "/etc/hosts",
-      "prototypes",
-    ]) {
-      expect(Permission.evaluate("edit", path, prototyper.permission).action, path).toBe("deny")
-    }
+      // Inside the node workspace's prototypes/ directory an edit passes.
+      for (const path of ["prototypes/lru-cache/replay.ts", "prototypes/a.ts", "prototypes/a/b/c/d.json"]) {
+        expect(Permission.evaluate("edit", path, prototyper.permission).action, path).toBe("allow")
+      }
+      // Everywhere else it is refused: product code, tests, config, lookalike directories, other roots.
+      for (const path of [
+        "src/index.ts",
+        "package.json",
+        ".env",
+        "prototypes-old/a.ts",
+        "my-prototypes/a.ts",
+        "docs/prototypes/a.ts",
+        "../other/prototypes/a.ts",
+        "/etc/hosts",
+        "prototypes",
+      ]) {
+        expect(Permission.evaluate("edit", path, prototyper.permission).action, path).toBe("deny")
+      }
 
-    // The shell runs the prototype; shell access is not a sandbox, so the rule is bash: allow.
-    expect(action(prototyper, "bash")).toBe("allow")
-    expect(action(prototyper, "task")).toBe("deny")
-    expect(action(prototyper, "todowrite")).toBe("deny")
-    expect(action(prototyper, "question")).toBe("deny")
-    expect(action(prototyper, "some_mcp_tool")).toBe("deny")
-    expect(AgentContract.isWriterAgent(prototyper)).toBe(true)
-  }),
+      // The shell runs the prototype; shell access is not a sandbox, so the rule is bash: allow.
+      expect(action(prototyper, "bash")).toBe("allow")
+      expect(action(prototyper, "task")).toBe("deny")
+      expect(action(prototyper, "todowrite")).toBe("deny")
+      expect(action(prototyper, "question")).toBe("deny")
+      expect(action(prototyper, "some_mcp_tool")).toBe("deny")
+      expect(AgentContract.isWriterAgent(prototyper)).toBe(true)
+    }),
+  { git: true },
 )
 
 it.instance("outside the edit window the prototyper's profile is explore's", () =>
@@ -198,3 +201,22 @@ it.instance(
     }),
   { config: { agent: { researcher: { permission: { edit: "allow" } } } } },
 )
+
+describe("the prototyper's write window follows the execution directory", () => {
+  test("it is prototypes/ under the directory, named relative to the worktree", () => {
+    expect(Agent.prototypeEditPattern("/repo", "/repo")).toBe("prototypes/**")
+    expect(Agent.prototypeEditPattern("/repo", "/repo/packages/demo")).toBe("packages/demo/prototypes/**")
+    // A directory outside the worktree has no worktree-relative name.
+    expect(Agent.prototypeEditPattern("/repo", "/elsewhere")).toBe("prototypes/**")
+  })
+
+  test("in a subdirectory the files the tools ask for pass, and the root prototypes/ does not", () => {
+    const rules = Permission.fromConfig({
+      edit: { "*": "deny", [Agent.prototypeEditPattern("/repo", "/repo/packages/demo")]: "allow" },
+    })
+    // write/edit/apply_patch ask with the path relative to the worktree.
+    expect(Permission.evaluate("edit", "packages/demo/prototypes/experiment.ts", rules).action).toBe("allow")
+    expect(Permission.evaluate("edit", "prototypes/experiment.ts", rules).action).toBe("deny")
+    expect(Permission.evaluate("edit", "packages/demo/src/index.ts", rules).action).toBe("deny")
+  })
+})

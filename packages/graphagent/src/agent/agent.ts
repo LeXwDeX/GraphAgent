@@ -40,7 +40,20 @@ import { ModelV2 } from "@graphagent/core/model"
 import { LocationServiceMap } from "@graphagent/core/location-layer"
 import { Reference } from "@graphagent/core/reference"
 import { Location } from "@graphagent/core/location"
+
 import { PluginV2 } from "@graphagent/core/plugin"
+
+/**
+ * The edit pattern for the prototyper's one write window: `prototypes/**` under the execution directory.
+ * File tools ask for edit permission with paths relative to the worktree, so a session or DAG node
+ * running in a subdirectory must name that subdirectory too. A directory outside the worktree has no
+ * worktree-relative name and keeps the bare pattern.
+ */
+export function prototypeEditPattern(worktree: string, directory: string): string {
+  const prefix = path.relative(worktree, directory).replaceAll("\\", "/")
+  if (prefix === "" || prefix.startsWith("..") || path.isAbsolute(prefix)) return "prototypes/**"
+  return `${prefix}/prototypes/**`
+}
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -295,11 +308,15 @@ export const layer = Layer.effect(
           },
           prototyper: {
             name: "prototyper",
-            // The explore profile, with one window to write in: prototypes/ in the node workspace. A pattern-scoped
+            // The explore profile, with one window to write in: prototypes/ in the execution directory (the node
+            // workspace), which file tools name relative to the worktree (`prototypeEditPattern`). A pattern-scoped
             // allow keeps the file tools advertised, so this agent is a writer to the DAG (and `private`).
             permission: Permission.merge(
               defaults,
-              Permission.fromConfig({ ...inspection, edit: { "*": "deny", "prototypes/**": "allow" } }),
+              Permission.fromConfig({
+                ...inspection,
+                edit: { "*": "deny", [prototypeEditPattern(ctx.worktree, ctx.directory)]: "allow" },
+              }),
               user,
             ),
             description:
