@@ -12,6 +12,7 @@ import { SessionCancellation } from "@/session/cancellation"
 import type { HookCommand, HookEvent, HookSummary, RewakeToken, Settings } from "../types"
 import type { TriggerResult } from "../trigger-result"
 import type { HookExecution } from "../handlers/shared"
+import { enabledMatchers } from "./disabled"
 
 /**
  * One running foreground handler per (session, hook digest). Several fibers may
@@ -146,11 +147,14 @@ export function claimStopContinuation(state: State, sessionID: string, event: Ho
   return true
 }
 
-/** Literal FileChanged matcher entries are the static watch list. */
+/**
+ * Literal FileChanged matcher entries are the static watch list. A hook that
+ * `disableAllHooks` switched off adds no path: only the enabled layers' matchers count.
+ */
 export function staticWatchPaths(settings: Settings): readonly string[] {
   return [
     ...new Set(
-      (settings.hooks?.FileChanged ?? [])
+      enabledMatchers(settings, settings.hooks?.FileChanged ?? [])
         .flatMap((group) => (group.matcher === undefined || group.matcher === "" ? [] : group.matcher.split("|")))
         .filter(Boolean),
     ),
