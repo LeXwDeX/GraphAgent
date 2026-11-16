@@ -6,8 +6,10 @@
 #           native hashes and returning them as artifacts for review)
 # Agents  : "GitHub-hosted Agents" pool, billed per minute:
 #           ubuntu-24.04-8-core (x86_64-linux) and macos-26-arm64
-#           (aarch64-darwin). aarch64-linux and x86_64-darwin are not covered
-#           here; the Nix system is derived from the agent itself.
+#           (aarch64-darwin). aarch64-linux and x86_64-darwin cannot be routed
+#           here; .github/workflows/nix-extra-platforms.yml covers them with
+#           the same path list and verify_build.py. The Nix system is derived
+#           from the agent itself.
 # ============================================================================
 
 name: $(Date:yyyyMMdd)$(Rev:.r)
