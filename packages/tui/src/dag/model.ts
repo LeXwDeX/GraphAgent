@@ -5,22 +5,96 @@
  * state, or SDK access lives here; UI code maps the returned tokens and
  * strings to theme colors and components. */
 
-import type { DagNode } from "@graphagent/sdk"
+import type { DagNode, DagWorkflowSummary } from "@graphagent/sdk"
+import { computeWaves, type DagWaveNode } from "./waves"
 
-export type { DagNode }
+export type { DagNode, DagWorkflowSummary }
 
 /** Theme token a DAG status maps to. The theme owns the concrete color. */
 export type DagStatusToken =
   "success" | "error" | "statusPaused" | "statusRunning" | "statusQueued" | "textMuted" | "text"
 
+/**
+ * A node as the TUI keeps it. The wire row (`DagNode`) also carries the node's
+ * full `output` (large), its model, a last-activity stamp and the bounded
+ * safety-denial audit. No DAG surface shows those, so a row drops them when it
+ * enters the store. Numbers are finite: the SDK's "NaN"/"Infinity" string
+ * sentinels are resolved once here instead of at every read.
+ */
+export interface DagNodeRow {
+  readonly id: string
+  readonly workflow_id: string
+  readonly name: string
+  readonly worker_type: string
+  readonly status: string
+  readonly required: boolean
+  readonly depends_on: readonly string[]
+  readonly child_session_id?: string
+  /** Per-attempt execution location. */
+  readonly directory?: string
+  readonly head?: string
+  readonly attempt_id?: string
+  readonly accepted_input_revision?: number
+  readonly snapshot_revision?: number
+  readonly agent_messages?: {
+    readonly queued: number
+    readonly delivered: number
+    readonly undeliverable: number
+    readonly closed_reason?: string
+  }
+  readonly error_reason?: string
+  /** Failure class; `failed` with class `cancelled` displays as cancelled. */
+  readonly error_class?: string
+  readonly deadline_ms?: number
+  readonly replan_attempts: number
+  readonly started_at?: number
+  readonly completed_at?: number
+}
+
+/** A finite number from an SDK numeric field, or undefined for its non-finite string sentinels. */
+export function dagFinite(value: number | string | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+/** The stored form of a wire node: display fields only, no `output`, finite numbers, no shared references. */
+export function dagNodeRow(node: DagNode): DagNodeRow {
+  const deadline = dagFinite(node.deadline_ms)
+  const startedAt = dagFinite(node.started_at)
+  const completedAt = dagFinite(node.completed_at)
+  return {
+    id: node.id,
+    workflow_id: node.workflow_id,
+    name: node.name,
+    worker_type: node.worker_type,
+    status: node.status,
+    required: node.required,
+    depends_on: [...node.depends_on],
+    ...(node.child_session_id !== undefined ? { child_session_id: node.child_session_id } : {}),
+    ...(node.directory !== undefined ? { directory: node.directory } : {}),
+    ...(node.head !== undefined ? { head: node.head } : {}),
+    ...(node.attempt_id !== undefined ? { attempt_id: node.attempt_id } : {}),
+    ...(node.accepted_input_revision !== undefined ? { accepted_input_revision: node.accepted_input_revision } : {}),
+    ...(node.snapshot_revision !== undefined ? { snapshot_revision: node.snapshot_revision } : {}),
+    ...(node.agent_messages !== undefined ? { agent_messages: { ...node.agent_messages } } : {}),
+    ...(node.error_reason !== undefined ? { error_reason: node.error_reason } : {}),
+    ...(node.error_class !== undefined ? { error_class: node.error_class } : {}),
+    ...(deadline !== undefined ? { deadline_ms: deadline } : {}),
+    replan_attempts: dagFinite(node.replan_attempts) ?? 0,
+    ...(startedAt !== undefined ? { started_at: startedAt } : {}),
+    ...(completedAt !== undefined ? { completed_at: completedAt } : {}),
+  }
+}
+
 /** Acceptance and durable model-input association are separate delivery states. */
-export function formatDagAgentMessages(node: DagNode): string | undefined {
+export function formatDagAgentMessages(node: Pick<DagNodeRow, "agent_messages">): string | undefined {
   const messages = node.agent_messages
   if (!messages) return undefined
   return `messages ${messages.queued} queued · ${messages.delivered} delivered · ${messages.undeliverable} undeliverable`
 }
 
-export function formatDagAgentInput(node: DagNode): string | undefined {
+export function formatDagAgentInput(
+  node: Pick<DagNodeRow, "attempt_id" | "accepted_input_revision" | "snapshot_revision">,
+): string | undefined {
   if (!node.attempt_id) return undefined
   return `attempt ${node.attempt_id} · input ${node.accepted_input_revision ?? 0} · snapshot ${node.snapshot_revision ?? 0}`
 }
@@ -117,27 +191,180 @@ export function dagEscalationLabel(summary: { escalatedNodes?: number | string }
   return `timeout ×${escalated}`
 }
 
+/** What a node or workflow looks like on screen: the seven persisted node statuses, the structural `cancelled`, and the workflow-only `paused` and `stepping`. */
+export type DagDisplayState =
+  | "pending"
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "aborted"
+  | "skipped"
+  | "cancelled"
+  | "paused"
+  | "stepping"
+
+/** Character of a progress-bar segment; every glyph is a box-drawing line. */
+export type DagBarGlyph = "━" | "─" | "╌"
+
+export interface DagStateStyle {
+  /** Theme token the state is drawn in. */
+  readonly token: DagStatusToken
+  /** Bar segment character. Color is never the only cue: a thin line waits, dashes mean skipped, cancelled or aborted. */
+  readonly bar: DagBarGlyph
+  /** Symbol in front of a node row. */
+  readonly glyph: string
+  /** How bad the state is when a wave collapses into one segment: the highest rank wins. */
+  readonly rank: number
+}
+
+interface DagStateRule {
+  readonly status: string
+  /** Only matches a failure of this class. */
+  readonly errorClass?: string
+  readonly state: DagDisplayState
+}
+
+/**
+ * Persisted status, plus failure class, to display state. The server persists
+ * seven node statuses. Cancellation is not one of them: a cancelled node is
+ * `failed` with `error_class` "cancelled" (the rule `displayState` applies in
+ * `@graphagent/schema/dag-status`), so that row has to sit above plain
+ * `failed`. `paused`, `stepping` and `cancelled` are workflow statuses; no
+ * node row holds them. The first matching row wins.
+ */
+export const DAG_STATE_TABLE: readonly DagStateRule[] = [
+  { status: "pending", state: "pending" },
+  { status: "queued", state: "queued" },
+  { status: "running", state: "running" },
+  { status: "completed", state: "completed" },
+  { status: "failed", errorClass: "cancelled", state: "cancelled" },
+  { status: "failed", state: "failed" },
+  { status: "aborted", state: "aborted" },
+  { status: "skipped", state: "skipped" },
+  { status: "paused", state: "paused" },
+  { status: "stepping", state: "stepping" },
+  { status: "cancelled", state: "cancelled" },
+]
+
+/**
+ * Display state to token, bar glyph, row symbol and collapse rank. Waiting
+ * states share a color with the ones that will never run, and the thin line
+ * against the dashed one tells them apart without color. The rank order is
+ * failed > running > paused > queued > skipped > completed. Paused and
+ * stepping keep the plain circle: only a workflow can be in them, and a
+ * workflow is labelled in text rather than by a node symbol.
+ */
+export const DAG_STATE_STYLE: Readonly<Record<DagDisplayState, DagStateStyle>> = {
+  completed: { token: "success", bar: "━", glyph: "✓", rank: 0 },
+  skipped: { token: "statusQueued", bar: "╌", glyph: "⊘", rank: 1 },
+  cancelled: { token: "statusQueued", bar: "╌", glyph: "⊘", rank: 1 },
+  aborted: { token: "statusQueued", bar: "╌", glyph: "↯", rank: 1 },
+  pending: { token: "statusQueued", bar: "─", glyph: "○", rank: 2 },
+  queued: { token: "statusQueued", bar: "─", glyph: "○", rank: 2 },
+  paused: { token: "statusPaused", bar: "━", glyph: "○", rank: 3 },
+  stepping: { token: "statusPaused", bar: "━", glyph: "○", rank: 3 },
+  running: { token: "statusRunning", bar: "━", glyph: "●", rank: 4 },
+  failed: { token: "error", bar: "━", glyph: "✗", rank: 5 },
+}
+
+/** A status the table does not know, such as one a newer server adds: plain text, waiting line, ranked with the waiting states. */
+const UNKNOWN_STYLE: DagStateStyle = { token: "text", bar: "─", glyph: "○", rank: 2 }
+
+/** The display state of a node or workflow status; undefined for a status the table does not know. */
+export function dagDisplayState(status: string, errorClass?: string): DagDisplayState | undefined {
+  return DAG_STATE_TABLE.find(
+    (rule) => rule.status === status && (rule.errorClass === undefined || rule.errorClass === errorClass),
+  )?.state
+}
+
+/** Token, bar glyph, row symbol and rank for a status. */
+export function dagStateStyle(status: string, errorClass?: string): DagStateStyle {
+  const state = dagDisplayState(status, errorClass)
+  return state === undefined ? UNKNOWN_STYLE : DAG_STATE_STYLE[state]
+}
+
 /**
  * Shared status→theme-token mapping for every DAG surface, so one status never
  * renders in different colors across views. Accepts both workflow and node
- * statuses. Callers resolve the token against the active theme.
+ * statuses; pass the node's `error_class` so a cancelled node reads as
+ * cancelled. Callers resolve the token against the active theme.
  */
-export function dagStatusColor(status: string): DagStatusToken {
-  if (status === "completed") return "success"
-  if (status === "failed") return "error"
-  if (status === "paused" || status === "stepping") return "statusPaused"
-  if (status === "running") return "statusRunning"
-  if (status === "pending" || status === "queued") return "statusQueued"
-  if (status === "skipped" || status === "cancelled" || status === "aborted") return "textMuted"
-  return "text"
+export function dagStatusColor(status: string, errorClass?: string): DagStatusToken {
+  return dagStateStyle(status, errorClass).token
 }
 
 /** Status glyph for node rows — mirrors the todo-item ✓ vocabulary. */
-export function dagNodeGlyph(status: string): string {
-  if (status === "completed") return "✓"
-  if (status === "failed") return "✗"
-  if (status === "aborted") return "↯"
-  if (status === "skipped" || status === "cancelled") return "⊘"
-  if (status === "queued") return "◌"
-  return "○"
+export function dagNodeGlyph(status: string, errorClass?: string): string {
+  return dagStateStyle(status, errorClass).glyph
+}
+
+/** Progress-bar character for a status. */
+export function dagBarGlyph(status: string, errorClass?: string): DagBarGlyph {
+  return dagStateStyle(status, errorClass).bar
+}
+
+/** Workflow statuses that are still going: the main agent has not finished with them. */
+const ACTIVE_WORKFLOW_STATUSES: ReadonlySet<string> = new Set(["running", "stepping", "paused"])
+
+export interface DagMainSelection {
+  /** The workflow the status band shows, if any. */
+  readonly main: DagWorkflowSummary | undefined
+  /** Every other workflow, for the `+N` tail. */
+  readonly others: readonly DagWorkflowSummary[]
+  /** An active or an unconfirmed failed workflow exists: the condition for an automatic band. */
+  readonly attention: boolean
+}
+
+/**
+ * Pick the one workflow the status band shows from a session tree's workflows.
+ * `workflows` is newest first, the order the server lists a session's
+ * workflows in (by creation time, descending), so "most recent" among equals
+ * is the first one. Order of preference:
+ *
+ * 1. the workflow the user picked in the panel, while it still exists;
+ * 2. an active one (running, stepping, paused);
+ * 3. a failed one the user has not confirmed (`acknowledged` holds the ids
+ *    they opened in the panel).
+ *
+ * A finished workflow is only ever picked by rule 1; `attention` says whether
+ * anything still needs the band.
+ */
+export function selectMainWorkflow(
+  workflows: readonly DagWorkflowSummary[],
+  memory: { readonly chosen?: string; readonly acknowledged?: ReadonlySet<string> } = {},
+): DagMainSelection {
+  const chosen = memory.chosen === undefined ? undefined : workflows.find((workflow) => workflow.id === memory.chosen)
+  const active = workflows.find((workflow) => ACTIVE_WORKFLOW_STATUSES.has(workflow.status))
+  const unconfirmed = workflows.find(
+    (workflow) => workflow.status === "failed" && !(memory.acknowledged?.has(workflow.id) ?? false),
+  )
+  const main = chosen ?? active ?? unconfirmed
+  return {
+    main,
+    others: workflows.filter((workflow) => workflow !== main),
+    attention: active !== undefined || unconfirmed !== undefined,
+  }
+}
+
+/**
+ * One workflow ready to draw: its summary, its nodes, and the nodes grouped
+ * into waves. `nodes` is empty until the table has loaded, and the display
+ * falls back to the summary counts.
+ */
+export interface DagWorkflowView<T extends DagWaveNode = DagNodeRow> {
+  readonly summary: DagWorkflowSummary
+  readonly nodes: readonly T[]
+  readonly waves: readonly (readonly T[])[]
+  /** Nodes outside every wave: a dependency cycle, or a dependency on one. */
+  readonly unplaced: readonly T[]
+}
+
+export function dagWorkflowView<T extends DagWaveNode>(
+  summary: DagWorkflowSummary,
+  nodes: readonly T[] | undefined,
+): DagWorkflowView<T> {
+  const rows = nodes ?? []
+  const { waves, unplaced } = computeWaves(rows)
+  return { summary, nodes: rows, waves, unplaced }
 }

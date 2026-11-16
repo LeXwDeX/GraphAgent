@@ -31,6 +31,8 @@ import type {
 
 export type { DagWorkflowSummary }
 import { createStore, produce, reconcile } from "solid-js/store"
+import { DagMerge } from "@graphagent/core/dag/merge"
+import { dagFinite, dagNodeRow } from "../dag/model"
 import { createEventGate } from "./event-gate"
 import { createInterestAggregator } from "./interest"
 import {
@@ -70,6 +72,25 @@ import { batch, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { TuiLog } from "../util/log"
+
+type SdkEventOf<T extends SdkEvent["type"]> = Extract<SdkEvent, { type: T }>["properties"]
+
+/** How a session's latest turn ended (`session.turn.settled`). */
+export type TurnOutcomeType = SdkEventOf<"session.turn.settled">["outcome"]["type"]
+
+/** The latest turn a session settled; later turns replace it. */
+export interface SettledTurn {
+  turnID: string
+  outcome: TurnOutcomeType
+  /** Epoch milliseconds. */
+  timeEnded: number
+}
+
+/** A workflow a display surface shows, and the session that owns it. */
+export interface DagWatch {
+  workflowID: string
+  sessionID: string
+}
 
 function search<T>(items: T[], target: string, key: (item: T) => string) {
   let left = 0
@@ -168,6 +189,17 @@ export const {
       dag: {
         [sessionID: string]: DagWorkflowSummary[]
       }
+      /**
+       * Node tables of the workflows a display surface shows (#1032 F4), one
+       * merge feed each; see `dag.watch`. Rows carry no `output`.
+       */
+      dagNodes: {
+        [workflowID: string]: DagMerge.Feed
+      }
+      /** The latest settled turn per session; a reconnect clears it, since nothing can read it back. */
+      turn_settled: {
+        [sessionID: string]: SettledTurn
+      }
       summary: {
         [sessionID: string]: SessionSummary
       }
@@ -217,6 +249,8 @@ export const {
       formatter: [],
       vcs: undefined,
       dag: {},
+      dagNodes: {},
+      turn_settled: {},
       summary: {},
       hydrated: [],
       taskIndex: {},
@@ -267,6 +301,21 @@ export const {
 
     let disposed = false
     let bootstrapAttempt = 0
+    // #1032 F4: the node tables of the workflows a display surface shows.
+    // `dagFeeds` holds the authoritative merge feed per workflow; `store.dagNodes`
+    // mirrors it for readers. Every change replaces a whole entry, so the store
+    // never mutates an object the feed still shares with it.
+    const dagFeeds = new Map<string, DagMerge.Feed>()
+    // Surface -> (workflow -> owning session): what each surface shows.
+    const dagWatches = new Map<string, Map<string, string>>()
+    // The table read in flight per workflow. A newer read replaces it, and an
+    // answer that no longer matches is dropped.
+    const dagReads = new Map<string, symbol>()
+    // The session set last handed to the aggregator and its confirmation: a
+    // second surface showing the same workflow must wait for the same answer
+    // before it reads, or it would read ahead of the worker.
+    let dagInterestKey = ""
+    let dagInterestSettled: Promise<void> = Promise.resolve()
     const submissionAccepted = new Map<string, () => void>()
     const ancillaryAttempts = new Map<string, object>()
     const ancillaryRevision = new Map<string, number>()
@@ -446,6 +495,7 @@ export const {
     }
 
     function dropSession(sessionID: string) {
+      dropDagOwner(sessionID)
       const messages = store.message[sessionID] ?? []
       const partIDs = messages.flatMap((message) => (store.part[message.id] ?? []).map((part) => part.id))
       stream.clearParts(partIDs)
@@ -467,6 +517,7 @@ export const {
           delete draft.goal[sessionID]
           delete draft.session_diff[sessionID]
           delete draft.dag[sessionID]
+          delete draft.turn_settled[sessionID]
           delete draft.session_status[sessionID]
           delete draft.session_load_errors[sessionID]
           for (const [childID, entry] of Object.entries(draft.taskIndex)) {
@@ -703,6 +754,198 @@ export const {
       )
     }
 
+    /** Workflow -> owning session over every surface; the first surface to name a workflow decides. */
+    function dagWatched() {
+      const watched = new Map<string, string>()
+      for (const entries of dagWatches.values()) {
+        for (const [workflowID, sessionID] of entries) {
+          if (!watched.has(workflowID)) watched.set(workflowID, sessionID)
+        }
+      }
+      return watched
+    }
+
+    /** Set or drop a workflow's feed in the feed map and in the store. */
+    function writeDagFeed(workflowID: string, feed: DagMerge.Feed | undefined) {
+      if (feed) dagFeeds.set(workflowID, feed)
+      else {
+        dagFeeds.delete(workflowID)
+        dagReads.delete(workflowID)
+      }
+      setStore(
+        "dagNodes",
+        produce((draft) => {
+          if (feed) draft[workflowID] = feed
+          else delete draft[workflowID]
+        }),
+      )
+    }
+
+    /**
+     * The graph revision a freshly read table is stamped with: the `dag.nodes`
+     * answer carries none. A push buffered meanwhile knows the server's current
+     * one (a resync names it); with none buffered the summary's is the best
+     * there is, and a later push that disagrees reads the table once more.
+     */
+    function dagGraphRev(workflowID: string, sessionID: string, feed: DagMerge.Feed) {
+      if (feed.status === "loading" && feed.buffered.length > 0) {
+        return feed.buffered.reduce((newest, patch) => (patch.seq > newest.seq ? patch : newest)).graphRev
+      }
+      return dagFinite(store.dag[sessionID]?.find((summary) => summary.id === workflowID)?.graphRev) ?? 0
+    }
+
+    /**
+     * Read a workflow's whole node table. The read starts a feed in `loading`
+     * (or keeps the one that is), so pushes that arrive meanwhile are buffered
+     * and replayed on top of the answer. `reset` forgets what was buffered, for
+     * a reconnect. A read already in flight is replaced: its answer predates
+     * the push that asked for this one. A failed read leaves the feed loading
+     * and is not retried by itself; the next resync, graph change or reconnect
+     * reads again.
+     */
+    function readDagNodes(workflowID: string, reset = false) {
+      const sessionID = dagWatched().get(workflowID)
+      if (sessionID === undefined) return
+      const previous = dagFeeds.get(workflowID)
+      const feed = previous?.status === "loading" && !reset ? previous : DagMerge.loading()
+      if (feed !== previous) writeDagFeed(workflowID, feed)
+      const read = Symbol(workflowID)
+      dagReads.set(workflowID, read)
+      const workspace = project.workspace.current()
+      void sdk.client.dag
+        .nodes({ dagID: workflowID }, { headers: locationHeaders({ workspace }) })
+        .then((response) => {
+          if (disposed || dagReads.get(workflowID) !== read) return
+          const current = dagFeeds.get(workflowID)
+          if (!response.data) {
+            TuiLog.write("error", "Loading DAG nodes failed", { workflowID, status: response.response?.status })
+            return
+          }
+          if (!current) return
+          writeDagFeed(
+            workflowID,
+            DagMerge.receive(current, {
+              workflowID,
+              graphRev: dagGraphRev(workflowID, sessionID, current),
+              seq: 0,
+              nodes: response.data.map(dagNodeRow),
+            }),
+          )
+        })
+        .catch((error) => {
+          TuiLog.write("error", "Loading DAG nodes failed", { workflowID, error: String(error) })
+        })
+        .finally(() => {
+          if (dagReads.get(workflowID) === read) dagReads.delete(workflowID)
+        })
+    }
+
+    /**
+     * `dag.workflow.nodes.updated`: merge a push into the feed of a workflow a
+     * surface shows. A push for any other workflow is ignored: it is not
+     * loaded, so there is nothing to merge into, and the read that loads it
+     * starts after the interest is confirmed.
+     */
+    function reduceDagNodes(properties: SdkEventOf<"dag.workflow.nodes.updated">) {
+      const feed = dagFeeds.get(properties.workflowID)
+      if (!feed) return
+      const patch: DagMerge.NodesPatch = {
+        workflowID: properties.workflowID,
+        graphRev: dagFinite(properties.graphRev) ?? 0,
+        seq: properties.seq,
+        nodes: properties.nodes.map(dagNodeRow),
+        removed: properties.removed,
+        ...(properties.resync === true ? { resync: true } : {}),
+      }
+      const next = DagMerge.push(feed, patch)
+      // A stale or duplicate push leaves a loaded view as it is.
+      if (next === feed) return
+      writeDagFeed(properties.workflowID, next)
+      // A resync, or a push from another graph revision than the loaded view,
+      // cannot be merged: the whole table is read again, once.
+      if (patch.resync === true || (feed.status === "ready" && next.status === "loading")) {
+        readDagNodes(properties.workflowID)
+      }
+    }
+
+    function sameWatch(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>) {
+      if (a.size !== b.size) return false
+      for (const [workflowID, sessionID] of a) if (b.get(workflowID) !== sessionID) return false
+      return true
+    }
+
+    /**
+     * Bring feeds and interest in line with what the surfaces show: drop the
+     * feed of a workflow nobody shows any more, hand the owning sessions to the
+     * aggregator (source `dag`), and only after the worker confirmed them read
+     * the table of every workflow that has no feed yet.
+     */
+    async function applyDagWatches() {
+      const watched = dagWatched()
+      // Dropping a feed while walking the map is safe: an entry removed behind the walk is not visited again.
+      for (const workflowID of dagFeeds.keys()) {
+        if (!watched.has(workflowID)) writeDagFeed(workflowID, undefined)
+      }
+      const sessions = [...new Set(watched.values())].toSorted()
+      const key = sessions.join("\u0000")
+      if (key !== dagInterestKey) {
+        dagInterestKey = key
+        dagInterestSettled = sessions.length > 0 ? interest.set("dag", sessions) : interest.delete("dag")
+      }
+      const settled = dagInterestSettled
+      try {
+        await settled
+      } catch (error) {
+        // The worker never confirmed, so nothing is registered: take the source
+        // back out, and the next declaration of these sessions asks again. A
+        // second failure of the same worker has nothing to add to the log below.
+        if (dagInterestSettled === settled) {
+          dagInterestKey = ""
+          interest.delete("dag").catch(() => {})
+        }
+        TuiLog.write("error", "Registering DAG interest failed", { error: String(error) })
+        return
+      }
+      if (disposed) return
+      for (const workflowID of dagWatched().keys()) {
+        if (!dagFeeds.has(workflowID)) readDagNodes(workflowID)
+      }
+    }
+
+    /**
+     * Declare the workflows one display surface (`source`, for example the
+     * status band or the `/dag` panel) shows. It replaces what that surface
+     * declared before. A surface must end its declaration with
+     * `watch(source, [])` when it goes away (a component does so on unmount):
+     * the table and the interest stay registered until then. Calling again
+     * with the same workflows does nothing. Resolves once the interest is
+     * confirmed and the first table reads have started, not when they finish;
+     * read the result with `dag.nodes`.
+     */
+    async function watchDag(source: string, workflows: readonly DagWatch[]) {
+      const next = new Map<string, string>()
+      for (const { workflowID, sessionID } of workflows) next.set(workflowID, sessionID)
+      const previous = dagWatches.get(source)
+      if (previous ? sameWatch(previous, next) : next.size === 0) return
+      if (next.size === 0) dagWatches.delete(source)
+      else dagWatches.set(source, next)
+      await applyDagWatches()
+    }
+
+    /** A deleted session owns no workflow any more: its watches end. */
+    function dropDagOwner(sessionID: string) {
+      let changed = false
+      for (const [source, entries] of dagWatches) {
+        for (const [workflowID, owner] of entries) {
+          if (owner !== sessionID) continue
+          entries.delete(workflowID)
+          changed = true
+        }
+        if (entries.size === 0) dagWatches.delete(source)
+      }
+      if (changed) void applyDagWatches()
+    }
+
     function applySessionList(sessions: Session[]) {
       batch(() => {
         setStore("session", reconcile(sessions))
@@ -866,6 +1109,23 @@ export const {
           // sidebar rows and re-trigger their signature-guarded fetches.
           setStore("dag", event.properties.sessionID, reconcile(event.properties.summaries))
           break
+
+        // #1032: node-level push for a workflow a surface shows; merged by the
+        // rules in `DagMerge`, and only after the interest that delivers it.
+        case "dag.workflow.nodes.updated":
+          if (workspace !== undefined && workspace !== project.workspace.current()) break
+          reduceDagNodes(event.properties)
+          break
+
+        // #1032 D3: how the latest turn of a session ended. Nothing reads it
+        // back, so an event that arrives out of order must not replace a newer one.
+        case "session.turn.settled": {
+          const { sessionID, turnID, outcome, timeEnded } = event.properties
+          const previous = store.turn_settled[sessionID]
+          if (previous && previous.timeEnded > timeEnded) break
+          setStore("turn_settled", sessionID, { turnID, outcome: outcome.type, timeEnded })
+          break
+        }
 
         case "session.diff":
           changedAncillary(event.properties.sessionID, "session_diff")
@@ -1331,6 +1591,23 @@ export const {
       }
     }
     onResync(guardedRefreshDagSummaries)
+    // #1032: every shown workflow reads its table again, from an empty buffer.
+    // A shown workflow with no feed yet is one whose interest the worker never
+    // confirmed: declaring it again would be a no-op, so the reconnect registers
+    // the interest again and reads it only after the worker confirms.
+    onResync(async () => {
+      let unconfirmed = false
+      for (const workflowID of dagWatched().keys()) {
+        if (dagFeeds.has(workflowID)) readDagNodes(workflowID, true)
+        else unconfirmed = true
+      }
+      if (unconfirmed) await applyDagWatches()
+    })
+    // The settled-turn slice has no read-back: a turn that settled during the
+    // disconnect is unknown, and an old outcome must not pass for the latest.
+    onResync(() => {
+      setStore("turn_settled", reconcile({}))
+    })
     onResync(refreshLifecycle)
     onResync(refreshGoals)
     onResync(refreshTrust)
@@ -1358,6 +1635,9 @@ export const {
 
     onCleanup(() => {
       disposed = true
+      dagFeeds.clear()
+      dagWatches.clear()
+      dagReads.clear()
       ancillaryAttempts.clear()
       submissionAccepted.clear()
       unsubscribeStream()
@@ -1549,6 +1829,15 @@ export const {
       },
       /** Subscribe a refresh function to the single reconnect entry point. */
       onResync,
+      /** #1032: the node tables of the workflows the display surfaces show. */
+      dag: {
+        watch: watchDag,
+        /** The loaded node rows of a workflow, or undefined while its table is not loaded. */
+        nodes(workflowID: string) {
+          const feed = store.dagNodes[workflowID]
+          return feed ? DagMerge.snapshotOf(feed)?.nodes : undefined
+        },
+      },
       /** #1040: project-layer trust entries and decisions. */
       trust: {
         refresh: refreshTrust,

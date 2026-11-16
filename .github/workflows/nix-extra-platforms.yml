@@ -1,0 +1,171 @@
+# ============================================================================
+# Nix verification, extra platforms (GitHub Actions)
+# ----------------------------------------------------------------------------
+# Purpose : Measure and build the native Nix dependency hash and CLI package
+#           on the two platforms the Azure pipeline cannot route:
+#           aarch64-linux and x86_64-darwin (#1095)
+# Trigger : PRs to main touching Nix inputs (the same path list as
+#           .azure-pipelines/nix-verify.yml), manual run (optionally measuring
+#           and applying the native hash in the runner for review)
+# Runners : GitHub-hosted standard runners, free for public repositories:
+#           ubuntu-24.04-arm (aarch64-linux), macos-26-intel (x86_64-darwin).
+#           The Nix system is derived from the runner and must equal the one
+#           the job names.
+# Result  : Same contract as nix-verify.yml: nix/scripts/verify_build.py fails
+#           the job when the committed nodeModules hash differs from the native
+#           measurement. The measured hash is printed in the log, the job
+#           summary and an annotation, and nix-evidence/ is uploaded as an
+#           artifact either way.
+# ============================================================================
+
+name: Nix verification (extra platforms)
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - package.json
+      - bun.lock
+      - .node-version
+      - config_assistant/go.mod
+      - .azure-pipelines/nix-verify.yml
+      - .github/workflows/nix-extra-platforms.yml
+  workflow_dispatch:
+    inputs:
+      regenerate_hashes:
+        description: Measure and apply the native hash before building; return artifacts for review
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-extra-platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-build:
+    name: Nix (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: x86_64-darwin
+            runner: macos-26-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_SYSTEM: ${{ matrix.system }}
+      REGENERATE_HASHES: ${{ inputs.regenerate_hashes || false }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 3 \
+            --output "$RUNNER_TEMP/nix-install" \
+            https://releases.nixos.org/nix/nix-2.35.0/install
+          sh "$RUNNER_TEMP/nix-install" --daemon --yes
+
+      - name: Verify native toolchain, dependency hash and CLI package
+        run: |
+          set -euo pipefail
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+          export NIX_CONFIG="experimental-features = nix-command flakes"
+          case "$(uname -s)-$(uname -m)" in
+            Linux-x86_64) system=x86_64-linux ;;
+            Linux-aarch64) system=aarch64-linux ;;
+            Darwin-x86_64) system=x86_64-darwin ;;
+            Darwin-arm64) system=aarch64-darwin ;;
+            *) echo "::error::Unsupported runner $(uname -sm)"; exit 1 ;;
+          esac
+          echo "Nix system: $system"
+          if [[ "$system" != "$EXPECTED_SYSTEM" ]]; then
+            echo "::error::This job verifies $EXPECTED_SYSTEM but the runner is $system"
+            exit 1
+          fi
+          python3 nix/scripts/test_verify_build.py
+          args=(--system "$system")
+          if [[ "$REGENERATE_HASHES" == "true" ]]; then args+=(--apply); fi
+          python3 nix/scripts/verify_build.py "${args[@]}"
+
+      # Runs after a failed verification too: a stale hash is the expected
+      # first result, and the measured value is what the backfill needs.
+      - name: Report measured hash
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          system = os.environ["EXPECTED_SYSTEM"]
+          applied = os.environ["REGENERATE_HASHES"] == "true"
+          sha = os.environ["GITHUB_SHA"]
+          artifact = "nix-{}-{}-{}".format(system, sha, os.environ["GITHUB_RUN_ATTEMPT"])
+
+
+          def load(text):
+              try:
+                  return json.loads(text)
+              except ValueError:
+                  return {}
+
+
+          measurement = Path("nix-evidence/measurement.json")
+          measured = load(measurement.read_text()).get("node_modules_hash") if measurement.is_file() else None
+          shown = subprocess.run(["git", "show", "HEAD:nix/hashes.json"], capture_output=True, text=True)
+          committed = load(shown.stdout).get("nodeModules", {}).get(system) if shown.returncode == 0 else None
+
+          if not measured:
+              level, title = "error", "Nix measurement missing ({})".format(system)
+              verdict = "No native measurement was produced; the job log and the evidence artifact show why."
+          elif measured == committed:
+              level, title = "notice", "Nix hash current ({})".format(system)
+              verdict = "The committed nodeModules hash equals the native measurement."
+          else:
+              level, title = "warning" if applied else "error", "Stale Nix hash ({})".format(system)
+              verdict = "The committed nodeModules hash differs from the native measurement."
+          print("::{} title={}::{} measured={} committed={}".format(level, title, verdict, measured, committed))
+
+          rows = [
+              ("Nix system", system),
+              ("Measured nodeModules hash", measured or "none"),
+              ("Committed nix/hashes.json", committed or "none"),
+              ("Source commit", sha),
+              ("Evidence artifact", artifact),
+          ]
+          lines = ["### Nix native measurement ({})".format(system), "", verdict, "", "| Item | Value |", "|---|---|"]
+          lines += ["| {} | `{}` |".format(name, value) for name, value in rows]
+          if measured and measured != committed:
+              lines += ["", "Entry for `nodeModules` in `nix/hashes.json`:", "", "```", '"{}": "{}"'.format(system, measured), "```"]
+              if applied:
+                  lines += ["", "The measured hash was applied only inside this runner; nothing was committed."]
+          report = "\n".join(lines) + "\n"
+          print(report)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(report)
+          PY
+
+      - name: Preserve measured hashes and native build evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nix-${{ matrix.system }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: nix-evidence/
+          if-no-files-found: error
