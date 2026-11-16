@@ -510,6 +510,53 @@ export const NodeDeadlineExtended = Event.define({
 })
 export type NodeDeadlineExtended = typeof NodeDeadlineExtended.Type
 
+/**
+ * #1031 M7: the DAG safety guard denied one tool call of an unattended node.
+ * The node keeps running (a tool error, not a lifecycle event); the row is
+ * audit evidence for `inspect`, coverage and the parent reports.
+ */
+export const NodeSafetyDenied = Event.define({
+  type: "dag.node.safety_denied",
+  ...options,
+  schema: {
+    ...Base,
+    nodeID: NodeID,
+    /** Execution attempt that produced the call (the row's replan-attempt ordinal). */
+    attempt: NonNegativeInt,
+    /**
+     * `SF-1..6` for the built-in safety list (outside-project writes, credential
+     * reads, destructive and publishing commands, repeated calls, calls that
+     * need user confirmation), `SX-n` for `dag.safety.extra`.
+     */
+    ruleID: Schema.String,
+    /** Permission key that was being adjudicated. */
+    permission: Schema.String,
+    /** Short human-readable reason, at most 200 characters. */
+    summary: Schema.String.check(Schema.isMaxLength(200)),
+  },
+})
+export type NodeSafetyDenied = typeof NodeSafetyDenied.Type
+
+/** One denial kept on the node row. */
+export const NodeSafetyDenial = Schema.Struct({
+  attempt: NonNegativeInt,
+  ruleID: Schema.String,
+  permission: Schema.String,
+  summary: Schema.String.check(Schema.isMaxLength(200)),
+  at: NonNegativeInt,
+})
+export type NodeSafetyDenial = typeof NodeSafetyDenial.Type
+
+/**
+ * The bounded projection of a node's denials. The first 20 calls are kept in
+ * order; `total` keeps counting past the bound so a report never undercounts.
+ */
+export const NodeSafetyDenials = Schema.Struct({
+  items: Schema.Array(NodeSafetyDenial),
+  total: NonNegativeInt,
+})
+export type NodeSafetyDenials = typeof NodeSafetyDenials.Type
+
 // ============================================================================
 // Inventories + tagged unions
 // ============================================================================
@@ -538,6 +585,7 @@ export const DurableDefinitions = Event.inventory(
   NodeRequeued,
   NodeTimeoutEscalated,
   NodeDeadlineExtended,
+  NodeSafetyDenied,
 )
 
 export const Definitions = DurableDefinitions

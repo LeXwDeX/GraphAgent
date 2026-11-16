@@ -361,6 +361,7 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
         command: input.command,
         directories,
         patterns: globs,
+        tool: "bash",
       },
     })
   }

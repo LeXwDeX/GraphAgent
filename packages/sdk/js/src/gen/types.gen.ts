@@ -2295,6 +2295,16 @@ export type DagNode = {
   replan_attempts: number | "Infinity" | "-Infinity" | "NaN"
   started_at?: number | "Infinity" | "-Infinity" | "NaN"
   completed_at?: number | "Infinity" | "-Infinity" | "NaN"
+  safety_denials?: {
+    items: Array<{
+      attempt: number
+      ruleID: string
+      permission: string
+      summary: string
+      at: number
+    }>
+    total: number
+  }
 }
 
 export type EventDagWorkflowSummaryUpdated = {

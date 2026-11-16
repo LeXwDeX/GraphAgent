@@ -14,6 +14,7 @@ import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Database } from "@graphagent/core/database/database"
 import { ChildPolicy } from "@/session/child/policy"
 import { AskAdjudicator } from "./ask-adjudicator"
+import { SafetyGuard } from "./safety-guard"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { type TriggerResult } from "@/hook/trigger-result"
 import { SettingsHook } from "@/hook"
@@ -50,9 +51,16 @@ export interface AskOptions {
   readonly canonicalToolName?: string
   /** Real MCP server of the tool that is asking. */
   readonly mcpServer?: { name: string; source: string }
-  readonly resolveRuleset?: (
-    mode?: "plan",
-  ) => Effect.Effect<{ native: PermissionV1.Ruleset; rules: PermissionV1.Ruleset }>
+  readonly resolveRuleset?: (mode?: "plan") => Effect.Effect<{
+    native: PermissionV1.Ruleset
+    rules: PermissionV1.Ruleset
+    /**
+     * Indices into `rules` whose allow the user wrote. The unattended
+     * adjudicator uses only these as explicit allows (#1031 M7); absent means
+     * the source cannot prove provenance and no rule counts as explicit.
+     */
+    userRuleIndices?: readonly number[]
+  }>
   /** Agent role receiving this call, used to name role-based denials. */
   readonly role?: string
   /** Internal: role-default rules inside the child session permission. */
@@ -158,8 +166,9 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const settingsHook = Option.getOrUndefined(yield* Effect.serviceOption(SettingsHook.Service))
     const config = Option.getOrUndefined(yield* Effect.serviceOption(Config.Service))
-    // The unattended-ask seam (Issue #1026, PR4). Absent until E4 registers its
-    // SafetyGuard: the ask path then behaves exactly as before.
+    // The unattended-ask seam (Issue #1026, PR4). #1031 M7 registers the
+    // SafetyGuard below; a harness that supplies its own adjudicator still
+    // decides for itself, and an absent service keeps the ask path unchanged.
     const adjudicator = Option.getOrUndefined(yield* Effect.serviceOption(AskAdjudicator.Service))
     const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
     const layerNotification = Option.getOrUndefined(yield* Effect.serviceOption(Notification.Service))
@@ -281,6 +290,31 @@ export const layer = Layer.effect(
       // Read once per ask, and only when an adjudicator exists: the run policy
       // of the asking child session (a task's root dag mode may have changed).
       const subject = adjudicator ? yield* ChildPolicy.askOf(database?.db)(request.sessionID) : Option.none()
+      // A run whose policy is `auto` never reaches the user (Issue #1026, PR4
+      // seam; E4 supplies the decision). `adjudicate` settles one pattern of
+      // such a run: an allow needs no question, a denial ends the ask as a
+      // tool error carrying the safety rule. Without a registered service, or
+      // for a run that asks the user, it is absent and nothing happens here.
+      const adjudicate =
+        adjudicator && Option.isSome(subject) && subject.value.ask === "auto"
+          ? Effect.fnUntraced(function* (pattern: string, rule: AskAdjudicator.AskRule) {
+              const decision = yield* adjudicator.decide({
+                request: { permission: request.permission, patterns: request.patterns, metadata: request.metadata },
+                pattern,
+                rule,
+                // The request's own option, not the `forced` flag that an earlier
+                // pattern's allow clears: the request stays forced for every pattern.
+                forced: force,
+                owner: subject.value.owner,
+                rootSessionID: subject.value.rootSessionID,
+              })
+              if (decision !== "allow")
+                yield* new PermissionV1.DeniedError({
+                  ruleset: ruleset.filter((entry) => Wildcard.match(request.permission, entry.permission)),
+                  reason: `dag_safety:${decision.deny.ruleID}: ${decision.deny.reason}`,
+                })
+            })
+          : undefined
 
       for (const pattern of request.patterns) {
         const nativeRule = evaluate(request.permission, pattern, resolved.native)
@@ -309,32 +343,33 @@ export const layer = Layer.effect(
             ...(reason ? { reason } : {}),
           })
         }
-        // A run whose policy is `auto` never reaches the user (Issue #1026,
-        // PR4 seam; E4 supplies the decision). Deny rules above always win;
-        // `explicit` tells the adjudicator whether the matching allow is the
-        // user's own, not a role/default rule. Without a registered service
-        // nothing happens here.
-        if (adjudicator && Option.isSome(subject) && subject.value.ask === "auto") {
+        // Deny rules above always win. `explicit` tells the adjudicator whether
+        // the matching allow is the user's own, not a role/default rule, and
+        // `forced` that this is a force ask only a human could settle (it is
+        // adjudicated like any other pattern, never skipped).
+        if (adjudicate) {
           const index = matchingRuleIndex(request.permission, pattern, ruleset)
-          const roleStart = Math.max(0, resolved.rules.length - (options?.sessionRuleCount ?? 0))
-          const explicit = rule.action === "allow" && !(options?.roleDefaultIndices ?? []).includes(index - roleStart)
-          const decision = yield* adjudicator.decide({
-            request: { permission: request.permission, patterns: request.patterns, metadata: request.metadata },
-            pattern,
-            rule: { action: rule.action === "allow" ? "allow" : "ask", explicit },
-            owner: subject.value.owner,
-            rootSessionID: subject.value.rootSessionID,
-          })
-          if (decision === "allow") {
-            // The adjudicator settled this pattern; a forced ask no longer
-            // needs its dialog for it.
-            forced = false
-            continue
-          }
-          return yield* new PermissionV1.DeniedError({
-            ruleset: ruleset.filter((entry) => Wildcard.match(request.permission, entry.permission)),
-            reason: `dag_safety:${decision.deny.ruleID}: ${decision.deny.reason}`,
-          })
+          const matched = ruleset[index]
+          // Explicit means the user wrote this allow, for something specific:
+          // a role/default allow is not theirs, and neither is a whole-key
+          // wildcard (`bash: "allow"` has pattern `*`; permission `*` covers
+          // every key), which would switch the safety list off wholesale. A
+          // resolved policy reports its user-rule indices; a direct caller's
+          // own ruleset is explicit by construction; a resolved policy without
+          // provenance proves nothing, so the safety list still applies.
+          const explicit =
+            rule.action === "allow" &&
+            matched?.action === "allow" &&
+            matched.permission !== "*" &&
+            matched.pattern !== "*" &&
+            (resolved.userRuleIndices !== undefined
+              ? resolved.userRuleIndices.includes(index)
+              : options?.resolveRuleset === undefined && index < originalRuleset.length)
+          yield* adjudicate(pattern, { action: rule.action === "allow" ? "allow" : "ask", explicit })
+          // The adjudicator settled this pattern; a forced ask no longer
+          // needs its dialog for it.
+          forced = false
+          continue
         }
         if (rule.action === "allow") continue
         if (!force && policy.mode === "bypassPermissions" && (yield* capabilities.has(request.sessionID))) continue
@@ -359,6 +394,12 @@ export const layer = Layer.effect(
         )
           continue
         needsAsk = true
+      }
+      // A force ask without patterns never enters the loop, yet only a human
+      // could settle it: the adjudicator gets it once, as the whole-key pattern.
+      if (adjudicate && force && request.patterns.length === 0) {
+        yield* adjudicate("*", { action: "ask", explicit: false })
+        forced = false
       }
       if (forced) needsAsk = true
 
@@ -781,12 +822,26 @@ export function disabled(tools: string[], ruleset: PermissionV1.Ruleset, options
 }
 
 export const defaultLayer = layer.pipe(
+  Layer.provide(SafetyGuard.defaultLayer),
   Layer.provide(Config.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(SettingsHook.defaultLayer),
   Layer.provide(Notification.defaultLayer),
+  // The unattended seam reads the task child's root DAG mode through
+  // `ChildPolicy.askOf(database)`; without its own Database this layer is
+  // built before any sibling provides one and every task child falls back to
+  // "user" (#1031 M7). The same memoized instance a sibling Database layer
+  // builds is shared here.
+  Layer.provide(Database.defaultLayer),
 )
 
-export const node = LayerNode.make(layer, [EventV2Bridge.node, SettingsHook.node, Notification.node, Config.node])
+export const node = LayerNode.make(layer, [
+  SafetyGuard.node,
+  EventV2Bridge.node,
+  SettingsHook.node,
+  Notification.node,
+  Config.node,
+  Database.node,
+])
 
 export * as Permission from "."

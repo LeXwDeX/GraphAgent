@@ -20,4 +20,13 @@ export class ToolRefusedError extends Error {
   }
 }
 
+/**
+ * Raised when the DAG safety guard rejected this specific call before
+ * execution. The thrown error becomes the call's tool error; the processor has
+ * already recorded the denial on the part, so the model still sees the reason.
+ */
+export class ToolCallDeniedError extends Error {
+  override readonly name = "ToolCallDeniedError"
+}
+
 export * as ToolRefusal from "./refusal"

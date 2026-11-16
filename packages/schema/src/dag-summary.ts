@@ -7,6 +7,7 @@ import { Schema } from "effect"
 import { define, inventory } from "./event"
 import { SessionID } from "./session-id"
 import { NonNegativeInt } from "./schema"
+import { NodeSafetyDenials } from "./dag-event"
 
 /** #1027 D6: review-quality counters for the `/dag` panel, computed by the
  * same rule as the workflow inspection status. `null` when the workflow is
@@ -117,6 +118,9 @@ export const NodeView = Schema.Struct({
   replan_attempts: Schema.Number,
   started_at: Schema.optional(Schema.Number),
   completed_at: Schema.optional(Schema.Number),
+  // #1031 M7: bounded safety denials (items + total), so the sidebar and the
+  // incremental node push show the same audit the workflow tool reports.
+  safety_denials: Schema.optional(NodeSafetyDenials),
 }).annotate({ identifier: "Dag.Node" })
 export type NodeView = typeof NodeView.Type
 

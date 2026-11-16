@@ -23,7 +23,11 @@ export type OwnerKey = ChildOwner
 export interface AskRule {
   /** The rule that matched the pattern in the asking session's ruleset. */
   readonly action: "allow" | "ask"
-  /** True when the matching allow is one the user wrote, not a role/default rule. */
+  /**
+   * True when the matching allow is one the user wrote for this permission key
+   * with a concrete pattern. Role/default rules and whole-key wildcards (a
+   * pattern or permission of `*`, as in `bash: "allow"`) are not explicit.
+   */
   readonly explicit: boolean
 }
 
@@ -32,6 +36,11 @@ export interface DecideInput {
   /** The single pattern being evaluated. */
   readonly pattern: string
   readonly rule: AskRule
+  /**
+   * The ask is a `force` ask (a hook `permissionDecision: "ask"` or an MCP tool
+   * that requires user interaction): no allow rule can settle it, only a human.
+   */
+  readonly forced: boolean
   readonly owner: OwnerKey
   readonly rootSessionID: SessionID
 }

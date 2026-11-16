@@ -24,13 +24,13 @@ task-local YAML file, then start that path. A name that resolves nowhere fails
 with the searched locations.
 
 A saved workflow can be a starting point; a small task-local graph needs no
-library search. Keep one primary reference and borrow secondary checks rather
-than concatenating whole workflows. `lite` and `full` are reference shapes, not
-mandatory tiers. Uncertainty, irreversibility, public contracts, concurrency,
-persistence, authorization, or upstream executable dependencies warrant
-risk-addressing evidence; a risk label or non-`ACCEPT` verdict alone never
-requires a full graph or a fixed reviewer count. Retarget a matching custom
-workflow and reuse valid results; skill dag-recovery covers verdict disposal.
+library search. Borrow secondary checks rather than concatenating whole
+workflows. `lite` and `full` are reference shapes, not mandatory tiers.
+Uncertainty, irreversibility, public contracts, concurrency, persistence,
+authorization, or upstream executable dependencies warrant risk-addressing
+evidence; a risk label or non-`ACCEPT` verdict alone never requires a full graph
+or a fixed reviewer count. Retarget a matching custom workflow and reuse valid
+results; skill dag-recovery covers verdict disposal.
 
 ## Node inputs and model selection
 
@@ -38,7 +38,7 @@ Every node receives its direct `depends_on` outputs:
 
 - The exact dependency ID is the default template variable: `depends_on:
   [node-a, node-b]` exposes `{{node-a}}` and `{{node-b}}`.
-- Uninterpolated values append as structured context for downstream nodes.
+- Uninterpolated values append as structured context.
 - Use `input_mapping` only to rename a variable or select a field. Its direction
   is **template variable → upstream source**:
 
@@ -70,34 +70,43 @@ workflow without `acceptance` derives `AC1..ACn` from
 
 `config.review_gate` is `"strict"` or `"standard"`, start-only, and fixed at
 run.start: DAG mode on or `mode: deep` fixes `strict`, overriding an authored
-`standard`; otherwise it defaults to `standard`. Later mode switches do not
-change it; mutations validate against the persisted value. `strict` enables the
-review-coverage requirements, including completeness; `standard` keeps them
-advisory. A strict block decision is required and non-skippable, uses read-only
-lanes and arbitration, and an ACCEPT requires every lane completed. Fragments
-cannot set either field.
+`standard`; otherwise it defaults to `standard`. Later mode switches or
+mutations cannot change it. `strict` enables the review-coverage requirements,
+including completeness; `standard` keeps them advisory. A strict block decision
+is required and non-skippable, uses read-only lanes and arbitration, and an
+ACCEPT requires every lane completed. Fragments cannot set either field.
 
 Review blocks also accept `lenses` (`standards`, `intent`, `completeness`,
 `security`, `tests`, `performance`; default `[standards, intent]`) and
 `skeptics` (0-4, default 0, rotating fixed attack angles). They do not apply to
 low-level nodes, which use the `review` field. Block decisions also submit
-`dispositions`/`resolved` (see skill dag-blocks) and continue a stored loop via
-`prior_round`; `review_round`/`prior_findings` are compiler-owned. Lanes may
-declare `not_examined` gaps, which surface under coverage.
-Lanes, the decision, `verify`, and `synthesize` default to the read-only
-`auditor`; a writing `synthesize` declares `worker_type`.
+`dispositions`/`resolved` and continue a stored loop via `prior_round`;
+`review_round`/`prior_findings` are compiler-owned. Lanes may declare
+`not_examined` gaps, which surface under coverage. Lanes, the decision,
+`verify`, and `synthesize` default to the read-only `auditor`; a writing
+`synthesize` declares `worker_type`.
+
+## Permissions
+
+A running node is unattended: it never asks the user. `question`/`plan_exit` are
+root-only, so it asks its parent via `agent.send` (a task child asks in its
+final answer). After a safety-list denial (skill dag-policy) it does not retry:
+it changes approach (outside files are read with `read`, not the shell), or
+finishes the rest and says so. Publishing, merging, and default-branch pushes
+are for the parent and user: commit locally and report. Global
+`dag.safety.extra` adds SX-n denials; a user-written allow with a concrete
+pattern lifts any rule but SF-6. Each denial is recorded on the node's
+`safety_denials` and shown by `inspect`, coverage, and the wake and report.
 
 ## Prompt Templates
 
 Templates are read-only prompt fragments under project
 `.agents/workflows/prompts/*.md` or global
 `<graphagent config dir>/workflows/prompts/*.md`. Project assets shadow global;
-prompt IDs have no bundled fallback, and bundled YAML does not install
-fragments. Missing assets are rejected during environment validation. Supply
-required `{{variable}}` inputs through static `prompt_template.input` or
-`input_mapping`; validation checks bindings and spawn resolves actual values.
-Example assets: `code-explore` (requires `target`) for structure searches, plus
-`arch-gate`, `implement` (requires `spec`), `plan`, `verify`, and `review-arch`.
+prompt IDs have no bundled fallback. Missing assets are rejected during
+environment validation. Supply required `{{variable}}` inputs through static
+`prompt_template.input` or `input_mapping`; validation checks bindings and spawn
+resolves actual values.
 
 Review prompts should request `unverified_claims` for downstream verification.
 
@@ -109,9 +118,8 @@ as `[object Object]`.
 
 ## Budget Declaration
 
-The engine enforces budgets without adaptive increases; adjust only when tool
-time, resources, or evidence volume warrants it. Higher concurrency helps only
-independent work:
+The engine enforces budgets without adaptive increases. Higher concurrency
+helps only independent work:
 
 - `max_concurrency`: default 5.
 - `max_node_replan_attempts`: default 5. Increase only for iterative
@@ -119,16 +127,14 @@ independent work:
 - `max_total_nodes`: your user's global `dag.max_total_nodes` (default 100) is a
   hard cap; only a lower declaration tightens it.
 - `worker_config.timeout_ms`: default 10 minutes from slot acquisition. Queue
-  time is free and never fails; a running node that exceeds the budget escalates
-  before failing. Increase for long-running nodes. Verifiers and aggregators
-  often need 20–30 minutes to consume and re-check several reports (for example
-  `timeout_ms: 1800000`); reusing a fan-out lane's budget for the fan-in lane
-  recurs.
+  time is free; a running node that exceeds the budget escalates before failing.
+  Verifiers and aggregators often need 20–30 minutes (for example
+  `timeout_ms: 1800000`).
 
 ## Single-Workspace Discipline
 
-All nodes share one workspace; write conflicts are an orchestration concern, not
-infrastructure. Two tiers:
+All nodes share one workspace; write conflicts are an orchestration concern.
+Two tiers:
 
 **Tier A — Disjoint write sets**: parallel nodes writing to non-overlapping
 files/paths run concurrently when each owns a distinct module or file set.
@@ -153,7 +159,7 @@ changes sequentially; review converges on its diff.
 | `report_to_parent` | no       | If true, the parent wakes when this node completes or fails; terminal status always wakes the parent |
 | `worker_config`    | no       | `{ timeout_ms }` bounds the node from slot acquisition to completion (default 10 minutes); queued time does not count |
 | `workspace_writes` | no       | `"allow"`/`"deny"`. Deny withholds edit, write, apply_patch; shell keeps agent permission, so reviewers can test. Default deny for `review`/`review-*` and `auditor`, else allow |
-| `output_schema`    | no       | JSON Schema for the node result; the final answer must be exactly one matching JSON value (one bounded correction turn on a near-miss) |
+| `output_schema`    | no       | JSON Schema for the node result; the final answer must be exactly one matching JSON value |
 | `restart`          | no       | (replan only) Re-spawn this running node with the new prompt |
 | `cancel`           | no       | (replan only) Cancel this node |
 | `review`           | no       | (review workers) `{ phase: "design" \| "diff" }`; a `diff` review must declare `implementation_node_id` / `verification_node_id` and wire transitive review→verification→implementation dependencies, `input_mapping` for the diff artifact + fingerprint + verification output, a PASS-gated `condition`, and a `verdict` + `implementation_fingerprint` `output_schema`. `strict` and deep reject violations; standard warns. Block `lenses`/`skeptics` are block-only |
@@ -170,5 +176,4 @@ summarize it again. `delivery_node` chooses the result node; a one-leaf
 `synthesize` workflow selects it automatically, otherwise the parent gets a
 deterministic index. When coverage is non-empty, delivery appends the
 engine-owned `Coverage and truncation` (`覆盖与截断` under zh-CN) section;
-`inspect` exposes the same entries. Delivery does not change scheduling, pause,
-failure, timeout, or actionable-wake behavior.
+`inspect` exposes the same entries.

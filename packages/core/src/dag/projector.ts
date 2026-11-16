@@ -866,6 +866,57 @@ export const layer = Layer.effectDiscard(
         .run()
         .pipe(Effect.orDie),
     )
+
+    // #1031 M7: one bounded audit entry per denial. The row is not a status
+    // transition: the seq guard only makes a replayed older denial idempotent,
+    // and `total` keeps counting after the first 20 items so reports never
+    // undercount. The node keeps running — a denial is a tool error, not an
+    // event the scheduler reacts to.
+    yield* project(DagEvent.NodeSafetyDenied, (event) =>
+      Effect.gen(function* () {
+        const current = yield* db
+          .select()
+          .from(WorkflowNodeTable)
+          .where(
+            and(
+              eq(WorkflowNodeTable.workflow_id, event.data.dagID),
+              eq(WorkflowNodeTable.id, event.data.nodeID),
+            ),
+          )
+          .get()
+          .pipe(Effect.orDie)
+        if (!current || event.durable!.seq <= current.seq) return
+        const prior = current.safety_denials ?? { items: [], total: 0 }
+        const items =
+          prior.items.length >= 20
+            ? prior.items
+            : [
+                ...prior.items,
+                {
+                  attempt: event.data.attempt,
+                  ruleID: event.data.ruleID,
+                  permission: event.data.permission,
+                  summary: event.data.summary,
+                  at: toMillis(event.data.timestamp),
+                },
+              ]
+        yield* db
+          .update(WorkflowNodeTable)
+          .set({
+            safety_denials: { items, total: prior.total + 1 },
+            seq: event.durable!.seq,
+            time_updated: toMillis(event.data.timestamp),
+          })
+          .where(
+            and(
+              eq(WorkflowNodeTable.workflow_id, event.data.dagID),
+              eq(WorkflowNodeTable.id, event.data.nodeID),
+            ),
+          )
+          .run()
+          .pipe(Effect.orDie)
+      }),
+    )
   }),
 )
 

@@ -337,6 +337,8 @@ export function renderStatus(input: {
           ...DagLocation.nodeLocationView(node),
           ...(node.errorReason ? { error_reason: node.errorReason } : {}),
           ...(node.errorClass ? { error_class: node.errorClass } : {}),
+          // #1031 M7: bounded safety-denial evidence (items + total).
+          ...(node.safetyDenials ? { safety_denials: node.safetyDenials } : {}),
           ...(config?.nodes.find((definition) => definition.id === node.id)?.recovery
             ? { recovery: config.nodes.find((definition) => definition.id === node.id)!.recovery }
             : {}),

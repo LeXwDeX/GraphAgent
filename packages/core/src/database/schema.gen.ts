@@ -194,6 +194,7 @@ export default {
           \`base_head\` text,
           \`target_fingerprint\` text,
           \`stale_target\` integer,
+          \`safety_denials\` text,
           \`worktree_directory\` text,
           \`worktree_branch\` text,
           \`worktree_commit\` text,

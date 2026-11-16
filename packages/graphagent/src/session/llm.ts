@@ -26,7 +26,7 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { CacheGroup } from "./llm/cache-group"
-import { ToolRefusedError } from "./llm/refusal"
+import { ToolCallDeniedError, ToolRefusedError } from "./llm/refusal"
 import { ThinkingReplay } from "./thinking-replay"
 import { AgentScheduler } from "./agent-scheduler"
 import type { Lane as SchedulerLane } from "./agent-scheduler-state"
@@ -170,6 +170,15 @@ export type StreamInput = {
   toolPolicy?: "allow" | "refuse"
   /** Called for every local tool call on a `refuse` request, before execution. */
   onToolRefused?: () => void
+  /**
+   * Per-call execution gate (DAG safety list SF-5), read before a local tool
+   * runs. A returned reason means the call was denied and must not execute; the
+   * reason becomes its tool error instead. `undefined` admits the call. A
+   * promise means the verdict is not known yet: the AI SDK dispatches a tool
+   * concurrently with the processor handling the same `tool-call` event, so
+   * `execute` waits for it, never past the request's own abort.
+   */
+  toolCallVerdict?: (id: string) => string | undefined | Promise<string | undefined>
   purpose?: RequestPurpose
   /** Scheduling lane; derived from purpose and parent session when omitted. */
   lane?: SchedulerLane
@@ -205,6 +214,22 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@graphagent/LLM") {}
 
 export const use = serviceUse(Service)
+
+/**
+ * `pending`, unless the request aborts first: then the wait ends with an
+ * AbortError and a verdict that arrives later is dropped.
+ *
+ * @internal Exported for testing
+ */
+export function untilAborted<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new DOMException("Aborted", "AbortError"))
+    // Always observe `pending`: a late rejection of an abandoned wait must not surface as unhandled.
+    pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort))
+    if (signal.aborted) abort()
+    else signal.addEventListener("abort", abort, { once: true })
+  })
+}
 
 /**
  * The tool set a request may execute. Registry, MCP, structured-output and native
@@ -249,16 +274,29 @@ function gateTools(input: {
             // A failed stream closes its request scope. Refuse any SDK
             // callback that arrives after that scope has been aborted.
             if (request.abort.aborted) throw new DOMException("Aborted", "AbortError")
-            if (refuseTools) {
-              request.onToolRefused?.()
-              throw new ToolRefusedError()
+            const admit = (denied: string | undefined) => {
+              if (denied !== undefined) throw new ToolCallDeniedError(denied)
+              if (refuseTools) {
+                request.onToolRefused?.()
+                throw new ToolRefusedError()
+              }
+              const admission = admitToolCall(args[1].toolCallId)
+              if (!admission.allowed) throw new Error(ToolBudget.exhaustedMessage(toolBudget.max))
+              if (admission.executed) throw new Error(`Duplicate tool call: ${args[1].toolCallId}`)
+              admission.executed = true
+              request.onAttemptActivity?.("tool-executed")
+              return execute(...args)
             }
-            const admission = admitToolCall(args[1].toolCallId)
-            if (!admission.allowed) throw new Error(ToolBudget.exhaustedMessage(toolBudget.max))
-            if (admission.executed) throw new Error(`Duplicate tool call: ${args[1].toolCallId}`)
-            admission.executed = true
-            request.onAttemptActivity?.("tool-executed")
-            return execute(...args)
+            const verdict = request.toolCallVerdict?.(args[1].toolCallId)
+            if (!(verdict instanceof Promise)) return admit(verdict)
+            // The SDK can dispatch the call while the processor is still
+            // deciding whether it may run: park until that verdict exists.
+            // Parked or not, a tool resolves to one value here; none streams
+            // preliminary results through an async generator.
+            return untilAborted(verdict, request.abort).then((denied) => {
+              if (request.abort.aborted) throw new DOMException("Aborted", "AbortError")
+              return admit(denied)
+            })
           },
         } satisfies Tool,
       ]

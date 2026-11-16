@@ -217,7 +217,11 @@ describe("tool.registry MCP resolution", () => {
       const rootIds = (yield* registry.resolve({ model, agent: build, session: sessionInfo(directory) })).map(
         (entry) => entry.id,
       )
-      for (const id of ROOT_ONLY_TOOLS) expect(rootIds).toContain(id)
+      // `plan_exit` joins the registry only under plan mode (`plan` agent);
+      // this suite runs with the default flags, so `build` never exposes it.
+      // test/tool/root-only-dialogs.test.ts covers its root/child split.
+      expect(rootIds).not.toContain("plan_exit")
+      for (const id of ROOT_ONLY_TOOLS) if (id !== "plan_exit") expect(rootIds).toContain(id)
 
       const child = yield* registry.resolve({
         model,

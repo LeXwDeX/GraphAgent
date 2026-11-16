@@ -27,7 +27,7 @@ permission; `list_mcp_resources`, `list_mcp_resource_templates`, and
 | -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `explore`, `debug--evidence`     | read-only research                       | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                             | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
 | `auditor`                        | read-only verification; model tier `advanced` | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                        | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
-| `plan`                           | read-only planning, plan-file edits      | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only plan files pass), `task` (except `general`), `skill`, MCP tools, `question`, `plan_exit` | `todowrite` in a child session                                                                |
+| `plan`                           | read-only planning, plan-file edits      | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only plan files pass), `task` (except `general`), `skill`, MCP tools | `todowrite` in a child session; `question`, `plan_exit` (root-only, hidden from every child session) |
 | `general`                        | writer / verifier                        | all default tools except `todowrite`; `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                                                               | `todowrite`, and `task` in a child session                                                    |
 | `build`                          | writer                                   | non-DAG primary: all default tools including `todowrite` and `task`; DAG child: `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                     | `todowrite` and `task` in a DAG child session                                                 |
 | `compaction`, `title`, `summary` | internal `* deny`                        | none                                                                                                                                                                                   | every tool; these hidden agents are not valid workflow worker types                           |
@@ -41,6 +41,54 @@ Block defaults:
 - `coding`, `prototype` -> `build`
 - `debug` evidence lane -> `explore`; its diagnosis lane -> `general`
 - review lanes, skeptics, the review decision, verification, and synthesis -> `auditor`
+
+## Unattended children
+
+`question` and `plan_exit` are root-only: a `task` subagent or DAG node hides
+them even when its agent profile allows them, so a node asks its parent through
+`agent.send` and a task child states the need in its final answer.
+
+DAG node attempts and task children of a DAG-on root are unattended: their
+permission asks never become a user dialog. Deny rules win first. A call that
+hits the built-in safety list (SF-1..6) or a global `dag.safety.extra` rule
+(SX-n) is refused as a tool error naming the rule and the reason, and the node
+keeps running. A user-written allow with a concrete pattern lifts SF-1..5 and
+SX-n, never SF-6. All other asks auto-approve. For a DAG node, a denial is
+durable node evidence (`safety_denials`) that `inspect`, coverage, and the final
+report and wake show; it is not a tool-profile change.
+
+The safety list guards against honest mistakes, not adversarial input, and is
+not a sandbox (see "No Sandbox" in
+[SECURITY.md](../../../../../SECURITY.md#no-sandbox)). It judges structured
+facts only: the tool, resolved target paths, and request metadata. It never
+interprets bash semantics; shell commands are matched only as literal patterns
+on a single simple command. The rules:
+
+- SF-1 writes outside the project. (a) The target of `edit`, `write`, or
+  `apply_patch` (an `apply_patch` move target included, symlinks resolved) lies
+  outside the project directory, its worktrees, and the default allowed
+  directories. (b) The shell tool raises an `external_directory` request for a
+  path outside the project: its existing detection of outside path arguments to
+  `cd`, `rm`, `cp`, `mv`, `mkdir`, `touch`, `chmod`, `chown`, `cat`, and similar
+  commands, and an outside `workdir`. (b) does not distinguish reads from
+  writes: either is refused, and outside files are read with the `read` tool.
+- SF-2 reading credential files. The target path of `read`, `grep`, or `glob`
+  matches `.env` or `.env.*` (except `.env.example`, `.env.sample`, and
+  `.env.template`), `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`,
+  `id_ed25519*`, `id_ecdsa*`, `.ssh/**`, `.aws/credentials`, `.npmrc`,
+  `.netrc`, `.pgpass`, `.git-credentials`, `.docker/config.json`,
+  `.kube/config`, `/etc/shadow`, or `/etc/sudoers*`.
+- SF-3 destructive commands, as literal patterns on a single simple command:
+  `git reset --hard`, `git clean`, force push (`--force`, `--force-with-lease`,
+  `-f`), `sudo`, `shutdown`, `reboot`, `mkfs*`, and `dd ... of=/dev/...`.
+- SF-4 publishing, as literal patterns: `npm publish`, `pnpm publish`,
+  `yarn publish`, `yarn npm publish`, `cargo publish`, `docker push`,
+  `gh release ...`, and `gh pr merge`. A plain `git push`, including one to a
+  feature branch, passes.
+- SF-5 repeated identical calls (doom loop). Only the repeated call is refused.
+- SF-6 calls that need user confirmation: a call whose hook returns ask, or an
+  MCP tool call that declares it needs user interaction. Both are always
+  refused, because a node has nobody to ask.
 
 Under the `strict` review gate, every review lane and its arbitration decision
 must use a read-only profile: `explore`, `plan`, `auditor`, `review`, `verify`,

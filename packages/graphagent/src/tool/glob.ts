@@ -37,6 +37,11 @@ export const GlobTool = Tool.define(
       execute: (params: { pattern: string; path?: string; limit?: number }, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const ins = yield* InstanceState.context
+          // Computed before the ask because it is pure: the permission request
+          // reports the directory the search runs in, which `path` (an
+          // argument, possibly relative) does not say.
+          let search = params.path ?? ins.directory
+          search = path.isAbsolute(search) ? search : path.resolve(ins.directory, search)
           yield* ctx.ask({
             permission: "glob",
             patterns: [params.pattern],
@@ -44,11 +49,10 @@ export const GlobTool = Tool.define(
             metadata: {
               pattern: params.pattern,
               path: params.path,
+              searchPath: search,
             },
           })
 
-          let search = params.path ?? ins.directory
-          search = path.isAbsolute(search) ? search : path.resolve(ins.directory, search)
           const statFailure = (error: unknown) =>
             Effect.fail(
               new Error(

@@ -81,6 +81,8 @@ export interface NodeRow {
   /** #944: start/completion target fingerprint and the mismatch verdict. */
   targetFingerprint?: DagEvent.TargetFingerprint | null
   staleTarget?: boolean | null
+  /** #1031 M7: bounded DAG safety denials recorded for this node. */
+  safetyDenials?: DagEvent.NodeSafetyDenials | null
   /** #946: isolated worktree evidence and the paths this node changed. */
   worktreeDirectory?: string | null
   worktreeBranch?: string | null
@@ -195,6 +197,7 @@ const mapNode = (r: typeof WorkflowNodeTable.$inferSelect): NodeRow => ({
   baseHead: r.base_head,
   targetFingerprint: r.target_fingerprint,
   staleTarget: r.stale_target,
+  safetyDenials: r.safety_denials,
   worktreeDirectory: r.worktree_directory,
   worktreeBranch: r.worktree_branch,
   worktreeCommit: r.worktree_commit,
