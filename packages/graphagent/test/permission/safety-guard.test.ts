@@ -236,6 +236,17 @@ describe("SF-2: sensitive file reads", () => {
     expect(grep({ path: ".", include: "[" })).toBeUndefined()
   })
 
+  it("reads a leading `!` in a grep include as the exclusion ripgrep makes of it", () => {
+    // `--glob=!x` selects nothing, so it cannot select a sensitive file.
+    for (const include of ["!*.pem", "!.env*", "!{*.pem,*.key}", "!keys/*.pem", "!.ssh/*"])
+      expect(grep({ path: "src", include })).toBeUndefined()
+    expect(grep({ path: ".", include: "!.env" })).toBeUndefined()
+    // The searched path is still judged, and so is a positive glob.
+    expect(grep({ path: ".ssh", include: "!*.pem" })?.ruleID).toBe("SF-2")
+    expect(grep({ path: "src", include: "*.pem" })?.ruleID).toBe("SF-2")
+    expect(grep({ path: "src", include: "\\!*.pem" })?.ruleID).toBe("SF-2")
+  })
+
   it("is lifted by an explicit allow on the checked key", () => {
     expect(read(".env", { explicit: true })).toBeUndefined()
     expect(grep({ path: ".ssh" })?.ruleID).toBe("SF-2")
@@ -667,6 +678,74 @@ describe("symlinks", () => {
       expect(await check("glob", "docs")).toMatchObject({ ruleID: "SF-2", label: "glob symlink" })
       expect(await check("grep", "src")).toBeUndefined()
       expect(await symlinkViolation(inProject(dir, { permission: "grep", pattern: "x", metadata: {} }))).toBeUndefined()
+    })
+  })
+
+  it("resolves the path a read opens, not the folded pattern it asks with", async () => {
+    await withProject(async (dir, outside) => {
+      // `link` points at `<outside>/.ssh/child`: on disk `<project>/link/../config`
+      // is `<outside>/.ssh/config`. read.ts sends `path.relative(worktree,
+      // filepath)` as the pattern, which folds the spelling to `config`, and the
+      // path it opens as `metadata.filepath`.
+      await fs.mkdir(path.join(outside, ".ssh", "child"), { recursive: true })
+      await fs.writeFile(path.join(outside, ".ssh", "config"), "Host x")
+      await fs.symlink(path.join(outside, ".ssh", "child"), path.join(dir, "link"), "dir")
+      await fs.mkdir(path.join(dir, "sub"))
+      const asked = (filepath: string) =>
+        inProject(dir, { permission: "read", pattern: path.relative(dir, filepath), metadata: { filepath } })
+
+      const escape = asked(`${dir}/link/../config`)
+      expect(escape.pattern).toBe("config")
+      // Folded, the request names an ordinary file to the lexical pass.
+      expect(evaluate(escape)).toBeUndefined()
+      const violation = await symlinkViolation(escape)
+      expect(violation).toMatchObject({ ruleID: "SF-2", label: "read symlink" })
+      expect(violation?.reason).toContain(path.join(outside, ".ssh", "config"))
+
+      // Without a symlink in the way the spelling is what its pattern says.
+      const plain = asked(`${dir}/sub/../x.txt`)
+      expect(evaluate(plain)).toBeUndefined()
+      expect(await symlinkViolation(plain)).toBeUndefined()
+      // A relative `filepath` is a display string, not a path the tool opens.
+      const display = { permission: "read", pattern: "config", metadata: { filepath: "link/../config" } } as const
+      expect(await symlinkViolation(inProject(dir, display))).toBeUndefined()
+    })
+  })
+
+  it("resolves the path a grep or glob searches in the kernel's spelling and in the fold ripgrep ends up in", async () => {
+    await withProject(async (dir, outside) => {
+      await fs.mkdir(path.join(outside, ".ssh", "child"), { recursive: true })
+      await fs.mkdir(path.join(outside, "plain"))
+      // `link/..` is the credential directory to the kernel.
+      await fs.symlink(path.join(outside, ".ssh", "child"), path.join(dir, "link"), "dir")
+      // `elsewhere/..` is `<outside>`, but its fold `<project>/keys` is a link to the credential directory.
+      await fs.symlink(path.join(outside, "plain"), path.join(dir, "elsewhere"), "dir")
+      await fs.symlink(path.join(outside, ".ssh"), path.join(dir, "keys"), "dir")
+      await fs.mkdir(path.join(dir, "sub"))
+      await fs.mkdir(path.join(dir, "src"))
+      const check = (permission: "grep" | "glob", searchPath: string) =>
+        symlinkViolation(inProject(dir, { permission, pattern: "x", metadata: { path: searchPath, searchPath } }))
+
+      for (const permission of ["grep", "glob"] as const) {
+        const label = `${permission} symlink`
+        expect(await check(permission, `${dir}/link/..`)).toMatchObject({ ruleID: "SF-2", label })
+        expect(await check(permission, `${dir}/elsewhere/../keys`)).toMatchObject({ ruleID: "SF-2", label })
+        // Without a symlink in the way, and the default directory, are ordinary.
+        expect(await check(permission, `${dir}/sub/../src`)).toBeUndefined()
+        expect(await check(permission, dir)).toBeUndefined()
+      }
+    })
+  })
+
+  it("takes the reported search path over the relative argument the tool has already folded", async () => {
+    await withProject(async (dir, outside) => {
+      await fs.mkdir(path.join(outside, ".ssh", "child"), { recursive: true })
+      await fs.symlink(path.join(outside, ".ssh", "child"), path.join(dir, "link"), "dir")
+      await fs.mkdir(path.join(dir, "sub"))
+      // grep and glob fold a relative path (`path.join`, `path.resolve`): `link/../sub` is `<project>/sub`.
+      const metadata = { path: "link/../sub", searchPath: path.join(dir, "sub") }
+      for (const permission of ["grep", "glob"] as const)
+        expect(await symlinkViolation(inProject(dir, { permission, pattern: "x", metadata }))).toBeUndefined()
     })
   })
 

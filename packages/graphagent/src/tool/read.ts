@@ -391,7 +391,9 @@ export const ReadTool = Tool.define<
         permission: "read",
         patterns: [path.relative(instance.worktree, filepath)],
         always: ["*"],
-        metadata: {},
+        // The pattern is folded (`link/../x` reads `x`); `filepath` is the path
+        // every access below uses, which the kernel resolves link first.
+        metadata: { filepath },
       })
 
       if (!stat) return yield* miss(filepath)

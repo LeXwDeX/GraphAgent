@@ -323,17 +323,26 @@ function editMoveTargets(metadata: Record<string, unknown> | undefined): string[
 }
 
 /**
- * The spelling a native write/edit tool writes through. Its permission pattern
- * is `path.relative(worktree, filepath)`, which has already folded `link/..`
- * away, while the kernel follows `link` before it applies `..`; the tool hands
- * over the original absolute path in `metadata.filepath`. apply_patch is not
- * affected: it resolves every path lexically before it writes, so its patterns
- * already are the written paths, and its `filepath` is only a display string.
+ * The path a native tool says it hands to the filesystem, as the absolute
+ * string under `key` in its permission metadata. Native tools fold the path
+ * into their permission pattern (`path.relative(worktree, filepath)`), which
+ * drops `link/..` before the guard sees it, while the kernel follows `link`
+ * first; the metadata keeps the spelling that is actually used. A value that
+ * is not absolute is only a display string.
+ */
+function absoluteSpelling(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const raw = metadata?.[key]
+  return typeof raw === "string" && path.isAbsolute(slashes(raw.trim())) ? raw : undefined
+}
+
+/**
+ * The spelling a native write/edit tool writes through (`metadata.filepath`).
+ * apply_patch is not affected: it resolves every path lexically before it
+ * writes, so its patterns already are the written paths, and its `filepath` is
+ * only a display string next to `files`.
  */
 function writtenSpelling(metadata: Record<string, unknown> | undefined): string | undefined {
-  if (metadata === undefined || Array.isArray(metadata.files)) return undefined
-  const raw = metadata.filepath
-  return typeof raw === "string" && path.isAbsolute(slashes(raw.trim())) ? raw : undefined
+  return Array.isArray(metadata?.files) ? undefined : absoluteSpelling(metadata, "filepath")
 }
 
 /** SF-1 (a): edit, write and apply_patch targets, move destinations included. */
@@ -390,7 +399,9 @@ function searchViolation(input: EvaluateInput): Violation | undefined {
   const target = raw === undefined ? undefined : literalPath(raw, directory)
   const include =
     input.permission === "grep" && typeof input.metadata?.include === "string" ? input.metadata.include : undefined
-  if (include) {
+  // A leading `!` makes the glob an exclusion for ripgrep (`--glob=!x`): it
+  // selects nothing, so it cannot select a sensitive file.
+  if (include && !include.startsWith("!")) {
     const selection = sensitiveSelection(include, target ?? directory)
     if (selection) return denial(SF_2, input.permission, credentialRead(selection, include))
   }
@@ -586,13 +597,32 @@ async function realRootsOf(input: EvaluateInput): Promise<string[]> {
  * A read whose real target is sensitive even though its spelling is not:
  * `read public.txt` where `public.txt` links to `.env` reads the environment
  * file the lexical check already refuses by name. A missing file makes the
- * tool fail on its own, a link to one included; there is nothing to leak.
+ * tool fail on its own, a link to one included; there is nothing to leak. Each
+ * spelling is resolved on its own and a hit on any of them denies.
  */
-async function sensitiveLinkViolation(raw: string, base: string, label: string) {
-  const real = await nativePhysicalPath(raw, base)
-  if (real === undefined) return undefined
-  const category = sensitiveCategory(real)
-  return category ? denial(SF_2, label, credentialRead(category, `${real} (through a symlink)`)) : undefined
+async function sensitiveLinkViolation(raws: readonly string[], base: string, label: string) {
+  for (const raw of raws) {
+    const real = await nativePhysicalPath(raw, base)
+    if (real === undefined) continue
+    const category = sensitiveCategory(real)
+    if (category) return denial(SF_2, label, credentialRead(category, `${real} (through a symlink)`))
+  }
+  return undefined
+}
+
+/**
+ * What a grep or glob may reach. The tool reports the absolute path it
+ * searches (`metadata.searchPath`). The kernel follows its symlinks before it
+ * applies a `..`, while ripgrep ends up in the lexical fold of it (grep
+ * resolves the path first, the process spawner resolves `cwd`), so both
+ * spellings are judged; the relative `metadata.path` argument is not, because
+ * the tool has already folded it into `searchPath`. A caller that reports no
+ * `searchPath` is judged by its `path` argument alone.
+ */
+function searchSpellings(input: EvaluateInput): string[] {
+  const searched = absoluteSpelling(input.metadata, "searchPath")
+  if (searched !== undefined) return [...new Set([searched, path.resolve(slashes(searched.trim()))])]
+  return typeof input.metadata?.path === "string" ? [input.metadata.path] : []
 }
 
 /**
@@ -601,19 +631,28 @@ async function sensitiveLinkViolation(raw: string, base: string, label: string) 
  * root, and a read, grep or glob whose real target is a sensitive file. New
  * files are covered through their nearest existing parent, and a symlink to a
  * file that does not exist yet through the place a write would create it.
+ *
+ * The reading tools report the path they hand to the filesystem next to the
+ * folded permission pattern, `metadata.filepath` for read and
+ * `metadata.searchPath` for grep and glob, and it is resolved the way the
+ * kernel does it, symlinks before `..`.
  */
 export async function symlinkViolation(
   input: EvaluateInput,
   options: { readonly moves?: boolean } = {},
 ): Promise<Violation | undefined> {
   if (input.forced || input.explicit) return undefined
-  if (input.permission === "read")
-    return sensitiveLinkViolation(input.pattern, input.instance?.worktree ?? input.cwd, "read symlink")
-  if (input.permission === "grep" || input.permission === "glob") {
-    const raw = input.metadata?.path
-    if (typeof raw !== "string") return undefined
-    return sensitiveLinkViolation(raw, input.instance?.directory ?? input.cwd, `${input.permission} symlink`)
+  if (input.permission === "read") {
+    const opened = absoluteSpelling(input.metadata, "filepath")
+    const raws = opened === undefined ? [input.pattern] : [input.pattern, opened]
+    return sensitiveLinkViolation(raws, input.instance?.worktree ?? input.cwd, "read symlink")
   }
+  if (input.permission === "grep" || input.permission === "glob")
+    return sensitiveLinkViolation(
+      searchSpellings(input),
+      input.instance?.directory ?? input.cwd,
+      `${input.permission} symlink`,
+    )
   if (input.permission !== "edit") return undefined
 
   const base = input.instance?.worktree ?? input.cwd

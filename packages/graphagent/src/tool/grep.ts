@@ -61,6 +61,14 @@ export const GrepTool = Tool.define(
             throw new Error("pattern is required")
           }
 
+          // Computed before the ask because it is pure: the permission request
+          // reports the path the search starts from, which `path` (an argument,
+          // possibly relative) does not say.
+          const ins = yield* InstanceState.context
+          const requested = path.isAbsolute(params.path ?? ins.directory)
+            ? (params.path ?? ins.directory)
+            : path.join(ins.directory, params.path ?? ".")
+
           yield* ctx.ask({
             permission: "grep",
             patterns: [params.pattern],
@@ -69,13 +77,10 @@ export const GrepTool = Tool.define(
               pattern: params.pattern,
               path: params.path,
               include: params.include,
+              searchPath: requested,
             },
           })
 
-          const ins = yield* InstanceState.context
-          const requested = path.isAbsolute(params.path ?? ins.directory)
-            ? (params.path ?? ins.directory)
-            : path.join(ins.directory, params.path ?? ".")
           const requestedInfo = yield* fs.stat(requested).pipe(Effect.catch(() => Effect.succeed(undefined)))
           yield* assertExternalDirectoryEffect(ctx, requested, {
             bypass: false,

@@ -179,6 +179,9 @@ export function makeToolCallGate(options: { readonly wait: boolean }) {
 
 type ToolCallGate = ReturnType<typeof makeToolCallGate>
 
+/** The verdicts of each context's current provider request (SF-5); replaced for every attempt. */
+const toolGates = new WeakMap<ProcessorContext, ToolCallGate>()
+
 /**
  * The unattended safety list's SF-5 denial is a recoverable tool error: the
  * node sees the reason and can choose another path. Every other doom-loop
@@ -315,6 +318,22 @@ export const layer = Layer.effect(
       )
     })
 
+    // SF-5: a call the safety list denied must not execute. The SDK may
+    // dispatch it before the verdict exists, so an unattended run holds
+    // `execute` until the doom-loop check has settled the call.
+    const openToolGate = Effect.fnUntraced(function* (ctx: ProcessorContext) {
+      const gate = makeToolCallGate({ wait: yield* unattended(ctx.sessionID) })
+      toolGates.set(ctx, gate)
+      return gate
+    })
+
+    // Whatever ended the request, no `execute` stays parked on a verdict.
+    const closeToolGate = (ctx: ProcessorContext) =>
+      Effect.sync(() => {
+        toolGates.get(ctx)?.close()
+        toolGates.delete(ctx)
+      })
+
     // Resize image attachments; the ones that cannot be resized are left out and counted in the output text.
     const normalizeToolOutput = Effect.fnUntraced(function* (rawOutput: ToolOutput) {
       const normalized = yield* Effect.forEach(rawOutput.attachments ?? [], (attachment) =>
@@ -361,8 +380,6 @@ export const layer = Layer.effect(
       }
       let aborted = false
       let deferred = false
-      /** Verdicts of the current provider request's tool calls; replaced for every attempt. */
-      let toolGate: ToolCallGate | undefined
       let displayPending = ""
       let displayIndex = 0
       let displayFinished = false
@@ -577,7 +594,7 @@ export const layer = Layer.effect(
                 : value.providerMetadata,
             }))
 
-            yield* settleDoomLoop(toolGate, ctx, value, checkDoomLoop(ctx, value, input), failToolCall)
+            yield* settleDoomLoop(toolGates.get(ctx), ctx, value, checkDoomLoop(ctx, value, input), failToolCall)
             return
           }
 
@@ -978,15 +995,9 @@ export const layer = Layer.effect(
             beginAttempt(ctx)
             yield* status.set(ctx.sessionID, { type: "busy" })
             const generation = ++attemptGeneration
-            // SF-5: a call the safety list denied must not execute. The SDK may
-            // dispatch it before the verdict exists, so an unattended run holds
-            // `execute` until the doom-loop check has settled the call.
-            const gate = makeToolCallGate({ wait: yield* unattended(ctx.sessionID) })
-            toolGate = gate
             const source = llm.stream({
               ...streamInput,
-              sessionRetry: true,
-              toolCallVerdict: gate.verdict,
+              sessionRetry: true, toolCallVerdict: (yield* openToolGate(ctx)).verdict, // SF-5
               onThinkingInvalidated: (blocks) =>
                 Effect.gen(function* () {
                   const invalidated = new Set(blocks)
@@ -1018,9 +1029,8 @@ export const layer = Layer.effect(
                 }
                 streamInput.onAttemptActivity?.(activity)
               },
-              // A refused final-step tool call is still real activity: it must
-              // close the incomplete-response and retry gates exactly like a
-              // tool that executed.
+              // A refused final-step tool call is still real activity: it must close the
+              // incomplete-response and retry gates exactly like a tool that executed.
               onToolRefused: () => {
                 if (generation !== attemptGeneration) return
                 ctx.attempt.anyToolCalled = true
@@ -1033,13 +1043,7 @@ export const layer = Layer.effect(
               Stream.tap((event) => handleEvent(event)),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
-              // Whatever ended the request, no `execute` stays parked on a verdict.
-              Effect.ensuring(
-                Effect.sync(() => {
-                  gate.close()
-                  if (toolGate === gate) toolGate = undefined
-                }),
-              ),
+              Effect.ensuring(closeToolGate(ctx)),
             )
 
             // Detect an incomplete response before cleanup loses the

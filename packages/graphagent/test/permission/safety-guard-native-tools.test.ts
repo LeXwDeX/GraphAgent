@@ -4,6 +4,7 @@
 import { Database } from "@graphagent/core/database/database"
 import { CrossSpawnSpawner } from "@graphagent/core/cross-spawn-spawner"
 import { FSUtil } from "@graphagent/core/fs-util"
+import { Ripgrep } from "@graphagent/core/ripgrep"
 import { afterEach, expect } from "bun:test"
 import * as fs from "node:fs/promises"
 import os from "node:os"
@@ -13,12 +14,17 @@ import { Agent } from "@/agent/agent"
 import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Format } from "@/format"
+import { Git } from "@/git"
 import { LSP } from "@/lsp/lsp"
 import { Permission } from "@/permission"
 import { ChildRegistry } from "@/session/child/registry"
+import { Instruction } from "@/session/instruction"
 import { MessageID, SessionID } from "@/session/schema"
 import { ApplyPatchTool } from "@/tool/apply_patch"
 import { EditTool } from "@/tool/edit"
+import { GlobTool } from "@/tool/glob"
+import { GrepTool } from "@/tool/grep"
+import { ReadTool } from "@/tool/read"
 import type * as Tool from "@/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { WriteTool } from "@/tool/write"
@@ -26,15 +32,16 @@ import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 /**
- * #1031 M7: the real write, edit and apply_patch tools behind the production
- * Permission layer and its SafetyGuard, for an unattended child run.
+ * #1031 M7: the real native file tools behind the production Permission layer
+ * and its SafetyGuard, for an unattended child run.
  *
- * write and edit send `path.relative(worktree, filepath)` as the permission
- * pattern, which folds `link/..` away, while they write through the absolute
- * path they were given, which the kernel resolves link first. The guard has to
- * judge the second, and these cases prove the file is never written.
- * apply_patch resolves every path before it asks and before it writes, so its
- * patterns are where the files really land.
+ * write, edit and read send `path.relative(worktree, filepath)` as the
+ * permission pattern, which folds `link/..` away, while they go through the
+ * absolute path they were given, which the kernel resolves link first. The
+ * guard has to judge the second, and these cases prove the file is never
+ * written, never opened. grep and glob report the path they search next to
+ * their arguments, and apply_patch resolves every path before it asks and
+ * before it writes, so its patterns are where the files really land.
  */
 
 afterEach(async () => {
@@ -52,6 +59,9 @@ const it = testEffect(
     CrossSpawnSpawner.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,
+    Instruction.defaultLayer,
+    Ripgrep.defaultLayer,
+    Git.defaultLayer,
   ),
 )
 
@@ -118,6 +128,27 @@ const withLink = Effect.gen(function* () {
   yield* Effect.promise(() => fs.mkdir(path.join(outside, "child")))
   yield* Effect.promise(() => fs.symlink(path.join(outside, "child"), path.join(directory, "link"), "dir"))
   yield* Effect.promise(() => fs.mkdir(path.join(directory, "sub")))
+  return { directory, outside }
+})
+
+/**
+ * A project directory beside a credential directory: `link` points at
+ * `<outside>/.ssh/child`, so `link/..` is the credential directory on disk,
+ * `keys` is a link to it and `elsewhere` one to an ordinary directory. `sub`
+ * holds an ordinary file and a key file that both match "needle".
+ */
+const withCredentials = Effect.gen(function* () {
+  const { directory, outside } = yield* withOutside
+  const write = (file: string, text: string) => Effect.promise(() => fs.writeFile(file, text))
+  yield* Effect.promise(() => fs.mkdir(path.join(outside, ".ssh", "child"), { recursive: true }))
+  yield* Effect.promise(() => fs.mkdir(path.join(outside, "plain")))
+  yield* write(path.join(outside, ".ssh", "config"), "Host secret needle\n")
+  yield* Effect.promise(() => fs.symlink(path.join(outside, ".ssh", "child"), path.join(directory, "link"), "dir"))
+  yield* Effect.promise(() => fs.symlink(path.join(outside, ".ssh"), path.join(directory, "keys"), "dir"))
+  yield* Effect.promise(() => fs.symlink(path.join(outside, "plain"), path.join(directory, "elsewhere"), "dir"))
+  yield* Effect.promise(() => fs.mkdir(path.join(directory, "sub")))
+  yield* write(path.join(directory, "sub", "note.txt"), "an ordinary needle\n")
+  yield* write(path.join(directory, "sub", "server.pem"), "a key needle\n")
   return { directory, outside }
 })
 
@@ -241,6 +272,71 @@ it.instance(
       // The same link into the project is an ordinary new file, created through it.
       yield* write.execute({ filePath: `${directory}/dl2`, content: "fine" }, context)
       expect(yield* Effect.promise(() => fs.readFile(path.join(directory, "new.txt"), "utf-8"))).toBe("fine")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "the read tool through link/.. is refused before it opens the credential file the kernel resolves",
+  () =>
+    Effect.gen(function* () {
+      const { directory } = yield* withCredentials
+      const context = yield* contextOf("read")
+      const tool = yield* (yield* ReadTool).init()
+
+      // On disk this is `<outside>/.ssh/config`; the permission pattern it produces is `config`.
+      const cause = yield* denied(tool.execute({ filePath: `${directory}/link/../config` }, context))
+      expect(cause).toContain("dag_safety:SF-2")
+
+      // Without a link in the way the same spelling is an ordinary read.
+      const read = yield* tool.execute({ filePath: `${directory}/sub/../sub/note.txt` }, context)
+      expect(read.output).toContain("an ordinary needle")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "the grep tool is refused where its search path reaches a credential directory, and lets ordinary paths and exclusions through",
+  () =>
+    Effect.gen(function* () {
+      const { directory } = yield* withCredentials
+      const context = yield* contextOf("grep")
+      const tool = yield* (yield* GrepTool).init()
+      const search = (params: { path?: string; include?: string }) =>
+        tool.execute({ pattern: "needle", ...params }, context)
+
+      // The kernel reads `link/..` as `<outside>/.ssh`.
+      expect(yield* denied(search({ path: `${directory}/link/..` }))).toContain("dag_safety:SF-2")
+      // The tool folds the path before it searches: this is `<project>/keys`, a link to the credential directory.
+      expect(yield* denied(search({ path: `${directory}/elsewhere/../keys` }))).toContain("dag_safety:SF-2")
+      // A positive include of key files.
+      expect(yield* denied(search({ path: "sub", include: "*.pem" }))).toContain("dag_safety:SF-2")
+
+      // A relative path is folded by the tool: `link/../sub` searches `<project>/sub`.
+      expect((yield* search({ path: "link/../sub" })).output).toContain("note.txt")
+      // `!` makes the include an exclusion: it leaves the key file out, it does not select it.
+      const excluded = yield* search({ path: `${directory}/sub/../sub`, include: "!*.pem" })
+      expect(excluded.output).toContain("note.txt")
+      expect(excluded.output).not.toContain("server.pem")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "the glob tool is refused where its search path reaches a credential directory, and lets ordinary paths through",
+  () =>
+    Effect.gen(function* () {
+      const { directory } = yield* withCredentials
+      const context = yield* contextOf("glob")
+      const tool = yield* (yield* GlobTool).init()
+      const list = (searchPath: string) => tool.execute({ pattern: "*", path: searchPath }, context)
+
+      expect(yield* denied(list(`${directory}/link/..`))).toContain("dag_safety:SF-2")
+      expect(yield* denied(list(`${directory}/elsewhere/../keys`))).toContain("dag_safety:SF-2")
+
+      // A relative path is folded by the tool: `link/../sub` lists `<project>/sub`.
+      expect((yield* list("link/../sub")).output).toContain("note.txt")
+      expect((yield* list(`${directory}/sub/../sub`)).output).toContain("note.txt")
     }),
   { git: true },
 )
