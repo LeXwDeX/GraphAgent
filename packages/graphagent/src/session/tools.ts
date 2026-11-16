@@ -2,6 +2,7 @@ import { Agent } from "@/agent/agent"
 import { subagentRoleDefaultRuleIndices } from "@/agent/subagent-permissions"
 import { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
+import { HookGuard } from "@/permission/hook-guard"
 import { Tool } from "@/tool/tool"
 import { ToolRegistry } from "@/tool/registry"
 import { TaskTool } from "@/tool/task"
@@ -99,7 +100,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
   // only supplies the executing session and the tool/MCP binding.
   const hookContext = Effect.fn("SessionTools.hookContext")(function* (toolName?: string) {
     const policy = "hookPolicy" in permission ? yield* permission.hookPolicy(input.session.id) : undefined
-    const mode = policy?.mode ?? (input.agent.name === "plan" ? "plan" : "default")
+    // An unattended session runs under its `dag.permission` tier, so the tier, not the session's own
+    // hook policy, tells an external guard what the session does (#1324 Q9).
+    const tierMode = yield* HookGuard.permissionMode(input.session.id)
+    const mode = tierMode ?? policy?.mode ?? (input.agent.name === "plan" ? "plan" : "default")
     const binding = hookIdentity(toolName)
     // A tool executed under a child session is that subagent's own call: CC
     // names the child session and the executing agent in agent_id / agent_type.
@@ -261,6 +265,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: WrapI
     agentService,
     questionHookAnswers,
     hookContext,
+    // A PreToolUse hook's deny of a DAG node's call is part of the node's safety record (#1324 §5.2).
+    hookDenied: (tool: string, reason: string) => HookGuard.recordDenial({ sessionID: input.session.id, tool, reason }),
     reportInterrupt,
     recordSettlement,
     recordInput,

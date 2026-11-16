@@ -18,6 +18,8 @@ GraphAgent does **not** sandbox the agent. The permission system exists as a UX 
 
 If you need true isolation, run GraphAgent inside a Docker container or VM.
 
+The same holds for unattended workflow sessions (DAG nodes, and `task` subagents while DAG mode is on). The built-in safety list, the `dag.permission` tiers and an external command guard hook narrow what they can do, but none of them is a security boundary. See [Unattended permissions](docs/unattended-permissions.en.md) ([中文](docs/unattended-permissions.md)) for what each covers and how to set it up.
+
 ### Server Mode
 
 Server mode is opt-in only. When enabled, set `GRAPHAGENT_SERVER_PASSWORD` to require HTTP Basic Auth. Without this, the server runs unauthenticated (with a warning). It is the end user's responsibility to secure the server - any functionality it provides is not a vulnerability.
