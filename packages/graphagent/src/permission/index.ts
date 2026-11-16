@@ -415,12 +415,14 @@ export const layer = Layer.effect(
         !force &&
         heldByAskTier(request)
       // The `readonly` tier (#1324 §4): an unattended session limited to a
-      // read-only tool surface. `readonlyOverride` is evaluated INSTEAD OF the
-      // session's own agent permission for the three classes it replaces, and
-      // nothing (a user's own `allow` included) widens it; everything else
-      // (read, grep, glob, `agent`, …) keeps its ordinary rule. A `force` ask
-      // is left alone: nobody can answer it regardless of tier, and SF-6
-      // already denies it uniformly for every unattended session.
+      // read-only tool surface. `readonlyOverride` narrows the three classes
+      // it covers — it is consulted only once the agent's own and the user's
+      // configured rules have both cleared a pattern (neither denies it), so
+      // it can add a denial of its own but never lifts one that already won
+      // for another reason, and a user's own `allow` never widens it either.
+      // Everything else (read, grep, glob, `agent`, …) keeps its ordinary
+      // rule. A `force` ask is left alone: nobody can answer it regardless of
+      // tier, and SF-6 already denies it uniformly for every unattended run.
       const readonlyTier =
         Option.isSome(subject) && subject.value.unattended && subject.value.mode === "readonly" && !force
       const readonlyOverride = (pattern: string): PermissionV1.Rule | undefined => {
@@ -438,35 +440,38 @@ export const layer = Layer.effect(
         )
 
       for (const pattern of request.patterns) {
-        // A readonly-tier override, when it applies, stands in for every one
-        // of the three computations below: it is never beaten by a deny the
-        // override itself did not produce, nor by an allow from elsewhere.
+        const nativeRule = evaluate(request.permission, pattern, resolved.native)
+        const configuredRule = evaluate(request.permission, pattern, ruleset)
+        // Denials are checked BEFORE remembered approvals, any hook result, or
+        // a readonly-tier override: a deny the agent's own permission or the
+        // user wrote always wins over `readonlyOverride`, which only narrows
+        // what is left of the call — it never lifts a deny that already
+        // applies for another reason (Codex #1334 P1).
         const override = readonlyOverride(pattern)
-        const nativeRule = override ?? evaluate(request.permission, pattern, resolved.native)
-        const configuredRule = override ?? evaluate(request.permission, pattern, ruleset)
-        // Denials are checked BEFORE remembered approvals or any hook result.
         const rule =
           nativeRule.action === "deny"
             ? nativeRule
             : configuredRule.action === "deny" || force
               ? configuredRule
-              : override ?? evaluate(request.permission, pattern, ruleset, approved)
+              : (override ?? evaluate(request.permission, pattern, ruleset, approved))
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           // A readonly-tier denial is this tier's own rule, not the agent's or
-          // the user's: name the tier instead of guessing whose rule it was.
-          const reason = override
-            ? readonlyOverrideReason(request.permission)
-            : roleDenialReason({
-                role: options?.role,
-                permission: request.permission,
-                patterns: [pattern],
-                native: resolved.native,
-                ruleset,
-                resolvedRuleCount: resolved.rules.length,
-                roleDefaultIndices: options?.roleDefaultIndices ?? [],
-                sessionRuleCount: options?.sessionRuleCount ?? 0,
-              })
+          // the user's: name the tier only when the override itself produced
+          // this particular denial, never when a deny elsewhere already won.
+          const reason =
+            rule === override
+              ? readonlyOverrideReason(request.permission)
+              : roleDenialReason({
+                  role: options?.role,
+                  permission: request.permission,
+                  patterns: [pattern],
+                  native: resolved.native,
+                  ruleset,
+                  resolvedRuleCount: resolved.rules.length,
+                  roleDefaultIndices: options?.roleDefaultIndices ?? [],
+                  sessionRuleCount: options?.sessionRuleCount ?? 0,
+                })
           return yield* new PermissionV1.DeniedError({
             ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
             ...(reason ? { reason } : {}),

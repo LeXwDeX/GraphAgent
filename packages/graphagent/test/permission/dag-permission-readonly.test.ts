@@ -141,6 +141,7 @@ const mcp = (sessionID: SessionID, tool: string, extra: Extra = {}) =>
   call(sessionID, tool, "*", { metadata: { source: "mcp" }, ...extra })
 
 const allow = (permission: string, pattern: string) => ({ permission, pattern, action: "allow" as const })
+const deny = (permission: string, pattern: string) => ({ permission, pattern, action: "deny" as const })
 
 /** Every `permission.asked` event the run publishes. */
 const watchAsked = Effect.gen(function* () {
@@ -268,6 +269,48 @@ it.instance(
         yield* settlesAlone(mcp(childSessionID, tool, { ruleset: [allow(tool, "*")] }))
         // Another tool's allow still does not name this one.
         yield* failsWithout(mcp(childSessionID, "github_list_issues", { ruleset: [allow(tool, "*")] }))
+
+        expect(asked).toEqual([])
+      }),
+    ),
+  { git: true },
+)
+
+/**
+ * Codex #1334 P1: `readonlyOverride` must only narrow what the agent's own and
+ * the user's configured rules already allow, never stand in for them. A user's
+ * own `deny` — on a bash pattern the review allowlist would otherwise let
+ * through, on edit, or on a named MCP tool — has to keep winning, with the
+ * ordinary (non-readonly) denial wording, exactly as it does outside this tier.
+ */
+it.instance(
+  "readonly tier: a user's own deny always wins over the tool-face override, never with the readonly wording",
+  () =>
+    withTier(
+      "readonly",
+      Effect.gen(function* () {
+        const asked = yield* watchAsked
+        const { childSessionID } = yield* makeRun("deny-wins")
+        const tool = "github_create_issue"
+
+        // The review allowlist would otherwise allow "git diff"; the user's own
+        // deny on that exact pattern still wins, and the reason is not readonly's.
+        const bashDenied = yield* failsWithout(
+          bash(childSessionID, "git diff --cached", { ruleset: [deny("bash", "git diff*")] }),
+        )
+        expect(bashDenied.text).not.toContain('dag.permission is "readonly"')
+
+        // edit and a named MCP tool deny the same way: still denied, but not by the override.
+        const editDenied = yield* failsWithout(edit(childSessionID, "src/a.ts", { ruleset: [deny("edit", "src/*")] }))
+        expect(editDenied.text).not.toContain('dag.permission is "readonly"')
+
+        const mcpDenied = yield* failsWithout(mcp(childSessionID, tool, { ruleset: [deny(tool, "*")] }))
+        expect(mcpDenied.text).not.toContain('dag.permission is "readonly"')
+
+        // The tool face still denies what it always did: a pattern nobody wrote
+        // a rule for, but that the review allowlist does not cover.
+        const stillOverridden = yield* failsWithout(bash(childSessionID, "npm test"))
+        expect(stillOverridden.text).toContain('dag.permission is "readonly"')
 
         expect(asked).toEqual([])
       }),
@@ -407,7 +450,14 @@ it.instance(
           config: {
             name: "readonly safety",
             nodes: [
-              { id: "a", name: "a", worker_type: "build", depends_on: [], required: true, prompt_template: { inline: "a" } },
+              {
+                id: "a",
+                name: "a",
+                worker_type: "build",
+                depends_on: [],
+                required: true,
+                prompt_template: { inline: "a" },
+              },
             ],
           },
         })
