@@ -60,8 +60,10 @@ export interface Interface {
    * Read-only view of the currently-effective hooks (merged global + project +
    * local chain), one entry per hook command tagged with its source layer.
    * Backed by the same hot-reloaded state `trigger` consults — never re-reads
-   * files. Empty when no hooks.json layer defines any hook or when
-   * disableAllHooks is on, because no trigger can run them.
+   * files. Empty when no hooks.json layer defines any hook. A hook that
+   * `disableAllHooks` switched off is left out, because no trigger can run it:
+   * a global-layer true leaves nothing, a project or local true leaves the
+   * global hooks.
    */
   readonly list: () => Effect.Effect<ReadonlyArray<HookSummary>>
   /**
