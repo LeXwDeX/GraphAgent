@@ -18,6 +18,7 @@ import { AbsolutePath } from "@graphagent/core/schema"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
+import { markNodeWakeReported } from "./fixtures"
 
 // ============================================================================
 // Harness A — full Dag command → event → projector → store (in-memory DB).
@@ -178,7 +179,7 @@ describe("nodeExtendTimeout command-layer guard (Q3)", () => {
           // Q2 (ADR-0002): adjudication must follow delivery. The escalation
           // wake is delivered before the main agent re-times — only then may
           // the extension land.
-          yield* store.markNodeWakeReported(dagID, "a")
+          yield* markNodeWakeReported(store, dagID, "a")
 
           const written = yield* dag.nodeExtendTimeout(dagID, "a", 99_999)
           // Command sync return: 1 = success (guard 前移, 错误即状态 — the
@@ -342,7 +343,7 @@ describe("extendTimeout dedicated control command (P0-A)", () => {
           yield* dag.nodeStarted(dagID, "a", "ses_child_1", Date.now() - 500, true)
           yield* dag.nodeTimeoutEscalated(dagID, "a", "ses_child_1", 1)
           // Q2: adjudication follows delivery.
-          yield* store.markNodeWakeReported(dagID, "a")
+          yield* markNodeWakeReported(store, dagID, "a")
 
           const before = yield* store.getNode(dagID, "a")
           const verdict = yield* dag.extendTimeout(dagID, "a", 60_000)
@@ -447,13 +448,13 @@ describe("extendTimeout dedicated control command (P0-A)", () => {
           yield* dag.nodeQueued(dagID, "a", Date.now() - 1000)
           yield* dag.nodeStarted(dagID, "a", "ses_child_1", Date.now() - 500, true)
           yield* dag.nodeTimeoutEscalated(dagID, "a", "ses_child_1", 1)
-          yield* store.markNodeWakeReported(dagID, "a")
+          yield* markNodeWakeReported(store, dagID, "a")
           expect((yield* dag.extendTimeout(dagID, "a", 30_000)).status).toBe("extended")
 
           // The second delivered escalation reaches this workflow's cap. The
           // command must not defer the watcher's terminal verdict by 24 hours.
           yield* dag.nodeTimeoutEscalated(dagID, "a", "ses_child_1", 2)
-          yield* store.markNodeWakeReported(dagID, "a")
+          yield* markNodeWakeReported(store, dagID, "a")
           const before = yield* store.getNode(dagID, "a")
           expect(yield* dag.extendTimeout(dagID, "a", 86_400_000)).toEqual({ status: "cap_exhausted" })
           const after = yield* store.getNode(dagID, "a")

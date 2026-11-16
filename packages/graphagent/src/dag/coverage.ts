@@ -102,9 +102,9 @@ export function workflowCoverage(input: {
   // the reason is baked into its prompt); a marker that is still present means
   // the expansion never committed. Both shapes are reported.
   for (const definition of input.config?.nodes ?? []) {
-    // The persisted config is parsed tolerantly (a legacy row may omit
-  // prompt_template), so never assume the field exists.
-  const declined = /Parallel fan-out was declined \(([^)]*)\)/.exec(definition.prompt_template?.inline ?? "")
+    // The persisted config is parsed tolerantly (an older row may omit
+    // prompt_template), so never assume the field exists.
+    const declined = /Parallel fan-out was declined \(([^)]*)\)/.exec(definition.prompt_template?.inline ?? "")
     if (declined) {
       entries.push({ node_id: definition.id, reason: `parallel fan-out declined: ${declined[1]}` })
       continue
@@ -134,7 +134,7 @@ export function workflowCoverage(input: {
     }
     const completed = current.find((node) => node.id === definition.id && node.status === "completed")
     if (!completed) continue
-    const legacyRaised = definition.depends_on.reduce((sum, laneID) => {
+    const raisedWithoutDispositions = definition.depends_on.reduce((sum, laneID) => {
       if (definitions.get(laneID)?.review_lane === undefined) return sum
       const actions = record(current.find((node) => node.id === laneID)?.output)?.required_actions
       return sum + (Array.isArray(actions) ? actions.length : 0)
@@ -142,7 +142,7 @@ export function workflowCoverage(input: {
     const { quietRounds } = reviewRoundQuietStreak(
       completed.output,
       definition.review_quiet_rounds ?? 0,
-      legacyRaised,
+      raisedWithoutDispositions,
     )
     if (quietRounds >= 2)
       entries.push({ node_id: definition.id, reason: "review loop stopped: two consecutive quiet rounds" })

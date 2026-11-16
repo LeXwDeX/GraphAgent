@@ -1,7 +1,25 @@
 // SPDX-FileCopyrightText: 2026 LeXwDeX
 // SPDX-License-Identifier: Apache-2.0
 
+import { Effect } from "effect"
 import type { DagStore } from "@graphagent/core/dag/store"
+
+/**
+ * Acknowledge one node's wake the way delivery does: through the batch mark,
+ * on the row's current revision. A row a newer event already moved on is left
+ * alone, exactly as in production. Tests use this instead of a dedicated
+ * single-row write on the store.
+ */
+export const markNodeWakeReported = (store: DagStore.Interface, workflowId: string, nodeID: string) =>
+  store
+    .getNode(workflowId, nodeID)
+    .pipe(
+      Effect.flatMap((node) =>
+        node
+          ? store.markWakeBatchReported({ nodes: [node], workflows: [] })
+          : Effect.die(new Error(`node ${workflowId}/${nodeID} does not exist`)),
+      ),
+    )
 
 export function makeWorkflowRow(overrides: Partial<DagStore.WorkflowRow> = {}): DagStore.WorkflowRow {
   return {

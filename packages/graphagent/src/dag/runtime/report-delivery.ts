@@ -47,6 +47,17 @@ export function selectReportNode(config: WorkflowConfig, nodes: readonly DagStor
 }
 
 /**
+ * The delivery node of a graph that ends in it. Its output is the final report
+ * itself, so a display delivery already carries it.
+ */
+function isOrdinaryDeliveryLeaf(config: WorkflowConfig, nodes: readonly DagStore.NodeRow[], node: DagStore.NodeRow) {
+  return (
+    node.id === config.delivery_node &&
+    !nodes.some((candidate) => !candidate.superseded && candidate.dependsOn.includes(node.id))
+  )
+}
+
+/**
  * Durable parent-involvement signal for a completed final-response workflow.
  * `wakeEligible` is the persisted `report_to_parent` evidence from the node's
  * execution attempt; the current config proves the node still belongs to the
@@ -57,16 +68,27 @@ export function selectReportNode(config: WorkflowConfig, nodes: readonly DagStor
  */
 export function reportingCheckpoints(config: WorkflowConfig, nodes: readonly DagStore.NodeRow[]) {
   const configured = new Map(config.nodes.map((node) => [node.id, node]))
-  const isOrdinaryDeliveryLeaf = (node: DagStore.NodeRow) =>
-    node.id === config.delivery_node &&
-    !nodes.some((candidate) => !candidate.superseded && candidate.dependsOn.includes(node.id))
   return nodes.filter((node) => {
     if (node.superseded || !node.wakeEligible) return false
     const definition = configured.get(node.id)
     if (!definition) return false
     if (definition.report_to_parent === false) return false
-    return !isOrdinaryDeliveryLeaf(node)
+    return !isOrdinaryDeliveryLeaf(config, nodes, node)
   })
+}
+
+/**
+ * The mode-independent half of the completion-turn rule (#891): the delivery
+ * node produced the final answer and no reporting checkpoint other than that
+ * ordinary leaf exists, so the displayed report is all the parent is owed.
+ * Every other completed outcome owes the parent a turn in either mode: a
+ * checkpoint, no delivery node, or a delivery node a gate skipped (#294).
+ * With the session's DAG mode on the parent gets that turn after a display-only
+ * report too (#1015); `DagDelivery` reads the durable mode at the delivery
+ * boundary and applies it on top of this predicate.
+ */
+export function isDisplayOnlyCompletion(config: WorkflowConfig, nodes: readonly DagStore.NodeRow[]) {
+  return reportingCheckpoints(config, nodes).length === 0 && selectReportNode(config, nodes) !== undefined
 }
 
 export function resultIndex(workflow: DagStore.WorkflowRow, nodes: readonly DagStore.NodeRow[]) {
@@ -127,11 +149,11 @@ function latestUser(history: readonly SessionV1.WithParts[]) {
 /**
  * Local command exchanges persisted before #1031 (the `/memory` swap did not
  * mark its parts `ignored`) have no assistant turn: the visible response sits
- * on the same user message next to the command part. Keep recognizing them so
- * a resumed session still receives a finished workflow's report instead of
- * leaving it pending until the next user turn.
+ * inline on the same user message next to the command part. Keep recognizing
+ * them so a resumed session still receives a finished workflow's report
+ * instead of leaving it pending until the next user turn.
  */
-function legacyLocalExchange(user: SessionV1.WithParts) {
+function inlineLocalExchange(user: SessionV1.WithParts) {
   const command = user.parts.find(
     (part) => part.type === "text" && ["memory", "trust", "goal", "subgoal"].includes(String(part.metadata?.command)),
   )
@@ -170,7 +192,7 @@ function userTurnAnswered(history: readonly SessionV1.WithParts[]) {
     user.parts.some((part) => part.type === "text" && part.time?.end !== undefined)
   )
     return true
-  if (legacyLocalExchange(user)) return true
+  if (inlineLocalExchange(user)) return true
   const assistant = history
     .filter(
       (item) =>
@@ -222,9 +244,11 @@ export function deliverReport(input: {
   directory: string
   source?: SessionV1.WithParts
   /**
-   * Display delivery acknowledges only the workflow completion row by
-   * default. The loop defers acknowledgement while a parent wake turn will
-   * mark the same completion row atomically with that turn's admission.
+   * Display delivery acknowledges the workflow completion row by default, and
+   * with it the wake of an ordinary delivery leaf, whose output is the
+   * displayed report. A checkpoint wake is never acknowledged here. The loop
+   * defers acknowledgement while a parent wake turn will mark the same rows
+   * atomically with that turn's admission.
    */
   acknowledge?: boolean
 }): Effect.Effect<boolean, never, Database.Service> {
@@ -233,7 +257,6 @@ export function deliverReport(input: {
     const config = parseWorkflowConfig(workflow.config)
     if (workflow.status !== "completed" || !config) return false
     const acknowledge = input.acknowledge ?? true
-    const completionBatch = { nodes: [], workflows: input.batch.workflows } satisfies DagStore.WakeBatch
     const identity = reportIdentity(workflow)
     const sessionID = SessionID.make(workflow.sessionId)
     const getReceipt = () => sessions.getPart({ sessionID, messageID: identity.messageID, partID: identity.answerID })
@@ -257,6 +280,13 @@ export function deliverReport(input: {
     if (!receipt && !userTurnAnswered(history)) return false
     const nodes = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
     const node = selectReportNode(config, nodes)
+    // #1015: the display carries the ordinary delivery leaf's own output, so
+    // acknowledging it leaves no wake behind that nothing would ever deliver.
+    const completionBatch = {
+      nodes:
+        node && node.wakeEligible && !node.wakeReported && isOrdinaryDeliveryLeaf(config, nodes, node) ? [node] : [],
+      workflows: input.batch.workflows,
+    } satisfies DagStore.WakeBatch
     const structured = !!config.nodes.find((item) => item.id === node?.id)?.output_schema
     let artifact: ManagedOutputFileRef | undefined
     if (
