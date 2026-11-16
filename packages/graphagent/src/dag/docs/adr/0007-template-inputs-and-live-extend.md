@@ -79,21 +79,44 @@ dependencies, as its lanes do through the block's own `depends_on`; this also
 lets a review follow another review inside one start document, which used to be
 an authoring error.
 
-**6. A rejected nodes fragment says how to fix it.** The merged-graph checkpoint
-gate that `Dag.extend` enforces at the runtime seam is also run at authoring, on
-the fragment's own dependents, so the rejection arrives before anything is
-parked. A grouped gate diagnostic carries `suggested_fragment`: node patches
-merged by id (`condition` and `skip_ok` for the dependents, `output_schema` for a
-checkpoint with no contract), built only when every ungated dependent can be
-repaired by adding one condition. The verdict schema is offered as a missing
-contract only when it provides what the gates already on the checkpoint read
-(`verdict`, compared with `==` or `!=` to `ACCEPT`, `REVISE`, `REJECT`, or
-`BLOCKED`); for any other gate no patch is given and the hint names the fields
-the gates read, so the caller declares a schema that provides them. The tool renders it as a structured retry
-signal. A dependent that already has a condition, one that depends on a second
-reporting checkpoint, or a checkpoint whose declared contract has no "carry on"
-verdict gets no patch; the options in the hint remain. A blocks document has no
-`condition` field, so its hint names block-level choices instead.
+**6. A rejected nodes fragment says how to fix it, when the fix is simple.** The
+merged-graph checkpoint gate that `Dag.extend` enforces at the runtime seam is
+also run at authoring, on the fragment's own dependents, so the rejection arrives
+before anything is parked. A grouped gate diagnostic carries `suggested_fragment`:
+node patches merged by id (`condition`, and `skip_ok` where the gated node is
+required, for the dependents; `output_schema` for a checkpoint with no contract).
+The tool renders it as a structured retry signal.
+
+**`suggested_fragment` covers only simple repairs: it edits the checkpoint and the
+nodes it gates, and changes the meaning of no other node.** It is offered only
+when all of these hold:
+
+1. A condition can do the gating. It reads exactly one direct dependency, so a
+   dependent that already has a condition, or that depends on a second reporting
+   checkpoint, gets no patch, and a blocks document (no `condition` field) is told
+   its block-level choices instead.
+2. The verdict it gates on exists: the "carry on" verdict the checkpoint already
+   enumerates, or else the documented verdict schema, which is offered as a
+   missing contract only when it provides what the gates already on the
+   checkpoint read (`verdict`, compared with `==` or `!=` to `ACCEPT`, `REVISE`,
+   `REJECT`, or `BLOCKED`). Otherwise the hint names the fields the gates read, so
+   the caller declares a schema that provides them.
+3. A rejected verdict then fails nothing. A gate makes the gated nodes skippable,
+   and the scheduler skips every node whose dependencies are all skipped, so a
+   required node behind a gated one that is not `skip_ok` would fail the workflow
+   on the rejected branch. The patch is offered only when every node a rejected
+   verdict would skip, directly or through that cascade, is already optional or
+   `skip_ok`. The nodes are judged for all checkpoints of the graph together,
+   since the patches are applied together and each checkpoint may reject, and
+   only failures the repair itself causes count: a skip hazard already in the
+   fragment is not charged to it. A gated node that says `skip_ok: false` is left
+   to the caller too.
+
+When (3) fails no patch is given, and the hint lists the nodes to make
+`skip_ok: true` or `required: false`. Giving other nodes `skip_ok` would change
+what they mean, so that stays the caller's decision. The retry signal carries a
+fragment only when every gate diagnostic has one; otherwise it says that no
+mechanical fix applies.
 
 **7. One mistake, one correction.** A graph that defines both `blocks` and
 `nodes` is reported once. The empty key is deleted; when both hold entries, the

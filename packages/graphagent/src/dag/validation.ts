@@ -74,7 +74,9 @@ export const DiagnosticCodeSchema = Schema.Literals(Object.values(DIAGNOSTIC_COD
 
 /** Node patches that make a rejected fragment valid. Each entry names a node by
  * `id` and carries only the fields to add; merge it into the node of that id as
- * written, and nothing else about the fragment changes. */
+ * written, and nothing else about the fragment changes. A suggested fragment
+ * covers only simple repairs: it edits the checkpoint and the nodes it gates and
+ * changes the meaning of no other node (see `checkpointGateSuggestion`). */
 export const SuggestedFragmentSchema = Schema.Struct({
   nodes: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 })
@@ -1257,12 +1259,90 @@ function readFields(reads: readonly GateRead[]) {
 }
 
 /**
+ * The nodes a rejected verdict skips once `gated` carry a condition on the
+ * checkpoint: the gated nodes themselves, and every node whose dependencies are
+ * all skipped, which the scheduler skips in turn (its orphan cascade). A node
+ * with a dependency that still runs, the checkpoint included, is not skipped; it
+ * runs on a placeholder input.
+ */
+function skippedByGate(nodes: readonly NodeConfig[], gated: readonly NodeConfig[]): Set<string> {
+  const skipped = new Set(gated.map((node) => node.id))
+  for (;;) {
+    const added = nodes.filter(
+      (node) => !skipped.has(node.id) && node.depends_on.length > 0 && node.depends_on.every((dep) => skipped.has(dep)),
+    )
+    if (added.length === 0) return skipped
+    for (const node of added) skipped.add(node.id)
+  }
+}
+
+/** The given nodes and every node downstream of them. */
+function downstreamOf(nodes: readonly NodeConfig[], from: readonly NodeConfig[]): Set<string> {
+  const reached = new Set(from.map((node) => node.id))
+  for (;;) {
+    const added = nodes.filter((node) => !reached.has(node.id) && node.depends_on.some((dep) => reached.has(dep)))
+    if (added.length === 0) return reached
+    for (const node of added) reached.add(node.id)
+  }
+}
+
+/**
+ * The nodes that fail the workflow only because of the gates a repair adds: a
+ * rejected verdict skips them (directly, or because every dependency is
+ * skipped), they are required, and they are not opted into the skip. New
+ * required work is strict (`skip_ok: false`) unless it says otherwise, so an
+ * unset `skip_ok` is not an opt-in.
+ *
+ * `gated` are the nodes the repair adds a condition to, across every checkpoint
+ * of the graph: the patches are applied together, and every checkpoint may
+ * reject at once. Nodes that already carry a condition may be skipped as well,
+ * so the cascade is judged with them skipped both before and after, and a failure
+ * that exists without the repair is not charged to it. A gated node whose
+ * `skip_ok` is unset is not listed, since the repair sets it; one that says
+ * `skip_ok: false` is, since that is a choice the repair would overturn.
+ */
+function newSkipGaps(
+  nodes: readonly NodeConfig[],
+  gated: readonly NodeConfig[],
+  defaults?: { readonly required?: boolean },
+): string[] {
+  const conditional = nodes.filter((node) => node.condition !== undefined && node.condition.trim() !== "")
+  const failing = (skipped: ReadonlySet<string>) =>
+    new Set(
+      nodes
+        .filter(
+          (node) => skipped.has(node.id) && (node.required ?? defaults?.required ?? false) && node.skip_ok !== true,
+        )
+        .map((node) => node.id),
+    )
+  const before = failing(skippedByGate(nodes, conditional))
+  const after = failing(skippedByGate(nodes, [...conditional, ...gated]))
+  const gatedIDs = new Set(gated.map((node) => node.id))
+  return nodes
+    .filter(
+      (node) => after.has(node.id) && !before.has(node.id) && !(gatedIDs.has(node.id) && node.skip_ok === undefined),
+    )
+    .map((node) => node.id)
+}
+
+/** The ids as a hint lists them. */
+const idList = (ids: readonly string[]) => ids.map((id) => `\`${id}\``).join(", ")
+
+/**
  * The patches that gate every ungated dependent of one reporting checkpoint, or
- * undefined when no mechanical repair is safe. A condition reads exactly one
- * direct dependency, so a dependent that already carries a condition, or that
- * depends on a second reporting checkpoint, cannot be repaired by adding one.
- * The gate reads the "carry on" verdict the checkpoint already enumerates; a
- * checkpoint without any output contract gets the documented verdict schema.
+ * undefined when no simple repair exists. A suggested fragment is a simple
+ * repair: it edits the checkpoint and the nodes it gates, and changes the
+ * meaning of no other node. So it is offered only when
+ *
+ * - a condition can do the gating: it reads exactly one direct dependency, so a
+ *   dependent that already carries a condition, or that depends on a second
+ *   reporting checkpoint, cannot be repaired by adding one;
+ * - the verdict it gates on exists: the "carry on" verdict the checkpoint
+ *   already enumerates, or else the documented verdict schema, which must
+ *   provide what the gates already on the checkpoint read;
+ * - a rejected verdict then fails nothing: every node it would skip is already
+ *   optional or `skip_ok` (`skipGaps`). Giving other nodes `skip_ok` would
+ *   change what they mean, so that stays the caller's call, named in the hint.
  */
 function checkpointGateSuggestion(input: {
   checkpoint: NodeConfig
@@ -1271,10 +1351,13 @@ function checkpointGateSuggestion(input: {
   patchable: (id: string) => boolean
   /** Gates already reading this checkpoint that the verdict schema would not satisfy. */
   uncoveredReads: readonly GateRead[]
+  /** Nodes a rejected verdict would skip and fail the workflow through. */
+  skipGaps: readonly string[]
   defaults?: { readonly required?: boolean }
 }): SuggestedFragment | undefined {
   const { checkpoint, ungated } = input
   if (!GATE_NODE_ID.test(checkpoint.id) || ungated.length === 0) return undefined
+  if (input.skipGaps.length > 0) return undefined
   // The verdict schema stands in for a missing contract only when it provides
   // what the gates already on this checkpoint read; otherwise applying it would
   // skip their dependents silently.
@@ -1297,7 +1380,9 @@ function checkpointGateSuggestion(input: {
         id: dependent.id,
         condition: gate,
         // A required dependent that a rejected verdict skips must not fail the workflow.
-        ...((dependent.required ?? input.defaults?.required ?? false) ? { skip_ok: true } : {}),
+        ...((dependent.required ?? input.defaults?.required ?? false) && dependent.skip_ok === undefined
+          ? { skip_ok: true }
+          : {}),
       })),
     ],
   }
@@ -1331,24 +1416,43 @@ function checkpointGateFindings(
     nodes.filter((node) => reportsToParent(node) && !options?.exemptCheckpointIds?.has(node.id)).map((node) => node.id),
   )
   const patchable = (id: string) => options?.form !== "blocks" && (options?.patchableIds?.has(id) ?? true)
+  const dependentsOf = (checkpoint: NodeConfig) =>
+    nodes.filter(
+      (dependent) =>
+        dependent.depends_on.includes(checkpoint.id) &&
+        (options?.dependentIds === undefined || options.dependentIds.has(dependent.id)),
+    )
+  const ungatedOf = (checkpoint: NodeConfig) =>
+    dependentsOf(checkpoint).filter((dependent) => conditionReference(dependent.condition) !== checkpoint.id)
+  // The repairs of every checkpoint are applied together, and each checkpoint may
+  // reject: what they would make fail is judged once, over all the gated nodes.
+  const gatedByRepairs = [
+    ...new Map(
+      nodes
+        .filter((node) => reportingCheckpointIds.has(node.id))
+        .flatMap(ungatedOf)
+        .map((node) => [node.id, node]),
+    ).values(),
+  ]
+  const failingWithRepairs = new Set(newSkipGaps(nodes, gatedByRepairs, defaults))
   return nodes.flatMap((checkpoint) => {
     if (!reportingCheckpointIds.has(checkpoint.id)) return []
     // Gates already on a checkpoint with no contract: the verdict schema must not
     // be offered as its contract when they read something else.
     const uncovered = checkpoint.output_schema === undefined ? uncoveredGateReads(nodes, checkpoint.id) : []
-    const dependents = nodes.filter(
-      (dependent) =>
-        dependent.depends_on.includes(checkpoint.id) &&
-        (options?.dependentIds === undefined || options.dependentIds.has(dependent.id)),
-    )
-    const ungated = dependents.filter((dependent) => conditionReference(dependent.condition) !== checkpoint.id)
+    const ungated = ungatedOf(checkpoint)
+    const dependents = dependentsOf(checkpoint)
     const fixes = ungated.map((dependent) => checkpointDependentFix(dependent, reportingCheckpointIds, byID))
+    // What gating these dependents would make a rejected verdict skip and fail.
+    const reach = ungated.length > 0 ? downstreamOf(nodes, ungated) : new Set<string>()
+    const gaps = nodes.filter((node) => reach.has(node.id) && failingWithRepairs.has(node.id)).map((node) => node.id)
     const suggestion = checkpointGateSuggestion({
       checkpoint,
       ungated,
       reportingCheckpointIds,
       patchable,
       uncoveredReads: uncovered,
+      skipGaps: gaps,
       defaults,
     })
     const grouped =
@@ -1365,7 +1469,7 @@ function checkpointGateFindings(
               hint:
                 options?.form === "blocks"
                   ? blocksCheckpointHint(checkpoint.id)
-                  : `${uncovered.length > 0 ? `The gates already on "${checkpoint.id}" read ${readFields(uncovered)}, so give it an output_schema that provides them rather than the verdict shape.\n` : ""}${fixes.join("\n")}\n` +
+                  : `${uncovered.length > 0 ? `The gates already on "${checkpoint.id}" read ${readFields(uncovered)}, so give it an output_schema that provides them rather than the verdict shape.\n` : ""}${gaps.length > 0 ? `Gating them also skips ${idList(gaps)} when the verdict is not accepted, and a skipped required node fails the workflow: give ${gaps.length === 1 ? "it" : "each"} skip_ok: true or required: false first. A suggested repair edits only the checkpoint and the nodes it gates, so none is offered until then.\n` : ""}${fixes.join("\n")}\n` +
                     `Keep "${checkpoint.id}" a reporting leaf (drop its dependents), or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
               ...(suggestion ? { suggested_fragment: suggestion } : {}),
             }),
