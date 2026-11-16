@@ -114,6 +114,7 @@ import {
   type SessionViewState,
 } from "./rows"
 import { createRowTable } from "./row-table"
+import { createExpandables, toggleExpand, type Expandables } from "./expand"
 
 addDefaultParsers(parsers.parsers)
 
@@ -133,6 +134,7 @@ const sessionBindingCommands = [
   "session.toggle.actions",
   "session.toggle.scrollbar",
   "session.toggle.generic_tool_output",
+  "view.expand.toggle",
   "session.messages_last_user",
   "session.message.next",
   "session.message.previous",
@@ -171,6 +173,8 @@ const context = createContext<{
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
   view: SessionViewState
+  /** Blocks that can fold; `view.expand.toggle` finds the one to flip here. */
+  expandables: Expandables
   rowHeight: (row: Row, index: number) => number
   measureRow: (row: Row, el: BoxRenderable) => void
   /** True while the row hosting `partID` is inside the scroll viewport. Unwindowed transcripts report everything visible. */
@@ -303,6 +307,7 @@ export function Main() {
   // estimates all read this table instead of mounted render nodes, so an
   // unmounted row can still be located and scrolled to.
   const view = createSessionViewState()
+  const expandables = createExpandables()
   const measurements = createRowMeasurements()
 
   // Windowing reports which part rows are actually on screen, so spinners in
@@ -908,6 +913,16 @@ export function Main() {
       },
     },
     {
+      title: t("help.expand.toggle"),
+      description: t("help.expand.toggle.note"),
+      value: "view.expand.toggle",
+      category: "Session",
+      // Opening a block is view state, not a request, so sub-agent views keep the key (spec 4.4).
+      run: () => {
+        toggleExpand(rows(), expandables, view)
+      },
+    },
+    {
       title: "Page up",
       value: "session.page.up",
       category: "Session",
@@ -1418,6 +1433,7 @@ export function Main() {
           sync,
           tui: tuiConfig,
           view,
+          expandables,
           rowHeight: heightFor,
           measureRow,
           isVisible: isVisiblePart,
@@ -2174,6 +2190,11 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo((owner) => generateSubtleSyntax(theme, owner))
+  // In hide mode the header folds the body. The keyboard finds the block here: with no body there is nothing to open.
+  ctx.expandables.register(props.part.id, {
+    flag: "expanded",
+    available: () => inMinimal() && Boolean(summary().body),
+  })
 
   const toggle = () => {
     if (!inMinimal()) return
@@ -2391,10 +2412,16 @@ function GenericTool(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  const showBlock = () => attention() || (props.output && ctx.showGenericToolOutput())
+  // Only the block folds; the one-line fallback below has nothing to open.
+  ctx.expandables.register(props.part.id, {
+    flag: "expanded",
+    available: () => Boolean(showBlock()) && collapsed().overflow,
+  })
 
   return (
     <Show
-      when={attention() || (props.output && ctx.showGenericToolOutput())}
+      when={showBlock()}
       fallback={
         <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
           {props.tool} {input(props.input)}
@@ -2455,6 +2482,8 @@ function InlineTool(props: {
   )
 
   const failed = createMemo(() => Boolean(error() && !denied()))
+  // A failed call folds its error text under the row, and a click on the row opens it (see `onMouseUp` below).
+  ctx.expandables.register(props.part.id, { flag: "errorExpanded", available: failed })
   const clickable = createMemo(() => Boolean(props.onClick || failed()))
   const fg = createMemo(() => {
     if (props.color) return props.color
@@ -2647,6 +2676,8 @@ function Shell(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  // Without output the call is one line and `overflow` stays false.
+  ctx.expandables.register(props.part.id, { flag: "expanded", available: () => collapsed().overflow })
 
   const workdirDisplay = createMemo(() => {
     const workdir = stringValue(props.input.workdir)
