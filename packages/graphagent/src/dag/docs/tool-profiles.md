@@ -27,6 +27,9 @@ permission; `list_mcp_resources`, `list_mcp_resource_templates`, and
 | -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `explore`, `debug--evidence`     | read-only research                       | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                             | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
 | `auditor`                        | read-only verification; model tier `advanced` | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                        | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
+| `researcher`                     | read-only web research; no shell         | `read`, `grep`, `glob`, `webfetch`, `websearch`, `skill`, `*_initial_instructions`                                                                                                     | `bash`, `edit`, `write`, `apply_patch`, `lsp`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
+| `architect`                      | read-only design: the `explore` profile plus the language server | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `lsp`, `skill`, `*_initial_instructions`                                                                              | `edit`, `write`, `apply_patch`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
+| `prototyper`                     | writer limited to `prototypes/` in the node workspace | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only `prototypes/**` passes), `skill`, `*_initial_instructions`                  | `lsp`, `task`, `todowrite`, other MCP tools, `question`, `plan_exit` |
 | `plan`                           | read-only planning, plan-file edits      | `read`, `grep`, `glob`, `bash`, `webfetch`, `websearch`, `edit`, `write`, `apply_patch` (only plan files pass), `task` (except `general`), `skill`, MCP tools | `todowrite` in a child session; `question`, `plan_exit` (root-only, hidden from every child session) |
 | `general`                        | writer / verifier                        | all default tools except `todowrite`; `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                                                               | `todowrite`, and `task` in a child session                                                    |
 | `build`                          | writer                                   | non-DAG primary: all default tools including `todowrite` and `task`; DAG child: `edit`, `write`, `apply_patch`, `skill`, MCP tools                                                     | `todowrite` and `task` in a DAG child session                                                 |
@@ -38,7 +41,8 @@ Block defaults:
 
 - `explore` -> `explore`
 - `plan` -> `plan`
-- `coding`, `prototype` -> `build`
+- `coding` -> `build`
+- `prototype` -> `prototyper`
 - `debug` evidence lane -> `explore`; its diagnosis lane -> `general`
 - review lanes, skeptics, the review decision, verification, and synthesis -> `auditor`
 
@@ -46,10 +50,10 @@ Block defaults:
 
 A node is a writer, one that can change the workspace, when its block is
 `coding` or `prototype`, or when its worker is not a read-only profile
-(`explore`, `plan`, `auditor`, `review`, `verify`, `verification`, or a matching
-`review-*` / `verify-*` / `verification-*` name) and its effective
-`workspace_writes` is not `deny`. The generated fan-out aggregator is never a
-writer. Three engine rules share this one definition:
+(`explore`, `plan`, `auditor`, `review`, `verify`, `verification`, `researcher`,
+`architect`, or a matching `review-*` / `verify-*` / `verification-*` name) and its
+effective `workspace_writes` is not `deny`. The generated fan-out aggregator is never
+a writer. Three engine rules share this one definition:
 
 - The `plan` agent may only run workflows whose newly-running nodes are all
   read-only. A graph with a writer is refused at `start`, `extend`, `replan`,
@@ -119,7 +123,8 @@ on a single simple command. The rules:
 
 Under the `strict` review gate, every review lane and its arbitration decision
 must use a read-only profile: `explore`, `plan`, `auditor`, `review`, `verify`,
-`verification`, or a matching `review-*` / `verify-*` / `verification-*` name.
+`verification`, `researcher`, `architect`, or a matching `review-*` / `verify-*` /
+`verification-*` name.
 A write-capable profile in either position is an authoring error; under
 `standard` the same gap is a warning. The block compiler defaults lanes, the
 decision, verification, and synthesis to `auditor`.

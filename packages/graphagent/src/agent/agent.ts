@@ -14,9 +14,12 @@ import { Auth } from "../auth"
 import { ProviderTransform } from "@/provider/transform"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_ARCHITECT from "./prompt/architect.txt"
 import PROMPT_AUDITOR from "./prompt/auditor.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_PROTOTYPER from "./prompt/prototyper.txt"
+import PROMPT_RESEARCHER from "./prompt/researcher.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
@@ -144,6 +147,23 @@ export const layer = Layer.effect(
           ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
         } satisfies Record<string, "allow" | "ask" | "deny">
 
+        // The read-only inspection profile `explore` and `architect` share (#1158): read, search and fetch, a shell
+        // for inspection, and the session bootstrap path every read-only worker needs. Shell access is not a
+        // read-only sandbox; this is a behavioral restriction, not command-level enforcement.
+        const inspection = {
+          "*": "deny",
+          grep: "allow",
+          glob: "allow",
+          bash: "allow",
+          webfetch: "allow",
+          websearch: "allow",
+          read: "allow",
+          // Read-only workers still need the session bootstrap path.
+          skill: "allow",
+          "*_initial_instructions": "allow",
+          external_directory: readonlyExternalDirectory,
+        } as const
+
         const defaults = Permission.fromConfig({
           "*": "allow",
           doom_loop: "ask",
@@ -222,13 +242,23 @@ export const layer = Layer.effect(
           },
           explore: {
             name: "explore",
+            permission: Permission.merge(defaults, Permission.fromConfig(inspection), user),
+            description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
+            prompt: PROMPT_EXPLORE,
+            options: {},
+            mode: "subagent",
+            native: true,
+            contract: { role: "worker", visibility: "public", output: { artifact: "code_findings" } },
+          },
+          researcher: {
+            name: "researcher",
+            // Reads, searches and fetches; no shell and no file tool at all.
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
                 "*": "deny",
                 grep: "allow",
                 glob: "allow",
-                bash: "allow",
                 webfetch: "allow",
                 websearch: "allow",
                 read: "allow",
@@ -239,12 +269,43 @@ export const layer = Layer.effect(
               }),
               user,
             ),
-            description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
-            prompt: PROMPT_EXPLORE,
+            description:
+              "Web research agent. Use it to answer a question from external sources such as documentation, release notes and issue trackers. It cites a source for every claim and reports where sources disagree. No shell; it cannot change files. Returns a research_findings artifact.",
+            prompt: PROMPT_RESEARCHER,
             options: {},
             mode: "subagent",
             native: true,
-            contract: { role: "worker", visibility: "public" },
+            contract: { role: "worker", visibility: "public", output: { artifact: "research_findings" } },
+          },
+          architect: {
+            name: "architect",
+            // The explore profile plus the language server.
+            permission: Permission.merge(defaults, Permission.fromConfig({ ...inspection, lsp: "allow" }), user),
+            description:
+              "Architecture design agent. Use it to weigh design options for a change against the existing code and recommend one, with the trade-offs. It does not split work into packages or write code. Read-only. Returns an architecture_proposal artifact.",
+            prompt: PROMPT_ARCHITECT,
+            options: {},
+            mode: "subagent",
+            native: true,
+            contract: { role: "worker", visibility: "public", output: { artifact: "architecture_proposal" } },
+          },
+          prototyper: {
+            name: "prototyper",
+            // The explore profile, with one window to write in: prototypes/ in the node workspace. A pattern-scoped
+            // allow keeps the file tools advertised, so this agent is a writer to the DAG (and `private`).
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({ ...inspection, edit: { "*": "deny", "prototypes/**": "allow" } }),
+              user,
+            ),
+            description:
+              "Prototype agent. Use it to answer one falsifiable technical question with the smallest disposable experiment: it states a hypothesis, writes the experiment only under prototypes/, runs it, and reports what it observed and how to run it again. Never changes product code. Returns a prototype artifact.",
+            prompt: PROMPT_PROTOTYPER,
+            options: {},
+            mode: "subagent",
+            native: true,
+            // A writer: `public` would be dropped anyway, and its failure derives to `fail`.
+            contract: { role: "worker", visibility: "private", output: { artifact: "prototype" } },
           },
           review: {
             name: "review",
