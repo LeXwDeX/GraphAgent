@@ -22,11 +22,7 @@ and #1325 the per-layer hook switch they lean on. A first version of the
 unattended guard (#1323) tried to judge bash command text. `safety-guard.ts`
 grew from about 740 to about 2,180 lines, mostly shell semantics, and every
 review round found another spelling that escaped. It was cut back to structured
-facts; decision 3 is the result.
-
-Two parts were not in code when this ADR was written: the `readonly` tier
-(#1324 PR2) and the guard-facing hook integration (#1324 PR3). They are marked
-where they appear. Paths are relative to `packages/graphagent/`.
+facts; decision 3 is the result. Paths are relative to `packages/graphagent/`.
 
 ## Decision
 
@@ -94,23 +90,33 @@ and before any question; a pattern it settles creates no pending request and no
   reply earlier in the same session, spares the question. Deny rules still win,
   and a non-interactive `run` rejects the requests rather than hanging.
   Implemented by #1324 PR1.
-- **`readonly`.** Decided in #1324 PR2, still open when this ADR was written:
-  the schema accepts the value and L2 describes it, but nothing restricts the
-  sessions yet. The decision is a read-only tool surface. `start`, `extend`,
-  `replan`, and `recover` refuse writers with the plan agent's check (decision
-  4). Bash is limited to the read-only git and gh allowlist of the `review`
-  profile, which an explicit allow does not widen. MCP tools are denied unless
-  the user allows that exact tool. A request that would need an answer is denied
-  as `RO-1`.
+- **`readonly`.** Unattended sessions get a read-only tool surface (#1324 PR2).
+  `edit`, `write`, and `apply_patch` are hidden (`src/tool/registry.ts`), and an
+  `edit` request already in flight is refused. Bash runs only `READONLY_BASH`
+  (`src/permission/index.ts`), the read-only git and gh allowlist that the
+  `review` profile shares; a user's allow does not widen it. An MCP tool is
+  refused unless the user wrote an allow that names exactly that tool. `read`,
+  `grep`, `glob`, `webfetch`, and the agent tool keep their ordinary rules, and
+  a request that would need an answer is denied as `RO-1` (decision 3). The
+  tier only narrows: its override is consulted after the agent's and the user's
+  deny rules, so it never lifts a deny. A workflow with a writer cannot start.
+  `start` returns `error_code: permission_readonly`, and `extend`, `replan`, and
+  `recover` are rejected with kind `permission-readonly`, for every caller and
+  ahead of the plan-agent check (`DagWriteGuard.readonlyRejection`, decision 4).
+  A running writer is not cancelled; the tier is read at every request, so it
+  meets the surface from its next call.
 
 ### 3. The safety list is insurance, not a security boundary
 
-In the `allow` tier, `SafetyGuard` (`src/permission/safety-guard.ts`) is the
-`AskAdjudicator` that `Permission.ask` consults for unattended sessions. It
-guards against the mistakes of an honest agent, not adversarial input. It is not
-a sandbox and GraphAgent provides none (see "No Sandbox" in
-[SECURITY.md](../../../../../../SECURITY.md#no-sandbox)); real isolation means a
-container or a VM. The order of judgment, per pattern:
+In the `allow` and `readonly` tiers, `SafetyGuard`
+(`src/permission/safety-guard.ts`) is the `AskAdjudicator` that `Permission.ask`
+consults for unattended sessions; the `ask` tier leaves the judgment to the
+user. It guards against the mistakes of an honest agent, not adversarial input.
+It is not a sandbox and GraphAgent provides none (see "No Sandbox" in
+[SECURITY.md](../../../../../../SECURITY.md#no-sandbox), and the
+[user guide](../../../../../../docs/unattended-permissions.en.md) for what each
+tier and the list do and do not catch); real isolation means a container or a
+VM. The order of judgment, per pattern:
 
 1. A `deny` rule refuses the call, as for any session.
 2. SF-6: an ask only a human could settle (a hook returned `ask`, or an MCP tool
@@ -124,18 +130,20 @@ container or a VM. The order of judgment, per pattern:
 4. A list hit denies the call. The node gets a tool error naming the rule and the
    reason and keeps running; nothing pauses, escalates, or wakes the main agent.
 5. Everything else is allowed, including what the rules would have turned into
-   an ask.
+   an ask. The `readonly` tier is the exception: an ask that nothing above
+   decided is denied as `RO-1`, because nobody can fetch the approval.
 
 The list is SF-1 writes outside the project, SF-2 credential files, SF-3
 destructive commands, SF-4 publishing, SF-5 repeated identical calls, SF-6
-above, and the user's own `SX-<n>` entries in global `dag.safety.extra`, which
-can only deny ([tool-profiles.md](../tool-profiles.md) has the exact rules). It
-judges structured facts only: the permission key, the paths native tools
-provide, which tool raised an `external_directory` request, the doom-loop
-detector, the `forced` flag, and literal Wildcard tables over the text of one
-simple command. It never interprets shell text (quoting, wrappers, variables,
-redirects, `cd`, git state). For bash it uses only what the shell tool already
-produces: each simple command's text and its own `external_directory` detection.
+above, `RO-1` for the `readonly` tier only, and the user's own `SX-<n>` entries
+in global `dag.safety.extra`, which can only deny ([tool-profiles.md](../tool-profiles.md)
+spells out the SF rules). It judges structured facts only: the permission key,
+the paths native tools provide, which tool raised an `external_directory`
+request, the doom-loop detector, the `forced` flag, and literal Wildcard tables
+over the text of one simple command. It never interprets shell text (quoting,
+wrappers, variables, redirects, `cd`, git state). For bash it uses only what the
+shell tool already produces: each simple command's text and its own
+`external_directory` detection.
 
 **Native path contract.** SF-1 (a) and SF-2 judge the path a native file tool
 actually hands to the filesystem: `read`, `write`, and `edit` report it in
@@ -150,30 +158,53 @@ directory); bash reads of sensitive files; any spelling that changes a command's
 text (`env X=1 git reset --hard`, `bash -c '...'`, variables, `curl ... | sh`); a
 push to the default branch (only force pushes match); and, for native tools,
 hard links, a path swapped between check and use (TOCTOU), Windows-specific path
-semantics, and the path arguments of non-native and MCP tools. The "known gaps"
-tests in `test/permission/safety-guard.test.ts` assert that the bash cases are
-not denied, so extending the guard's reach starts by changing those tests and
-this ADR.
+semantics, and the path arguments of non-native and MCP tools. The `readonly`
+tier has the same gap: its bash allowlist is literal rules over the command
+text, so a redirect after an allowed command (`git diff > file`) still writes.
+The "known gaps" tests in `test/permission/safety-guard.test.ts` assert that the
+bash cases are not denied, so extending the guard's reach starts by changing
+those tests and this ADR.
 
 **Disclosure.** A denied DAG-node call publishes the durable `NodeSafetyDenied`
 event, projected into `workflow_node.safety_denials` (the first 20 per node and
-a running total). `inspect` shows it, coverage lists it, and the node and
-workflow wakes carry the counts; a denial never wakes the parent by itself. A
-task child has no node row, so its denial is only the tool result.
+a running total). The rules that publish it are SF-1..6, `SX-<n>`, `RO-1`, and
+`HOOK` (below); the `readonly` tier's tool-surface refusals (edit, bash outside
+the allowlist, MCP) are ordinary rule denials and publish nothing. `inspect`
+shows the denials, coverage lists them, and the node and workflow wakes carry
+the counts; a denial never wakes the parent by itself. A task child has no node
+row, so its denial is only the tool result.
 
 **External guard.** Stronger cover for bash lives outside the engine: a command
-guard (for example the `destructive_command_guard` project) that the user
-installs as a user-level `PreToolUse` hook. It fires for child sessions' tool
-calls before the tool's own permission request, and a deny reaches the node as a
-tool result. GraphAgent does not bundle, download, or distribute a guard, and
-hooks fail open unless configured with `onFailure: "block"`. The guard-facing
-integration (a `permission_mode` that reflects the tier, counting a hook denial
-in `NodeSafetyDenied`, user documentation) is #1324 PR3 and was not in code when
-this ADR was written. What is in code is the layering rule that keeps a project
-from switching off a user-level guard: `disableAllHooks` applies per layer
-(#1325, `src/hook/engine/disabled.ts`). `true` in the global layer disables every
-hook; `true` in a project or local layer disables only that side's hooks, and a
-project value never re-enables what the global layer disabled.
+guard that the user installs as a user-level `PreToolUse` hook. The hook fires
+for child sessions' tool calls before the tool's own permission request, and a
+deny reaches the node as a tool result (`[Tool denied by hook] ...`). GraphAgent
+bundles, downloads, and names no guard in code, and
+`test/hook/unattended-guard-docs.test.ts` keeps it that way. The user guide,
+linked from `SECURITY.md`
+([English](../../../../../../docs/unattended-permissions.en.md),
+[Chinese](../../../../../../docs/unattended-permissions.md)), shows how to wire
+one up. `src/permission/hook-guard.ts` adds two pieces of engine support
+(#1324 PR3):
+
+- `permission_mode`. The tool hooks of an unattended session are told the tier's
+  mode in place of the session's own: `dontAsk` under `allow` and `plan` under
+  `readonly`, whatever `hookPermissions.mode` says. Under `ask` nothing is
+  overridden. With nobody to ask, a guard that is unsure should deny; if it asks
+  anyway, SF-6 refuses the call, except under `ask`, where the question reaches
+  the user.
+- `HOOK` denials. A PreToolUse deny of a DAG node's call, a guard that fails
+  closed included, publishes `NodeSafetyDenied` with `ruleID: "HOOK"`, the
+  tool's permission key, and the hook's reason cut to 200 characters.
+  `src/tool/pipeline.ts` does this for built-in tools, MCP resource tools, and
+  MCP server tools, in every tier. A confirmation the user refuses is not a
+  safety denial, and a task child has no node row, so it records nothing.
+
+Hooks fail open unless configured with `onFailure: "block"`. What keeps a
+project from switching off a user-level guard is the layering rule of #1325
+(`src/hook/engine/disabled.ts`): `disableAllHooks` applies per layer. `true` in
+the global layer disables every hook; `true` in a project or local layer
+disables only that side's hooks, and a project value never re-enables what the
+global layer disabled.
 
 ### 4. Writers and workspaces
 
@@ -188,11 +219,12 @@ workflow. `workflow start` (`src/tool/workflow/run.ts`) and `DagControl`
 nothing was attempted.
 
 - **Plan agent: read-only.** `start`, `extend`, `replan`, and `recover` refuse a
-  request that would newly run a writer when the caller is the `plan` agent.
-  Draft, validate, resume, and step are not gated, and running writers keep
-  running. This closes a way round plan's edit ban: a node derives its
-  permissions from the parent session's deny and `external_directory` rules, not
-  from the `plan` profile.
+  request that would newly run a writer when the caller is the `plan` agent. The
+  `readonly` permission tier applies the same check to every caller, and first
+  (decision 2). Draft, validate, resume, and step are not gated, and running
+  writers keep running. This closes a way round plan's edit ban: a node derives
+  its permissions from the parent session's deny and `external_directory` rules,
+  not from the `plan` profile.
 - **Cross-workflow conflicts.** `start`, `extend`, `replan`, `recover`, and
   `retarget` refuse a request that would newly run (for a retarget, move) an
   unisolated writer in a directory where another live workflow, in any session,
@@ -287,16 +319,20 @@ decision, a reporting checkpoint that is not an ordinary delivery leaf.
 ## Consequences
 
 - The safety list is bypassed by any spelling that changes a command's text, by
-  redirects, and by bash reads (decision 3). Real isolation needs a container or
-  a VM, and command-level cover needs `deny` rules, `dag.safety.extra`, or an
-  external guard hook, which fails open unless `onFailure: "block"` is set.
+  redirects, and by bash reads (decision 3). The `readonly` tier inherits the
+  gap: a redirect after an allowed command (`git diff > file`) still writes.
+  Real isolation needs a container or a VM, and command-level cover needs `deny`
+  rules, `dag.safety.extra`, or an external guard hook.
 - In the default tier an unattended session's asks are auto-approved unless the
   list matches, so edits inside the project, `webfetch`, and bash commands the
   list does not match get no human confirmation. Worktree isolation does not
   offset this; it only prevents write conflicts.
-- Until #1324 PR2 merges, `readonly` exists only as wording: L2 tells the main
-  agent that nodes cannot edit, and the engine does not enforce it. The
-  guard-facing integration of #1324 PR3 is likewise not in code.
+- In the `readonly` tier an MCP tool is refused unless the user allowed exactly
+  that tool, so even a read-only search tool needs an explicit allow by name.
+- A guard hook fails open by default, so a guard that cannot start is the same
+  as no guard. With `onFailure: "block"` it fails closed, and because it is a
+  user-level hook that runs for the user's own session too, a broken guard then
+  refuses the user's own shell commands as well.
 - The cross-workflow checks are not atomic. Each reads state just before the
   durable write and takes no cross-workflow lock, so two requests racing in the
   same instant can both pass.
@@ -323,11 +359,12 @@ decision, a reporting checkpoint that is not an ordinary delivery leaf.
   blocks only the same-workspace write conflict.
 - Give the model a way to switch DAG mode, through a tool field or a skill:
   rejected; the setting is the user's.
+- Bundle or download a command guard: rejected. Installing one is the user's own
+  choice and responsibility, and the repository ships only the guide that
+  explains how.
 
 ## Deferred
 
-- #1324 PR2 (`readonly`) and PR3 (the guard-facing integration and user
-  documentation).
 - Engine-native review constructs: first-class `challenge` and `panel` blocks,
   an engine-driven `until_dry` loop, and engine-computed jury scoring. The parent
   drives review rounds through `prior_round`; the engine only checks and bounds
