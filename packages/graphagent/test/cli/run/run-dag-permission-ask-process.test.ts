@@ -11,6 +11,7 @@
 // handed to the child process through GRAPHAGENT_CONFIG_CONTENT.
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
+import { mkdir, realpath } from "node:fs/promises"
 import path from "node:path"
 import { reply } from "../../lib/llm-server"
 import { cliIt } from "../../lib/cli-process"
@@ -29,8 +30,12 @@ const askConfig = (llmUrl: string) => JSON.stringify({ ...testProviderConfig(llm
 const RAN_COMMAND = "printf RAN-MARK-$((20+22))"
 const RAN_OUTPUT = "RAN-MARK-42"
 
-// Worktree isolation needs a clean git target: the run's directory becomes a repository whose one
-// commit holds the workflow spec, and the harness's own state directories are ignored.
+// Worktree isolation needs a clean git target and a real project root: `$HOME` never becomes one
+// (the worktree service refuses to write project files there), and the harness points HOME at its
+// own temporary directory. So the project is a repository in a directory below it, with one commit
+// that holds the workflow spec, and the run starts from that directory.
+const projectIn = (home: string) => path.join(home, "project")
+
 const initRepository = (directory: string, files: Record<string, string>) =>
   Effect.promise(async () => {
     const git = async (...args: string[]) => {
@@ -42,13 +47,24 @@ const initRepository = (directory: string, files: Record<string, string>) =>
       if ((await child.exited) !== 0)
         throw new Error(`git ${args.join(" ")}: ${await new Response(child.stderr).text()}`)
     }
-    await Bun.write(path.join(directory, ".gitignore"), ".config/\n.local/\n.cache/\n")
+    await mkdir(directory, { recursive: true })
     for (const [name, content] of Object.entries({ "README.md": "fixture\n", ...files }))
       await Bun.write(path.join(directory, name), content)
     await git("init", "-q")
     await git("add", "-A")
     await git("commit", "-q", "-m", "fixture")
   })
+
+/**
+ * The environment of a run that starts from the project directory. HOME is spelled as the real
+ * path of the harness home: the project-root guard compares paths as spelled, and where the
+ * temporary directory is reached through a symlink (macOS) the project root would never equal
+ * HOME, so a project placed at HOME would pass there and fail where the spellings agree (Linux).
+ */
+const projectEnv = Effect.fn("projectEnv")(function* (home: string) {
+  const real = yield* Effect.promise(() => realpath(home))
+  return { PWD: projectIn(home), HOME: real, GRAPHAGENT_TEST_HOME: real }
+})
 
 // The same command, naming the directory it ran in.
 const WHERE_COMMAND = 'printf "RAN-MARK-$((20+22)) %s" "$PWD"'
@@ -142,8 +158,9 @@ describe("opencode run under dag.permission ask (#1324)", () => {
     "rejects the request of a node that runs in its own worktree, and the workflow still ends",
     ({ home, llm, opencode }) =>
       Effect.gen(function* () {
-        yield* initRepository(home, { "wf-ask-worktree.yaml": worktreeSpec })
-        const spec = path.join(home, "wf-ask-worktree.yaml")
+        const project = projectIn(home)
+        yield* initRepository(project, { "wf-ask-worktree.yaml": worktreeSpec })
+        const spec = path.join(project, "wf-ask-worktree.yaml")
         yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(
           bodyIncludes("ASK-TIER-NODE"),
@@ -154,7 +171,8 @@ describe("opencode run under dag.permission ask (#1324)", () => {
         const result = yield* opencode.run("ASK-TIER start the worktree node workflow", {
           extraArgs: SKIP_PERMISSIONS,
           timeoutMs: 90_000,
-          env: { GRAPHAGENT_CONFIG_CONTENT: askConfig(llm.url) },
+          cwd: project,
+          env: { ...(yield* projectEnv(home)), GRAPHAGENT_CONFIG_CONTENT: askConfig(llm.url) },
         })
 
         opencode.expectExit(result, 0)
@@ -171,8 +189,9 @@ describe("opencode run under dag.permission ask (#1324)", () => {
     "the control: under the default tier the same node runs its command inside its worktree",
     ({ home, llm, opencode }) =>
       Effect.gen(function* () {
-        yield* initRepository(home, { "wf-ask-worktree-default.yaml": worktreeSpec })
-        const spec = path.join(home, "wf-ask-worktree-default.yaml")
+        const project = projectIn(home)
+        yield* initRepository(project, { "wf-ask-worktree-default.yaml": worktreeSpec })
+        const spec = path.join(project, "wf-ask-worktree-default.yaml")
         yield* llm.tool("workflow", { params: { action: "run", operation: "start", spec_path: spec } })
         yield* llm.pushMatch(
           bodyIncludes("ASK-TIER-NODE"),
@@ -183,6 +202,8 @@ describe("opencode run under dag.permission ask (#1324)", () => {
         const result = yield* opencode.run("ASK-TIER start the worktree node workflow", {
           extraArgs: SKIP_PERMISSIONS,
           timeoutMs: 90_000,
+          cwd: project,
+          env: yield* projectEnv(home),
         })
 
         opencode.expectExit(result, 0)
