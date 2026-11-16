@@ -89,6 +89,23 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`reminder\` (
+          \`id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`text\` text NOT NULL,
+          \`fire_at\` integer NOT NULL,
+          \`every_ms\` integer,
+          \`status\` text NOT NULL,
+          \`creator\` text DEFAULT 'user' NOT NULL,
+          \`delivery\` text,
+          \`delivered_at\` integer,
+          \`created_at\` integer NOT NULL,
+          \`updated_at\` integer NOT NULL,
+          CONSTRAINT \`fk_reminder_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT "reminder_creator_check" CHECK("creator" = 'user')
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`runtime_job\` (
           \`id\` text PRIMARY KEY,
           \`type\` text NOT NULL,
@@ -422,6 +439,8 @@ export default {
       yield* tx.run(`CREATE INDEX \`pr_watch_phase_deadline_idx\` ON \`pr_watch\` (\`phase\`,\`deadline_at\`);`)
       yield* tx.run(`CREATE INDEX \`pr_watch_session_idx\` ON \`pr_watch\` (\`session_id\`);`)
       yield* tx.run(`CREATE UNIQUE INDEX \`pr_watch_session_url_idx\` ON \`pr_watch\` (\`session_id\`,\`url\`);`)
+      yield* tx.run(`CREATE INDEX \`reminder_status_fire_at_idx\` ON \`reminder\` (\`status\`,\`fire_at\`);`)
+      yield* tx.run(`CREATE INDEX \`reminder_session_idx\` ON \`reminder\` (\`session_id\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_status_idx\` ON \`runtime_job\` (\`status\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_session_idx\` ON \`runtime_job\` (\`session_id\`);`)
       yield* tx.run(`CREATE INDEX \`runtime_job_updated_at_idx\` ON \`runtime_job\` (\`updated_at\`);`)

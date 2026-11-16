@@ -36,7 +36,7 @@ const sorted = (values: Iterable<string>) => [...values].sort()
 describe("lifecycle vocabulary", () => {
   it("covers every wire domain exactly once", () => {
     expect(sorted(Object.keys(VOCABULARY))).toEqual(sorted(DOMAINS))
-    expect(DOMAINS).toHaveLength(12)
+    expect(DOMAINS).toHaveLength(13)
   })
 
   it("maps every value to a phase except turn.ended, which the outcome decides", () => {
@@ -80,6 +80,20 @@ describe("lifecycle vocabulary", () => {
       "cancelled",
       "expired",
     ])
+    expect(VOCABULARY.reminder.values).toEqual(["scheduled", "due", "delivered", "cancelled"])
+  })
+
+  it("projects the reminder values onto the phases the Issue names", () => {
+    // pending(scheduled) -> settling(due) -> succeeded(delivered) | cancelled (#1072).
+    expect(phaseOf("reminder", "scheduled")).toBe("pending")
+    expect(phaseOf("reminder", "due")).toBe("settling")
+    expect(phaseOf("reminder", "delivered")).toBe("succeeded")
+    expect(phaseOf("reminder", "cancelled")).toBe("cancelled")
+    expect(VOCABULARY.reminder.terminal).toEqual(["delivered", "cancelled"])
+    // Only a delivered reminder is settled: a cancelled one never reached the session.
+    expect(isSettledValue("reminder", "delivered")).toBe(true)
+    expect(isSettledValue("reminder", "cancelled")).toBe(false)
+    expect(isTerminalValue("reminder", "due")).toBe(false)
   })
 
   it("splits terminal from settled: settled means terminal and successfully quiet", () => {
@@ -105,6 +119,8 @@ describe("lifecycle vocabulary", () => {
     expect(authorityOf("turn")).toBe("durable")
     expect(authorityOf("cancellation")).toBe("live")
     expect(authorityOf("pr_watch")).toBe("mixed")
+    // The clock keeps nothing but its next wake-up time: the row is the record.
+    expect(authorityOf("reminder")).toBe("durable")
   })
 
   it("maps the ten turn outcomes and settles only completed", () => {

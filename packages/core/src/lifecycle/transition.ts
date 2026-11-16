@@ -121,3 +121,22 @@ export const PR_WATCH_TRANSITION_TABLE: TransitionTable = {
           ? ["succeeded", "failed", "cancelled", "expired"]
           : [],
 }
+
+/**
+ * User reminders wait `scheduled` for their `fire_at`, are owed to the session
+ * while `due`, and settle at the turn boundary that delivers them (#1072). A
+ * one-shot reminder ends `delivered`; a repeating one returns from `due` to
+ * `scheduled` with its `fire_at` advanced, so `delivered` stays terminal.
+ * Either live value can still be cancelled by the user.
+ */
+export const REMINDER_TRANSITION_TABLE: TransitionTable = {
+  domain: "reminder",
+  next: (from) =>
+    from === null
+      ? ["scheduled"]
+      : from === "scheduled"
+        ? ["due", "cancelled"]
+        : from === "due"
+          ? ["delivered", "scheduled", "cancelled"]
+          : [],
+}

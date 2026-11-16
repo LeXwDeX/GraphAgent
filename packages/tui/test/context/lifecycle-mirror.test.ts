@@ -156,6 +156,7 @@ describe("isPullableDomain", () => {
     expect(isPullableDomain("job")).toBe(true)
     expect(isPullableDomain("goal")).toBe(true)
     expect(isPullableDomain("pr_watch")).toBe(true)
+    expect(isPullableDomain("reminder")).toBe(true)
   })
 
   test("every other domain would only come back unknown, so it is never asked", () => {

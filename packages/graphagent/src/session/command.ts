@@ -21,6 +21,7 @@ import { Memory } from "@/memory/memory"
 import { shellVerdict } from "@/project/trust/command-shell"
 import { ProjectTrust } from "@/project/trust/service"
 import { Provider } from "@/provider/provider"
+import { ReminderCommand } from "@/reminder/command"
 import { Process } from "@/util/process"
 import { Shell } from "@graphagent/core/shell"
 import { Command } from "../command"
@@ -224,6 +225,9 @@ export function parseDagModeCommand(raw: string): DagModeCommandArgs {
  */
 const runsBuiltinDagMode = (entry: Command.Info | undefined) => !entry || Command.isBuiltin(entry)
 
+/** The same rule for `/remind` (#1072): a user command named `remind` replaces the built-in entry. */
+const runsBuiltinRemind = runsBuiltinDagMode
+
 function dagModeReceipt(
   parsed: DagModeCommandArgs,
   snapshot: DagModeSnapshot,
@@ -394,6 +398,56 @@ function dagModeCommand(deps: CommandDeps, input: CommandInput) {
 }
 
 /**
+ * Local `/remind` dispatch (#1072): the reminder module creates, lists or
+ * cancels and writes the receipt text; this records the exchange as a command
+ * message whose parts are ignored presentation state, like `/dag-mode`.
+ */
+function remindCommand(deps: CommandDeps, input: CommandInput) {
+  return Effect.gen(function* () {
+    const info: SessionInfo = yield* deps.sessions.get(input.sessionID).pipe(Effect.orDie)
+    const agentName = input.agent ?? (yield* deps.agents.defaultAgent())
+    const model = yield* dagModeMessageModel(deps, info)
+    const userMsg: SessionV1.User = {
+      id: input.messageID ?? MessageID.ascending(),
+      role: "user",
+      sessionID: input.sessionID,
+      time: { created: Date.now() },
+      agent: agentName,
+      model: { providerID: model.providerID, modelID: model.modelID },
+    }
+    yield* deps.sessions.updateMessage(userMsg)
+    const commandPart: SessionV1.TextPart = {
+      id: PartID.ascending(),
+      messageID: userMsg.id,
+      sessionID: input.sessionID,
+      type: "text",
+      ignored: true,
+      text: `/remind ${input.arguments}`.trim(),
+      metadata: { command: "remind" },
+    }
+    yield* deps.sessions.updatePart(commandPart)
+    const text = yield* ReminderCommand.run({
+      sessionID: input.sessionID,
+      parentID: info.parentID,
+      arguments: input.arguments,
+    })
+    const now = Date.now()
+    const receiptPart: SessionV1.TextPart = {
+      id: PartID.ascending(),
+      messageID: userMsg.id,
+      sessionID: input.sessionID,
+      type: "text",
+      ignored: true,
+      text,
+      time: { start: now, end: now },
+    }
+    yield* deps.sessions.updatePart(receiptPart)
+    yield* deps.sessions.touch(input.sessionID)
+    return { info: userMsg, parts: [commandPart, receiptPart] }
+  })
+}
+
+/**
  * `cmd` carries the skill-promotion provenance (#1040) that lets
  * `shellVerdict` fail closed on a project-owned skill outside
  * `.agents/skills` instead of falling through as "no declaration found".
@@ -488,6 +542,8 @@ export function makeCommand(deps: CommandDeps) {
     if (input.command === "memory") return yield* commandTurn(input.sessionID, memoryCommandMessage(deps, input))
     if (input.command === Command.Default.DAG_MODE && runsBuiltinDagMode(yield* commands.get(input.command)))
       return yield* commandTurn(input.sessionID, dagModeCommand(deps, input))
+    if (input.command === Command.Default.REMIND && runsBuiltinRemind(yield* commands.get(input.command)))
+      return yield* commandTurn(input.sessionID, remindCommand(deps, input))
     // Goal/Subgoal command dispatch — early return BEFORE command registry lookup
     if (goal && (input.command === "goal" || input.command === "subgoal")) {
       const dispatch = input.command === "goal" ? goal.dispatch : goal.dispatchSubgoal

@@ -85,6 +85,7 @@ export const Default = {
   SUBGOAL: "subgoal",
   MEMORY: "memory",
   DAG_MODE: "dag-mode",
+  REMIND: "remind",
   IMPORT_CLAUDE: "import-claude",
   CREATE_HOOK: "create-hook",
 } as const
@@ -153,6 +154,13 @@ export const layer = Layer.effect(
       commands[Default.DAG_MODE] = {
         name: Default.DAG_MODE,
         description: "DAG mode for this session [on|off|status|budget <tokens>|budget off]",
+        source: "command",
+        template: "",
+        hints: ["$ARGUMENTS"],
+      }
+      commands[Default.REMIND] = {
+        name: Default.REMIND,
+        description: "schedule a reminder <30m|2h|09:00|tomorrow 09:00|every 1h> <text>; list; cancel <id>",
         source: "command",
         template: "",
         hints: ["$ARGUMENTS"],

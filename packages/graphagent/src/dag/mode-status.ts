@@ -5,6 +5,7 @@
 // `GET /session/:sessionID/dag-mode`. The wire shape is fixed by the Issue;
 // the availability rules mirror E4's degradation conditions.
 import { DagMode } from "@graphagent/schema/dag-mode"
+import { WorkflowQuality } from "@graphagent/schema/dag-summary"
 import { Schema } from "effect"
 
 export const UnavailableReason = Schema.Literals([
@@ -31,10 +32,9 @@ export const Status = Schema.Struct({
     maxTotalNodes: Schema.Finite,
     running: Schema.Finite,
   }),
-  // #1027 D6a fixed the summary shape (`WorkflowQuality`); this status keeps
-  // the null arm until D6b computes the counters. Extend it to
-  // `Schema.NullOr(WorkflowQuality)` together with that computation.
-  quality: Schema.Null,
+  // #1027 D6b: the review quality of the session's workflows, combined (the
+  // same fields a workflow summary carries); null when no workflow reports one.
+  quality: Schema.NullOr(WorkflowQuality),
 }).annotate({ identifier: "SessionDagMode" })
 export type Status = typeof Status.Type
 

@@ -5,9 +5,17 @@ export * as DagReviewLifecycle from "./review-lifecycle"
 
 import type { NodeConfig, WorkflowConfig } from "./dag"
 import type { PriorFinding } from "./blocks"
-import { isReadOnlyProfile, isReviewWorker, nonWriterWorkerOverride } from "./blocks"
+import { isReadOnlyProfile, isReviewWorker, isWriterNode, nonWriterWorkerOverride } from "./blocks"
 import { evaluateCondition } from "./runtime/eval"
 import { normalizeOutput, verdictField } from "./runtime/verdict"
+
+/** The strict review gate. Deep mode always implies it; a standard-mode
+ * workflow can opt into the same requirements with config.review_gate. The gate
+ * is fixed at run.start, so later mutations validate against this persisted
+ * value. */
+export function strictReviewGate(config: Pick<WorkflowConfig, "mode" | "review_gate">) {
+  return config.mode === "deep" || config.review_gate === "strict"
+}
 
 /** `grandfathered`: review nodes carried with a persisted definition (runtime
  * replan/extend/recover). Their PASS gate keeps the pre-evaluation textual check it
@@ -18,10 +26,7 @@ export function validateReviewLifecycle(
   config: WorkflowConfig,
   options: { grandfathered?: ReadonlySet<string> } = {},
 ) {
-  // Deep mode always implies the strict gate; a standard-mode workflow can opt
-  // into the same requirements with config.review_gate. The gate is fixed at
-  // run.start, so later mutations validate against this persisted value.
-  const strict = config.mode === "deep" || config.review_gate === "strict"
+  const strict = strictReviewGate(config)
   const issues = config.nodes.flatMap((node) => {
     if (!node.review) {
       if (!isReviewWorker(node.worker_type)) return []
@@ -450,6 +455,56 @@ export function reviewRoundSummary(rounds: readonly ReviewRoundMetrics[]): Revie
     stillOpen: total((round) => round.stillOpen),
     quietRounds,
   }
+}
+
+/**
+ * #1027 D6b: the new upheld findings a decision's dispositions attribute to
+ * `lanes` (the skeptic lanes). A skeptic only reports what it can demonstrate,
+ * so an upheld new finding on its lane is a demonstrated falsification the
+ * arbitration confirmed; a duplicate of an earlier finding is not a new one.
+ */
+export function reviewLaneFindings(output: unknown, lanes: ReadonlySet<string>): number {
+  const result = structuredRecord(output)
+  const raw = result && Array.isArray(result.dispositions) ? result.dispositions : []
+  return raw
+    .map(dispositionRecord)
+    .filter(
+      (item): item is Disposition =>
+        item !== undefined && item.novelty === "new" && item.decision === "upheld" && lanes.has(item.node),
+    ).length
+}
+
+/**
+ * #1031 M1 / #1027 D6b: whether an ACCEPT decision is bound to the final
+ * implementation. A diff-review decision (a block review with a verification
+ * route) qualifies when it completed against an unchanged tree, accepted, and
+ * echoes the fingerprint its implementation node holds now. It stops counting
+ * once a later writer is built on top of it, because that writer's result is
+ * not what the decision judged. Settlement already rejects an echo that
+ * differs from the implementation the decision ran against, so the comparison
+ * here only has to catch an implementation re-run afterwards.
+ */
+export function reviewBoundAccept(
+  config: WorkflowConfig,
+  rows: ReadonlyMap<string, { status: string; output?: unknown; staleTarget?: boolean | null }>,
+): boolean {
+  const writers = config.nodes.filter(isWriterNode)
+  return config.nodes.some((decision) => {
+    const review = decision.review
+    if (decision.review_arbitration !== true || review?.phase !== "diff" || !review.implementation_node_id) return false
+    const row = rows.get(decision.id)
+    if (row?.status !== "completed" || row.staleTarget === true) return false
+    if (reviewVerdict(row.output) !== "ACCEPT") return false
+    const implementation = rows.get(review.implementation_node_id)
+    const echoed = fingerprintText(structuredRecord(row.output)?.implementation_fingerprint)
+    if (implementation?.status !== "completed" || echoed === undefined) return false
+    if (echoed !== fingerprintText(structuredRecord(implementation.output)?.fingerprint)) return false
+    return !writers.some((writer) => dependsTransitively(config, writer.id, decision.id))
+  })
+}
+
+function fingerprintText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined
 }
 
 /** Strict review-coverage errors for an already-compiled graph (#1031 M6).

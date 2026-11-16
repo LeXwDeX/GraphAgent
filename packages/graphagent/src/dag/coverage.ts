@@ -34,10 +34,12 @@ export interface CoverageEntry {
   page?: CoveragePage
 }
 
+/** `output` may be absent for a row whose output the caller did not load: such
+ * a row simply has no `not_examined` entries or review stop to contribute. */
 type CoverageNode = Pick<
   DagStore.NodeRow,
-  "id" | "status" | "output" | "errorReason" | "errorClass" | "superseded" | "safetyDenials"
->
+  "id" | "status" | "errorReason" | "errorClass" | "superseded" | "safetyDenials"
+> & { output?: unknown }
 
 const record = (value: unknown): Record<string, unknown> | undefined => {
   const parsed = normalizeOutput(value)
