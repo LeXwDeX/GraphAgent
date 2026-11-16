@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Schema } from "effect"
+import { isRecord } from "@/util/record"
 import type { NodeConfig } from "./dag"
 
 export const WORKFLOW_BLOCK_KINDS = [
@@ -97,7 +98,7 @@ export class WorkflowBlock extends Schema.Class<WorkflowBlock>("WorkflowBlock")(
   }),
   report_to_parent: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default; a reporting block with dependents becomes a blocking checkpoint, and the compiler gates its dependents on verdicts",
+      "Override wake behavior. Review decisions, synthesis, and a review route's verification gate report by default. A reporting block with dependents is a blocking checkpoint: the compiler gates the dependents of a review block on its verdict, and in an extend those of a live review decision or verification gate; any other reporting block must stay a leaf or set report_to_parent: false",
   }),
   fan_out: Schema.optional(Schema.String).annotate({
     description:
@@ -138,7 +139,87 @@ export interface WorkflowBlockCompileOptions {
   /** Prior-round findings resolved from stored workflow outputs, keyed by
    * `<workflow_id>/<review_id>`. Only a live authoring caller supplies them. */
   prior_rounds?: Readonly<Record<string, PriorRound>>
+  /** Reporting checkpoints of the live workflow an extend fragment may depend
+   * on (`liveGates`). A block that depends on one is gated on its verdict the
+   * way a dependent of an in-document review block is. */
+  live_gates?: ReadonlyMap<string, LiveGate>
 }
+
+/** A node of the live workflow that a later fragment may depend on. */
+export interface LiveNode {
+  readonly definition: NodeConfig
+  /** Settled in the durable graph: its verdict is already delivered. */
+  readonly terminal: boolean
+}
+
+/** A live reporting checkpoint whose verdict a dependent can gate on. */
+export interface LiveGate {
+  readonly id: string
+  /** The verdict that lets dependents run: ACCEPT for a review decision, PASS
+   * for a verification. */
+  readonly verdict: string
+  /** The checkpoint is the decision of a review block. */
+  readonly review: boolean
+}
+
+/** Verdicts, in preference order, that mean "carry on" in the block output
+ * contracts (review decisions accept, verifications pass). */
+const POSITIVE_VERDICTS = ["ACCEPT", "PASS"] as const
+
+/** The "carry on" verdict an output schema enumerates, if it has one. */
+export function positiveVerdict(schema: Record<string, unknown> | undefined): string | undefined {
+  const properties = schema?.properties
+  if (!isRecord(properties) || !isRecord(properties.verdict)) return undefined
+  const values = properties.verdict.enum
+  if (!Array.isArray(values)) return undefined
+  return POSITIVE_VERDICTS.find((verdict) => values.includes(verdict))
+}
+
+/**
+ * The reporting checkpoints of a live workflow that a new block can be gated
+ * on. A checkpoint that is already terminal is settled: the parent has read its
+ * verdict, so a dependent added afterwards (the sanctioned reopen-extend wave)
+ * must run whatever the verdict was and is never gated. A live one has no
+ * verdict yet, so its dependents wait for it exactly as they would inside one
+ * start document.
+ */
+export function liveGates(
+  nodes: readonly LiveNode[],
+  defaults?: { readonly report_to_parent?: boolean },
+): ReadonlyMap<string, LiveGate> {
+  const gates = new Map<string, LiveGate>()
+  for (const { definition, terminal } of nodes) {
+    if (terminal) continue
+    if (!(definition.report_to_parent ?? defaults?.report_to_parent ?? false)) continue
+    const verdict = positiveVerdict(definition.output_schema)
+    if (verdict === undefined) continue
+    gates.set(definition.id, {
+      id: definition.id,
+      verdict,
+      review: definition.block === "review" && definition.review_arbitration === true,
+    })
+  }
+  return gates
+}
+
+/** Which source form a workflow's nodes came from: compiled blocks, hand-written
+ * nodes, or both (an extend may use either form on any workflow). */
+export function graphForm(nodes: readonly Pick<NodeConfig, "block">[]): "blocks" | "nodes" | "mixed" {
+  const compiled = nodes.filter((entry) => entry.block !== undefined).length
+  if (compiled === 0) return "nodes"
+  return compiled === nodes.length ? "blocks" : "mixed"
+}
+
+/** The output contract a checkpoint declares when a gate reads its verdict: the
+ * vocabulary the recovery guidance documents for reporting checkpoints. */
+export const CHECKPOINT_VERDICT_SCHEMA = {
+  type: "object",
+  required: ["verdict", "summary"],
+  properties: {
+    verdict: { type: "string", enum: ["ACCEPT", "REVISE", "REJECT", "BLOCKED"] },
+    summary: { type: "string" },
+  },
+} as const
 
 // An ACCEPT must refute, by lane and index, every required action a review
 // lane raised (review-lifecycle acceptConsistencyErrors enforces it).
@@ -459,7 +540,16 @@ function compileBlock(
   const reviewDependency = dependencies.find(
     (dependency) => blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
   )
-  const condition = reviewDependency ? `${reviewDependency}.output.verdict == "ACCEPT"` : undefined
+  // An extend fragment's dependency may be a checkpoint of the live workflow
+  // rather than a block of this document: it is gated the same way.
+  const liveGate = reviewDependency
+    ? undefined
+    : dependencies.map((dependency) => options.live_gates?.get(dependency)).find((gate) => gate !== undefined)
+  const condition = reviewDependency
+    ? `${reviewDependency}.output.verdict == "ACCEPT"`
+    : liveGate
+      ? `${liveGate.id}.output.verdict == "${liveGate.verdict}"`
+      : undefined
   const drivesFanOut = block.kind === "plan" && blocks.some((candidate) => candidate.fan_out === block.id)
 
   if (block.kind === "debug") {
@@ -645,9 +735,10 @@ function compileBlock(
   // the review output so unresolvedReviewOutcomes/finalReviewGates recognize
   // an ACCEPTed review as resolved (issue #304) — the same binding contract
   // the verify aggregation path already honors.
+  const gatingReview = reviewDependency ?? (liveGate?.review ? liveGate.id : undefined)
   const synthesizeGateBinding =
-    block.kind === "synthesize" && reviewDependency
-      ? { [`${reviewDependency.replace(/-/g, "_")}_review`]: `${reviewDependency}.output` }
+    block.kind === "synthesize" && gatingReview
+      ? { [`${gatingReview.replace(/-/g, "_")}_review`]: `${gatingReview}.output` }
       : undefined
   // A review-route verification gate reports to the parent by default: on
   // FAIL every review lane and the decision are condition-skipped and the
@@ -936,8 +1027,12 @@ function requireValidBlockGraph(graph: WorkflowBlockGraph, options: WorkflowBloc
       if (block.prior_round.review_id.trim() === "")
         throw new Error(`Block "${block.id}" prior_round.review_id must not be empty`)
     }
+    // A live checkpoint of the workflow being extended counts as a gate too:
+    // one condition reads one dependency, so two gates cannot both be honored.
     const reviewDependencies = (block.depends_on ?? []).filter(
-      (dependency) => graph.blocks.find((candidate) => candidate.id === dependency)?.kind === "review",
+      (dependency) =>
+        graph.blocks.find((candidate) => candidate.id === dependency)?.kind === "review" ||
+        options.live_gates?.has(dependency) === true,
     )
     if (reviewDependencies.length > 1) {
       throw new Error(

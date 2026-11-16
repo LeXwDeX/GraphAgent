@@ -148,14 +148,17 @@ export const WorkflowTool = Tool.define<
                 case "draft":
                   return yield* draftSpec(authoring, params.config, params.title, session, ctx)
                 case "validate":
-                  return yield* validateSpec(authoring, params.spec_path, params.profile, session, ctx)
+                  return yield* validateSpec(authoring, params.spec_path, params.profile, params.inputs, session, ctx)
                 default:
                   return yield* Effect.die(new Error("unreachable workflow spec operation"))
               }
             case "run":
               return yield* runWorkflow({ dag, control, ...(budget ? { budget } : {}), authoring, sessionID: ctx.sessionID, session, ctx }, params)
             case "inspect":
-              return yield* inspectWorkflow({ dag, sessionID: ctx.sessionID, children: ctx.children }, params)
+              return yield* inspectWorkflow(
+                { dag, sessionID: ctx.sessionID, children: ctx.children, ...(config ? { config } : {}) },
+                params,
+              )
             case "control":
               return yield* controlWorkflow({ dag, control, authoring, sessionID: ctx.sessionID, session, ctx }, params)
             default:

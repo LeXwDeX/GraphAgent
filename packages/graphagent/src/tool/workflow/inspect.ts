@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Cause, Effect, Option } from "effect"
+import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
 import type { NodeRow } from "@graphagent/core/dag/store"
+import type { Config } from "@/config/config"
 import { Dag } from "@/dag/dag"
+import { DagBlocks } from "@/dag/blocks"
 import { DagCoverage } from "@/dag/coverage"
+import { DagValidation } from "@/dag/validation"
 import { verifyOutputFileRef } from "@/dag/runtime/output-ref"
 import type { ChildRunView } from "@/session/child/run"
 import { SessionID } from "@/session/schema"
@@ -18,6 +22,40 @@ export interface InspectContext {
   readonly sessionID: string
   /** #1030 D9-h: the calling session's child runs, read-only. */
   readonly children?: Tool.ChildRuns
+  /** The user's global `dag.max_total_nodes` cap; absent in harnesses without
+   * a Config service, which keep the documented default. */
+  readonly config?: Pick<Config.Interface, "dagGlobal">
+}
+
+/** What `extend` does with a terminal workflow, for the parent to read before it
+ * tries (#1073). A live workflow takes work and needs no note. */
+const TERMINAL_EXTEND: Readonly<Record<string, string>> = {
+  completed:
+    "extend reopens a workflow only when it completed naturally at a reporting leaf checkpoint and the fragment adds new node ids; control(complete) never reopens it. Otherwise start a bounded successor",
+  failed:
+    "extend is rejected for a failed workflow; use control(recover) with node_ids and expected_graph_rev, or start a bounded successor",
+  cancelled:
+    "extend is rejected for a cancelled workflow; use control(recover) with resume_cancelled: true, or start a bounded successor",
+}
+
+/** #1073 preflight: the limits an extend runs into, stated before it is tried.
+ * `nodes.used` counts every node the workflow ever registered, the figure the
+ * ceiling check uses; the limit is the lower of the workflow's own cap and the
+ * user's. */
+const constraintsOf = (input: {
+  readonly status: string
+  readonly config: ReturnType<typeof Dag.parseWorkflowConfig>
+  readonly registered: number
+  readonly userMaxTotalNodes: number | undefined
+}) => {
+  const limit = DagValidation.effectiveMaxTotalNodes(input.config?.max_total_nodes, input.userMaxTotalNodes)
+  const terminal = isTerminalWorkflowStatusValue(input.status)
+  return {
+    terminal,
+    graph_form: DagBlocks.graphForm(input.config?.nodes ?? []),
+    nodes: { used: input.registered, limit, remaining: Math.max(0, limit - input.registered) },
+    ...(terminal && TERMINAL_EXTEND[input.status] ? { extend: TERMINAL_EXTEND[input.status] } : {}),
+  }
 }
 
 /** #1030 D9-h: every node's current attempt run, read through
@@ -81,6 +119,7 @@ export const inspectWorkflow = (context: InspectContext, params: InspectParams):
         ),
       )
       const usage = summaries.find((summary) => summary.id === workflow.id)
+      const userMaxTotalNodes = context.config ? (yield* context.config.dagGlobal()).max_total_nodes : undefined
       return renderStatus({
         workflow,
         nodes,
@@ -89,6 +128,12 @@ export const inspectWorkflow = (context: InspectContext, params: InspectParams):
         latestRetarget,
         childRuns,
         coverage,
+        constraints: constraintsOf({
+          status: workflow.status,
+          config: Dag.parseWorkflowConfig(workflow.config),
+          registered: allNodes.length,
+          userMaxTotalNodes,
+        }),
         ...(usage
           ? {
               usage: {

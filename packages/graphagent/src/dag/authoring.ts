@@ -13,9 +13,11 @@ export * as WorkflowAuthoring from "./authoring"
 
 import { Effect, Schema } from "effect"
 import type { NodeConfig, NodeDefaults, WorkflowConfig } from "./dag"
-import type { AcceptanceItem, PriorRound, ReviewGate, WorkflowBlock } from "./blocks"
+import { graphForm, liveGates } from "./blocks"
+import type { AcceptanceItem, LiveGate, LiveNode, PriorRound, ReviewGate, WorkflowBlock } from "./blocks"
 import { acceptanceFromCriteria, type AdmissionInput } from "./admission"
 import type { Config } from "@/config/config"
+import { DagTemplateInputs } from "./template-inputs"
 import { DagValidation } from "./validation"
 
 type Action = "start" | "extend" | "replan"
@@ -46,9 +48,14 @@ export type PreparedReplan = Extract<PreparedGraph, { action: "replan" }>
 export type PreparedNodes = PreparedExtend | PreparedReplan
 
 interface Result extends DagValidation.ValidationResult {
-  /** Strict decoded document. Boundary-owned legacy fields are not exposed. */
+  /** Strict decoded document. Boundary-owned legacy fields are not exposed. A
+   * document that declares template inputs is returned as written, with its
+   * declarations and placeholders. */
   document?: unknown
   prepared?: PreparedGraph
+  /** Set when the start document declares template inputs: which declared
+   * inputs the caller supplied and which fell back to their default. */
+  template?: { supplied: string[]; defaulted: string[] }
 }
 
 interface PrepareInput {
@@ -71,6 +78,15 @@ interface PrepareInput {
    * stored outputs. Live callers supply it; portable validation compiles
    * without prior findings. A failure becomes a blocking diagnostic. */
   prior_rounds?: (reference: { workflow_id: string; review_id: string }) => Effect.Effect<PriorRound, string>
+  /** Template arguments for a start document that declares `inputs` (#1073).
+   * Absent means "no inputs supplied": a document with required inputs is then
+   * rejected rather than started from placeholders. */
+  template?: DagTemplateInputs.Supply
+  /** The live workflow's nodes, for an extend (#1073). A block that depends on
+   * a live reporting checkpoint is gated on its verdict as in a start document,
+   * and a fragment that leaves a dependent of one ungated is rejected here with
+   * its repair instead of at the runtime seam. */
+  live_nodes?: readonly LiveNode[]
 }
 
 interface Options {
@@ -133,22 +149,43 @@ export function make(options: Options = {}) {
       // Environment catalogs are live state (models and agents may
       // change during the tool instance), so only portable results are safe
       // to cache by source content. A prior_round compile depends on another
-      // workflow's stored outputs, so it is never cached.
-      const cacheable = profile === "portable" && !sourceMentionsPriorRound(input.source)
+      // workflow's stored outputs, so it is never cached; neither is a fragment
+      // read against the live workflow's nodes.
+      const cacheable =
+        profile === "portable" && input.live_nodes === undefined && !sourceMentionsPriorRound(input.source)
       const cached = cacheable ? cache.get(key) : undefined
       if (cached) return cached
 
+      // A start document that declares template inputs is returned as written
+      // (declarations and placeholders intact) with a note of which inputs the
+      // call supplied; the instantiated copy only feeds decoding.
+      let template: DagTemplateInputs.Outcome | undefined
+      let asWritten: unknown
+      const finish = (result: Result): Result => {
+        const finished: Result = template?.declared
+          ? {
+              ...result,
+              document: asWritten,
+              template: { supplied: template.supplied, defaulted: template.defaulted },
+            }
+          : result
+        if (cacheable) cache.set(key, finished)
+        return finished
+      }
+
       const parsed = parseSource(input.source, input.action, profile)
-      if (!parsed.value) {
-        if (cacheable) cache.set(key, parsed.result)
-        return parsed.result
+      if (!parsed.value) return finish(parsed.result)
+      asWritten = parsed.value.value
+      let documentValue = parsed.value.value
+      if (input.action === "start") {
+        template = DagTemplateInputs.instantiate(documentValue, input.template)
+        if (template.diagnostics.some((diagnostic) => diagnostic.severity === "error"))
+          return finish(invalidResult(sourceName, profile, template.diagnostics))
+        documentValue = template.value
       }
-      const decoded = decodeAction(input.action, parsed.value.value, sourceName, profile)
-      if (!decoded.value) {
-        const result = { ...decoded.result, document: parsed.value.value }
-        if (cacheable) cache.set(key, result)
-        return result
-      }
+      const liveForm = input.live_nodes ? graphForm(input.live_nodes.map((entry) => entry.definition)) : undefined
+      const decoded = decodeAction(input.action, documentValue, sourceName, profile, liveForm, template?.origins)
+      if (!decoded.value) return finish({ ...decoded.result, document: parsed.value.value })
       if (decoded.value.action === "replan") {
         const fragment = decoded.value.spec.fragment
         const rejected = (["delivery_node", "workspace", "isolation", "acceptance", "review_gate"] as const)
@@ -179,27 +216,24 @@ export function make(options: Options = {}) {
                         : `Remove "${field}" from the fragment. Delivery selection is maintained by the runtime across replans.`,
             }),
           )
-        if (rejected.length > 0) {
-          const result = { ...invalidResult(sourceName, profile, rejected), document: decoded.value.spec }
-          if (cacheable) cache.set(key, result)
-          return result
-        }
+        if (rejected.length > 0)
+          return finish({ ...invalidResult(sourceName, profile, rejected), document: decoded.value.spec })
       }
       const prior = yield* resolvePriorRounds(decoded.value, input.prior_rounds)
-      if (prior.diagnostics.length > 0) {
-        const result = { ...invalidResult(sourceName, profile, prior.diagnostics), document: decoded.value.spec }
-        if (cacheable) cache.set(key, result)
-        return result
-      }
+      if (prior.diagnostics.length > 0)
+        return finish({ ...invalidResult(sourceName, profile, prior.diagnostics), document: decoded.value.spec })
       const review = effectiveReviewConfig(decoded.value, input)
-      const compiled = compileAction(decoded.value, input.known_dependencies, review, prior.rounds)
-      if (!compiled.nodes) {
-        const result = { ...invalidResult(sourceName, profile, compiled.diagnostics), document: decoded.value.spec }
-        if (cacheable) cache.set(key, result)
-        return result
-      }
+      // An extend fragment may depend on checkpoints of the live workflow; they
+      // gate their dependents the way an in-document review block does.
+      const gates =
+        input.action === "extend" && input.live_nodes
+          ? liveGates(input.live_nodes, input.node_defaults)
+          : undefined
+      const compiled = compileAction(decoded.value, input.known_dependencies, review, prior.rounds, gates)
+      if (!compiled.nodes)
+        return finish({ ...invalidResult(sourceName, profile, compiled.diagnostics), document: decoded.value.spec })
       if (profile === "environment" && !options.loadEnvironment) {
-        return {
+        return finish({
           ...invalidResult(sourceName, profile, [
             DagValidation.diagnostic({
               code: DagValidation.DIAGNOSTIC_CODES.environmentUnavailable,
@@ -209,7 +243,7 @@ export function make(options: Options = {}) {
             }),
           ]),
           document: decoded.value.spec,
-        }
+        })
       }
 
       const modeledNodes = applyNodeModels(compiled.nodes, parsed.value.nodes)
@@ -245,9 +279,21 @@ export function make(options: Options = {}) {
       // can also return nodes with blocking diagnostics (the strict writer
       // gate). Merge them with the post-compile result instead of
       // short-circuiting, so the caller sees every error the document has.
+      // #1073: the merged-graph checkpoint gate Dag.extend enforces at the
+      // runtime seam, run here so the rejection carries its repair.
+      const liveGateErrors =
+        input.action === "extend" && input.live_nodes
+          ? DagValidation.liveCheckpointGateDiagnostics({
+              fragment: nodes,
+              live: input.live_nodes,
+              defaults: nodeDefaults,
+              form: compiled.blocks === undefined ? "nodes" : "blocks",
+            })
+          : []
       const errors = DagValidation.sortDiagnostics([
         ...validation.errors,
         ...compiled.diagnostics.filter((diagnostic) => diagnostic.severity === "error"),
+        ...liveGateErrors,
       ])
       const valid = errors.length === 0
       const prepared = valid ? prepareGraph(decoded.value, nodes, nodeDefaults, review) : undefined
@@ -263,8 +309,10 @@ export function make(options: Options = {}) {
         document: decoded.value.spec,
         ...(prepared ? { prepared } : {}),
       } satisfies Result
-      if (cacheable) cache.set(key, result)
-      return result
+      return finish({
+        ...result,
+        warnings: DagValidation.sortDiagnostics([...result.warnings, ...(template?.diagnostics ?? [])]),
+      })
     })
 
   return { prepare }
@@ -348,29 +396,51 @@ function parseSource(
   return { value: normalizeLegacyFile(action, parsed.value) }
 }
 
-function decodeAction(action: Action, value: unknown, source: string, profile: DagValidation.Profile) {
+function decodeAction(
+  action: Action,
+  value: unknown,
+  source: string,
+  profile: DagValidation.Profile,
+  liveForm?: "blocks" | "nodes" | "mixed",
+  origins: readonly DagTemplateInputs.Origin[] = [],
+) {
   const options = {
     ...DagValidation.STRICT_PARSE_OPTIONS,
     errors: "all",
   } as const
+  // A decode failure under a field a template input filled names that input.
+  const invalid = (failure: unknown) =>
+    invalidResult(
+      source,
+      profile,
+      DagTemplateInputs.explainOrigins(DagValidation.schemaDiagnostics(failure, "", action), origins),
+    )
   if (action === "start") {
+    // A document that mixes graph sources reports the one mistake with one
+    // correction instead of four union errors.
+    const mixed = DagValidation.mixedGraphDiagnostic(action, value, liveForm)
+    if (mixed) return { result: invalidResult(source, profile, [mixed]) }
     const decoded = Schema.decodeUnknownResult(DagValidation.StartSpec, options)(value)
     if (decoded._tag === "Success") return { value: { action, spec: decoded.success } } as const
-    return { result: invalidResult(source, profile, DagValidation.schemaDiagnostics(decoded.failure, "", action)) }
+    return { result: invalid(decoded.failure) }
   }
   if (action === "extend") {
+    const mixed = DagValidation.mixedGraphDiagnostic(action, value, liveForm)
+    if (mixed) return { result: invalidResult(source, profile, [mixed]) }
     const decoded = Schema.decodeUnknownResult(DagValidation.ExtendSpec, options)(value)
     if (decoded._tag === "Success") return { value: { action, spec: decoded.success } } as const
-    return { result: invalidResult(source, profile, DagValidation.schemaDiagnostics(decoded.failure, "", action)) }
+    return { result: invalid(decoded.failure) }
   }
   // Replan-only tail (start/extend returned above). Guard the envelope BEFORE
   // the union decode so a missing top-level `fragment` reports the real mistake
   // instead of the misleading "blocks/nodes graph" union error.
   const envelope = DagValidation.replanEnvelopeDiagnostic(value)
   if (envelope) return { result: invalidResult(source, profile, [envelope]) }
+  const mixed = DagValidation.mixedGraphDiagnostic(action, value, liveForm)
+  if (mixed) return { result: invalidResult(source, profile, [mixed]) }
   const decoded = Schema.decodeUnknownResult(DagValidation.ReplanSpec, options)(value)
   if (decoded._tag === "Success") return { value: { action, spec: decoded.success } } as const
-  return { result: invalidResult(source, profile, DagValidation.schemaDiagnostics(decoded.failure, "", action)) }
+  return { result: invalid(decoded.failure) }
 }
 
 function compileAction(
@@ -378,6 +448,7 @@ function compileAction(
   knownDependencies: string[] | undefined,
   review: EffectiveReviewConfig,
   priorRounds: Readonly<Record<string, PriorRound>> = {},
+  liveGateMap?: ReadonlyMap<string, LiveGate>,
 ): {
   nodes?: NodeConfig[]
   diagnostics: DagValidation.Diagnostic[]
@@ -397,6 +468,7 @@ function compileAction(
     review_gate: review.review_gate,
     ...(review.acceptance !== undefined ? { acceptance: review.acceptance } : {}),
     ...(Object.keys(priorRounds).length > 0 ? { prior_rounds: priorRounds } : {}),
+    ...(liveGateMap !== undefined && liveGateMap.size > 0 ? { live_gates: liveGateMap } : {}),
   }
   if (decoded.action === "extend") {
     const extend = decoded.spec
@@ -564,6 +636,7 @@ function cacheKey(input: PrepareInput, profile: DagValidation.Profile, userMaxTo
     review_gate: input.review_gate,
     acceptance: input.acceptance,
     user_max_total_nodes: userMaxTotalNodes,
+    template: input.template,
   })
   return new Bun.CryptoHasher("sha256").update(`${context}\0${content}`).digest("hex")
 }

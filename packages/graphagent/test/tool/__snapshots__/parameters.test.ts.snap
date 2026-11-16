@@ -1064,6 +1064,10 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
               ],
               "type": "string",
             },
+            "inputs": {
+              "description": "Template inputs",
+              "type": "object",
+            },
             "operation": {
               "description": "Pre-flight without creating a workflow",
               "enum": [
@@ -1098,6 +1102,10 @@ exports[`tool parameters JSON Schema (wire shape) workflow 1`] = `
                 "run",
               ],
               "type": "string",
+            },
+            "inputs": {
+              "description": "Template inputs",
+              "type": "object",
             },
             "operation": {
               "enum": [

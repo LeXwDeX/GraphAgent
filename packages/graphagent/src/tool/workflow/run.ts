@@ -28,6 +28,14 @@ const refusedStart = (title: string, errorCode: string, message: string, extra: 
   metadata: { blocked: true, diagnosticSummary: message },
 })
 
+/** The inputs a template start applied, in declaration order, so the parent sees
+ * which ones fell back to their default. Nothing for a spec without inputs. */
+const inputsLine = (template: { supplied: string[]; defaulted: string[] } | undefined) => {
+  if (template === undefined) return ""
+  const used = [...template.supplied, ...template.defaulted.map((name) => `${name} (default)`)]
+  return used.length === 0 ? "" : `Inputs: ${used.join(", ")}.\n`
+}
+
 export interface RunContext {
   readonly dag: Dag.Interface
   readonly control: DagControl.Interface
@@ -87,6 +95,9 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
         // authored standard. Later mode switches cannot change it.
         ...(session.dagMode === "on" ? { review_gate: "strict" as const } : {}),
         prior_rounds: priorRoundLoader(dag, sessionID),
+        // #1073: a spec that declares inputs is filled from the call; a call
+        // without inputs still reports the required ones as missing.
+        template: { kind: "values" as const, values: params.inputs ?? {} },
       })
       const blocking = result.errors.filter(
         (diagnostic) => diagnostic.code !== DagValidation.DIAGNOSTIC_CODES.modelUnavailable,
@@ -173,7 +184,7 @@ export const runWorkflow = (context: RunContext, params: RunParams): Effect.Effe
       const notice = isolation.kind === "none" ? "" : `${isolation.notice}\n`
       return {
         title: `Workflow started: ${config.name}`,
-        output: `<workflow id="${dagID}" state="running" mode="${mode}">\n${prepared.nodes.length} nodes registered.\n${notice}${authoringWarnings(result)}Do not poll this workflow. It runs asynchronously and will wake the parent session when attention is required.\n</workflow>`,
+        output: `<workflow id="${dagID}" state="running" mode="${mode}">\n${prepared.nodes.length} nodes registered.\n${inputsLine(result.template)}${notice}${authoringWarnings(result)}Do not poll this workflow. It runs asynchronously and will wake the parent session when attention is required.\n</workflow>`,
         metadata: { workflowId: dagID } as Metadata,
       }
     }

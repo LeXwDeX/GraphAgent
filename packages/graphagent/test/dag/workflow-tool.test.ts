@@ -4370,6 +4370,8 @@ describe("workflow tool saved workflows", () => {
                   operation: "validate",
                   spec_path: `builtin://${name}`,
                   ...(profile ? { profile } : {}),
+                  // #1073: a stage declares inputs, and validate answers "would this start?".
+                  inputs: { objective: "Check the stage" },
                 },
               },
               contextWith([]),

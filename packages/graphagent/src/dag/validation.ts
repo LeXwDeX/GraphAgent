@@ -63,11 +63,22 @@ export const DIAGNOSTIC_CODES = {
   workspaceWorktreeMismatch: "workspace.worktree_mismatch",
   workspaceInvalid: "workspace.invalid",
   isolationInvalid: "isolation.invalid",
+  // A template's `inputs`: a declaration that cannot be used, or a call that
+  // does not match what the spec declares.
+  templateInputs: "template.inputs",
 } as const
 
 export type DiagnosticCode = (typeof DIAGNOSTIC_CODES)[keyof typeof DIAGNOSTIC_CODES]
 
 export const DiagnosticCodeSchema = Schema.Literals(Object.values(DIAGNOSTIC_CODES))
+
+/** Node patches that make a rejected fragment valid. Each entry names a node by
+ * `id` and carries only the fields to add; merge it into the node of that id as
+ * written, and nothing else about the fragment changes. */
+export const SuggestedFragmentSchema = Schema.Struct({
+  nodes: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+})
+export type SuggestedFragment = typeof SuggestedFragmentSchema.Type
 
 export const DiagnosticSchema = Schema.Struct({
   severity: Schema.Literals(["error", "warning"]),
@@ -76,6 +87,9 @@ export const DiagnosticSchema = Schema.Struct({
   path: Schema.String,
   message: Schema.String,
   hint: Schema.String,
+  /** Present when the diagnostic has a mechanical fix that can be applied as it
+   * stands (see `SuggestedFragmentSchema`). */
+  suggested_fragment: Schema.optional(SuggestedFragmentSchema),
 })
 export type Diagnostic = typeof DiagnosticSchema.Type
 
@@ -120,6 +134,7 @@ export function diagnostic(input: {
   path: string
   message: string
   hint?: string
+  suggested_fragment?: SuggestedFragment
 }): Diagnostic {
   return {
     severity: input.severity ?? "error",
@@ -127,6 +142,7 @@ export function diagnostic(input: {
     path: input.path,
     message: input.message,
     hint: input.hint ?? "",
+    ...(input.suggested_fragment ? { suggested_fragment: input.suggested_fragment } : {}),
   }
 }
 
@@ -342,10 +358,33 @@ export const NodesGraphSchema = Schema.Struct({
 /** A start/replan graph carries exactly one source shape: blocks or nodes. */
 export const WorkflowGraphSchema = Schema.Union([BlocksGraphSchema, NodesGraphSchema])
 
+/** What a template accepts from `run.start { spec_path, inputs }`. An input
+ * without a `default` is required. `array` takes a JSON array of any items: the
+ * field it lands in decides their shape when the instantiated document is
+ * decoded. */
+export const TEMPLATE_INPUT_TYPES = ["string", "number", "boolean", "array"] as const
+export type TemplateInputType = (typeof TEMPLATE_INPUT_TYPES)[number]
+
+export const TemplateInputDeclaration = Schema.Struct({
+  type: Schema.optional(Schema.Literals(TEMPLATE_INPUT_TYPES)).annotate({
+    description: "string (default), number, boolean, or array",
+  }),
+  description: Schema.optional(Schema.String).annotate({ description: "What the input controls" }),
+  default: Schema.optional(Schema.Unknown).annotate({
+    description: "Value used when the caller omits the input; an input without one is required",
+  }),
+})
+
+/** Declared inputs by name. Placeholders `{{name}}` in the document are replaced
+ * with the supplied value; a placeholder that names no declared input is left
+ * as written for the runtime's own `{{node-id}}` bindings. */
+export const TemplateInputs = Schema.Record(Schema.String, TemplateInputDeclaration)
+
 export const StartSpec = Schema.Struct({
   title: Schema.optional(Schema.String),
   mode: Schema.optional(ExecutionMode),
   admission: Schema.optional(AdmissionInput),
+  inputs: Schema.optional(TemplateInputs),
   config: WorkflowGraphSchema,
 })
 
@@ -372,6 +411,15 @@ export type NodeSpec = typeof NodeSchema.Type
 /** The validator decodes untrusted model/YAML input; unknown keys are
  * rejected so a foreign field can never be silently dropped or defaulted. */
 export const STRICT_PARSE_OPTIONS = { onExcessProperty: "error" as const }
+
+const decodeTemplateInputOption = Schema.decodeUnknownOption(TemplateInputDeclaration, STRICT_PARSE_OPTIONS)
+
+/** One template input declaration, decoded strictly, or undefined when it is not
+ * a valid declaration. */
+export function decodeTemplateInput(value: unknown): typeof TemplateInputDeclaration.Type | undefined {
+  const decoded = decodeTemplateInputOption(value)
+  return Option.isSome(decoded) ? decoded.value : undefined
+}
 
 // ============================================================================
 // Schema-error → diagnostics
@@ -432,7 +480,7 @@ export type SchemaAction = "start" | "extend" | "replan"
 /** The exact document shape each action decodes. Every envelope-level hint
  * ends with this sentence so a retry is keyed off the action's own contract. */
 const ACTION_ENVELOPES: Record<SchemaAction, string> = {
-  start: "a start document: { title?, mode?, admission?, config: { name, objective + blocks | nodes } }",
+  start: "a start document: { title?, mode?, admission?, inputs?, config: { name, objective + blocks | nodes } }",
   extend:
     'an extend document: { "objective": "...", "blocks": [...] } or { "nodes": [...] } at the top level — no "config", "title", "name", "fragment", or graph-budget fields',
   replan: 'a replan document: { "fragment": { name, objective + blocks | nodes } }',
@@ -554,6 +602,50 @@ export function replanEnvelopeDiagnostic(value: unknown): Diagnostic | undefined
   })
 }
 
+/** Entries of a graph source key; a missing, null, or non-array value counts as none. */
+function sourceEntries(graph: Record<string, unknown>, key: "blocks" | "nodes") {
+  const value = graph[key]
+  return Array.isArray(value) ? value.length : 0
+}
+
+/**
+ * A graph carries exactly one source, `blocks` or `nodes`. A document that
+ * defines both used to decode into four union errors, none of which said which
+ * key to remove. This names the mistake once with one correction (#1073): the
+ * empty key is dropped; when both hold entries the kept form is the one the
+ * live workflow already uses (`blocks` for a start or an unknown workflow), and
+ * the other form's entries go into a second document.
+ *
+ * Returns `undefined` unless the graph defines both keys.
+ */
+export function mixedGraphDiagnostic(
+  action: SchemaAction,
+  value: unknown,
+  liveForm?: "blocks" | "nodes" | "mixed",
+): Diagnostic | undefined {
+  if (!isRecord(value)) return undefined
+  const graph = action === "start" ? value.config : action === "replan" ? value.fragment : value
+  if (!isRecord(graph) || graph.blocks == null || graph.nodes == null) return undefined
+  const blocks = sourceEntries(graph, "blocks")
+  const nodes = sourceEntries(graph, "nodes")
+  const kept: "blocks" | "nodes" =
+    blocks > 0 && nodes === 0 ? "blocks" : nodes > 0 && blocks === 0 ? "nodes" : liveForm === "nodes" ? "nodes" : "blocks"
+  const dropped = kept === "blocks" ? "nodes" : "blocks"
+  const droppedEntries = kept === "blocks" ? nodes : blocks
+  const second = action === "start" ? "extend document after the workflow has started" : `${action} document after this one lands`
+  return diagnostic({
+    code: DIAGNOSTIC_CODES.schemaInvalid,
+    path: action === "start" ? "config" : action === "replan" ? "fragment" : "$",
+    message: 'the graph defines both "blocks" and "nodes"; a graph has exactly one source',
+    hint:
+      droppedEntries === 0
+        ? `Delete the empty "${dropped}" key and keep "${kept}".`
+        : `Keep "${kept}" and remove "${dropped}" (it holds ${droppedEntries} entr${droppedEntries === 1 ? "y" : "ies"})` +
+          `${liveForm === "blocks" || liveForm === "nodes" ? `; the live workflow's graph is ${liveForm}-form` : ""}. ` +
+          `If that work is still needed, send it in a second ${second}.`,
+  })
+}
+
 // ============================================================================
 // Graph compilation (blocks → nodes) as diagnostics
 // ============================================================================
@@ -570,6 +662,8 @@ export interface BlockCompileOptions {
   acceptance?: readonly DagBlocks.AcceptanceItem[]
   /** Prior-round findings resolved from stored workflow outputs. */
   prior_rounds?: Readonly<Record<string, DagBlocks.PriorRound>>
+  /** Live checkpoints of the workflow an extend fragment attaches to. */
+  live_gates?: ReadonlyMap<string, DagBlocks.LiveGate>
 }
 
 export function compileBlockSource(
@@ -585,6 +679,7 @@ export function compileBlockSource(
           ...(options.review_gate !== undefined ? { review_gate: options.review_gate } : {}),
           ...(options.acceptance !== undefined ? { acceptance: options.acceptance } : {}),
           ...(options.prior_rounds !== undefined ? { prior_rounds: options.prior_rounds } : {}),
+          ...(options.live_gates !== undefined ? { live_gates: options.live_gates } : {}),
         },
       )
       return { nodes, diagnostics: [] }
@@ -1096,32 +1191,94 @@ function checkpointDependentFix(
   return `- "${dependent.id}": ${removal}no reporting checkpoint remains as a direct dependency after that removal`
 }
 
-/** A report_to_parent node wakes the parent for adjudication; a dependent
- * without a condition on that node's output is spawned the moment the
- * checkpoint completes, so the checkpoint verdict can never act first.
- * Block-compiled graphs gate dependents on the verdict (issue #294
- * REJECT-checkpoint shape); hand-built node graphs must do the same or keep
- * the checkpoint as a reporting leaf.
- *
- * Options:
- * - `exemptCheckpointIds` (DAG-02 runtime path): a checkpoint already
- *   terminal in the durable graph is settled and immutable (terminal nodes
- *   never re-run) — the ordering race the gate protects is in the past, so
- *   additive waves / reopens may attach dependents without a condition.
- *   Authoring never exempts: nothing is terminal there yet.
- * - `requireOutputSchema` (default true; the runtime replan path passes
- *   false): DAG-01's "gated checkpoints must declare output_schema" is an
- *   AUTHORING obligation — runtime-created graphs deliberately bypass
- *   authoring validation (CONTEXT.md), so the runtime gate polices the
- *   ordering race only, not the schema declaration. */
-export function checkpointGateDiagnostics(
+/** What a checkpoint-gate check may assume about the graph it reads. */
+export interface CheckpointGateOptions {
+  /** DAG-02 runtime path: a checkpoint already terminal in the durable graph is
+   * settled and immutable (terminal nodes never re-run) — the ordering race the
+   * gate protects is in the past, so additive waves / reopens may attach
+   * dependents without a condition. Authoring never exempts: nothing is
+   * terminal there yet. */
+  readonly exemptCheckpointIds?: ReadonlySet<string>
+  /** Default true; the runtime replan path passes false. DAG-01's "gated
+   * checkpoints must declare output_schema" is an AUTHORING obligation —
+   * runtime-created graphs deliberately bypass authoring validation
+   * (CONTEXT.md), so the runtime gate polices the ordering race only, not the
+   * schema declaration. */
+  readonly requireOutputSchema?: boolean
+  /** Nodes whose definition the caller can still change (#1073). A suggested
+   * fragment only edits these; absent means every node. */
+  readonly patchableIds?: ReadonlySet<string>
+  /** Only dependents in this set are examined. A preflight against a live
+   * workflow reads just the fragment's own dependents. */
+  readonly dependentIds?: ReadonlySet<string>
+  /** The form the nodes were authored in. Blocks have no `condition` or
+   * `output_schema` to add, so their repair names block-level choices. */
+  readonly form?: "blocks" | "nodes"
+}
+
+const GATE_NODE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+
+/**
+ * The patches that gate every ungated dependent of one reporting checkpoint, or
+ * undefined when no mechanical repair is safe. A condition reads exactly one
+ * direct dependency, so a dependent that already carries a condition, or that
+ * depends on a second reporting checkpoint, cannot be repaired by adding one.
+ * The gate reads the "carry on" verdict the checkpoint already enumerates; a
+ * checkpoint without any output contract gets the documented verdict schema.
+ */
+function checkpointGateSuggestion(input: {
+  checkpoint: NodeConfig
+  ungated: readonly NodeConfig[]
+  reportingCheckpointIds: ReadonlySet<string>
+  patchable: (id: string) => boolean
+  defaults?: { readonly required?: boolean }
+}): SuggestedFragment | undefined {
+  const { checkpoint, ungated } = input
+  if (!GATE_NODE_ID.test(checkpoint.id) || ungated.length === 0) return undefined
+  for (const dependent of ungated) {
+    if (!input.patchable(dependent.id)) return undefined
+    if (dependent.condition !== undefined && dependent.condition.trim() !== "") return undefined
+    const reporting = [...new Set(dependent.depends_on)].filter((id) => input.reportingCheckpointIds.has(id))
+    if (reporting.length !== 1) return undefined
+  }
+  const declared = checkpoint.output_schema !== undefined
+  const verdict = declared ? DagBlocks.positiveVerdict(checkpoint.output_schema) : "ACCEPT"
+  if (verdict === undefined) return undefined
+  if (!declared && !input.patchable(checkpoint.id)) return undefined
+  const gate = `${checkpoint.id}.output.verdict == "${verdict}"`
+  return {
+    nodes: [
+      ...(declared ? [] : [{ id: checkpoint.id, output_schema: DagBlocks.CHECKPOINT_VERDICT_SCHEMA }]),
+      ...ungated.map((dependent) => ({
+        id: dependent.id,
+        condition: gate,
+        // A required dependent that a rejected verdict skips must not fail the workflow.
+        ...((dependent.required ?? input.defaults?.required ?? false) ? { skip_ok: true } : {}),
+      })),
+    ],
+  }
+}
+
+/** The repair a blocks-form document can make: it has no `condition` field, so
+ * the choices are structural. */
+function blocksCheckpointHint(checkpointID: string) {
+  return (
+    `Blocks cannot carry a condition. Put a review block between "${checkpointID}" and its dependents (a review block's dependents are gated on its verdict automatically), ` +
+    `keep "${checkpointID}" a reporting leaf (drop its dependents), or set report_to_parent: false on "${checkpointID}" if downstream must run unconditionally — ` +
+    "that removes verdict gating for every downstream node."
+  )
+}
+
+interface CheckpointGateFinding {
+  readonly checkpoint: string
+  readonly diagnostics: Diagnostic[]
+}
+
+function checkpointGateFindings(
   nodes: readonly NodeConfig[],
-  defaults?: { readonly report_to_parent?: boolean },
-  options?: {
-    readonly exemptCheckpointIds?: ReadonlySet<string>
-    readonly requireOutputSchema?: boolean
-  },
-): Diagnostic[] {
+  defaults?: { readonly report_to_parent?: boolean; readonly required?: boolean },
+  options?: CheckpointGateOptions,
+): CheckpointGateFinding[] {
   const reportsToParent = (node: NodeConfig) =>
     node.report_to_parent ?? defaults?.report_to_parent ?? DEFAULT_WORKFLOW_CONFIG.reportToParent
   const requireOutputSchema = options?.requireOutputSchema ?? true
@@ -1129,11 +1286,23 @@ export function checkpointGateDiagnostics(
   const reportingCheckpointIds = new Set(
     nodes.filter((node) => reportsToParent(node) && !options?.exemptCheckpointIds?.has(node.id)).map((node) => node.id),
   )
+  const patchable = (id: string) => options?.form !== "blocks" && (options?.patchableIds?.has(id) ?? true)
   return nodes.flatMap((checkpoint) => {
     if (!reportingCheckpointIds.has(checkpoint.id)) return []
-    const dependents = nodes.filter((dependent) => dependent.depends_on.includes(checkpoint.id))
+    const dependents = nodes.filter(
+      (dependent) =>
+        dependent.depends_on.includes(checkpoint.id) &&
+        (options?.dependentIds === undefined || options.dependentIds.has(dependent.id)),
+    )
     const ungated = dependents.filter((dependent) => conditionReference(dependent.condition) !== checkpoint.id)
     const fixes = ungated.map((dependent) => checkpointDependentFix(dependent, reportingCheckpointIds, byID))
+    const suggestion = checkpointGateSuggestion({
+      checkpoint,
+      ungated,
+      reportingCheckpointIds,
+      patchable,
+      defaults,
+    })
     const grouped =
       ungated.length === 0
         ? []
@@ -1146,8 +1315,11 @@ export function checkpointGateDiagnostics(
                 `${ungated.length === 1 ? "is" : "are"} not gated on its output: ${ungated.map((dependent) => `"${dependent.id}"`).join(", ")}` +
                 ` — the engine spawns each as soon as "${checkpoint.id}" completes, so the checkpoint verdict cannot be acted on first`,
               hint:
-                `${fixes.join("\n")}\n` +
-                `Keep "${checkpoint.id}" a reporting leaf (drop its dependents), or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
+                options?.form === "blocks"
+                  ? blocksCheckpointHint(checkpoint.id)
+                  : `${fixes.join("\n")}\n` +
+                    `Keep "${checkpoint.id}" a reporting leaf (drop its dependents), or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
+              ...(suggestion ? { suggested_fragment: suggestion } : {}),
             }),
           ]
     // DAG-01: a checkpoint whose output a gate reads must declare
@@ -1170,11 +1342,60 @@ export function checkpointGateDiagnostics(
               hint:
                 `Declare output_schema on "${checkpoint.id}" (e.g. the verdict shape),` +
                 ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
+              ...(patchable(checkpoint.id)
+                ? { suggested_fragment: { nodes: [{ id: checkpoint.id, output_schema: DagBlocks.CHECKPOINT_VERDICT_SCHEMA }] } }
+                : {}),
             }),
           ]
         : []
-    return [...grouped, ...schemaRequired]
+    return [{ checkpoint: checkpoint.id, diagnostics: [...grouped, ...schemaRequired] }]
   })
+}
+
+/** A report_to_parent node wakes the parent for adjudication; a dependent
+ * without a condition on that node's output is spawned the moment the
+ * checkpoint completes, so the checkpoint verdict can never act first.
+ * Block-compiled graphs gate dependents on the verdict (issue #294
+ * REJECT-checkpoint shape); hand-built node graphs must do the same or keep
+ * the checkpoint as a reporting leaf.
+ *
+ * A grouped diagnostic carries a `suggested_fragment` when the repair is
+ * mechanical (see `checkpointGateSuggestion`). */
+export function checkpointGateDiagnostics(
+  nodes: readonly NodeConfig[],
+  defaults?: { readonly report_to_parent?: boolean; readonly required?: boolean },
+  options?: CheckpointGateOptions,
+): Diagnostic[] {
+  return checkpointGateFindings(nodes, defaults, options).flatMap((finding) => finding.diagnostics)
+}
+
+/**
+ * #1073 preflight: the merged-graph checkpoint gate that `Dag.extend` enforces
+ * at the runtime seam, run while the fragment is still a document. A fragment
+ * node that depends on a checkpoint of the live workflow which has not settled
+ * must gate on it, and a rejection here carries the repair instead of parking
+ * the workflow first. Only the fragment's own dependents are examined; a
+ * checkpoint that already settled is exempt, as at the runtime seam.
+ */
+export function liveCheckpointGateDiagnostics(input: {
+  fragment: readonly NodeConfig[]
+  live: readonly DagBlocks.LiveNode[]
+  defaults?: { readonly report_to_parent?: boolean; readonly required?: boolean }
+  form: "blocks" | "nodes"
+}): Diagnostic[] {
+  const fragmentIDs = new Set(input.fragment.map((node) => node.id))
+  const live = input.live.filter((entry) => !fragmentIDs.has(entry.definition.id))
+  const open = new Set(live.filter((entry) => !entry.terminal).map((entry) => entry.definition.id))
+  const settled = new Set(live.filter((entry) => entry.terminal).map((entry) => entry.definition.id))
+  return checkpointGateFindings([...live.map((entry) => entry.definition), ...input.fragment], input.defaults, {
+    exemptCheckpointIds: settled,
+    requireOutputSchema: false,
+    patchableIds: fragmentIDs,
+    dependentIds: fragmentIDs,
+    form: input.form,
+  })
+    .filter((finding) => open.has(finding.checkpoint))
+    .flatMap((finding) => finding.diagnostics)
 }
 
 function bindingDiagnostics(nodes: readonly NodeConfig[]): Diagnostic[] {
@@ -1461,7 +1682,7 @@ export interface ReplanStructuralInput {
     /** Frozen workflow review gate (config.review_gate). */
     review_gate?: DagBlocks.ReviewGate
     nodes: readonly NodeConfig[]
-    node_defaults?: { readonly report_to_parent?: boolean }
+    node_defaults?: { readonly report_to_parent?: boolean; readonly required?: boolean }
     /** Acceptance items persisted with the workflow (strict coverage). */
     acceptance?: readonly { id: string }[]
   }
@@ -1549,6 +1770,7 @@ export function replanStructuralDiagnostics(input: ReplanStructuralInput): Diagn
     ...checkpointGateDiagnostics(input.merged.nodes, input.merged.node_defaults, {
       exemptCheckpointIds: input.terminalNodeIds,
       requireOutputSchema: false,
+      patchableIds: new Set(input.fragmentNodes.map((node) => node.id)),
     }),
   ])
 }
@@ -1992,7 +2214,9 @@ export function validatePostCompile(input: {
       // Pre-fix it was skipped together with `structural`, so a replan could
       // attach an ungated dependent to a reporting checkpoint and the engine
       // spawned it the moment the checkpoint completed.
-      ...checkpointGateDiagnostics(input.nodes, input.config.node_defaults),
+      ...checkpointGateDiagnostics(input.nodes, input.config.node_defaults, {
+        form: input.blocks === undefined ? "nodes" : "blocks",
+      }),
       ...verdictVocabularyDiagnostics(input.config.objective, input.blocks),
     ]
     // Absolute-path syntax is a source-level contract: report it in both

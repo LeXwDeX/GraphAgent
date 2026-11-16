@@ -26,10 +26,13 @@ export const portableEntryCheck = (authoring: Authoring, entry: DagWorkflows.Ent
     if (content === undefined) {
       return { valid: false, summary: "[schema.invalid] spec content is unreadable" }
     }
+    // A template's required inputs stand in as samples: the check judges the
+    // template itself, not a start that supplies nothing.
     const result = yield* authoring.prepare({
       action: "start",
       source: { kind: "yaml", source: entry.path, content },
       profile: "portable",
+      template: { kind: "sample" },
     })
     const summary = result.valid
       ? ""
@@ -58,14 +61,20 @@ export const listSpecs = (authoring: Authoring, directory: string): Effect.Effec
               ? ` (${entry.blocks} blocks)`
               : "",
           entry.objective ? `\n  objective: ${entry.objective}` : "",
+          entry.inputs ? `\n  inputs: ${entry.inputs}` : "",
           `\n  path: ${entry.path}`,
           check.valid ? "" : `\n  ${check.summary}`,
         ].join(""),
       )
     }
+    // The listing is where a template's inputs are discovered, so it also says
+    // how to fill them.
+    const usage = entries.some((entry) => entry.inputs)
+      ? '\n\nA spec with inputs starts directly: workflow({params:{action:"run",operation:"start",spec_path:"<name>",inputs:{...}}}). * marks a required input; the others use their default.'
+      : ""
     return {
       title: `${entries.length} saved workflow${entries.length > 1 ? "s" : ""}`,
-      output: rows.join("\n"),
+      output: `${rows.join("\n")}${usage}`,
       metadata: {},
     }
   })
@@ -82,6 +91,8 @@ export const readSpec = (
       action: "start",
       source: { kind: "yaml", source: specFile.path, content: specFile.content },
       profile: "portable",
+      // Read shows a template as written; its validity is judged with sample inputs.
+      template: { kind: "sample" },
     })
     return {
       title: `Workflow spec: ${specPath}`,
@@ -105,6 +116,7 @@ export const validateSpec = (
   authoring: Authoring,
   specPath: string,
   requestedProfile: DagValidation.Profile | undefined,
+  inputs: Readonly<Record<string, unknown>> | undefined,
   session: SessionContext,
   ctx: Tool.Context,
 ): Effect.Effect<Tool.ExecuteResult> =>
@@ -144,6 +156,9 @@ export const validateSpec = (
             source: loaded.source,
             profile,
             environment: { directory: session.directory, parent: session.model },
+            // Validate answers "would this start?", so a template is checked
+            // against the inputs the start call would carry.
+            template: { kind: "values" as const, values: inputs ?? {} },
           })
     return {
       title: `Workflow validation ${result.valid ? "passed" : "failed"}: ${loaded.path} (${profile})`,

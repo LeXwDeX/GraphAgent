@@ -4,13 +4,16 @@
 // #1031 M9: the four stage specs the runtime ships in the builtin workflow
 // scope. They are validated through the real authoring boundary (parse, strict
 // decode, block compilation, portable profile), not as raw YAML, and under the
-// strict review gate that a DAG-mode start fixes.
+// strict review gate that a DAG-mode start fixes. #1073: each declares template
+// inputs, so every case starts the spec from its `objective` alone, the way
+// `run.start { spec_path, inputs: { objective } }` does.
 
 import { describe, expect, it } from "bun:test"
 import { Effect, Schema } from "effect"
 import { WorkflowAuthoring } from "@/dag/authoring"
 import { DagBlocks } from "@/dag/blocks"
 import { BUILTIN_WORKFLOWS } from "@/dag/builtin-workflows"
+import { DagTemplateInputs } from "@/dag/template-inputs"
 import { reportingCheckpoints, selectReportNode } from "@/dag/runtime/report-delivery"
 import { DagValidation } from "@/dag/validation"
 import { DagWorkflows } from "@/dag/workflows"
@@ -21,20 +24,36 @@ const NAMES = ["stage-design", "stage-implement", "stage-review", "stage-underst
 const authoring = WorkflowAuthoring.make()
 const decodeStart = Schema.decodeUnknownSync(DagValidation.StartSpec, DagValidation.STRICT_PARSE_OPTIONS)
 
+/** The only input every stage requires. */
+const REQUEST = { objective: "Stage test request" }
+const withRequest = { kind: "values", values: REQUEST } as const
+
 function prepare(name: string, content: string = BUILTIN_WORKFLOWS[name], gate?: "strict" | "standard") {
+  // A patched copy carries no `inputs` section, and a call that passes inputs to
+  // a spec that declares none is rejected.
+  const declares = DagTemplateInputs.declarationsOf(Bun.YAML.parse(content)).length > 0
   return Effect.runPromise(
     authoring.prepare({
       action: "start",
       source: { kind: "yaml", source: `builtin://${name}`, content },
       profile: "portable",
       ...(gate ? { review_gate: gate } : {}),
+      ...(declares ? { template: withRequest } : {}),
     }),
   )
 }
 
+/** A stage spec started from its request alone: placeholders resolved. */
+function instantiated(name: string) {
+  const outcome = DagTemplateInputs.instantiate(Bun.YAML.parse(BUILTIN_WORKFLOWS[name]), withRequest)
+  if (outcome.diagnostics.some((entry) => entry.severity === "error"))
+    throw new Error(`${name} does not start from the request alone: ${JSON.stringify(outcome.diagnostics)}`)
+  return outcome.value
+}
+
 /** The decoded blocks-form start document of a stage spec. */
 function graph(name: string) {
-  const { config } = decodeStart(Bun.YAML.parse(BUILTIN_WORKFLOWS[name]))
+  const { config } = decodeStart(instantiated(name))
   if (!("blocks" in config)) throw new Error(`${name} must use the blocks form`)
   return config
 }
@@ -55,7 +74,7 @@ async function compiled(name: string) {
 
 /** A start document built from a stage spec with config fields replaced. */
 function patched(name: string, patch: Record<string, unknown>) {
-  const spec = decodeStart(Bun.YAML.parse(BUILTIN_WORKFLOWS[name]))
+  const spec = decodeStart(instantiated(name))
   return JSON.stringify({ ...spec, config: { ...spec.config, ...patch } })
 }
 
@@ -64,6 +83,20 @@ function keysDeep(value: unknown): string[] {
   if (typeof value !== "object" || value === null) return []
   return Object.entries(value).flatMap(([key, child]) => [key, ...keysDeep(child)])
 }
+
+// #1073: whatever the builtin scope holds (the stage specs, plus the release
+// snapshot of curated templates in a release build) declares inputs and starts
+// from `objective` alone.
+describe("every builtin template", () => {
+  for (const [name, content] of Object.entries(DagWorkflows.builtinTemplates())) {
+    it(`${name} declares inputs and passes validation given only objective`, async () => {
+      expect(DagTemplateInputs.declarationsOf(Bun.YAML.parse(content)).length).toBeGreaterThan(0)
+      const result = await prepare(name, content)
+      expect(result.errors).toEqual([])
+      expect(result.valid).toBe(true)
+    })
+  }
+})
 
 describe("builtin stage specs", () => {
   it("ships exactly the four stage specs under bare library names", () => {
@@ -78,6 +111,42 @@ describe("builtin stage specs", () => {
         expect(config.name).toBe(name)
         expect(config.review_gate).toBe("strict")
         expect(Bun.YAML.parse(BUILTIN_WORKFLOWS[name])).toMatchObject({ title: expect.stringContaining("Stage:") })
+      })
+
+      // #1073: the request is the only required input, and it lands in the
+      // objective every child prompt carries.
+      it("starts from its objective alone and carries the request into the workflow objective", async () => {
+        const declarations = DagTemplateInputs.declarationsOf(Bun.YAML.parse(BUILTIN_WORKFLOWS[name]))
+        expect(declarations.filter((entry) => entry.required).map((entry) => entry.name)).toEqual(["objective"])
+        expect(graph(name).objective).toContain(REQUEST.objective)
+        const prepared = await compiled(name)
+        for (const node of prepared.nodes)
+          expect(String(node.prompt_template.input?.objective)).toContain(REQUEST.objective)
+      })
+
+      it("refuses to start without its objective", async () => {
+        const result = await Effect.runPromise(
+          authoring.prepare({
+            action: "start",
+            source: { kind: "yaml", source: `builtin://${name}`, content: BUILTIN_WORKFLOWS[name] },
+            profile: "portable",
+          }),
+        )
+        expect(result.valid).toBe(false)
+        expect(result.errors.map((entry) => entry.message)).toContain('required input "objective" was not supplied')
+      })
+
+      it("is a valid template on its own, judged with sample inputs", async () => {
+        const result = await Effect.runPromise(
+          authoring.prepare({
+            action: "start",
+            source: { kind: "yaml", source: `builtin://${name}`, content: BUILTIN_WORKFLOWS[name] },
+            profile: "portable",
+            template: { kind: "sample" },
+          }),
+        )
+        expect(result.errors).toEqual([])
+        expect(result.warnings).toEqual([])
       })
 
       it("passes the strict gate with no errors and no warnings", async () => {

@@ -31,6 +31,7 @@ import * as path from "node:path"
 import * as fs from "node:fs/promises"
 import { DagPaths } from "./paths"
 import { BUILTIN_WORKFLOWS } from "./builtin-workflows"
+import { DagTemplateInputs } from "./template-inputs"
 import { isRecord } from "@/util/record"
 
 // Injected by the build (build.ts define), mirrors GRAPHAGENT_MODELS_DEV.
@@ -55,6 +56,17 @@ export interface Entry {
   readonly nodes?: number
   /** Block count when the saved spec uses the high-level interface. */
   readonly blocks?: number
+  /** One line naming the inputs a template declares (`objective*, depth=2`):
+   * `*` marks a required input, the others show their default. */
+  readonly inputs?: string
+}
+
+interface Meta {
+  title?: string
+  objective?: string
+  nodes?: number
+  blocks?: number
+  inputs?: string
 }
 
 /**
@@ -162,9 +174,7 @@ function scopes(directory: string) {
 }
 
 /** Best-effort listing metadata from a file-backed spec. */
-async function describe(
-  file: string,
-): Promise<{ title?: string; objective?: string; nodes?: number; blocks?: number }> {
+async function describe(file: string): Promise<Meta> {
   const text = await Bun.file(file)
     .text()
     .catch(() => undefined)
@@ -174,9 +184,7 @@ async function describe(
 /** Parse bounded selection metadata from spec content (shared with builtins).
  * A malformed spec still lists — hiding it would make a typo look like a
  * missing file; the start path reports the real parse error. */
-async function parseMeta(
-  text: string,
-): Promise<{ title?: string; objective?: string; nodes?: number; blocks?: number }> {
+async function parseMeta(text: string): Promise<Meta> {
   const parsed = await Promise.resolve(text)
     .then((value) => Bun.YAML.parse(value))
     .catch(() => undefined)
@@ -188,11 +196,13 @@ async function parseMeta(
   const objective = rawObjective ? preview(rawObjective, 240) : undefined
   const nodes = config && Array.isArray(config["nodes"]) ? config["nodes"].length : undefined
   const blocks = config && Array.isArray(config["blocks"]) ? config["blocks"].length : undefined
+  const inputs = DagTemplateInputs.summary(DagTemplateInputs.declarationsOf(parsed))
   return {
     ...(title ? { title } : {}),
     ...(objective ? { objective } : {}),
     ...(nodes === undefined ? {} : { nodes }),
     ...(blocks === undefined ? {} : { blocks }),
+    ...(inputs ? { inputs } : {}),
   }
 }
 

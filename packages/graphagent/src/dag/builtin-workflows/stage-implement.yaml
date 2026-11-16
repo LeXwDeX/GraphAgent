@@ -2,11 +2,28 @@
 # The only writing stage. The plan decides how many slices run in parallel
 # (fan_out); verification and a fingerprint-bound strict review follow, and the
 # report is the stage artifact (fingerprint, changed files, verify evidence,
-# review dispositions). Retarget a copy before starting it: put the selected
-# design in config.objective and the instructions, and replace config.acceptance
-# with the acceptance items from the understand stage (1-50, unique ids); the
-# single item below is only a default.
+# review dispositions). Start it with
+# run.start { spec_path: "stage-implement", inputs: { objective, acceptance } }:
+# put the selected design in `objective` and the acceptance items from the
+# understand stage in `acceptance` (1-50, unique ids); the single item declared
+# below is only a default.
 title: "Stage: implement — map → plan-sized slices → verify → strict review → report"
+inputs:
+  objective:
+    description: The selected design to implement, with the constraints it must respect.
+  acceptance:
+    type: array
+    description: >-
+      Acceptance items [{ id, text }] (1-50, unique ids) that the completeness
+      lane judges one by one.
+    default:
+      - id: AC1
+        text: >-
+          The change delivers the behavior described in the workflow objective and
+          breaks no required repository check.
+  verify_command:
+    description: A command the verify block must run besides the repository gates; none means no extra command.
+    default: "none"
 config:
   name: stage-implement
   review_gate: strict
@@ -20,11 +37,8 @@ config:
     Implement the selected design: change only what the acceptance criteria
     require, prove it with deterministic checks, and have the result reviewed
     against those criteria.
-  acceptance:
-    - id: AC1
-      text: >-
-        The change delivers the behavior described in the workflow objective and
-        breaks no required repository check.
+    Design: {{objective}}
+  acceptance: "{{acceptance}}"
   blocks:
     - id: map
       kind: explore
@@ -62,7 +76,8 @@ config:
         (frozen install, typecheck, lint, tests, generated outputs, migrations,
         packaging), and judge each acceptance criterion with deterministic
         evidence. Record exact commands and raw results; a required check that
-        did not run counts as a failure.
+        did not run counts as a failure. Also run this command and record its
+        raw result (none means no extra command): {{verify_command}}
 
     - id: review
       kind: review

@@ -8,8 +8,10 @@ import stageReviewContent from "./stage-review.yaml" with { type: "text" }
 
 /**
  * Workflow specs that ship inside the runtime itself, keyed by library name.
- * They are the four stage references of DAG mode (understand, design,
- * implement, review) and belong to the `builtin` scope of `DagWorkflows`.
+ * They are the four stage templates of DAG mode (understand, design,
+ * implement, review) and belong to the `builtin` scope of `DagWorkflows`. Each
+ * declares `inputs` (at least `objective`), so a stage starts from
+ * `run.start { spec_path, inputs }` without a copy of the file.
  * Text imports are inlined by `bun test`, `bun dev`, and the compiled binary
  * alike, so the specs resolve without a release snapshot. Add a spec by adding
  * the file and one entry here; names must be bare identifiers.
