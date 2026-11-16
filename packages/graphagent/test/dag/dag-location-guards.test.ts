@@ -208,10 +208,12 @@ interface TwoInstanceInput {
   /**
    * Optional deterministic park on DagStore.tryClaimAdoption (the #270 atomic
    * admission fence). Each claim bumps `calls`; the first `skip` claims pass
-   * through unparked (e.g. the adoption claim), every later claim sets
-   * `parked.value = true` and parks on `wait` before delegating — letting a
-   * probe interleave Session.remove between the passed admission and the
-   * in-flight spawn's child-session creation (the deletion-race probe C7).
+   * through unparked, every later claim sets `parked.value = true` and parks
+   * on `wait` before delegating — letting a probe interleave Session.remove
+   * between the passed admission and the in-flight spawn's child-session
+   * creation (the deletion-race probe C7). Adoption no longer goes through
+   * this claim (it takes the runner lease, ADR-0008), so the only caller is
+   * the spawn-admission fence.
    */
   readonly parkAdoptionClaim?: {
     readonly wait: Promise<void>
@@ -2018,12 +2020,12 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
     })
     await Effect.runPromise(
       runTwoInstanceGuardTest(
-        { parkAdoptionClaim: { wait, parked, calls, skip: 1 } },
+        { parkAdoptionClaim: { wait, parked, calls, skip: 0 } },
         ({ dag, database, initA, cancelsA, childPromptsA }) =>
           Effect.gen(function* () {
             yield* initA
-            // A ready-node workflow: the adoption claim (skipped by the gate) runs
-            // first, then spawnReady admits the node and the SECOND claim — the
+            // A ready-node workflow: adoption takes the runner lease (not this
+            // claim), then spawnReady admits the node and the FIRST claim — the
             // window-2 spawn-admission fence — parks just before the child session
             // would materialize.
             const dagID = yield* dag.create({

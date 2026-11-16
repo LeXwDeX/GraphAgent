@@ -24,6 +24,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { SessionEvent } from "@graphagent/schema/session-event"
+import { DagLease } from "@graphagent/core/dag/lease"
 import { DagStore } from "@graphagent/core/dag/store"
 import { DagMessages } from "@graphagent/core/dag/messages"
 import { Database } from "@graphagent/core/database/database"
@@ -80,6 +81,7 @@ import { Permission } from "@/permission"
 import { HookStartContext } from "@/hook/start-context"
 import { HookLifecycle } from "@/hook/lifecycle"
 import { DagDelivery } from "./delivery"
+import { RunnerLease } from "./runner-lease"
 import { settleTerminalWorkflowWorktree, workflowWorktreeSettlementPending } from "./worktree-completion"
 import { Logging } from "@graphagent/core/observability/logging"
 
@@ -115,6 +117,8 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@graphagent/DagLoop") {}
 
 interface WorkflowEntry {
+  /** ADR-0008: the runner lease this entry drives the workflow under. Renewed every period; losing it evicts the entry. */
+  token: DagLease.Token
   runtime: WorkflowRuntime
   /** Per-workflow child-run cap, enforced by the process-level scheduler. */
   concurrency: number
@@ -163,6 +167,7 @@ const serviceLayer = Layer.effect(
     const automation = yield* ExclusiveRegistry.Service
     const scheduler = yield* AgentScheduler.Service
     const database = yield* Database.Service
+    const { leases, runnerID } = yield* RunnerLease.resolve(database)
 
     const state = yield* InstanceState.make(
       Effect.fn("DagLoop.state")(function* (ctx) {
@@ -173,6 +178,15 @@ const serviceLayer = Layer.effect(
         // runtimes.has check is check-then-act. Reserved synchronously at
         // adoption entry, released when the adoption settles.
         const recovering = new Set<string>()
+        // ADR-0008: this instance's runner leases. Made before any fiber is
+        // forked below, so its release at exit runs after they are interrupted.
+        let evictEntry: (dagID: string, entry: WorkflowEntry) => Effect.Effect<void> = () => Effect.void
+        const runnerLease = yield* RunnerLease.make({
+          leases,
+          runnerID,
+          entries: runtimes,
+          evict: (dagID, entry) => evictEntry(dagID, entry),
+        })
         // D7: all delivery scheduling (wake + agent mailbox) lives in
         // DagDelivery. This forward reference is assigned below, before any
         // event or recovery path can trigger it; every call site only nudges.
@@ -897,6 +911,22 @@ const serviceLayer = Layer.effect(
             )
         })
 
+        // ADR-0008 decision 2: a lost runner lease evicts the entry and writes
+        // nothing for the workflow (runner-lease.ts).
+        evictEntry = RunnerLease.evictor({
+          entries: runtimes,
+          childOf: (dagID, nodeID) =>
+            store.getNode(dagID, nodeID).pipe(Effect.map((node) => node?.childSessionId ?? null)),
+          abort: (dagID, nodeID, childSessionID) =>
+            abortChild(dagID, nodeID, childSessionID, "dag.loop.leaseLost", childAbort("lease-lost", "dag-lease")).pipe(
+              Effect.ignore,
+            ),
+          unregister: (entry, dagID) =>
+            automation
+              .unregister(SessionID.make(entry.parentSessionID), { kind: "dag", id: dagID })
+              .pipe(Effect.catchCause((cause) => (Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.void))),
+        })
+
         // Subscription handlers must never die. dag.ts guards and checkCompletion
         // use orDie, whose defects punch straight through Effect.ignore (it only
         // absorbs the error channel) and would kill the forked runForEach fiber —
@@ -1043,10 +1073,16 @@ const serviceLayer = Layer.effect(
           // first yield so the second caller drops out immediately.
           if (runtimes.has(dagID) || recovering.has(dagID)) return
           recovering.add(dagID)
+          let claimed: DagLease.Token | undefined
           // Effect.ensuring releases the adoption slot even when a fiber
           // interrupt cuts the adoption sequence — a finally block does not
           // survive interruption.
           yield* Effect.gen(function* () {
+            // ADR-0008 decision 6: the claim comes first. Another runner's live
+            // lease ends the adoption before any of its nodes is judged lost.
+            const token = yield* runnerLease.claim(dagID)
+            if (!token) return
+            claimed = token
             const config = parseWorkflowConfig(wf.config)
             const recovery = yield* reconcileWorkflow(
               dagID,
@@ -1155,6 +1191,7 @@ const serviceLayer = Layer.effect(
             if (isPaused) runtime.setPaused(true)
             if (isStepping) runtime.setStepMode(true)
             const entry: WorkflowEntry = {
+              token,
               runtime,
               concurrency: maxConcurrency,
               evalLock: Semaphore.makeUnsafe(1),
@@ -1175,11 +1212,10 @@ const serviceLayer = Layer.effect(
             if (!(yield* DagLocation.ownsWorkflow(dagID, ctx.directory))) return
             // #270 atomic-admission fence (C3): the durable read above and the
             // runtimes publish below are still two statements — a deletion can
-            // commit between them. Collapse the admission into ONE conditional
-            // UPDATE that matches only while the row exists and is non-terminal.
-            // A cascade committed in that final window matches zero rows and the
-            // adoption aborts here, before it ever publishes an entry.
-            if (!(yield* store.tryClaimAdoption(dagID))) return
+            // commit between them. One statement re-reads the lease with its
+            // workflow (must exist, be non-terminal, still be this claim): a
+            // cascade or takeover committed in that window aborts the adoption.
+            if (!(yield* runnerLease.confirm(dagID, token))) return
             runtimes.set(dagID, entry)
             yield* automation.register(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
             // Only accepted messages may continue their existing child attempt.
@@ -1199,7 +1235,11 @@ const serviceLayer = Layer.effect(
             if (pausedForRecovery || pausedForCheckpoint) {
               yield* delivery.nudge(wf.sessionId)
             }
-          }).pipe(Effect.ensuring(Effect.sync(() => recovering.delete(dagID))))
+          }).pipe(
+            // No entry at the end: give the claim back instead of letting it run out.
+            Effect.onExit(() => runnerLease.abandon(dagID, claimed)),
+            Effect.ensuring(Effect.sync(() => recovering.delete(dagID))),
+          )
         })
 
         // Orphan-pending recovery: a pending workflow with no non-pending node
@@ -1284,6 +1324,7 @@ const serviceLayer = Layer.effect(
               // adoption's own getNodes reads the already-replanned rows.
               if (runtimes.has(dagID) || recovering.has(dagID)) return
               recovering.add(dagID)
+              let claimed: DagLease.Token | undefined
               yield* Effect.gen(function* () {
                 const wf = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
                 if (!wf) return
@@ -1306,6 +1347,10 @@ const serviceLayer = Layer.effect(
                   yield* failUnusableWorkspace(wf, location)
                   return
                 }
+                // ADR-0008: a first wave is claimed like any adoption (it creates the row).
+                const token = yield* runnerLease.claim(dagID)
+                if (!token) return
+                claimed = token
                 const config = parseWorkflowConfig(wf.config)
                 // Rev-view (v1.0.15 Train A): same current-revision rebuild
                 // input as recoverWorkflow — adoption must not resurrect the
@@ -1317,6 +1362,7 @@ const serviceLayer = Layer.effect(
                 )
                 const runtime = new WorkflowRuntime(toSchedulingNodes(nodes), maxConcurrency)
                 const entry: WorkflowEntry = {
+                  token,
                   runtime,
                   concurrency: maxConcurrency,
                   evalLock: Semaphore.makeUnsafe(1),
@@ -1335,12 +1381,10 @@ const serviceLayer = Layer.effect(
                 // through. A row cascade-deleted after the first guard must not
                 // be adopted into an inert entry.
                 if (!(yield* DagLocation.ownsWorkflow(dagID, ctx.directory))) return
-                // #270 atomic-admission fence (C3, same as recoverWorkflow): the
-                // durable read and the runtimes publish are two statements a
-                // deletion can slip between; collapse the admission into one
-                // conditional UPDATE (exists + non-terminal). A cascade committed
-                // in the final window matches zero rows and the adoption aborts.
-                if (!(yield* store.tryClaimAdoption(dagID))) return
+                // #270 atomic-admission fence (C3, same as recoverWorkflow): one
+                // statement re-reads the lease with its workflow (exists,
+                // non-terminal, still this claim); a cascade in this window aborts.
+                if (!(yield* runnerLease.confirm(dagID, token))) return
                 runtimes.set(dagID, entry)
                 yield* automation.register(SessionID.make(wf.sessionId), { kind: "dag", id: dagID })
                 yield* entry.evalLock.withPermits(1)(
@@ -1349,7 +1393,10 @@ const serviceLayer = Layer.effect(
                     yield* checkCompletion(dagID)
                   }),
                 )
-              }).pipe(Effect.ensuring(Effect.sync(() => recovering.delete(dagID))))
+              }).pipe(
+                Effect.onExit(() => runnerLease.abandon(dagID, claimed)),
+                Effect.ensuring(Effect.sync(() => recovering.delete(dagID))),
+              )
             }).pipe(guarded("WorkflowStarted")),
           ),
           Effect.forkScoped({ startImmediately: true }),
@@ -2244,7 +2291,7 @@ const serviceLayer = Layer.effect(
                 // durable rows stay running/paused/stepping with dead attempts
                 // and nothing ever schedules them again. recoverWorkflow keeps
                 // its own guards (directory ownership, runtimes/recovering
-                // reservations, tryClaimAdoption) and reconciles dead attempts
+                // reservations, the runner lease claim) and reconciles dead attempts
                 // with attempt identity, pausing on invented failures.
                 const moved = yield* store.listBySession(sessionID)
                 for (const wf of moved) {
@@ -2374,6 +2421,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(Database.defaultLayer),
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(DagStore.defaultLayer),
+  Layer.provide(DagLease.defaultLayer),
   Layer.provide(DagMessages.defaultLayer),
   Layer.provide(Dag.defaultLayer),
   Layer.provide(Agent.defaultLayer),
@@ -2389,6 +2437,7 @@ export const node = LayerNode.make(layer, [
   Database.node,
   EventV2Bridge.node,
   DagStore.node,
+  DagLease.node,
   DagMessages.node,
   Dag.node,
   Agent.node,
