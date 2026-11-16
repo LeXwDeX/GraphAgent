@@ -140,6 +140,37 @@ describe("blocks-form extend gating (live review decision)", () => {
   })
 })
 
+describe("a review block that follows a live checkpoint", () => {
+  it("lands gated by the checkpoint it follows, and leaves the workflow running", async () => {
+    const dir = repo()
+    await run(
+      Effect.gen(function* () {
+        yield* seed([["ses_gating", dir]])
+        const id = workflowID((yield* start(caller(dir), writeSpec(reviewBase))).output)
+        const landed = yield* extend(
+          caller(dir),
+          id,
+          writeSpec({
+            objective: "A second look",
+            blocks: [{ id: "second-look", kind: "review", depends_on: ["decision"] }],
+          }),
+        )
+        // Two lanes and the arbitration node.
+        expect(landed.title).toBe("Workflow extended: 3 nodes added")
+        const stored = yield* storedNodes(id)
+        for (const added of ["second-look--standards", "second-look--intent", "second-look"]) {
+          const entry = stored.find((candidate) => candidate.id === added)
+          expect(entry?.condition, added).toBe('decision.output.verdict == "ACCEPT"')
+          // A condition reads direct dependencies only, so the checkpoint must be one of them.
+          expect(entry?.depends_on, added).toContain("decision")
+        }
+        // The runtime seam did not reject and park the workflow.
+        expect((yield* (yield* DagStore.Service).getWorkflow(id))?.status).toBe("running")
+      }),
+    )
+  })
+})
+
 describe("live-graph aware compilation (authoring)", () => {
   const liveDecision = (terminal: boolean): { definition: NodeConfig; terminal: boolean } => ({
     terminal,
@@ -224,6 +255,28 @@ describe("live-graph aware compilation (authoring)", () => {
     ).toBe(true)
     expect(result.errors.every((entry) => entry.suggested_fragment === undefined)).toBe(true)
   })
+
+  // A condition is evaluated against the node's direct dependencies only; one
+  // that reads a node outside depends_on silently resolves to nothing, so the
+  // runtime refuses it. Whichever node a block compiles into must keep the gate
+  // it reads among its dependencies.
+  const KINDS = ["explore", "plan", "prototype", "debug", "coding", "verify", "review", "synthesize"] as const
+  for (const kind of KINDS) {
+    for (const gate of ["decision", "checks"] as const) {
+      it(`a ${kind} block after the live ${gate === "decision" ? "review decision" : "verification gate"} reads it through depends_on`, async () => {
+        const result = await prepare({ objective: "Continue", blocks: [{ id: "next", kind, depends_on: [gate] }] }, [
+          gate === "decision" ? liveDecision(false) : liveVerification(false),
+        ])
+        const nodes = only(result)
+        const gated = nodes.filter((entry) => entry.condition !== undefined)
+        expect(gated.length, "every block kind is gated on the live checkpoint").toBeGreaterThan(0)
+        expect(DagValidation.conditionReferenceErrors(nodes)).toEqual([])
+        // The checkpoint's own dependents are all gated: the merged-graph gate has nothing to refuse.
+        for (const entry of nodes.filter((candidate) => candidate.depends_on.includes(gate)))
+          expect(entry.condition, entry.id).toContain(`${gate}.output.verdict`)
+      })
+    }
+  }
 
   it("refuses a block that depends on two live gates with one fix", async () => {
     const result = await prepare(
@@ -328,6 +381,76 @@ describe("nodes-form extend: suggested_fragment", () => {
         expect(retrySignal(text).suggested_fragment).toBeUndefined()
       }),
     )
+  })
+})
+
+// The mechanical repair for a checkpoint with no output_schema declares the
+// verdict contract. That only satisfies gates that read the verdict it
+// enumerates; applied to a gate that reads anything else, the dependents would be
+// skipped silently, which is worse than the error.
+describe("a schema repair that would not satisfy the gates is not offered", () => {
+  const prepare = (nodes: unknown[]) =>
+    Effect.runPromise(
+      WorkflowAuthoring.make().prepare({
+        action: "extend",
+        source: { kind: "inline", value: { nodes }, source: "<t>" },
+      }),
+    )
+  const checkpoint = node("gate", [], { report_to_parent: true })
+  const schemaGate = (errors: Awaited<ReturnType<typeof prepare>>["errors"]) =>
+    errors.find((entry) => entry.message.includes("declares no output_schema"))
+
+  it("offers the verdict schema when every gate reads a verdict value it enumerates", async () => {
+    const result = await prepare([
+      checkpoint,
+      node("after", ["gate"], { condition: 'gate.output.verdict == "ACCEPT"' }),
+      node("later", ["gate"], { condition: 'gate.output.verdict != "BLOCKED"' }),
+    ])
+    expect(schemaGate(result.errors)?.suggested_fragment?.nodes).toEqual([
+      { id: "gate", output_schema: expect.objectContaining({ required: ["verdict", "summary"] }) },
+    ])
+  })
+
+  it("offers nothing when a gate reads another field, and names the field", async () => {
+    const result = await prepare([checkpoint, node("after", ["gate"], { condition: "gate.output.ready == true" })])
+    const error = schemaGate(result.errors)
+    expect(error).toBeDefined()
+    expect(error?.suggested_fragment).toBeUndefined()
+    expect(error?.hint).toContain("`ready`")
+    expect(error?.hint).toContain("declare an output_schema that provides")
+  })
+
+  it("offers nothing when a gate reads a verdict value the schema does not enumerate", async () => {
+    const result = await prepare([
+      checkpoint,
+      node("after", ["gate"], { condition: 'gate.output.verdict == "continue"' }),
+    ])
+    const error = schemaGate(result.errors)
+    expect(error?.suggested_fragment).toBeUndefined()
+    expect(error?.hint).toContain("`verdict`")
+  })
+
+  it("does not gate an ungated sibling with a schema that breaks the gate its sibling already has", async () => {
+    const result = await prepare([
+      checkpoint,
+      node("ready-path", ["gate"], { condition: "gate.output.ready == true" }),
+      node("loose", ["gate"]),
+    ])
+    const grouped = result.errors.find((entry) => entry.message.includes("not gated on its output"))
+    expect(grouped).toBeDefined()
+    expect(grouped?.suggested_fragment).toBeUndefined()
+    expect(grouped?.hint).toContain("`ready`")
+    // No patch anywhere, so the retry signal says so instead of offering a half fix.
+    expect(result.errors.every((entry) => entry.suggested_fragment === undefined)).toBe(true)
+  })
+
+  it("keeps offering the full repair when nothing else reads the checkpoint", async () => {
+    const result = await prepare([checkpoint, node("loose", ["gate"])])
+    const grouped = result.errors.find((entry) => entry.message.includes("not gated on its output"))
+    expect(grouped?.suggested_fragment?.nodes).toEqual([
+      { id: "gate", output_schema: expect.objectContaining({ required: ["verdict", "summary"] }) },
+      { id: "loose", condition: 'gate.output.verdict == "ACCEPT"' },
+    ])
   })
 })
 

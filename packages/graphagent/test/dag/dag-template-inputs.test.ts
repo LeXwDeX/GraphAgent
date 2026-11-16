@@ -279,6 +279,46 @@ describe("supplying inputs", () => {
   })
 })
 
+// A sample must satisfy the field it fills, not only the declared type, or a
+// template whose real callers pass valid values is judged unstartable.
+describe("sample values follow the field they fill", () => {
+  const sampled = (inputs: unknown, config: Record<string, unknown>) =>
+    instantiate(spec(inputs, config), { kind: "sample" }).value
+
+  it("gives a required list an element of the shape the field takes", () => {
+    expect(sampled({ objective: {}, acceptance: { type: "array" } }, { acceptance: "{{acceptance}}" })).toMatchObject({
+      config: { acceptance: [{ id: "sample", text: "sample" }] },
+    })
+  })
+
+  it("takes an allowed value for a string field that only allows some, and a number for a numeric one", () => {
+    expect(
+      sampled({ objective: {}, gate: {}, width: { type: "number" } }, { review_gate: "{{gate}}", max_concurrency: "{{width}}" }),
+    ).toMatchObject({ config: { review_gate: "strict", max_concurrency: 1 } })
+  })
+
+  it("leaves a list of plain references empty: any element would name a block that is not there", () => {
+    expect(
+      sampled(
+        { objective: {}, after: { type: "array" } },
+        { blocks: [{ id: "scan", kind: "explore" }, { id: "next", kind: "explore", depends_on: "{{after}}" }] },
+      ),
+    ).toMatchObject({ config: { blocks: [{ id: "scan" }, { id: "next", depends_on: [] }] } })
+  })
+
+  it("keeps the type sample where the placeholder sits inside text or the field is not known", () => {
+    expect(
+      sampled({ objective: {}, paths: { type: "array" } }, { objective: "Scope: {{paths}}", unknown_field: "{{paths}}" }),
+    ).toMatchObject({ config: { objective: "Scope: (none)", unknown_field: [] } })
+  })
+
+  it("never replaces a declared default", () => {
+    expect(
+      sampled({ objective: {}, acceptance: { type: "array", default: [{ id: "AC9", text: "kept" }] } }, { acceptance: "{{acceptance}}" }),
+    ).toMatchObject({ config: { acceptance: [{ id: "AC9", text: "kept" }] } })
+  })
+})
+
 describe("the Workflow Authoring Check", () => {
   const source = (document: unknown) => ({ kind: "inline" as const, value: document, source: "<template>" })
   const prepare = (document: unknown, template?: DagTemplateInputs.Supply) =>

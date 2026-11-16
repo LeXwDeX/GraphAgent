@@ -46,7 +46,14 @@ an error too.
 
 **3. A template is judged with sample values where no call exists.** `spec list`,
 `spec read`, and the template CI (`script/dag-template-validation.ts`) stand a
-sample in for each required input. The CI additionally requires a template that
+sample in for each required input. A sample follows the field it fills
+(`template-sample.ts` reads the start document's own schema and takes the
+smallest value that field accepts: one `{ id, text }` element for `acceptance`,
+an allowed string for `review_gate`), so a constraint on an input's value, such
+as the acceptance items a strict writer needs, is not taken for a defect of the
+template. A list of plain strings stays empty, since any element would name
+something that is not there, and what no schema states (an absolute path) needs
+a default on the input to be judged. The CI additionally requires a template that
 declares inputs to start from `objective` alone, which is what "every curated
 template starts from the request" means; a template with no inputs gets a
 warning, not a failure, so the curated set can adopt `inputs` without blocking a
@@ -66,7 +73,11 @@ binding as a dependent of an in-document review block. A checkpoint that has
 settled is never gated: the parent has read its verdict, and gating the repair
 wave on `ACCEPT` would skip it after a `REVISE`, which breaks the reopen-extend
 flow (ADR-0003). A block that depends on two gates is refused (one condition
-reads one dependency).
+reads one dependency). A condition reads direct dependencies only, so the
+arbitration node of a review block lists the gate its condition reads among its
+dependencies, as its lanes do through the block's own `depends_on`; this also
+lets a review follow another review inside one start document, which used to be
+an authoring error.
 
 **6. A rejected nodes fragment says how to fix it.** The merged-graph checkpoint
 gate that `Dag.extend` enforces at the runtime seam is also run at authoring, on
@@ -74,7 +85,11 @@ the fragment's own dependents, so the rejection arrives before anything is
 parked. A grouped gate diagnostic carries `suggested_fragment`: node patches
 merged by id (`condition` and `skip_ok` for the dependents, `output_schema` for a
 checkpoint with no contract), built only when every ungated dependent can be
-repaired by adding one condition. The tool renders it as a structured retry
+repaired by adding one condition. The verdict schema is offered as a missing
+contract only when it provides what the gates already on the checkpoint read
+(`verdict`, compared with `==` or `!=` to `ACCEPT`, `REVISE`, `REJECT`, or
+`BLOCKED`); for any other gate no patch is given and the hint names the fields
+the gates read, so the caller declares a schema that provides them. The tool renders it as a structured retry
 signal. A dependent that already has a condition, one that depends on a second
 reporting checkpoint, or a checkpoint whose declared contract has no "carry on"
 verdict gets no patch; the options in the hint remain. A blocks document has no

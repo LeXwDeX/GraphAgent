@@ -28,6 +28,7 @@
  */
 
 import { isRecord } from "@/util/record"
+import { DagTemplateSample } from "./template-sample"
 import { DagValidation } from "./validation"
 
 export type InputType = DagValidation.TemplateInputType
@@ -184,19 +185,41 @@ interface State {
   readonly values: ReadonlyMap<string, unknown>
   readonly used: Set<string>
   readonly origins: Origin[]
+  /** Sample mode: the declared type of each input whose value is only a stand-in. */
+  readonly standIns: ReadonlyMap<string, InputType>
 }
 
-function substituteText(text: string, path: string, state: State): unknown {
+/** Object keys and list indexes from the document root to a value. */
+type Trail = readonly (string | number)[]
+
+/** The path as a decode diagnostic spells it: `["config"]["acceptance"][0]`. */
+const pathOf = (trail: Trail) =>
+  trail.map((segment) => (typeof segment === "number" ? `[${segment}]` : `[${JSON.stringify(segment)}]`)).join("")
+
+/** The value an input takes in a field that is exactly its placeholder. A
+ * stand-in follows the field it fills (`DagTemplateSample`), as long as it is
+ * still a value of the input's declared type; anything supplied or defaulted is
+ * used as it is. */
+function valueAt(name: string, trail: Trail, state: State): unknown {
+  const type = state.standIns.get(name)
+  if (type === undefined) return state.values.get(name)
+  const fitted = DagTemplateSample.sampleAt(trail)
+  return fitted !== undefined && matches(type, fitted) ? fitted : state.values.get(name)
+}
+
+function substituteText(text: string, trail: Trail, state: State): unknown {
   const whole = WHOLE_PLACEHOLDER.exec(text)
   if (whole && state.values.has(whole[1])) {
-    const value = state.values.get(whole[1])
-    state.used.add(whole[1])
+    const name = whole[1]
+    state.used.add(name)
+    const value = valueAt(name, trail, state)
     // A whole-field placeholder keeps the input's own type, so an array input
     // can fill an array field.
     if (typeof value !== "string") {
-      state.origins.push({ path, input: whole[1] })
+      state.origins.push({ path: pathOf(trail), input: name })
       return value
     }
+    if (state.standIns.has(name)) return value
   }
   return text.replace(PLACEHOLDER, (match, key: string) => {
     if (!state.values.has(key)) return match
@@ -205,12 +228,12 @@ function substituteText(text: string, path: string, state: State): unknown {
   })
 }
 
-function substitute(value: unknown, path: string, state: State): unknown {
-  if (typeof value === "string") return substituteText(value, path, state)
-  if (Array.isArray(value)) return value.map((item, index) => substitute(item, `${path}[${index}]`, state))
+function substitute(value: unknown, trail: Trail, state: State): unknown {
+  if (typeof value === "string") return substituteText(value, trail, state)
+  if (Array.isArray(value)) return value.map((item, index) => substitute(item, [...trail, index], state))
   if (isRecord(value))
     return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [key, substitute(child, `${path}[${JSON.stringify(key)}]`, state)]),
+      Object.entries(value).map(([key, child]) => [key, substitute(child, [...trail, key], state)]),
     )
   return value
 }
@@ -273,6 +296,7 @@ export function instantiate(document: unknown, supply?: Supply): Outcome {
       problem(name, `input "${name}" is not declared by this spec`, "Remove it from inputs, or declare it in the spec")
 
   const values = new Map<string, unknown>()
+  const standIns = new Map<string, InputType>()
   const supplied: string[] = []
   const defaulted: string[] = []
   for (const declaration of declared.declarations) {
@@ -294,6 +318,7 @@ export function instantiate(document: unknown, supply?: Supply): Outcome {
       defaulted.push(name)
     } else if (supply?.kind === "sample") {
       values.set(name, sampleOf(type))
+      standIns.set(name, type)
     } else {
       problem(
         name,
@@ -305,8 +330,8 @@ export function instantiate(document: unknown, supply?: Supply): Outcome {
   if (diagnostics.length > 0) return fail(diagnostics)
 
   const { inputs: _declarations, ...rest } = document
-  const state: State = { values, used: new Set(), origins: [] }
-  const value = substitute(rest, "", state)
+  const state: State = { values, used: new Set(), origins: [], standIns }
+  const value = substitute(rest, [], state)
   const unused = declared.declarations.filter((declaration) => !state.used.has(declaration.name))
   return {
     value,

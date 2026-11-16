@@ -550,6 +550,9 @@ function compileBlock(
     : liveGate
       ? `${liveGate.id}.output.verdict == "${liveGate.verdict}"`
       : undefined
+  // The node `condition` reads. A condition is evaluated against a node's direct
+  // dependencies only, so every node that carries it must list this one.
+  const gateReference = reviewDependency ?? liveGate?.id
   const drivesFanOut = block.kind === "plan" && blocks.some((candidate) => candidate.fan_out === block.id)
 
   if (block.kind === "debug") {
@@ -640,7 +643,14 @@ function compileBlock(
         id: block.id,
         name: `${block.id}: review decision`,
         workerType: block.worker_type ?? "auditor",
-        dependencies: [...laneIDs, ...(route ? [route.verificationID] : [])],
+        // The arbitration reads the same gate its lanes do: the route's
+        // verification, or else the checkpoint the block follows. The lanes
+        // already depend on it through the block's own depends_on; the
+        // decision depends on the lanes, so it names the gate itself.
+        dependencies: [
+          ...laneIDs,
+          ...(route ? [route.verificationID] : gateReference !== undefined ? [gateReference] : []),
+        ],
         objective,
         instruction: block.instruction,
         contract: [

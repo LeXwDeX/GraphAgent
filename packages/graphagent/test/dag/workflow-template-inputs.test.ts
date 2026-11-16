@@ -191,6 +191,95 @@ describe("run.start { spec_path, inputs } on a builtin stage spec", () => {
   })
 })
 
+// A template is judged on its own with sample values for its required inputs.
+// A sample that breaks a constraint on the input's value is no defect of the
+// template: a strict writer needs 1-50 acceptance items, and the empty list a
+// required `array` input used to be sampled as made every such template look
+// unstartable.
+describe("judging a template on its own", () => {
+  const strictWriter = (blocks: string[]) =>
+    [
+      "inputs:",
+      "  objective: {}",
+      "  acceptance: { type: array }",
+      "config:",
+      "  name: strict-writer",
+      "  review_gate: strict",
+      '  objective: "Ship it. Request: {{objective}}"',
+      '  acceptance: "{{acceptance}}"',
+      "  blocks:",
+      ...blocks,
+      "",
+    ].join("\n")
+
+  const WRITER = ["    - id: impl", "      kind: coding"]
+  const VERIFY = ["    - id: checks", "      kind: verify", "      depends_on: [impl]"]
+  // The strict gate also wants a required final gate behind the review decision.
+  const REVIEW = [
+    "    - id: decision",
+    "      kind: review",
+    "      depends_on: [checks]",
+    "      lenses: [standards, intent, completeness]",
+    "    - id: final",
+    "      kind: synthesize",
+    "      depends_on: [decision]",
+  ]
+
+  const withLibrary = <E, R>(files: Record<string, string>, body: (dir: string) => Effect.Effect<void, E, R>) =>
+    Effect.gen(function* () {
+      const dir = repo()
+      yield* seed([["ses_template", dir]])
+      mkdirSync(path.join(dir, ".agents", "workflows"), { recursive: true })
+      for (const [name, content] of Object.entries(files))
+        writeFileSync(path.join(dir, ".agents", "workflows", `${name}.yaml`), content)
+      yield* body(dir)
+    })
+
+  it("does not call a strict writer template with a required acceptance list unstartable", async () => {
+    await withEmptyGlobalConfig(() =>
+      run(
+        withLibrary({ "strict-writer": strictWriter([...WRITER, ...VERIFY, ...REVIEW]) }, (dir) =>
+          Effect.gen(function* () {
+            const listing = (yield* list(caller(dir))).output
+            expect(listing).toContain("strict-writer [project]")
+            expect(listing).toContain("inputs: objective*, acceptance:array*")
+            expect(listing).not.toContain("[invalid")
+            const payload = Schema.decodeUnknownSync(ReadPayload)(
+              JSON.parse((yield* read(caller(dir), "strict-writer")).output),
+            )
+            expect(payload.validation).toEqual({ valid: true, errors: [] })
+            // The template starts once the caller supplies what it requires.
+            const result = yield* start(caller(dir), "strict-writer", {
+              objective: "Make it durable",
+              acceptance: [{ id: "AC1", text: "It survives a restart" }],
+            })
+            expect(result.title).toBe("Workflow started: strict-writer")
+          }),
+        ),
+      ),
+    )
+  })
+
+  it("still flags a real structural defect of the template", async () => {
+    await withEmptyGlobalConfig(() =>
+      run(
+        // The writer has no review behind it: a defect whatever acceptance the caller passes.
+        withLibrary({ "unreviewed-writer": strictWriter([...WRITER, ...VERIFY]) }, (dir) =>
+          Effect.gen(function* () {
+            const listing = (yield* list(caller(dir))).output
+            expect(listing).toContain("unreviewed-writer [project] [invalid — not startable]")
+            expect(listing).toContain('Writer block "impl" has no downstream review gate')
+            const payload = Schema.decodeUnknownSync(ReadPayload)(
+              JSON.parse((yield* read(caller(dir), "unreviewed-writer")).output),
+            )
+            expect(payload.validation.valid).toBe(false)
+          }),
+        ),
+      ),
+    )
+  })
+})
+
 describe("spec list, read, and validate for templates", () => {
   it("lists the declared inputs of each stage spec and how to start one", async () => {
     const dir = repo()

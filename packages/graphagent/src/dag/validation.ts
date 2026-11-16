@@ -30,7 +30,7 @@ import { DEFAULT_WORKFLOW_CONFIG } from "./dag"
 import { DagBlocks } from "./blocks"
 import { AdmissionInput, ExecutionMode } from "./admission"
 import { strictReviewCoverageErrors, validateReviewLifecycle } from "./review-lifecycle"
-import { conditionReference, conditionSyntaxError, parseInputMappingReference } from "./runtime/eval"
+import { conditionRead, conditionReference, conditionSyntaxError, parseInputMappingReference } from "./runtime/eval"
 import { unsupportedSchemaKeywords } from "./runtime/capture"
 import { placeholderKeys, templateSourceById } from "./templates/resolve"
 import { DagLocation } from "./location"
@@ -629,10 +629,17 @@ export function mixedGraphDiagnostic(
   const blocks = sourceEntries(graph, "blocks")
   const nodes = sourceEntries(graph, "nodes")
   const kept: "blocks" | "nodes" =
-    blocks > 0 && nodes === 0 ? "blocks" : nodes > 0 && blocks === 0 ? "nodes" : liveForm === "nodes" ? "nodes" : "blocks"
+    blocks > 0 && nodes === 0
+      ? "blocks"
+      : nodes > 0 && blocks === 0
+        ? "nodes"
+        : liveForm === "nodes"
+          ? "nodes"
+          : "blocks"
   const dropped = kept === "blocks" ? "nodes" : "blocks"
   const droppedEntries = kept === "blocks" ? nodes : blocks
-  const second = action === "start" ? "extend document after the workflow has started" : `${action} document after this one lands`
+  const second =
+    action === "start" ? "extend document after the workflow has started" : `${action} document after this one lands`
   return diagnostic({
     code: DIAGNOSTIC_CODES.schemaInvalid,
     path: action === "start" ? "config" : action === "replan" ? "fragment" : "$",
@@ -1218,6 +1225,37 @@ export interface CheckpointGateOptions {
 
 const GATE_NODE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
 
+/** One gate on a checkpoint, as the evaluator reads it. */
+type GateRead = NonNullable<ReturnType<typeof conditionRead>>
+
+/** Whether the documented verdict schema gives a gate what it reads: the
+ * `verdict` field, compared for equality with a value that schema enumerates. */
+function verdictSchemaProvides(read: GateRead): boolean {
+  const verdicts: readonly string[] = DagBlocks.CHECKPOINT_VERDICT_SCHEMA.properties.verdict.enum
+  return (
+    read.field === "verdict" &&
+    (read.op === "==" || read.op === "!=") &&
+    typeof read.value === "string" &&
+    verdicts.includes(read.value)
+  )
+}
+
+/** The gates already on a checkpoint that the verdict schema would not satisfy. */
+function uncoveredGateReads(nodes: readonly NodeConfig[], checkpointID: string): GateRead[] {
+  return nodes
+    .filter((node) => node.depends_on.includes(checkpointID))
+    .flatMap((node) => {
+      const read = conditionRead(node.condition)
+      return read?.node === checkpointID && !verdictSchemaProvides(read) ? [read] : []
+    })
+}
+
+/** The output fields a set of gates read, as a hint names them. */
+function readFields(reads: readonly GateRead[]) {
+  const fields = reads.map((read) => (read.field === "" ? "output" : read.field))
+  return [...new Set(fields)].map((field) => `\`${field}\``).join(", ")
+}
+
 /**
  * The patches that gate every ungated dependent of one reporting checkpoint, or
  * undefined when no mechanical repair is safe. A condition reads exactly one
@@ -1231,10 +1269,16 @@ function checkpointGateSuggestion(input: {
   ungated: readonly NodeConfig[]
   reportingCheckpointIds: ReadonlySet<string>
   patchable: (id: string) => boolean
+  /** Gates already reading this checkpoint that the verdict schema would not satisfy. */
+  uncoveredReads: readonly GateRead[]
   defaults?: { readonly required?: boolean }
 }): SuggestedFragment | undefined {
   const { checkpoint, ungated } = input
   if (!GATE_NODE_ID.test(checkpoint.id) || ungated.length === 0) return undefined
+  // The verdict schema stands in for a missing contract only when it provides
+  // what the gates already on this checkpoint read; otherwise applying it would
+  // skip their dependents silently.
+  if (checkpoint.output_schema === undefined && input.uncoveredReads.length > 0) return undefined
   for (const dependent of ungated) {
     if (!input.patchable(dependent.id)) return undefined
     if (dependent.condition !== undefined && dependent.condition.trim() !== "") return undefined
@@ -1289,6 +1333,9 @@ function checkpointGateFindings(
   const patchable = (id: string) => options?.form !== "blocks" && (options?.patchableIds?.has(id) ?? true)
   return nodes.flatMap((checkpoint) => {
     if (!reportingCheckpointIds.has(checkpoint.id)) return []
+    // Gates already on a checkpoint with no contract: the verdict schema must not
+    // be offered as its contract when they read something else.
+    const uncovered = checkpoint.output_schema === undefined ? uncoveredGateReads(nodes, checkpoint.id) : []
     const dependents = nodes.filter(
       (dependent) =>
         dependent.depends_on.includes(checkpoint.id) &&
@@ -1301,6 +1348,7 @@ function checkpointGateFindings(
       ungated,
       reportingCheckpointIds,
       patchable,
+      uncoveredReads: uncovered,
       defaults,
     })
     const grouped =
@@ -1317,7 +1365,7 @@ function checkpointGateFindings(
               hint:
                 options?.form === "blocks"
                   ? blocksCheckpointHint(checkpoint.id)
-                  : `${fixes.join("\n")}\n` +
+                  : `${uncovered.length > 0 ? `The gates already on "${checkpoint.id}" read ${readFields(uncovered)}, so give it an output_schema that provides them rather than the verdict shape.\n` : ""}${fixes.join("\n")}\n` +
                     `Keep "${checkpoint.id}" a reporting leaf (drop its dependents), or set report_to_parent: false on "${checkpoint.id}" if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
               ...(suggestion ? { suggested_fragment: suggestion } : {}),
             }),
@@ -1340,10 +1388,16 @@ function checkpointGateFindings(
                 `reporting checkpoint "${checkpoint.id}" is gated on its output but declares no output_schema` +
                 ` — without a schema the child may complete with prose that resolves no fields, leaving the gate permanently false and silently skipping the gated subtree`,
               hint:
-                `Declare output_schema on "${checkpoint.id}" (e.g. the verdict shape),` +
+                (uncovered.length > 0
+                  ? `The gates on "${checkpoint.id}" read ${readFields(uncovered)}; declare an output_schema that provides ${readFields(uncovered)} (the documented verdict schema does not),`
+                  : `Declare output_schema on "${checkpoint.id}" (e.g. the verdict shape),`) +
                 ` keep "${checkpoint.id}" a reporting leaf, or set report_to_parent: false if downstream must run unconditionally — ${CHECKPOINT_WEAKENING}`,
-              ...(patchable(checkpoint.id)
-                ? { suggested_fragment: { nodes: [{ id: checkpoint.id, output_schema: DagBlocks.CHECKPOINT_VERDICT_SCHEMA }] } }
+              ...(patchable(checkpoint.id) && uncovered.length === 0
+                ? {
+                    suggested_fragment: {
+                      nodes: [{ id: checkpoint.id, output_schema: DagBlocks.CHECKPOINT_VERDICT_SCHEMA }],
+                    },
+                  }
                 : {}),
             }),
           ]
