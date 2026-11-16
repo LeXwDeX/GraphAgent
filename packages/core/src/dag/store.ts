@@ -331,8 +331,6 @@ export interface Interface {
   readonly getRunningNodes: (workflowId: string) => Effect.Effect<NodeRow[]>
   readonly setCapturedOutput: (childSessionID: string, payload: unknown, snapshotID?: string) => Effect.Effect<void>
 
-  readonly markNodeWakeReported: (workflowId: string, nodeID: string) => Effect.Effect<void>
-  readonly markWorkflowWakeReported: (dagID: string) => Effect.Effect<void>
   readonly markWakeBatchReported: (batch: WakeBatch) => Effect.Effect<void>
   readonly getWakeSnapshot: (sessionID: string) => Effect.Effect<WakeSnapshot>
   readonly getUnreportedWakeNodes: (sessionID: string) => Effect.Effect<NodeRow[]>
@@ -656,24 +654,6 @@ export const layer = Layer.effect(
           .update(WorkflowNodeTable)
           .set({ captured_output: payload, captured_output_present: true, captured_snapshot_id: snapshotID ?? null })
           .where(and(eq(WorkflowNodeTable.child_session_id, childSessionID), eq(WorkflowNodeTable.status, "running")))
-          .run()
-          .pipe(Effect.orDie)
-      }),
-
-      markNodeWakeReported: Effect.fn("DagStore.markNodeWakeReported")(function* (workflowId, nodeID) {
-        yield* db
-          .update(WorkflowNodeTable)
-          .set({ wake_reported: true })
-          .where(and(eq(WorkflowNodeTable.workflow_id, workflowId), eq(WorkflowNodeTable.id, nodeID)))
-          .run()
-          .pipe(Effect.orDie)
-      }),
-
-      markWorkflowWakeReported: Effect.fn("DagStore.markWorkflowWakeReported")(function* (dagID) {
-        yield* db
-          .update(WorkflowTable)
-          .set({ wake_reported: true })
-          .where(eq(WorkflowTable.id, dagID))
           .run()
           .pipe(Effect.orDie)
       }),
