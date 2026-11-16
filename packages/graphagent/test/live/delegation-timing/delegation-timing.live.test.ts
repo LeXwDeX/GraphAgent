@@ -7,11 +7,12 @@
  * It is skipped unless `GRAPHAGENT_LIVE_EVAL=1`, so neither `bun turbo test` nor
  * the package test script ever calls a model. Run it from `packages/graphagent`:
  *
- *   GRAPHAGENT_LIVE_EVAL=1 bun test test/live/delegation-timing/delegation-timing.live.test.ts
+ *   GRAPHAGENT_LIVE_EVAL=1 GRAPHAGENT_LIVE_EVAL_CONFIG=<path to graphagent.json> \
+ *     bun test test/live/delegation-timing/delegation-timing.live.test.ts
  *
  * Optional environment:
  *
- * - GRAPHAGENT_LIVE_EVAL_CONFIG       config to read the provider from (default: the user-level graphagent.json under XDG_CONFIG_HOME)
+ * - GRAPHAGENT_LIVE_EVAL_CONFIG       config to read the provider from (required; the test preload sandboxes XDG_CONFIG_HOME)
  * - GRAPHAGENT_LIVE_EVAL_MODELS       comma-separated provider/model ids; default: every configured QWEN, GLM or
  *                                     DeepSeek model (other families are refused)
  * - GRAPHAGENT_LIVE_EVAL_ROUNDS       rounds per model (default 3)

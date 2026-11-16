@@ -369,6 +369,8 @@ function gitKind(args: readonly string[]): ShellKind {
   }
   const sub = rest.shift()
   if (sub === undefined) return "read"
+  // `diff`, `show`, `log` and others can write their output to a file instead of stdout.
+  if (rest.some((arg) => /^--output(-directory)?(=|$)/.test(arg))) return "edit"
   if (GIT_READ.has(sub)) return "read"
   if (GIT_WRITE.has(sub)) return "edit"
   const flags = rest.filter((arg) => arg.startsWith("-"))

@@ -52,7 +52,26 @@ const HOOK_ENTRY = path.join(HERE, "hook.ts")
 
 export const DEFAULT_STEP_CAP = 8
 const HOST_READY_MS = 60_000
-const ALLOW_ALL = [{ permission: "*", pattern: "*", action: "allow" }]
+/**
+ * The evaluation session's own rules. Session rules are appended after the configured ones and the last
+ * match wins, so a bare wildcard allow here would override the configured `external_directory` denial.
+ * The denial is therefore restated after it: nothing outside the workspace is reachable apart from the
+ * runtime's truncated tool output in the temporary home.
+ */
+function sessionPermission(home: string) {
+  return [
+    { permission: "*", pattern: "*", action: "allow" },
+    { permission: "external_directory", pattern: "*", action: "deny" },
+    {
+      permission: "external_directory",
+      pattern: path.join(home, ".local/share/graphagent/tool-output/*"),
+      action: "allow",
+    },
+  ]
+}
+
+/** A model ID as one path component: provider model IDs may contain `/`. */
+const fileSafe = (value: string) => value.replace(/[^A-Za-z0-9._-]/g, "_")
 
 export type Family = "qwen" | "glm" | "deepseek"
 
@@ -728,7 +747,7 @@ async function observe(
   dir: string,
   api: ReturnType<typeof client>,
 ): Promise<Observation> {
-  const session = await api("/session", { body: { title: scenario.id, permission: ALLOW_ALL } })
+  const session = await api("/session", { body: { title: scenario.id, permission: sessionPermission(ctx.home) } })
   const sessionID = isRecord(session) ? text(session.id) : undefined
   if (!sessionID) throw new Error("the session was not created")
   const model = { providerID: ctx.model.providerID, modelID: ctx.model.modelID }
@@ -807,7 +826,7 @@ async function attempt(ctx: RunContext, scenario: Scenario, number: number): Pro
     const changed = (await workspaceDigest(dir)) !== before
     if (ctx.transcripts) {
       await fs.writeFile(
-        path.join(ctx.transcripts, `${ctx.model.modelID}-r${ctx.round}-${scenario.id}-${number}.json`),
+        path.join(ctx.transcripts, `${fileSafe(ctx.model.modelID)}-r${ctx.round}-${scenario.id}-${number}.json`),
         JSON.stringify(digest(messages), null, 2),
       )
     }
@@ -861,6 +880,14 @@ export interface EvalOptions {
   readonly keep: boolean
 }
 
+function requiredConfig(value: string | undefined): string {
+  if (value) return value
+  throw new Error(
+    "GRAPHAGENT_LIVE_EVAL_CONFIG must name the graphagent.json(c) to read the providers from; " +
+      "the test preload sandboxes XDG_CONFIG_HOME, so it cannot be found by default",
+  )
+}
+
 export function optionsFromEnv(env: Record<string, string | undefined>): EvalOptions {
   const number = (name: string, fallback: number) => {
     const value = Number(env[name])
@@ -872,9 +899,9 @@ export function optionsFromEnv(env: Record<string, string | undefined>): EvalOpt
       .map((item) => item.trim())
       .filter(Boolean)
   return {
-    configFile:
-      env.GRAPHAGENT_LIVE_EVAL_CONFIG ||
-      path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "graphagent", "graphagent.json"),
+    // Required: the package's test preload points XDG_CONFIG_HOME at a sandbox before this runs, so no
+    // default derived from the environment would find the user's configuration.
+    configFile: requiredConfig(env.GRAPHAGENT_LIVE_EVAL_CONFIG),
     models: list("GRAPHAGENT_LIVE_EVAL_MODELS"),
     rounds: number("GRAPHAGENT_LIVE_EVAL_ROUNDS", 3),
     concurrency: number("GRAPHAGENT_LIVE_EVAL_CONCURRENCY", 4),
