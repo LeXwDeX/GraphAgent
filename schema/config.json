@@ -88,6 +88,81 @@
         }
       ]
     },
+    "AgentContract": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "worker",
+            "composer"
+          ],
+          "description": "worker (default) does the work itself and is a valid task subagent. composer only plans how a DAG expands work and runs only inside a DAG, never through the task tool."
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "public",
+            "private"
+          ],
+          "description": "private (default): only the main agent, the user or a template places the agent in a graph. public: a composer may dispatch it. A public agent must be read-only; one whose permission rules allow writing is treated as private."
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "artifact": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "artifact"
+          ],
+          "additionalProperties": true,
+          "description": "The artifact type this agent produces."
+        },
+        "failure": {
+          "type": "string",
+          "enum": [
+            "skip",
+            "fail"
+          ],
+          "description": "skip: the work may be skipped when it fails. fail: its failure is the workflow's failure. Defaults to fail for agents that can write files and skip for read-only agents."
+        },
+        "compose": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "enum": [
+                "fan_out",
+                "recursive_split"
+              ],
+              "description": "How the composer expands a plan: fan_out (one layer of parallel workers) or recursive_split."
+            },
+            "dispatch": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Agents this composer may expand into. Only agents that exist, are public and are read-only when the plan is made are used."
+            },
+            "fallback": {
+              "type": "string",
+              "description": "Worker that takes the whole task when a plan cannot be expanded. Must be listed in dispatch."
+            }
+          },
+          "required": [
+            "pattern",
+            "dispatch",
+            "fallback"
+          ],
+          "additionalProperties": true,
+          "description": "Composer only: what the composer may expand into. Replaced as a whole when overridden."
+        }
+      },
+      "additionalProperties": true,
+      "description": "Declares an agent's role, visibility, artifact and failure semantics. Permissions stay in `permission`; whether an agent is read-only is derived from it."
+    },
     "AgentConfigEncoded": {
       "type": "object",
       "additionalProperties": {},
@@ -176,6 +251,9 @@
         },
         "permission": {
           "$ref": "#/$defs/PermissionConfigEncoded"
+        },
+        "contract": {
+          "$ref": "#/$defs/AgentContract"
         }
       }
     },

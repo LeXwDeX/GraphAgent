@@ -5,7 +5,7 @@ export * as DagEnvironmentCatalogs from "./environment-catalogs"
 
 import { Effect } from "effect"
 import type { Agent } from "@/agent/agent"
-import { Permission } from "@/permission"
+import { AgentContract } from "@/agent/contract"
 import type { Provider } from "@/provider/provider"
 import { DagSection } from "@/config/dag-section"
 import { Dag } from "./dag"
@@ -56,15 +56,12 @@ export const makeCatalogLoader =
       return {
         worker_types: new Set(agentCatalog.map((agent) => agent.name)),
         // #946: worktree isolation is only for agents that can edit files.
-        // `plan` keeps an edit allow-list for its plan file, so it is excluded
-        // explicitly; every other builder is judged by its permission rules.
+        // The agent contract's `public` rule (#1158) asks the same question, so
+        // both read `AgentContract.isWriterAgent`: `plan` keeps an edit
+        // allow-list for its plan file and is excluded, every other agent is
+        // judged by its effective permission rules.
         writer_types: new Set(
-          agentCatalog
-            .filter(
-              (agent) =>
-                agent.name !== "plan" && Permission.disabled(["edit", "write", "patch"], agent.permission).size === 0,
-            )
-            .map((agent) => agent.name),
+          agentCatalog.filter((agent) => AgentContract.isWriterAgent(agent)).map((agent) => agent.name),
         ),
         resolveModel,
       }

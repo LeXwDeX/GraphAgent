@@ -1,4 +1,5 @@
 import { LayerNode } from "@graphagent/core/effect/layer-node"
+import { ConfigAgentV1 } from "@graphagent/core/v1/config/agent"
 import { PermissionV1 } from "@graphagent/core/v1/permission"
 import { Config } from "@/config/config"
 import { watchTrustState } from "@/project/trust/subscribe"
@@ -20,6 +21,7 @@ import PROMPT_REVIEW from "./prompt/review.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
+import { AgentContract } from "./contract"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@graphagent/core/global"
 import { PROJECT_DIR } from "@graphagent/core/brand"
@@ -60,6 +62,12 @@ export const Info = Schema.Struct({
   prompt: Schema.optional(Schema.String),
   options: Schema.Record(Schema.String, Schema.Unknown),
   steps: Schema.optional(Schema.Finite),
+  /**
+   * What the agent declares about its role, visibility, artifact and failure
+   * semantics (#1158). Declared form: fields it omits take the defaults that
+   * `AgentContract.effective` fills in.
+   */
+  contract: Schema.optional(ConfigAgentV1.Contract),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -236,6 +244,7 @@ export const layer = Layer.effect(
             options: {},
             mode: "subagent",
             native: true,
+            contract: { role: "worker", visibility: "public" },
           },
           review: {
             name: "review",
@@ -265,6 +274,9 @@ export const layer = Layer.effect(
             options: {},
             mode: "subagent",
             native: true,
+            // Serves background review; multi-lens review runs through the DAG's
+            // review lanes, so it is never a composer's dispatch target.
+            contract: { role: "worker", visibility: "private" },
           },
           auditor: {
             name: "auditor",
@@ -299,6 +311,8 @@ export const layer = Layer.effect(
             options: {},
             mode: "subagent",
             native: true,
+            // A review lane that is missing cannot be treated as if it never ran.
+            contract: { role: "worker", visibility: "public", failure: "fail" },
           },
           compaction: {
             name: "compaction",
@@ -383,6 +397,7 @@ export const layer = Layer.effect(
           item.steps = value.steps ?? item.steps
           item.options = mergeDeep(item.options, value.options ?? {})
           item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
+          item.contract = AgentContract.merge(item.contract, value.contract)
         }
 
         // Ensure Truncate.GLOB is allowed unless explicitly configured
@@ -472,6 +487,16 @@ export const layer = Layer.effect(
         const defaultAgent = Effect.fnUntraced(function* () {
           return (yield* defaultInfo()).name
         })
+
+        // Contract diagnostics (#1158), judged on the effective rules `get` and
+        // `list` return: a public agent that can write, a composer that cannot
+        // be used. The log is the catalog's diagnostic channel (as for skills);
+        // `AgentContract.diagnose` and `composerAvailability` answer the same
+        // question for callers that validate against the current catalog.
+        const catalog = yield* Effect.forEach(Object.values(agents), (agent) => hydrate(agent))
+        for (const diagnostic of AgentContract.diagnose(catalog)) {
+          yield* Effect.logWarning(diagnostic.message, { agent: diagnostic.agent, code: diagnostic.code })
+        }
 
         return {
           get,
