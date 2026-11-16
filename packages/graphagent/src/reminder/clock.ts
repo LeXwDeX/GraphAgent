@@ -131,19 +131,31 @@ export const make = Effect.gen(function* () {
    * mid-turn is dropped and the turn-end idle event delivers the notice; no
    * loaded instance only means the durable row waits for the instance's startup
    * scan or its 30s tick.
+   *
+   * The clock never waits for delivery. A nudge is the inbox's drain, and a
+   * drain waits for the claims ahead of it (a DAG delivery claim waits for the
+   * turn it admitted, up to its seven minute lease), so awaiting it here would
+   * leave every reminder behind this one, of any session or directory,
+   * `scheduled`: the inbox's fallback scan only looks for `due` rows and could
+   * not rescue a reminder the clock never moved. The nudge therefore runs in its
+   * own fiber bound to the clock's scope. A failure costs a log line and closing
+   * the scope interrupts it.
    */
   const nudge = (sessionID: string) =>
     Effect.suspend(() => {
       const route = EngineProcess.inbox.nudge
       if (!route) return Effect.void
-      return route(SessionID.make(sessionID)).pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.void
-            : Effect.logWarning("ReminderClock delivery nudge failed", { sessionID, cause: Cause.pretty(cause) }),
-        ),
-      )
-    })
+      return route(SessionID.make(sessionID))
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.void
+          : Effect.logWarning("ReminderClock delivery nudge failed", { sessionID, cause: Cause.pretty(cause) }),
+      ),
+      // Started at once, so a nudge that finishes quickly is done before the pass moves on.
+      Effect.forkIn(scope, { startImmediately: true }),
+      Effect.asVoid,
+    )
 
   const promoteOne = Effect.fnUntraced(function* (row: Store.Row, now: number) {
     const updated = yield* Store.promote(db, row, now)

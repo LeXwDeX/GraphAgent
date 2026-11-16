@@ -16,6 +16,7 @@ import {
   resetLive,
   seedSession,
   settle,
+  stubNudge,
   unique,
   watchLifecycle,
   withClock,
@@ -256,6 +257,143 @@ describe("reminder clock loop", () => {
       yield* settle
       expect((yield* edges(seen, "rmd_race")).filter((edge) => edge.to === "due")).toHaveLength(1)
       expect(nudged).toEqual([sessionID])
+      yield* resetLive
+    }),
+  )
+})
+
+describe("reminder clock delivery nudge", () => {
+  // A nudge is the inbox's drain, and a drain waits for the claims ahead of it: a DAG delivery claim
+  // waits for the turn it admitted, up to its seven minute lease. The clock must never wait for
+  // delivery, or every reminder behind a stuck drain, of any session or directory, stays `scheduled`
+  // and the inbox's fallback scan (which only looks for `due` rows) cannot rescue it.
+  it.effect("a nudge that never returns does not hold up the reminders behind it", () =>
+    withClock((clock) =>
+      Effect.gen(function* () {
+        yield* resetLive
+        const hung = yield* seedSession(unique("ses_rem_hung"))
+        const elsewhere = yield* seedSession(unique("ses_rem_elsewhere"), "/tmp/reminder-tests-elsewhere")
+        const nudged: string[] = []
+        yield* stubNudge((sessionID) =>
+          sessionID === hung
+            ? Effect.never
+            : Effect.sync(() => {
+                nudged.push(sessionID)
+              }),
+        )
+        const first = yield* clock.create({ sessionID: hung, text: "first", fireAt: 5 * MINUTE })
+        const second = yield* clock.create({ sessionID: elsewhere, text: "second", fireAt: 10 * MINUTE })
+        yield* clock.init()
+
+        yield* TestClock.adjust(Duration.minutes(5))
+        yield* eventually(
+          readReminder(first.id).pipe(Effect.map((row) => (row?.status === "due" ? row : undefined))),
+          "the first reminder to come due",
+        )
+
+        // The first reminder's nudge is stuck in the inbox. The clock still wakes for the next one.
+        yield* TestClock.adjust(Duration.minutes(5))
+        yield* eventually(
+          readReminder(second.id).pipe(Effect.map((row) => (row?.status === "due" ? row : undefined))),
+          "the reminder behind a hung nudge to come due",
+        )
+        expect(nudged).toEqual([elsewhere])
+        yield* resetLive
+      }),
+    ),
+  )
+
+  it.effect("one pass moves every due reminder, however long the first one's nudge takes", () =>
+    withClock((clock) =>
+      Effect.gen(function* () {
+        yield* resetLive
+        const hung = yield* seedSession(unique("ses_rem_pass_hung"))
+        const other = yield* seedSession(unique("ses_rem_pass_other"))
+        yield* stubNudge((sessionID) => (sessionID === hung ? Effect.never : Effect.void))
+        // Oldest first: the pass reaches the hung session's reminder before the other one.
+        yield* insertReminder({ id: "rmd_pass_a_hung", session_id: hung, fire_at: 0 })
+        yield* insertReminder({ id: "rmd_pass_b_other", session_id: other, fire_at: 0 })
+
+        const pass = yield* Effect.forkScoped(clock.promoteOnce())
+        yield* eventually(
+          readReminder("rmd_pass_b_other").pipe(Effect.map((row) => (row?.status === "due" ? row : undefined))),
+          "the second reminder of the pass to come due",
+        )
+        expect(yield* readReminder("rmd_pass_a_hung")).toMatchObject({ status: "due" })
+        // The pass is over: it did not wait for either nudge.
+        const exit = yield* eventually(
+          Effect.sync(() => pass.pollUnsafe()),
+          "the pass to end without waiting for delivery",
+        )
+        expect(Exit.isSuccess(exit) ? exit.value : undefined).toBe(2)
+        yield* resetLive
+      }),
+    ),
+  )
+
+  it.effect("a nudge that fails is logged and the clock goes on", () =>
+    withClock((clock) =>
+      Effect.gen(function* () {
+        yield* resetLive
+        const dies = yield* seedSession(unique("ses_rem_nudge_dies"))
+        const throws = yield* seedSession(unique("ses_rem_nudge_throws"))
+        const fine = yield* seedSession(unique("ses_rem_nudge_fine"))
+        const nudged: string[] = []
+        yield* stubNudge((sessionID) => {
+          // A hook that throws before it returns an effect, and one whose effect dies.
+          if (sessionID === throws) throw new Error("the nudge hook threw")
+          if (sessionID === dies) return Effect.die(new Error("the nudge died"))
+          return Effect.sync(() => {
+            nudged.push(sessionID)
+          })
+        })
+        yield* insertReminder({ id: "rmd_nudge_a_dies", session_id: dies, fire_at: 0 })
+        yield* insertReminder({ id: "rmd_nudge_b_throws", session_id: throws, fire_at: 0 })
+        yield* insertReminder({ id: "rmd_nudge_c_fine", session_id: fine, fire_at: 0 })
+
+        expect(yield* clock.promoteOnce()).toBe(3)
+        yield* settle
+        for (const id of ["rmd_nudge_a_dies", "rmd_nudge_b_throws", "rmd_nudge_c_fine"])
+          expect(yield* readReminder(id), id).toMatchObject({ status: "due" })
+        expect(nudged).toEqual([fine])
+        yield* resetLive
+      }),
+    ),
+  )
+
+  it.effect("a pending nudge ends with the clock's scope and leaves no fiber behind", () =>
+    Effect.gen(function* () {
+      yield* resetLive
+      const sessionID = yield* seedSession(unique("ses_rem_nudge_scope"))
+      const fibers = { started: 0, interrupted: 0 }
+      yield* stubNudge(() =>
+        Effect.suspend(() => {
+          fibers.started += 1
+          return Effect.never.pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                fibers.interrupted += 1
+              }),
+            ),
+          )
+        }),
+      )
+      yield* insertReminder({ id: "rmd_nudge_scope", session_id: sessionID, fire_at: 0 })
+
+      yield* withClock((clock) =>
+        Effect.gen(function* () {
+          const pass = yield* Effect.forkScoped(clock.promoteOnce())
+          yield* eventually(
+            Effect.sync(() => pass.pollUnsafe()),
+            "the pass to end without waiting for delivery",
+          )
+          // The nudge is running, unawaited, and nothing has stopped it.
+          expect(fibers).toEqual({ started: 1, interrupted: 0 })
+        }),
+      )
+
+      // The clock's scope closed: the nudge went with it, nothing is left running.
+      expect(fibers).toEqual({ started: 1, interrupted: 1 })
       yield* resetLive
     }),
   )

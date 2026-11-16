@@ -151,6 +151,24 @@ export const recordNudges = Effect.acquireRelease(
     }),
 )
 
+/**
+ * Replaces the inbox nudge hook of this process while the test runs, and restores
+ * it after. `handler` decides what a nudge for a session does: record it, fail,
+ * hang, or forward to the real inbox. Resolves to the hook it replaced.
+ */
+export const stubNudge = (handler: (sessionID: SessionID) => Effect.Effect<void>) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const previous = EngineProcess.inbox.nudge
+      EngineProcess.inbox.nudge = handler
+      return previous
+    }),
+    (previous) =>
+      Effect.sync(() => {
+        EngineProcess.inbox.nudge = previous
+      }),
+  )
+
 /** The process-level reminder state is shared by every test file: start each test clean. */
 export const resetLive = Effect.sync(() => {
   EngineProcess.reminder.due.clear()

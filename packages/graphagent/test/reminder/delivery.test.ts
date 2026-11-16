@@ -21,12 +21,14 @@ import {
   edges,
   events,
   eventually,
+  insertReminder,
   noticeText,
   readReminder,
   recordingPrompts,
   resetLive,
   seedSession,
   settle,
+  stubNudge,
   unique,
   watchLifecycle,
   withClock,
@@ -154,6 +156,49 @@ describe("reminder delivery boundary", () => {
         )
         expect(noticeText(recording.admitted[0])).not.toContain("delayed")
         expect(yield* readReminder(id)).toMatchObject({ status: "delivered" })
+      }),
+    ).pipe(Effect.provideService(InstanceRef, instance)),
+  )
+
+  // A nudge is the inbox's drain; behind a DAG delivery claim it can wait for an admitted turn for
+  // minutes. The clock must not wait with it: the other sessions' reminders still come due and reach
+  // their sessions, and the stuck one is not lost, the inbox's own tick delivers it.
+  it.effect("a nudge that never returns does not hold up another session's reminder", () =>
+    withClock((clock) =>
+      Effect.gen(function* () {
+        yield* resetLive
+        const { db } = yield* Database.Service
+        const hung = yield* seedSession(unique("ses_remdel_hung"))
+        const other = yield* seedSession(unique("ses_remdel_other"))
+        const recording = yield* recordingPrompts(db)
+        yield* startInstance(recording.prompts)
+        // The real inbox hook, except that the hung session's nudge never comes back.
+        const inboxNudge = EngineProcess.inbox.nudge
+        yield* stubNudge((sessionID) => (sessionID === hung ? Effect.never : (inboxNudge?.(sessionID) ?? Effect.void)))
+        // Oldest first: the clock reaches the hung session's reminder before the other one.
+        yield* insertReminder({ id: "rmd_del_a_hung", session_id: hung, fire_at: 1_000, text: "stuck for now" })
+        yield* insertReminder({ id: "rmd_del_b_other", session_id: other, fire_at: 2_000, text: "must still arrive" })
+        yield* clock.init()
+        yield* TestClock.adjust(Duration.seconds(5))
+
+        yield* eventually(
+          Effect.sync(() => (recording.admitted.length >= 1 ? true : undefined)),
+          "the other session's reminder to be delivered behind a hung nudge",
+        )
+        expect(recording.admitted).toHaveLength(1)
+        expect(noticeText(recording.admitted[0]).endsWith("\n\nmust still arrive")).toBe(true)
+        expect(yield* readReminder("rmd_del_b_other")).toMatchObject({ status: "delivered" })
+        // The stuck reminder is owed, not lost: it came due and waits for the inbox's own backstop.
+        expect(yield* readReminder("rmd_del_a_hung")).toMatchObject({ status: "due", delivery: null })
+
+        yield* TestClock.adjust(Duration.seconds(30))
+        yield* eventually(
+          Effect.sync(() => (recording.admitted.length === 2 ? true : undefined)),
+          "the inbox tick to deliver the reminder whose nudge hung",
+        )
+        expect(noticeText(recording.admitted[1]).endsWith("\n\nstuck for now")).toBe(true)
+        expect(yield* readReminder("rmd_del_a_hung")).toMatchObject({ status: "delivered" })
+        yield* resetLive
       }),
     ).pipe(Effect.provideService(InstanceRef, instance)),
   )
