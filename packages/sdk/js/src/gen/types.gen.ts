@@ -1075,6 +1075,30 @@ export type Agent = {
     [key: string]: unknown
   }
   steps?: number
+  contract?: AgentContract
+}
+
+export type AgentContract = {
+  role?: "worker" | "composer"
+  visibility?: "public" | "private"
+  output?: {
+    artifact: string
+  }
+  failure?: "skip" | "fail"
+  compose?: {
+    /**
+     * How the composer expands a plan: fan_out (one layer of parallel workers) or recursive_split.
+     */
+    pattern: "fan_out" | "recursive_split"
+    /**
+     * Agents this composer may expand into. Only agents that exist, are public and are read-only when the plan is made are used.
+     */
+    dispatch: Array<string>
+    /**
+     * Worker that takes the whole task when a plan cannot be expanded. Must be listed in dispatch.
+     */
+    fallback: string
+  }
 }
 
 export type Command = {
@@ -1542,6 +1566,7 @@ export type AgentConfig = {
   steps?: number
   maxSteps?: number
   permission?: PermissionConfig
+  contract?: AgentContract
   [key: string]: unknown
 }
 

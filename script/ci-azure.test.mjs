@@ -69,12 +69,12 @@ await test("CI runs the gates the GitHub workflows used to run", () => {
   )
 })
 
-await test("Azure Pipelines runs development CI and GitHub Actions runs release and Windows E2E", () => {
+await test("Azure Pipelines runs development CI and GitHub Actions runs release, Windows E2E and extra Nix platforms", () => {
   const workflows = new URL("../.github/workflows/", import.meta.url)
   assert.deepEqual(
     readdirSync(workflows).sort(),
-    ["release-fork.yml", "windows-e2e.yml"],
-    ".github/workflows holds the release and Windows E2E",
+    ["nix-extra-platforms.yml", "release-fork.yml", "windows-e2e.yml"],
+    ".github/workflows holds the release, Windows E2E and the extra Nix platforms",
   )
   for (const file of ["ci.yml", "nix-verify.yml", "nightly-pty.yml", "release.yml", "templates/toolchain.yml"])
     assert(existsSync(new URL(`../.azure-pipelines/${file}`, import.meta.url)), file)
@@ -87,6 +87,40 @@ await test("Azure Pipelines runs development CI and GitHub Actions runs release 
   const nix = read(".azure-pipelines/nix-verify.yml")
   assert.match(nix, /\ntrigger: none\n/)
   assert.match(nix, /\n  paths:\n    include:\n      - flake\.nix\n/)
+})
+
+// #1095: the Azure pool cannot route aarch64-linux and x86_64-darwin, so a GitHub workflow runs the same
+// verification there. It keeps the same triggers and the same Nix, and its actions stay pinned.
+await test("the GitHub Nix workflow mirrors the Azure Nix pipeline on the platforms Azure cannot route", () => {
+  const azure = read(".azure-pipelines/nix-verify.yml")
+  const github = read(".github/workflows/nix-extra-platforms.yml")
+  const items = (text, pattern) =>
+    (text.match(pattern)?.[1] ?? "")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.replace(/^\s*- /, ""))
+  // An Azure path filter names the nix directory; GitHub needs a glob for the files inside it.
+  const azurePaths = items(azure, /\n  paths:\n    include:\n((?:      - [^\n]+\n)+)/).map((path) =>
+    path === "nix" ? "nix/**" : path,
+  )
+  const githubPaths = items(github, /\n    paths:\n((?:      - [^\n]+\n)+)/)
+  assert(azurePaths.includes("flake.nix"), "the Azure path list was read")
+  assert.deepEqual(
+    githubPaths.toSorted(),
+    [...azurePaths, ".github/workflows/nix-extra-platforms.yml"].toSorted(),
+    "same path list as the Azure pipeline, plus the workflow itself",
+  )
+  const installer = /https:\/\/releases\.nixos\.org\/nix\/nix-[\d.]+\/install/
+  assert(azure.match(installer), "the Azure pipeline pins a Nix installer")
+  assert.equal(github.match(installer)?.[0], azure.match(installer)[0], "both pipelines install the same Nix")
+  assert.deepEqual(
+    [...github.matchAll(/^ +- system: (\S+)$/gm)].map((match) => match[1]),
+    ["aarch64-linux", "x86_64-darwin"],
+  )
+  assert.match(github, /\npermissions:\n  contents: read\n/)
+  const actions = [...github.matchAll(/uses: (\S+)@(\S+)/g)]
+  assert(actions.length > 0, "the workflow uses actions")
+  for (const [, action, ref] of actions) assert.match(ref, /^[0-9a-f]{40}$/, `${action} is pinned to a commit`)
 })
 
 // #1279: the PTY end-to-end benchmark runs nightly and by hand, and reports; it is not a gate.

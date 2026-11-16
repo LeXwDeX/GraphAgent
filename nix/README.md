@@ -44,19 +44,26 @@ existing `release-fork.yml` build path.
 
 ## Native acceptance
 
-The Nix verification workflow uses isolated GitHub-hosted runners for both
-Linux architectures and both Darwin architectures. It checks native platform
-identity and exact installed runtimes, then builds the fake-hash updater.
+Nix verification uses isolated GitHub-hosted runners for both Linux
+architectures and both Darwin architectures, split across two pipelines that
+run the same `nix/scripts/verify_build.py` on the same path list:
+`.azure-pipelines/nix-verify.yml` covers `x86_64-linux` and `aarch64-darwin`,
+and `.github/workflows/nix-extra-platforms.yml` covers `aarch64-linux`
+(`ubuntu-24.04-arm`) and `x86_64-darwin` (`macos-26-intel`), whose runner
+labels the Azure pool cannot route. Each job checks native platform identity
+and exact installed runtimes, then builds the fake-hash updater.
 Only a hash mismatch for that exact updater derivation yields a candidate;
 dependency downloads, installation failures and other mismatches fail without
 inventing a hash. Each job preserves logs, the lock, the measured candidate
 hashes and source commit in an artifact.
 
 A normal PR run rejects stale committed hashes. Review each platform's
-measurement artifact, copy only its `nodeModules.<system>` value into
-`hashes.json`, and run the workflow again to build the normal packages.
-A manual run with `regenerate_hashes: true` applies only the measured native
-hash in the ephemeral runner before those acceptance builds. It never pushes
+measurement artifact (the GitHub workflow also prints the measured hash in its
+job summary), copy only its `nodeModules.<system>` value into `hashes.json`,
+and run that platform's pipeline again to build the normal packages.
+A manual run with `regenerate_hashes: true` (`regenerateHashes` in the Azure
+pipeline) applies only the measured native hash in the ephemeral runner before
+those acceptance builds. It never pushes
 or commits the result. All four successful native builds are still required
 before claiming four-platform Nix package support.
 

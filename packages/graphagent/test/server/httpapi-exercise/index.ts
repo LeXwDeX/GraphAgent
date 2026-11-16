@@ -148,7 +148,22 @@ const scenarios: Scenario[] = [
     .at((ctx) => ({ path: "/vcs/apply", headers: ctx.headers(), body: { patch: "" } }))
     .status(400, undefined, "status"),
   http.protected.get("/command", "command.list").json(200, array, "status"),
-  http.protected.get("/agent", "app.agents").json(200, array, "status"),
+  http.protected.get("/agent", "app.agents").json(
+    200,
+    (body) => {
+      array(body)
+      // #1158: the agent contract is part of the public agent shape.
+      const explore = body.find((item) => isRecord(item) && item.name === "explore")
+      object(explore)
+      object(explore.contract)
+      check(explore.contract.role === "worker", "agent list should carry the explore contract role")
+      check(explore.contract.visibility === "public", "agent list should carry the explore contract visibility")
+      const build = body.find((item) => isRecord(item) && item.name === "build")
+      object(build)
+      check(build.contract === undefined, "an agent without a declared contract should omit the contract field")
+    },
+    "status",
+  ),
   http.protected.get("/skill", "app.skills").json(200, array, "status"),
   http.protected.get("/lsp", "lsp.status").json(200, array),
   http.protected.get("/formatter", "formatter.status").json(200, array),
