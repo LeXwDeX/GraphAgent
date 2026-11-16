@@ -131,6 +131,26 @@ function heldByAskTier(request: { permission: string; metadata?: Record<string, 
 }
 
 /**
+ * The run policy of an asking child session, under the `dag.permission` tier in
+ * force right now (#1324). The tier is read from the global `dag` section on
+ * every call and never cached, so a switch reaches a node that is already
+ * running. A session with no active child run (every root session, a finished
+ * child) has no policy, and nothing is read for it. `config` and `database` are
+ * the caller's optional services: without a database a task child's root DAG
+ * mode cannot be read, and the child counts as attended. `Permission.ask` and
+ * the hook guard (`HookGuard.permissionMode`) share this one reading.
+ */
+export const runPolicyOf = (deps: {
+  readonly config: Pick<Config.Interface, "dagGlobal"> | undefined
+  readonly database: Pick<Database.Interface, "db"> | undefined
+}) =>
+  Effect.fnUntraced(function* (sessionID: PermissionV1.Request["sessionID"]) {
+    if (Option.isNone(ChildPolicy.subjectOf(sessionID))) return Option.none<ChildPolicy.AskPolicy>()
+    const tier = deps.config ? ((yield* deps.config.dagGlobal()).permission ?? "allow") : "allow"
+    return yield* ChildPolicy.askOf(deps.database?.db)(sessionID, tier)
+  })
+
+/**
  * Bash commands an unattended session may still run once nothing broader is
  * allowed: the review persona's own allowlist (`agent.ts`), reused verbatim as
  * the bash tool face of the `readonly` tier of `dag.permission` (#1324 §4,
@@ -312,16 +332,9 @@ export const layer = Layer.effect(
       }
     })
 
-    // The run policy of an asking session, under the `dag.permission` tier in
-    // force right now (#1324). The tier is read from the global `dag` section on
-    // every ask and never cached, so a switch reaches a node that is already
-    // running. A session with no active child run (every root session, a
-    // finished child) has no policy, and nothing is read for it.
-    const runPolicyOf = Effect.fnUntraced(function* (sessionID: PermissionV1.Request["sessionID"]) {
-      if (Option.isNone(ChildPolicy.subjectOf(sessionID))) return Option.none<ChildPolicy.AskPolicy>()
-      const tier = config ? ((yield* config.dagGlobal()).permission ?? "allow") : "allow"
-      return yield* ChildPolicy.askOf(database?.db)(sessionID, tier)
-    })
+    // The run policy of an asking session (see `runPolicyOf`), over the
+    // configuration and database this layer was built with.
+    const policyOf = runPolicyOf({ config, database })
 
     const ask = Effect.fn("Permission.ask")(function* (input: PermissionV1.AskInput, options?: AskOptions) {
       const current = yield* InstanceState.get(state)
@@ -344,7 +357,7 @@ export const layer = Layer.effect(
       // Read once per ask: the run policy of the asking child session (a task's
       // root dag mode may have changed) under the `dag.permission` tier in force
       // now. The tier is never cached, so a switch reaches a node's next ask.
-      const subject = yield* runPolicyOf(request.sessionID)
+      const subject = yield* policyOf(request.sessionID)
       // A run whose policy is `auto` never reaches the user (Issue #1026, PR4
       // seam; E4 supplies the decision). `adjudicate` settles one pattern of
       // such a run: an allow needs no question, a denial ends the ask as a
@@ -801,7 +814,13 @@ export function merge(...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule[] 
 const EDIT_TOOLS = ["edit", "write", "apply_patch"]
 const READ_TOOLS = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
 
-function permissionName(tool: string) {
+/**
+ * The permission key a tool's calls ask under: the file tools share `edit`, the
+ * MCP resource tools `read`, and every other tool, an MCP server tool included,
+ * is its own key. Tool advertisement (`disabled`) and the hook guard's record of
+ * a denied call (`HookGuard.permissionKey`) read the same table.
+ */
+export function permissionName(tool: string) {
   return EDIT_TOOLS.includes(tool) ? "edit" : READ_TOOLS.includes(tool) ? "read" : tool
 }
 

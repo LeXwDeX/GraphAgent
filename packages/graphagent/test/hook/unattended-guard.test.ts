@@ -119,6 +119,14 @@ const fetchDefinition = {
       ),
     ),
 }
+// A file tool by id (`write` shares the `edit` permission key with edit and apply_patch). It never runs here:
+// the guard refuses it first, and the guard reads the `command` field of whatever tool it sits in front of.
+const writeDefinition = {
+  id: "write",
+  description: "Fixture file tool",
+  parameters: Schema.Struct({ command: Schema.String }),
+  execute: () => Effect.succeed({ title: "written", output: "WRITE_COMPLETE", metadata: {} }),
+}
 // A call that asks nothing: proof that the node goes on after a refusal.
 const noteDefinition = {
   id: "note",
@@ -126,7 +134,7 @@ const noteDefinition = {
   parameters: Schema.Struct({ text: Schema.String }),
   execute: () => Effect.succeed({ title: "noted", output: "NOTED", metadata: {} }),
 }
-const definitions = [bashDefinition, fetchDefinition, noteDefinition]
+const definitions = [bashDefinition, fetchDefinition, writeDefinition, noteDefinition]
 
 // One MCP server tool. `resolve` wraps server tools in place, so every session gets a fresh instance.
 const makeMcp = () =>
@@ -505,6 +513,23 @@ describe("every tool path records the hook's denial", () => {
           permission: "srv_lookup",
           summary: REASON,
         })
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "a file tool: the denial is recorded under the edit key the file tools share",
+    () =>
+      Effect.gen(function* () {
+        const { dagID, tools } = yield* guardedNode({ matcher: "*" })
+        const denied = yield* watch(DagEvent.NodeSafetyDenied.type)
+
+        const refused = yield* callTool(tools, "write", { command: GAP })
+        expect(refused.output.startsWith(`[Tool denied by hook] ${REASON}`)).toBe(true)
+        yield* Effect.yieldNow
+
+        expect(denied).toHaveLength(1)
+        expect(denied[0]).toMatchObject({ dagID, nodeID: "a", ruleID: "HOOK", permission: "edit" })
       }),
     { git: true },
   )

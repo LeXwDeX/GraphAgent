@@ -7,8 +7,10 @@ import { HookGuard } from "@/permission/hook-guard"
 
 /**
  * #1324 P4: a hook's denial of a DAG node's call is recorded with the permission
- * key the call would have asked under. The permission service keeps its own
- * tool-to-key table private; this pins the one copy the recording uses to it.
+ * key the call would have asked under. The key is the permission service's own
+ * table (`Permission.permissionName`, which tool advertisement reads through
+ * `Permission.disabled`); this pins what the recording uses to what
+ * advertisement derives, so the two cannot drift apart.
  */
 
 const TOOLS = [
