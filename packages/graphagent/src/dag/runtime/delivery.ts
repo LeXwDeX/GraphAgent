@@ -162,6 +162,18 @@ export function workflowSafetyWakeLine(total: number) {
 }
 
 /**
+ * #1015: the wake's note on required nodes a completed workflow left undone
+ * (a gate skipped them). What the parent is told depends on whether the
+ * delivery node produced the final answer: without one the work is likely
+ * unfinished, with one the report may already cover it.
+ */
+export function incompleteRequiredWakeLine(lines: readonly string[], answered: boolean) {
+  return answered
+    ? `\nRequired nodes not completed (the final answer was delivered):\n${lines.join("\n")}\nCheck the delivered report against them; if in-scope work remains, repair and reopen the work with control extend, or start a bounded successor workflow.`
+    : `\nRequired nodes not completed (no final answer was produced):\n${lines.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
+}
+
+/**
  * Single DAG delivery scheduler (E1/D7). It owns both ledgers without
  * unifying them: the durable wake marker (`wake_reported`, admitted ==
  * delivered, #321) and `agent_message` (confirmed by `associate`, not by
@@ -677,22 +689,23 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
           if (total > 0) denialsByWorkflow.set(workflow.id, total)
         }
         // A completed workflow can still leave required work undone when a
-        // gate skipped it; name those nodes so the turn acts on them.
-        const incompleteByWorkflow = new Map<string, string[]>()
+        // gate skipped it; name those nodes so the turn acts on them. The note
+        // says whether the delivery node produced a final answer (#1015).
+        const incompleteByWorkflow = new Map<string, { readonly lines: string[]; readonly answered: boolean }>()
         for (const workflow of batch.workflows) {
           if (workflow.status !== "completed" || !completionIDs.has(workflow.id)) continue
-          const incomplete = (yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)).filter(
-            (node) => node.required && node.status !== "completed",
-          )
+          const current = yield* store.getCurrentNodes(workflow.id).pipe(Effect.orDie)
+          const incomplete = current.filter((node) => node.required && node.status !== "completed")
           if (incomplete.length > 0) {
-            incompleteByWorkflow.set(
-              workflow.id,
-              incomplete.map((node) => {
+            const config = parseWorkflowConfig(workflow.config)
+            incompleteByWorkflow.set(workflow.id, {
+              lines: incomplete.map((node) => {
                 const state = displayState(node)
                 const reason = state === "failed" && node.errorClass ? `: ${node.errorClass}` : ""
                 return `- "${node.id}" (${state}${reason})`.slice(0, 300)
               }),
-            )
+              answered: config !== undefined && selectReportNode(config, current) !== undefined,
+            })
           }
         }
         const summaries = [
@@ -731,7 +744,7 @@ export const make = Effect.fn("DagDelivery.make")(function* (environment: Enviro
             const attribution = failures
               ? `\nFailed nodes:\n${failures.join("\n")}`
               : incomplete
-                ? `\nRequired nodes not completed (no final answer was produced):\n${incomplete.join("\n")}\nRead the gate result, then repair and reopen the work with control extend, or start a bounded successor workflow; do not stop while in-scope work remains.`
+                ? incompleteRequiredWakeLine(incomplete.lines, incomplete.answered)
                 : ""
             const safety = workflowSafetyWakeLine(denialsByWorkflow.get(workflow.id) ?? 0)
             return workflow.status === "paused"

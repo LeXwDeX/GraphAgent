@@ -529,6 +529,8 @@ it("wakes the parent when a gate skips the delivery node and only a result index
       expect(completionText).toContain("[DAG Workflow completed]")
       expect(completionText).toContain("[DAG Final Report]")
       expect(completionText).toContain('"summary" (skipped')
+      // No delivery node completed, so the note keeps saying there is no final answer.
+      expect(completionText).toContain("Required nodes not completed (no final answer was produced)")
       expect((yield* store.getWorkflow(dagID))?.wakeReported).toBe(true)
     }),
   )

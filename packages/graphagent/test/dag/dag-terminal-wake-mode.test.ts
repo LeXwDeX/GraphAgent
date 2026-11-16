@@ -453,7 +453,43 @@ const outcomes: readonly Outcome[] = [
         return dagID
       }),
     report: 'node_id="summary"',
-    wake: ["[DAG Workflow completed]", "[DAG Final Report]", '"summary" (skipped'],
+    wake: [
+      "[DAG Workflow completed]",
+      "[DAG Final Report]",
+      '"summary" (skipped',
+      // No delivery node completed, so the note says there is no final answer.
+      "Required nodes not completed (no final answer was produced)",
+    ],
+    absentFromWake: ["the final answer was delivered"],
+  },
+  {
+    name: "completes through its delivery leaf while an accepted gate skipped a required branch",
+    run: (services) =>
+      Effect.gen(function* () {
+        const dagID = yield* start(services, "Skipped branch", {
+          name: "skipped-branch",
+          delivery_node: "final",
+          max_concurrency: 4,
+          nodes: [
+            node("gate"),
+            { ...node("branch", { dependsOn: ["gate"] }), condition: 'gate.output == "GO"', skip_ok: true },
+            node("final"),
+          ],
+        })
+        const started = yield* gates(services, 2)
+        yield* release(started.get("gate"), "NO")
+        yield* release(started.get("final"), "final answer")
+        return dagID
+      }),
+    report: "final answer",
+    wake: [
+      "[DAG Workflow completed]",
+      "[DAG Final Report]",
+      '"branch" (skipped',
+      // The delivery node produced the answer: the note must not claim otherwise.
+      "Required nodes not completed (the final answer was delivered)",
+    ],
+    absentFromWake: ["no final answer was produced"],
   },
   {
     name: "fails",

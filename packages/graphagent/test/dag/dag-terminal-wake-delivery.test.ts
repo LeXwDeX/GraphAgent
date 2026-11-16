@@ -23,7 +23,7 @@ import { SessionProjector } from "@graphagent/core/session/projector"
 import { MessageTable, PartTable, SessionTable } from "@graphagent/core/session/sql"
 import type { SessionV1 } from "@graphagent/core/v1/session"
 import { Dag, type NodeConfig, type WorkflowConfig } from "@/dag/dag"
-import { DagDelivery } from "@/dag/runtime/delivery"
+import { DagDelivery, incompleteRequiredWakeLine } from "@/dag/runtime/delivery"
 import { isDisplayOnlyCompletion } from "@/dag/runtime/report-delivery"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -79,6 +79,25 @@ describe("isDisplayOnlyCompletion", () => {
     expect(isDisplayOnlyCompletion(config([leaf(false)]), [makeNodeRow({ id: "final", status: "skipped" })])).toBe(
       false,
     )
+  })
+})
+
+describe("incompleteRequiredWakeLine", () => {
+  const lines = ['- "branch" (skipped)']
+
+  it("says a final answer was delivered only when the delivery node produced one", () => {
+    const delivered = incompleteRequiredWakeLine(lines, true)
+    expect(delivered).toContain("Required nodes not completed (the final answer was delivered)")
+    expect(delivered).toContain('- "branch" (skipped)')
+    expect(delivered).not.toContain("no final answer was produced")
+  })
+
+  it("keeps the no-final-answer note, with its instruction to repair, when none was produced", () => {
+    const missing = incompleteRequiredWakeLine(lines, false)
+    expect(missing).toContain("Required nodes not completed (no final answer was produced)")
+    expect(missing).toContain('- "branch" (skipped)')
+    expect(missing).toContain("do not stop while in-scope work remains")
+    expect(missing).not.toContain("the final answer was delivered")
   })
 })
 
