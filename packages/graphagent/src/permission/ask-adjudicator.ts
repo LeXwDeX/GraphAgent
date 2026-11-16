@@ -14,8 +14,8 @@ import { Context, type Effect } from "effect"
  *
  * `Permission.ask` calls `decide` only for a child run whose effective ask
  * policy is `auto`, after the deny rules have won and before `needsAsk` is
- * set. No implementation is registered until E4 lands: an absent service
- * leaves the current ask path byte-for-byte unchanged.
+ * set. Production registers `SafetyGuard` (`permission/safety-guard.ts`); an
+ * absent service leaves the ask path unchanged.
  */
 
 /** The owner of the run the asking session belongs to; the same `ChildOwner` used by `ChildRuns`. */
