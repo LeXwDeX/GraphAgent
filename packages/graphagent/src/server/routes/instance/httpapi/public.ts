@@ -310,6 +310,14 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   if (dagModeStatus?.unavailableReason) dagModeStatus.unavailableReason = nullable(dagModeStatus.unavailableReason)
   if (dagModeStatus?.budget?.properties?.tokens)
     dagModeStatus.budget.properties.tokens = nullable(dagModeStatus.budget.properties.tokens)
+  // #1027 D6b: review quality is genuinely null outside the strict review gate
+  // (and a completeness verdict is null until a completeness lane completes),
+  // on the session status and on every workflow summary alike.
+  if (dagModeStatus?.quality) dagModeStatus.quality = nullable(dagModeStatus.quality)
+  if (schemas.DagWorkflowSummary?.properties?.quality)
+    schemas.DagWorkflowSummary.properties.quality = nullable(schemas.DagWorkflowSummary.properties.quality)
+  if (schemas.DagWorkflowQuality?.properties?.completeness)
+    schemas.DagWorkflowQuality.properties.completeness = nullable(schemas.DagWorkflowQuality.properties.completeness)
   // #1069 (B1): a bulk lifecycle read reports an unknown ref as a null state,
   // so this field is genuinely nullable rather than optional.
   if (schemas.LifecycleStateEntry?.properties?.state)

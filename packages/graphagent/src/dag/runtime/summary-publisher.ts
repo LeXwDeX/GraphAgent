@@ -12,6 +12,7 @@ import { DagStore } from "@graphagent/core/dag/store"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { GlobalBus } from "@/bus/global"
+import { DagSummaryDerived } from "../summary-derived"
 
 /**
  * Stateless derived-view publisher for DAG workflow summaries.
@@ -27,10 +28,19 @@ import { GlobalBus } from "@/bus/global"
  * child-session events to the owning parent session. The child ledger below is
  * routing state (childSessionID → parent session); it never caches a summary.
  *
+ * #1027 D6b: `coverageCount` and `quality` are derived from the workflow's
+ * config and node rows by the same computations `inspect` uses
+ * (`DagSummaryDerived`). They are the one part of an emission that is not
+ * re-read every time: a workflow whose durable change marker has not moved
+ * keeps the values derived at that marker, so usage ticks and finished
+ * workflows cost one marker read instead of a config parse.
+ *
  * Invariants (enforced by the "stateless derived view" contract):
- * - No cached summary is ever served; every emission is a full recompute.
- * - The child ledger, debounce, and throttle maps only deduplicate I/O and
- *   route events; removing them changes freshness, not correctness.
+ * - No cached summary is ever served; every emission re-reads the aggregates
+ *   from DagStore, and a memoised derived value is valid only for the exact
+ *   change marker it was derived at.
+ * - The child ledger, debounce, throttle, and derivation memo only deduplicate
+ *   I/O and route events; removing them changes freshness, not correctness.
  * - Emits ONLY through the ephemeral GlobalBus path — no EventV2 durable
  *   registration, no SQL writes.
  * - Removing this module has no effect on correctness; only realtime push is lost.
@@ -69,6 +79,9 @@ const SUMMARY_TRIGGER_EVENTS = [
   DagEvent.NodeTimeoutEscalated,
   // An extension clears escalation_pending, so escalatedNodes drops back.
   DagEvent.NodeDeadlineExtended,
+  // #1031 M7: a denial is a coverage entry, so coverageCount rises without
+  // any status transition.
+  DagEvent.NodeSafetyDenied,
 ] as const
 
 export interface Interface {
@@ -116,6 +129,7 @@ export const layer = Layer.effect(
         const USAGE_WINDOW_MS = 1_000
         const usageLast = new Map<string, number>()
         const usageQueued = new Set<string>()
+        const derived = DagSummaryDerived.memo()
 
         const coalesceLatest = <E, R>(
           active: Map<string, boolean>,
@@ -158,6 +172,25 @@ export const layer = Layer.effect(
             const scheduler = Option.getOrUndefined(yield* Effect.serviceOption(AgentScheduler.Service))
             const concurrencyRunning =
               scheduler === undefined ? undefined : (yield* scheduler.capacity()).children.dagRunning
+            // Both derived fields are optional on the wire, so a derivation
+            // that cannot be read must not cost the emission its usage and
+            // progress counts.
+            const values = yield* derived
+              .resolve(
+                store,
+                sessionID,
+                summaries.map((summary) => summary.id),
+              )
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterrupts(cause)
+                    ? Effect.failCause(cause)
+                    : Effect.logWarning("DagSummaryPublisher: failed to derive coverage and quality", {
+                        sessionID,
+                        cause,
+                      }).pipe(Effect.as(new Map<string, DagSummaryDerived.Derived>())),
+                ),
+              )
             GlobalBus.emit("event", {
               directory: ctx.directory,
               project: ctx.project.id,
@@ -166,14 +199,9 @@ export const layer = Layer.effect(
                 type: "dag.workflow.summary.updated",
                 properties: {
                   sessionID,
-                  summaries: summaries.map((summary) => ({
-                    ...summary,
-                    // D6b computes the real values once their owner Issues
-                    // define the sources; D6a fixes the consumer-facing shape.
-                    coverageCount: 0,
-                    quality: null,
-                    ...(concurrencyRunning === undefined ? {} : { concurrencyRunning }),
-                  })),
+                  summaries: summaries.map((summary) =>
+                    DagSummaryDerived.toWire(summary, values.get(summary.id), concurrencyRunning),
+                  ),
                 },
               },
             })

@@ -5,7 +5,7 @@
 
 import { describe, expect } from "bun:test"
 import { Cause, DateTime, Deferred, Effect, Layer } from "effect"
-import { DagStore, type WorkflowRow, type WorkflowSummary } from "@graphagent/core/dag/store"
+import { DagStore, type SummaryNodeRow, type WorkflowRow, type WorkflowSummary } from "@graphagent/core/dag/store"
 import { DagEvent } from "@graphagent/schema/dag-event"
 import { SessionV1 } from "@graphagent/core/v1/session"
 import { logLines } from "effect/testing/TestConsole"
@@ -14,6 +14,7 @@ import { DagSummaryPublisher } from "@/dag/runtime/summary-publisher"
 import { GlobalBus } from "@/bus/global"
 import { InstanceState } from "@/effect/instance-state"
 import { it, pollWithTimeout } from "../lib/effect"
+import { roundOne, rowsFor, strictConfig, type Outputs } from "./review-fixtures"
 
 const ts = (n: number) => DateTime.makeUnsafe(n)
 
@@ -41,6 +42,15 @@ interface StoreControl {
   /** #1027 D6: childSessionID → durable attempt-ledger owner. */
   childOwners: Map<string, { workflowId: string; sessionId: string; projectId: string; directory?: string }>
   childLookups: Map<string, number>
+  /** #1027 D6b: change marker per workflow; an unlisted workflow has none and is derived every time. */
+  revisions: Map<string, string>
+  /** #1027 D6b: persisted workflow config text per workflow id (default ""). */
+  configs: Map<string, string>
+  /** #1027 D6b: the node rows derivation reads, and how often it read them. */
+  summaryNodes: SummaryNodeRow[]
+  nodeReads: number
+  /** #1027 D6b: fail the next N derivation node reads with a defect. */
+  nodeFailures: number
 }
 
 interface EventControl {
@@ -58,6 +68,11 @@ function control(): StoreControl {
     summaries: new Map<string, WorkflowSummary[]>(),
     childOwners: new Map(),
     childLookups: new Map<string, number>(),
+    revisions: new Map<string, string>(),
+    configs: new Map<string, string>(),
+    summaryNodes: [],
+    nodeReads: 0,
+    nodeFailures: 0,
   }
 }
 
@@ -141,6 +156,25 @@ function runtime(state: StoreControl, bus: EventControl) {
           throw new Error("simulated summary read failure after gate")
         }
         return summaries
+      }),
+    // #1027 D6b derivation reads. They are separate from `getWorkflow` so the
+    // sessionID-lookup counts above keep measuring only the event path.
+    getWorkflowRevisions: () => Effect.sync(() => state.revisions),
+    listBySession: (sessionID) =>
+      Effect.sync(() =>
+        (state.summaries.get(sessionID) ?? []).map((entry) => ({
+          ...workflow(entry.id, sessionID, state.projects.get(entry.id) ?? "global"),
+          config: state.configs.get(entry.id) ?? "",
+        })),
+      ),
+    getSummaryNodes: (input) =>
+      Effect.sync(() => {
+        state.nodeReads += 1
+        if (state.nodeFailures > 0) {
+          state.nodeFailures -= 1
+          throw new Error("simulated derivation read failure")
+        }
+        return state.summaryNodes.filter((node) => input.workflowIds.includes(node.workflowId))
       }),
     getWorkflowByChildSession: (childSessionID) =>
       Effect.gen(function* () {
@@ -738,6 +772,147 @@ describe("DagSummaryPublisher child usage routing (#1027 D6)", () => {
         )
         yield* Effect.sleep("1 second")
         expect(mine(collector)).toHaveLength(2)
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+})
+
+// #1027 D6b: `coverageCount` and `quality` come from the workflow's config and
+// node rows, memoised per change marker so usage ticks never re-derive.
+describe("DagSummaryPublisher derived fields (#1027 D6b)", () => {
+  const config = strictConfig()
+  const nodesFor = (workflowId: string, outputs: Outputs): SummaryNodeRow[] =>
+    rowsFor(config, outputs).map((row) => ({
+      id: row.id,
+      workflowId,
+      status: row.status,
+      dependsOn: row.dependsOn,
+      errorReason: row.errorReason,
+      errorClass: row.errorClass,
+      safetyDenials: null,
+      staleTarget: null,
+      superseded: false as const,
+      output: row.output,
+    }))
+
+  function seeded() {
+    const state = control()
+    const bus = {} satisfies EventControl
+    state.sessions.set("dag-q", "ses-q")
+    state.summaries.set("ses-q", [summary("dag-q", 1)])
+    state.configs.set("dag-q", JSON.stringify(config))
+    state.revisions.set("dag-q", "1")
+    // The review has judged round one, and the final gate failed.
+    state.summaryNodes = nodesFor("dag-q", { ...roundOne, final: { status: "failed" } })
+    state.childOwners.set("ses-child", { workflowId: "dag-q", sessionId: "ses-q", projectId: "global" })
+    return { state, bus }
+  }
+
+  const forSession = (collector: ReturnType<typeof startCollector>) =>
+    collector.emissions.filter((emission) => emission.sessionID === "ses-q")
+
+  it.instance("emits the coverage count and review quality of each workflow", () => {
+    const { state, bus } = seeded()
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishNodeEvents(bus, "dag-q", 1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (forSession(collector).length === 1 ? true : undefined)),
+          "summary with derived fields was not emitted",
+        )
+        const emitted = forSession(collector)[0].summaries[0] as WorkflowSummary & {
+          coverageCount: number
+          quality: Record<string, unknown> | null
+        }
+        // The failed final gate is the one coverage entry.
+        expect(emitted.coverageCount).toBe(1)
+        expect(emitted.quality).toEqual({
+          reviewBound: false,
+          reviews: 1,
+          raised: 5,
+          fixed: 0,
+          refuted: 1,
+          stillOpen: 0,
+          skepticRefutations: 1,
+          rounds: 1,
+          quietRounds: 0,
+          completeness: { covered: 1, total: 2, unlisted: 1 },
+        })
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+
+  it.instance("a usage tick reuses the derived values instead of reading nodes again", () => {
+    const { state, bus } = seeded()
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishNodeEvents(bus, "dag-q", 1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (forSession(collector).length === 1 ? true : undefined)),
+          "first summary was not emitted",
+        )
+        expect(state.nodeReads).toBe(1)
+
+        yield* publishChildStepFinish(bus, "ses-child", true)
+        yield* pollWithTimeout(
+          Effect.sync(() => (forSession(collector).length === 2 ? true : undefined)),
+          "usage summary was not emitted",
+        )
+        expect(state.nodeReads).toBe(1)
+        expect(forSession(collector)[1].summaries).toEqual(forSession(collector)[0].summaries)
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+
+  it.instance("derives again once the workflow's change marker moves", () => {
+    const { state, bus } = seeded()
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishNodeEvents(bus, "dag-q", 1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (forSession(collector).length === 1 ? true : undefined)),
+          "first summary was not emitted",
+        )
+
+        // The final gate is rerun and completes: its marker moves.
+        state.summaryNodes = nodesFor("dag-q", { ...roundOne, final: { output: { summary: "ready" } } })
+        state.revisions.set("dag-q", "2")
+        yield* publishNodeEvents(bus, "dag-q", 1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (forSession(collector).length === 2 ? true : undefined)),
+          "second summary was not emitted",
+        )
+        expect(state.nodeReads).toBe(2)
+        expect((forSession(collector)[1].summaries[0] as { coverageCount?: number }).coverageCount).toBe(0)
+      }),
+    ).pipe(Effect.provide(runtime(state, bus)))
+  })
+
+  it.instance("an unreadable derivation still emits the aggregates, and recovers on the next event", () => {
+    const { state, bus } = seeded()
+    state.nodeFailures = 1
+    return withCollector((collector) =>
+      Effect.gen(function* () {
+        yield* (yield* DagSummaryPublisher.Service).init()
+        yield* publishNodeEvents(bus, "dag-q", 1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (forSession(collector).length === 1 ? true : undefined)),
+          "aggregates were lost with the derivation",
+        )
+        const degraded = forSession(collector)[0].summaries[0]
+        expect(degraded.completedNodes).toBe(1)
+        expect("coverageCount" in degraded).toBe(false)
+        expect("quality" in degraded).toBe(false)
+
+        yield* publishNodeEvents(bus, "dag-q", 1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (forSession(collector).length === 2 ? true : undefined)),
+          "the next event did not publish",
+        )
+        expect((forSession(collector)[1].summaries[0] as { coverageCount?: number }).coverageCount).toBe(1)
       }),
     ).pipe(Effect.provide(runtime(state, bus)))
   })

@@ -72,6 +72,7 @@ export async function runDagCoreCoverageGate() {
         "test/dag-store-wake.test.ts",
         "test/dag-node-cancelled-projection.test.ts",
         "test/dag-store-summaries.test.ts",
+        "test/dag-store-derivation.test.ts",
         "test/dag-store-checkpoint-control.test.ts",
         "test/dag-projector-drift.test.ts",
       ],
