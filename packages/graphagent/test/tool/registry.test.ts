@@ -108,6 +108,19 @@ describe("tool.registry", () => {
     }),
   )
 
+  // #1072: reminders are the user's. The model may suggest one in text, but no
+  // tool lets it create, change or list one, so it cannot arm a timer to wake
+  // itself.
+  it.instance("exposes no tool that creates, changes or lists reminders", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids.length).toBeGreaterThan(0)
+      expect(ids.filter((id) => /remind|alarm|timer|schedul|cron|wake/i.test(id))).toEqual([])
+    }),
+  )
+
   it.instance("does not load legacy JavaScript tools from project tool directories", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service

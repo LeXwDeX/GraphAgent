@@ -305,6 +305,20 @@ export interface PrWatchLiveState {
   readonly watches: Map<string, { readonly phase: string; readonly sessionID: string; readonly observedAt: number }>
 }
 
+/**
+ * The live side of user reminders (#1072). The durable `reminder` row is the
+ * authority; this is only what clocks of this process know. `due` lets the
+ * inbox source answer its hint from memory, and `clocks` lets whoever changes a
+ * reminder (create, cancel, a repeating delivery that moved `fire_at`) wake the
+ * clock of every layer graph so none sleeps past the new next wake-up time.
+ */
+export interface ReminderLiveState {
+  /** Sessions this process saw a reminder go due for: a hint that may be stale, never an authority. */
+  readonly due: Set<string>
+  /** Wake-up callbacks of the running clocks, one per built layer graph. */
+  readonly clocks: Set<() => void>
+}
+
 export interface EngineProcess {
   readonly runtimes: SessionRuntimes
   readonly cancellation: CancellationState
@@ -320,6 +334,8 @@ export interface EngineProcess {
   readonly children: ChildRunRegistryState
   /** Live phases of the PR watches a poller of this process is driving (#1071). */
   readonly prWatch: PrWatchLiveState
+  /** What this process's reminder clocks know: sessions with a due reminder, and the clocks to wake (#1072). */
+  readonly reminder: ReminderLiveState
 }
 
 const makeRunnerIdentity = (): RunnerIdentity => {
@@ -346,6 +362,7 @@ export const EngineProcess: EngineProcess = {
   runner: makeRunnerIdentity(),
   children: { byRun: new Map(), bySession: new Map(), reports: new Map(), parents: new Set() },
   prWatch: { watches: new Map() },
+  reminder: { due: new Set(), clocks: new Set() },
 }
 
 /**

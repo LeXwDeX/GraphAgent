@@ -674,6 +674,7 @@ export type LifecycleDomain =
   | "turn"
   | "cancellation"
   | "pr_watch"
+  | "reminder"
 
 export type LifecycleStateRef = {
   domain: LifecycleDomain
@@ -1940,6 +1941,7 @@ export type EventLifecycleTransitioned = {
       | "turn"
       | "cancellation"
       | "pr_watch"
+      | "reminder"
     stateID: string
     sessionID?: string
     from?: string

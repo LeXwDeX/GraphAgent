@@ -123,6 +123,27 @@ describe("legacy command registry", () => {
     }),
   )
 
+  // #1072: `/remind` is answered by the server without a model turn, like `/memory`
+  // and `/dag-mode`: an empty template, one `$ARGUMENTS` hint, no agent or subtask.
+  it.instance("lists remind as a controller command", () =>
+    Effect.gen(function* () {
+      const commands = yield* Command.Service
+      const remind = yield* commands.get("remind")
+
+      expect(remind).toMatchObject({
+        name: "remind",
+        source: "command",
+        template: "",
+        hints: ["$ARGUMENTS"],
+      })
+      expect(remind?.description).toContain("list")
+      expect(remind?.description).toContain("cancel <id>")
+      expect(remind?.agent).toBeUndefined()
+      expect(remind?.subtask).toBeUndefined()
+      expect(Command.Default.REMIND).toBe("remind")
+    }),
+  )
+
   it.instance("does not register the retired trust command", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service
@@ -277,7 +298,12 @@ describe("legacy command registry", () => {
   it.instance("marks built-in registry entries", () =>
     Effect.gen(function* () {
       const commands = yield* Command.Service
-      for (const name of [Command.Default.DAG_MODE, Command.Default.MEMORY, Command.Default.REVIEW]) {
+      for (const name of [
+        Command.Default.DAG_MODE,
+        Command.Default.REMIND,
+        Command.Default.MEMORY,
+        Command.Default.REVIEW,
+      ]) {
         const entry = yield* commands.get(name)
         if (!entry) throw new Error(`expected built-in command: ${name}`)
         expect(Command.isBuiltin(entry)).toBe(true)

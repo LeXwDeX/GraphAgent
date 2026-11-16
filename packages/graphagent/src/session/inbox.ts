@@ -67,7 +67,7 @@ import type { TurnOrigin } from "./turns"
  * - `join_or_start`: join the running turn, or start one when idle
  *   (hook.rewake, child.result).
  * - `turn_boundary`: hold the item until the current turn ends, then deliver
- *   it at the idle boundary (pr_watch outcomes).
+ *   it at the idle boundary (pr_watch outcomes, user reminders).
  */
 export type DeliveryPolicy = "idle_only" | "join_or_start" | "turn_boundary"
 
@@ -81,6 +81,7 @@ export type InboxSourceID =
   | "hook.async_context"
   | "goal.continue"
   | "pr_watch"
+  | "reminder"
 
 /**
  * What happened to one submitted item. `pending` means the item is queued for
