@@ -64,7 +64,7 @@ import { useFooterKeyHints } from "./shell/footer"
 import { useFooterStatus } from "./shell/footer-status"
 import { dagIndicatorReserve } from "./shell/dag-indicator"
 import { HookProgress } from "./shell/hook-progress"
-import { HookStatusProvider } from "./context/hook-status"
+import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
@@ -388,8 +388,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const clipboard = useClipboard()
   const footerKeys = useFooterKeyHints()
   const dagIndicator = useDagIndicator()
+  const hookStatus = useHookStatus()
   const footerStatus = useFooterStatus(
-    () => (route.data.type === "session" ? <HookProgress sessionID={route.data.sessionID} /> : undefined),
+    // The shared slot holds the hook progress only while a hook runs. The component renders nothing when idle, but
+    // an element in the slot would still keep the idle key hints off the session footer.
+    () =>
+      route.data.type === "session" && hookStatus.list(route.data.sessionID).length > 0 ? (
+        <HookProgress sessionID={route.data.sessionID} />
+      ) : undefined,
     () => dagIndicatorReserve(dagIndicator(), dimensions().width, kv.get("ambiguous_width", 1) === 2 ? 2 : 1),
   )
   const bottomZone = createBottomZoneState()
