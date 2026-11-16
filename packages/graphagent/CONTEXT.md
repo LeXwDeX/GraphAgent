@@ -35,11 +35,11 @@ Background only when all of these hold:
 - **B-2:** The agent only reads, or writes files neither the main agent nor the user will touch.
 - **B-3:** Its result fits in one message.
 
-Delegate first: once background is chosen, the main agent does not read files or run commands beforehand to investigate the work. It passes on the user's request and what it already knows, and the agent gathers its own context. The main agent then replies briefly and ends its turn; the result arrives as a message.
+Delegate first: once background is chosen, the main agent does not read files or run commands beforehand to investigate the work. It passes on the user's request and what it already knows, and the agent gathers its own context. The main agent then carries on with any foreground work the user also asked for; if none is left, it replies briefly and ends its turn. The result arrives as a message.
 
 Reviews, audits, and test or type-check runs of finished work are good background work; research that decides the main agent's next edit is not. When neither list applies cleanly, default to foreground.
 
-The criteria live in the `task` tool description (`packages/graphagent/src/tool/task.txt`, "Choosing foreground or background"); the runtime does not classify calls. A real-model evaluation shaped this wording (the original duration condition was dropped and the user's parallel signal became the trigger); see Amendment 1 in `docs/adr/0003-task-execution-classification.md`.
+The criteria live in the `task` tool description (`packages/graphagent/src/tool/task.txt`, "Choosing foreground or background"); the runtime does not classify calls. A real-model evaluation shaped this wording (the original duration condition was dropped and the user's parallel signal became the trigger). The final wording did not stably meet the evaluation's background gate (72%–83% of the scenarios that should go to the background, against a gate of 5/6), so a code-level execution mode is tracked in #1357. Results: Amendment 1 in `docs/adr/0003-task-execution-classification.md`.
 
 ## Default classification
 
@@ -56,7 +56,7 @@ The criteria live in the `task` tool description (`packages/graphagent/src/tool/
 
 - Foreground is the default. Backgrounding removes the result from the current turn and pays a notification and context cost.
 - Never run two writers on the same files.
-- Never background a task and then wait for it with sleep or polling; end the turn and let the result arrive as a message.
+- Never background a task and then wait for it with sleep or polling; if nothing else is left, end the turn and let the result arrive as a message.
 - A background delegation is only useful when its result can be summarized in one message for the user.
 - A task run started by the agent does not survive session cancellation. A user-issued background command survives Esc but is force-cancelled when its session is deleted. Other background tools keep their own cancellation semantics.
 - A command-defined `background: true` applies only to a user-issued interactive run. A non-interactive turn or hook follow-up runs the subtask inline.

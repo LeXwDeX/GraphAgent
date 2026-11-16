@@ -162,7 +162,9 @@ release-note entry for this decision is:
 The criteria shipped in #1301 were measured against a real model and then revised. This amendment
 replaces the criteria in Decision 2; Decisions 1 and 3 through 7 stand. The F-n and B-n IDs in the
 rest of this document are the original numbering. The revised IDs are the ones used in
-`packages/graphagent/CONTEXT.md` and are mapped under "Revised criteria" below.
+`packages/graphagent/CONTEXT.md` and are mapped under "Revised criteria" below. The final wording
+(the one now in `task.txt`) did not stably meet the evaluation's background gate; the follow-up is
+#1357 (see "Consequences and risks" below).
 
 ### Evaluation
 
@@ -176,19 +178,24 @@ GRAPHAGENT_LIVE_EVAL_CONFIG=<path to graphagent.json> bun run test/live/delegati
 ```
 
 Each model runs 20 deterministic scenarios (a fixture project plus a scripted user request), three
-rounds by default: 8 F scenarios whose work must not be backgrounded, 6 B scenarios (independent,
-read-only, slow work the user does not wait for) that should be delegated in the background, and 6
-A scenarios where either choice is accepted. A model family passes with no foreground violation
-(backgrounding in an F scenario, or editing after an injected `/review` result), at least 5/6
-background hits on the B scenarios, and at least 85% accuracy over all runs. Only the DeepSeek
-family was evaluated; no QWEN or GLM model was configured. Counts below are summed over three
-rounds (F: 8 × 3, B: 6 × 3, all: 20 × 3).
+rounds by default, each scenario capped at 8 model steps: 8 F scenarios whose work must not be
+backgrounded, 6 B scenarios (independent, read-only, slow work the user does not wait for) that
+should be delegated in the background, and 6 A scenarios where either choice is accepted. A model
+family passes with no foreground violation (backgrounding in an F scenario, or editing after an
+injected `/review` result), at least 5/6 background hits on the B scenarios, and at least 85%
+accuracy over all runs. Only the DeepSeek family was evaluated; no QWEN or GLM model was
+configured. Counts below are summed over three rounds (F: 8 × 3, B: 6 × 3, all: 20 × 3).
 
-| Wording          | F violations | B background hits | Accuracy      | Gates               |
-| ---------------- | ------------ | ----------------- | ------------- | ------------------- |
-| Original (#1301) | 0/24         | 3/18 (16.7%)      | 45/60 (75.0%) | B and accuracy fail |
-| Revision 1       | 0/24         | 12/18 (66.7%)     | 54/60 (90.0%) | B fails             |
-| Revision 2       | 0/24         | 15/18 (83.3%)     | 57/60 (95.0%) | all pass            |
+| Wording                                           | F violations | B background hits | Accuracy      | Gates                            |
+| ------------------------------------------------- | ------------ | ----------------- | ------------- | -------------------------------- |
+| Original (#1301)                                  | 0/24         | 3/18 (16.7%)      | 45/60 (75.0%) | B and accuracy fail              |
+| Revision 1                                        | 0/24         | 12/18 (66.7%)     | 54/60 (90.0%) | B fails                          |
+| Revision 2                                        | 0/24         | 15/18 (83.3%)     | 57/60 (95.0%) | all pass (B exactly at the gate) |
+| Revision 2 + review correction (final wording)    | 0/24         | 14/18 (77.8%)     | 56/60 (93.3%) | B fails                          |
+| Final wording + no-preparation clause (withdrawn) | 0/24         | 13/18 (72.2%)     | 55/60 (91.7%) | B fails                          |
+
+Only the Revision 2 batch reached all three gates, with the background gate met exactly. The two
+later batches, including the final wording, fall below the background gate.
 
 The transcripts of the original wording showed three causes. In the B scenarios the model rarely
 considered delegating: it read for 5 to 9 steps and then ran the tests itself. "Takes minutes"
@@ -197,7 +204,9 @@ investigated first and ended up doing the work itself.
 
 ### Revisions
 
-Plan 6 allows at most two revision iterations of the `task.txt` wording; both were used.
+Plan 6 allows at most two revision iterations of the `task.txt` wording; both were used. Two
+changes were measured afterwards: a review correction, which stayed in the wording, and a
+supplementary trial, which was withdrawn.
 
 - **Revision 1: the user's parallel signal.** The background trigger became the user's own
   signal: they say they will keep working on something else meanwhile ("meanwhile", "at the same
@@ -211,7 +220,18 @@ Plan 6 allows at most two revision iterations of the `task.txt` wording; both we
 - **Revision 2: delegate first.** Once background is chosen, the main agent no longer reads files
   or runs commands beforehand to investigate the work. It passes on the user's request and what it
   already knows, the agent gathers its own context, and the main agent replies briefly and ends
-  its turn.
+  its turn (the turn-ending part was corrected afterwards, see below).
+- **Review correction: continue foreground work after delegating.** PR review pointed out that
+  "reply briefly and end your turn" drops the foreground part of a request that asks for both, for
+  example a background review plus a foreground edit, and that it contradicts the existing rule to
+  end the turn only when nothing else is left. The wording now tells the main agent to carry on
+  with any foreground work the user also asked for, and to reply briefly and end its turn only if
+  none is left; the result still arrives as a message. This is the final wording: F 0/24, B 14/18
+  (77.8%), accuracy 93.3%.
+- **No-preparation trial (withdrawn).** On top of the correction, a clause was tried that tells
+  the main agent not to do preparation work, such as installing dependencies, before delegating. It
+  did not help (F 0/24, B 13/18 (72.2%), accuracy 91.7%), so it was withdrawn and is not in the
+  final wording.
 
 ### Revised criteria
 
@@ -234,21 +254,38 @@ B-1 expressed from the other side.
 
 ### Consequences and risks
 
-- The evidence covers one model family. QWEN and GLM were not configured, so the revised wording
+- The background gate was not stably met. The foreground gate held in every batch (0/24), and
+  accuracy passed its gate from Revision 1 on (90.0% to 95.0% against 85%). B hits were 15/18 for
+  Revision 2, 14/18 for the final wording and 13/18 for the withdrawn trial (72.2% to 83.3%),
+  against a gate of 5/6; only the Revision 2 batch reached it, and exactly.
+- The misses repeat in the same scenarios. In b6 (the user writes documentation while the main
+  agent runs the full test suite and type check and lists the failures by cause), all three rounds
+  failed in most batches: the model ran `bun install` or the tests itself instead of delegating.
+  b2 (review of uncommitted billing changes) and b5 (test-gap inventory) failed only occasionally.
+- Prompt wording alone therefore does not reliably put background-suitable work in the
+  background. Under Plan 6 of #1057 the prompt iteration stops here. A code-level execution mode
+  is tracked in #1357 (Appendix A of #1057): agents and commands declare an `execution` mode, and
+  hard constraints take precedence.
+- The evidence covers one model family. QWEN and GLM were not configured, so the final wording
   has not been evaluated on them.
-- Revision 2 meets the background gate exactly (15/18 is 5/6); 3 of 18 B runs still did not
-  background.
 - All six B scenarios contain an explicit user signal. The result shows how reliably the model
   acts on the signal, not whether it would background suitable work without one; without a signal
   or an explicit request, `task.txt` says to use foreground.
+- None of the 20 scenarios asks for foreground work in the same request as the delegated work, so
+  the evaluation does not exercise the review correction directly; it shows only that the
+  foreground and accuracy gates held with it.
 - Delegating first moves context gathering from the main agent to the child agent. The delegation
   message carries the user's request and what the main agent already knows.
 - The product change is the `task.txt` wording only: no runtime code, schema, or persisted state.
-  Rollback is restoring the original wording, which failed two of the three gates.
+  Rollback is restoring the original wording, which failed two of the three gates (background and
+  accuracy); the final wording fails only the background gate.
 
 ### Acceptance
 
 - `task.txt`, `packages/graphagent/CONTEXT.md`, `README.md`, `README.en.md`, and this amendment
-  describe the same criteria.
-- With the revised wording the evaluation passes all three gates on the DeepSeek family (table
-  above).
+  describe the same criteria and the same turn-end rule: after delegating, continue any foreground
+  work the user also asked for, and end the turn only when none is left.
+- Foreground gate (no F violation): met, 0/24 with every wording measured.
+- Accuracy gate (at least 85%): met with the final wording, 93.3%.
+- Background gate (at least 5/6 B hits): not stably met. The final wording measured 14/18
+  (77.8%), and the last three batches ranged from 72.2% to 83.3%. Moved to #1357.
