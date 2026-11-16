@@ -24,13 +24,15 @@ import type { AgentScheduler } from "@/session/agent-scheduler"
 import type { Session } from "@/session/session"
 import { DagMode } from "./mode"
 import { DagModeStatus } from "./mode-status"
+import { DagQuality } from "./quality"
+import { DagSummaryDerived } from "./summary-derived"
 
 export interface Deps {
   readonly sessions: Pick<Session.Interface, "get">
   readonly agents: Pick<Agent.Interface, "defaultInfo" | "get" | "list" | "permissionPolicy">
   readonly providers: Pick<Provider.Interface, "defaultModel" | "getModel">
   readonly config: Pick<Config.Interface, "dagGlobal" | "get">
-  readonly dagStore: Pick<DagStore.Interface, "getWorkflowSummaries" | "listBySession">
+  readonly dagStore: Pick<DagStore.Interface, "getWorkflowSummaries" | "listBySession" | "getSummaryNodes">
   readonly scheduler: Pick<AgentScheduler.Interface, "capacity">
 }
 
@@ -108,6 +110,17 @@ export const read = Effect.fn("DagModeReader.read")(function* (deps: Deps, info:
     usedCacheRead += summary.tokensCacheRead ?? 0
   }
 
+  // #1027 D6b: the same per-workflow quality a summary carries, combined over
+  // the session's workflows. `workflows` already holds every row, so the node
+  // read is the only addition.
+  const derived = yield* DagSummaryDerived.forWorkflows(deps.dagStore, workflows)
+  const quality = DagQuality.combine(
+    workflows.flatMap((workflow) => {
+      const value = derived.get(workflow.id)?.quality
+      return value ? [value] : []
+    }),
+  )
+
   const runningWorkflows = workflows.filter(
     (workflow) => workflow.status === WorkflowStatus.RUNNING || workflow.status === WorkflowStatus.STEPPING,
   ).length
@@ -131,7 +144,7 @@ export const read = Effect.fn("DagModeReader.read")(function* (deps: Deps, info:
         maxTotalNodes: dag.max_total_nodes ?? DEFAULT_WORKFLOW_CONFIG.maxTotalNodes,
         running: capacity.children.dagRunning,
       },
-      quality: null,
+      quality,
     },
     runningWorkflows,
     running: capacity.children.dagRunning,
