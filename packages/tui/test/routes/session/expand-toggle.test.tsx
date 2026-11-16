@@ -206,3 +206,92 @@ test("with no block that can fold the key does nothing", async () => {
     await harness.dispose()
   }
 }, 60_000)
+
+// The cases below are the ones where what the key may open depends on what the block draws, so they check the
+// frame and not the functions of `fold.ts`: the key and the block have to agree.
+
+const toolPart = (fixture: PerfFixture, index: number) =>
+  fixture.parts.find((part): part is Extract<Part, { type: "tool" }> => part.id === PART(index))!
+
+const printed = (prefix: string, count = 30) =>
+  Array.from({ length: count }, (_, line) => `${prefix} ${line}`).join("\n")
+
+test("a reasoning that has only a title has nothing to open, so the key goes past it", async () => {
+  const harness = await mountHarness(
+    transcript([1, 5, 8], (fixture) => {
+      const thought = fixture.parts.find((part): part is Extract<Part, { type: "reasoning" }> => part.id === PART(8))!
+      thought.text = "**Planning the change**"
+    }),
+  )
+  try {
+    const before = await until(harness, holds("Click to expand"), "held the folded output")
+    expect(before).toContain("+ Thought: Planning the change")
+
+    pressExpand(harness)
+    const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
+    // The reasoning is the later block, and it stayed folded: under its header there is nothing.
+    expect(opened).toContain("+ Thought: Planning the change")
+  } finally {
+    await harness.dispose()
+  }
+}, 60_000)
+
+test("a failed bash call that printed output is a block: the key opens its output, not an error", async () => {
+  const harness = await mountHarness(
+    transcript([1, 5], (fixture) => {
+      toolPart(fixture, 5).state = {
+        status: "error",
+        input: { command: "printf perf-5" },
+        error: "Tool execution aborted",
+        metadata: { output: printed("output line"), interrupted: true },
+        time: { start: 5, end: 6 },
+      }
+    }),
+  )
+  try {
+    const before = await until(harness, holds("Click to expand"), "held the folded output")
+    expect(before).toContain("Tool execution aborted")
+    expect(before).not.toContain(BEYOND_THE_CAP)
+
+    pressExpand(harness)
+    const opened = await until(harness, holds(BEYOND_THE_CAP), "opened the output")
+    expect(opened).toContain("Click to collapse")
+  } finally {
+    await harness.dispose()
+  }
+}, 60_000)
+
+test("the output of a tool without a display of its own folds once the reader shows it", async () => {
+  const harness = await mountHarness(
+    transcript([1, 6], (fixture) => {
+      const call = toolPart(fixture, 6)
+      call.tool = "custom_tool"
+      call.state = {
+        status: "completed",
+        input: {},
+        output: printed("generic line", 20),
+        title: "Custom tool",
+        metadata: {},
+        time: { start: 6, end: 7 },
+      }
+    }),
+  )
+  try {
+    const before = await until(harness, holds("custom_tool"), "held the call as one line")
+    expect(before).not.toContain("Click to expand")
+
+    // The call is one line until the output is shown: nothing to open, and the frame stays as it was.
+    pressExpand(harness)
+    await harness.app.renderOnce()
+    await settleScroll(harness)
+    expect(await readFrame(harness.app)).toBe(before)
+
+    harness.command("session.toggle.generic_tool_output")
+    await until(harness, holds("Click to expand"), "showed the output")
+    pressExpand(harness)
+    const opened = await until(harness, holds("Click to collapse"), "opened the output")
+    expect(opened).toContain("generic line 19")
+  } finally {
+    await harness.dispose()
+  }
+}, 60_000)

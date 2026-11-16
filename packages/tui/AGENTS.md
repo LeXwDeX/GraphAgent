@@ -38,7 +38,7 @@ packages/tui/src/
                         #   ticker.ts、sdk.tsx、route.tsx、theme.tsx …
   routes/               # home.tsx（及 home/）、session/、diff/
                         #   session/index.tsx 的 Main 按 parentID 区分主会话与子 agent 视图（子 agent 视图内容 F5 未落地）；
-                        #   同目录还有 rows.ts、expand.ts（可折叠块的登记与 ctrl+o）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
+                        #   同目录还有 rows.ts、fold.ts（什么可折叠的纯判定）、expand.ts（ctrl+o 选块）、permission.tsx、question.tsx、ask-surface.tsx、drawer.tsx（抽屉区块）…
   session/              # 会话级辅助：prefill.ts（已落地）；siblings.ts、navigate.ts（F5，未落地）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
   dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4，未落地）
@@ -194,7 +194,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 - 正在写入的 text/reasoning 行，`revision` 不含正文，只含 `done` 等标志，结束时按全文计算一次。正文变化会让每帧都产生新的 `Row`，使该行每帧重挂载、其后的行全部失效；它的高度靠挂载后的实测（`streaming` 行始终挂载）。`chars`（高度估算）因此只在该行出现与结束时更新。
 - 窗口化的行是否挂载经 `createSelector` 逐行询问（`pinned`、末尾、视口三个选择器），视口移动一行只唤醒进出窗口的那几行；`gaps` 用普通循环计算，内容相同的 map 不替换。不要让每一行都读同一个会随滚动变化的 signal。
 - 组件内局部状态（展开、选中）一律提升到 `SessionViewState = Map<partID, …>`，卸载后再挂载不丢。滚动定位走行表，不依赖渲染节点。
-- 可折叠的块（点击展开的推理、工具输出、工具错误）要在组件里向 `routes/session/expand.ts` 登记：`ctx.expandables.register(partID, { flag, available })`，`flag` 是点击翻转的那个视图标志，`available` 返回此刻有没有可折叠的内容。`ctrl+o`（`view.expand.toggle`）先展开转录里最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；它翻转的是点击用的同一个标志，所以按键和点击随时互相接续。新增一种这样的块而不登记，按键就会绕过它。
+- 可折叠的块（点击展开的推理、工具输出、工具错误）的判定写在 `routes/session/fold.ts` 的纯函数里，块和 `ctrl+o`（`view.expand.toggle`）共用：`foldFlag(part, env, source)` 返回点击会翻转的视图标志，没有可折叠内容时返回空。行数、字符数、思考模式、“失败且画成一行”这些条件只在那里定义，组件不另写一份。`ctrl+o` 从行表末尾往前，按 store 里的 part 判定，不看块是否已挂载：窗口化转录会卸载视口以外的块，它们正是前几次按键要够到的。先展开最近一个已折叠的块，再往前一个，全部展开后收起最近的一个；翻转的是点击用的同一个标志，翻转后该行被 `pinnedKeys` 固定，挂载时即为展开态，所以按键和点击随时互相接续。新增一种可折叠的块，要在 `fold.ts` 加判定并让组件用它，否则按键会绕过它。视口以外的块展开后不会自动滚动到位。
 - 宽度变化使缓存失效。
 - 窗口化转录保持视口内容不动：视口之上的行高变化（未测过的行首次挂载并被测量、行被展开或收起）用 OpenTUI 原生的 `scroll.anchor(行节点)` 保持锚点，由布局在同一帧里调整偏移；不用 `scroll.scrollBy(delta)`，它要等下一帧测到新高度才补偿，每次修正先跳一帧再跳回（#1277 实测 44 次跳动变成 96 次）。`SessionTranscript` 的窗口控制器每个 pass 锚定视口顶部所在的行（该行须已被上一次布局放好）；贴底时不锚定，让滚动盒继续跟随新内容。
 - 窗口按布局之后的偏移取：行表已经知道、布局尚未应用的变化（行集合变了，或某行的 `revision` 变了，例如展开）折算进偏移再算窗口，否则视口里的行会被卸载一帧，屏幕上出现空白。测量不在其中，它读的是已被锚定的布局。
@@ -402,7 +402,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 | 新键位 | 处置表遍历；同层无重复键；帮助文字随改键变化；涉及 `esc` 时每层一条用例 |
 | 状态带行 / 抽屉区块 | 80/120 列快照；双语不溢出；写请求 0；无 `setInterval`；抽屉关闭时订阅 0 |
 | 新服务端事件 | gate 决策；非完整集合会话 store 写入 0；重连刷新；乱序；空闲帧 0 |
-| 新消息类型 / 行 | 高度估算；`revision`；窗口化挂载行数；展开状态卸载后保留；可折叠的块已登记（`ctrl+o` 能展开它） |
+| 新消息类型 / 行 | 高度估算；`revision`；窗口化挂载行数；展开状态卸载后保留；可折叠的块有 `fold.ts` 判定（窗口化会话里已卸载的块 `ctrl+o` 也能展开） |
 | 新设置项 | 存储位置遍历；C1 不可用时只读；读回 |
 | 新预填模板 | 出现条件；`session.prompt` 为 0；草稿追加；双语 |
 | 新 toast | 页脚快照；排队与溢出；`dedupeKey` 合并；截断 |

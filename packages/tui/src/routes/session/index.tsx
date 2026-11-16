@@ -44,7 +44,18 @@ import type {
 import { createSessionAttention } from "@graphagent/sdk/attention"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
-import { webSearchProviderLabel } from "../../util/tool-display"
+import {
+  numberValue,
+  parseApplyPatchFiles,
+  parseDiagnostics,
+  parseQuestionAnswers,
+  parseQuestions,
+  parseTodos,
+  recordValue,
+  stringValue,
+  toolDisplay,
+  webSearchProviderLabel,
+} from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK, locationHeaders } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
@@ -68,7 +79,6 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv.tsx"
 import { createTicker } from "../../context/ticker"
 import { useOptionalTicker } from "../../context/ticker-context"
-import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
 import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
@@ -114,7 +124,36 @@ import {
   type SessionViewState,
 } from "./rows"
 import { createRowTable } from "./row-table"
-import { createExpandables, toggleExpand, type Expandables } from "./expand"
+import { toggleExpand } from "./expand"
+import {
+  completedOutput,
+  editShowsBlock,
+  errorDenied,
+  foldFlag,
+  GENERIC_OUTPUT_LINES,
+  genericOutput,
+  genericShowsBlock,
+  outputCharCap,
+  SHELL_OUTPUT_LINES,
+  shellOutput,
+  shellShowsBlock,
+  toolError,
+  toolFailed,
+  toolMetadata,
+  writeShowsBlock,
+  type FoldEnv,
+  type FoldSource,
+} from "./fold"
+
+// The tool data readers live in `util/tool-display`, where `./fold` reads them too; the tests import them from here.
+export {
+  parseApplyPatchFiles,
+  parseDiagnostics,
+  parseQuestionAnswers,
+  parseQuestions,
+  parseTodos,
+  toolDisplay,
+} from "../../util/tool-display"
 
 addDefaultParsers(parsers.parsers)
 
@@ -173,8 +212,6 @@ const context = createContext<{
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
   view: SessionViewState
-  /** Blocks that can fold; `view.expand.toggle` finds the one to flip here. */
-  expandables: Expandables
   rowHeight: (row: Row, index: number) => number
   measureRow: (row: Row, el: BoxRenderable) => void
   /** True while the row hosting `partID` is inside the scroll viewport. Unwindowed transcripts report everything visible. */
@@ -307,7 +344,6 @@ export function Main() {
   // estimates all read this table instead of mounted render nodes, so an
   // unmounted row can still be located and scrolled to.
   const view = createSessionViewState()
-  const expandables = createExpandables()
   const measurements = createRowMeasurements()
 
   // Windowing reports which part rows are actually on screen, so spinners in
@@ -723,6 +759,26 @@ export function Main() {
     }
   }
 
+  // Which flag folds the part of a row, read from the store and not from the blocks on screen: a windowed
+  // transcript has unmounted the blocks outside the viewport, and `view.expand.toggle` has to reach them too.
+  const foldSource: FoldSource = {
+    text: (part) =>
+      part.type === "reasoning" && part.time.end !== undefined ? settledPartText(part) : sync.readPartText(part),
+    metadata: (part) => toolMetadata(part, (item) => sync.readPartPreview(item)),
+  }
+  function foldOfRow() {
+    const env: FoldEnv = {
+      width: contentWidth(),
+      thinking: thinkingMode(),
+      showGenericToolOutput: showGenericToolOutput(),
+    }
+    return (row: Row) => {
+      if (row.kind !== "reasoning" && row.kind !== "tool") return undefined
+      const part = sync.data.part[row.messageID]?.find((item) => item.id === row.partID)
+      return part ? foldFlag(part, env, foldSource) : undefined
+    }
+  }
+
   const sessionCommandList = createMemo(() => [
     {
       title: "Rename session",
@@ -919,7 +975,7 @@ export function Main() {
       category: "Session",
       // Opening a block is view state, not a request, so sub-agent views keep the key (spec 4.4).
       run: () => {
-        toggleExpand(rows(), expandables, view)
+        toggleExpand(rows(), foldOfRow(), view)
       },
     },
     {
@@ -1433,7 +1489,6 @@ export function Main() {
           sync,
           tui: tuiConfig,
           view,
-          expandables,
           rowHeight: heightFor,
           measureRow,
           isVisible: isVisiblePart,
@@ -2190,11 +2245,6 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo((owner) => generateSubtleSyntax(theme, owner))
-  // In hide mode the header folds the body. The keyboard finds the block here: with no body there is nothing to open.
-  ctx.expandables.register(props.part.id, {
-    flag: "expanded",
-    available: () => inMinimal() && Boolean(summary().body),
-  })
 
   const toggle = () => {
     if (!inMinimal()) return
@@ -2321,18 +2371,15 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
   const toolprops = {
     get metadata() {
-      if (props.part.state.status === "pending") return {}
-      const metadata = props.part.state.metadata ?? {}
       // The running output window lives in the stream buffer, not the store
       // (#886 5.3); it overlays the snapshot until the durable part settles.
-      const preview = ctx.sync.readPartPreview(props.part)
-      return preview ? { ...metadata, output: preview.tail, previewTotalLength: preview.totalLength } : metadata
+      return toolMetadata(props.part, (part) => ctx.sync.readPartPreview(part))
     },
     get input() {
       return props.part.state.input ?? {}
     },
     get output() {
-      return props.part.state.status === "completed" ? props.part.state.output : undefined
+      return completedOutput(props.part.state)
     },
     get tool() {
       return props.part.tool
@@ -2403,21 +2450,17 @@ function GenericTool(props: ToolProps) {
   const attention = createMemo(() => toolAttention(props.tool, props.part.state))
   const { theme } = useTheme()
   const ctx = use()
-  const output = createMemo(() => props.output?.trim() ?? "")
+  const output = createMemo(() => genericOutput(props.output))
   const expanded = () => ctx.view.get(props.part.id, "expanded")
-  const maxLines = 3
-  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
+  const maxLines = GENERIC_OUTPUT_LINES
+  const maxChars = createMemo(() => outputCharCap(maxLines, ctx.width))
   const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
   const limited = createMemo(() => {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
-  const showBlock = () => attention() || (props.output && ctx.showGenericToolOutput())
-  // Only the block folds; the one-line fallback below has nothing to open.
-  ctx.expandables.register(props.part.id, {
-    flag: "expanded",
-    available: () => Boolean(showBlock()) && collapsed().overflow,
-  })
+  // Only the block folds; the one-line fallback below has nothing to open, and `fold.ts` skips a call that draws it.
+  const showBlock = () => genericShowsBlock(attention(), props.output, ctx.showGenericToolOutput())
 
   return (
     <Show
@@ -2471,19 +2514,12 @@ function InlineTool(props: {
     return callID === props.part.callID
   })
 
-  const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error : undefined))
+  const error = createMemo(() => toolError(props.part.state))
 
-  const denied = createMemo(
-    () =>
-      error()?.includes("QuestionRejectedError") ||
-      error()?.includes("rejected permission") ||
-      error()?.includes("specified a rule") ||
-      error()?.includes("user dismissed"),
-  )
+  const denied = createMemo(() => errorDenied(error()))
 
-  const failed = createMemo(() => Boolean(error() && !denied()))
   // A failed call folds its error text under the row, and a click on the row opens it (see `onMouseUp` below).
-  ctx.expandables.register(props.part.id, { flag: "errorExpanded", available: failed })
+  const failed = createMemo(() => toolFailed(props.part.state))
   const clickable = createMemo(() => Boolean(props.onClick || failed()))
   const fg = createMemo(() => {
     if (props.color) return props.color
@@ -2501,7 +2537,7 @@ function InlineTool(props: {
       color={fg()}
       errorColor={theme.error}
       failed={failed()}
-      denied={Boolean(denied())}
+      denied={denied()}
       error={error()}
       errorExpanded={errorExpanded()}
       complete={props.complete}
@@ -2667,17 +2703,15 @@ function Shell(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
-  const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
+  const output = createMemo(() => shellOutput(props.metadata))
   const expanded = () => ctx.view.get(props.part.id, "expanded")
-  const maxLines = 10
-  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
+  const maxLines = SHELL_OUTPUT_LINES
+  const maxChars = createMemo(() => outputCharCap(maxLines, ctx.width))
   const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
   const limited = createMemo(() => {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
-  // Without output the call is one line and `overflow` stays false.
-  ctx.expandables.register(props.part.id, { flag: "expanded", available: () => collapsed().overflow })
 
   const workdirDisplay = createMemo(() => {
     const workdir = stringValue(props.input.workdir)
@@ -2695,7 +2729,7 @@ function Shell(props: ToolProps) {
 
   return (
     <Switch>
-      <Match when={stringValue(props.metadata.output) !== undefined}>
+      <Match when={shellShowsBlock(props.metadata)}>
         <BlockTool
           title={title()}
           part={props.part}
@@ -2734,7 +2768,7 @@ function Write(props: ToolProps) {
 
   return (
     <Switch>
-      <Match when={props.metadata.diagnostics !== undefined}>
+      <Match when={writeShowsBlock(props.metadata)}>
         <BlockTool title={"# Wrote " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
           <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
             <code
@@ -2962,7 +2996,7 @@ function Edit(props: ToolProps) {
 
   return (
     <Switch>
-      <Match when={stringValue(props.metadata.diff) !== undefined}>
+      <Match when={editShowsBlock(props.metadata)}>
         <BlockTool title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
           <box paddingLeft={1}>
             <PatchDiff
@@ -3178,93 +3212,4 @@ function input(input: Record<string, unknown>, omit?: string[]): string {
   })
   if (primitives.length === 0) return ""
   return `[${primitives.map(([key, value]) => `${key}=${value}`).join(", ")}]`
-}
-
-function stringValue(value: unknown) {
-  return typeof value === "string" ? value : undefined
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
-
-const toolDisplays = new Set([
-  "bash",
-  "glob",
-  "read",
-  "grep",
-  "webfetch",
-  "websearch",
-  "write",
-  "edit",
-  "task",
-  "apply_patch",
-  "todowrite",
-  "question",
-  "skill",
-])
-
-export function toolDisplay(tool: string) {
-  return toolDisplays.has(tool) ? tool : "generic"
-}
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return
-  return value as Record<string, unknown>
-}
-
-export function parseApplyPatchFiles(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((item) => {
-    const file = recordValue(item)
-    if (!file) return []
-    const type = stringValue(file.type)
-    const relativePath = stringValue(file.relativePath)
-    const filePath = stringValue(file.filePath)
-    const patch = stringValue(file.patch)
-    const deletions = numberValue(file.deletions)
-    if (!type || !relativePath || !filePath || patch === undefined || deletions === undefined) return []
-    return [{ type, relativePath, filePath, patch, deletions, movePath: stringValue(file.movePath) }]
-  })
-}
-
-export function parseTodos(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((item) => {
-    const todo = recordValue(item)
-    const status = stringValue(todo?.status)
-    const content = stringValue(todo?.content)
-    return status && content ? [{ status, content }] : []
-  })
-}
-
-export function parseQuestions(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((item) => {
-    const question = stringValue(recordValue(item)?.question)
-    return question ? [{ question }] : []
-  })
-}
-
-export function parseQuestionAnswers(value: unknown) {
-  if (!Array.isArray(value)) return
-  return value.map((answer) =>
-    Array.isArray(answer) ? answer.filter((item): item is string => typeof item === "string") : [],
-  )
-}
-
-export function parseDiagnostics(value: unknown, filePath: string) {
-  const diagnostics = recordValue(value)?.[filePath]
-  if (!Array.isArray(diagnostics)) return []
-  return diagnostics
-    .flatMap((item) => {
-      const diagnostic = recordValue(item)
-      const start = recordValue(recordValue(diagnostic?.range)?.start)
-      const line = numberValue(start?.line)
-      const character = numberValue(start?.character)
-      const message = stringValue(diagnostic?.message)
-      if (diagnostic?.severity !== 1 || line === undefined || character === undefined || !message) return []
-      return [{ range: { start: { line, character } }, message }]
-    })
-    .slice(0, 3)
 }
