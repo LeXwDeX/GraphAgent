@@ -1278,10 +1278,11 @@ const serviceLayer = Layer.effect(
         // ADR-0008 decision 6, row 1 (Amendment 3, 4b-C): the end of a runtime entry whose workflow ended or was deleted,
         // in one routine for the two ways this process learns of it. The terminal event handlers below hear of an end
         // that this process's own bus carried. An end that another process caused never reaches this bus (events do not
-        // cross processes), so no handler runs here for it, and the lost lease that the renewal or a spawn's re-read
-        // finds is the only news: the reconciler's `retire` action (row 1) runs this same routine. Whichever takes the
-        // entry's lock first retires the entry and does what follows; the other finds it gone, or replaced, and ends
-        // right there, so the settlement and the wake of the parent follow once per entry. Returns whether this call
+        // cross processes), so no handler runs here for it, and the news is the lost lease that a renewal or a spawn's
+        // re-read finds, or the round's look at the entries that its scan did not list (a control op needs no lease, so
+        // the renewal can go on succeeding): the reconciler's `retire` action (row 1) runs this same routine. Whichever
+        // takes the entry's lock first retires the entry and does what follows; the other finds it gone, or replaced, and
+        // ends right there, so the settlement and the wake of the parent follow once per entry. Returns whether this call
         // retired it.
         const retireTerminal = Effect.fn("DagLoop.retireTerminal")(function* (
           dagID: string,
@@ -1322,10 +1323,13 @@ const serviceLayer = Layer.effect(
                       ? childAbort("control-cancel", "parent-control")
                       : childAbort("parent-session-deleted", "parent-session")
               for (const [nodeID, fiber] of entry.fibers) {
-                const node = yield* store.getNode(dagID, nodeID)
-                yield* abortChild(dagID, nodeID, node?.childSessionId ?? null, "dag.loop.workflowTerminal", abort).pipe(
-                  Effect.ignore,
-                )
+                // The child that this entry's own attempt recorded (`Evictable.attemptChild`), where it recorded one: once
+                // another runner took the workflow over and restarted a node, the node row names that runner's child,
+                // which this entry must not touch. An attempt that has recorded none (its spawn has not created the
+                // child) falls back to the row, as the terminal handler always did.
+                const own = entry.attemptChild.get(fiber)?.()
+                const childSessionID = own ?? (yield* store.getNode(dagID, nodeID))?.childSessionId ?? null
+                yield* abortChild(dagID, nodeID, childSessionID, "dag.loop.workflowTerminal", abort).pipe(Effect.ignore)
                 yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
                 const watcher = entry.watchers.get(nodeID)
                 if (watcher) yield* Fiber.interrupt(watcher).pipe(Effect.ignore)

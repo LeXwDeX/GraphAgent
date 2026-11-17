@@ -10,8 +10,9 @@
  * terminalization runs in, the single flight of `reconcile`, `reconcileAfter`
  * (the trigger that brings news and is answered by an evaluation that began after
  * it), the clock watch every observation feeds, the retirement of the entry of a
- * workflow that ended (row 1, which the loop's terminal handlers share), and the
- * order and the resilience of a round. The loop and two runners over one database are in
+ * workflow that ended (row 1, which the loop's terminal handlers share, and which a
+ * round reaches for the entries that its scan of the live statuses did not list), and
+ * the order and the resilience of a round. The loop and two runners over one database are in
  * `dag-runner-lease.test.ts` ("the reconcile tick") and `dag-runner-races.test.ts`
  * (race 3).
  */
@@ -1429,6 +1430,87 @@ describe("a round", () => {
         expect(calls.claim).toEqual(["wf-orphan"])
         expect([...calls.adopt].sort()).toEqual(["wf-paused", "wf-running", "wf-stepping"])
         expect(calls.getWorkflow).toBe(4)
+      }),
+    ),
+  )
+
+  // A round scans the live statuses, and an ended workflow is not among them. Another process that ended a workflow with a
+  // control op (which needs no lease) leaves the lease row where it was, so neither a renewal nor a spawn tells this
+  // instance: the entries that the scan did not list are looked at after it, once each, and row 1 retires them.
+  it.live(
+    "looks at the entries that the scan did not list after it, once each: the ended and the deleted are retired",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, entries } = yield* harness
+          const leases = yield* DagLease.Service
+          yield* workflow("wf-live")
+          const claimed = yield* leases.claim({ dagID: "wf-live", runnerID: RUNNER, now: Date.now() })
+          const live = entryOf("live", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
+          entries.set("wf-live", live)
+          yield* workflow("wf-done", { status: "completed" })
+          yield* workflow("wf-failed", { status: "failed" })
+          const ended = ["wf-done", "wf-failed", "wf-nowhere"]
+          for (const dagID of ended) entries.set(dagID, entryOf(dagID, token(1)))
+
+          yield* reconciler.round({ afterClockJump: false })
+
+          expect(calls.retired.map((call) => call.dagID).sort()).toEqual([...ended].sort())
+          // The live workflow was evaluated by the scan alone (it is renewed, nothing is done), each of the others once:
+          // four reads of a workflow row, not five.
+          expect(calls.getWorkflow).toBe(4)
+          expect(entries.get("wf-live")).toBe(live)
+          expect(calls.evictLost).toEqual([])
+          expect(calls.adopt).toEqual([])
+        }),
+      ),
+  )
+
+  it.live("goes on with the other entries when the retirement of one of them fails", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries, script } = yield* harness
+        yield* workflow("wf-1", { status: "completed" })
+        yield* workflow("wf-2", { status: "cancelled" })
+        entries.set("wf-1", entryOf("one", token(1)))
+        entries.set("wf-2", entryOf("two", token(1)))
+        let first = true
+        script.retire = Effect.suspend(() => {
+          if (!first) return Effect.void
+          first = false
+          return Effect.die(new Error("retirement failed"))
+        })
+
+        yield* reconciler.round({ afterClockJump: false })
+
+        expect(calls.retired).toHaveLength(2)
+      }),
+    ),
+  )
+
+  it.live("is interrupted among the entries as it is among the workflows", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries, script } = yield* harness
+        yield* workflow("wf-1", { status: "completed" })
+        yield* workflow("wf-2", { status: "completed" })
+        entries.set("wf-1", entryOf("one", token(1)))
+        entries.set("wf-2", entryOf("two", token(1)))
+        const gate = yield* Deferred.make<void>()
+        script.retire = Deferred.await(gate)
+
+        const round = yield* reconciler
+          .round({ afterClockJump: false })
+          .pipe(Effect.forkChild({ startImmediately: true }))
+        yield* pollWithTimeout(
+          Effect.sync(() => (calls.retired.length > 0 ? true : undefined)),
+          "the round never retired",
+        )
+        yield* Fiber.interrupt(round)
+
+        // It stopped at the entry it was in: the second one was never looked at.
+        expect(calls.retired).toHaveLength(1)
+        expect(calls.getWorkflow).toBe(1)
       }),
     ),
   )

@@ -901,8 +901,8 @@ after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`Wo
   moved, and the reconciler's `retire` input is the same routine; the action runs in the workflow's flight, as an
   eviction does. Under the entry's `evalLock` it reads the workflow row again (a live row means that the news is
   stale, a late terminal event or a verdict made before an extend reopened the workflow, and the entry stays),
-  checks that the entry is still the table's, stops the children that the node rows name, interrupts the fibers and
-  watchers and drops the entry. Then, outside the lock and only for the call that dropped it, it gives the lease
+  checks that the entry is still the table's, stops the children that the entry's own attempts recorded, interrupts the
+  fibers and watchers and drops the entry. Then, outside the lock and only for the call that dropped it, it gives the lease
   back (`abandon`), settles the worktree, releases the dag registration of the parent session and nudges its
   wake. The reason the children are stopped for is the durable status (completed, failed, cancelled; a row that is
   gone is a deleted session); it used to follow the event type of the handler, which is the same in every order
@@ -921,11 +921,20 @@ after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`Wo
   handler's treatment of an entry whose row is missing was this already.
 - Without a `retire` given to the reconciler (the scripted collaborators of `dag-reconciler.test.ts`) row 1 does
   nothing, as it did. The loop always gives one.
-- Not changed. `refused` still leaves a workflow that ended alone, and so does a renewal that cannot read. A
-  workflow that another process ended while the lease row still names this runner (nobody took it over: a control
-  op needs no lease) is not news either, because that renewal succeeds: only `verify` at the next spawn hands it to
-  the reconciler, as before 4b-C.
-- `loop.ts` grows by 34 lines (2317 to 2351): the routine has its comments, and `settleWorkflowTerminal` moved up
+- The round. A control op (a cancel) needs no lease, so another process that ends a workflow with one leaves this
+  runner's lease row alone: the renewal keeps succeeding, no spawn asks, and no event reaches this bus. `round` therefore
+  looks, after its scan of the live statuses, at every entry of the instance that the scan did not list, once per
+  workflow (a failing one is logged and skipped, as in the scan), and the tick's round reaches row 1 for such an entry
+  within one period. Before this, only the re-read of a spawn ever noticed it, which was the variant that the first
+  version of this section left open. It is `reconcile`, not `reconcileAfter`: the round asks what the state is now.
+- Which children. The children that the retirement stops are the ones the entry's own attempts recorded
+  (`Evictable.attemptChild`, as the eviction's are), not the ones the node rows name: once another runner took the
+  workflow over and restarted a node, the row names that runner's child, which this one must not touch. An attempt that
+  recorded none (its spawn had not created the child yet) falls back to the row, as the handler always did; that is the
+  one case in which the row's child can still be another runner's. For a workflow that ended it costs nothing (the
+  holder stops its own children), and the durable re-read under the lock keeps it from a workflow that is live again.
+- Not changed. `refused` still leaves a workflow that ended alone, and so does a renewal that cannot read.
+- `loop.ts` grows by 38 lines (2317 to 2355): the routine has its comments, and `settleWorkflowTerminal` moved up
   ahead of the reconciler's construction.
 
 ### Decision 8: line counts of `loop.ts` (4b-A)

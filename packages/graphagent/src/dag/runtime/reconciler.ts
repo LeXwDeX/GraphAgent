@@ -25,10 +25,15 @@ import type { RunnerLease } from "./runner-lease"
  * An evaluation is single-flight: at most one is under way per workflow, so no two
  * adoptions, evictions or terminalizations of one workflow run at once, which is
  * what the in-process `recovering` reservation of the loop used to stand for.
- * `round` reconciles every non-terminal workflow, orphans first. The renewal tick
- * of `RunnerLease` starts one per period, in a fiber of its own and never two at
- * once (and startup runs one, awaited), so a round that waits for a worktree
- * removal, the lifecycle lock or a user hook delays no renewal.
+ * `round` reconciles every non-terminal workflow, orphans first, and then every
+ * entry of the instance that this scan did not list: the entry of a workflow that
+ * ended or was deleted is not among the statuses that a round scans, and when
+ * another process ended the workflow with a control op (which needs no lease, so the
+ * renewal keeps succeeding), no event, renewal or spawn tells this instance, and the
+ * round is what reaches row 1 for it. The renewal tick of `RunnerLease` starts one
+ * per period, in a fiber of its own and never two at once (and startup runs one,
+ * awaited), so a round that waits for a worktree removal, the lifecycle lock or a
+ * user hook delays no renewal.
  *
  * Two entries, for two kinds of caller. `reconcile(dagID)` is for a caller that asks
  * "what is the state now" on its own schedule, the startup round and the tick:
@@ -97,7 +102,11 @@ export interface Interface {
    * and a call that arrives during it waits for the next.
    */
   readonly reconcileAfter: (dagID: string, round?: Round) => Effect.Effect<ReconcileDecide.Action>
-  /** Reconcile every non-terminal workflow, one at a time: `pending` first (orphans), then the others. A failing workflow is logged and skipped. */
+  /**
+   * Reconcile every non-terminal workflow, one at a time: `pending` first (orphans), then the others; then each entry of
+   * the instance whose workflow that scan did not list (it ended or was deleted: row 1 retires the entry), once per
+   * workflow. A failing workflow is logged and skipped.
+   */
   readonly round: (round: Round) => Effect.Effect<void>
 }
 
@@ -431,17 +440,33 @@ export function make<E extends RunnerLease.Evictable>(input: Input<E>): Interfac
     }
   })
 
+  // One workflow of a round: a failure is logged and the round goes on with the next one, an interruption is not the
+  // workflow's failure and ends the round.
+  const visit = (dagID: string, round: Round) =>
+    reconcile(dagID, round).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("DagLoop reconciliation failed for workflow", { dagID, cause }),
+      ),
+    )
+
   const sweep = Effect.fn("DagReconciler.round")(function* (round: Round) {
+    const scanned = new Set<string>()
     for (const status of LIVE_STATUSES) {
       for (const workflow of yield* store.listByStatus(status)) {
-        yield* reconcile(workflow.id, round).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("DagLoop reconciliation failed for workflow", { dagID: workflow.id, cause }),
-          ),
-        )
+        scanned.add(workflow.id)
+        yield* visit(workflow.id, round)
       }
+    }
+    // The entries that the scan did not list: their workflow ended or was deleted, and nobody this instance heard from said
+    // so. The table is read as it is now, not as it was before the scan, and the map tolerates changes while it is
+    // iterated: an entry that an evaluation dropped meanwhile is not visited, one that an adoption made meanwhile is
+    // visited once, as a live workflow is, and a workflow is never visited twice in a round.
+    for (const dagID of entries.keys()) {
+      if (scanned.has(dagID)) continue
+      scanned.add(dagID)
+      yield* visit(dagID, round)
     }
   })
 
