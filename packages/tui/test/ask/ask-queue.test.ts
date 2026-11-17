@@ -49,10 +49,8 @@ function data(): AskQueueData {
       grandchild: [permission("per_000000000040", "grandchild")],
       "other-root": [permission("per_000000000001", "other-root")],
     },
-    // The root asks; a descendant's question cannot exist (sub-agents have no `question` tool) and is never queued.
     question: {
-      root: [question("que_000000000020", "root")],
-      child: [question("que_000000000025", "child")],
+      child: [question("que_000000000020", "child")],
       grandchild: [question("que_000000000050", "grandchild")],
     },
   }
@@ -77,25 +75,17 @@ describe("session tree resolution", () => {
 })
 
 describe("ask queue aggregation", () => {
-  test("aggregates the permissions of the tree and the root's question in creation order", () => {
+  test("aggregates the root, child and grandchild in creation order", () => {
     const queue = collectAskQueue(data(), "root")
     expect(queue.map(askRequestID)).toEqual([
       "per_000000000010",
       "que_000000000020",
       "per_000000000030",
       "per_000000000040",
+      "que_000000000050",
     ])
-    expect(queue.map(askSessionID)).toEqual(["child", "root", "root", "grandchild"])
-    expect(queue.map((ask) => ask.kind)).toEqual(["permission", "question", "permission", "permission"])
-  })
-
-  test("queues no question of a descendant, from any view of the tree", () => {
-    for (const viewed of ["root", "child", "grandchild", "sibling"]) {
-      const questions = collectAskQueue(data(), viewed).filter((ask) => ask.kind === "question")
-      expect(questions.map(askSessionID)).toEqual(["root"])
-    }
-    const onlyDescendants: AskQueueData = { ...data(), question: { child: data().question.child } }
-    expect(collectAskQueue(onlyDescendants, "child").some((ask) => ask.kind === "question")).toBe(false)
+    expect(queue.map(askSessionID)).toEqual(["child", "child", "root", "grandchild", "grandchild"])
+    expect(queue.map((ask) => ask.kind)).toEqual(["permission", "question", "permission", "permission", "question"])
   })
 
   test("shows the same queue from the main session and every descendant view", () => {

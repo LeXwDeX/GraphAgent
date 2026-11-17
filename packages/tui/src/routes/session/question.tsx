@@ -22,6 +22,8 @@ export interface QuestionPromptProps {
   request: QuestionRequest
   /** Session being viewed; decides whether a source label is shown. */
   currentSessionID: string
+  /** Root of the queue's session tree; only its own questions accept free text. */
+  rootSessionID: string
   /** 1-based position in the shared ask queue. */
   position: number
   total: number
@@ -41,6 +43,7 @@ export function QuestionPrompt(props: QuestionPromptProps) {
 
   const questions = createMemo(() => props.request.questions)
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
+  const own = createMemo(() => props.request.sessionID === props.rootSessionID)
   const headerBudget = createMemo(() =>
     Math.min(24, Math.max(6, Math.floor((dimensions().width - 8) / Math.max(1, questions().length + 1)))),
   )
@@ -62,7 +65,7 @@ export function QuestionPrompt(props: QuestionPromptProps) {
   const question = createMemo(() => questions()[store.tab])
   const confirm = createMemo(() => !single() && store.tab === questions().length)
   const options = createMemo(() => question()?.options ?? [])
-  const allowCustom = createMemo(() => question()?.custom !== false)
+  const allowCustom = createMemo(() => question()?.custom !== false && own())
   const other = createMemo(() => allowCustom() && store.selected === options().length)
   const input = createMemo(() => store.custom[store.tab] ?? "")
   const multi = createMemo(() => question()?.multiple === true)
