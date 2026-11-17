@@ -16,8 +16,10 @@ import path from "node:path"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { Database } from "@graphagent/core/database/database"
 import { EventV2 } from "@graphagent/core/event"
+import { DagLease } from "@graphagent/core/dag/lease"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
+import { DagTransact } from "@graphagent/core/dag/transact"
 import { Project } from "@graphagent/core/project"
 import { ProjectTable } from "@graphagent/core/project/sql"
 import { AbsolutePath } from "@graphagent/core/schema"
@@ -109,9 +111,13 @@ export function runtime() {
       Effect.provideService(effect, InstanceRef, { directory: input.directory } as never),
   } as never)
   const bridge = EventV2Bridge.defaultLayer.pipe(Layer.provide(Layer.merge(database, events)))
+  // As in production every Dag command runs in one IMMEDIATE transaction (#1029).
+  const transact = DagTransact.layer.pipe(
+    Layer.provide(Layer.merge(database, DagLease.layer.pipe(Layer.provide(database)))),
+  )
   const dag = Layer.provideMerge(
     Dag.layer,
-    Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridge),
+    Layer.mergeAll(database, events, store, projector, worktree, instanceStore, bridge, transact),
   )
   return Layer.merge(dag, DagControl.layer.pipe(Layer.provide(dag)))
 }
