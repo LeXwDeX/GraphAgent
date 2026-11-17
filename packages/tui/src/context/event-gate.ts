@@ -53,6 +53,7 @@ const SESSION_SUMMARY_TYPES = new Set([
   "goal.cleared",
   "dag.workflow.summary.updated",
   "lifecycle.transitioned",
+  "pr.watch.updated",
   "session.turn.settled",
 ])
 

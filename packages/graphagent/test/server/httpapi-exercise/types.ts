@@ -51,19 +51,38 @@ export type BackendApp = {
   request(input: string | URL | Request, init?: RequestInit): Response | Promise<Response>
 }
 
+export type PrWatchSeed = {
+  id: string
+  sessionID: SessionID
+  url: string
+  number: number
+  phase: string
+  updatedAt: number
+  outcome?: string
+  head?: string
+}
+
 /** Effect-native helpers available while setting up and asserting a scenario. */
 export type ScenarioContext = {
   directory: string | undefined
   headers: (extra?: Record<string, string>) => Record<string, string>
   request: (input: FollowupRequestSpec) => Effect.Effect<CallResult>
   file: (name: string, content: string) => Effect.Effect<void>
-  session: (input?: { title?: string; parentID?: SessionID; model?: { id: string; providerID: string } }) => Effect.Effect<SessionInfo>
+  session: (input?: {
+    title?: string
+    parentID?: SessionID
+    model?: { id: string; providerID: string }
+  }) => Effect.Effect<SessionInfo>
   sessionGet: (sessionID: SessionID) => Effect.Effect<SessionInfo | undefined>
   project: () => Effect.Effect<Project.Info>
   message: (sessionID: SessionID, input?: { text?: string }) => Effect.Effect<MessageSeed>
   messages: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts[]>
   todos: (sessionID: SessionID, todos: TodoInfo[]) => Effect.Effect<void>
   goal: (sessionID: SessionID, goalText: string, maxTurns?: number) => Effect.Effect<void>
+  /** Insert a durable `pr_watch` row owned by this process; `next_poll_at` is far enough out that the poller never reads the forge. */
+  prWatch: (input: PrWatchSeed) => Effect.Effect<void>
+  /** Create a reminder through the reminder clock. */
+  reminder: (sessionID: SessionID, text: string, fireAt: number) => Effect.Effect<{ id: string }>
   worktree: (input?: { name?: string }) => Effect.Effect<Worktree.Info>
   worktreeRemove: (directory: string) => Effect.Effect<void>
   llmText: (value: string) => Effect.Effect<void>
@@ -72,7 +91,12 @@ export type ScenarioContext = {
   /** Create a DAG workflow owned by sessionID with the given node configs. Returns the dagID. */
   dag: (input: { sessionID: SessionID; title?: string; nodes: DagNodeSeed[] }) => Effect.Effect<DagWorkflowInfo>
   /** Fail a seeded DAG node through the Dag service (projects error_class on the wire). */
-  dagFailNode: (dagID: string, nodeID: string, reason: string, errorClass: "timeout" | "exec_failed" | "verdict_fail") => Effect.Effect<void>
+  dagFailNode: (
+    dagID: string,
+    nodeID: string,
+    reason: string,
+    errorClass: "timeout" | "exec_failed" | "verdict_fail",
+  ) => Effect.Effect<void>
   dagAgentMessage: (dagID: string, nodeID: string, ownerSessionID: SessionID) => Effect.Effect<void>
   /** Create a DAG workflow under a different project in the shared database. */
   foreignDag: (input: { title?: string; nodes: DagNodeSeed[] }) => Effect.Effect<DagWorkflowInfo>

@@ -4,6 +4,7 @@
 import { KeyedMutex } from "@graphagent/core/effect/keyed-mutex"
 import { LayerNode } from "@graphagent/core/effect/layer-node"
 import { SessionAdmission } from "@graphagent/core/session/admission"
+import type { PrWatchEvent } from "@graphagent/schema/pr-watch-event"
 import { Cause, Context, Effect, Layer, Option, type Deferred, type Scope } from "effect"
 import { randomUUID } from "node:crypto"
 import { makeSessionRuntimes, type SessionRuntimes } from "./runtime"
@@ -303,6 +304,20 @@ export interface ChildReport {
  */
 export interface PrWatchLiveState {
   readonly watches: Map<string, { readonly phase: string; readonly sessionID: string; readonly observedAt: number }>
+  /**
+   * The last progress this process published per watch (#1036): the dedupe
+   * signature of `pr.watch.updated` and the check counts, sanitized review and
+   * delivery record the durable row does not carry. Owned by
+   * `pr-watch/progress.ts`, pruned lazily there; never an authority.
+   */
+  readonly progress: Map<string, PrWatchProgressSlot>
+}
+
+export interface PrWatchProgressSlot {
+  readonly entry: PrWatchEvent.Entry
+  readonly signature: string
+  /** The owning session's directory, read once per watch to locate the event. */
+  readonly directory: string | undefined
 }
 
 /**
@@ -361,7 +376,7 @@ export const EngineProcess: EngineProcess = {
   scheduler: AgentSchedulerState.makeState(),
   runner: makeRunnerIdentity(),
   children: { byRun: new Map(), bySession: new Map(), reports: new Map(), parents: new Set() },
-  prWatch: { watches: new Map() },
+  prWatch: { watches: new Map(), progress: new Map() },
   reminder: { due: new Set(), clocks: new Set() },
 }
 

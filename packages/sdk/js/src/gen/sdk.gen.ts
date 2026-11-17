@@ -228,6 +228,10 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionPrWatchErrors,
+  SessionPrWatchResponses,
+  SessionReminderErrors,
+  SessionReminderResponses,
   SessionResumeErrors,
   SessionResumeResponses,
   SessionRevertErrors,
@@ -2510,6 +2514,44 @@ export class Session2 extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
     return (options?.client ?? this.client).get<SessionGoalResponses, SessionGoalErrors, ThrowOnError>({
       url: "/session/{sessionID}/goal",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session PR watches
+   *
+   * List the session's PR/MR watches that are live or ended within the last 10 minutes, newest first. Each entry has the shape of the pr.watch.updated event payload.
+   */
+  public prWatch<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionPrWatchResponses, SessionPrWatchErrors, ThrowOnError> {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<SessionPrWatchResponses, SessionPrWatchErrors, ThrowOnError>({
+      url: "/session/{sessionID}/pr-watch",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get session reminders
+   *
+   * List the session's reminders that can still fire or are owed, soonest first, with the time each fires at.
+   */
+  public reminder<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ): RequestResult<SessionReminderResponses, SessionReminderErrors, ThrowOnError> {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<SessionReminderResponses, SessionReminderErrors, ThrowOnError>({
+      url: "/session/{sessionID}/reminder",
       ...options,
       ...params,
     })

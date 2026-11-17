@@ -70,6 +70,7 @@ describe("event scope", () => {
     expect(eventScope("goal.updated")).toBe("session-summary")
     expect(eventScope("dag.workflow.summary.updated")).toBe("session-summary")
     expect(eventScope("lifecycle.transitioned")).toBe("session-summary")
+    expect(eventScope("pr.watch.updated")).toBe("session-summary")
     expect(eventScope("session.turn.settled")).toBe("session-summary")
     expect(eventScope("mcp.tools.changed")).toBe("global")
     expect(eventScope("project.updated")).toBe("global")

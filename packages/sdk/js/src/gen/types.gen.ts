@@ -72,6 +72,7 @@ export type Event =
   | EventGlobalDisposed
   | EventLifecycleTransitioned
   | EventSessionTurnSettled
+  | EventPrWatchUpdated
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -86,6 +87,24 @@ export type QuestionRejected = {
 }
 
 export type QuestionAnswer = Array<string>
+
+export type PrWatchDelivery = {
+  state: "pending" | "delivered"
+  deliveredAt?: number
+  noticeMessageID?: string
+  noReply?: boolean
+}
+
+export type PrWatchChecks = {
+  total: number
+  pending: number
+  failed: number
+  passed: number
+}
+
+export type PrWatchOutcome = "success" | "failure" | "merged" | "closed" | "review" | "deadline"
+
+export type PrWatchPhase = "watching" | "delivering" | "succeeded" | "failed" | "expired" | "cancelled"
 
 export type QuestionTool = {
   messageID: string
@@ -738,6 +757,41 @@ export type TextPartInput = {
   metadata?: {
     [key: string]: unknown
   }
+}
+
+export type SessionReminderList = {
+  entries: Array<SessionReminder>
+}
+
+export type SessionReminder = {
+  id: string
+  sessionID: string
+  text: string
+  fireAt: number
+  everyMs: number | null
+  status: "scheduled" | "due"
+  createdAt: number
+}
+
+export type PrWatchList = {
+  entries: Array<PrWatchEntry>
+}
+
+export type PrWatchEntry = {
+  sessionID: string
+  watchID: string
+  url: string
+  provider: "github" | "gitlab"
+  number: number
+  phase: PrWatchPhase
+  outcome?: PrWatchOutcome
+  checks?: PrWatchChecks
+  head?: string
+  review?: string
+  startedAt: number
+  updatedAt: number
+  deadlineAt: number
+  delivery?: PrWatchDelivery
 }
 
 export type Session = {
@@ -1906,6 +1960,27 @@ export type EventServerInstanceDisposed = {
   type: "server.instance.disposed"
   properties: {
     directory: string
+  }
+}
+
+export type EventPrWatchUpdated = {
+  id: string
+  type: "pr.watch.updated"
+  properties: {
+    sessionID: string
+    watchID: string
+    url: string
+    provider: "github" | "gitlab"
+    number: number
+    phase: PrWatchPhase
+    outcome?: PrWatchOutcome
+    checks?: PrWatchChecks
+    head?: string
+    review?: string
+    startedAt: number
+    updatedAt: number
+    deadlineAt: number
+    delivery?: PrWatchDelivery
   }
 }
 
@@ -4970,6 +5045,68 @@ export type SessionGoalResponses = {
 }
 
 export type SessionGoalResponse = SessionGoalResponses[keyof SessionGoalResponses]
+
+export type SessionPrWatchData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/pr-watch"
+}
+
+export type SessionPrWatchErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: BadRequestError | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionPrWatchError = SessionPrWatchErrors[keyof SessionPrWatchErrors]
+
+export type SessionPrWatchResponses = {
+  /**
+   * PR/MR watches
+   */
+  200: PrWatchList
+}
+
+export type SessionPrWatchResponse = SessionPrWatchResponses[keyof SessionPrWatchResponses]
+
+export type SessionReminderData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/reminder"
+}
+
+export type SessionReminderErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: BadRequestError | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionReminderError = SessionReminderErrors[keyof SessionReminderErrors]
+
+export type SessionReminderResponses = {
+  /**
+   * Pending reminders
+   */
+  200: SessionReminderList
+}
+
+export type SessionReminderResponse = SessionReminderResponses[keyof SessionReminderResponses]
 
 export type SessionHookListData = {
   body?: never
