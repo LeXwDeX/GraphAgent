@@ -70,7 +70,8 @@ import { HookStatusProvider, useHookStatus } from "./context/hook-status"
 import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
-import { returnToParent } from "./session/navigate"
+import { openSubAgent, returnToParent } from "./session/navigate"
+import { siblingPosition, siblingSessions } from "./session/siblings"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
@@ -412,7 +413,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const subagentPath = createMemo(() => {
     const view = subagent()
     if (!view) return undefined
-    return { ...view, onOpen: (sessionID: string) => route.navigate({ type: "session", sessionID }) }
+    return {
+      ...view,
+      onOpen: (sessionID: string) =>
+        sync.session.get(sessionID)?.parentID
+          ? openSubAgent(sessionID, { route, sync, toast })
+          : route.navigate({ type: "session", sessionID }),
+    }
+  })
+  // `子 agent i/N` in the top bar: the same `(time.created, id)` order that `←→` walks.
+  const subagentPosition = createMemo(() => {
+    if (route.data.type !== "session" || !subagent()) return undefined
+    const sessionID = route.data.sessionID
+    return siblingPosition(siblingSessions(sync.data.session, sessionID), sessionID)
   })
   const footerStatus = useFooterStatus(
     // The shared slot holds the hook progress only while a hook runs. The component renders nothing when idle, but
@@ -1138,6 +1151,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       path:
         route.data.type === "session" && !subagentPath() ? sync.session.get(route.data.sessionID)?.title : undefined,
       subagent: subagentPath(),
+      position: subagentPosition(),
       right,
     }
   })
@@ -1184,7 +1198,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
               route.data.type === "diff"
                 ? diffFooterHints()
                 : subagent()
-                  ? subagentFooterHints(footerKeys().drawer)
+                  ? subagentFooterHints(footerKeys().drawer, (subagentPosition()?.total ?? 0) > 1)
                   : footerKeys().hints,
             meta: route.data.type === "home" ? homeMeta() : { trust: homeMeta().trust },
             dag: dagIndicator(),

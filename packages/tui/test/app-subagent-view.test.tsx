@@ -304,3 +304,86 @@ for (const language of ["zh-CN", "en"] as const) {
     })
   }
 }
+
+const sibling = (id: string, created: number, agent: string) =>
+  sessionFixture(id, {
+    parentID: rootID,
+    title: `${agent} 任务 (@${agent} subagent)`,
+    agent,
+    time: { created, updated: created + 1 },
+  })
+
+test("the top bar counts the sub-agent among its siblings in the order ←→ walks, and the footer offers the switch", async () => {
+  const siblings = [
+    root,
+    sibling("ses_sub_c", 30, "review"),
+    sibling("ses_sub_a", 10, "explore"),
+    sibling("ses_sub_b", 20, "general"),
+  ]
+  const app = await runApp({ sessions: siblings, args: { sessionID: "ses_sub_a" }, width: 120, height: 30 })
+  try {
+    const first = await waitForFrame(app.setup, (frame) => topRow(frame).includes("子 agent 1/3"), "the position")
+    expect(topRow(first)).toContain("←→")
+    expect(footerRow(first)).toContain("←→ 切换")
+
+    // Created 10, 20, 30: explore, general, review. Right walks that order and wraps; left goes back.
+    const seen: string[] = []
+    let previous = topRow(first)
+    for (const key of ["right", "right", "right", "left"] as const) {
+      app.setup.mockInput.pressArrow(key)
+      const frame = await waitForFrame(app.setup, (next) => topRow(next) !== previous, `the sub-agent after ${key}`)
+      previous = topRow(frame)
+      seen.push(frame)
+    }
+    expect(seen.map((frame) => /子 agent (\d)\/3/.exec(topRow(frame))?.[1])).toEqual(["2", "3", "1", "3"])
+    expect(topRow(seen[0] ?? "")).toContain("general")
+    expect(topRow(seen[1] ?? "")).toContain("review")
+    expect(topRow(seen[2] ?? "")).toContain("explore")
+    expect(topRow(seen[3] ?? "")).toContain("review")
+    expect(app.writes()).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("an only sub-agent shows 1/1 without the switch keys, in the top bar and in the footer", async () => {
+  const app = await runApp({ sessions, args: { sessionID: childID }, width: 120, height: 30 })
+  try {
+    const frame = await waitForFrame(app.setup, (next) => topRow(next).includes("子 agent 1/1"), "the position")
+    expect(topRow(frame)).not.toContain("←→")
+    expect(footerRow(frame)).not.toContain("切换")
+    expect(footerRow(frame)).toContain("esc 返回")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("clicking a middle segment opens that sub-agent", async () => {
+  const middle = sessionFixture("ses_sub_mid", {
+    parentID: rootID,
+    title: "规划迁移 (@general subagent)",
+    agent: "general",
+  })
+  const leaf = sessionFixture("ses_sub_leaf", {
+    parentID: "ses_sub_mid",
+    title: "扫描破坏性变更 (@explore subagent)",
+    agent: "explore",
+  })
+  const app = await runApp({
+    sessions: [root, middle, leaf],
+    args: { sessionID: "ses_sub_leaf" },
+    width: 160,
+    height: 30,
+  })
+  try {
+    const before = await waitForFrame(app.setup, (frame) => topRow(frame).includes("规划迁移"), "the middle segment")
+    const row = topRow(before)
+    await app.setup.mockMouse.click(cellWidth(row.slice(0, row.indexOf("规划迁移"))) + 1, 0)
+    const after = await waitForFrame(app.setup, (frame) => !topRow(frame).includes("explore"), "the middle sub-agent")
+    expect(topRow(after)).toContain("general · 规划迁移")
+    expect(after).toContain("只读")
+    expect(app.writes()).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})

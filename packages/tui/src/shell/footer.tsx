@@ -49,14 +49,13 @@ export function useFooterKeyHints(): () => FooterKeyHints {
 }
 
 /**
- * Right-hand hints of a sub-agent view: switch sibling, back to the parent, and the drawer, whose key comes from the
- * keymap and is left out while it has no binding.
+ * Right-hand hints of a sub-agent view: switch sibling (only while it has one), back to the parent, and the drawer,
+ * whose key comes from the keymap and is left out while it has no binding.
  */
-export function subagentFooterHints(drawer: string): readonly FooterHint[] {
-  const hints: FooterHint[] = [
-    { key: SUBAGENT_SWITCH_KEYS, label: t("subagent.hint.switch") },
-    { key: SUBAGENT_BACK_KEY, label: t("subagent.hint.back") },
-  ]
+export function subagentFooterHints(drawer: string, switchable = true): readonly FooterHint[] {
+  const hints: FooterHint[] = []
+  if (switchable) hints.push({ key: SUBAGENT_SWITCH_KEYS, label: t("subagent.hint.switch") })
+  hints.push({ key: SUBAGENT_BACK_KEY, label: t("subagent.hint.back") })
   if (drawer) hints.push({ key: drawer, label: t("shell.footer.drawer") })
   return hints
 }

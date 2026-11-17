@@ -87,42 +87,26 @@ function toastText(harness: Harness) {
   return harness.toast().currentToast?.text
 }
 
-/** The `(i of N)` the sub-agent footer draws, as `i/N`. */
-async function footerPosition(harness: Harness) {
-  const match = (await harness.frame()).match(/\((\d+) of (\d+)\)/)
-  return match ? `${match[1]}/${match[2]}` : undefined
-}
-
 test("right and left walk the sub-agents of one parent in creation order and wrap at both ends", async () => {
   const harness = await mountTree({ route: { type: "session", sessionID: firstID } })
   try {
     expect(viewing(harness)).toBe(firstID)
 
     // Oldest first, ties by id; the stranger of the other tree is skipped. After the newest comes the oldest. The
-    // footer counts the same sequence.
-    const forward: [string, string | undefined][] = []
+    // top bar's `i/N` counts the same sequence (test/app-subagent-view.test.tsx).
+    const forward: string[] = []
     for (let step = 0; step < 4; step++) {
       await arrow(harness, "right")
-      forward.push([viewing(harness), await footerPosition(harness)])
+      forward.push(viewing(harness))
     }
-    expect(forward).toEqual([
-      [secondID, "2/3"],
-      [thirdID, "3/3"],
-      [firstID, "1/3"],
-      [secondID, "2/3"],
-    ])
+    expect(forward).toEqual([secondID, thirdID, firstID, secondID])
 
-    const backward: [string, string | undefined][] = []
+    const backward: string[] = []
     for (let step = 0; step < 4; step++) {
       await arrow(harness, "left")
-      backward.push([viewing(harness), await footerPosition(harness)])
+      backward.push(viewing(harness))
     }
-    expect(backward).toEqual([
-      [firstID, "1/3"],
-      [thirdID, "3/3"],
-      [secondID, "2/3"],
-      [firstID, "1/3"],
-    ])
+    expect(backward).toEqual([firstID, thirdID, secondID, firstID])
 
     expect(harness.writes()).toEqual([])
   } finally {
