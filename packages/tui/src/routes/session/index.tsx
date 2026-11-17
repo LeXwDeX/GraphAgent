@@ -24,7 +24,7 @@ import { useRoute, useRouteData } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
 import { lifecycleKey } from "../../context/lifecycle-mirror"
-import type { TaskIndexEntry } from "../../context/session-summary"
+import { backgroundResultOf, type TaskIndexEntry } from "../../context/session-summary"
 import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
@@ -77,6 +77,7 @@ import { useDrawer } from "../../shell/drawer"
 import { returnToParent, useOpenSubAgent } from "../../session/navigate"
 import { childSessions, nextSibling, siblingSessions } from "../../session/siblings"
 import { backgroundElapsed, backgroundStatus, type BackgroundStatus } from "../../session/background"
+import { backgroundCard, type BackgroundCard } from "../../session/background-card"
 import {
   handbackLine,
   handbackText,
@@ -143,6 +144,7 @@ import {
   type SessionViewState,
 } from "./rows"
 import { createRowTable, type Delegation } from "./row-table"
+import { RESULT_CARD_INDENT, RESULT_CARD_MARK, resultCardPreview, resultCardTitle } from "./result-card"
 import { toggleExpand } from "./expand"
 import { diffView, sessionContentWidth } from "./diff-view"
 import {
@@ -155,6 +157,7 @@ import {
   genericOutput,
   genericShowsBlock,
   outputCharCap,
+  resultCardFolds,
   SHELL_OUTPUT_LINES,
   shellOutput,
   shellShowsBlock,
@@ -247,6 +250,8 @@ const context = createContext<{
     background: Accessor<string>
     redo: Accessor<string>
     dagmodeToggle: Accessor<string>
+    /** The key of `view.expand.toggle`, which the hint on a result card names; empty while it is unbound. */
+    expand: Accessor<string>
   }
 }>()
 
@@ -882,6 +887,14 @@ export function Main() {
       if (row.kind === "delegation") {
         return delegationFolds(promptText(sync.data.part[row.messageID] ?? []), env.width) ? "expanded" : undefined
       }
+      // The card of a background result is drawn from a synthetic text part, and folds when it has more than its line.
+      if (row.kind === "result") {
+        const part = sync.data.part[row.messageID]?.find((item) => item.id === row.partID)
+        const card = part?.type === "text" ? backgroundCard(part) : undefined
+        return card && resultCardFolds(card, env.width, ambiguousWidthOf(kv.get("ambiguous_width", 1)))
+          ? "expanded"
+          : undefined
+      }
       if (row.kind !== "reasoning" && row.kind !== "tool") return undefined
       const part = sync.data.part[row.messageID]?.find((item) => item.id === row.partID)
       return part ? foldFlag(part, env, foldSource) : undefined
@@ -1278,6 +1291,7 @@ export function Main() {
               assistantMetadata: showAssistantMetadata(),
               providers: sync.data.provider,
               readText: (part) => sync.readPartText(part),
+              taskKind: (childSessionID) => sync.data.taskIndex[childSessionID]?.kind,
             },
           )
           await clipboard.write?.(transcript)
@@ -1327,6 +1341,7 @@ export function Main() {
               assistantMetadata: options.assistantMetadata,
               providers: sync.data.provider,
               readText: (part) => sync.readPartText(part),
+              taskKind: (childSessionID) => sync.data.taskIndex[childSessionID]?.kind,
             },
           )
 
@@ -1579,6 +1594,7 @@ export function Main() {
     background: useCommandShortcut("session.background"),
     redo: useCommandShortcut("session.redo"),
     dagmodeToggle: useCommandShortcut("session.dagmode.toggle"),
+    expand: useCommandShortcut("view.expand.toggle"),
   }
 
   return (
@@ -1715,6 +1731,7 @@ export function Main() {
                                 parts={sync.data.part[message.id] ?? []}
                                 pending={pending()}
                               />
+                              <BackgroundResults parts={sync.data.part[message.id] ?? []} />
                             </Match>
                             <Match when={message.role === "assistant"}>
                               <AssistantMessage
@@ -2049,6 +2066,14 @@ function SessionRow(props: {
         <Match when={props.row.kind === "handback"}>
           <SubagentHandback />
         </Match>
+        <Match when={props.row.kind === "result"}>
+          <Show when={part()}>
+            {(value) => {
+              const current = value()
+              return current.type === "text" ? <BackgroundResultCard part={current} /> : undefined
+            }}
+          </Show>
+        </Match>
         <Match when={props.row.kind === "text" && part()?.type === "text"}>
           <TextPart last={false} part={part() as TextPart} message={message() as AssistantMessage} />
         </Match>
@@ -2267,6 +2292,136 @@ function SubagentHandback() {
           </text>
         </box>
       )}
+    </Show>
+  )
+}
+
+/** The `ambiguous_width` setting as the width functions take it. */
+const ambiguousWidthOf = (value: unknown): AmbiguousWidth => (value === 2 ? 2 : 1)
+
+/** The theme token the mark of a result card is drawn in, by how the run ended. */
+const RESULT_CARD_COLOR = {
+  completed: "success",
+  error: "error",
+  interrupted: "warning",
+} as const satisfies Record<BackgroundCard["status"], string>
+
+/** The cards of a user message: one for each of its parts that reports a finished background run. */
+function BackgroundResults(props: { parts: Part[] }) {
+  const results = createMemo(() =>
+    props.parts.filter((part): part is TextPart => part.type === "text" && backgroundResultOf(part) !== undefined),
+  )
+  return <For each={results()}>{(part) => <BackgroundResultCard part={part} />}</For>
+}
+
+/**
+ * The card of a finished background run (#1058): the result the server added to this session when the run ended, drawn
+ * where that message sits and not hidden with the rest of the synthetic text. Closed it is two lines, the title with its
+ * status and time, and the first line of what the run left with a hint at its end. `view.expand.toggle` opens the whole
+ * result under the title, drawn as the markdown assistant text is (`resultCardFolds` says when there is more to open;
+ * the key and the hint read it). A click opens the sub-agent that ran it, and asks the server for nothing. Only the
+ * metadata of the part says that it is a result (`backgroundCard`).
+ */
+function BackgroundResultCard(props: { part: TextPart }) {
+  const ctx = use()
+  const { theme, syntax } = useTheme()
+  const kv = useKV()
+  const renderer = useRenderer()
+  const openSubAgent = useOpenSubAgent()
+  const [hover, setHover] = createSignal(false)
+  const link = createMemo(() => ctx.sync.data.taskIndex[backgroundResultOf(props.part)?.childSessionID ?? ""])
+  const card = createMemo(() => backgroundCard(props.part, link()?.kind))
+  const ambiguousWidth = () => ambiguousWidthOf(kv.get("ambiguous_width", 1))
+  const folds = createMemo(() => {
+    const value = card()
+    return value ? resultCardFolds(value, ctx.width, ambiguousWidth()) : false
+  })
+  // A card that cannot fold is closed, whatever flag an earlier width left: the key could not close it.
+  const expanded = createMemo(() => folds() && ctx.view.get(props.part.id, "expanded"))
+  const hint = createMemo(() => {
+    const key = ctx.shortcuts.expand()
+    if (!key || !folds()) return t("background.card.hintOpen")
+    return t(expanded() ? "background.card.hintCollapse" : "background.card.hint", { key })
+  })
+  const layout = (firstLine: string) =>
+    resultCardPreview({
+      firstLine,
+      hint: hint(),
+      folds: folds(),
+      width: ctx.width,
+      ambiguousWidth: ambiguousWidth(),
+    })
+
+  return (
+    <Show when={card()}>
+      {(value) => {
+        const title = createMemo(() => resultCardTitle(value(), ctx.width, ambiguousWidth()))
+        const preview = createMemo(() => layout(value().firstLine))
+        // The hint of an open card stands alone under the body, at the same end of the line.
+        const closing = createMemo(() => layout(""))
+        return (
+          <box
+            ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+            marginTop={1}
+            border={["left"]}
+            customBorderChars={SplitBorder.customBorderChars}
+            borderColor={theme.border}
+            flexShrink={0}
+          >
+            <box
+              paddingTop={1}
+              paddingBottom={1}
+              paddingLeft={2}
+              paddingRight={1}
+              backgroundColor={hover() ? theme.backgroundMenu : theme.backgroundPanel}
+              flexShrink={0}
+              onMouseOver={() => setHover(true)}
+              onMouseOut={() => setHover(false)}
+              onMouseUp={() => {
+                // A drag that selected text is not a click.
+                if (renderer.getSelection()?.getSelectedText()) return
+                openSubAgent(value().childSessionID)
+              }}
+            >
+              <text wrapMode="none" fg={theme.text}>
+                <span style={{ fg: theme[RESULT_CARD_COLOR[value().status]] }}>{RESULT_CARD_MARK} </span>
+                {title()}
+              </text>
+              <Show
+                when={expanded()}
+                fallback={
+                  <text wrapMode="none">
+                    <span style={{ fg: value().status === "error" ? theme.error : theme.textMuted }}>
+                      {" ".repeat(RESULT_CARD_INDENT)}
+                      {preview().text}
+                    </span>
+                    <span>{" ".repeat(preview().pad)}</span>
+                    <span style={{ fg: theme.textDim }}>{preview().hint}</span>
+                  </text>
+                }
+              >
+                <box paddingTop={1}>
+                  <AdaptiveMarkdown
+                    content={value().body}
+                    streaming={false}
+                    syntaxStyle={syntax()}
+                    tableOptions={{ style: "grid" }}
+                    conceal={ctx.conceal()}
+                    fg={theme.markdownText}
+                    bg={theme.backgroundPanel}
+                  />
+                </box>
+                <box paddingTop={1}>
+                  <text wrapMode="none">
+                    <span>{" ".repeat(RESULT_CARD_INDENT + closing().pad)}</span>
+                    <span style={{ fg: theme.textDim }}>{closing().hint}</span>
+                  </text>
+                </box>
+              </Show>
+            </box>
+          </box>
+        )
+      }}
     </Show>
   )
 }
