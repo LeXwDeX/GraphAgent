@@ -322,6 +322,9 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   // so this field is genuinely nullable rather than optional.
   if (schemas.LifecycleStateEntry?.properties?.state)
     schemas.LifecycleStateEntry.properties.state = nullable(schemas.LifecycleStateEntry.properties.state)
+  // #1036: a one-shot reminder has no repeat interval; `everyMs` is null, not optional.
+  if (schemas.SessionReminder?.properties?.everyMs)
+    schemas.SessionReminder.properties.everyMs = nullable(schemas.SessionReminder.properties.everyMs)
   const providerOptions = schemas.ProviderConfig?.properties?.options
   if (providerOptions) providerOptions.additionalProperties = {}
   const model = schemas.ProviderConfig?.properties?.models?.additionalProperties

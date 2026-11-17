@@ -90,7 +90,7 @@ export type QuestionAnswer = Array<string>
 
 export type PrWatchDelivery = {
   state: "pending" | "delivered"
-  deliveredAt?: number | "Infinity" | "-Infinity" | "NaN"
+  deliveredAt?: number
   noticeMessageID?: string
   noReply?: boolean
 }
@@ -767,10 +767,10 @@ export type SessionReminder = {
   id: string
   sessionID: string
   text: string
-  fireAt: number | "Infinity" | "-Infinity" | "NaN"
-  everyMs: number | "Infinity" | "-Infinity" | "NaN"
+  fireAt: number
+  everyMs: number | null
   status: "scheduled" | "due"
-  createdAt: number | "Infinity" | "-Infinity" | "NaN"
+  createdAt: number
 }
 
 export type PrWatchList = {
@@ -788,9 +788,9 @@ export type PrWatchEntry = {
   checks?: PrWatchChecks
   head?: string
   review?: string
-  startedAt: number | "Infinity" | "-Infinity" | "NaN"
-  updatedAt: number | "Infinity" | "-Infinity" | "NaN"
-  deadlineAt: number | "Infinity" | "-Infinity" | "NaN"
+  startedAt: number
+  updatedAt: number
+  deadlineAt: number
   delivery?: PrWatchDelivery
 }
 
@@ -1977,9 +1977,9 @@ export type EventPrWatchUpdated = {
     checks?: PrWatchChecks
     head?: string
     review?: string
-    startedAt: number | "Infinity" | "-Infinity" | "NaN"
-    updatedAt: number | "Infinity" | "-Infinity" | "NaN"
-    deadlineAt: number | "Infinity" | "-Infinity" | "NaN"
+    startedAt: number
+    updatedAt: number
+    deadlineAt: number
     delivery?: PrWatchDelivery
   }
 }

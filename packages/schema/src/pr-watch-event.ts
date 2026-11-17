@@ -50,7 +50,7 @@ export type Checks = typeof Checks.Type
  */
 export const Delivery = Schema.Struct({
   state: Schema.Literals(["pending", "delivered"]),
-  deliveredAt: Schema.optional(Schema.Number),
+  deliveredAt: Schema.optional(Schema.Finite),
   noticeMessageID: Schema.optional(Schema.String),
   noReply: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "PrWatchDelivery" })
@@ -70,9 +70,9 @@ export const fields = {
   head: Schema.optional(Schema.String),
   /** Sanitized to `[A-Za-z0-9_.-]`, at most 40 characters. */
   review: Schema.optional(Schema.String),
-  startedAt: Schema.Number,
-  updatedAt: Schema.Number,
-  deadlineAt: Schema.Number,
+  startedAt: Schema.Finite,
+  updatedAt: Schema.Finite,
+  deadlineAt: Schema.Finite,
   delivery: Schema.optional(Delivery),
 }
 

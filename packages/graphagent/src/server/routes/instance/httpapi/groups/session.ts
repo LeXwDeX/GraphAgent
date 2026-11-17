@@ -50,10 +50,10 @@ export const SessionReminder = Schema.Struct({
   id: Schema.String,
   sessionID: SessionID,
   text: Schema.String,
-  fireAt: Schema.Number,
-  everyMs: Schema.NullOr(Schema.Number),
+  fireAt: Schema.Finite,
+  everyMs: Schema.NullOr(Schema.Finite),
   status: Schema.Literals(["scheduled", "due"]),
-  createdAt: Schema.Number,
+  createdAt: Schema.Finite,
 }).annotate({ identifier: "SessionReminder" })
 
 export const SessionReminderList = Schema.Struct({
