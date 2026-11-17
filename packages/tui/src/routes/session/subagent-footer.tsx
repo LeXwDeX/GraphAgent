@@ -7,6 +7,7 @@ import type { AssistantMessage } from "@graphagent/sdk"
 import { Locale } from "../../util/locale"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useCommandShortcut, useGraphagentKeymap } from "../../keymap"
+import { siblingPosition, siblingSessions } from "../../session/siblings"
 
 export function SubagentFooter() {
   const route = useRouteData("session")
@@ -20,14 +21,8 @@ export function SubagentFooter() {
     const agentMatch = s.title.match(/@(\w+) subagent/)
     const label = agentMatch ? Locale.titlecase(agentMatch[1]) : "Subagent"
 
-    if (!s.parentID) return { label, index: 0, total: 0 }
-
-    const siblings = sync.data.session
-      .filter((x) => x.parentID === s.parentID)
-      .toSorted((a, b) => a.time.created - b.time.created)
-    const index = siblings.findIndex((x) => x.id === s.id)
-
-    return { label, index: index + 1, total: siblings.length }
+    const position = siblingPosition(siblingSessions(sync.data.session, s.id), s.id)
+    return { label, index: position?.index ?? 0, total: position?.total ?? 0 }
   })
 
   const usage = createMemo(() => {
