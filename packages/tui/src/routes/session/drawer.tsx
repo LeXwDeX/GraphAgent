@@ -14,6 +14,7 @@ import { t, type MessageKey } from "../../i18n"
 import { useCommandShortcut } from "../../keymap"
 import { Locale } from "../../util/locale"
 import { getScrollAcceleration } from "../../util/scroll"
+import { isGoalShown } from "../../shell/status-band"
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -178,7 +179,11 @@ function DrawerDagMode(props: { sessionID: string }) {
 function DrawerGoal(props: { sessionID: string }) {
   const sync = useSync()
   const { theme } = useTheme()
-  const goal = createMemo(() => sync.data.goal[props.sessionID])
+  // A partial goal body (no text or status) is no goal: reading `.goal.length` on it would throw.
+  const goal = createMemo(() => {
+    const value = sync.data.goal[props.sessionID]
+    return isGoalShown(value) ? value : undefined
+  })
 
   return (
     <Show when={goal()}>
