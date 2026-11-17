@@ -505,7 +505,8 @@ describe("what the port does not touch (ADR-0008 decisions 4 and 5)", () => {
 // The behavior above is the port's. That the runtime goes through it is the wiring of the loop and the
 // delivery, which hold the plain service as well (for reads and for the writes that carry no token): one
 // call site that named it would write without the token and no behavioral case would notice. `spawn.ts`
-// and `recovery.ts` have only the service their caller provides, which is the port.
+// and `recovery.ts` have only the service their caller provides, which is the port. The reconciler is given
+// `portFor` and nothing else of `Dag`, so it cannot name the plain service; the pin below keeps it so.
 describe("the loop and the delivery write runner commands through the port only (ADR-0008 decision 5)", () => {
   /** The source of a runtime file, comments stripped. */
   const source = (file: string) =>
@@ -513,7 +514,7 @@ describe("the loop and the delivery write runner commands through the port only 
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/.*$/gm, "")
 
-  for (const file of ["loop.ts", "delivery.ts"])
+  for (const file of ["loop.ts", "delivery.ts", "reconciler.ts"])
     test(`${file} calls no runner command on the plain service`, () => {
       const plain = new RegExp(`\\bdag\\s*\\.\\s*(${RunnerPort.COMMANDS.join("|")})\\b`, "g")
 

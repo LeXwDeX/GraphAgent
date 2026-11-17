@@ -11,7 +11,7 @@
  *
  * The DAG runtime guards key ownership on the PROJECT ID only
  * (`wf.projectId !== ctx.project.id` in DagLoop.recoverWorkflow,
- * recoverOrphanPending, the WorkflowStarted handler, and the startup wake
+ * the orphan-pending path (now the reconciler), the WorkflowStarted handler, and the startup wake
  * sweep; the idle-Status wake path has no ownership guard at all). Two
  * instances of the SAME project in DIFFERENT directories (sibling worktrees
  * of one project) therefore both pass every guard: a foreign directory can
@@ -56,6 +56,7 @@ import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
 import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { makeDeadlineWatcher } from "@/dag/runtime/spawn"
 import { DagLocation } from "@/dag/location"
@@ -894,6 +895,8 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
     expect(loopFile).toBeDefined()
     const deliveryFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/delivery.ts"))
     expect(deliveryFile).toBeDefined()
+    const reconcilerFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/reconciler.ts"))
+    expect(reconcilerFile).toBeDefined()
 
     // Positive half: every adoption/wake ownership gate must carry a
     // directory-level check. The four adoption sites live in the loop and the
@@ -905,13 +908,15 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
         name: "recoverWorkflow (startup recovery adoption)",
         source: loopFile!.source,
         from: "const recoverWorkflow = Effect.fn(",
-        to: "// Orphan-pending recovery",
+        to: "yield* events.subscribe(DagEvent.WorkflowStarted)",
       },
       {
-        name: "recoverOrphanPending (orphan-pending sweep)",
-        source: loopFile!.source,
-        from: "const recoverOrphanPending = Effect.fn(",
-        to: "yield* events.subscribe(DagEvent.WorkflowStarted)",
+        // The reconciler decides from this observation (adoption, orphan disposal, eviction): its
+        // `owned` field is the directory gate for all of them.
+        name: "DagReconciler.observe (reconcile round: orphan-pending disposal and adoption verdict)",
+        source: reconcilerFile!.source,
+        from: 'const observe = Effect.fn("DagReconciler.observe")',
+        to: "const terminalizeOrphan = Effect.fn(",
       },
       {
         name: "WorkflowStarted handler (first-wave adoption)",
@@ -2206,7 +2211,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
     )
   })
 
-  it("C6: recoverOrphanPending racing Session.remove is absorbed without killing init", async () => {
+  it("C6: the reconciler's orphan path racing Session.remove is absorbed without killing init", async () => {
     const parked = { value: false }
     const calls = { value: 0 }
     let release: () => void = () => {}
@@ -2216,8 +2221,9 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
     await Effect.runPromise(
       runTwoInstanceGuardTest({ parkGetNodes: { wait, parked, calls } }, ({ database, session, store, initA }) =>
         Effect.gen(function* () {
-          // An all-pending orphan under A: a create that crashed mid-way.
-          // It is stamped DIR_A so instance A's recoverOrphanPending owns it.
+          // An all-pending orphan under A: a create that crashed mid-way, older
+          // than the reconciler's grace period. It is stamped DIR_A so instance
+          // A's reconciler owns it.
           yield* database.db
             .insert(WorkflowTable)
             .values({
@@ -2231,6 +2237,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               config: "{}",
               seq: 1,
               wake_reported: true,
+              time_created: Date.now() - 2 * ReconcileDecide.ORPHAN_PENDING_GRACE_MS,
             })
             .run()
             .pipe(Effect.orDie)
@@ -2248,20 +2255,20 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             })
             .run()
             .pipe(Effect.orDie)
-          // Boot A; recoverOrphanPending parks its first getNodes on the gate.
+          // Boot A; the reconciler's observation parks its first getNodes on the gate.
           const initFiber = yield* initA.pipe(Effect.forkChild)
           yield* pollWithTimeout(
             Effect.sync(() => (parked.value ? true : undefined)),
-            "recoverOrphanPending never parked at getNodes",
+            "the reconciler never parked at getNodes",
           )
-          // While it is parked between getNodes and dag.fail, delete the
+          // While it is parked between its observation and the claim, delete the
           // session — FK cascade wipes the orphan rows out from under it.
           yield* session.remove(SES_A as never)
           expect(yield* store.getWorkflow("c6-orphan")).toBeUndefined()
-          // Release: dag.fail on the gone workflow fails, the startup-scan
-          // catchCause absorbs it, and Effect.ensuring frees the recovering
-          // slot. init must therefore complete — a leak or an unabsorbed
-          // defect would surface here.
+          // Release: the claim of the gone workflow is refused (or, were it let
+          // through, dag.fail would fail and the round's catchCause absorb it),
+          // and Effect.ensuring frees the recovering slot. init must therefore
+          // complete — a leak or an unabsorbed defect would surface here.
           release()
           yield* Fiber.join(initFiber)
           expect(yield* store.getWorkflow("c6-orphan")).toBeUndefined()

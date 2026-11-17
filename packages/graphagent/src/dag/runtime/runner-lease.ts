@@ -7,6 +7,7 @@ import { Cause, Clock, Context, Effect, Fiber, Layer, Option, Scope, Semaphore }
 import { DagLease } from "@graphagent/core/dag/lease"
 import { Database } from "@graphagent/core/database/database"
 import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
+import { ReconcileDecide } from "./reconcile-decide"
 
 /**
  * The runtime side of the runner lease for one DagLoop instance (Issue #1029,
@@ -43,9 +44,26 @@ import { EngineProcess, type RunnerIdentity } from "@/session/engine-process"
  *     the runner port calls, `runner-port.ts`) is the third way to learn of the
  *     loss, after the renewal and the spawn's re-read: it evicts the same way.
  *
+ * The same tick starts the instance's reconcile round (`round`, ADR-0008
+ * decision 6, `reconciler.ts`), in a fiber of its own and never more than one at a
+ * time. The tick renews and reads the clock and nothing else: a round can wait for
+ * a worktree removal, the lifecycle lock or a user hook for longer than the TTL,
+ * and the renewals of a runner that is still driving its workflows must not wait
+ * for it. A tick that finds the previous round still running starts none.
+ *
+ * The clock-jump rule (decision 2) is one `ClockWatch` per instance, seeded at the
+ * start of the instance (`noteClock`). Every tick feeds it its reading, and so does
+ * every observation of the reconciler: a jump between two observations of one round
+ * shows in the later one, and a round that is merely long is no jump, since the tick
+ * goes on feeding the watch every period. A reading more than two periods after the
+ * latest one (a suspended machine, a long stall) starts a quiet period of two
+ * periods, every reading in it is told `afterClockJump`, and `decide` leaves
+ * another runner's expired lease alone: everything on the machine saw the same jump,
+ * so the lease ran out because nobody could renew it. Renewal is not held back: the
+ * owner renews, whatever the clock did.
+ *
  * Time comes from the `Clock` and the runner is `Identity`, so a test can drive
- * two runners in one process on a TestClock. Not here: the reconcile tick that
- * adds the clock-jump rule (PR4a).
+ * two runners in one process on a TestClock.
  */
 
 /**
@@ -125,6 +143,31 @@ export interface Interface<E extends Held = Held> {
    *     it could not be read (transient, as for a renewal; the next tick looks).
    */
   readonly refused: (dagID: string, token: DagLease.Token) => Effect.Effect<void>
+  /**
+   * The reconciler read the lease row and found that it no longer names the
+   * entry's token (ADR-0008 decision 6, row 3): the lease is lost, evict the
+   * entry as a renewal that finds the same does. Awaited, which `verify` and
+   * `refused` cannot be: the reconciler runs in no fiber the eviction interrupts.
+   * The verdict rests on reads that are older than the entry's lock, so the
+   * eviction reads the lease row again once it holds the lock and leaves the entry
+   * alone when
+   *   - it is gone, or an entry that replaced it is the table's now;
+   *   - the row does not show another holder (the judgement of `refused`): the
+   *     workflow ended in between, and the entry is the terminal handler's to
+   *     settle (the worktree, the parent's wake), or the row names the token after
+   *     all, or it could not be read (the next round looks again).
+   */
+  readonly evict: (dagID: string, entry: E) => Effect.Effect<void>
+  /**
+   * Take one reading of the wall clock, `at`, into the instance's clock watch
+   * (ADR-0008 decision 2), and tell whether it is in the shadow of a clock jump:
+   * more than two periods after the latest reading, or within two periods of such
+   * a jump. Every tick feeds the watch; the reconciler feeds it the reading of each
+   * observation, so that a jump between two observations of one round is seen by
+   * the second. It decides nothing itself: an expired lease of another runner is
+   * left alone while it answers `true`, and the owner's renewal is never held back.
+   */
+  readonly noteClock: (at: number) => boolean
 }
 
 /**
@@ -163,15 +206,31 @@ const sameToken = (left: DagLease.Token, right: DagLease.Token) =>
  * runtime entries, read by the renewal tick and at exit; `evict` drops the local
  * state of a workflow whose lease is gone. The release at exit is the first
  * finalizer of the calling scope, so it runs after the fibers forked later have
- * been interrupted.
+ * been interrupted, the renewal fiber and a round in flight among them.
  */
 export function make<E extends Held>(input: {
   readonly leases: DagLease.Interface
   readonly runnerID: string
   readonly entries: ReadonlyMap<string, E>
-  readonly evict: (dagID: string, entry: E) => Effect.Effect<void>
+  /**
+   * `stillLost`, when given, is read under the entry's own lock before anything is
+   * dropped, and an eviction that it answers `false` to does not happen
+   * (`evictor` implements it; the reconciler's eviction asks for it).
+   */
+  readonly evict: (dagID: string, entry: E, stillLost?: Effect.Effect<boolean>) => Effect.Effect<void>
+  /**
+   * The reconcile round of the instance (ADR-0008 decision 6). Each tick that
+   * finds no round in flight starts one in a fiber of the instance's scope, right
+   * after its renewals, and does not wait for it: the renewals of the next tick
+   * come on time however long a round takes, and a tick that finds the previous
+   * round still running starts none (it logs at debug level). `afterClockJump` is
+   * the verdict of the tick's own reading of the clock. A round that fails is
+   * logged and the next tick starts another; one that is in flight when the
+   * instance closes is interrupted.
+   */
+  readonly round?: (input: { readonly afterClockJump: boolean }) => Effect.Effect<void>
 }): Effect.Effect<Interface<E>, never, Scope.Scope> {
-  const { leases, runnerID, entries, evict } = input
+  const { leases, runnerID, entries, evict, round } = input
   return Effect.gen(function* () {
     const scope = yield* Scope.Scope
     const release = (dagID: string, token: DagLease.Token, message: string) =>
@@ -191,17 +250,29 @@ export function make<E extends Held>(input: {
     // Entries whose eviction after a refused write is in flight: concurrent refusals (one per fiber
     // of the entry) start one eviction, not one each.
     const evicting = new WeakSet<object>()
+    const announceLoss = (dagID: string, entry: E) =>
+      Effect.logWarning("DagLoop lost the runner lease of a workflow; evicting it", {
+        dagID,
+        runnerID,
+        epoch: entry.token.epoch,
+      })
+    const evictAbsorbed = (dagID: string, entry: E, stillLost?: Effect.Effect<boolean>) =>
+      absorb(evict(dagID, entry, stillLost), undefined, "DagLoop could not evict a workflow that lost its lease", {
+        dagID,
+      })
     const evictLost = (dagID: string, entry: E) =>
       Effect.gen(function* () {
-        yield* Effect.logWarning("DagLoop lost the runner lease of a workflow; evicting it", {
-          dagID,
-          runnerID,
-          epoch: entry.token.epoch,
-        })
-        yield* absorb(evict(dagID, entry), undefined, "DagLoop could not evict a workflow that lost its lease", {
-          dagID,
-        })
+        yield* announceLoss(dagID, entry)
+        yield* evictAbsorbed(dagID, entry)
       })
+    // Whether the lease row shows another holder right now: the row exists, so the workflow is live, and it does
+    // not name `token`. No row (the workflow is gone or terminal), a row that names the token and a row that
+    // cannot be read (transient, as for a renewal) are not a lost lease. `refused` and the reconciler's eviction
+    // judge by this.
+    const heldByAnother = (dagID: string, token: DagLease.Token, message: string) =>
+      absorb(leases.held(dagID), "unreadable" as const, message, { dagID }).pipe(
+        Effect.map((lease) => lease !== "unreadable" && lease !== undefined && !DagLease.holds(lease, token)),
+      )
 
     const renewAll = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis
@@ -218,8 +289,47 @@ export function make<E extends Held>(input: {
       }
       for (const [dagID, entry] of lost) yield* evictLost(dagID, entry)
     })
+    // The clock-jump rule: one watch for the instance, seeded with its start. The tick feeds it every period, so
+    // a round that is merely long is no jump, and the reconciler feeds it the reading of every observation, so a
+    // jump inside a round shows in the observation that follows it. Readings arrive in whatever order the two
+    // fibers get to the watch; it keeps the largest.
+    let watch = ReconcileDecide.noteClock(
+      ReconcileDecide.unwatched,
+      yield* Clock.currentTimeMillis,
+      DagLease.RENEWAL_PERIOD_MS,
+    ).watch
+    const noteClock = (at: number) => {
+      const noted = ReconcileDecide.noteClock(watch, at, DagLease.RENEWAL_PERIOD_MS)
+      watch = noted.watch
+      return noted.afterJump
+    }
+    // The tick renews and reads the clock, and never waits for a round: one round at a time runs in a fiber of
+    // the instance's scope, and a tick that finds it still running starts none.
+    let reconciling = false
+    const tick = Effect.gen(function* () {
+      const afterClockJump = noteClock(yield* Clock.currentTimeMillis)
+      yield* renewAll
+      if (round === undefined) return
+      if (reconciling) {
+        yield* Effect.logDebug("DagLoop did not start a reconcile round: the previous one is still running", {
+          runnerID,
+        })
+        return
+      }
+      reconciling = true
+      yield* absorb(
+        Effect.suspend(() => round({ afterClockJump })),
+        undefined,
+        "DagLoop could not run its reconcile round; retrying at the next tick",
+        {},
+      ).pipe(
+        Effect.ensuring(Effect.sync(() => void (reconciling = false))),
+        Effect.forkIn(scope, { startImmediately: true }),
+        Effect.asVoid,
+      )
+    })
     yield* Effect.sleep(DagLease.RENEWAL_PERIOD_MS).pipe(
-      Effect.andThen(renewAll),
+      Effect.andThen(tick),
       Effect.forever,
       Effect.forkScoped({ startImmediately: true }),
     )
@@ -255,16 +365,31 @@ export function make<E extends Held>(input: {
         if (entry === undefined || !sameToken(entry.token, token) || evicting.has(entry)) return
         evicting.add(entry)
         yield* Effect.gen(function* () {
-          const lease = yield* absorb(
-            leases.held(dagID),
-            "unreadable" as const,
+          const lost = yield* heldByAnother(
+            dagID,
+            token,
             "DagLoop could not read a runner lease after its write was refused; the next tick looks again",
-            { dagID },
           )
-          if (lease === "unreadable" || lease === undefined || DagLease.holds(lease, token)) return
-          yield* evictLost(dagID, entry)
+          if (lost) yield* evictLost(dagID, entry)
         }).pipe(Effect.ensuring(Effect.sync(() => void evicting.delete(entry))), Effect.forkIn(scope), Effect.asVoid)
       }),
+      evict: Effect.fn("RunnerLease.evict")(function* (dagID: string, entry: E) {
+        // The reconciler's verdict was made from reads that are older than the entry's lock: once the eviction holds
+        // it, the lease row is read again, and a workflow that ended in between is left to its terminal handler.
+        const stillLost = heldByAnother(
+          dagID,
+          entry.token,
+          "DagLoop could not read a runner lease before evicting its workflow; the next round looks again",
+        ).pipe(
+          Effect.tap((lost) =>
+            lost
+              ? announceLoss(dagID, entry)
+              : Effect.logDebug("DagLoop left a workflow in place: its lease row shows no other holder now", { dagID }),
+          ),
+        )
+        yield* evictAbsorbed(dagID, entry, stillLost)
+      }),
+      noteClock,
     }
   })
 }
@@ -278,18 +403,23 @@ export function make<E extends Held>(input: {
  * the entry itself recorded (`Evictable.attemptChild`), never the node row's
  * current value, which can already name an attempt of the new holder. The body
  * runs under the entry's `evalLock`, so it is serialized with the entry's event
- * handlers.
+ * handlers. `stillLost`, when given, is read under that lock before anything is
+ * touched: an eviction that decided on reads older than the lock asks it, and
+ * leaves the entry alone when it answers `false`.
  */
 export const evictor = <E extends Evictable>(input: {
   readonly entries: Map<string, E>
   readonly abort: (dagID: string, nodeID: string, childSessionID: string) => Effect.Effect<void>
   readonly unregister: (entry: E, dagID: string) => Effect.Effect<void>
 }) =>
-  Effect.fn("RunnerLease.evict")(function* (dagID: string, entry: E) {
+  Effect.fn("RunnerLease.evict")(function* (dagID: string, entry: E, stillLost?: Effect.Effect<boolean>) {
     const evicted = yield* entry.evalLock.withPermits(1)(
       Effect.gen(function* () {
         // Already gone: a terminal event or a move dropped it first.
         if (input.entries.get(dagID) !== entry) return false
+        // Decided on older reads: what they showed may have ended since (a workflow that went terminal has its
+        // terminal handler waiting for this lock, and the entry is what it settles).
+        if (stillLost !== undefined && !(yield* stillLost)) return false
         for (const [nodeID, fiber] of entry.fibers) {
           // A spawn that has not created its child yet has nothing to cancel: interrupting its fiber ends it.
           const childSessionID = entry.attemptChild.get(fiber)?.()
