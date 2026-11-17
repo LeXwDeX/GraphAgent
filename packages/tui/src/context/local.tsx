@@ -12,6 +12,7 @@ import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTheme } from "./theme"
 import { useRoute } from "./route"
 import { errorMessage } from "../util/error"
+import { TuiLog } from "../util/log"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -220,11 +221,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return
         }
         state.pending = false
-        void writeJsonAtomic(filePath, {
+        // A failed write leaves the previous file; nothing waits on it, so it must not reject unhandled.
+        writeJsonAtomic(filePath, {
           recent: modelStore.recent,
           favorite: modelStore.favorite,
           variant: modelStore.variant,
-        })
+        }).catch((error) => TuiLog.write("error", "Saving the model state failed", { error: String(error) }))
       }
 
       readJson<unknown>(filePath)
@@ -1053,9 +1055,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return
         }
         state.pending = false
-        void writeJsonAtomic(filePath, {
+        // A failed write leaves the previous file; nothing waits on it, so it must not reject unhandled.
+        writeJsonAtomic(filePath, {
           pinned: sessionStore.pinned,
-        })
+        }).catch((error) => TuiLog.write("error", "Saving the pinned sessions failed", { error: String(error) }))
       }
 
       readJson<unknown>(filePath)

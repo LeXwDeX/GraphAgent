@@ -108,6 +108,8 @@ export function createFetch(override?: FetchHandler, events?: ReturnType<typeof 
     if (url.pathname === "/reference") return json([])
     if (url.pathname === "/provider") return json({ all: [], default: {}, connected: [] })
     if (url.pathname === "/session") return json([])
+    // The PR watch and reminder reads a tree makes when it is entered or the stream reconnects (#1036 F6): none.
+    if (/^\/session\/[^/]+\/(pr-watch|reminder)$/.test(url.pathname)) return json({ entries: [] })
     if (url.pathname === "/vcs") return json({ branch: "main" })
     throw new Error(`unexpected request: ${url.pathname}`)
   }) as typeof globalThis.fetch
