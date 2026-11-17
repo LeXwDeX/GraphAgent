@@ -23,8 +23,11 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { useRoute, useRouteData } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
+import { lifecycleKey } from "../../context/lifecycle-mirror"
+import type { TaskIndexEntry } from "../../context/session-summary"
 import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
+import { cellWidth, truncateCells, type AmbiguousWidth } from "../../ui/width"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
@@ -73,12 +76,14 @@ import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { returnToParent, useOpenSubAgent } from "../../session/navigate"
 import { childSessions, nextSibling, siblingSessions } from "../../session/siblings"
+import { backgroundElapsed, backgroundStatus, type BackgroundStatus } from "../../session/background"
 import {
   handbackLine,
   handbackText,
   promptText,
   sameHandback,
   subagentOutcome,
+  UNKNOWN,
   type HandbackLine,
 } from "../../session/subagent-record"
 import { subagentDescription, subagentMarkerToken } from "../../session/subagents"
@@ -2299,7 +2304,7 @@ function AssistantTaskHint(props: { parts: Part[] }) {
       <box paddingTop={1} paddingLeft={3}>
         <text fg={theme.text}>
           {ctx.shortcuts.childFirst()}
-          <span style={{ fg: theme.textMuted }}> view subagents</span>
+          <span style={{ fg: theme.textMuted }}> {t("background.hint.view")}</span>
           <Show
             when={props.parts.some(
               (x) =>
@@ -2311,7 +2316,7 @@ function AssistantTaskHint(props: { parts: Part[] }) {
           >
             <span style={{ fg: theme.textMuted }}> · </span>
             {ctx.shortcuts.background()}
-            <span style={{ fg: theme.textMuted }}> background</span>
+            <span style={{ fg: theme.textMuted }}> {t("background.hint.move")}</span>
           </Show>
         </text>
       </box>
@@ -3066,9 +3071,59 @@ function WebSearch(props: ToolProps) {
   )
 }
 
+/** A run's `initiator` as the server records it; anything else is unknown. */
+function initiatorValue(value: unknown): "user" | "agent" | undefined {
+  return value === "user" || value === "agent" ? value : undefined
+}
+
+/** Columns the status line of a Task row starts at: the row's padding, the icon cell and the `↳ `. */
+const TASK_DETAIL_INDENT = 3 + INLINE_TOOL_ICON_WIDTH + 2
+/** The most cells of an error the status line of a background run shows. */
+const TASK_REASON_CELLS = 80
+
+/** The theme token a background run is drawn in, by how it stands; the icon tells the finished ones apart as well. */
+const BACKGROUND_COLOR = {
+  queued: "statusQueued",
+  running: "statusRunning",
+  completed: "success",
+  error: "error",
+  interrupted: "warning",
+  cancelled: "textMuted",
+} as const satisfies Record<Exclude<BackgroundStatus, "unknown">, string>
+
+/** A call that cancels a background task (`action: "cancel"`) names the task it stops; it starts no run. */
+function TaskCancel(props: ToolProps) {
+  const sync = useSync()
+  const openSubAgent = useOpenSubAgent()
+  const target = createMemo(() => stringValue(props.input.task_id))
+  const name = createMemo(() => {
+    const id = target()
+    if (!id) return undefined
+    return t("background.row.cancelCall", { description: sync.data.taskIndex[id]?.description ?? id })
+  })
+  return (
+    <InlineTool
+      icon="│"
+      complete={name()}
+      pending={t("subagent.row.pending")}
+      part={props.part}
+      onClick={() => {
+        const id = target()
+        if (id) openSubAgent(id)
+      }}
+    >
+      {name()}
+    </InlineTool>
+  )
+}
+
 function Task(props: ToolProps) {
+  if (props.input.action === "cancel") return <TaskCancel {...props} />
   const { theme } = useTheme()
   const sync = useSync()
+  const ctx = use()
+  const kv = useKV()
+  const ticker = useOptionalTicker()
   const openSubAgent = useOpenSubAgent()
 
   // `sessionID` is the current key; `sessionId` keeps tabs for messages
@@ -3096,41 +3151,135 @@ function Task(props: ToolProps) {
     return Math.max(0, value.lastActivityAt - value.startedAt)
   })
 
+  // #1058: the link the data layer keeps for the child says who asked for the run, where it runs and what the server
+  // reported when it ended. The part's own metadata stands in until the link is there.
+  const link = createMemo(() => sync.data.taskIndex[sessionID() ?? ""])
+  const initiator = createMemo(() => link()?.initiator ?? initiatorValue(props.metadata.initiator))
+  const background = createMemo(() => link()?.background ?? props.metadata.background === true)
+  const promoted = createMemo(() => link()?.promoted ?? props.metadata.promoted === true)
+  const entry = createMemo(
+    (): TaskIndexEntry =>
+      link() ?? {
+        parentSessionID: props.part.sessionID,
+        parentMessageID: props.part.messageID,
+        partID: props.part.id,
+        background: background(),
+        startedAt: props.part.state.status === "pending" ? undefined : props.part.state.time.start,
+      },
+  )
+  // What a background run is doing. When nothing says, the row reads like a foreground one.
+  const backgroundState = createMemo((): Exclude<BackgroundStatus, "unknown"> | undefined => {
+    const id = sessionID()
+    if (!id || !background()) return undefined
+    const state = backgroundStatus({
+      entry: entry(),
+      job: sync.data.lifecycle[lifecycleKey({ domain: "job", id })],
+      summary: summary(),
+    })
+    return state === "unknown" ? undefined : state
+  })
+
+  // Only a running line shows a time that moves, so only a running row that is on screen listens to the one-second
+  // clock; a row that is queued, finished or scrolled away keeps what it shows and costs no timer.
+  const ticking = createMemo(() => backgroundState() === "running" && ctx.isVisible(props.part.id))
+  createEffect(() => {
+    if (!ticking() || !ticker) return
+    onCleanup(ticker.subscribeSecond())
+  })
+  const elapsed = createMemo(() => {
+    const state = backgroundState()
+    if (state === undefined) return undefined
+    if (ticking()) ticker?.second()
+    return backgroundElapsed(
+      { sessionID: sessionID() ?? "", entry: entry(), status: state },
+      ticker?.now() ?? Date.now(),
+    )
+  })
+
+  const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
+  // The error is cut so that its line stays one row at the content width the transcript has.
+  const reason = () => {
+    const prefix = cellWidth(t("background.row.error", { reason: "" }), ambiguousWidth())
+    const room = Math.min(TASK_REASON_CELLS, ctx.width - TASK_DETAIL_INDENT - prefix)
+    return backgroundReason(summary()?.error, Math.max(10, room), ambiguousWidth())
+  }
+
+  // The line under the title. A foreground run, or one nothing is known of, has its retry, what it is doing, or how
+  // the call ended; a background run says how it stands.
+  const detail = createMemo(() => {
+    const state = backgroundState()
+    const retrying = retry()
+    const retryLine = retrying && formatSubagentRetry(retrying.attempt, Locale.truncate(retrying.message, 80))
+    if (state === undefined) {
+      if (isRunning()) {
+        if (retryLine) return retryLine
+        const current = summary()?.current
+        if (current) return `${Locale.titlecase(current.tool)} ${current.title ?? ""}`.trimEnd()
+        return formatSubagentToolcalls(summary()?.toolCalls)
+      }
+      if (props.part.state.status === "completed") {
+        return formatCompletedSubagentDetail(summary()?.toolCalls, Locale.duration(duration()))
+      }
+      return undefined
+    }
+    if (state === "running" && retryLine) return retryLine
+    const time = elapsed()
+    return formatBackgroundStatus({
+      status: state,
+      reported: link()?.result !== undefined,
+      calls: formatSubagentToolcalls(summary()?.toolCalls),
+      elapsed: time === undefined ? UNKNOWN : Locale.duration(time),
+      reason: state === "error" ? reason() : undefined,
+    })
+  })
+
   const content = createMemo(() => {
     const description = stringValue(props.input.description)
     if (!description) return ""
-    let content = [
-      formatSubagentTitle(
-        Locale.titlecase(stringValue(props.input.subagent_type) ?? "General"),
-        description,
-        props.metadata.background === true,
-      ),
+    const lines = [
+      formatSubagentTitle(Locale.titlecase(stringValue(props.input.subagent_type) ?? "General"), description, {
+        initiator: initiator(),
+        background: background(),
+        promoted: promoted(),
+      }),
     ]
+    const line = detail()
+    if (line) lines.push(`↳ ${line}`)
+    return lines.join("\n")
+  })
 
-    const retrying = retry()
-    if (isRunning() && retrying) {
-      content.push(`↳ ${formatSubagentRetry(retrying.attempt, Locale.truncate(retrying.message, 80))}`)
-    } else if (isRunning()) {
-      const current = summary()?.current
-      if (current) content.push(`↳ ${Locale.titlecase(current.tool)} ${current.title ?? ""}`.trimEnd())
-      else content.push(`↳ ${formatSubagentToolcalls(summary()?.toolCalls)}`)
+  const color = createMemo(() => {
+    const state = backgroundState()
+    if (state === undefined) return retry() ? theme.error : undefined
+    // A run that is retrying says so in the color of an error, as a foreground one does.
+    if (state === "running" && retry()) return theme.error
+    return theme[BACKGROUND_COLOR[state]]
+  })
+  const icon = createMemo(() => {
+    switch (backgroundState()) {
+      case "completed":
+        return "✓"
+      case "error":
+        return "✗"
+      case undefined:
+        return props.part.state.status === "completed" ? "✓" : "│"
+      default:
+        return "│"
     }
-
-    if (!isRunning() && props.part.state.status === "completed") {
-      content.push(`↳ ${formatCompletedSubagentDetail(summary()?.toolCalls, Locale.duration(duration()))}`)
-    }
-
-    return content.join("\n")
+  })
+  const spinning = createMemo(() => {
+    const state = backgroundState()
+    return state === undefined ? isRunning() : state === "running"
   })
 
   return (
     <InlineTool
-      icon={props.part.state.status === "completed" ? "✓" : "│"}
+      icon={icon()}
       separate={true}
-      color={retry() ? theme.error : undefined}
-      spinner={isRunning()}
+      color={color()}
+      spinner={spinning()}
       complete={stringValue(props.input.description)}
-      pending="Delegating..."
+      pending={t("subagent.row.pending")}
       part={props.part}
       onClick={() => {
         const id = sessionID()
@@ -3145,21 +3294,68 @@ function Task(props: ToolProps) {
 export function formatSubagentToolcalls(count: number | undefined) {
   // A cold start cannot reconstruct historical tool counts (#886 5.4); `—`
   // distinguishes "unknown" from a real zero.
-  if (count === undefined) return "—"
-  return `${count} toolcall${count === 1 ? "" : "s"}`
+  if (count === undefined) return UNKNOWN
+  return t(count === 1 ? "subagent.end.tools.one" : "subagent.end.tools.other", { count })
 }
 
-export function formatSubagentTitle(agent: string, description: string, background: boolean) {
-  return `${agent} Task${background ? " (background)" : ""} — ${description}`
+/** `Explore Task — description`, then who asked for the run and whether it runs in the background (#1058). */
+export function formatSubagentTitle(
+  agent: string,
+  description: string,
+  labels: { initiator: "user" | "agent" | undefined; background: boolean; promoted: boolean },
+) {
+  const initiator = t(labels.initiator === "user" ? "background.row.byUser" : "background.row.byAgent")
+  const execution = t(
+    labels.promoted
+      ? "background.row.promoted"
+      : labels.background
+        ? "background.row.background"
+        : "background.row.foreground",
+  )
+  return [t("subagent.row.title", { agent, description }), initiator, execution].join(" · ")
 }
 
 export function formatSubagentRetry(attempt: number, message: string) {
-  return `Retrying (attempt ${attempt}) · ${message}`
+  return t("subagent.row.retry", { attempt, message })
 }
 
 export function formatCompletedSubagentDetail(toolcalls: number | undefined, duration: string) {
   if (toolcalls === 0) return duration
   return `${formatSubagentToolcalls(toolcalls)} · ${duration}`
+}
+
+/**
+ * The status line of a background run, without its arrow: what `backgroundStatus` decided, in words (#1058).
+ * `reported` is whether the server has told how the run ended, in a message of its own below the row; `calls` and
+ * `elapsed` come ready, with `—` for what is unknown.
+ */
+export function formatBackgroundStatus(input: {
+  status: Exclude<BackgroundStatus, "unknown">
+  reported: boolean
+  calls: string
+  elapsed: string
+  reason?: string
+}) {
+  const { status, calls, elapsed, reason } = input
+  if (status === "queued") return t("background.row.queued")
+  if (status === "running") return t("background.row.running", { calls, elapsed })
+  if (status === "completed") {
+    return t(input.reported ? "background.row.completedResult" : "background.row.completed", { elapsed })
+  }
+  if (status === "error") return reason ? t("background.row.error", { reason }) : t("background.row.errorBare")
+  if (status === "interrupted") return t("background.row.interrupted")
+  if (status === "cancelled") return t("background.row.cancelled")
+  // A status added to `BackgroundStatus` without a line here does not typecheck.
+  return status satisfies never
+}
+
+/** The first line of an error that has any text, as one displayable line cut to `width` cells; none without one. */
+export function backgroundReason(error: string | undefined, width: number, ambiguousWidth: AmbiguousWidth) {
+  for (const line of (error ?? "").split(/\r?\n/)) {
+    const text = remoteLine(line)
+    if (text) return truncateCells(text, width, ambiguousWidth) || undefined
+  }
+  return undefined
 }
 
 function Edit(props: ToolProps) {

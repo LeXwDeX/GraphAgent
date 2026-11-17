@@ -20,6 +20,25 @@ export interface SessionSummary {
   error?: string
 }
 
+/**
+ * How a background Task run ended, as the server reports it in the message it adds to the parent session. The Task
+ * part itself never learns it: a background part completes as soon as the run starts and is not updated again.
+ */
+export interface BackgroundResult {
+  status: "completed" | "error" | "interrupted"
+  /** The Task description the run was started with. */
+  title: string
+  initiator?: "user" | "agent"
+  /** The command the user typed; only a run the user started has one. */
+  command?: string
+  /** Epoch milliseconds. */
+  startedAt: number
+  endedAt: number
+  /** The message and the text part that carry the notice. */
+  messageID: string
+  partID: string
+}
+
 export interface TaskIndexEntry {
   parentSessionID: string
   parentMessageID: string
@@ -27,6 +46,16 @@ export interface TaskIndexEntry {
   kind?: string
   description?: string
   background?: boolean
+  /** Who asked for the run; unset for parts written before the Task tool recorded it. */
+  initiator?: "user" | "agent"
+  /** The command the user typed; only a run the user started has one. */
+  command?: string
+  /** A foreground run that was turned into a background one. */
+  promoted?: boolean
+  /** When the Task tool started (epoch milliseconds, the part's `state.time.start`). */
+  startedAt?: number
+  /** Written from the result message, never from the Task part; a part write keeps the one held. */
+  result?: BackgroundResult
 }
 
 export type SessionLike = Pick<Session, "id" | "parentID" | "time">
@@ -42,7 +71,18 @@ export interface ToolPartLike {
     title?: string
     input?: Record<string, any>
     metadata?: Record<string, any>
+    time?: { start?: number; end?: number }
   }
+}
+
+/** The part of a text part the background result reader looks at. */
+export interface TextPartLike {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "text"
+  synthetic?: boolean
+  metadata?: Record<string, unknown>
 }
 
 export function summaryStatus(status: SessionStatus | undefined): SessionSummaryStatus {
@@ -126,13 +166,29 @@ export function mergeToolPart(
   }
 }
 
-/** Extract the child-session link from a parent's Task tool part. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+const finiteTime = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value)
+const nonEmpty = (value: unknown): value is string => typeof value === "string" && value !== ""
+const initiatorOf = (value: unknown): "user" | "agent" | undefined =>
+  value === "user" || value === "agent" ? value : undefined
+
+/**
+ * Extract the child-session link from a parent's Task tool part. A call that cancels a task
+ * (`input.action === "cancel"`) names the child it stops, but it did not start it: it makes no link, so it cannot
+ * overwrite the one the starting call made.
+ */
 export function taskIndexEntry(part: ToolPartLike): { childSessionID: string; entry: TaskIndexEntry } | undefined {
   if (part.tool !== "task") return undefined
+  if (part.state.input?.action === "cancel") return undefined
   // `sessionID` is the current key; `sessionId` keeps links for messages
   // persisted before the rename (#1069 P9).
-  const childSessionID = part.state.metadata?.sessionID ?? part.state.metadata?.sessionId
+  const metadata = part.state.metadata
+  const childSessionID = metadata?.sessionID ?? metadata?.sessionId
   if (typeof childSessionID !== "string" || !childSessionID) return undefined
+  const start = part.state.time?.start
   return {
     childSessionID,
     entry: {
@@ -141,7 +197,41 @@ export function taskIndexEntry(part: ToolPartLike): { childSessionID: string; en
       partID: part.id,
       kind: typeof part.state.input?.subagent_type === "string" ? part.state.input.subagent_type : undefined,
       description: typeof part.state.input?.description === "string" ? part.state.input.description : undefined,
-      background: part.state.metadata?.background === true,
+      background: metadata?.background === true,
+      initiator: initiatorOf(metadata?.initiator),
+      command: nonEmpty(metadata?.command) ? metadata.command : undefined,
+      promoted: metadata?.promoted === true ? true : undefined,
+      startedAt: finiteTime(start) ? start : undefined,
+    },
+  }
+}
+
+/**
+ * Read the result a finished background run left in the message the server added to the parent session
+ * (`metadata.backgroundResult` of a synthetic text part). The child, the status, the title and both times must be
+ * well formed or the part is not a result; a malformed `initiator` or `command` is left out and the result stays.
+ */
+export function backgroundResultOf(
+  part: TextPartLike,
+): { childSessionID: string; result: BackgroundResult } | undefined {
+  if (part.type !== "text" || part.synthetic !== true) return undefined
+  const raw = part.metadata?.backgroundResult
+  if (!isRecord(raw)) return undefined
+  const { childSessionID, status, title, initiator, command, startedAt, endedAt } = raw
+  if (!nonEmpty(childSessionID) || !nonEmpty(title)) return undefined
+  if (status !== "completed" && status !== "error" && status !== "interrupted") return undefined
+  if (!finiteTime(startedAt) || !finiteTime(endedAt)) return undefined
+  return {
+    childSessionID,
+    result: {
+      status,
+      title,
+      initiator: initiatorOf(initiator),
+      command: nonEmpty(command) ? command : undefined,
+      startedAt,
+      endedAt,
+      messageID: part.messageID,
+      partID: part.id,
     },
   }
 }
@@ -160,24 +250,37 @@ export interface SnapshotSummary {
   toolPartIDs: Set<string>
   /** Links from the session's Task tool parts to the child sessions they started. */
   tasks: Array<{ childSessionID: string; entry: TaskIndexEntry }>
+  /** The results of finished background runs, from the messages the server added, oldest first. */
+  results: Array<{ childSessionID: string; result: BackgroundResult }>
 }
 
 function isToolPart(part: { id: string; type: string }): part is ToolPartLike {
   return part.type === "tool"
 }
 
+function isTextPart(part: { id: string; type: string }): part is TextPartLike {
+  return part.type === "text"
+}
+
 /**
  * Recount a session from its loaded messages (#886 5.4). The event reducer only
  * sees tool parts that arrive live, so a session that was cold or reconnected
- * starts from this scan instead of from a count that missed history. Messages
- * are read oldest first, like the store keeps them.
+ * starts from this scan instead of from a count that missed history. The same
+ * scan finds the Task links and the results of finished background runs.
+ * Messages are read oldest first, like the store keeps them.
  */
 export function summarizeMessages(messages: ReadonlyArray<SnapshotMessage>): SnapshotSummary {
   const toolPartIDs = new Set<string>()
   const tasks: SnapshotSummary["tasks"] = []
+  const results: SnapshotSummary["results"] = []
   let current: SnapshotSummary["current"]
   for (const message of messages) {
     for (const part of message.parts) {
+      if (isTextPart(part)) {
+        const result = backgroundResultOf(part)
+        if (result) results.push(result)
+        continue
+      }
       if (!isToolPart(part)) continue
       toolPartIDs.add(part.id)
       // Same rule as `mergeToolPart`: pending and failed tools never become "current".
@@ -189,7 +292,7 @@ export function summarizeMessages(messages: ReadonlyArray<SnapshotMessage>): Sna
       if (task) tasks.push(task)
     }
   }
-  return { toolCalls: toolPartIDs.size, current, toolPartIDs, tasks }
+  return { toolCalls: toolPartIDs.size, current, toolPartIDs, tasks, results }
 }
 
 /**

@@ -45,6 +45,7 @@ packages/tui/src/
   session/              # 会话级辅助：prefill.ts、siblings.ts（同级排序）、navigate.ts（进入子 agent、失效回父）、
                         #   subagents.ts（子 agent 的 kind、描述、状态标记与 /agents 行模型等纯函数，顶栏与面板共用，F5）
                         #   subagent-record.ts（子 agent 记录的任务块与结束行的判定和文字）
+                        #   background.ts（后台 Task 的状态与耗时的纯函数：状态取值 结果 > job > 摘要，#1058）
   attention/            # index.ts、notify.ts（F1 已迁入）；F5 补子 agent 提醒
   dag/                  # model.ts、waves.ts：纯函数（F1 已迁入）；bar.ts、prefill.ts（F4 已落地）
   pr/                   # state.ts：prLineState、短标记、toast 与警示清除的纯函数；reminder.ts：提醒倒计时的纯函数（F6）
@@ -74,10 +75,11 @@ packages/tui/script/    # check-tui-imports.ts、check-tui-text.ts、english-tex
 - `config/`：键位 `Definitions`、`CommandMap` 与处置表（F1）。
 - `context/`：provider 与数据层。F1 已新增 `event-gate`、`frame-clock`、`stream-buffer`、`interest`、`ticker`（计时唯一来源，`frame`/`second`/`at`）；现有动画与秒级显示均经 `ticker`，由 `test/source-guards.test.ts` 守住（第 5 节）。
 - `routes/`：`home`、`session`（有 `parentID` 的会话渲染为子 agent 视图，内容 F5 未落地）、`diff`。F1、F5。
+  - Task 行（`routes/session/index.tsx` 的 `Task`，#1058）：标题行是 `{agent} Task — {描述}` 加发起者与前后台标记（读 `taskIndex[child]`，没有链接时读 Task part 的 metadata）；后台运行的状态行由 `backgroundStatus` 决定，每个状态一条固定文案和一个颜色 token，`unknown` 与前台行一样；前台行文案不变，但全部走 `t()`，键在 `subagent.row.*`，后台行的键在 `background.row.*`。已结束的行耗时是结果上报的起止之差，不读时钟。
 - `dag/`、`pr/`：无 I/O 的纯函数。`dag/` 已有 `model.ts`、`waves.ts`、`bar.ts`、`prefill.ts`；`pr/` 已有 `state.ts`、`reminder.ts`（F6）。`dag/` 不得 import `ui/`，所以 `bar.ts` 自带进度条字形的字宽（`━ ─` 为 Ambiguous，`╌` 为 Neutral），`test/dag/bar.test.ts` 用 `cellWidth` 逐条核对。
 - `theme/`：token 表、`resolveTheme`、主题 JSON（F1）。
 - `i18n/`：双语文案表与 `t()`（F1）。
-- `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，`i/N`、`←→`、`<leader>down` 共用）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）；子 agent 的 `kind`、描述、状态标记（符号与颜色 token）和 `/agents` 的行模型 `subagents.ts`（顶栏、面板、提醒共用的唯一实现）；记录 `subagent-record.ts`（子 agent 记录开头的任务块取哪条消息的文字、结束后那一行的状态与文字；结束状态与顶栏标记同源 `subagentMarker`，会话自己的状态未知时才看父会话的前台 Task 调用）。
+- `session/`：会话级辅助函数：预填 `prefill.ts`；同级排序 `siblings.ts`（`(time.created, id)` 升序，`i/N`、`←→`、`<leader>down` 共用）；导航 `navigate.ts`（`openSubAgent` 是进入子 agent 的唯一入口，`returnToParent` 处理子会话失效）；子 agent 的 `kind`、描述、状态标记（符号与颜色 token）和 `/agents` 的行模型 `subagents.ts`（顶栏、面板、提醒共用的唯一实现）；记录 `subagent-record.ts`（子 agent 记录开头的任务块取哪条消息的文字、结束后那一行的状态与文字；结束状态与顶栏标记同源 `subagentMarker`，会话自己的状态未知时才看父会话的前台 Task 调用）；后台 Task 的状态 `background.ts`（`backgroundStatus` 按“服务端上报的结果 > 运行所属 job 的状态 > 子会话摘要”取值，先匹配者胜，后来的来源不改写先来的；`queued` 是推断：job 在跑而子会话没跑过一轮、没调过工具，服务端不上报排队；三处都没有说法时为 `unknown`。`backgroundElapsed` 对进行中的运行取 `now - startedAt`，对已结束的取结果上报的起止之差，不知道时返回空，不取负值）。
 - `attention/`：提醒与注意力上报。F1 已迁入 `index.ts` 与 `notify.ts`，F5 补子 agent 提醒。
 - `ui/`：无状态展示件，不访问数据；含统一宽度函数 `width.ts`。
 - `prompt/`：存量目录，放输入框的数据辅助（展示文本、历史、frecency、暂存、part、排队消息、特性），不在第 3 节依赖表内。
@@ -182,7 +184,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 只有 `context/ticker.ts`、`context/frame-clock.ts`（帧对齐回退）和 `terminal-win32.ts`（平台适配，不在渲染路径）允许出现 `setTimeout`/`setInterval`。检查：`grep -rln "setInterval\|setTimeout" packages/tui/src` 只命中这三个文件。新增白名单必须改本规范，并在 PR 里说明理由。组件内计时、自建轮询一律禁止。
 - toast 时长、提问倒计时（F3）、已用时间（F4）、PR 的"3 分钟未响应"与"60 秒隐藏"、提醒倒计时（F6）全部用 `second` 或 `at`；F6 的三项都在 PR tracker 里用 `at`，状态带不订阅。
-- P15（空闲 0 帧）在没有任何秒级显示可见时成立；显示秒级耗时的组件只在可见时订阅 `second`。
+- P15（空闲 0 帧）在没有任何秒级显示可见时成立；显示秒级耗时的组件只在可见时订阅 `second`。后台 Task 行（#1058）只在“运行中且位于视口内（`ctx.isVisible`）”时订阅：排队、已结束、滚出视口的行不订阅，状态变了或滚出视口就取消。
 - 唯一允许的动画：braille spinner 按固定间隔换帧。不用 `TextAttributes.BLINK`，不做按时间改变透明度的循环动画，不留 `createFadeIn`。
 - `Spinner` 只在位于视口内时订阅 `frame`。"位于视口内"由行表和视口区间判断，不是"是否挂载"（overscan、末尾行、`streaming` 行都是挂载状态但不一定可见）。
 
@@ -384,7 +386,7 @@ Worker 事件 → EventGate（按会话过滤）→ FrameClock（按帧合批）
 
 - 所有用户可见文字走 `t("key", params)`，包括命令标题与描述、面板标题与按键提示、toast、页脚、状态带、询问区、空状态、预填文字。命令分类等枚举用键，不用中文字面量。
 - 不翻译：代码标识符、命令名（`/new`）、键名、`/config` 语言行的选项文字（`简体中文`、`English`）。
-- 键名规则：`area.name`，点分，如 `subagent.readonly`、`dagmode.footer.on`、`command.session.new.title`、`error.child_session_read_only`。同一功能的键共用前缀（`dagmode.band.*`、`dagmode.panel.*`、`dagmode.drawer.*`、`dagmode.prefill.*`、`dagmode.budget.*`）。
+- 键名规则：`area.name`，点分，如 `subagent.readonly`、`dagmode.footer.on`、`command.session.new.title`、`error.child_session_read_only`。同一功能的键共用前缀（`dagmode.band.*`、`dagmode.panel.*`、`dagmode.drawer.*`、`dagmode.prefill.*`、`dagmode.budget.*`、`background.row.*`）。
 - `i18n/zh-CN.ts` 与 `i18n/en.ts` 两张表键集合必须完全相同，每个键的占位符集合相同，没有空字符串。一致性测试由 F1 提供；缺任何一个键测试失败。
 - 禁止在组件里拼接中文字符串。带变量的文案用占位符，不用字符串拼接。检查：F1 的 AST 扫描测试遍历 `packages/tui/src`（排除 `i18n/`）的字符串字面量与 JSX 文本，不得出现 CJK 字符（注释不计）。
 - 按键名放进文案时用 `{key}` 占位，由 keymap 当前绑定填入；后备文本里不含 `{key}`。
