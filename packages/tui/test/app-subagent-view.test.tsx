@@ -165,9 +165,11 @@ test("the marker follows the sub-agent: running in the brand color, done in gray
     await waitForFrame(app.setup, (frame) => topRow(frame).includes("✗ explore"), "the failed marker")
     expect((await topColor(app.setup, "✗"))?.equals(palette().error)).toBe(true)
 
-    // Running again beats the error that is still on record.
+    // Running again starts a new run, and its success is not marked with the earlier failure.
     app.events.emit(status(childID, "busy"))
     await waitForFrame(app.setup, (frame) => topRow(frame).includes("● explore"), "the running marker again")
+    app.events.emit(status(childID, "idle"))
+    await waitForFrame(app.setup, (frame) => topRow(frame).includes("✓ explore"), "done after the rerun")
     expect(app.writes()).toEqual([])
   } finally {
     await app.stop()

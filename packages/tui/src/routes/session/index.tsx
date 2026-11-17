@@ -73,6 +73,15 @@ import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { returnToParent, useOpenSubAgent } from "../../session/navigate"
 import { childSessions, nextSibling, siblingSessions } from "../../session/siblings"
+import {
+  handbackLine,
+  handbackText,
+  promptText,
+  sameHandback,
+  subagentOutcome,
+  type HandbackLine,
+} from "../../session/subagent-record"
+import { subagentDescription, subagentMarkerToken } from "../../session/subagents"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -114,6 +123,7 @@ import { isQueuedMessage, orderedBefore } from "../../prompt/queued-message"
 import {
   createRowMeasurements,
   createSessionViewState,
+  DELEGATION_PROMPT_LINES,
   estimateRowHeight,
   isWindowed,
   PART_OVERSCAN,
@@ -125,7 +135,7 @@ import {
   type Row,
   type SessionViewState,
 } from "./rows"
-import { createRowTable } from "./row-table"
+import { createRowTable, type Delegation } from "./row-table"
 import { toggleExpand } from "./expand"
 import { diffView, sessionContentWidth } from "./diff-view"
 import {
@@ -220,6 +230,10 @@ const context = createContext<{
   /** True while the row hosting `partID` is inside the scroll viewport. Unwindowed transcripts report everything visible. */
   isVisible: (partID: string | undefined) => boolean
   setVisibleParts: (partIDs: ReadonlySet<string> | undefined) => void
+  /** The user message a sub-agent view draws as its task block; nothing in a main session (#1033 3.4). */
+  delegation: Accessor<Delegation | undefined>
+  /** The closing line of a sub-agent that has finished; nothing while it runs, or in a main session (#1033 3.4). */
+  handback: Accessor<HandbackLine | undefined>
   shortcuts: {
     childFirst: Accessor<string>
     background: Accessor<string>
@@ -281,6 +295,8 @@ export function Main() {
   )
   const askRequests = useAskSurfaceRequests()
   const visible = createMemo(() => !session()?.parentID)
+  // A sub-agent view is read-only (#1033 3.3): the keys that change the session or send it a request do nothing there.
+  const readOnly = createMemo(() => !!session()?.parentID)
   const disabled = createMemo(() => askRequests().length > 0)
 
   const pending = createMemo(() => {
@@ -360,6 +376,39 @@ export function Main() {
     return ids.has(partID)
   }
 
+  // A sub-agent view opens its record with the task its parent delegated (#1033 3.4): the first message of the
+  // session, when it is the user message that carries the prompt, is drawn as that block and not as a user message.
+  // The window the session keeps (the last 100 messages) can have dropped it; then there is no task block, and the
+  // description stays in the top bar.
+  const delegation = createMemo(
+    (): Delegation | undefined => {
+      const current = session()
+      if (!current?.parentID) return undefined
+      const first = messages()[0]
+      if (first?.role !== "user" || !promptText(sync.data.part[first.id] ?? [])) return undefined
+      return { messageID: first.id, description: subagentDescription(current, sync.data.taskIndex[current.id]) }
+    },
+    undefined,
+    { equals: (left, right) => left?.messageID === right?.messageID && left?.description === right?.description },
+  )
+  // The Task call of the parent that started the agent: its state tells how it ended when the session's own does not.
+  const parentTask = createMemo(() => {
+    const entry = sync.data.taskIndex[route.sessionID]
+    if (!entry) return undefined
+    const part = sync.data.part[entry.parentMessageID]?.find((item) => item.id === entry.partID)
+    return { background: entry.background, status: part?.type === "tool" ? part.state.status : undefined }
+  })
+  const handback = createMemo(
+    (): HandbackLine | undefined => {
+      if (!session()?.parentID) return undefined
+      const summary = sync.data.summary[route.sessionID]
+      const outcome = subagentOutcome(summary, parentTask())
+      return outcome ? handbackLine(outcome, summary) : undefined
+    },
+    undefined,
+    { equals: sameHandback },
+  )
+
   const rowData = createRowTable({
     messages,
     parts: (messageID) => sync.data.part[messageID] ?? [],
@@ -370,6 +419,14 @@ export function Main() {
     revertMessageID,
     revertRevision: () => rowRevision(revert()?.reverted.length, revertInfo()?.diff),
     reverted: atOrAfterRevert,
+    delegation,
+    // The line is words, so its revision is the words: a language switch measures it again.
+    handback: () => {
+      const line = handback()
+      if (!line) return undefined
+      const text = handbackText(line)
+      return rowRevision(text.glyph, text.lead, text.meta)
+    },
   })
 
   const rows = createMemo(() => rowData().rows)
@@ -666,6 +723,8 @@ export function Main() {
     if (messageID) scrollToMessageID(messageID)
   }
 
+  // A click on a user message opens its actions. A sub-agent view has none to offer (#1033 3.3): its messages are
+  // not clickable, and the text is copied by selecting it.
   function openMessagePanel(message: UserMessage) {
     if (renderer.getSelection()?.getSelectedText()) return
     openBottomPanel("message", () => (
@@ -688,27 +747,27 @@ export function Main() {
     send: (update, signal) => sdk.client.session.attention(update, { signal }),
   })
   createEffect(() => attention.select(route.sessionID))
-  createEffect(() => {
+  // The parent whose background view this session holds, set only while it is a background sub-agent. The Task
+  // link lives in the summary layer (`taskIndex`, kept by the parent's tool events), so this holds when the
+  // parent's own messages are not loaded, or were evicted from the hydrated cache.
+  const backgroundParentID = createMemo(() => {
     const current = session()
     const parentID = current?.parentID
-    const viewing =
-      parentID &&
-      (sync.data.message[parentID] ?? []).some((message) =>
-        (sync.data.part[message.id] ?? []).some(
-          (part) =>
-            part.type === "tool" &&
-            part.tool === "task" &&
-            part.state.status !== "pending" &&
-            part.state.metadata?.background === true &&
-            (part.state.metadata?.sessionID ?? part.state.metadata?.sessionId) === current.id,
-        ),
-      )
-    backgroundAttention.select(viewing ? parentID : undefined, !!viewing)
+    return parentID && sync.data.taskIndex[current.id]?.background === true ? parentID : undefined
   })
-  const reportActivity = () => attention.activity()
-  renderer.keyInput.on("keypress", reportActivity)
+  // Every switch of session, siblings included, closes the previous lease before the next one opens, so the old
+  // view keeps no heartbeat. A session that is not a background sub-agent holds no lease at all.
+  createEffect(
+    on([() => route.sessionID, backgroundParentID], ([, parentID]) => {
+      backgroundAttention.select(undefined)
+      if (parentID) backgroundAttention.select(parentID, true)
+    }),
+  )
+  // An interceptor ahead of all others, not a `keypress` listener: the keymap consumes the keys it binds (left and
+  // right between sub-agents, the page keys, esc) before later listeners run, and those are user activity too.
+  const offActivity = keymap.intercept("key", () => attention.activity(), { priority: 1_000 })
   onCleanup(() => {
-    renderer.keyInput.off("keypress", reportActivity)
+    offActivity()
     void attention.close()
     void backgroundAttention.close()
   })
@@ -735,7 +794,10 @@ export function Main() {
       return visibleMessages.findLast((child) => child.y < scrollTop - 10)?.id ?? null
     }
     const top = scroll.scrollTop
-    const userRows = rows().flatMap((row, index) => (row.kind === "user" ? [{ row, index }] : []))
+    // The task block of a sub-agent view is its first user message.
+    const userRows = rows().flatMap((row, index) =>
+      row.kind === "user" || row.kind === "delegation" ? [{ row, index }] : [],
+    )
     if (direction === "next") {
       const target = userRows.find((item) => positions()[item.index] > top + 10)
       return target?.row.messageID ?? null
@@ -818,6 +880,7 @@ export function Main() {
       title: "Rename session",
       value: "session.rename",
       category: "Session",
+      enabled: !readOnly(),
       run: () => {
         void renameSession("")
       },
@@ -846,12 +909,14 @@ export function Main() {
       title: "Fork session",
       value: "session.fork",
       category: "Session",
+      enabled: !readOnly(),
       run: () => openBottomPanel("fork", () => <ForkPanel sessionID={route.sessionID} onPreview={previewMessage} />),
     },
     {
       title: "Compact session",
       value: "session.compact",
       category: "Session",
+      enabled: !readOnly(),
       run: () => {
         const selectedModel = local.model.current()
         if (!selectedModel) {
@@ -873,6 +938,7 @@ export function Main() {
       title: "Undo previous message",
       value: "session.undo",
       category: "Session",
+      enabled: !readOnly(),
       run: async () => {
         const status = sync.data.session_status?.[route.sessionID]
         if (status?.type !== "idle") await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
@@ -909,7 +975,7 @@ export function Main() {
       title: "Redo",
       value: "session.redo",
       category: "Session",
-      enabled: !!session()?.revert?.messageID,
+      enabled: !readOnly() && !!session()?.revert?.messageID,
       run: () => {
         const messageID = session()?.revert?.messageID
         if (!messageID) return
@@ -1299,7 +1365,7 @@ export function Main() {
       value: "session.background",
       category: "Session",
       hidden: true,
-      enabled: foregroundTasks().length > 0,
+      enabled: !readOnly() && foregroundTasks().length > 0,
       run: () => {
         void sdk.client.experimental.session.background(
           { sessionID: route.sessionID },
@@ -1526,6 +1592,8 @@ export function Main() {
           measureRow,
           isVisible: isVisiblePart,
           setVisibleParts: updateVisibleParts,
+          delegation,
+          handback,
           shortcuts,
         }}
       >
@@ -1554,102 +1622,101 @@ export function Main() {
                 <Show
                   when={isWindowed(rows().length)}
                   fallback={
-                    <For each={messages()}>
-                      {(message, index) => (
-                        <Switch>
-                          <Match when={message.id === revert()?.messageID}>
-                            {(function () {
-                              const [hover, setHover] = createSignal(false)
+                    <>
+                      <For each={messages()}>
+                        {(message, index) => (
+                          <Switch>
+                            <Match when={message.id === revert()?.messageID}>
+                              {(function () {
+                                const [hover, setHover] = createSignal(false)
 
-                              const handleUnrevert = async () => {
-                                if (!bottomZone) return
-                                const confirmed = await askConfirm(bottomZone, {
-                                  title: "Confirm Redo",
-                                  body: "Are you sure you want to restore the reverted messages?",
-                                  confirmLabel: t("ask.confirm.confirm"),
-                                  cancelLabel: t("ask.confirm.cancel"),
-                                })
-                                if (confirmed) {
-                                  keymap.dispatchCommand("session.redo")
+                                const handleUnrevert = async () => {
+                                  if (!bottomZone) return
+                                  const confirmed = await askConfirm(bottomZone, {
+                                    title: "Confirm Redo",
+                                    body: "Are you sure you want to restore the reverted messages?",
+                                    confirmLabel: t("ask.confirm.confirm"),
+                                    cancelLabel: t("ask.confirm.cancel"),
+                                  })
+                                  if (confirmed) {
+                                    keymap.dispatchCommand("session.redo")
+                                  }
                                 }
-                              }
 
-                              return (
-                                <box
-                                  onMouseOver={() => setHover(true)}
-                                  onMouseOut={() => setHover(false)}
-                                  onMouseUp={handleUnrevert}
-                                  marginTop={1}
-                                  flexShrink={0}
-                                  border={["left"]}
-                                  customBorderChars={SplitBorder.customBorderChars}
-                                  borderColor={theme.backgroundPanel}
-                                >
+                                return (
                                   <box
-                                    paddingTop={1}
-                                    paddingBottom={1}
-                                    paddingLeft={2}
-                                    backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+                                    onMouseOver={() => setHover(true)}
+                                    onMouseOut={() => setHover(false)}
+                                    onMouseUp={handleUnrevert}
+                                    marginTop={1}
+                                    flexShrink={0}
+                                    border={["left"]}
+                                    customBorderChars={SplitBorder.customBorderChars}
+                                    borderColor={theme.backgroundPanel}
                                   >
-                                    <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
-                                    <text fg={theme.textMuted}>
-                                      <span style={{ fg: theme.text }}>{shortcuts.redo()}</span> or /redo to restore
-                                    </text>
-                                    <Show when={revert()!.diffFiles?.length}>
-                                      <box marginTop={1}>
-                                        <For each={revert()!.diffFiles}>
-                                          {(file) => (
-                                            <text fg={theme.text}>
-                                              {file.filename}
-                                              <Show when={file.additions > 0}>
-                                                <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
-                                              </Show>
-                                              <Show when={file.deletions > 0}>
-                                                <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
-                                              </Show>
-                                            </text>
-                                          )}
-                                        </For>
-                                      </box>
-                                    </Show>
+                                    <box
+                                      paddingTop={1}
+                                      paddingBottom={1}
+                                      paddingLeft={2}
+                                      backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+                                    >
+                                      <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
+                                      <text fg={theme.textMuted}>
+                                        <span style={{ fg: theme.text }}>{shortcuts.redo()}</span> or /redo to restore
+                                      </text>
+                                      <Show when={revert()!.diffFiles?.length}>
+                                        <box marginTop={1}>
+                                          <For each={revert()!.diffFiles}>
+                                            {(file) => (
+                                              <text fg={theme.text}>
+                                                {file.filename}
+                                                <Show when={file.additions > 0}>
+                                                  <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
+                                                </Show>
+                                                <Show when={file.deletions > 0}>
+                                                  <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
+                                                </Show>
+                                              </text>
+                                            )}
+                                          </For>
+                                        </box>
+                                      </Show>
+                                    </box>
                                   </box>
-                                </box>
-                              )
-                            })()}
-                          </Match>
-                          <Match when={atOrAfterRevert(message)}>
-                            <></>
-                          </Match>
-                          <Match when={message.role === "user"}>
-                            <UserMessage
-                              index={index()}
-                              onMouseUp={() => {
-                                if (renderer.getSelection()?.getSelectedText()) return
-                                openBottomPanel("message", () => (
-                                  <MessagePanel
-                                    messageID={message.id}
-                                    sessionID={route.sessionID}
-                                    queued={isQueuedMessage(message as UserMessage, pending())}
-                                    setPrompt={(promptInfo) => prompt?.set(promptInfo)}
-                                    editPrompt={(request) => prompt?.edit(request)}
-                                  />
-                                ))
-                              }}
-                              message={message as UserMessage}
-                              parts={sync.data.part[message.id] ?? []}
-                              pending={pending()}
-                            />
-                          </Match>
-                          <Match when={message.role === "assistant"}>
-                            <AssistantMessage
-                              last={lastAssistant()?.id === message.id}
-                              message={message as AssistantMessage}
-                              parts={sync.data.part[message.id] ?? []}
-                            />
-                          </Match>
-                        </Switch>
-                      )}
-                    </For>
+                                )
+                              })()}
+                            </Match>
+                            <Match when={atOrAfterRevert(message)}>
+                              <></>
+                            </Match>
+                            <Match when={message.role === "user" && message.id === delegation()?.messageID}>
+                              <DelegationBlock messageID={message.id} parts={sync.data.part[message.id] ?? []} />
+                            </Match>
+                            <Match when={message.role === "user"}>
+                              <UserMessage
+                                index={index()}
+                                onMouseUp={
+                                  session()?.parentID ? undefined : () => openMessagePanel(message as UserMessage)
+                                }
+                                message={message as UserMessage}
+                                parts={sync.data.part[message.id] ?? []}
+                                pending={pending()}
+                              />
+                            </Match>
+                            <Match when={message.role === "assistant"}>
+                              <AssistantMessage
+                                last={lastAssistant()?.id === message.id}
+                                message={message as AssistantMessage}
+                                parts={sync.data.part[message.id] ?? []}
+                              />
+                            </Match>
+                          </Switch>
+                        )}
+                      </For>
+                      <Show when={handback() && messages().length > 0}>
+                        <SubagentHandback />
+                      </Show>
+                    </>
                   }
                 >
                   <SessionTranscript
@@ -1657,7 +1724,7 @@ export function Main() {
                     positions={positions()}
                     pinned={pinnedKeys()}
                     revert={revert()}
-                    onUserMouseUp={openMessagePanel}
+                    onUserMouseUp={session()?.parentID ? undefined : openMessagePanel}
                   />
                 </Show>
               </scrollbox>
@@ -1744,7 +1811,8 @@ function SessionTranscript(props: {
   /** Keys of the rows that stay mounted wherever the viewport is. */
   pinned: ReadonlySet<string>
   revert: RevertState | undefined
-  onUserMouseUp: (message: UserMessage) => void
+  /** Opens the actions of a user message; absent where the messages are not clickable (a sub-agent view). */
+  onUserMouseUp?: (message: UserMessage) => void
 }) {
   const ctx = use()
   const renderer = useRenderer()
@@ -1914,7 +1982,7 @@ function SessionTranscript(props: {
 function SessionRow(props: {
   row: Row
   revert: RevertState | undefined
-  onUserMouseUp: (message: UserMessage) => void
+  onUserMouseUp?: (message: UserMessage) => void
   /** Registers the row's element and measuring function with the transcript; the returned function removes them. */
   track: (key: string, el: BoxRenderable, measure: () => void) => () => void
 }) {
@@ -1959,8 +2027,14 @@ function SessionRow(props: {
             message={message() as UserMessage}
             parts={parts()}
             pending={pending()}
-            onMouseUp={() => props.onUserMouseUp(message() as UserMessage)}
+            onMouseUp={props.onUserMouseUp ? () => props.onUserMouseUp?.(message() as UserMessage) : undefined}
           />
+        </Match>
+        <Match when={props.row.kind === "delegation" && message()?.role === "user"}>
+          <DelegationBlock messageID={props.row.messageID} parts={parts()} />
+        </Match>
+        <Match when={props.row.kind === "handback"}>
+          <SubagentHandback />
         </Match>
         <Match when={props.row.kind === "text" && part()?.type === "text"}>
           <TextPart last={false} part={part() as TextPart} message={message() as AssistantMessage} />
@@ -1988,7 +2062,8 @@ function SessionRow(props: {
 function UserMessage(props: {
   message: UserMessage
   parts: Part[]
-  onMouseUp: () => void
+  /** Opens the message's actions. Absent in a sub-agent view, where the block is not clickable and does not hover. */
+  onMouseUp?: () => void
   index: number
   pending?: Message
 }) {
@@ -2029,7 +2104,7 @@ function UserMessage(props: {
         >
           <box
             onMouseOver={() => {
-              setHover(true)
+              if (props.onMouseUp) setHover(true)
             }}
             onMouseOut={() => {
               setHover(false)
@@ -2088,6 +2163,78 @@ function UserMessage(props: {
         />
       </Show>
     </>
+  )
+}
+
+/**
+ * The task a sub-agent view opens with (#1033 3.4): what the main agent asked of it, read-only. It stands where the
+ * first user message of the session would, so the prompt is drawn once, here and not again as a user message. A long
+ * prompt is cut after `DELEGATION_PROMPT_LINES` lines the way a long tool output is; `/copy` and `/export` keep it
+ * whole.
+ */
+function DelegationBlock(props: { messageID: string; parts: Part[] }) {
+  const ctx = use()
+  const { theme } = useTheme()
+  const description = createMemo(() => ctx.delegation()?.description)
+  const prompt = createMemo(
+    () =>
+      collapseToolOutput(
+        promptText(props.parts),
+        DELEGATION_PROMPT_LINES,
+        outputCharCap(DELEGATION_PROMPT_LINES, ctx.width),
+      ).output,
+  )
+
+  return (
+    <box
+      id={props.messageID}
+      ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+      border={["left"]}
+      borderColor={theme.border}
+      customBorderChars={SplitBorder.customBorderChars}
+      flexShrink={0}
+    >
+      <box paddingTop={1} paddingBottom={1} paddingLeft={2} backgroundColor={theme.backgroundPanel} flexShrink={0}>
+        <text fg={theme.textMuted}>{t("subagent.task.title")}</text>
+        <Show when={description()}>
+          <text fg={theme.text} attributes={TextAttributes.BOLD}>
+            {description()}
+          </text>
+        </Show>
+        <Show when={prompt()}>
+          <box paddingTop={1}>
+            <text fg={theme.text}>{prompt()}</text>
+          </box>
+        </Show>
+      </box>
+    </box>
+  )
+}
+
+/**
+ * The line that closes the record of a finished sub-agent (#1033 3.4): `✓ <it is done and the result went back>
+ * · <tool calls> · <time>`. Static, drawn once the agent is idle and not at all while it runs.
+ */
+function SubagentHandback() {
+  const ctx = use()
+  const { theme } = useTheme()
+  const shown = createMemo(() => {
+    const line = ctx.handback()
+    return line ? { outcome: line.outcome, ...handbackText(line) } : undefined
+  })
+
+  return (
+    <Show when={shown()}>
+      {(line) => (
+        <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
+          <text>
+            <span style={{ fg: theme[subagentMarkerToken(line().outcome)] }}>{line().glyph}</span>
+            <span style={{ fg: line().outcome === "failed" ? theme.error : theme.textMuted }}>{line().lead}</span>
+            <span style={{ fg: theme.textMuted }}>{line().meta}</span>
+          </text>
+        </box>
+      )}
+    </Show>
   )
 }
 

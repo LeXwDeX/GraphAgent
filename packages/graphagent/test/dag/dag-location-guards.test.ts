@@ -11,7 +11,7 @@
  *
  * The DAG runtime guards key ownership on the PROJECT ID only
  * (`wf.projectId !== ctx.project.id` in DagLoop.recoverWorkflow,
- * recoverOrphanPending, the WorkflowStarted handler, and the startup wake
+ * the orphan-pending path (now the reconciler), the WorkflowStarted handler, and the startup wake
  * sweep; the idle-Status wake path has no ownership guard at all). Two
  * instances of the SAME project in DIFFERENT directories (sibling worktrees
  * of one project) therefore both pass every guard: a foreign directory can
@@ -56,6 +56,7 @@ import { SessionStatusEvent } from "@graphagent/schema/session-status-event"
 import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 import { DagSupervisionSweep } from "@/dag/runtime/supervision-sweep"
 import { makeDeadlineWatcher } from "@/dag/runtime/spawn"
 import { DagLocation } from "@/dag/location"
@@ -894,30 +895,29 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
     expect(loopFile).toBeDefined()
     const deliveryFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/delivery.ts"))
     expect(deliveryFile).toBeDefined()
+    const reconcilerFile = sources.find((s) => s.file.endsWith("graphagent/src/dag/runtime/reconciler.ts"))
+    expect(reconcilerFile).toBeDefined()
 
     // Positive half: every adoption/wake ownership gate must carry a
-    // directory-level check. The four adoption sites live in the loop and the
-    // wake-delivery path lives in the D7 delivery module; both are located by
-    // their semantic anchors so the probe survives refactors that keep the
-    // handler boundaries.
+    // directory-level check. The adoption is `recoverWorkflow` and the
+    // observation of the reconciler that every trigger (startup, tick, first
+    // wave, replan, session move) ends in; the wake-delivery path lives in the
+    // D7 delivery module. They are located by their semantic anchors so the
+    // probe survives refactors that keep the handler boundaries.
     const regions: Array<{ name: string; source: string; from: string; to: string }> = [
       {
         name: "recoverWorkflow (startup recovery adoption)",
         source: loopFile!.source,
         from: "const recoverWorkflow = Effect.fn(",
-        to: "// Orphan-pending recovery",
-      },
-      {
-        name: "recoverOrphanPending (orphan-pending sweep)",
-        source: loopFile!.source,
-        from: "const recoverOrphanPending = Effect.fn(",
         to: "yield* events.subscribe(DagEvent.WorkflowStarted)",
       },
       {
-        name: "WorkflowStarted handler (first-wave adoption)",
-        source: loopFile!.source,
-        from: "yield* events.subscribe(DagEvent.WorkflowStarted)",
-        to: "for (const def of [DagEvent.NodeCompleted, DagEvent.NodeSkipped, DagEvent.NodeAborted])",
+        // The reconciler decides from this observation (adoption, orphan disposal, eviction) for every trigger,
+        // the first wave of a new workflow included: its `owned` field is the directory gate for all of them.
+        name: "DagReconciler.observe (startup, tick, first wave, replan and session move: adoption, orphan disposal, eviction)",
+        source: reconcilerFile!.source,
+        from: 'const observe = Effect.fn("DagReconciler.observe")',
+        to: "const terminalizeOrphan = Effect.fn(",
       },
       {
         name: "startup wake sweep",
@@ -951,6 +951,39 @@ describe("DAG execution-location static contract (DAG-LOC-01 R7)", () => {
       }
     }
     expect(unguarded).toEqual([])
+  })
+
+  // Issue #1029 (ADR-0008 decision 6, PR4b): a runtime entry is created in one place, the reconciler's adoption
+  // (`recoverWorkflow`), and the event triggers (a first wave, a replan with no entry, a session move) reach it only
+  // through `reconcileAfter`, whose observation carries the ownership gate above. A second path that built an entry (or
+  // called the adoption itself) would bypass the single flight that keeps two adoptions from overwriting each other.
+  it("every runtime entry is created by the adoption, and the event triggers reach it through reconcileAfter", () => {
+    const loopSource = readFileSync(path.join(graphagentDagSrc, "runtime/loop.ts"), "utf8")
+    const code = loopSource
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n")
+
+    // Exactly one `runtimes.set(`, and it lies inside `recoverWorkflow`.
+    expect(code.match(/runtimes\.set\(/g) ?? []).toHaveLength(1)
+    const adoption = code.slice(
+      code.indexOf("const recoverWorkflow = Effect.fn("),
+      code.indexOf("DagReconciler.movedEvictor("),
+    )
+    expect(adoption).toContain("runtimes.set(")
+    // `recoverWorkflow` is called by the reconciler's `adopt`, and nowhere else.
+    expect(code.match(/\brecoverWorkflow\(/g) ?? []).toHaveLength(1)
+
+    // Each event trigger hands the workflow to `reconcileAfter` and does not adopt on its own.
+    const triggers = ["DagEvent.WorkflowStarted", "DagEvent.WorkflowReplanned", "SessionEvent.Moved"]
+    for (const event of triggers) {
+      const start = code.indexOf(`events.subscribe(${event})`)
+      expect(start).toBeGreaterThan(-1)
+      const next = code.indexOf("events.subscribe(", start + 1)
+      const handler = code.slice(start, next === -1 ? undefined : next)
+      expect(`${event}: ${handler.includes("reconcileAfter(")}`).toBe(`${event}: true`)
+      expect(handler).not.toContain("recoverWorkflow")
+    }
   })
 
   // #238 probe ⑤ (R7-ext): the directory stamp is WRITE-ONCE EXCEPT the single
@@ -2206,7 +2239,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
     )
   })
 
-  it("C6: recoverOrphanPending racing Session.remove is absorbed without killing init", async () => {
+  it("C6: the reconciler's orphan path racing Session.remove is absorbed without killing init", async () => {
     const parked = { value: false }
     const calls = { value: 0 }
     let release: () => void = () => {}
@@ -2216,8 +2249,9 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
     await Effect.runPromise(
       runTwoInstanceGuardTest({ parkGetNodes: { wait, parked, calls } }, ({ database, session, store, initA }) =>
         Effect.gen(function* () {
-          // An all-pending orphan under A: a create that crashed mid-way.
-          // It is stamped DIR_A so instance A's recoverOrphanPending owns it.
+          // An all-pending orphan under A: a create that crashed mid-way, older
+          // than the reconciler's grace period. It is stamped DIR_A so instance
+          // A's reconciler owns it.
           yield* database.db
             .insert(WorkflowTable)
             .values({
@@ -2231,6 +2265,7 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
               config: "{}",
               seq: 1,
               wake_reported: true,
+              time_created: Date.now() - 2 * ReconcileDecide.ORPHAN_PENDING_GRACE_MS,
             })
             .run()
             .pipe(Effect.orDie)
@@ -2248,20 +2283,20 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
             })
             .run()
             .pipe(Effect.orDie)
-          // Boot A; recoverOrphanPending parks its first getNodes on the gate.
+          // Boot A; the reconciler's observation parks its first getNodes on the gate.
           const initFiber = yield* initA.pipe(Effect.forkChild)
           yield* pollWithTimeout(
             Effect.sync(() => (parked.value ? true : undefined)),
-            "recoverOrphanPending never parked at getNodes",
+            "the reconciler never parked at getNodes",
           )
-          // While it is parked between getNodes and dag.fail, delete the
+          // While it is parked between its observation and the claim, delete the
           // session — FK cascade wipes the orphan rows out from under it.
           yield* session.remove(SES_A as never)
           expect(yield* store.getWorkflow("c6-orphan")).toBeUndefined()
-          // Release: dag.fail on the gone workflow fails, the startup-scan
-          // catchCause absorbs it, and Effect.ensuring frees the recovering
-          // slot. init must therefore complete — a leak or an unabsorbed
-          // defect would surface here.
+          // Release: the claim of the gone workflow is refused (or, were it let
+          // through, dag.fail would fail and the round's catchCause absorb it),
+          // and the evaluation's flight ends whatever happens. init must therefore
+          // complete — a leak or an unabsorbed defect would surface here.
           release()
           yield* Fiber.join(initFiber)
           expect(yield* store.getWorkflow("c6-orphan")).toBeUndefined()
@@ -2274,23 +2309,24 @@ describe("DAG-LOC-01 issue #238 evidence probes", () => {
 // ---------------------------------------------------------------------------
 // H1 mutation probe (DAG-LOC-01 REJECT follow-up, latch = 959bae7c2)
 //
-// The WorkflowStarted handler's recovering reservation is the only guard
-// between its runtimes/recovering check and runtimes.set. Within one
-// subscription duplicate WorkflowStarted events are serialized by
-// Stream.runForEach, so the falsifiable race is a reentrant stimulus on a
-// DIFFERENT subscription fiber: the WorkflowReplanned handler's no-entry
-// path calls recoverWorkflow, whose own guard observes the live adoption's
-// reservation (post-latch) or nothing (pre-latch). The probe parks the live
-// adoption at the getWorkflow/getNodes seam, publishes the reentrant
-// WorkflowReplanned from the SIBLING directory's ambient context, and
-// asserts adopt-exactly-once: while parked, exactly ONE adoption sequence
-// may sit at the seam (single runtimes.set-to-be, single exclusive-registry
-// registration-to-be); after release, exactly one first-wave spawn; a
-// follow-up duplicate WorkflowStarted from the sibling directory must not
-// drive a second adoption either. Reverting 959bae7c2 turns this probe RED
-// at the seam-count assertion (a second gated getNodes parks inside
-// reconcileWorkflow — the second adoption that would overwrite the first
-// runtimes entry and double-register the lease).
+// The first wave is the reconciler's: WorkflowStarted calls reconcileAfter,
+// and the single flight of the evaluation is the only guard between its
+// observation (no runtimes entry) and runtimes.set. Within one subscription
+// duplicate WorkflowStarted events are serialized by Stream.runForEach, so
+// the falsifiable race is a reentrant stimulus on a DIFFERENT subscription
+// fiber: the WorkflowReplanned handler's no-entry path calls reconcileAfter
+// too, which must wait for the live adoption and then look again instead of
+// adopting beside it. The probe parks the live adoption at the
+// getWorkflow/getNodes seam, publishes the reentrant WorkflowReplanned from
+// the SIBLING directory's ambient context, and asserts adopt-exactly-once:
+// while parked, exactly ONE adoption sequence may sit at the seam (single
+// runtimes.set-to-be, single exclusive-registry registration-to-be); after
+// release, exactly one first-wave spawn; a follow-up duplicate
+// WorkflowStarted from the sibling directory must not drive a second adoption
+// either. Letting a second evaluation of the same workflow run beside the
+// first turns this probe RED at the seam-count assertion (a second gated
+// getNodes parks inside reconcileWorkflow — the second adoption that would
+// overwrite the first runtimes entry and double-register the lease).
 // ---------------------------------------------------------------------------
 
 describe("DAG-LOC-01 H1 adopt-exactly-once latch", () => {
@@ -2324,10 +2360,9 @@ describe("DAG-LOC-01 H1 adopt-exactly-once latch", () => {
             // Reentrant stimulus published from the SIBLING directory's
             // ambient context (B's InstanceRef stamps the location): a same-
             // dagID WorkflowReplanned whose handler finds no runtimes entry
-            // takes the recoverWorkflow re-adoption path. The live adoption's
-            // reservation must repel it — pre-latch the replan passed
-            // recoverWorkflow's guard and parked a SECOND gated getNodes
-            // inside reconcileWorkflow.
+            // takes the reconcileAfter re-adoption path. The evaluation that is
+            // adopting must hold it back — a replan that evaluated beside it
+            // would park a SECOND gated getNodes inside reconcileWorkflow.
             yield* bridge
               .publish(DagEvent.WorkflowReplanned, {
                 dagID: dagID as never,

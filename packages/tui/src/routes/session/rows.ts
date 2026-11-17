@@ -9,7 +9,18 @@ import { createSignal } from "solid-js"
  * become one row. `revision` changes when the row's content changes, which
  * invalidates its cached measured height.
  */
-export type RowKind = "user" | "text" | "reasoning" | "tool" | "meta" | "revert" | "notice"
+export type RowKind =
+  | "user"
+  | "text"
+  | "reasoning"
+  | "tool"
+  | "meta"
+  | "revert"
+  | "notice"
+  /** A sub-agent view's first user message, drawn as the task its parent delegated (#1033 3.4). */
+  | "delegation"
+  /** The line that closes the record of a sub-agent that has finished (#1033 3.4). */
+  | "handback"
 
 export interface Row {
   key: string
@@ -31,6 +42,12 @@ export interface Row {
 export const WINDOW_MIN_ROWS = 2000
 export const PART_OVERSCAN = 6
 export const TAIL_ALWAYS = 4
+
+/**
+ * Lines of the delegated prompt that the task block of a sub-agent view shows before it folds into `…`. The rest of
+ * the prompt stays in the transcript that `/copy` and `/export` write.
+ */
+export const DELEGATION_PROMPT_LINES = 8
 
 /** Whether a transcript of `rowCount` rows is windowed; shorter ones mount every row. */
 export const isWindowed = (rowCount: number) => rowCount >= WINDOW_MIN_ROWS
@@ -219,6 +236,12 @@ export function estimateRowHeight(row: Row, width: number, chars: number, expand
   switch (row.kind) {
     case "user":
       return lines + 3
+    case "delegation":
+      // The title, the description and the gap before the prompt, the prompt itself (folded past its cap, with the
+      // `…` line), and the padding above and below.
+      return Math.min(lines, DELEGATION_PROMPT_LINES + 1) + 5
+    case "handback":
+      return 2
     case "text":
       return lines + 1
     case "reasoning":

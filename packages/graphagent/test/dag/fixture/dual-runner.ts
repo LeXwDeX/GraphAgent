@@ -55,7 +55,11 @@
  *   - Time: the fixture adds no delays of its own. Run the test under TestClock
  *     (`testEffect(...).effect` or `Effect.provide(TestClock.layer())`) and
  *     `TestClock.adjust` moves both runners' clocks together, a wall-clock jump
- *     as seen by the whole machine.
+ *     as seen by the whole machine. A wait is bounded in real time, not in
+ *     rounds of the clock (`STALL_TOLERANCE`): a round costs a fraction of a
+ *     millisecond when the runners' fibers have nothing to run, so a count of
+ *     them ends long before a runner that is only slow (a loaded machine) is
+ *     done.
  *
  * What it does not model (module singletons shared by both runners, because
  * they are one process): `EngineProcess` (cancellation epochs, inbox drain
@@ -74,7 +78,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import { asc, eq, sql } from "drizzle-orm"
-import { Cause, Context, Deferred, Effect, Exit, Layer, Option, Queue, Scope } from "effect"
+import { Cause, Clock, Context, Deferred, Duration, Effect, Exit, Layer, Option, Queue, Scope } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { Database } from "@graphagent/core/database/database"
 import { DagLease } from "@graphagent/core/dag/lease"
@@ -250,8 +254,13 @@ export interface Runner {
   readonly run: <A, E>(effect: Effect.Effect<A, E, RunnerServices>) => Effect.Effect<A, E>
   /** Start the runner the way bootstrap does: DagLoop startup recovery, then the inbox. */
   readonly init: Effect.Effect<void>
-  /** Wait for the next child prompt this runner starts. */
-  readonly nextPrompt: (message: string) => Effect.Effect<PromptGate, Error>
+  /**
+   * Wait for the next child prompt this runner starts: the signal to wait on for what a runner's fibers do on
+   * the way there (an adoption takes real time, which no number of clock rounds waits for). It gives up after
+   * `STALL_TOLERANCE` of real time, on the TestClock too, and fails with `message`; an effect is read at that
+   * moment, for the state a failure should report (`describeRunner`).
+   */
+  readonly nextPrompt: (message: string | Effect.Effect<string>) => Effect.Effect<PromptGate, Error>
   /** Park durable publishes of this runner; see the module comment for the window this models and which publishes are safe to hold. */
   readonly hold: (match: (publish: PublishView) => boolean, options?: HoldOptions) => Effect.Effect<Hold>
   /** Park every durable publish and every lease operation of this runner until released: a stalled (SIGSTOPped) process. */
@@ -298,6 +307,25 @@ export interface DualRunnerOptions {
 }
 
 const cwd = process.cwd()
+
+/**
+ * How long a wait for a runner's fibers may take in real time before it gives up. Every wait returns as soon as
+ * what it waits for is there, so the bound costs nothing when things go well and only decides how long a real
+ * failure takes to report (the same figure, and the same reason, as in `dag-input-mapping-runtime.test.ts`).
+ */
+const STALL_TOLERANCE = "20 seconds"
+
+const isTestClock = (clock: Clock.Clock): clock is TestClock.TestClock => "withLive" in clock
+
+/**
+ * `effect` on the real clock. On the TestClock a timeout ends only when the test moves the clock, which a wait for
+ * a signal does not, so a bound on real work has to be set on the real one; a test on the live clock needs no switch.
+ */
+const onRealClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+  Effect.withFiber((fiber) => {
+    const clock = fiber.getRef(Clock.Clock)
+    return isTestClock(clock) ? clock.withLive(effect) : effect
+  })
 
 const instanceContext = {
   directory: cwd,
@@ -793,10 +821,14 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
       init: run(loopService.init().pipe(Effect.andThen(inboxService.init()))),
       nextPrompt: (message) =>
         Queue.take(prompts).pipe(
-          Effect.timeoutOption("5 seconds"),
+          Effect.timeoutOption(STALL_TOLERANCE),
+          onRealClock,
           Effect.flatMap(
             Option.match({
-              onNone: () => Effect.fail(new Error(message)),
+              onNone: () =>
+                (typeof message === "string" ? Effect.succeed(message) : message).pipe(
+                  Effect.flatMap((text) => Effect.fail(new Error(text))),
+                ),
               onSome: Effect.succeed,
             }),
           ),
@@ -885,20 +917,79 @@ export const makeDualRunner = (options: DualRunnerOptions = {}): Effect.Effect<D
     return { r1, r2, file, children, log, leaseRow, expireLease }
   })
 
+/** Rounds of `pollOnTestClock` that move the clock, 20 ms of virtual time each: 10 s at most. */
+const CLOCK_ROUNDS = 500
+
 /**
  * `pollWithTimeout` for tests on the TestClock, where sleeping never ends: it
  * advances the clock a little between checks (20 ms of virtual time per round,
  * 500 rounds at most), so what it waits for must not depend on the lease's
  * clock moving by more than that.
+ *
+ * It is bounded in real time (`STALL_TOLERANCE`, or `patience`), not in rounds,
+ * and every round also gives the runners' fibers a millisecond of real time (10
+ * ms once the clock rounds are used up): an idle round takes a few hundred
+ * microseconds, while what the fibers do between two checks (an adoption takes
+ * tens of milliseconds, several times that on a loaded machine) is real work
+ * that no count of rounds waits for. `message` is what a wait that gave up
+ * reports; an effect is read at that moment, for the state a failure should
+ * report (`describeRunner`).
  */
-export const pollOnTestClock = <A>(check: Effect.Effect<A | undefined>, message: string) =>
+export const pollOnTestClock = <A>(
+  check: Effect.Effect<A | undefined>,
+  message: string | Effect.Effect<string>,
+  options: { readonly patience?: Duration.Input } = {},
+) =>
   Effect.gen(function* () {
-    for (let attempt = 0; attempt < 500; attempt++) {
+    const patience = Duration.toMillis(Duration.fromInputUnsafe(options.patience ?? STALL_TOLERANCE))
+    const started = performance.now()
+    let round = 0
+    for (; ; round++) {
       const found = yield* check
       if (found !== undefined) return found
-      yield* TestClock.adjust("20 millis")
+      if (performance.now() - started >= patience) break
+      if (round < CLOCK_ROUNDS) yield* TestClock.adjust("20 millis")
+      yield* TestClock.withLive(Effect.sleep(round < CLOCK_ROUNDS ? "1 millis" : "10 millis"))
     }
-    return yield* Effect.fail(new Error(message))
+    const reason = typeof message === "string" ? message : yield* message
+    const waited = Math.round(performance.now() - started)
+    return yield* Effect.fail(
+      new Error(
+        `${reason}\n  (gave up after ${waited} ms of real time and ${Math.min(round, CLOCK_ROUNDS)} clock rounds)`,
+      ),
+    )
+  })
+
+const showAnswer = (answer: LeaseCall["answer"]) =>
+  answer === undefined
+    ? "none"
+    : typeof answer === "boolean"
+      ? String(answer)
+      : `${answer.runnerID} epoch ${answer.epoch}`
+
+/**
+ * What a wait that gave up says about one workflow and one runner: the workflow's
+ * status, its lease row, and what the runner's loop did about it: its lease calls
+ * (a `claim` answered "none" was refused, by another runner's live lease or
+ * because the workflow had ended; no `claim` at all was never tried), the child
+ * sessions it created and the writes it made under its token. It is what tells
+ * a runner that is slow from one that was refused.
+ */
+export const describeRunner = (dual: DualRunner, runner: Runner, dagID: string) =>
+  Effect.gen(function* () {
+    // Reads go through R2's connection: R1's closes with `R1.stop`.
+    const workflow = yield* dual.r2.store.getWorkflow(dagID)
+    const row = yield* dual.leaseRow(dagID)
+    const calls = runner.leaseCalls.filter((call) => call.dagID === dagID)
+    const writes = runner.fenced.filter((write) => write.dagID === dagID)
+    const list = (items: ReadonlyArray<string>) => (items.length === 0 ? "none" : items.join(", "))
+    return [
+      `workflow ${dagID}: ${workflow?.status ?? "not found"}`,
+      `lease row: ${row === undefined ? "none" : `${row.runnerID} epoch ${row.epoch}, expires ${row.expiresAt}`} (clock ${yield* Clock.currentTimeMillis})`,
+      `${runner.name} lease calls: ${list(calls.map((call) => `${call.operation} -> ${showAnswer(call.answer)}`))}`,
+      `${runner.name} created: ${list(runner.created)}`,
+      `${runner.name} fenced writes: ${list(writes.map((write) => write.outcome))}`,
+    ].join("\n  ")
   })
 
 /**

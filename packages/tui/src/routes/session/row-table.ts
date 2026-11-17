@@ -17,6 +17,13 @@ import {
 } from "./rows"
 import { hideToolDetails } from "./tool-attention"
 
+/** The user message a sub-agent view draws as the task its parent delegated to it (#1033 3.4). */
+export interface Delegation {
+  messageID: string
+  /** The Task description shown above the prompt; part of the row's revision, since it can wrap. */
+  description: string
+}
+
 /** The row table of a session: every row in order, plus what the window and the height estimate read about them. */
 export interface RowTable {
   rows: Row[]
@@ -43,6 +50,16 @@ export interface RowTableDeps {
   revertRevision: () => number
   /** Whether a message sits at or after the revert boundary, where nothing is shown. */
   reverted: (message: Message) => boolean
+  /**
+   * The message a sub-agent view shows as its task: the row of that user message becomes a `delegation` row, so the
+   * prompt is drawn once, in the task block, and not again as a user message. Nothing in a main session.
+   */
+  delegation?: Accessor<Delegation | undefined>
+  /**
+   * Revision of the closing line of a sub-agent that has finished. The line is the last row, and only a table that has
+   * rows gets one; nothing while the agent runs or in a main session.
+   */
+  handback?: Accessor<number | undefined>
   /** Factory of the per-message text cache; a test swaps it to count derivations. */
   textFacts?: () => TextFactsCache
 }
@@ -91,7 +108,11 @@ export function createRowTable(deps: RowTableDeps): Accessor<RowTable> {
     const chars = new Map<string, number>()
     const streaming = new Set<string>()
 
+    const delegation = deps.delegation?.()
+    let last: Message | undefined
+
     for (const { message, rows } of units()) {
+      last = message
       if (message.id === deps.revertMessageID()) {
         list.push({
           key: `revert:${message.id}`,
@@ -102,15 +123,35 @@ export function createRowTable(deps: RowTableDeps): Accessor<RowTable> {
       }
       if (deps.reverted(message)) continue
       const built = rows()
-      for (const row of built.rows) list.push(row)
-      for (const [key, count] of built.chars) chars.set(key, count)
+      const delegated = delegation?.messageID === message.id
+      for (const row of built.rows) {
+        const shown = delegated && row.kind === "user" ? delegationRow(row, delegation.description) : row
+        list.push(shown)
+        const count = built.chars.get(row.key)
+        if (count !== undefined) chars.set(shown.key, count)
+      }
       for (const key of built.streaming) streaming.add(key)
+    }
+
+    const handback = deps.handback?.()
+    if (handback !== undefined && last && list.length > 0) {
+      list.push({ key: `handback:${last.sessionID}`, messageID: last.id, kind: "handback", revision: handback })
     }
 
     const stable = stableRows(previous, list)
     previous = stable.byKey
     return { rows: stable.rows, chars, streaming }
   })
+}
+
+/** The row of the delegated user message, drawn as the task block: same message, its own key and revision. */
+function delegationRow(row: Row, description: string): Row {
+  return {
+    key: `delegation:${row.messageID}`,
+    messageID: row.messageID,
+    kind: "delegation",
+    revision: rowRevision(row.revision, description),
+  }
 }
 
 function createMessageRows(message: Message, deps: RowTableDeps): Accessor<MessageRows> {

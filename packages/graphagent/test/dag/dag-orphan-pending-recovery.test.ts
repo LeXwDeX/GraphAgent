@@ -14,6 +14,7 @@ import { DagEvent } from "@graphagent/schema/dag-event"
 import { Agent } from "@/agent/agent"
 import { Dag } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EngineProcess } from "@/session/engine-process"
@@ -115,6 +116,22 @@ function seedProjectAndSession(database: Database.Interface) {
   })
 }
 
+/**
+ * The row an older version left behind: created longer ago than the grace period
+ * (`ORPHAN_PENDING_GRACE_MS`), which the reconciler waits out before it disposes
+ * of a `pending` workflow (ADR-0008 decision 6, row 8). `Dag.create` is one
+ * transaction now, so the tests fake the age of the row, not a crash.
+ */
+function backdate(
+  database: Database.Interface,
+  dagID: string,
+  ageMs = ReconcileDecide.ORPHAN_PENDING_GRACE_MS + 1_000,
+) {
+  return database.db
+    .run(sql`UPDATE workflow SET time_created = ${Date.now() - ageMs} WHERE id = ${dagID}`)
+    .pipe(Effect.orDie, Effect.asVoid)
+}
+
 // Publish the exact durable prefix Dag.create would write, then stop before
 // WorkflowStarted — simulating a process crash between the create transactions.
 function publishInterruptedCreate(
@@ -122,6 +139,7 @@ function publishInterruptedCreate(
   dagID: DagEvent.DagID,
   ts: DateTime.Utc,
   nodeCount: number,
+  directory = process.cwd(),
 ) {
   return Effect.gen(function* () {
     yield* events.publish(DagEvent.WorkflowCreated, {
@@ -132,7 +150,7 @@ function publishInterruptedCreate(
       config: JSON.stringify({ name: "orphan", nodes: [] }),
       status: "pending",
       timestamp: ts,
-      directory: process.cwd(),
+      directory,
     })
     for (let i = 1; i <= nodeCount; i++) {
       yield* events.publish(DagEvent.NodeRegistered, {
@@ -156,6 +174,7 @@ describe("DagLoop orphan pending recovery", () => {
           yield* seedProjectAndSession(database)
           const dagID = DagEvent.DagID.create()
           yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 2)
+          yield* backdate(database, dagID)
 
           const failures: Array<{ reason: string }> = []
           const unsubscribe = yield* events.listen((event) =>
@@ -179,7 +198,9 @@ describe("DagLoop orphan pending recovery", () => {
           expect((yield* store.getNodes(dagID)).map((n) => n.status)).toEqual(["skipped", "skipped"])
           expect(failures).toContainEqual(expect.objectContaining({ reason: ORPHAN_REASON }))
           // The WorkflowStarted published for the terminalization leg must not
-          // be adopted: no node may be scheduled on a dead workflow.
+          // be adopted: the first-wave handler waits for the orphan's evaluation
+          // (reconcileAfter) and finds the workflow failed, so no node is
+          // scheduled on a dead workflow.
           expect(promptCalls).toEqual([])
         }),
       ),
@@ -195,6 +216,7 @@ describe("DagLoop orphan pending recovery", () => {
           yield* seedProjectAndSession(database)
           const dagID = DagEvent.DagID.create()
           yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 1)
+          yield* backdate(database, dagID)
           const lease = () =>
             database.db.get<{ runner_id: string; epoch: number; expires_at: number }>(
               sql`SELECT runner_id, epoch, expires_at FROM dag_runner WHERE dag_id = ${dagID}`,
@@ -220,6 +242,7 @@ describe("DagLoop orphan pending recovery", () => {
           yield* seedProjectAndSession(database)
           const dagID = DagEvent.DagID.create()
           yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 1)
+          yield* backdate(database, dagID)
           // Somebody drives it: this runner may not terminalize what it does not hold.
           yield* database.db.run(
             sql`INSERT INTO dag_runner (dag_id, runner_id, epoch, expires_at) VALUES (${dagID}, '99:other', 1, ${Date.now() + 3_600_000})`,
@@ -246,10 +269,61 @@ describe("DagLoop orphan pending recovery", () => {
           yield* seedProjectAndSession(database)
           const dagID = DagEvent.DagID.create()
           yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 0)
+          yield* backdate(database, dagID)
 
           yield* loop.init()
 
           expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+        }),
+      ),
+    )
+  })
+
+  // ADR-0008 decision 6, row 9: a `pending` row is an orphan only once the grace period is over. `Dag.create`
+  // is one transaction, so such a row comes from an older version; a writer that is still at it is not interrupted.
+  it("leaves a young pending workflow alone: nothing is claimed, failed or scheduled within the grace period", async () => {
+    await Effect.runPromise(
+      runOrphanRecovery(({ database, loop, events, store, promptCalls }) =>
+        Effect.gen(function* () {
+          yield* seedProjectAndSession(database)
+          const dagID = DagEvent.DagID.create()
+          yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 2)
+          // Five seconds short of the end of the grace period.
+          yield* backdate(database, dagID, ReconcileDecide.ORPHAN_PENDING_GRACE_MS - 5_000)
+
+          yield* loop.init()
+
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("pending")
+          expect((yield* store.getNodes(dagID)).map((n) => n.status)).toEqual(["pending", "pending"])
+          // Not even claimed: it is not this runner's to dispose of yet.
+          expect(
+            yield* database.db.get(sql`SELECT dag_id FROM dag_runner WHERE dag_id = ${dagID}`).pipe(Effect.orDie),
+          ).toBeUndefined()
+          expect(promptCalls).toEqual([])
+        }),
+      ),
+    )
+  })
+
+  // An owner-less (empty-directory) row has no owner under `ownsWorkflow`, which fails closed, so no instance
+  // would ever dispose of it: the reconciler treats a `pending` one as its own. Its location is unusable, which
+  // ends it at once (row 4), as the sweep that came before the reconciler did.
+  it("disposes of an owner-less pending workflow (an empty directory stamp) without waiting for the grace period", async () => {
+    await Effect.runPromise(
+      runOrphanRecovery(({ database, loop, events, store, promptCalls }) =>
+        Effect.gen(function* () {
+          yield* seedProjectAndSession(database)
+          const dagID = DagEvent.DagID.create()
+          yield* publishInterruptedCreate(events, dagID, yield* DateTime.now, 1, "")
+          expect((yield* store.getWorkflow(dagID))?.directory).toBe("")
+
+          yield* loop.init()
+
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+          expect(yield* store.getWorkflowFailureReason?.(dagID) ?? Effect.succeed(undefined)).toContain(
+            "workspace_invalid",
+          )
+          expect(promptCalls).toEqual([])
         }),
       ),
     )
@@ -263,6 +337,7 @@ describe("DagLoop orphan pending recovery", () => {
           const dagID = DagEvent.DagID.create()
           const ts = yield* DateTime.now
           yield* publishInterruptedCreate(events, dagID, ts, 1)
+          yield* backdate(database, dagID)
           // A node that already progressed proves the workflow was adopted and
           // mid-flight — the defensive criterion must not terminalize it.
           yield* events.publish(DagEvent.NodeStarted, {
