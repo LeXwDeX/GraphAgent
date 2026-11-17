@@ -15,7 +15,7 @@ import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 const STATUS_SUFFIX = " /status"
 const TOAST_MIN_BUDGET = 10
 /** Room for the agent name, action hint and the gap before the shared slot. */
-const LEFT_RESERVE = 28
+export const LEFT_RESERVE = 28
 
 /**
  * Lists the keys that can follow the leader key while it is pending. The

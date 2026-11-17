@@ -42,6 +42,7 @@ import {
 import { dagUnplacedReasons } from "../dag/waves"
 import { t, type MessageKey } from "../i18n"
 import { useBindings } from "../keymap"
+import { useOpenSubAgent } from "../session/navigate"
 import { usePrefillRootPrompt } from "../session/prefill"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { TuiLog } from "../util/log"
@@ -226,6 +227,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
   const { theme } = useTheme()
   const ticker = useTicker()
   const host = usePanelHost()
+  const openSubAgent = useOpenSubAgent()
   const dimensions = useTerminalDimensions()
 
   const ambiguousWidth = (): AmbiguousWidth => (kv.get("ambiguous_width", 1) === 2 ? 2 : 1)
@@ -524,7 +526,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
     if (!node) return
     if (node.child_session_id !== undefined) {
       host.closeAll()
-      route.navigate({ type: "session", sessionID: node.child_session_id })
+      openSubAgent(node.child_session_id)
       return
     }
     toggleDetail()
