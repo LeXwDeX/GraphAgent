@@ -8,6 +8,7 @@ import * as TestClock from "effect/testing/TestClock"
 import { Database } from "@graphagent/core/database/database"
 import { DagProjector } from "@graphagent/core/dag/projector"
 import { DagStore } from "@graphagent/core/dag/store"
+import { DagTransact } from "@graphagent/core/dag/transact"
 import { WorkflowNodeTable, WorkflowTable } from "@graphagent/core/dag/sql"
 import { EventV2 } from "@graphagent/core/event"
 import { Project } from "@graphagent/core/project"
@@ -24,6 +25,7 @@ const persistence = Layer.mergeAll(
   EventV2.defaultLayer,
   DagProjector.defaultLayer,
   DagStore.defaultLayer,
+  DagTransact.defaultLayer,
   EventV2Bridge.defaultLayer,
 )
 const it = testEffect(Layer.provideMerge(Dag.layer, persistence))

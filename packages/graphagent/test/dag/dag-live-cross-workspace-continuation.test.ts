@@ -28,6 +28,7 @@ import { tmpdir } from "../fixture/fixture"
 import { makeNodeRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 /** The per-workflow child-run schedule the loop hands to `spawnNode`. */
 const spawnSchedule = <T extends { readonly dagID: string }>(input: T, cap: number) => ({
@@ -93,7 +94,15 @@ describe("live cross-workspace DAG continuation", () => {
       const store = DagStore.layer.pipe(Layer.provide(database))
       const messagesLayer = DagMessages.layer.pipe(Layer.provide(database))
       const projector = DagProjector.layer.pipe(Layer.provide(Layer.merge(database, events)))
-      const persistence = Layer.mergeAll(database, events, bridge, store, messagesLayer, projector)
+      const persistence = Layer.mergeAll(
+        database,
+        events,
+        bridge,
+        store,
+        messagesLayer,
+        projector,
+        transactLayer(database),
+      )
       const dag = Dag.layer.pipe(Layer.provide(persistence))
 
       const parent = sessionInfo(parentID, owner.path)

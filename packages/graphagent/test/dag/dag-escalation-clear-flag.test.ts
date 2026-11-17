@@ -16,6 +16,7 @@ import { Dag, type NodeConfig } from "@/dag/dag"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceRef } from "@/effect/instance-ref"
 import { markNodeWakeReported } from "./fixtures"
+import { transactLayer } from "./fixture/transact"
 
 function node(id: string, timeoutMs?: number): NodeConfig {
   return {
@@ -35,7 +36,7 @@ const harness = (() => {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   return Layer.mergeAll(database, events, bridge, store, projector, dag)
 })()
 

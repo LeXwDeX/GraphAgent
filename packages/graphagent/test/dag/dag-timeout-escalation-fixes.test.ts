@@ -31,6 +31,7 @@ import { Truncate } from "@/tool/truncate"
 import { makeNodeRow, markNodeWakeReported } from "./fixtures"
 import { pollWithTimeout } from "../lib/effect"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 function node(id: string, timeoutMs?: number): NodeConfig {
   return {
@@ -50,7 +51,7 @@ const harness = (() => {
   const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
   const store = DagStore.layer.pipe(Layer.provide(database))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const control = DagControl.layer.pipe(Layer.provide(dag))
   return Layer.mergeAll(database, events, bridge, store, projector, dag, control)
 })()

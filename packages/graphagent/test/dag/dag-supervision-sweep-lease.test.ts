@@ -42,6 +42,7 @@ import { it } from "../lib/effect"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { transactLayer } from "./fixture/transact"
 
 const PROJECT = "project-1"
 const SESSION = "ses_parent"
@@ -61,7 +62,7 @@ const harness = (sweepLeases: SweepLeases) => {
   const leases = DagLease.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status)
   const given = sweepLeases === "provided" ? leases : sweepLeases === "absent" ? Layer.empty : sweepLeases
   const sweep = DagSupervisionSweep.layerWithoutDeps.pipe(

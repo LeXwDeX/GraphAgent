@@ -9,8 +9,10 @@
  * collaborator each action calls (and which it does not), the flight the orphan
  * terminalization runs in, the single flight of `reconcile`, `reconcileAfter`
  * (the trigger that brings news and is answered by an evaluation that began after
- * it), the clock watch every observation feeds, and the order and the resilience
- * of a round. The loop and two runners over one database are in
+ * it), the clock watch every observation feeds, the retirement of the entry of a
+ * workflow that ended (row 1, which the loop's terminal handlers share, and which a
+ * round reaches for the entries that its scan of the live statuses did not list), and
+ * the order and the resilience of a round. The loop and two runners over one database are in
  * `dag-runner-lease.test.ts` ("the reconcile tick") and `dag-runner-races.test.ts`
  * (race 3).
  */
@@ -27,7 +29,6 @@ import { ProjectTable } from "@graphagent/core/project/sql"
 import { SessionTable } from "@graphagent/core/session/sql"
 import { Project } from "@graphagent/core/project"
 import { AbsolutePath } from "@graphagent/core/schema"
-import { DagEvent } from "@graphagent/schema/dag-event"
 import { DagReconciler } from "@/dag/runtime/reconciler"
 import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 import type { RunnerLease } from "@/dag/runtime/runner-lease"
@@ -153,8 +154,10 @@ const harness = Effect.gen(function* () {
     evictLost: [] as string[],
     evictMoved: [] as string[],
     claim: [] as string[],
+    /** The entries of ended workflows that the reconciler asked the loop to retire (row 1). */
+    retired: [] as Array<{ readonly dagID: string; readonly entry: Entry }>,
     abandon: [] as Array<DagLease.Token | undefined>,
-    published: [] as string[],
+    /** The orphans that were terminalized, by the one command that does it (`Dag.failOrphan`), and the token it ran under. */
     failed: [] as Array<{ readonly dagID: string; readonly token: DagLease.Token; readonly reason: string }>,
   }
   // What a test changes about the scripted collaborators.
@@ -168,8 +171,13 @@ const harness = Effect.gen(function* () {
     /** Runs before the nodes of a `pending` workflow are read, which the observation does after it read the ownership. */
     beforeGetNodes: Effect.Effect<void>
     beforeHeld: Effect.Effect<void>
-    /** Runs inside the orphan's `WorkflowStarted` publish, where the first-wave handler of the loop would pick the event up. */
-    whilePublishing: Effect.Effect<void>
+    /**
+     * Runs inside the orphan's terminalization, where the first-wave handler of the loop picks up the
+     * `WorkflowStarted` that the command commits.
+     */
+    whileFailing: Effect.Effect<void>
+    /** Runs inside the retirement of an ended workflow's entry, which the loop does under the entry's lock. */
+    retire: Effect.Effect<void>
     /** The instance's clock watch, which `RunnerLease` keeps in the loop; a test that gives none runs without one. */
     noteClock: ((at: number) => boolean) | undefined
   } = {
@@ -180,7 +188,8 @@ const harness = Effect.gen(function* () {
     afterGetWorkflow: Effect.void,
     beforeGetNodes: Effect.void,
     beforeHeld: Effect.void,
-    whilePublishing: Effect.void,
+    whileFailing: Effect.void,
+    retire: Effect.void,
     noteClock: undefined,
   }
 
@@ -212,14 +221,6 @@ const harness = Effect.gen(function* () {
     runnerID: RUNNER,
     directory: DIRECTORY,
     entries,
-    events: {
-      // The publish is generic in its event, and the stub only records which one: the cast is the stub's shape.
-      // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      publish: ((definition: { readonly type: string }) =>
-        Effect.sync(() => void calls.published.push(definition.type)).pipe(
-          Effect.andThen(Effect.suspend(() => script.whilePublishing)),
-        )) as never,
-    },
     lease: {
       claim: (dagID) =>
         Effect.sync(() => {
@@ -230,8 +231,9 @@ const harness = Effect.gen(function* () {
       evict: (dagID) => Effect.sync(() => void calls.evictLost.push(dagID)),
     },
     portFor: (_dagID, held) => ({
-      fail: (dagID, reason) =>
-        Effect.suspend(() => script.fail).pipe(
+      failOrphan: (dagID, reason) =>
+        Effect.suspend(() => script.whileFailing).pipe(
+          Effect.andThen(Effect.suspend(() => script.fail)),
           Effect.tap(() => Effect.sync(() => void calls.failed.push({ dagID, token: held, reason }))),
         ),
     }),
@@ -239,6 +241,10 @@ const harness = Effect.gen(function* () {
     failUnusable: (row, location) =>
       Effect.sync(() => void calls.failUnusable.push({ dagID: row.id, location: location._tag })),
     evictMoved: (dagID) => Effect.sync(() => void calls.evictMoved.push(dagID)),
+    retire: (dagID, entry) =>
+      Effect.sync(() => void calls.retired.push({ dagID, entry })).pipe(
+        Effect.andThen(Effect.suspend(() => script.retire)),
+      ),
     noteClock: (at) => {
       calls.reads.push("clock")
       return script.noteClock?.(at) ?? false
@@ -263,28 +269,142 @@ const instance = {
 const scenario = <A, E, R>(body: Effect.Effect<A, E, R>) =>
   seed.pipe(Effect.andThen(body), Effect.provideService(InstanceRef, instance))
 
-/** What a verdict left behind: nothing was adopted, failed, claimed, evicted or published. */
+/** What a verdict left behind: nothing was adopted, failed, claimed, evicted or retired. */
 const untouched = (calls: Effect.Success<typeof harness>["calls"]) => {
   expect(calls.adopt).toEqual([])
   expect(calls.failUnusable).toEqual([])
   expect(calls.evictLost).toEqual([])
   expect(calls.evictMoved).toEqual([])
   expect(calls.claim).toEqual([])
-  expect(calls.published).toEqual([])
   expect(calls.failed).toEqual([])
+  expect(calls.retired).toEqual([])
 }
 
 describe("what the reconciler does with a verdict", () => {
-  it.live("a workflow that is gone or terminal is left alone, whatever else is known about it", () =>
+  it.live("a workflow that is gone or terminal and has no entry is left alone", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls } = yield* harness
+        yield* workflow("wf-done", { status: "completed" })
+        yield* workflow("wf-failed", { status: "failed" })
+        yield* workflow("wf-cancelled", { status: "cancelled" })
+
+        for (const dagID of ["wf-done", "wf-failed", "wf-cancelled", "wf-nowhere"])
+          expect(yield* reconciler.reconcile(dagID)).toEqual({ _tag: "noop" })
+        untouched(calls)
+      }),
+    ),
+  )
+
+  // Row 1 (ADR-0008 Amendment 3, 4b-C): the entry of a workflow that ended is retired, by the routine that the loop's
+  // terminal handlers run, so a workflow that another process ended (whose terminal event this process never hears)
+  // does not leave an entry behind. The shell only asks for it: nothing is evicted, claimed or adopted.
+  it.live("the entry of a workflow that ended or is gone is retired, and nothing else is done", () =>
     scenario(
       Effect.gen(function* () {
         const { reconciler, calls, entries } = yield* harness
+        const handed = [] as Array<{ readonly dagID: string; readonly entry: Entry }>
         yield* workflow("wf-done", { status: "completed" })
-        entries.set("wf-done", entryOf("done", token(1)))
+        yield* workflow("wf-failed", { status: "failed" })
+        yield* workflow("wf-cancelled", { status: "cancelled" })
 
-        expect(yield* reconciler.reconcile("wf-done")).toEqual({ _tag: "noop" })
-        expect(yield* reconciler.reconcile("wf-nowhere")).toEqual({ _tag: "noop" })
-        untouched(calls)
+        for (const dagID of ["wf-done", "wf-failed", "wf-cancelled", "wf-nowhere"]) {
+          const entry = entryOf(dagID, token(1))
+          entries.set(dagID, entry)
+          expect(yield* reconciler.reconcile(dagID)).toEqual({ _tag: "retire" })
+          handed.push({ dagID, entry })
+        }
+
+        // Each entry was handed over as it is, once; the shell touches no entry itself.
+        expect(calls.retired.map((call) => call.dagID)).toEqual(handed.map((call) => call.dagID))
+        calls.retired.forEach((call, index) => expect(call.entry).toBe(handed[index]?.entry))
+        for (const { dagID, entry } of handed) expect(entries.get(dagID)).toBe(entry)
+        expect(calls.evictLost).toEqual([])
+        expect(calls.evictMoved).toEqual([])
+        expect(calls.adopt).toEqual([])
+        expect(calls.claim).toEqual([])
+      }),
+    ),
+  )
+
+  it.live("an entry is retired whatever the lease row and the directory say: the workflow ended", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries } = yield* harness
+        // Another runner's live lease, then the workflow ends: the row stays in the table, and `DagLease.held` does not show it.
+        yield* workflow("wf-theirs")
+        yield* heldByOther("wf-theirs", "live")
+        yield* workflow("wf-foreign", { status: "cancelled", directory: "/somewhere/else" })
+        const { db } = yield* Database.Service
+        yield* db.run(sql`UPDATE workflow SET status = 'failed' WHERE id = 'wf-theirs'`).pipe(Effect.orDie)
+        entries.set("wf-theirs", entryOf("theirs", token(1)))
+        entries.set("wf-foreign", entryOf("foreign", token(1)))
+
+        expect(yield* reconciler.reconcile("wf-theirs")).toEqual({ _tag: "retire" })
+        expect(yield* reconciler.reconcile("wf-foreign")).toEqual({ _tag: "retire" })
+
+        expect(calls.retired.map((call) => call.dagID)).toEqual(["wf-theirs", "wf-foreign"])
+        expect(calls.evictLost).toEqual([])
+        expect(calls.evictMoved).toEqual([])
+      }),
+    ),
+  )
+
+  // A graph that has no loop has nothing to retire an entry with: the verdict is the same, the shell does nothing.
+  it.live("without a retirement given, the entry of a workflow that ended is left alone", () =>
+    scenario(
+      Effect.gen(function* () {
+        const real = yield* DagStore.Service
+        const leases = yield* DagLease.Service
+        const entries = new Map<string, Entry>()
+        const reconciler = DagReconciler.make<Entry>({
+          store: real,
+          leases,
+          runnerID: RUNNER,
+          directory: DIRECTORY,
+          entries,
+          lease: { claim: () => Effect.succeed(undefined), abandon: () => Effect.void, evict: () => Effect.void },
+          portFor: () => ({ failOrphan: () => Effect.void }),
+          adopt: () => Effect.void,
+          failUnusable: () => Effect.void,
+          evictMoved: () => Effect.void,
+        })
+        yield* workflow("wf-done", { status: "completed" })
+        const entry = entryOf("done", token(1))
+        entries.set("wf-done", entry)
+
+        expect(yield* reconciler.reconcile("wf-done")).toEqual({ _tag: "retire" })
+
+        expect(entries.get("wf-done")).toBe(entry)
+      }),
+    ),
+  )
+
+  // The retirement runs in the flight of its workflow, as an eviction does: a trigger that arrives while it is under way
+  // waits for it and then looks again, and by then there is no entry to retire a second time.
+  it.live("the retirement is single-flight: a second trigger waits for it and finds the entry gone", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries, script } = yield* harness
+        yield* workflow("wf-ending", { status: "cancelled" })
+        entries.set("wf-ending", entryOf("ending", token(1)))
+        const gate = yield* Deferred.make<void>()
+        // What the loop's routine does: it waits for the entry's lock, then drops the entry.
+        script.retire = Deferred.await(gate).pipe(Effect.andThen(Effect.sync(() => void entries.delete("wf-ending"))))
+
+        const first = yield* reconciler.reconcile("wf-ending").pipe(Effect.forkChild({ startImmediately: true }))
+        yield* pollWithTimeout(
+          Effect.sync(() => (calls.retired.length > 0 ? true : undefined)),
+          "the retirement never started",
+        )
+        const second = yield* reconciler.reconcileAfter("wf-ending").pipe(Effect.forkChild({ startImmediately: true }))
+        expect(calls.getWorkflow).toBe(1)
+        yield* Deferred.succeed(gate, undefined)
+
+        expect(yield* Fiber.join(first)).toEqual({ _tag: "retire" })
+        expect(yield* Fiber.join(second)).toEqual({ _tag: "noop" })
+        expect(calls.retired).toHaveLength(1)
+        expect(calls.getWorkflow).toBe(2)
       }),
     ),
   )
@@ -438,61 +558,67 @@ describe("the order of the reads (ADR-0008 decision 6, row 3)", () => {
   )
 
   // `DagLease.held` joins the workflow row and has none for a workflow that ended. Read second, it reports the lease of
-  // a workflow that ended between the two reads as lost, and its entry would be evicted before the terminal handler
-  // gets it (no worktree settlement, no wake of the parent).
-  it.live(
-    "a workflow that ends between the two reads is not a lost lease: its entry is left to the terminal handler",
-    () =>
-      scenario(
-        Effect.gen(function* () {
-          const { reconciler, calls, entries, script } = yield* harness
-          yield* workflow("wf-ending")
-          const { db } = yield* Database.Service
-          const complete = db
-            .run(sql`UPDATE workflow SET status = 'completed' WHERE id = 'wf-ending'`)
-            .pipe(Effect.orDie)
-          const leases = yield* DagLease.Service
-          const claimed = yield* leases.claim({ dagID: "wf-ending", runnerID: RUNNER, now: Date.now() })
-          const entry = entryOf("ending", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
-          entries.set("wf-ending", entry)
-          // It ends right before the second of the two reads, whichever of them that is.
-          let reads = 0
-          const endsBeforeTheSecondRead = Effect.suspend(() => (++reads === 2 ? complete : Effect.void))
-          script.beforeHeld = endsBeforeTheSecondRead
-          script.beforeGetWorkflow = endsBeforeTheSecondRead
+  // a workflow that ended between the two reads as lost, and its entry would be evicted ahead of the retirement that
+  // settles the worktree and wakes the parent.
+  it.live("a workflow that ends between the two reads is not a lost lease: its entry is retired, not evicted", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries, script } = yield* harness
+        yield* workflow("wf-ending")
+        const { db } = yield* Database.Service
+        const complete = db.run(sql`UPDATE workflow SET status = 'completed' WHERE id = 'wf-ending'`).pipe(Effect.orDie)
+        const leases = yield* DagLease.Service
+        const claimed = yield* leases.claim({ dagID: "wf-ending", runnerID: RUNNER, now: Date.now() })
+        const entry = entryOf("ending", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
+        entries.set("wf-ending", entry)
+        // It ends right before the second of the two reads, whichever of them that is.
+        let reads = 0
+        const endsBeforeTheSecondRead = Effect.suspend(() => (++reads === 2 ? complete : Effect.void))
+        script.beforeHeld = endsBeforeTheSecondRead
+        script.beforeGetWorkflow = endsBeforeTheSecondRead
 
-          expect(yield* reconciler.reconcile("wf-ending")).toEqual({ _tag: "noop" })
+        expect(yield* reconciler.reconcile("wf-ending")).toEqual({ _tag: "retire" })
 
-          expect(reads).toBe(2)
-          expect(entries.get("wf-ending")).toBe(entry)
-          untouched(calls)
-        }),
-      ),
+        expect(reads).toBe(2)
+        expect(entries.get("wf-ending")).toBe(entry)
+        expect(calls.retired).toEqual([{ dagID: "wf-ending", entry }])
+        expect(calls.evictLost).toEqual([])
+        expect(calls.evictMoved).toEqual([])
+        expect(calls.adopt).toEqual([])
+        expect(calls.claim).toEqual([])
+      }),
+    ),
   )
 
   // The workflow ends as the lease row is read: `DagLease.held` has no row for it any more, and the workflow row read
   // after it says that it ended. (Read the other way round, the workflow row would have shown a live workflow.)
-  it.live("a lease row that is gone because the workflow ended, and the workflow row that says so, are a noop", () =>
-    scenario(
-      Effect.gen(function* () {
-        const { reconciler, calls, entries, script } = yield* harness
-        yield* workflow("wf-over")
-        const { db } = yield* Database.Service
-        const leases = yield* DagLease.Service
-        const claimed = yield* leases.claim({ dagID: "wf-over", runnerID: RUNNER, now: Date.now() })
-        const entry = entryOf("over", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
-        entries.set("wf-over", entry)
-        // The workflow fails right before the lease row is read.
-        script.beforeHeld = db
-          .run(sql`UPDATE workflow SET status = 'failed' WHERE id = 'wf-over'`)
-          .pipe(Effect.orDie, Effect.asVoid)
+  it.live(
+    "a lease row that is gone because the workflow ended, and the workflow row that says so, are a retirement",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, entries, script } = yield* harness
+          yield* workflow("wf-over")
+          const { db } = yield* Database.Service
+          const leases = yield* DagLease.Service
+          const claimed = yield* leases.claim({ dagID: "wf-over", runnerID: RUNNER, now: Date.now() })
+          const entry = entryOf("over", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
+          entries.set("wf-over", entry)
+          // The workflow fails right before the lease row is read.
+          script.beforeHeld = db
+            .run(sql`UPDATE workflow SET status = 'failed' WHERE id = 'wf-over'`)
+            .pipe(Effect.orDie, Effect.asVoid)
 
-        expect(yield* reconciler.reconcile("wf-over")).toEqual({ _tag: "noop" })
+          expect(yield* reconciler.reconcile("wf-over")).toEqual({ _tag: "retire" })
 
-        expect(entries.get("wf-over")).toBe(entry)
-        untouched(calls)
-      }),
-    ),
+          expect(entries.get("wf-over")).toBe(entry)
+          expect(calls.retired).toEqual([{ dagID: "wf-over", entry }])
+          expect(calls.evictLost).toEqual([])
+          expect(calls.evictMoved).toEqual([])
+          expect(calls.adopt).toEqual([])
+          expect(calls.claim).toEqual([])
+        }),
+      ),
   )
 
   it.live("a lease that another runner took is still evicted as lost while the workflow is live", () =>
@@ -646,7 +772,9 @@ describe("the clock watch (ADR-0008 decision 2): every observation feeds it", ()
 describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () => {
   const old = ReconcileDecide.ORPHAN_PENDING_GRACE_MS + 1_000
 
-  it.live("is claimed, started and failed under the claim, which is then given back", () =>
+  // One command under the claim does the whole terminalization, `WorkflowStarted` included: the reconciler has no bus
+  // to publish on (it is given none), so no event of the orphan is written outside the fence.
+  it.live("is claimed and failed by one command under the claim, which is then given back", () =>
     scenario(
       Effect.gen(function* () {
         const { reconciler, calls } = yield* harness
@@ -655,16 +783,15 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
         expect(yield* reconciler.reconcile("wf-orphan")).toEqual({ _tag: "terminalize-orphan" })
 
         expect(calls.claim).toEqual(["wf-orphan"])
-        expect(calls.published).toEqual([DagEvent.WorkflowStarted.type])
         expect(calls.failed).toEqual([{ dagID: "wf-orphan", token: token(1), reason: DagReconciler.ORPHAN_REASON }])
         expect(calls.abandon).toEqual([token(1)])
       }),
     ),
   )
 
-  // The first-wave handler of the loop calls `reconcileAfter` for every `WorkflowStarted`, and the orphan path publishes
-  // one of its own to legalize pending -> running -> failed. It must not adopt the orphan mid-way (a zero-node orphan
-  // would be completed instead of failed): the call waits for the flight of the terminalization and finds the failure.
+  // The first-wave handler of the loop calls `reconcileAfter` for every `WorkflowStarted`, and the command that fails the
+  // orphan commits one of its own to legalize pending -> running -> failed. It must not adopt the orphan (a zero-node
+  // orphan would be completed instead of failed): the call waits for the flight of the terminalization and finds the failure.
   it.live("raises the first wave of its own WorkflowStarted, which waits for it and finds the workflow failed", () =>
     scenario(
       Effect.gen(function* () {
@@ -672,7 +799,7 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
         const { db } = yield* Database.Service
         yield* workflow("wf-orphan", { status: "pending", ageMs: old, nodes: ["pending"] })
         const raised: Array<Fiber.Fiber<ReconcileDecide.Action>> = []
-        script.whilePublishing = reconciler.reconcileAfter("wf-orphan").pipe(
+        script.whileFailing = reconciler.reconcileAfter("wf-orphan").pipe(
           Effect.forkChild({ startImmediately: true }),
           Effect.tap((fiber) => Effect.sync(() => void raised.push(fiber))),
           Effect.asVoid,
@@ -726,7 +853,7 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
   )
 
   it.live(
-    "is not terminalized when its claim is refused: nothing is published, and there is nothing to give back",
+    "is not terminalized when its claim is refused: no command is issued, and there is nothing to give back",
     () =>
       scenario(
         Effect.gen(function* () {
@@ -737,7 +864,6 @@ describe("an orphan pending workflow (ADR-0008 decision 6, rows 8 and 9)", () =>
           expect(yield* reconciler.reconcile("wf-refused")).toEqual({ _tag: "terminalize-orphan" })
 
           expect(calls.claim).toEqual(["wf-refused"])
-          expect(calls.published).toEqual([])
           expect(calls.failed).toEqual([])
           expect(calls.abandon).toEqual([undefined])
         }),
@@ -1304,6 +1430,87 @@ describe("a round", () => {
         expect(calls.claim).toEqual(["wf-orphan"])
         expect([...calls.adopt].sort()).toEqual(["wf-paused", "wf-running", "wf-stepping"])
         expect(calls.getWorkflow).toBe(4)
+      }),
+    ),
+  )
+
+  // A round scans the live statuses, and an ended workflow is not among them. Another process that ended a workflow with a
+  // control op (which needs no lease) leaves the lease row where it was, so neither a renewal nor a spawn tells this
+  // instance: the entries that the scan did not list are looked at after it, once each, and row 1 retires them.
+  it.live(
+    "looks at the entries that the scan did not list after it, once each: the ended and the deleted are retired",
+    () =>
+      scenario(
+        Effect.gen(function* () {
+          const { reconciler, calls, entries } = yield* harness
+          const leases = yield* DagLease.Service
+          yield* workflow("wf-live")
+          const claimed = yield* leases.claim({ dagID: "wf-live", runnerID: RUNNER, now: Date.now() })
+          const live = entryOf("live", { runnerID: RUNNER, epoch: claimed?.epoch ?? 0 })
+          entries.set("wf-live", live)
+          yield* workflow("wf-done", { status: "completed" })
+          yield* workflow("wf-failed", { status: "failed" })
+          const ended = ["wf-done", "wf-failed", "wf-nowhere"]
+          for (const dagID of ended) entries.set(dagID, entryOf(dagID, token(1)))
+
+          yield* reconciler.round({ afterClockJump: false })
+
+          expect(calls.retired.map((call) => call.dagID).sort()).toEqual([...ended].sort())
+          // The live workflow was evaluated by the scan alone (it is renewed, nothing is done), each of the others once:
+          // four reads of a workflow row, not five.
+          expect(calls.getWorkflow).toBe(4)
+          expect(entries.get("wf-live")).toBe(live)
+          expect(calls.evictLost).toEqual([])
+          expect(calls.adopt).toEqual([])
+        }),
+      ),
+  )
+
+  it.live("goes on with the other entries when the retirement of one of them fails", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries, script } = yield* harness
+        yield* workflow("wf-1", { status: "completed" })
+        yield* workflow("wf-2", { status: "cancelled" })
+        entries.set("wf-1", entryOf("one", token(1)))
+        entries.set("wf-2", entryOf("two", token(1)))
+        let first = true
+        script.retire = Effect.suspend(() => {
+          if (!first) return Effect.void
+          first = false
+          return Effect.die(new Error("retirement failed"))
+        })
+
+        yield* reconciler.round({ afterClockJump: false })
+
+        expect(calls.retired).toHaveLength(2)
+      }),
+    ),
+  )
+
+  it.live("is interrupted among the entries as it is among the workflows", () =>
+    scenario(
+      Effect.gen(function* () {
+        const { reconciler, calls, entries, script } = yield* harness
+        yield* workflow("wf-1", { status: "completed" })
+        yield* workflow("wf-2", { status: "completed" })
+        entries.set("wf-1", entryOf("one", token(1)))
+        entries.set("wf-2", entryOf("two", token(1)))
+        const gate = yield* Deferred.make<void>()
+        script.retire = Deferred.await(gate)
+
+        const round = yield* reconciler
+          .round({ afterClockJump: false })
+          .pipe(Effect.forkChild({ startImmediately: true }))
+        yield* pollWithTimeout(
+          Effect.sync(() => (calls.retired.length > 0 ? true : undefined)),
+          "the round never retired",
+        )
+        yield* Fiber.interrupt(round)
+
+        // It stopped at the entry it was in: the second one was never looked at.
+        expect(calls.retired).toHaveLength(1)
+        expect(calls.getWorkflow).toBe(1)
       }),
     ),
   )

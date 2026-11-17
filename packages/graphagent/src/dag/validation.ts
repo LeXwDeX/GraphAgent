@@ -34,6 +34,7 @@ import { conditionRead, conditionReference, conditionSyntaxError, parseInputMapp
 import { unsupportedSchemaKeywords } from "./runtime/capture"
 import { placeholderKeys, templateSourceById } from "./templates/resolve"
 import { DagLocation } from "./location"
+import type { DagCompose } from "./compose"
 
 // ============================================================================
 // Diagnostic contract
@@ -1962,6 +1963,10 @@ export interface EnvironmentCatalogs {
   /** #946: worker types whose agent can write files. Worktree isolation is a
    * write-capable feature; undefined falls back to the static builtin check. */
   writer_types?: ReadonlySet<string>
+  /** #1158: the composers of the effective agent catalog, usable or not, with the
+   * agents each may expand into. undefined means no composer can be resolved, and
+   * compose blocks and composer nodes are not compiled. */
+  composers?: DagCompose.Catalog
   /** Resolves a node's model against this environment (DAG model tiers,
    * worker agent model, parent session). undefined skips the check. */
   resolveModel?: (

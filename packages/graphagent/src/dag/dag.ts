@@ -173,6 +173,14 @@ export interface NodeConfig {
   /** Direct dependency whose `packages` output fans this writer out at
    * admission; cleared by the expansion that replaces this node. */
   fan_out?: string
+  /** #1158: the expansion slot of a compose block or a composer node, naming its
+   * split node. A node that carries it is never to be spawned as authored: at
+   * admission the split node's plan replaces it with the expanded subtree and the
+   * join node under its id, as `fan_out` does for a writer. That admission step is
+   * the runtime half of #1158; until it exists the Workflow Authoring Check refuses
+   * to submit a graph with a slot (`DagCompose.gate`). Written by the compiler
+   * (`DagCompose`), never by an author; no model-writable node schema has the field. */
+  expand?: string
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
   /** #946: run this writer-capable node in a fresh worktree of the workflow
@@ -208,7 +216,7 @@ export interface NodeConfig {
   aggregates_writers?: boolean
   /** Compiler-generated helper node: its worker was chosen by block
    * compilation, not by an authored worker override. */
-  generated_helper?: "aggregate" | "evidence"
+  generated_helper?: "aggregate" | "evidence" | "split"
   /** #1031 M6: arbitration-depth marker for a block-compiled review decision;
    * unset for hand-authored review nodes, whose outputs keep the pre-arbitration
    * shape (no dispositions). */
@@ -660,6 +668,17 @@ export interface Interface {
   ) => Effect.Effect<void, Error>
   readonly fail: (dagID: string, reason: string) => Effect.Effect<void, Error>
   /**
+   * Terminalize an orphan `pending` workflow (ADR-0008 Amendment 3, 4b-C): the
+   * legal pending -> running -> failed sequence in ONE transaction, a runner
+   * write that carries the lease token like `fail`. The projector accepts
+   * `WorkflowFailed` only from running or stepping, so `WorkflowStarted` has
+   * to land first; in one transaction nothing can observe the `running` midpoint
+   * and a refused fence leaves neither event. Failed, not cancelled (an
+   * interrupted create), with `reason` in the durable event. Rejects a workflow
+   * that is not `pending`: this is not `failUnrecoverable`.
+   */
+  readonly failOrphan: (dagID: string, reason: string) => Effect.Effect<void, Error>
+  /**
    * Fail a workflow whose execution location is unusable outside the normal
    * control flow (its directory disappeared or was never stamped). Unlike
    * `fail`, this also legalizes the pending→running and paused→running legs
@@ -807,7 +826,7 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const store = yield* DagStore.Service
     const mailboxService = yield* Effect.serviceOption(DagMessages.Service)
-    const transactService = yield* Effect.serviceOption(DagTransact.Service)
+    const transactService = yield* DagTransact.Service
     const withMailbox = <A, E, R>(
       dagID: string,
       reason: string | undefined | ((result: A) => string | undefined),
@@ -822,11 +841,8 @@ export const layer = Layer.effect(
           .withLock(dagID)(Effect.suspend(() => body(lockWitness)))
           .pipe(Effect.timeout(WORKFLOW_LOCK_TIMEOUT))
     // ADR-0008 decision 3: the guard and the publish of a write run in ONE
-    // IMMEDIATE transaction (`DagTransact`), so nothing can change the workflow
-    // between them. The service is optional for now, like `DagMessages`: the
-    // production layers always provide it, and the many harnesses that mock this
-    // layer's dependencies run the body as it stands. PR4b makes it required,
-    // with the removal of the old paths.
+    // IMMEDIATE transaction (`DagTransact`, a required service), so nothing can
+    // change the workflow between them.
     //
     // A runner write carries its lease token (ADR-0008 decision 4): the runner
     // port provides it around the call (`DagTransact.Fence`) and `underFence`
@@ -834,8 +850,7 @@ export const layer = Layer.effect(
     const transact = <A, E, R>(
       dagID: string,
       body: Effect.Effect<A, E, R>,
-    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> =>
-      Option.isSome(transactService) ? DagTransact.underFence(transactService.value, dagID, body) : body
+    ): Effect.Effect<A, E | DagTransact.StaleRunnerError, R> => DagTransact.underFence(transactService, dagID, body)
     // A command that changes workflow state: the in-process lock queues it, then
     // one transaction carries its guard and its publish.
     const command =
@@ -1343,6 +1358,22 @@ export const layer = Layer.effect(
     })
 
     /**
+     * The orphan's terminalization (ADR-0008 Amendment 3, 4b-C): `WorkflowStarted`
+     * legalizes the pending -> running leg that the projector requires of a
+     * `WorkflowFailed`, and `fail` takes it from there, in the one transaction
+     * of the command. The guard admits `pending` alone: `guardWorkflow` would let a
+     * `paused` workflow through (paused -> running is legal), which no create
+     * sequence leaves behind.
+     */
+    const failOrphan = Effect.fn("Dag.failOrphan")(function* (lock: WorkflowLock, dagID: string, reason: string) {
+      const workflow = yield* guardWorkflow(dagID, WorkflowStatus.RUNNING)
+      if (workflow.status !== WorkflowStatus.PENDING)
+        yield* Effect.fail(new InvalidTransitionError(dagID, workflow.status, WorkflowStatus.RUNNING))
+      yield* events.publish(DagEvent.WorkflowStarted, { dagID: ID.make(dagID), timestamp: yield* DateTime.now })
+      yield* fail(lock, dagID, reason)
+    })
+
+    /**
      * Terminalize a workflow that can never progress. The projector accepts
      * WorkflowFailed only from running/stepping, so a pending row takes the
      * legal pending→running leg and a paused row the paused→running leg
@@ -1393,8 +1424,7 @@ export const layer = Layer.effect(
       // transaction. The command's `transact` owns that transaction; a nested
       // events.publish uses a savepoint on the same connection, so a recover
       // in another process cannot advance the graph between the reads and the
-      // terminal write. Without the service (unit harnesses), the same
-      // decision runs unfenced.
+      // terminal write.
       const terminalize = Effect.gen(function* () {
         const workflow = yield* store.getWorkflow(dagID).pipe(Effect.orDie)
         if (!workflow || isTerminalWorkflowStatusValue(workflow.status))
@@ -2680,6 +2710,8 @@ export const layer = Layer.effect(
       complete: (dagID, options) =>
         command(dagID)((lock) => withMailbox(dagID, "completed", complete(lock, dagID, options))),
       fail: (dagID, reason) => command(dagID)((lock) => withMailbox(dagID, "failed", fail(lock, dagID, reason))),
+      failOrphan: (dagID, reason) =>
+        command(dagID)((lock) => withMailbox(dagID, "failed", failOrphan(lock, dagID, reason))),
       failUnrecoverable: (dagID, reason) =>
         command(dagID)((lock) =>
           // An `ignored` outcome means the workflow moved or terminalized

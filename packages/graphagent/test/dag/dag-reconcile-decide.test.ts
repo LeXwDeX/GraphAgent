@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Issue #1029, PR4a: the reconciler's pure judgment. One group per row of the
+ * Issue #1029, PR4a and PR4b: the reconciler's pure judgment. One group per row of the
  * truth table in ADR-0008 decision 6, and in each group the places where an
  * earlier row has to win over a later one (the table is first-match). No Effect
  * and no database: `decide` is a function of its observation, and
  * `classifyLease` and `noteClock` are the two small functions that make the
- * observation's lease and clock-jump fields.
+ * observation's lease and clock-jump fields. Row 1 retires the entry of a workflow that
+ * ended (Amendment 3, 4b-C) and leaves a workflow that ended without one alone.
  */
 
 import { describe, expect, test } from "bun:test"
@@ -17,6 +18,7 @@ import { ReconcileDecide } from "@/dag/runtime/reconcile-decide"
 const { ORPHAN_PENDING_GRACE_MS, decide, classifyLease, noteClock, unwatched } = ReconcileDecide
 
 const NOOP: ReconcileDecide.Action = { _tag: "noop" }
+const RETIRE: ReconcileDecide.Action = { _tag: "retire" }
 const ADOPT: ReconcileDecide.Action = { _tag: "adopt" }
 const RENEW: ReconcileDecide.Action = { _tag: "renew" }
 const FAIL: ReconcileDecide.Action = { _tag: "fail-unrecoverable" }
@@ -49,25 +51,43 @@ const driving = { hasEntry: true, entryTokenHeld: true, lease: "mine" } as const
 const orphan = { status: "pending", allNodesPending: true, ageMs: ORPHAN_PENDING_GRACE_MS } as const
 
 describe("row 1: a workflow that is terminal or gone ends the evaluation", () => {
-  for (const status of ["completed", "failed", "cancelled", "gone"])
-    test(`${status}: nothing to do`, () => {
+  const ended = ["completed", "failed", "cancelled", "gone"]
+
+  for (const status of ended)
+    test(`${status}: nothing to do without an entry`, () => {
       expect(decide(observe({ status }))).toEqual(NOOP)
     })
 
-  test("it wins over every other row, an entry that has lost its lease and another runner's live lease included", () => {
+  for (const status of ended)
+    test(`${status}: the entry is retired`, () => {
+      expect(decide(observe({ status, hasEntry: true, entryTokenHeld: true, lease: "mine" }))).toEqual(RETIRE)
+    })
+
+  test("a lease row that no longer names the entry is no lost lease when the workflow ended: it is retired, not evicted", () => {
+    // `DagLease.held` has no row for a workflow that ended, so this is what every entry of one looks like.
+    expect(decide(observe({ status: "cancelled", hasEntry: true, entryTokenHeld: false, lease: "none" }))).toEqual(
+      RETIRE,
+    )
     expect(
-      decide(
-        observe({
-          status: "failed",
-          owned: false,
-          location: "unusable",
-          lease: "other-live",
-          hasEntry: true,
-          entryTokenHeld: false,
-          afterClockJump: true,
-        }),
-      ),
-    ).toEqual(NOOP)
+      decide(observe({ status: "completed", hasEntry: true, entryTokenHeld: false, lease: "other-live" })),
+    ).toEqual(RETIRE)
+  })
+
+  test("it wins over every other row, an entry that has lost its lease and another runner's live lease included", () => {
+    const rest = {
+      owned: false,
+      location: "unusable",
+      lease: "other-live",
+      entryTokenHeld: false,
+      afterClockJump: true,
+    } as const
+    expect(decide(observe({ status: "failed", hasEntry: true, ...rest }))).toEqual(RETIRE)
+    expect(decide(observe({ status: "failed", hasEntry: false, ...rest }))).toEqual(NOOP)
+  })
+
+  test("the entry is retired whether or not this directory still owns the workflow", () => {
+    expect(decide(observe({ status: "gone", owned: false, hasEntry: true }))).toEqual(RETIRE)
+    expect(decide(observe({ status: "gone", owned: true, hasEntry: true }))).toEqual(RETIRE)
   })
 })
 
@@ -330,7 +350,7 @@ describe("the table as a whole", () => {
   const all = <T>(values: readonly T[]) => values
   const table = (() => {
     const out: ReconcileDecide.Observation[] = []
-    for (const status of all(["running", "paused", "stepping", "pending", "completed", "gone"]))
+    for (const status of all(["running", "paused", "stepping", "pending", "completed", "failed", "cancelled", "gone"]))
       for (const owned of all([true, false]))
         for (const location of all(["ok", "unusable"] as const))
           for (const lease of all(["none", "mine", "other-live", "other-expired"] as const))
@@ -354,7 +374,7 @@ describe("the table as a whole", () => {
   })()
 
   test("covers every combination of the observation, and decides each one", () => {
-    expect(table.length).toBe(6 * 2 * 2 * 4 * 2 * 2 * 2 * 2 * 2)
+    expect(table.length).toBe(8 * 2 * 2 * 4 * 2 * 2 * 2 * 2 * 2)
     for (const observation of table) expect(decide(observation)._tag).toBeTypeOf("string")
   })
 
@@ -368,12 +388,26 @@ describe("the table as a whole", () => {
       expect(["adopt", "terminalize-orphan"]).not.toContain(decide(observation)._tag)
   })
 
+  const endedStatus = (status: string) => ["completed", "failed", "cancelled", "gone"].includes(status)
+
   test("never acts on a workflow that is terminal, gone or not owned, other than by dropping its entry", () => {
-    for (const observation of table.filter((o) => ["completed", "gone"].includes(o.status) || !o.owned)) {
+    for (const observation of table.filter((o) => endedStatus(o.status) || !o.owned)) {
       const action = decide(observation)
-      expect(action._tag === "noop" || action._tag === "evict").toBe(true)
-      if (action._tag === "evict") expect(observation.hasEntry).toBe(true)
+      expect(["noop", "evict", "retire"]).toContain(action._tag)
+      if (action._tag !== "noop") expect(observation.hasEntry).toBe(true)
     }
+  })
+
+  test("retires exactly when the workflow ended and the instance has an entry for it, whatever else is known", () => {
+    for (const observation of table) {
+      const expected = endedStatus(observation.status) && observation.hasEntry
+      expect(decide(observation)._tag === "retire").toBe(expected)
+    }
+  })
+
+  test("a workflow that ended is never evicted, failed, deferred, renewed, adopted or terminalized", () => {
+    for (const observation of table.filter((o) => endedStatus(o.status)))
+      expect(["noop", "retire"]).toContain(decide(observation)._tag)
   })
 
   test("evicts as lost exactly when an owned live workflow has an entry that its lease row no longer names", () => {
@@ -381,11 +415,7 @@ describe("the table as a whole", () => {
       const action = decide(observation)
       const lost = action._tag === "evict" && action.reason === "lease-lost"
       const expected =
-        observation.owned &&
-        observation.hasEntry &&
-        !observation.entryTokenHeld &&
-        observation.status !== "completed" &&
-        observation.status !== "gone"
+        observation.owned && observation.hasEntry && !observation.entryTokenHeld && !endedStatus(observation.status)
       expect(lost).toBe(expected)
     }
   })

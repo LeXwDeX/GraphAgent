@@ -32,6 +32,7 @@ import { withIdleAdmission } from "../lib/session-prompt"
 import { makeNodeRow } from "./fixtures"
 import { AgentScheduler } from "@/session/agent-scheduler"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 interface PromptGate {
   readonly title: string
@@ -116,7 +117,7 @@ function wakeLayer(input: {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const childTitles = new Map<string, string>()
   const created: string[] = []

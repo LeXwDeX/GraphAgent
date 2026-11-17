@@ -25,6 +25,7 @@ import { SessionStatus } from "@/session/status"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 import { withIdleAdmission } from "../lib/session-prompt"
 import { mockSessionPrompt } from "../lib/child-runs"
+import { transactLayer } from "./fixture/transact"
 
 const it = testEffect(Layer.empty)
 
@@ -77,7 +78,7 @@ function stepLayer(childPrompts: Queue.Queue<PromptGate>) {
   const store = DagStore.layer.pipe(Layer.provide(database))
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
-  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+  const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
   const base = Layer.mergeAll(database, events, bridge, store, projector, dag, status, AgentScheduler.defaultLayer)
   const titles = new Map<string, string>()
   let created = 0
