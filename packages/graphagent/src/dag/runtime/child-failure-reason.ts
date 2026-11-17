@@ -20,6 +20,7 @@ export type ChildAbortReason =
   | "shutdown"
   | "parent-session-deleted"
   | "location-moved"
+  | "lease-lost"
   | "recovery"
   | "admission-rejected"
   | "admission-error"
@@ -34,6 +35,7 @@ export type ChildAbortActor =
   | "recovery"
   | "parent-session"
   | "dag-location"
+  | "dag-lease"
 
 export function childAbort(reason: ChildAbortReason, actor: ChildAbortActor): SessionAbortReason.Info {
   return SessionAbortReason.make(reason, actor)

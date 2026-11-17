@@ -17,11 +17,16 @@
  *     process (`EngineProcess.runner`), R2 another live process (our parent's
  *     pid); `DualRunnerOptions` injects others, built with `makeRunnerIdentity`
  *     (same pid with another nonce is an earlier life of the process, a pid
- *     nothing runs under is a dead one, `runnerAlive` judges them). Nothing in
- *     the DAG reads the identity yet; the lease primitives of PR1 take a runner
- *     id explicitly, so a test passes `runner.identity.id` (and a `now` from the
- *     TestClock) per side. Code that reads the process singleton instead runs
- *     inside `withEngineRunner(identity, effect)`.
+ *     nothing runs under is a dead one, `runnerAlive` judges them). The identity
+ *     is provided to the runner's graph as `RunnerLease.Identity`, which is what
+ *     its DagLoop claims leases as; the singleton `EngineProcess.runner` is the
+ *     same for both runners, so nothing in the loop may read it. Code that does
+ *     read the singleton runs inside `withEngineRunner(identity, effect)`.
+ *   - Lease: every runner graph provides `DagLease`, which the runner's DagLoop
+ *     claims and renews through (the stall point below sits in front of every
+ *     operation, so a stalled process renews nothing). `runner.lease` is the same
+ *     primitives without the stall point, for a test to inspect or drive the
+ *     table; `leaseRow` reads it raw, whatever the workflow's status.
  *   - Stall / zombie: `runner.hold(...)` parks every matching durable write of
  *     ONE runner until released. Every `Dag` command runs in one IMMEDIATE
  *     transaction (`DagTransact`, ADR-0008 decision 3), and parking inside it
@@ -36,8 +41,9 @@
  *     transaction. Publishes that are not Dag commands (the session events, and
  *     `Dag.create`'s batch) are held in front of the bus; one that would park
  *     inside an open transaction dies with an error instead. `freeze()` parks
- *     everything, so arm it only once the runner's own fibers have nothing left
- *     to write.
+ *     everything, lease claims, renewals and releases included (a SIGSTOPped
+ *     process renews nothing), so arm it only once the runner's own fibers have
+ *     nothing left to write.
  *   - Time: the fixture adds no delays of its own. Run the test under TestClock
  *     (`testEffect(...).effect` or `Effect.provide(TestClock.layer())`) and
  *     `TestClock.adjust` moves both runners' clocks together, a wall-clock jump
@@ -59,8 +65,9 @@ import { randomUUID } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
-import { asc, eq } from "drizzle-orm"
+import { asc, eq, sql } from "drizzle-orm"
 import { Context, Deferred, Effect, Exit, Layer, Option, Queue, Scope } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import { Database } from "@graphagent/core/database/database"
 import { DagLease } from "@graphagent/core/dag/lease"
 import { DagMessages } from "@graphagent/core/dag/messages"
@@ -79,10 +86,11 @@ import { Provider } from "@graphagent/schema/provider"
 import { Agent } from "@/agent/agent"
 import { Dag, type NodeConfig } from "@/dag/dag"
 import { DagLoop } from "@/dag/runtime/loop"
+import { RunnerLease } from "@/dag/runtime/runner-lease"
 import { InstanceRef } from "@/effect/instance-ref"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { AgentScheduler } from "@/session/agent-scheduler"
-import { EngineProcess, runnerAlive, type RunnerIdentity } from "@/session/engine-process"
+import { EngineProcess, ExclusiveRegistry, runnerAlive, type RunnerIdentity } from "@/session/engine-process"
 import { SessionInbox } from "@/session/inbox"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Session } from "@/session/session"
@@ -142,8 +150,12 @@ export function node(id: string, dependsOn: string[] = []): NodeConfig {
   }
 }
 
-/** What a child session looks like to `Session.messages`: the transcript both runners read. */
-export type ChildState = "active" | "completed" | "failed"
+/**
+ * What a child session looks like to `Session.messages`: the transcript both
+ * runners read. "defect" is a session store that dies on read, which aborts a
+ * recovery that has to judge the child (`makeSessionStatusChecker`).
+ */
+export type ChildState = "active" | "completed" | "failed" | "defect"
 
 /** One child prompt a runner started and keeps in flight until the test releases it with the reply text. */
 export interface PromptGate {
@@ -163,6 +175,16 @@ export interface HoldOptions {
   readonly once?: boolean
 }
 
+export type LeaseOperation = "claim" | "renew" | "release" | "held"
+
+/** One lease operation of a runner's DagLoop that ran to its end, and what it answered. */
+export interface LeaseCall {
+  readonly operation: LeaseOperation
+  readonly dagID: string
+  /** `claim` and `held` answer the lease (or `undefined` when there is none); `renew` and `release` whether they applied. */
+  readonly answer: DagLease.Lease | boolean | undefined
+}
+
 /** A parked publisher: `reached` fires when a publish is parked, `release` lets it go on. */
 export interface Hold {
   readonly reached: Effect.Effect<void>
@@ -178,6 +200,18 @@ export interface Runner {
   readonly store: DagStore.Interface
   readonly dag: Dag.Interface
   readonly loop: DagLoop.Interface
+  /** The lease primitives of this runner's graph, without the stall point: for a test to inspect or drive the table. */
+  readonly lease: DagLease.Interface
+  /**
+   * The lease operations this runner's DagLoop ran to their end, in order, with
+   * their answers: what a test waits on to know the loop reached a decision (a
+   * claim that was refused, a renewal that went through) instead of sleeping
+   * for it. A call that was parked and never let go, or that was made to fail
+   * (`failLease`), is not in it; `lease` calls are not either.
+   */
+  readonly leaseCalls: ReadonlyArray<LeaseCall>
+  /** The exclusive registry this runner's DagLoop registers its workflows in (a dag registration keeps goals off the parent session). */
+  readonly exclusive: ExclusiveRegistry.Interface
   /** Child sessions this runner created, in order. */
   readonly created: string[]
   /** Sessions this runner's `SessionPrompt.cancel` was asked to stop. */
@@ -194,9 +228,11 @@ export interface Runner {
   readonly nextPrompt: (message: string) => Effect.Effect<PromptGate, Error>
   /** Park durable publishes of this runner; see the module comment for the window this models and which publishes are safe to hold. */
   readonly hold: (match: (publish: PublishView) => boolean, options?: HoldOptions) => Effect.Effect<Hold>
-  /** Park every durable publish of this runner until released: a stalled (SIGSTOPped) process. */
+  /** Park every durable publish and every lease operation of this runner until released: a stalled (SIGSTOPped) process. */
   readonly freeze: () => Effect.Effect<Hold>
-  /** Close this runner's layer scope: a graceful exit with its finalizers. */
+  /** The next `times` calls of one lease operation of this runner's DagLoop die, as a database failure (`SQLITE_BUSY` past the busy timeout) does. */
+  readonly failLease: (operation: LeaseOperation, times: number) => void
+  /** Close this runner's layer scope: a graceful exit with its finalizers. Holds and freezes let go first, so a finalizer never waits on one. */
   readonly stop: Effect.Effect<void>
 }
 
@@ -209,6 +245,18 @@ export interface DualRunner {
   readonly children: Map<string, ChildState>
   /** The durable event log of one workflow, versionless type names, in sequence order. */
   readonly log: (dagID: string) => Effect.Effect<ReadonlyArray<{ readonly seq: number; readonly type: string }>>
+  /**
+   * The holder stalled past its TTL: its lease row says it ran out (`expires_at`
+   * 0), so any runner may claim it. For a test on the live clock, where a stall
+   * is arbitrarily long without time passing; a TestClock jump of that size
+   * would also time out the workflow lock a parked write holds (`Dag`'s
+   * `WORKFLOW_LOCK_TIMEOUT`), and the zombie would never write.
+   */
+  readonly expireLease: (dagID: string) => Effect.Effect<void>
+  /** The raw `dag_runner` row of one workflow, whatever the workflow's status (`DagLease.held` hides a terminal workflow's). */
+  readonly leaseRow: (
+    dagID: string,
+  ) => Effect.Effect<{ readonly runnerID: string; readonly epoch: number; readonly expiresAt: number } | undefined>
 }
 
 export interface DualRunnerOptions {
@@ -253,7 +301,7 @@ function sessionInfo(id: string, parentID?: string): Session.Info {
   }
 }
 
-function transcript(sessionID: string, state: ChildState, text = ""): SessionV1.WithParts[] {
+function transcript(sessionID: string, state: Exclude<ChildState, "defect">, text = ""): SessionV1.WithParts[] {
   const messageID = MessageID.ascending()
   const info: SessionV1.Assistant = {
     id: messageID,
@@ -283,6 +331,11 @@ interface Gate {
   /** Park the write when a hold matches it; `inTransaction` tells whether it runs inside an open SQLite transaction. */
   readonly before: (publish: PublishView, inTransaction: Effect.Effect<boolean>) => Effect.Effect<void>
   readonly hold: Runner["hold"]
+  /**
+   * The runner is going away: nothing parks any more. Its finalizers (the
+   * DagLoop releases its leases) must not wait for a hold the test never let go of.
+   */
+  readonly close: () => void
 }
 
 function makeGate(): Gate {
@@ -293,9 +346,12 @@ function makeGate(): Gate {
     readonly released: Deferred.Deferred<void>
     spent: boolean
   }> = []
+  let closing = false
   return {
+    close: () => void (closing = true),
     before: (publish, inTransaction) =>
       Effect.gen(function* () {
+        if (closing) return
         const held = holds.find((item) => !item.spent && item.match(publish))
         if (!held) return
         // Parking inside a transaction would keep SQLite's write lock and freeze the other runner's connection.
@@ -406,6 +462,46 @@ function gatedBridge(gate: Gate) {
   )
 }
 
+/**
+ * The runner's lease primitives with the stall point in front of every
+ * operation: a frozen process claims, renews and releases nothing. `faults`
+ * arms a number of upcoming calls of an operation that die like a database
+ * failure does (a defect, never a `false`). Every call that ran to its end is
+ * appended to `calls` with its answer. `handle.lease` receives the primitives
+ * without the stall point, the faults and the record.
+ */
+function gatedLease(gate: Gate, faults: Map<LeaseOperation, number>, calls: LeaseCall[], handle: GraphInput["handle"]) {
+  return Layer.effect(
+    DagLease.Service,
+    Effect.gen(function* () {
+      const real = yield* DagLease.Service
+      handle.lease = real
+      const through = <A extends LeaseCall["answer"]>(
+        operation: LeaseOperation,
+        dagID: string,
+        effect: Effect.Effect<A>,
+      ) =>
+        gate.before({ type: `dag.lease.${operation}`, data: { dagID } }, Effect.succeed(false)).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const remaining = faults.get(operation) ?? 0
+              if (remaining <= 0) return effect
+              faults.set(operation, remaining - 1)
+              return Effect.die(new Error(`injected ${operation} failure: database is locked`))
+            }),
+          ),
+          Effect.tap((answer) => Effect.sync(() => void calls.push({ operation, dagID, answer }))),
+        )
+      return DagLease.Service.of({
+        claim: (input) => through("claim", input.dagID, real.claim(input)),
+        renew: (input) => through("renew", input.dagID, real.renew(input)),
+        release: (input) => through("release", input.dagID, real.release(input)),
+        held: (dagID) => through("held", dagID, real.held(dagID)),
+      })
+    }),
+  )
+}
+
 /** Wrap every function of a service so the effects it returns run in the runner's context. */
 function bind<S extends object>(
   service: S,
@@ -429,11 +525,14 @@ interface GraphInput {
   readonly mailbox: boolean
   readonly children: Map<string, ChildState>
   readonly gate: Gate
+  readonly identity: RunnerIdentity
+  readonly faults: Map<LeaseOperation, number>
+  readonly leaseCalls: LeaseCall[]
   readonly created: string[]
   readonly cancelled: string[]
   readonly prompts: Queue.Queue<PromptGate>
-  /** The mocked `Session.create` writes through this runner's own connection; set once the graph is built. */
-  readonly handle: { db?: Database.Interface["db"] }
+  /** The mocked `Session.create` writes through this runner's own connection; set once the graph is built. The lease is the graph's primitives without the stall point. */
+  readonly handle: { db?: Database.Interface["db"]; lease?: DagLease.Interface }
 }
 
 /** One runner's layer graph: the real DAG services over a mocked session/prompt/agent edge. */
@@ -448,9 +547,10 @@ function runnerGraph(input: GraphInput) {
   const status = SessionStatus.layer.pipe(Layer.provide(bridge))
   const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
   const messages = input.mailbox ? DagMessages.layer.pipe(Layer.provide(database)) : Layer.empty
-  // The lease primitives and the write fence the commands run in, on this runner's own connection.
-  const lease = DagLease.layer.pipe(Layer.provide(database))
-  const transact = DagTransact.layer.pipe(Layer.provide(Layer.merge(database, lease)))
+  // The write fence the commands run in, on this runner's own connection. It reads the real lease
+  // primitives: it is part of the command, not an operation of the loop, so it has no stall point.
+  const fenceLease = DagLease.layer.pipe(Layer.provide(database))
+  const transact = DagTransact.layer.pipe(Layer.provide(Layer.merge(database, fenceLease)))
   const dag = gatedDag(input.gate).pipe(
     Layer.provide(
       Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(messages), Layer.provide(transact)),
@@ -459,6 +559,11 @@ function runnerGraph(input: GraphInput) {
   )
   // As in production the shared inbox is part of the graph the loop is built in.
   const inbox = SessionInbox.layer.pipe(Layer.provide(bridge), Layer.provide(status))
+  // The loop claims and renews through the lease of its own graph, as the runner it names.
+  const lease = gatedLease(input.gate, input.faults, input.leaseCalls, input.handle).pipe(
+    Layer.provide(DagLease.layer.pipe(Layer.provide(database))),
+  )
+  const identity = Layer.succeed(RunnerLease.Identity, input.identity)
   const base = Layer.mergeAll(
     database,
     events,
@@ -466,12 +571,15 @@ function runnerGraph(input: GraphInput) {
     store,
     projector,
     messages,
-    lease,
     transact,
     dag,
     status,
     AgentScheduler.defaultLayer,
     inbox,
+    lease,
+    identity,
+    // The loop builds this same layer reference itself; a build shares one instance, so a test can see its registrations.
+    ExclusiveRegistry.defaultLayer,
   )
 
   const session = Layer.mock(Session.Service, {
@@ -499,6 +607,7 @@ function runnerGraph(input: GraphInput) {
       }),
     messages: (value) => {
       const state = input.children.get(value.sessionID)
+      if (state === "defect") return Effect.die(new Error(`session store defect reading ${value.sessionID}`))
       return Effect.succeed(state ? transcript(value.sessionID, state) : [])
     },
   })
@@ -558,15 +667,27 @@ interface RunnerBuild {
 const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Scope> =>
   Effect.gen(function* () {
     const gate = makeGate()
+    const faults = new Map<LeaseOperation, number>()
+    const leaseCalls: LeaseCall[] = []
     const created: string[] = []
     const cancelled: string[] = []
     const prompts = yield* Queue.unbounded<PromptGate>()
     const handle: GraphInput["handle"] = {}
-    const { layer, childRuns } = runnerGraph({ ...input, gate, created, cancelled, prompts, handle })
+    const { layer, childRuns } = runnerGraph({
+      ...input,
+      gate,
+      faults,
+      leaseCalls,
+      created,
+      cancelled,
+      prompts,
+      handle,
+    })
 
     // Each runner builds in its own root memo map: nothing is shared between the two graphs.
     const scope = yield* Scope.make()
-    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+    const stop = Effect.sync(gate.close).pipe(Effect.andThen(Scope.close(scope, Exit.void)))
+    yield* Effect.addFinalizer(() => stop)
     const context = yield* Layer.buildWithMemoMap(layer, Layer.makeMemoMapUnsafe(), scope).pipe(Effect.orDie)
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.provideContext(context), Effect.provideService(InstanceRef, instanceContext))
@@ -575,6 +696,9 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
     const service = <I, S>(key: Context.Key<I, S>): S => Context.getUnsafe(context, key)
     const bound = <I, S extends object>(key: Context.Key<I, S>) => bind(service(key), provide)
     handle.db = service(Database.Service).db
+    // Building the graph ran `gatedLease`, which left the primitives behind.
+    const lease = handle.lease
+    if (!lease) return yield* Effect.die(new Error("the runner graph did not build its DagLease"))
     const loopService = bound(DagLoop.Service)
     const inboxService = service(SessionInbox.Service)
     return {
@@ -585,6 +709,9 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
       store: bound(DagStore.Service),
       dag: bound(Dag.Service),
       loop: loopService,
+      lease,
+      leaseCalls,
+      exclusive: service(ExclusiveRegistry.Service),
       created,
       cancelled,
       prompts,
@@ -603,7 +730,8 @@ const buildRunner = (input: RunnerBuild): Effect.Effect<Runner, never, Scope.Sco
         ),
       hold: gate.hold,
       freeze: () => gate.hold(() => true, { once: false }),
-      stop: Scope.close(scope, Exit.void),
+      failLease: (operation, times) => void faults.set(operation, times),
+      stop,
     } satisfies Runner
   })
 
@@ -653,8 +781,9 @@ export const makeDualRunner = (options: DualRunnerOptions = {}): Effect.Effect<D
       })
       .run()
       .pipe(Effect.orDie)
+    // Reads go through R2's connection: R1's closes with `R1.stop`, and a test reads after it.
     const log: DualRunner["log"] = (dagID) =>
-      r1.database.db
+      r2.database.db
         .select({ seq: EventTable.seq, type: EventTable.type })
         .from(EventTable)
         .where(eq(EventTable.aggregate_id, dagID))
@@ -665,7 +794,38 @@ export const makeDualRunner = (options: DualRunnerOptions = {}): Effect.Effect<D
           // Stored types carry their schema version: `dag.node.failed.1`.
           Effect.map((rows) => rows.map((row) => ({ seq: row.seq, type: row.type.replace(/\.\d+$/, "") }))),
         )
-    return { r1, r2, file, children, log }
+    const leaseRow: DualRunner["leaseRow"] = (dagID) =>
+      r2.database.db
+        .get<{ runner_id: string; epoch: number; expires_at: number }>(
+          sql`SELECT runner_id, epoch, expires_at FROM dag_runner WHERE dag_id = ${dagID}`,
+        )
+        .pipe(
+          Effect.orDie,
+          Effect.map((row) =>
+            row === undefined ? undefined : { runnerID: row.runner_id, epoch: row.epoch, expiresAt: row.expires_at },
+          ),
+        )
+    const expireLease: DualRunner["expireLease"] = (dagID) =>
+      r2.database.db
+        .run(sql`UPDATE dag_runner SET expires_at = 0 WHERE dag_id = ${dagID}`)
+        .pipe(Effect.orDie, Effect.asVoid)
+    return { r1, r2, file, children, log, leaseRow, expireLease }
+  })
+
+/**
+ * `pollWithTimeout` for tests on the TestClock, where sleeping never ends: it
+ * advances the clock a little between checks (20 ms of virtual time per round,
+ * 500 rounds at most), so what it waits for must not depend on the lease's
+ * clock moving by more than that.
+ */
+export const pollOnTestClock = <A>(check: Effect.Effect<A | undefined>, message: string) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const found = yield* check
+      if (found !== undefined) return found
+      yield* TestClock.adjust("20 millis")
+    }
+    return yield* Effect.fail(new Error(message))
   })
 
 /**
