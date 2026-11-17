@@ -26,7 +26,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import { asc, eq, sql } from "drizzle-orm"
-import { Cause, Context, Effect, Exit, Fiber, Layer, Option } from "effect"
+import { Cause, Context, DateTime, Effect, Exit, Fiber, Layer, Option } from "effect"
 import type { Scope } from "effect"
 import { InvalidTransitionError, isTransitionRejection } from "@graphagent/core/dag/core/types"
 import { DagLease } from "@graphagent/core/dag/lease"
@@ -37,10 +37,14 @@ import { DagTransact } from "@graphagent/core/dag/transact"
 import { Database } from "@graphagent/core/database/database"
 import { layer as sqliteLayer } from "@graphagent/core/database/sqlite.bun"
 import { EventV2 } from "@graphagent/core/event"
-import { EventTable } from "@graphagent/core/event/sql"
+import { EventSequenceTable, EventTable } from "@graphagent/core/event/sql"
+import { Project } from "@graphagent/core/project"
+import { DagEvent } from "@graphagent/schema/dag-event"
 import { Dag, type NodeConfig } from "@/dag/dag"
+import { DagReconciler } from "@/dag/runtime/reconciler"
 import { RunnerPort } from "@/dag/runtime/runner-port"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionID } from "@/session/schema"
 import { testEffect } from "../lib/effect"
 
 const PROJECT = "p"
@@ -68,7 +72,7 @@ interface Harness {
   readonly tokens: Array<DagLease.Token | undefined>
 }
 
-type Services = Dag.Service | Database.Service | DagStore.Service | DagLease.Service | Scope.Scope
+type Services = Dag.Service | Database.Service | DagStore.Service | DagLease.Service | EventV2.Service | Scope.Scope
 
 const withHarness = <A, E>(body: (harness: Harness) => Effect.Effect<A, E, Services>) =>
   Effect.gen(function* () {
@@ -115,6 +119,37 @@ const createWorkflow = (nodes: NodeConfig[] = [node("a"), node("b", ["a"])]) =>
   Effect.gen(function* () {
     const dag = yield* Dag.Service
     return yield* dag.create({ projectID: PROJECT, sessionID: PARENT, title: "t", config: { name: "t", nodes } })
+  })
+
+/**
+ * The `pending` workflow an older version left behind, all its nodes still `pending` (ADR-0008 decision 6, row 8):
+ * the durable prefix that `Dag.create` wrote before it became one transaction, and nothing after it.
+ */
+const createOrphan = (harness: Harness, nodes: ReadonlyArray<string> = ["a", "b"]) =>
+  Effect.gen(function* () {
+    const events = yield* EventV2.Service
+    const dagID = DagEvent.DagID.create()
+    yield* events.publish(DagEvent.WorkflowCreated, {
+      dagID,
+      projectID: Project.ID.make(PROJECT),
+      sessionID: SessionID.make(PARENT),
+      title: "orphan",
+      config: JSON.stringify({ name: "orphan", nodes: [] }),
+      status: "pending",
+      timestamp: yield* DateTime.now,
+      directory: harness.directory,
+    })
+    for (const nodeID of nodes)
+      yield* events.publish(DagEvent.NodeRegistered, {
+        dagID,
+        nodeID: DagEvent.NodeID.make(nodeID),
+        name: nodeID,
+        workerType: "build",
+        dependsOn: [],
+        required: true,
+        timestamp: yield* DateTime.now,
+      })
+    return dagID
   })
 
 /** Queue and start a node the way the spawn path does, with the child session row the mailbox guard binds a settlement to. */
@@ -206,6 +241,7 @@ const CLASSES = {
   cancel: "intent",
   complete: "intent",
   fail: "both",
+  failOrphan: "runner",
   failUnrecoverable: "durable",
   settleCompletion: "both",
   exclusive: "read",
@@ -245,7 +281,9 @@ describe("the classification of the Dag commands (ADR-0008 decision 4)", () => {
 
 interface Scenario {
   readonly command: (typeof RunnerPort.COMMANDS)[number]
-  /** The state the command needs, on top of nodes `a` and `b` (depends on `a`), neither required. */
+  /** The workflow the command runs on; by default a running one with nodes `a` and `b` (depends on `a`), neither required. */
+  readonly create?: (harness: Harness) => Effect.Effect<string, unknown, Services>
+  /** The state the command needs, on top of that workflow. */
   readonly prepare?: (dag: Dag.Interface, dagID: string, harness: Harness) => Effect.Effect<unknown, unknown, Services>
   readonly run: (dag: Dag.Interface, dagID: string) => Effect.Effect<unknown, unknown>
   /** An event the command publishes, so that an empty log cannot pass for a command that ran. */
@@ -309,6 +347,12 @@ const scenarios: ReadonlyArray<Scenario> = [
   { command: "pause", run: (dag, id) => dag.pause(id), publishes: "dag.workflow.paused" },
   { command: "pauseForCheckpoint", run: (dag, id) => dag.pauseForCheckpoint(id, 1), publishes: "dag.workflow.paused" },
   { command: "fail", run: (dag, id) => dag.fail(id, "boom"), publishes: "dag.workflow.failed" },
+  {
+    command: "failOrphan",
+    create: (harness) => createOrphan(harness),
+    run: (dag, id) => dag.failOrphan(id, "orphan"),
+    publishes: "dag.workflow.failed",
+  },
 ]
 
 describe("a runner write is refused once another runner took the workflow over (ADR-0008 decisions 4 and 5)", () => {
@@ -325,7 +369,7 @@ describe("a runner write is refused once another runner took the workflow over (
         withHarness((harness) =>
           Effect.gen(function* () {
             const dag = yield* Dag.Service
-            const dagID = yield* createWorkflow()
+            const dagID = yield* scenario.create?.(harness) ?? createWorkflow()
             if (scenario.prepare) yield* scenario.prepare(dag, dagID, harness)
             const { stale, holder } = yield* takenOver(dagID)
             const zombie = portOf(dag, stale)
@@ -392,6 +436,190 @@ describe("a runner write is refused once another runner took the workflow over (
 
         expect(isTransitionRejection(errorOf(exit))).toBe(true)
         expect(yield* logOf(dagID)).toEqual(before)
+      }),
+    ),
+  )
+})
+
+// -- the orphan's terminalization, one command ----------------------------------
+
+/** The event log of one workflow, wiped from the read model, and the log itself to replay it from. */
+const wipeKeepingLog = (dagID: string) =>
+  Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    const rows = yield* db
+      .select()
+      .from(EventTable)
+      .where(eq(EventTable.aggregate_id, dagID))
+      .orderBy(asc(EventTable.seq))
+      .all()
+      .pipe(Effect.orDie)
+    yield* db.delete(EventTable).where(eq(EventTable.aggregate_id, dagID)).run().pipe(Effect.orDie)
+    yield* db.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, dagID)).run().pipe(Effect.orDie)
+    yield* db.run(sql`DELETE FROM workflow_node WHERE workflow_id = ${dagID}`).pipe(Effect.orDie)
+    yield* db.run(sql`DELETE FROM workflow WHERE id = ${dagID}`).pipe(Effect.orDie)
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      seq: row.seq,
+      aggregateID: row.aggregate_id,
+      data: row.data,
+    }))
+  })
+
+/**
+ * ADR-0008 Amendment 3, 4b-C: the projector accepts `WorkflowFailed` only from running or stepping, so failing an orphan
+ * `pending` workflow takes `WorkflowStarted` first. The reconciler used to publish that one bare, outside the fence, and
+ * then fail through the port. `failOrphan` does both in the one fenced transaction of a runner write.
+ */
+describe("failOrphan: the orphan's terminalization is one fenced transaction (ADR-0008 Amendment 3, 4b-C)", () => {
+  const REASON = DagReconciler.ORPHAN_REASON
+
+  it.live(
+    "one call writes WorkflowStarted straight into WorkflowFailed, in one transaction under the holder's token",
+    () =>
+      withHarness((harness) =>
+        Effect.gen(function* () {
+          const dag = yield* Dag.Service
+          const store = yield* DagStore.Service
+          const dagID = yield* createOrphan(harness)
+          const { holder } = yield* takenOver(dagID)
+          const { port, refused } = portOf(dag, holder)
+          const before = yield* logOf(dagID)
+          harness.tokens.length = 0
+
+          yield* port.failOrphan(dagID, REASON)
+
+          // One transaction, which is what the fence of the runner write answers for: it is a single command.
+          expect(harness.tokens).toEqual([holder])
+          expect(refused).toEqual([])
+          // The two existing events, back to back, and then the nodes the failure ends; no event type is new.
+          expect((yield* logOf(dagID)).slice(before.length)).toEqual([
+            "dag.workflow.started",
+            "dag.workflow.failed",
+            "dag.node.skipped",
+            "dag.node.skipped",
+          ])
+          // Failed, not cancelled: the interrupted-create semantics, with the reason on the durable event.
+          expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+          expect(yield* store.getWorkflowFailureReason?.(dagID) ?? Effect.succeed(undefined)).toBe(REASON)
+          expect((yield* store.getNodes(dagID)).map((node) => node.status)).toEqual(["skipped", "skipped"])
+        }),
+      ),
+  )
+
+  it.live("a workflow with no node at all is failed the same way", () =>
+    withHarness((harness) =>
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        const dagID = yield* createOrphan(harness, [])
+        const before = yield* logOf(dagID)
+
+        yield* dag.failOrphan(dagID, REASON)
+
+        expect((yield* logOf(dagID)).slice(before.length)).toEqual(["dag.workflow.started", "dag.workflow.failed"])
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+      }),
+    ),
+  )
+
+  // The two legs are one transaction: a failure of the second takes the first back with it, so nothing is left that
+  // reads as a `running` workflow with every node still `pending` (an adoption would start its nodes).
+  it.live("rolls back as a whole when its second leg cannot be written: no WorkflowStarted is left behind", () =>
+    withHarness((harness) =>
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        const { db } = yield* Database.Service
+        const dagID = yield* createOrphan(harness)
+        const { holder } = yield* takenOver(dagID)
+        const { port } = portOf(dag, holder)
+        const before = { log: yield* logOf(dagID), state: yield* snapshot(dagID) }
+        yield* db.run(
+          sql`CREATE TRIGGER fail_orphan_probe BEFORE UPDATE OF status ON workflow WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'the failure leg cannot be written'); END`,
+        )
+
+        const exit = yield* Effect.exit(port.failOrphan(dagID, REASON))
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(yield* logOf(dagID)).toEqual(before.log)
+        expect(yield* snapshot(dagID)).toEqual(before.state)
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("pending")
+
+        // Without the fault the same call goes through.
+        yield* db.run(sql`DROP TRIGGER fail_orphan_probe`)
+        yield* port.failOrphan(dagID, REASON)
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("failed")
+      }),
+    ),
+  )
+
+  it.live("a refused token leaves neither event, and the runner is told once", () =>
+    withHarness((harness) =>
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        const store = yield* DagStore.Service
+        const dagID = yield* createOrphan(harness)
+        const { stale } = yield* takenOver(dagID)
+        const zombie = portOf(dag, stale)
+        const before = yield* logOf(dagID)
+
+        const error = errorOf(yield* Effect.exit(zombie.port.failOrphan(dagID, REASON)))
+
+        expect(error).toBeInstanceOf(InvalidTransitionError)
+        expect(zombie.refused).toEqual(["10:one@1"])
+        expect(yield* logOf(dagID)).toEqual(before)
+        expect((yield* store.getWorkflow(dagID))?.status).toBe("pending")
+      }),
+    ),
+  )
+
+  // `guardWorkflow` alone would let a paused workflow through (paused -> running is legal): no create sequence leaves one.
+  // Every refusal names the leg that the command starts with, `-> running`, and not the failure that would follow it.
+  it.live("takes a `pending` workflow only: a running, a paused and a terminal one are refused untouched", () =>
+    withHarness(() =>
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        const running = yield* createWorkflow()
+        const paused = yield* createWorkflow()
+        yield* dag.pause(paused)
+        const cancelled = yield* createWorkflow()
+        yield* dag.cancel(cancelled)
+
+        for (const [status, dagID] of [
+          ["running", running],
+          ["paused", paused],
+          ["cancelled", cancelled],
+        ] as const) {
+          const before = { log: yield* logOf(dagID), state: yield* snapshot(dagID) }
+
+          const error = errorOf(yield* Effect.exit(dag.failOrphan(dagID, REASON)))
+
+          expect(error).toBeInstanceOf(InvalidTransitionError)
+          expect(isTransitionRejection(error)).toBe(true)
+          expect(messageOf(error)).toContain(`(${status} -> running)`)
+          expect(yield* logOf(dagID)).toEqual(before.log)
+          expect(yield* snapshot(dagID)).toEqual(before.state)
+        }
+      }),
+    ),
+  )
+
+  it.live("replays to the same read model: the log is the two existing events in order", () =>
+    withHarness((harness) =>
+      Effect.gen(function* () {
+        const dag = yield* Dag.Service
+        const events = yield* EventV2.Service
+        const dagID = yield* createOrphan(harness)
+        yield* dag.failOrphan(dagID, REASON)
+        const original = yield* snapshot(dagID)
+
+        const serialized = yield* wipeKeepingLog(dagID)
+        yield* events.replayAll(serialized)
+
+        expect(yield* snapshot(dagID)).toEqual(original)
+        expect(original.workflow?.status).toBe("failed")
       }),
     ),
   )

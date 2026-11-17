@@ -15,7 +15,7 @@ import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
  *
  * The first matching row wins:
  *
- *   1.  the workflow is terminal or gone                         -> noop
+ *   1.  the workflow is terminal or gone                         -> retire if there is an entry, else noop
  *   2.  this instance's directory does not own it                -> evict (not-owned) if there is an entry, else noop
  *   3.  an entry, and the lease row no longer names its token    -> evict (lease-lost)
  *   4.  the location is unusable, no other runner holds it live  -> fail-unrecoverable
@@ -28,13 +28,17 @@ import { isTerminalWorkflowStatusValue } from "@graphagent/core/dag/core/types"
  *   10. otherwise: no lease row, another runner's expired row,
  *       or a row that names this runner while there is no entry  -> adopt
  *
- * Why the order is the order: a workflow nobody can act on ends the evaluation
- * first (1, 2); an entry whose lease is gone must stop before anything else is
- * judged (3); an unusable location is a durable fact that needs no lease, unless
- * somebody live drives the workflow (4, 5); a live lease is never judged or
- * claimed (5); the clock rule only holds back a takeover from another runner,
- * never a claim of a workflow that has no lease row, which takes nothing from
- * anyone (7, 10).
+ * Why the order is the order: a workflow that ended is judged first, whoever
+ * owns it and whatever its lease row says: its entry is retired through the
+ * routine of the terminal handler (settlement, wake of the parent), which is
+ * what leaves no entry behind when the terminal event came from another process
+ * and no handler here heard it (1); a workflow nobody can act on ends the
+ * evaluation next (2); an entry whose lease is gone must stop before anything
+ * else is judged (3); an unusable location is a durable fact that needs no
+ * lease, unless somebody live drives the workflow (4, 5); a live lease is never
+ * judged or claimed (5); the clock rule only holds back a takeover from another
+ * runner, never a claim of a workflow that has no lease row, which takes
+ * nothing from anyone (7, 10).
  */
 
 /**
@@ -89,6 +93,8 @@ export type DeferReason = "other-live" | "clock-jump" | "pending"
 
 export type Action =
   | { readonly _tag: "noop" }
+  /** Row 1: the workflow ended and the instance still has its entry: the terminal handler's cleanup, settlement and wake. */
+  | { readonly _tag: "retire" }
   | { readonly _tag: "evict"; readonly reason: EvictReason }
   | { readonly _tag: "fail-unrecoverable" }
   | { readonly _tag: "defer"; readonly reason: DeferReason }
@@ -97,6 +103,7 @@ export type Action =
   | { readonly _tag: "adopt" }
 
 const NOOP: Action = { _tag: "noop" }
+const RETIRE: Action = { _tag: "retire" }
 const RENEW: Action = { _tag: "renew" }
 const ADOPT: Action = { _tag: "adopt" }
 const FAIL_UNRECOVERABLE: Action = { _tag: "fail-unrecoverable" }
@@ -109,7 +116,7 @@ const DEFER_PENDING: Action = { _tag: "defer", reason: "pending" }
 
 /** The truth table of ADR-0008 decision 6, first matching row wins. */
 export const decide = (o: Observation): Action => {
-  if (o.status === "gone" || isTerminalWorkflowStatusValue(o.status)) return NOOP
+  if (o.status === "gone" || isTerminalWorkflowStatusValue(o.status)) return o.hasEntry ? RETIRE : NOOP
   if (!o.owned) return o.hasEntry ? EVICT_NOT_OWNED : NOOP
   if (o.hasEntry && !o.entryTokenHeld) return EVICT_LEASE_LOST
   if (o.location === "unusable" && o.lease !== "other-live") return FAIL_UNRECOVERABLE
