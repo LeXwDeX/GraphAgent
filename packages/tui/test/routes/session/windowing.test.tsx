@@ -595,3 +595,29 @@ test("session.message.previous takes the viewport to a user message that was not
     await harness.dispose()
   }
 }, 60_000)
+
+// A session route that names a message (#1058 7) takes the viewport to it the same way, and takes the request off the
+// route, so naming the message again goes there again.
+test("a route that names a user message takes a windowed transcript to it, and again when it names it again", async () => {
+  const fixture = withQuestions()
+  const harness = await mountHarness(fixture)
+  try {
+    const scroll = await atTheEnd(harness)
+    const target = `msg_${fixture.session.id}_ask_5`
+
+    expect(question(scroll, 5)).toBeUndefined()
+    harness.navigate({ type: "session", sessionID: fixture.session.id, messageID: target })
+    await settleScroll(harness)
+    expect(question(scroll, 5)?.top).toBe(0)
+    expect(viewportText(harness).join("\n")).toContain("Question 5:")
+
+    scroll.scrollTo(0)
+    await settleScroll(harness)
+    expect(question(scroll, 5)).toBeUndefined()
+    harness.navigate({ type: "session", sessionID: fixture.session.id, messageID: target })
+    await settleScroll(harness)
+    expect(question(scroll, 5)?.top).toBe(0)
+  } finally {
+    await harness.dispose()
+  }
+}, 60_000)

@@ -7,6 +7,7 @@ import { DEFAULT_LANGUAGE } from "@graphagent/core/config/language"
 import type { AssistantMessage, Session, SessionStatus, ToolPart } from "@graphagent/sdk"
 import { setLanguage } from "../../src/i18n"
 import type { Route } from "../../src/context/route"
+import { createSummary } from "../../src/context/session-summary"
 import { openSubAgent, returnToParent } from "../../src/session/navigate"
 import type { ToastOptions } from "../../src/ui/toast"
 import { AppRoutes } from "../fixture/route-frame"
@@ -17,9 +18,9 @@ afterEach(() => {
   setLanguage(DEFAULT_LANGUAGE)
 })
 
-// Every way into a sub-agent goes through `openSubAgent`, and the sibling keys walk `siblingSessions`. These tests
-// use the real session route inside the app frame, the way `app.tsx` mounts it, and assert that nothing is written
-// to the server on the way (a sub-agent view is read-only).
+// Every way into a sub-agent goes through `openSubAgent`, and the sibling keys walk the order of the `/agents` list
+// (`subagentSiblings`). These tests use the real session route inside the app frame, the way `app.tsx` mounts it, and
+// assert that nothing is written to the server on the way (a sub-agent view is read-only).
 
 const rootID = "ses_nav_root"
 const firstID = "ses_nav_a"
@@ -29,9 +30,9 @@ const otherID = "ses_nav_other"
 const strangerID = "ses_nav_stranger"
 const soloID = "ses_nav_solo"
 
-// Sub-agents are numbered by creation time. `a` and `b` were created at the same instant, so their ids settle it,
-// and `c` is the newest. The stranger belongs to another tree and was created between `b` and `c`: it must never
-// show up in the walk. `solo` has no sub-agents at all.
+// `a` and `b` were created at the same instant, so their ids settle a tie, and `c` is the newest. The stranger belongs
+// to another tree and was created between `b` and `c`: it must never show up in the walk. `solo` has no sub-agents at
+// all.
 const tree: Session[] = [
   sessionFixture(rootID),
   sessionFixture(firstID, { parentID: rootID, time: { created: 10, updated: 11 } }),
@@ -64,6 +65,25 @@ async function mountTree(
   return harness
 }
 
+/**
+ * The states the list is ordered by: `b` is a background run that goes on, `a` a foreground one that runs, and nothing
+ * is known of `c`. The list is `b`, `a`, `c`: background, foreground, then the rest.
+ */
+function seedStates(harness: Harness) {
+  const sync = harness.sync()
+  const byID = (id: string) => tree.find((each) => each.id === id)!
+  sync.set("summary", secondID, { ...createSummary(byID(secondID), { type: "busy" }), toolCalls: 2 })
+  sync.set("summary", firstID, { ...createSummary(byID(firstID), { type: "busy" }), toolCalls: 1 })
+  sync.set("taskIndex", secondID, {
+    parentSessionID: rootID,
+    parentMessageID: "msg_nav",
+    partID: "prt_nav_b",
+    background: true,
+    startedAt: 11,
+  })
+  sync.set("lifecycle", `job:${secondID}`, { domain: "job", id: secondID, value: "running", phase: "running", at: 1 })
+}
+
 /** The session on screen, or the route type when it is not a session. */
 function viewing(harness: Harness) {
   const data = harness.route().data
@@ -87,27 +107,45 @@ function toastText(harness: Harness) {
   return harness.toast().currentToast?.text
 }
 
-test("right and left walk the sub-agents of one parent in creation order and wrap at both ends", async () => {
+test("right and left walk the sub-agents of one parent in the order of the list and wrap at both ends", async () => {
   const harness = await mountTree({ route: { type: "session", sessionID: firstID } })
   try {
     expect(viewing(harness)).toBe(firstID)
+    seedStates(harness)
+    await harness.settle()
 
-    // Oldest first, ties by id; the stranger of the other tree is skipped. After the newest comes the oldest. The
-    // top bar's `i/N` counts the same sequence (test/app-subagent-view.test.tsx).
+    // The list is `b` (background), `a` (foreground), `c` (the rest); the stranger of the other tree is skipped.
+    // After the last comes the first. The top bar's `i/N` counts the same sequence (test/app-subagent-view.test.tsx).
     const forward: string[] = []
     for (let step = 0; step < 4; step++) {
       await arrow(harness, "right")
       forward.push(viewing(harness))
     }
-    expect(forward).toEqual([secondID, thirdID, firstID, secondID])
+    expect(forward).toEqual([thirdID, secondID, firstID, thirdID])
 
     const backward: string[] = []
     for (let step = 0; step < 4; step++) {
       await arrow(harness, "left")
       backward.push(viewing(harness))
     }
-    expect(backward).toEqual([firstID, thirdID, secondID, firstID])
+    expect(backward).toEqual([firstID, secondID, thirdID, firstID])
 
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
+test("with no state known, the walk is newest first: ties by id, the other tree's session skipped", async () => {
+  const harness = await mountTree({ route: { type: "session", sessionID: thirdID } })
+  try {
+    // The list is `c`, `a`, `b`.
+    const forward: string[] = []
+    for (let step = 0; step < 4; step++) {
+      await arrow(harness, "right")
+      forward.push(viewing(harness))
+    }
+    expect(forward).toEqual([firstID, secondID, thirdID, firstID])
     expect(harness.writes()).toEqual([])
   } finally {
     await harness.dispose()
@@ -128,28 +166,32 @@ test("a sub-agent that is alone under its parent stays where it is", async () =>
   }
 })
 
-test("the key that opens the first sub-agent opens the oldest one, not the newest", async () => {
+test("the key that opens the first sub-agent opens the first one of the list: the background run", async () => {
   const harness = await mountTree()
   try {
+    seedStates(harness)
+    await harness.settle()
     await leaderDown(harness)
-    expect(viewing(harness)).toBe(firstID)
+    expect(viewing(harness)).toBe(secondID)
     // From there the sibling keys carry on in the same order.
     await arrow(harness, "right")
-    expect(viewing(harness)).toBe(secondID)
+    expect(viewing(harness)).toBe(firstID)
     expect(harness.writes()).toEqual([])
   } finally {
     await harness.dispose()
   }
 })
 
-test("inside a sub-agent the first-sub-agent key goes to the oldest of its siblings", async () => {
+test("inside a sub-agent the first-sub-agent key goes to the first of its siblings", async () => {
   const harness = await mountTree({ route: { type: "session", sessionID: thirdID } })
   try {
+    seedStates(harness)
+    await harness.settle()
     await leaderDown(harness)
-    expect(viewing(harness)).toBe(firstID)
-    // Already on the oldest: nothing to move to, and nothing to say.
+    expect(viewing(harness)).toBe(secondID)
+    // Already on the first: nothing to move to, and nothing to say.
     await leaderDown(harness)
-    expect(viewing(harness)).toBe(firstID)
+    expect(viewing(harness)).toBe(secondID)
     expect(toastText(harness)).toBeUndefined()
   } finally {
     await harness.dispose()

@@ -33,7 +33,7 @@ export type BackgroundSummary = Pick<SessionSummary, "status" | "toolCalls">
  *    says busy or retrying, otherwise `unknown`.
  */
 export function backgroundStatus(input: {
-  entry: TaskIndexEntry
+  entry: Pick<TaskIndexEntry, "result">
   job?: BackgroundJob
   summary?: BackgroundSummary
 }): BackgroundStatus {

@@ -8,7 +8,11 @@ export interface SiblingSession {
   readonly time: { readonly created: number }
 }
 
-/** `(time.created, id)` ascending: the one order sub-agents are numbered and walked in. */
+/**
+ * `(time.created, id)` ascending: the order sessions were made in, which is stable whatever their state. The sub-agent
+ * keys and the `/agents` list do not walk it but the grouped order of `subagentChildren` (`session/subagents.ts`),
+ * which starts from this one.
+ */
 function creationOrder(a: SiblingSession, b: SiblingSession): number {
   if (a.time.created !== b.time.created) return a.time.created < b.time.created ? -1 : 1
   if (a.id !== b.id) return a.id < b.id ? -1 : 1

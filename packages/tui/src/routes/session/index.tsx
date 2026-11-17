@@ -75,7 +75,7 @@ import { useHookStatus } from "../../context/hook-status"
 import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
 import { returnToParent, useOpenSubAgent } from "../../session/navigate"
-import { childSessions, nextSibling, siblingSessions } from "../../session/siblings"
+import { nextSibling } from "../../session/siblings"
 import { backgroundElapsed, backgroundStatus, type BackgroundStatus } from "../../session/background"
 import {
   handbackLine,
@@ -86,7 +86,13 @@ import {
   UNKNOWN,
   type HandbackLine,
 } from "../../session/subagent-record"
-import { subagentDescription, subagentMarkerToken } from "../../session/subagents"
+import {
+  subagentChildren,
+  subagentDescription,
+  subagentMarkerToken,
+  subagentSiblings,
+  subagentSource,
+} from "../../session/subagents"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -557,6 +563,9 @@ export function Main() {
   // one serialized activation so a slow switch cannot overlap the next one.
   let generation = 0
   let activation = Promise.resolve()
+  // The session whose activation ended last. By then its messages are loaded and the view is at the end, which is where
+  // an activation leaves it, so a jump the route asks for (below) waits for it.
+  const [activated, setActivated] = createSignal<string>()
 
   createEffect(
     on(
@@ -621,6 +630,7 @@ export function Main() {
               }
             }
             if (scroll) scroll.scrollBy(100_000)
+            setActivated(sessionID)
           })
           .catch((error) => {
             if (!isCurrent()) return
@@ -732,6 +742,32 @@ export function Main() {
     if (messageID) scrollToMessageID(messageID)
   }
 
+  // Brings a message into view, at the top of the viewport. A message that draws nothing has no place of its own (a
+  // synthetic one, such as the report the server adds when a background run ends, has no row): what it brought is
+  // at the end of the transcript, so that is where the jump goes.
+  function jumpToMessage(messageID: string) {
+    if (windowed()) {
+      if (scrollToMessageID(messageID)) return
+    } else if (scroll.getChildren().some((item) => item.id === messageID)) {
+      // Lands again after the next frame's layout, which a jump made right after the messages came in needs.
+      scroll.scrollChildIntoView(messageID, { align: "start", inset: 1 })
+      return
+    }
+    scroll.scrollTo(scroll.scrollHeight)
+  }
+
+  // A jump the route asks for (#1058 7: the click on the toast of a finished background run). It waits for the
+  // session's activation, which ends by scrolling to the end, so that the jump is the last scroll. The request is
+  // taken off the route when it is carried out: a later click on the same toast asks again, and scrolls again.
+  createEffect(() => {
+    const target = route.messageID
+    if (!target || activated() !== route.sessionID || !session() || !scroll || scroll.isDestroyed) return
+    untrack(() => {
+      jumpToMessage(target)
+      navigate({ type: "session", sessionID: route.sessionID })
+    })
+  })
+
   // A click on a user message opens its actions. A sub-agent view has none to offer (#1033 3.3): its messages are
   // not clickable, and the text is copied by selecting it.
   function openMessagePanel(message: UserMessage) {
@@ -837,11 +873,12 @@ export function Main() {
   const local = useLocal()
 
   // The first sub-agent of the session in view: the children of a root session, or, from inside a sub-agent, the
-  // oldest of its siblings. Oldest first is the order `moveChild` walks, so this is where that walk starts.
+  // first of its siblings. First in the order of the `/agents` list is the order `moveChild` walks, so this is where
+  // that walk starts.
   function moveFirstChild() {
     const current = session()
     if (!current) return
-    const first = childSessions(sync.data.session, current.parentID ?? current.id)[0]
+    const first = subagentChildren(sync.data.session, current.parentID ?? current.id, subagentSource(sync.data))[0]
     if (!first) {
       toast.show({ text: t("subagent.none"), level: "info", dedupeKey: "subagent.none" })
       return
@@ -849,11 +886,16 @@ export function Main() {
     if (first.id !== current.id) openSubAgent(first.id)
   }
 
-  // The previous or next sibling under the same parent, in `siblingSessions` order, wrapping at both ends.
+  // The previous or next sibling under the same parent, in the order of the `/agents` list (`subagentSiblings`),
+  // wrapping at both ends.
   function moveChild(direction: 1 | -1) {
     const current = session()
     if (!current) return
-    const next = nextSibling(siblingSessions(sync.data.session, current.id), current.id, direction)
+    const next = nextSibling(
+      subagentSiblings(sync.data.session, current.id, subagentSource(sync.data)),
+      current.id,
+      direction,
+    )
     if (next) openSubAgent(next.id)
   }
 
@@ -1568,8 +1610,15 @@ export function Main() {
     bindings: tuiConfig.keybinds.get("session.background"),
   }))
 
-  // snap to bottom when session changes
-  createEffect(on(() => route.sessionID, toBottom))
+  // snap to bottom when session changes, unless the route comes with a jump of its own
+  createEffect(
+    on(
+      () => route.sessionID,
+      () => {
+        if (!route.messageID) toBottom()
+      },
+    ),
+  )
 
   // Keymap selectors re-run on every keymap state change. Creating one per
   // message makes their cost grow with the transcript, so the session owns a

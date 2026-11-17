@@ -76,7 +76,8 @@ import { SessionDrawer } from "./routes/session/drawer"
 import { useDagIndicator } from "./routes/session/dag-mode"
 import type { TopBarRight } from "./shell/top-bar"
 import { returnToParent, useOpenSubAgent } from "./session/navigate"
-import { siblingPosition, siblingSessions } from "./session/siblings"
+import { siblingPosition } from "./session/siblings"
+import { subagentSiblings, subagentSource } from "./session/subagents"
 import { t } from "./i18n"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
@@ -433,8 +434,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     subagent: {
       toast,
       viewing: () => (route.data.type === "session" ? route.data.sessionID : undefined),
+      currentRoot: () =>
+        route.data.type === "session" ? resolveRootSessionID(sync.data.session, route.data.sessionID) : undefined,
       task: (sessionID) => sync.data.taskIndex[sessionID],
       open: openSubAgent,
+      // The toast brings the user to the session whose transcript holds the report, scrolled to its message. That is
+      // not a sub-agent entry (no retry notice) even when a sub-agent's own run reported into the session.
+      openResult: (sessionID, messageID) => route.navigate({ type: "session", sessionID, messageID }),
     },
   })
   const clipboard = useClipboard()
@@ -469,12 +475,17 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           : route.navigate({ type: "session", sessionID }),
     }
   })
-  // `子 agent i/N` in the top bar: the same `(time.created, id)` order that `←→` walks.
-  const subagentPosition = createMemo(() => {
-    if (route.data.type !== "session" || !subagent()) return undefined
-    const sessionID = route.data.sessionID
-    return siblingPosition(siblingSessions(sync.data.session, sessionID), sessionID)
-  })
+  // `子 agent i/N` in the top bar: the order of the `/agents` list, which `←→` walks (`session/subagents.ts`). The order
+  // follows the states of the siblings, so the memo reads them; it passes on a new position only when the place changes.
+  const subagentPosition = createMemo(
+    () => {
+      if (route.data.type !== "session" || !subagent()) return undefined
+      const sessionID = route.data.sessionID
+      return siblingPosition(subagentSiblings(sync.data.session, sessionID, subagentSource(sync.data)), sessionID)
+    },
+    undefined,
+    { equals: (left, right) => left?.index === right?.index && left?.total === right?.total },
+  )
   const footerStatus = useFooterStatus(
     // The shared slot holds the hook progress only while a hook runs. The component renders nothing when idle, but
     // an element in the slot would still keep the idle key hints off the session footer.
