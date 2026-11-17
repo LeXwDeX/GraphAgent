@@ -113,6 +113,114 @@ function pipeline(workflow = WF): DagNode[] {
   ]
 }
 
+/**
+ * A compose block after its slot expanded (#1158): the block's split node, three workers the plan asked for, which
+ * name the slot they hang under, and the slot itself, now the join node that waits for them. One worker failed, one runs.
+ */
+function composed(workflow = WF): DagNode[] {
+  return [
+    wire("scope", "completed", { started_at: NOW - 600_000, completed_at: NOW - 590_000 }, workflow),
+    wire(
+      "review--split",
+      "completed",
+      { depends_on: ["scope"], started_at: NOW - 590_000, completed_at: NOW - 580_000 },
+      workflow,
+    ),
+    wire(
+      "review--api",
+      "completed",
+      {
+        depends_on: ["review--split"],
+        expanded_from: "review",
+        started_at: NOW - 580_000,
+        completed_at: NOW - 500_000,
+      },
+      workflow,
+    ),
+    wire(
+      "review--core",
+      "failed",
+      {
+        depends_on: ["review--split"],
+        expanded_from: "review",
+        started_at: NOW - 580_000,
+        completed_at: NOW - 400_000,
+        error_reason: "审查超时",
+      },
+      workflow,
+    ),
+    wire(
+      "review--docs",
+      "running",
+      { depends_on: ["review--split"], expanded_from: "review", started_at: NOW - 580_000 },
+      workflow,
+    ),
+    wire("review", "pending", { depends_on: ["review--api", "review--core", "review--docs"] }, workflow),
+    wire("ship", "pending", { depends_on: ["review"] }, workflow),
+  ]
+}
+
+/** A block whose docs worker was split again: a nested slot, whose own workers name it, under the outer one. */
+function composedNested(workflow = WF): DagNode[] {
+  return [
+    wire("scope", "completed", { started_at: NOW - 600_000, completed_at: NOW - 590_000 }, workflow),
+    wire(
+      "review--split",
+      "completed",
+      { depends_on: ["scope"], started_at: NOW - 590_000, completed_at: NOW - 580_000 },
+      workflow,
+    ),
+    wire(
+      "review--api",
+      "completed",
+      {
+        depends_on: ["review--split"],
+        expanded_from: "review",
+        started_at: NOW - 580_000,
+        completed_at: NOW - 500_000,
+      },
+      workflow,
+    ),
+    // The nested split node and the nested slot name the outer slot; what the nested slot expanded into names it.
+    wire(
+      "review--docs--split",
+      "completed",
+      {
+        depends_on: ["review--split"],
+        expanded_from: "review",
+        started_at: NOW - 580_000,
+        completed_at: NOW - 570_000,
+      },
+      workflow,
+    ),
+    wire(
+      "review--docs--intro",
+      "completed",
+      {
+        depends_on: ["review--docs--split"],
+        expanded_from: "review--docs",
+        started_at: NOW - 570_000,
+        completed_at: NOW - 520_000,
+      },
+      workflow,
+    ),
+    wire(
+      "review--docs--refs",
+      "running",
+      { depends_on: ["review--docs--split"], expanded_from: "review--docs", started_at: NOW - 570_000 },
+      workflow,
+    ),
+    wire(
+      "review--docs",
+      "pending",
+      { depends_on: ["review--docs--intro", "review--docs--refs"], expanded_from: "review" },
+      workflow,
+    ),
+    wire("review", "pending", { depends_on: ["review--api", "review--docs"] }, workflow),
+    wire("ship", "pending", { depends_on: ["review"] }, workflow),
+  ]
+}
+
 /** The workflow summaries and node tables the fake server answers with, and a record of the table reads. */
 function dagServer(input: {
   summaries?: Record<string, DagWorkflowSummary[]>
@@ -476,6 +584,502 @@ describe("waves and the nodes outside them", () => {
       // One wave of one node, then the group outside the waves: its mark and three nodes of five cells each.
       expect(bar).toContain("━━━━━ !")
       expect(bar!.slice(bar!.indexOf("!") + 1).match(/[━─╌]/g)?.length).toBe(15)
+    } finally {
+      await shell.dispose()
+    }
+  })
+})
+
+/** The cells a line puts before `needle`: where the text starts on the screen, wide characters counted as two. */
+const columnOf = (line: string | undefined, needle: string, ambiguousWidth: 1 | 2 = 1) => {
+  if (line === undefined || !line.includes(needle)) throw new Error(`no ${needle} in ${line}`)
+  return cellWidth(line.slice(0, line.indexOf(needle)), ambiguousWidth)
+}
+
+/** A compose block's workflow, in the server's answer: nothing is asked of it but what it says. */
+function composeServer(tables: Record<string, DagNode[]> = { [WF]: composed() }) {
+  const nodes = tables[WF] ?? []
+  const count = (...statuses: string[]) => nodes.filter((node) => statuses.includes(node.status)).length
+  return dagServer({
+    summaries: {
+      [ROOT]: [
+        summaryOf(WF, "代码审查", "running", {
+          nodeCount: nodes.length,
+          completedNodes: count("completed"),
+          runningNodes: count("running"),
+          failedNodes: count("failed"),
+          queuedNodes: count("pending", "queued"),
+        }),
+      ],
+    },
+    tables,
+  })
+}
+
+describe("an expansion folded under its slot", () => {
+  test("the slot shows its own state and how many children it has; the children are not rows", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      const slot = lineWith(frame, "review ")
+      expect(slot).toContain("▸")
+      expect(slot).toContain("○")
+      expect(slot).toContain("（3 个子节点）")
+      for (const child of ["review--api", "review--core", "review--docs"]) expect(frame).not.toContain(child)
+      // What is not under a slot is as it was.
+      for (const plain of ["scope", "review--split", "ship"]) expect(frame).toContain(plain)
+      expect(lineWith(frame, "scope")).toContain("10s")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a slot with one child says so in the singular, in each language", async () => {
+    const one = composed().filter((node) => node.id !== "review--core" && node.id !== "review--docs")
+    const server = composeServer({ [WF]: one })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      expect(await shell.frame()).toContain("（1 个子节点）")
+      setLanguage("en")
+      await shell.settle()
+      const frame = await shell.frame()
+      expect(frame).toContain("(1 child)")
+      expect(frame).not.toContain("1 children")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("the wave of the folded children has no row, and the slot and what follows keep their numbers", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(lineWith(frame, "scope")).toContain("第 1 波")
+      expect(lineWith(frame, "review--split")).toContain("第 2 波")
+      expect(lineWith(frame, "review ")).toContain("第 4 波")
+      expect(lineWith(frame, "ship")).toContain("第 5 波")
+      expect(frame).not.toContain("第 3 波")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("it starts on the slot when what needs a look is a child folded under it", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(lineWith(frame, "›")).toContain("review")
+      expect(lineWith(frame, "›")).toContain("▸")
+      expect(
+        shell
+          .sync()
+          .dag.nodes(WF)
+          ?.find((node) => node.id === "review--core")?.status,
+      ).toBe("failed")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("space unfolds the slot: its children are ordinary rows one step in, each with its own state", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      await press(shell, " ")
+      const frame = await shell.frame()
+      const slot = lineWith(frame, "review ")
+      expect(slot).toContain("▾")
+      expect(lineWith(frame, "review--api")).toContain("✓")
+      expect(lineWith(frame, "review--api")).toContain("1m 20s")
+      expect(lineWith(frame, "review--core")).toContain("✗")
+      expect(lineWith(frame, "review--core")).toContain("3m 0s")
+      expect(lineWith(frame, "review--docs")).toContain("●")
+      expect(lineWith(frame, "review--docs")).toContain("9m 40s")
+      // Between the slot (and the note of the selected row) and what follows it, in wave order, and one step further
+      // in than the slot's own name.
+      const rows = rowsOf(frame)
+      const at = (name: string) => rows.findIndex((line) => line.includes(name))
+      expect(at("review ")).toBeGreaterThan(at("review--split"))
+      expect(at("review--api")).toBeGreaterThan(at("review "))
+      expect(at("review--core")).toBe(at("review--api") + 1)
+      expect(at("review--docs")).toBe(at("review--core") + 1)
+      expect(at("ship")).toBe(at("review--docs") + 1)
+      for (const name of ["review--api", "review--core", "review--docs"]) {
+        expect(columnOf(lineWith(frame, name), name)).toBe(columnOf(slot, "review") + 2)
+      }
+      // They sit in no wave of the list: neither a number nor a bar.
+      for (const name of ["review--api", "review--core", "review--docs"]) {
+        const line = lineWith(frame, name) ?? ""
+        expect(line).not.toContain("第")
+        expect(line.slice(1, -1)).not.toContain("│")
+      }
+      expect(lineWith(frame, "ship")).toContain("第 5 波")
+      // The slot stays the selected row.
+      expect(lineWith(frame, "›")).toContain("review ")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("space again folds it, and the selection stays on the slot", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      const folded = await shell.frame()
+      await press(shell, " ")
+      await press(shell, " ")
+      const frame = await shell.frame()
+      expect(frame).toBe(folded)
+      expect(frame).not.toContain("review--api")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a child can be selected like any node, and says what went wrong", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      await press(shell, " ")
+      await press(shell, "down")
+      expect(lineWith(await shell.frame(), "›")).toContain("review--api")
+      await press(shell, "down")
+      const frame = await shell.frame()
+      expect(lineWith(frame, "›")).toContain("review--core")
+      expect(frame).toContain("审查超时")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a pushed change reaches a child while it is folded, and a new child counts", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      shell.events.emit(
+        nodesPush({
+          seq: 1,
+          nodes: [
+            wire("review--docs", "completed", {
+              depends_on: ["review--split"],
+              expanded_from: "review",
+              started_at: NOW - 580_000,
+              completed_at: NOW - 200_000,
+            }),
+            wire("review--perf", "running", {
+              depends_on: ["review--split"],
+              expanded_from: "review",
+              started_at: NOW - 580_000,
+            }),
+            wire("review", "pending", {
+              depends_on: ["review--api", "review--core", "review--docs", "review--perf"],
+            }),
+          ],
+        }),
+      )
+      await waitFor(() => shell.sync().dag.nodes(WF)?.length === 8)
+      await shell.settle()
+      expect(await shell.frame()).toContain("（4 个子节点）")
+      await press(shell, " ")
+      const frame = await shell.frame()
+      expect(lineWith(frame, "review--docs")).toContain("✓")
+      expect(lineWith(frame, "review--perf")).toContain("●")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a slot inside a slot starts folded, with its own count, and opens in turn", async () => {
+    const shell = await mountDag({ server: composeServer({ [WF]: composedNested() }), height: 40 })
+    try {
+      await openLoaded(shell)
+      let frame = await shell.frame()
+      expect(lineWith(frame, "review ")).toContain("（3 个子节点）")
+      for (const child of ["review--api", "review--docs", "review--docs--intro"]) expect(frame).not.toContain(child)
+
+      await press(shell, " ")
+      frame = await shell.frame()
+      const nested = lineWith(frame, "review--docs ")
+      expect(nested).toContain("▸")
+      expect(nested).toContain("（2 个子节点）")
+      expect(frame).not.toContain("review--docs--intro")
+      // The nested split node, which the outer slot generated, is one of its plain children.
+      expect(lineWith(frame, "review--docs--split")).toContain("✓")
+      expect(columnOf(nested, "review--docs")).toBe(columnOf(lineWith(frame, "review "), "review") + 2)
+
+      // Down to the nested slot (the children come in wave order: api, the nested split, the nested slot).
+      for (let step = 0; step < 3; step++) await press(shell, "down")
+      expect(lineWith(await shell.frame(), "›")).toContain("review--docs ")
+      await press(shell, " ")
+      frame = await shell.frame()
+      expect(lineWith(frame, "review--docs ")).toContain("▾")
+      expect(lineWith(frame, "review--docs--intro")).toContain("✓")
+      expect(lineWith(frame, "review--docs--refs")).toContain("●")
+      expect(columnOf(lineWith(frame, "review--docs--intro"), "review--docs--intro")).toBe(
+        columnOf(lineWith(frame, "review--docs "), "review--docs") + 2,
+      )
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("folding the outer slot takes everything under it away and keeps what was opened inside", async () => {
+    const shell = await mountDag({ server: composeServer({ [WF]: composedNested() }), height: 40 })
+    try {
+      await openLoaded(shell)
+      await press(shell, " ")
+      for (let step = 0; step < 3; step++) await press(shell, "down")
+      await press(shell, " ")
+      expect(await shell.frame()).toContain("review--docs--intro")
+      // Back up to the outer slot and fold it.
+      for (let step = 0; step < 3; step++) await press(shell, "up")
+      expect(lineWith(await shell.frame(), "›")).toContain("review ")
+      await press(shell, " ")
+      let frame = await shell.frame()
+      for (const hidden of ["review--api", "review--docs", "review--docs--intro"]) expect(frame).not.toContain(hidden)
+      // Opened again, the nested slot is open as it was left.
+      await press(shell, " ")
+      frame = await shell.frame()
+      expect(lineWith(frame, "review--docs ")).toContain("▾")
+      expect(frame).toContain("review--docs--refs")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("the fold is kept when the panel is built again, and for each workflow on its own", async () => {
+    const server = dagServer({
+      summaries: {
+        [ROOT]: [summaryOf(WF, "代码审查", "running"), summaryOf(WF2, "第二次审查", "completed")],
+      },
+      tables: { [WF]: composed(), [WF2]: composed(WF2) },
+    })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      await press(shell, " ")
+      await press(shell, "down")
+      // The template list above comes and goes; the panel under it is made again.
+      await press(shell, "i")
+      expect(topID(shell)).toBe("dag-request")
+      shell.app.mockInput.pressEscape()
+      await waitFor(() => topID(shell) === "dag")
+      await shell.settle()
+      let frame = await shell.frame()
+      expect(lineWith(frame, "review--api")).toContain("✓")
+      expect(lineWith(frame, "›")).toContain("review--api")
+
+      // The other workflow has its own: its slot is folded.
+      await press(shell, "right")
+      await waitFor(() => shell.sync().dag.nodes(WF2) !== undefined, 10_000)
+      await shell.settle()
+      frame = await shell.frame()
+      expect(frame).toContain("（3 个子节点）")
+      expect(frame).not.toContain("review--api")
+
+      await press(shell, "left")
+      frame = await shell.frame()
+      expect(lineWith(frame, "review ")).toContain("▾")
+      expect(frame).toContain("review--api")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("enter on a slot goes where it always did: to its session, or to its details", async () => {
+    const withSession = composed().map((node) =>
+      node.id === "review" ? { ...node, child_session_id: NODE_SESSION } : node,
+    )
+    const shell = await mountDag({ server: composeServer({ [WF]: withSession }) })
+    try {
+      await openLoaded(shell)
+      expect(lineWith(await shell.frame(), "›")).toContain("review ")
+      expect(await shell.frame()).toContain("进入子 agent")
+      await press(shell, "return")
+      await waitFor(() => depth(shell) === 0)
+      expect(JSON.parse(JSON.stringify(shell.route().data))).toEqual({ type: "session", sessionID: NODE_SESSION })
+    } finally {
+      await shell.dispose()
+    }
+
+    const second = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(second)
+      await press(second, "return")
+      const frame = await second.frame()
+      expect(frame).toContain("输出：")
+      // The details are open and the slot is still folded.
+      expect(lineWith(frame, "review ")).toContain("▸")
+      expect(frame).not.toContain("review--api")
+    } finally {
+      await second.dispose()
+    }
+  })
+
+  test("o opens the details of the slot like those of any node, and the fold is left as it is", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      await press(shell, "o")
+      const frame = await shell.frame()
+      expect(frame).toContain("输出：")
+      expect(lineWith(frame, "review ")).toContain("▸")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("space on a node that is not a slot does nothing", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      await press(shell, "up")
+      expect(lineWith(await shell.frame(), "›")).toContain("review--split")
+      const before = await shell.frame()
+      await press(shell, " ")
+      expect(await shell.frame()).toBe(before)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a workflow without marks has no slot: no mark in front of a name, and space does nothing", async () => {
+    const shell = await mountDag()
+    try {
+      await openLoaded(shell)
+      const before = await shell.frame()
+      expect(before).not.toMatch(/[▸▾]/)
+      expect(before).not.toContain("space")
+      await press(shell, " ")
+      expect(await shell.frame()).toBe(before)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a mark that names a node that is not there leaves the node where it was", async () => {
+    const server = dagServer({
+      summaries: { [ROOT]: [summaryOf(WF, "旧的展开", "running", { nodeCount: 3 })] },
+      tables: {
+        [WF]: [
+          wire("first", "completed", { started_at: NOW - 60_000, completed_at: NOW - 30_000 }),
+          wire("orphan", "running", { depends_on: ["first"], expanded_from: "slot-that-was-replaced" }),
+          wire("last", "pending", { depends_on: ["orphan"], expanded_from: "last" }),
+        ],
+      },
+    })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      for (const name of ["first", "orphan", "last"]) expect(frame).toContain(name)
+      expect(lineWith(frame, "orphan")).toContain("第 2 波")
+      expect(lineWith(frame, "last")).toContain("第 3 波")
+      expect(frame).not.toMatch(/[▸▾]/)
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("the hint for the key is there while a slot is selected, and nowhere else, in each language", async () => {
+    const shell = await mountDag({ server: composeServer(), width: 120, height: 40 })
+    try {
+      await openLoaded(shell)
+      const hints = (frame: string) => rowsOf(frame).find((line) => line.includes("escape"))
+      expect(hints(await shell.frame())).toContain("space 展开子节点")
+      await press(shell, " ")
+      expect(hints(await shell.frame())).toContain("space 折叠子节点")
+      await press(shell, "down")
+      expect(hints(await shell.frame())).not.toContain("space")
+      await press(shell, "up")
+      setLanguage("en")
+      await shell.settle()
+      expect(hints(await shell.frame())).toContain("space Fold")
+      await press(shell, " ")
+      expect(hints(await shell.frame())).toContain("space Unfold")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("on a slot row the fold key's hint comes before the other hints, and the close hint stays", async () => {
+    // Where the room runs out, the details key's hint goes first and the request key's next.
+    for (const width of [80, 100, 119, 120, 140]) {
+      const shell = await mountDag({ server: composeServer(), width, height: 30 })
+      try {
+        await openLoaded(shell)
+        const hints = rowsOf(await shell.frame()).find((line) => line.includes("escape")) ?? ""
+        expect(hints).toContain("space 展开子节点")
+        expect(hints).toContain("escape 关闭")
+        expect(hints).not.toContain("详情")
+        expect(hints.includes("请主 agent 处理")).toBe(width >= 120)
+        await press(shell, "up")
+        const plain = rowsOf(await shell.frame()).find((line) => line.includes("escape")) ?? ""
+        expect(plain).toContain("请主 agent 处理")
+        expect(plain.includes("详情")).toBe(width >= 100)
+        expect(plain).not.toContain("space")
+      } finally {
+        await shell.dispose()
+      }
+    }
+  })
+
+  test("with a second workflow in the tabs the hint row still ends in the way out, in each language", async () => {
+    const server = dagServer({
+      summaries: { [ROOT]: [summaryOf(WF, "代码审查", "running"), summaryOf(WF2, "第二次审查", "completed")] },
+      tables: { [WF]: composed(), [WF2]: [wire("docs", "completed", {}, WF2)] },
+    })
+    for (const language of ["zh-CN", "en"] as const) {
+      for (const width of [100, 110, 120]) {
+        const shell = await mountDag({ server, width, height: 30, language })
+        try {
+          await openLoaded(shell)
+          const hints = rowsOf(await shell.frame()).find((line) => line.includes("escape")) ?? ""
+          expect(hints).toContain(language === "en" ? "space Unfold" : "space 展开子节点")
+          expect(hints).toContain(language === "en" ? "escape Close" : "escape 关闭")
+          expect(hints).not.toContain("…")
+        } finally {
+          await shell.dispose()
+        }
+      }
+    }
+  })
+
+  test("the bar and the counts hold every node, folded or not", async () => {
+    const shell = await mountDag({ server: composeServer() })
+    try {
+      await openLoaded(shell)
+      const bar = (frame: string) => rowsOf(frame).find((line) => /^│ [━─╌ ]+│$/.test(line))
+      const folded = await shell.frame()
+      // Five cells to a node, seven nodes: the folded children are in it.
+      expect(bar(folded)?.match(/[━─╌]/g)?.length).toBe(35)
+      expect(folded).toContain("3/7 完成 · 第 3/5 波")
+      await press(shell, " ")
+      const open = await shell.frame()
+      expect(bar(open)).toBe(bar(folded))
+      expect(open).toContain("3/7 完成 · 第 3/5 波")
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("the coverage block still names a failed child that is folded away", async () => {
+    const server = dagServer({
+      summaries: {
+        [ROOT]: [summaryOf(WF, "代码审查", "running", { nodeCount: 7, failedNodes: 1, coverageCount: 1 })],
+      },
+      tables: { [WF]: composed() },
+    })
+    const shell = await mountDag({ server })
+    try {
+      await openLoaded(shell)
+      const frame = await shell.frame()
+      expect(frame).toContain("review--core")
+      expect(frame).toContain("审查超时")
     } finally {
       await shell.dispose()
     }
@@ -907,7 +1511,13 @@ describe("moving around the panel", () => {
       await shell.registry().run("dag.open", { args: "", origin: "palette" })
       await waitFor(() => topID(shell) === "dag", 10_000)
       await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
-      expect(await shell.frame()).toContain("依赖升级验证")
+      // The node table can be loaded before the panel has drawn it; on a slow runner read until it shows (#1397).
+      let frame = await shell.frame()
+      for (const start = Date.now(); !frame.includes("依赖升级验证") && Date.now() - start < 10_000; ) {
+        await Bun.sleep(20)
+        frame = await shell.frame()
+      }
+      expect(frame).toContain("依赖升级验证")
     } finally {
       await shell.dispose()
     }
@@ -1114,7 +1724,81 @@ describe("what the panel costs", () => {
   })
 })
 
+describe("what folding costs", () => {
+  test("folding and unfolding register no keymap layer: the key is the template's, bound when it mounted", async () => {
+    const shell = await mountDag({ server: composeServer({ [WF]: composedNested() }), height: 40 })
+    const counters = createCounters(shell.app.renderer, shell.keymap())
+    try {
+      await openLoaded(shell)
+      const settled = counters.snapshot()
+      // Open, walk onto a nested slot, open that, walk off and fold, in a row.
+      for (const key of [" ", "down", "down", "down", " ", "up", "up", "up", " ", " ", "down", " "]) {
+        await press(shell, key)
+      }
+      expect(counters.delta(settled).registerLayer).toBe(0)
+    } finally {
+      counters.dispose()
+      await shell.dispose()
+    }
+  })
+
+  test("it writes nothing into the message and part stores", async () => {
+    const shell = await mountDag({ server: composeServer({ [WF]: composedNested() }), height: 40 })
+    const probe = probeStoreWrites(shell.sync().data, ["message", "part"])
+    try {
+      await openLoaded(shell)
+      for (const key of [" ", "down", "down", "down", " ", "o", "up", " "]) await press(shell, key)
+      expect(probe.total()).toBe(0)
+    } finally {
+      probe.dispose()
+      await shell.dispose()
+    }
+  })
+
+  test("it asks the workflow for nothing: not a write, and not a read either", async () => {
+    const server = composeServer({ [WF]: composedNested() })
+    const shell = await mountDag({ server, height: 40 })
+    try {
+      await openLoaded(shell)
+      // Every key a user presses is reported as activity (`attention`), which is not about the workflow.
+      const dagRequests = () => shell.requested.filter((entry) => entry.includes("/dag"))
+      const before = dagRequests()
+      expect(before.length).toBeGreaterThan(0)
+      for (const key of [" ", "down", "down", "down", " ", "up", "up", "up", " ", " ", " "]) await press(shell, key)
+      expect(dagRequests()).toEqual(before)
+      expect(shell.writes()).toEqual([])
+      expect(server.reads).toEqual([WF])
+    } finally {
+      await shell.dispose()
+    }
+  })
+})
+
 describe("the panel is read-only", () => {
+  test("a compose workflow's slots can be opened, walked into and asked about, and the server is only read from", async () => {
+    const server = composeServer({ [WF]: composedNested() })
+    const shell = await mountDag({ server, height: 40 })
+    try {
+      await openLoaded(shell)
+      // Unfold, into a child, its details, back to the slot, fold; then the templates and one of them.
+      for (const key of [" ", "down", "return", "o", "up", " "]) await press(shell, key)
+      await press(shell, "i")
+      shell.app.mockInput.pressEscape()
+      await waitFor(() => depth(shell) === 1)
+      await press(shell, "i")
+      await press(shell, "return")
+      await waitFor(() => depth(shell) === 0)
+      await shell.settle()
+
+      expect(shell.writes()).toEqual([])
+      const dag = shell.requested.filter((entry) => entry.includes("/dag"))
+      expect(dag.length).toBeGreaterThan(0)
+      expect(dag.filter((entry) => !entry.startsWith("GET "))).toEqual([])
+    } finally {
+      await shell.dispose()
+    }
+  })
+
   test("after everything reachable has been done, the server was only read from", async () => {
     const server = dagServer({
       summaries: { [ROOT]: [summaryOf(WF, "依赖升级验证", "running"), summaryOf(WF2, "文档整理", "completed")] },
@@ -1123,7 +1807,7 @@ describe("the panel is read-only", () => {
     const shell = await mountDag({ server })
     try {
       await openLoaded(shell)
-      for (const key of ["down", "down", "up", "return", "o", "return", "right", "left"]) await press(shell, key)
+      for (const key of ["down", "down", "up", " ", "return", "o", "return", "right", "left"]) await press(shell, key)
       await press(shell, "i")
       shell.app.mockInput.pressEscape()
       await waitFor(() => depth(shell) === 1)
@@ -1148,6 +1832,26 @@ describe("the panel is read-only", () => {
       await waitFor(() => topID(shell) === "dag", 10_000)
       await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
       for (const key of ["down", "o", "return", "up"]) await press(shell, key)
+      expect(shell.writes()).toEqual([])
+    } finally {
+      await shell.dispose()
+    }
+  })
+
+  test("a sub-agent view folds and unfolds a slot without asking for anything either", async () => {
+    const server = composeServer()
+    // The workflow belongs to the root; the sub-agent view shows the root's.
+    const shell = await mountDag({ sessionID: CHILD, server })
+    try {
+      await shell.registry().run("dag.open", { args: "", origin: "palette" })
+      await waitFor(() => topID(shell) === "dag", 10_000)
+      await waitFor(() => shell.sync().dag.nodes(WF) !== undefined, 10_000)
+      await shell.settle()
+      const dagRequests = () => shell.requested.filter((entry) => entry.includes("/dag"))
+      const before = dagRequests()
+      for (const key of [" ", " ", " "]) await press(shell, key)
+      expect(await shell.frame()).toContain("review--api")
+      expect(dagRequests()).toEqual(before)
       expect(shell.writes()).toEqual([])
     } finally {
       await shell.dispose()
@@ -1224,8 +1928,75 @@ describe("how it looks", () => {
     expect(await look({ width: 100, height: 30, server })).toMatchSnapshot()
   })
 
+  async function lookAtCompose(
+    options: Parameters<typeof mountDag>[0],
+    keys: string[] = [],
+    tables: Record<string, DagNode[]> = { [WF]: composed() },
+  ) {
+    const shell = await mountDag({ server: composeServer(tables), ...options })
+    try {
+      await openLoaded(shell)
+      for (const key of keys) await press(shell, key)
+      return await shell.frame()
+    } finally {
+      await shell.dispose()
+    }
+  }
+
+  test("a compose expansion folded, 80 by 24, in Chinese", async () => {
+    expect(await lookAtCompose({ width: 80, height: 24 })).toMatchSnapshot()
+  })
+
+  test("a compose expansion folded, 120 by 40, in Chinese", async () => {
+    expect(await lookAtCompose({ width: 120, height: 40 })).toMatchSnapshot()
+  })
+
+  test("a compose expansion folded, 80 by 24, in English", async () => {
+    expect(await lookAtCompose({ width: 80, height: 24, language: "en" })).toMatchSnapshot()
+  })
+
+  test("a compose expansion unfolded, 80 by 24, in Chinese", async () => {
+    expect(await lookAtCompose({ width: 80, height: 24 }, [" "])).toMatchSnapshot()
+  })
+
+  test("a compose expansion unfolded, 120 by 40, in English", async () => {
+    expect(await lookAtCompose({ width: 120, height: 40, language: "en" }, [" "])).toMatchSnapshot()
+  })
+
+  test("a slot inside a slot, both unfolded, 120 by 40, in Chinese", async () => {
+    const frame = await lookAtCompose({ width: 120, height: 40 }, [" ", "down", "down", "down", " "], {
+      [WF]: composedNested(),
+    })
+    expect(frame).toMatchSnapshot()
+  })
+
   for (const language of ["zh-CN", "en"] as const) {
     for (const ambiguousWidth of [1, 2] as const) {
+      test(`a compose expansion is laid out no wider than 80 columns, folded and unfolded, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
+        // Wide characters in the names, the marks and the counts: what the rows are laid out with must hold under both widths.
+        const tables = {
+          [WF]: composedNested().map((node) =>
+            node.id.startsWith("review") ? { ...node, name: `审查任务 ${node.id.replace("review", "子")}` } : node,
+          ),
+        }
+        for (const keys of [[], [" "], [" ", "down", "down", "down", " "]]) {
+          const frame = await lookAtCompose({ width: 80, height: 24, language, ambiguousWidth }, keys, tables)
+          const lines = rowsOf(frame).filter((line) => line.startsWith("│") && line.endsWith("│"))
+          expect(lines.length).toBeGreaterThan(5)
+          for (const line of lines) {
+            const inner = line.slice(1, -1).trimEnd()
+            expect({ keys, line, fits: cellWidth(inner, ambiguousWidth) <= 80 - 3 }).toEqual({
+              keys,
+              line,
+              fits: true,
+            })
+          }
+          // Every hint row ends in the way out.
+          const hints = lines.find((line) => line.includes("escape")) ?? ""
+          expect(hints.includes("escape") || hints.includes("…")).toBe(true)
+        }
+      })
+
       test(`nothing is laid out wider than 80 columns, ${language}, ambiguous_width ${ambiguousWidth}`, async () => {
         const reason = "一条相当长的失败原因，用来检查说明行在窄终端下被截断而不是换行或溢出".repeat(2)
         const server = dagServer({

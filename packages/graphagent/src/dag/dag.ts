@@ -220,6 +220,19 @@ export interface NodeConfig {
    * model-writable node schema has the field. A replan can neither change nor
    * clear it (`ReplanDefinition.changedEngineOwnedFields`). */
   compose_subtree?: { root: string; depth: number }
+  /** #1158: the id of the expansion slot whose plan generated this node, which is what
+   * lets a client group an expansion's nodes under it (`NodeView.expanded_from`). It is
+   * on the nodes that carry `compose_subtree`: the children of the plan, the fallback
+   * worker, and a nested split node and slot, which name the slot of the plan that
+   * listed the item (the outer one). The children of a nested slot name the nested slot,
+   * the node that expanded them, and the join node a slot becomes keeps the mark the slot
+   * had. The author's own nodes, the block's split node and its top-level slot, carry
+   * none. Unlike `compose_subtree.root`, which only groups, this is a reference to a
+   * node of the graph: a recovery that renames the slot renames it on every node that
+   * names it, the ones it reuses included (`planRecovery`). Written by the expansion,
+   * never by an author; no model-writable node schema has the field. A replan can
+   * neither change nor clear it (`ReplanDefinition.changedEngineOwnedFields`). */
+  expanded_from?: string
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
   /** #946: run this writer-capable node in a fresh worktree of the workflow

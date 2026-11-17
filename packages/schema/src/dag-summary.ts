@@ -105,6 +105,10 @@ export const NodeView = Schema.Struct({
   status: Schema.String,
   required: Schema.Boolean,
   depends_on: Schema.Array(Schema.String),
+  // #1158: the id of the compose expansion slot whose plan generated this node (one of its workers, the fallback
+  // worker, or a nested split node or slot). Absent on every other node and on rows of an older server, so a client
+  // that does not know the field decodes exactly as before.
+  expanded_from: Schema.optional(Schema.String),
   model_id: Schema.optional(Schema.String),
   model_provider_id: Schema.optional(Schema.String),
   child_session_id: Schema.optional(Schema.String),

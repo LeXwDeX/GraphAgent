@@ -358,6 +358,31 @@ test("a call that cancels a task names the task it stops, not a run of its own",
   }
 })
 
+test("a streamed call whose arguments arrive after it mounted becomes the cancel row", async () => {
+  const started = task("target")
+  const streamed = task("cancel")
+  // The part is first published with no arguments, the way a streamed tool call starts.
+  streamed.state = { ...streamed.state, status: "running", input: {}, metadata: {} } as typeof streamed.state
+  const harness = await mount({ language: "en", tasks: [started, streamed] })
+  try {
+    await harness.waitForFrame((value) => value.includes("Explore Task — Scan target"), "the started task")
+    const cancel = {
+      ...streamed,
+      state: {
+        ...streamed.state,
+        input: { action: "cancel", task_id: childID("target") },
+        metadata: { parentSessionID: ROOT, sessionID: childID("target"), background: true, jobId: childID("target") },
+      },
+    }
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the event carries a tool part; the helper is typed for text parts.
+    harness.events.emit(partEvent(cancel as unknown as TextPart))
+    await harness.waitForFrame((value) => value.includes("cancel background task “Scan target”"), "the cancel row")
+    expect(harness.writes()).toEqual([])
+  } finally {
+    await harness.dispose()
+  }
+})
+
 test("a run's color and icon say how it stands", async () => {
   const harness = await mountRuns({ language: "en" })
   try {

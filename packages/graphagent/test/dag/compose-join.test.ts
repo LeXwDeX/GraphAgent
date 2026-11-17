@@ -335,6 +335,62 @@ describe("recovering a compose node", () => {
     expect(before?.prompt_template.inline).toContain('\n- "survey--code": ')
   })
 
+  it("points the children at the renamed join node: the one it reuses and the one it replaces", () => {
+    const nodes = expandedRoute(plan(["official", "researcher"], ["code", "explore"]))
+    const rows = terminated(nodes, {
+      "survey--split": "completed",
+      "survey--official": "completed",
+      "survey--code": "failed",
+    })
+    const recovered = planRecovery(config(nodes), rows, ["survey--code"], 2, 3)
+    const joinID = "survey__attempt_2_r2"
+    const byID = new Map(recovered.config.nodes.map((node) => [node.id, node]))
+    expect(byID.has(joinID)).toBe(true)
+    // The sibling is reused, so nothing about it changes but the name of the slot that generated it, which was renamed.
+    expect(recovered.reused).toContain("survey--official")
+    const official = nodes.find((node) => node.id === "survey--official")
+    if (!official) throw new Error("the route has no child for the item")
+    expect(official.expanded_from).toBe("survey")
+    expect(byID.get("survey--official")).toEqual({ ...official, expanded_from: joinID })
+    // The attempt that replaces a child keeps naming the slot, as it is now.
+    expect(byID.get("survey--code__attempt_2_r2")?.expanded_from).toBe(joinID)
+    // No node names a slot that is not in the graph, and the split node, which the author wrote, names none.
+    for (const node of recovered.config.nodes)
+      if (node.expanded_from !== undefined) expect(byID.has(node.expanded_from), node.id).toBe(true)
+    expect(byID.get("survey--split")?.expanded_from).toBeUndefined()
+    // The definition the recovery started from keeps naming the slot as it was written.
+    expect(nodes.find((node) => node.id === "survey--code")?.expanded_from).toBe("survey")
+  })
+
+  it("leaves the children as they are when the slot's join node is not recovered", () => {
+    const nodes = expandedRoute(plan(["official", "researcher"], ["code", "explore"]))
+    const rows = terminated(nodes, {
+      "survey--split": "completed",
+      "survey--official": "completed",
+      "survey--code": "completed",
+      survey: "completed",
+      report: "failed",
+    })
+    const recovered = planRecovery(config(nodes), rows, ["report"], 2, 3)
+    for (const id of ["survey--official", "survey--code"]) {
+      const before = nodes.find((node) => node.id === id)
+      expect(before?.expanded_from).toBe("survey")
+      expect(recovered.config.nodes.find((node) => node.id === id)).toBe(before)
+    }
+  })
+
+  it("points every child at the renamed join node when the split node is recovered", () => {
+    const nodes = expandedRoute(plan(["official", "researcher"], ["code", "explore"]))
+    const rows = terminated(nodes, { "survey--split": "failed" })
+    const recovered = planRecovery(config(nodes), rows, ["survey--split"], 2, 3)
+    const joinID = "survey__attempt_2_r2"
+    const children = recovered.config.nodes.filter((node) => node.compose_subtree !== undefined)
+    expect(children.map((node) => node.id).sort()).toEqual(
+      ["survey--code__attempt_2_r2", "survey--official__attempt_2_r2"].sort(),
+    )
+    for (const child of children) expect(child.expanded_from, child.id).toBe(joinID)
+  })
+
   it("points the join node at every recovered attempt when the split node is recovered", () => {
     const nodes = expandedRoute(plan(["official", "researcher"], ["code", "explore"]))
     const rows = terminated(nodes, { "survey--split": "failed" })
@@ -427,6 +483,13 @@ describe("recovering a compose node", () => {
     // The keys follow the record again, and nothing of the first recovery is left in them or in the prompt.
     expectInputsFollowRecord(joinNode)
     expect(joinNode?.prompt_template.inline).not.toContain("survey--code__attempt_2_r2")
+    // The children name the join node of the second recovery, not the first's: the sibling that was reused twice
+    // follows the slot's rename both times.
+    expect(joinNode?.id).toBe("survey__attempt_3_r3")
+    expect(second.config.nodes.find((node) => node.id === "survey--official")?.expanded_from).toBe(joinNode?.id)
+    expect(second.config.nodes.find((node) => node.id === "survey--code__attempt_3_r3")?.expanded_from).toBe(
+      joinNode?.id,
+    )
   })
 })
 
@@ -483,5 +546,36 @@ describe("what a replan may do to the marks of a compose node", () => {
     expect(ReplanDefinition.changedEngineOwnedFields(slot, { ...definition, join: record })).toEqual([])
     // A replacement that merely lacks the marker is no expansion.
     expect(ReplanDefinition.changedEngineOwnedFields(slot, definition)).toEqual(["expand"])
+  })
+
+  it("reports the generating slot of a node that a replacement drops or rewrites", () => {
+    const child = nodes.find((node) => node.id === "survey--official")
+    if (child?.expanded_from !== "survey") throw new Error("the child does not name the slot that generated it")
+    const { expanded_from: _from, ...withoutFrom } = child
+    expect(ReplanDefinition.changedEngineOwnedFields(child, withoutFrom)).toEqual(["expanded_from"])
+    expect(ReplanDefinition.changedEngineOwnedFields(child, { ...child, expanded_from: "elsewhere" })).toEqual([
+      "expanded_from",
+    ])
+    // Restating it as it is, or changing what is the author's to change, reports nothing.
+    expect(ReplanDefinition.changedEngineOwnedFields(child, structuredClone(child))).toEqual([])
+    expect(ReplanDefinition.changedEngineOwnedFields(child, { ...child, name: "a new name" })).toEqual([])
+    // It is a field an admitted node cannot change either.
+    expect(
+      ReplanDefinition.changedAdmittedNodeFields(child, withoutFrom, { allowTimeoutUpdate: true }),
+    ).toEqual(["expanded_from"])
+  })
+
+  it("lets the expansion turn a nested slot into its join node, which keeps the slot that generated it", () => {
+    const nested: NodeConfig = {
+      ...slot,
+      id: "survey--big",
+      compose_subtree: { root: "survey", depth: 2 },
+      expanded_from: "survey",
+    }
+    const { expand: _expand, ...definition } = nested
+    expect(ReplanDefinition.changedEngineOwnedFields(nested, { ...definition, join: record })).toEqual([])
+    // A replacement of the join node that forgot where the slot came from is not the expansion's.
+    const { expanded_from: _from, ...forgotten } = definition
+    expect(ReplanDefinition.changedEngineOwnedFields(nested, { ...forgotten, join: record })).toEqual(["expanded_from"])
   })
 })

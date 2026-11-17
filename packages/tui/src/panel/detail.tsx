@@ -41,6 +41,11 @@ export interface DetailRow<T = unknown> {
   note?: string
   /** Wrapped text revealed below the row while it is selected. */
   body?: string
+  /**
+   * Space on the row calls `onToggle` although it has no check lead, as for a fold; the text is what the hint says the
+   * key does while the row is selected. A row without it, and without a check lead, leaves space unanswered.
+   */
+  toggleLabel?: string
 }
 
 export interface DetailPanelProps<T = unknown> {
@@ -138,6 +143,10 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
   function toggle() {
     const row = selectedRow()
     if (!row || !props.onToggle) return
+    if (row.toggleLabel !== undefined) {
+      props.onToggle(row)
+      return
+    }
     const lead = checkLead(row.lead)
     if (!lead || lead.disabled) return
     props.onToggle(row)
@@ -224,8 +233,9 @@ export function DetailPanel<T = unknown>(props: DetailPanelProps<T>) {
         result.push({ key: "panel.next", label: t("panel.hint.next") })
       }
       if (tabs().length > 1) result.push({ key: "panel.tab.next", label: t("panel.hint.tab") })
-      if (props.onToggle && checkLead(selectedRow()?.lead)) {
-        result.push({ key: "panel.toggle", label: t("panel.hint.toggle") })
+      const row = selectedRow()
+      if (props.onToggle && row && (checkLead(row.lead) || row.toggleLabel !== undefined)) {
+        result.push({ key: "panel.toggle", label: row.toggleLabel ?? t("panel.hint.toggle") })
       }
       if (props.onActivate) result.push({ key: "panel.submit", label: props.activateLabel ?? t("panel.hint.activate") })
     }

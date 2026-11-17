@@ -539,6 +539,34 @@ describe("the job of a background run", () => {
     }
   })
 
+  test("a snapshot of a resumed task does not give the new run the old run's result", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const messages: Loaded = {
+      [ROOT]: [
+        { info: message("msg_result_1", "user", 20), parts: [resultPart(1)] },
+        // The same child resumed after its result (ended at 150): the newest Task part started at 500.
+        {
+          info: message("msg_tasks", "assistant", 30),
+          parts: [taskPart(1, { id: "prt_task_1_again", state: { time: { start: 500, end: 501 } } })],
+        },
+      ],
+    }
+    const view = await open(tmp.path, { messages, states: { ses_bg1: { value: "running", phase: "running" } } })
+    const { sync } = view
+
+    try {
+      await sync.session.sync(ROOT)
+      expect(sync.data.taskIndex.ses_bg1).toMatchObject({ partID: "prt_task_1_again", startedAt: 500 })
+      expect(sync.data.taskIndex.ses_bg1).not.toHaveProperty("result")
+      // With no result the run's job is asked about.
+      await advanceUntil(view.sdk, () => view.calls.length === 1)
+      expect(view.calls[0]).toEqual([{ domain: "job", id: "ses_bg1" }])
+    } finally {
+      view.close()
+    }
+  })
+
   test("a resumed task starts a new run: the result of the old run is dropped and its job asked about", async () => {
     await using tmp = await tmpdir()
     await Bun.write(`${tmp.path}/kv.json`, "{}")

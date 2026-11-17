@@ -447,12 +447,14 @@ export function isReviewWorker(workerType: string) {
   return workerType === "review" || workerType.startsWith("review-")
 }
 
-const READ_ONLY_WORKERS = new Set(["auditor", "researcher", "surveyor", "mapper"])
+const READ_ONLY_WORKERS = new Set(["auditor", "researcher", "architect", "surveyor", "mapper"])
 
 /** The `researcher` and the built-in composers `surveyor` and `mapper` (#1158) have no
  * shell and no file tool, so, like the auditor, they can never write the workspace.
- * `explore` and `architect` keep a shell and are not listed: they are read-only
- * profiles that still run with writes allowed. */
+ * The `architect` keeps a shell like the auditor but has no file tool and only
+ * proposes a design, so it also denies writes by default; a plan block may then
+ * name it under the strict gate (#1158 PR6). `explore` keeps a shell and is not
+ * listed: it is a read-only profile that still runs with writes allowed. */
 export function isReadOnlyWorker(workerType: string) {
   return isReviewWorker(workerType) || READ_ONLY_WORKERS.has(workerType)
 }

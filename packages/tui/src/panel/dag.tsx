@@ -13,6 +13,7 @@ import { useSync } from "../context/sync"
 import { useTheme } from "../context/theme"
 import { useTicker } from "../context/ticker-context"
 import { layoutDagBar } from "../dag/bar"
+import { dagFold, type DagFoldRow } from "../dag/fold"
 import { dagCoverageEntries, dagModeLine, dagQualityText, dagUsage, type DagModePiece } from "../dag/mode"
 import {
   DAG_STATE_STYLE,
@@ -78,6 +79,9 @@ export interface DagPanelState {
   /** Nodes whose details are open, as `nodeKey`s. */
   readonly expanded: Accessor<ReadonlySet<string>>
   toggleExpanded(key: string): void
+  /** Expansion slots whose children are shown, as the `nodeKey`s of the slot: every slot starts folded. */
+  readonly unfolded: Accessor<ReadonlySet<string>>
+  toggleUnfolded(key: string): void
   /** Outputs read on demand, by `nodeKey`: a node's output is not in its table row. */
   readonly outputs: Accessor<Readonly<Record<string, NodeOutput>>>
   setOutput(key: string, output: NodeOutput): void
@@ -94,6 +98,7 @@ export function createDagPanelState(): DagPanelState {
   const [workflow, setWorkflow] = createSignal<string>()
   const [node, setNode] = createSignal<string>()
   const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set())
+  const [unfolded, setUnfolded] = createSignal<ReadonlySet<string>>(new Set())
   const [outputs, setOutputs] = createSignal<Readonly<Record<string, NodeOutput>>>({})
   return {
     workflow,
@@ -103,6 +108,13 @@ export function createDagPanelState(): DagPanelState {
     expanded,
     toggleExpanded: (key) =>
       setExpanded((current) => {
+        const next = new Set(current)
+        if (!next.delete(key)) next.add(key)
+        return next
+      }),
+    unfolded,
+    toggleUnfolded: (key) =>
+      setUnfolded((current) => {
         const next = new Set(current)
         if (!next.delete(key)) next.add(key)
         return next
@@ -141,6 +153,9 @@ const ACTIVE = new Set(["running", "stepping", "paused"])
 
 /** Width of the longest tab label before it is cut. */
 const TAB_LABEL_CELLS = 16
+
+/** From this width a slot row's hint row has room for the request key's hint next to the fold key's, tab key's included. */
+const SLOT_REQUEST_HINT_WIDTH = 120
 
 /** Coverage entries listed before the rest are only counted: the block is part of the summary and the panel is short. */
 const COVERAGE_ENTRIES = 4
@@ -297,6 +312,18 @@ export function DagPanel(props: { state?: DagPanelState }) {
     const current = view()
     return current ? [...current.waves.flat(), ...current.unplaced] : []
   })
+  /**
+   * The nodes an expansion generated, folded under the slot that generated them; the slots the user opened show
+   * theirs. What the rows draw. The bar, the counts and `nodeList` still hold every node.
+   */
+  const fold = createMemo(() => {
+    const current = view()
+    if (!current) return undefined
+    const prefix = `${current.summary.id}\u0000`
+    const open = new Set<string>()
+    for (const key of state.unfolded()) if (key.startsWith(prefix)) open.add(key.slice(prefix.length))
+    return dagFold(current.waves, current.unplaced, open)
+  })
   const reasons = createMemo(() => dagUnplacedReasons(view()?.unplaced ?? []))
   const ticking = createMemo(() => {
     const current = view()
@@ -374,16 +401,23 @@ export function DagPanel(props: { state?: DagPanelState }) {
   // ── selection ─────────────────────────────────────────────────────────────────────────────────────────
   const selectedID = createMemo(() => {
     const list = nodeList()
+    // A node folded away is stood for by the nearest slot above it that is on show.
+    const shown = (id: string) => fold()?.hidden.get(id) ?? id
     const picked = state.node()
-    if (picked !== undefined && list.some((node) => node.id === picked)) return picked
+    if (picked !== undefined && list.some((node) => node.id === picked)) return shown(picked)
     // Start on what needs a look: a failed node, else a running one, else the first.
     const startOn =
       list.find((node) => dagDisplayState(node.status, node.error_class) === "failed") ??
       list.find((node) => dagDisplayState(node.status, node.error_class) === "running") ??
       list[0]
-    return startOn?.id
+    return startOn === undefined ? undefined : shown(startOn.id)
   })
   const selectedNode = createMemo(() => nodeList().find((node) => node.id === selectedID()))
+  /** The selected row is an expansion slot: its children can be folded and unfolded. */
+  const selectedSlot = createMemo(() => {
+    const entry = fold()?.rows.find((each) => each.node.id === selectedID())
+    return entry !== undefined && entry.children > 0
+  })
 
   function switchWorkflow(id: string) {
     const root = rootID()
@@ -532,6 +566,16 @@ export function DagPanel(props: { state?: DagPanelState }) {
     toggleDetail()
   }
 
+  /** Space on a slot row: show its children, or fold them away again. A view change only; nothing is asked of anyone. */
+  function toggleFold(row: DetailRow<DagNodeRow>) {
+    const shown = active()
+    const entry = fold()?.rows.find((each) => each.node.id === row.id)
+    if (!shown || !entry || entry.children === 0) return
+    // The slot is the selection from here on: unfolding must not hand it back to a node it had hidden.
+    state.setNode(row.id)
+    state.toggleUnfolded(nodeKey(shown.summary.id, row.id))
+  }
+
   function openRequests() {
     const shown = active()
     if (!shown) return
@@ -550,14 +594,20 @@ export function DagPanel(props: { state?: DagPanelState }) {
 
   const rows = createMemo<DetailRow<DagNodeRow>[]>(() => {
     const current = view()
-    if (!current) return []
+    const folded = fold()
+    if (!current || !folded) return []
     const workflowID = current.summary.id
     const symbols = symbolCells()
     const aw = ambiguousWidth()
+    // Room for a fold mark in front of every name, once the workflow has a slot to put one on.
+    const marked = folded.rows.some((entry) => entry.children > 0)
     // `note` and `body` are read when a row is selected or opened, and follow the clock and the output as they
     // change, so the rows are not rebuilt every second.
-    const rowFor = (node: DagNodeRow, label: string, wave: number | undefined): DetailRow<DagNodeRow> => {
+    const rowFor = (entry: DagFoldRow<DagNodeRow>, label: string): DetailRow<DagNodeRow> => {
+      const node = entry.node
       const style = dagStateStyle(node.status, node.error_class)
+      const slot = entry.children > 0
+      const mark = marked ? (slot ? (entry.unfolded ? "▾ " : "▸ ") : "  ") : ""
       return {
         id: node.id,
         cells: [
@@ -565,14 +615,24 @@ export function DagPanel(props: { state?: DagPanelState }) {
           <text flexShrink={0} fg={theme[style.token]} wrapMode="none">
             {style.glyph + " ".repeat(symbols + 1 - cellWidth(style.glyph, aw))}
           </text>,
-          remoteLine(node.name),
+          // Two cells a level: a child sits one step in from the slot it is under.
+          "  ".repeat(entry.depth) + mark + remoteLine(node.name),
           <text flexShrink={0} wrapMode="none">
             {spanOf(node)}
           </text>,
+          // Direct children, not everything below: what is one step down is what unfolding shows.
+          ...(slot
+            ? [
+                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">
+                  {`  ${t(entry.children === 1 ? "dagmode.panel.fold.child" : "dagmode.panel.fold.children", { n: entry.children })}`}
+                </text>,
+              ]
+            : []),
         ],
         value: node,
+        toggleLabel: slot ? t(entry.unfolded ? "dagmode.panel.hint.fold" : "dagmode.panel.hint.unfold") : undefined,
         get note() {
-          return noteOf(node, wave)
+          return noteOf(node, entry.wave)
         },
         get body() {
           return detailOf(node, workflowID)
@@ -580,23 +640,31 @@ export function DagPanel(props: { state?: DagPanelState }) {
       }
     }
     const result: DetailRow<DagNodeRow>[] = []
-    for (const [index, wave] of current.waves.entries()) {
-      for (const [at, node] of wave.entries()) {
-        result.push(rowFor(node, at === 0 ? t("dagmode.panel.wave", { n: index + 1 }) : "│", index))
+    const labelled = new Set<number>()
+    let headed = false
+    for (const entry of folded.rows) {
+      if (entry.depth === 0 && entry.wave === undefined && !headed && current.unplaced.length > 0) {
+        headed = true
+        result.push({
+          id: "section:unplaced",
+          // Not a string cell: it would widen the wave column for every row.
+          cells: [
+            <text fg={theme.warning} wrapMode="none">
+              {t("dagmode.panel.unplaced", { n: current.unplaced.length })}
+            </text>,
+          ],
+          selectable: false,
+        })
       }
-    }
-    if (current.unplaced.length > 0) {
-      result.push({
-        id: "section:unplaced",
-        // Not a string cell: it would widen the wave column for every row.
-        cells: [
-          <text fg={theme.warning} wrapMode="none">
-            {t("dagmode.panel.unplaced", { n: current.unplaced.length })}
-          </text>,
-        ],
-        selectable: false,
-      })
-      for (const node of current.unplaced) result.push(rowFor(node, "!", undefined))
+      // The first row of a wave carries its number and the rest of its nodes a bar; a node folded under a slot is in
+      // none of them, so it carries neither.
+      let label = ""
+      if (entry.depth === 0 && entry.wave === undefined) label = "!"
+      else if (entry.depth === 0 && entry.wave !== undefined) {
+        label = labelled.has(entry.wave) ? "│" : t("dagmode.panel.wave", { n: entry.wave + 1 })
+        labelled.add(entry.wave)
+      }
+      result.push(rowFor(entry, label))
     }
     return result
   })
@@ -775,13 +843,20 @@ export function DagPanel(props: { state?: DagPanelState }) {
   }))
 
   // On a narrow terminal the hint row is cut at its end, where the close hint sits: the details key, which
-  // `enter` also reaches on a node without a session, gives way first.
+  // `enter` also reaches on a node without a session, gives way first. A slot row adds the fold key's hint (the
+  // row's `toggleLabel`, which the template puts before `enter`'s), and that one is worth more there than the others:
+  // the details key's hint goes, and the request key's too where the row would not hold it (with several workflows
+  // the tab key's hint is in it as well), so that the row still ends in the close hint.
   const hints = createMemo<PanelHint[]>(() => [
-    { key: "dag.panel.request", label: t("dagmode.panel.hint.request"), when: () => active() !== undefined },
+    {
+      key: "dag.panel.request",
+      label: t("dagmode.panel.hint.request"),
+      when: () => active() !== undefined && !(selectedSlot() && dimensions().width < SLOT_REQUEST_HINT_WIDTH),
+    },
     {
       key: "dag.panel.detail",
       label: t("dagmode.panel.hint.detail"),
-      when: () => selectedNode() !== undefined && dimensions().width >= PANEL_NARROW_WIDTH,
+      when: () => selectedNode() !== undefined && dimensions().width >= PANEL_NARROW_WIDTH && !selectedSlot(),
     },
   ])
 
@@ -797,6 +872,7 @@ export function DagPanel(props: { state?: DagPanelState }) {
       selected={selectedID()}
       onSelect={(row) => state.setNode(row.id)}
       onActivate={selectedNode() ? activate : undefined}
+      onToggle={toggleFold}
       activateLabel={selectedNode()?.child_session_id ? t("dagmode.panel.hint.enter") : t("dagmode.panel.hint.expand")}
       body={emptyBody()}
       hints={hints()}
