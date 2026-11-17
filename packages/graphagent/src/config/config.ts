@@ -66,7 +66,18 @@ const CONFIG_SCHEMA_URL = "https://raw.githubusercontent.com/LeXwDeX/GraphAgent/
 // The warning is deduplicated per process because every directory instance
 // re-reads the same project files. `permission` (#1324) is the tier of unattended
 // permissions: a shared project file must not loosen or tighten it for its user.
-const PROJECT_SCOPED_DAG_KEYS = ["mode", "concurrency", "max_total_nodes", "budget", "safety", "permission"] as const
+// `compose` (#1158) holds the composer expansion limits; like `max_total_nodes` they bound
+// what a workflow may spend, so only the user sets them. The whole section is stripped and
+// reported once as `dag.compose`, the way `budget` and `safety` are.
+const PROJECT_SCOPED_DAG_KEYS = [
+  "mode",
+  "concurrency",
+  "max_total_nodes",
+  "compose",
+  "budget",
+  "safety",
+  "permission",
+] as const
 const warnedProjectDagKeys = new Set<string>()
 
 // Project settings are not the home of hook or MCP definitions; those have

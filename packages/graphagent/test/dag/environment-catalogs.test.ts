@@ -4,6 +4,7 @@
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import type { Agent } from "@/agent/agent"
+import { DagCompose } from "@/dag/compose"
 import { DagEnvironmentCatalogs } from "@/dag/environment-catalogs"
 import { Permission } from "@/permission"
 import { Provider } from "@/provider/provider"
@@ -16,11 +17,12 @@ const readOnly = Permission.merge(
   Permission.fromConfig({ "*": "deny", read: "allow", grep: "allow", glob: "allow", bash: "allow" }),
 )
 
-const info = (name: string, permission: Agent.Info["permission"]): Agent.Info => ({
+const info = (name: string, permission: Agent.Info["permission"], contract?: Agent.Info["contract"]): Agent.Info => ({
   name,
   mode: "subagent",
   permission,
   options: {},
+  ...(contract ? { contract } : {}),
 })
 
 const catalog: Agent.Info[] = [
@@ -28,10 +30,20 @@ const catalog: Agent.Info[] = [
   info("general", Permission.merge(open, Permission.fromConfig({ todowrite: "deny" }))),
   // plan keeps an edit allow-list for its plan file and is a read-only profile.
   info("plan", Permission.merge(open, Permission.fromConfig({ edit: { "*": "deny", ".agents/plans/*.md": "allow" } }))),
-  info("explore", readOnly),
+  info("explore", readOnly, { visibility: "public", output: { artifact: "code_findings", task: false } }),
   info("auditor", Permission.merge(readOnly, Permission.fromConfig({ edit: "deny" }))),
   // A read-only agent that a user rule re-opened: a blanket deny, then `edit: allow`.
-  info("reopened", Permission.merge(readOnly, Permission.fromConfig({ edit: "allow" }))),
+  info("reopened", Permission.merge(readOnly, Permission.fromConfig({ edit: "allow" })), { visibility: "public" }),
+  // #1158: composers. `surveyor` can expand into the public read-only explore; `stuck` only into the re-opened agent.
+  info("surveyor", readOnly, {
+    role: "composer",
+    output: { artifact: "survey_report" },
+    compose: { pattern: "fan_out", dispatch: ["explore", "reopened"], fallback: "explore" },
+  }),
+  info("stuck", readOnly, {
+    role: "composer",
+    compose: { pattern: "fan_out", dispatch: ["reopened"], fallback: "reopened" },
+  }),
 ]
 
 // The loader only lists the catalog; every other method is out of scope here.
@@ -56,7 +68,7 @@ describe("DAG environment catalogs", () => {
     Effect.gen(function* () {
       const environment = yield* load
       expect([...(environment.worker_types ?? [])].toSorted()).toEqual(
-        ["auditor", "build", "explore", "general", "plan", "reopened"].toSorted(),
+        ["auditor", "build", "explore", "general", "plan", "reopened", "stuck", "surveyor"].toSorted(),
       )
     }),
   )
@@ -65,6 +77,22 @@ describe("DAG environment catalogs", () => {
     Effect.gen(function* () {
       const environment = yield* load
       expect([...(environment.writer_types ?? [])].toSorted()).toEqual(["build", "general", "reopened"])
+    }),
+  )
+
+  // #1158: the same load carries the composers, judged against this catalog.
+  it.effect("composers holds every composer, and says which of them can run", () =>
+    Effect.gen(function* () {
+      const composers = (yield* load).composers
+      expect([...(composers?.composers.keys() ?? [])].toSorted()).toEqual(["stuck", "surveyor"])
+      expect(composers?.agents.has("explore")).toBe(true)
+      const surveyor = composers ? DagCompose.resolve(composers, "surveyor") : undefined
+      expect(surveyor?.available).toBe(true)
+      // reopened writes now, so only explore is left to dispatch to.
+      if (surveyor?.available) expect(surveyor.composer.dispatch.map((worker) => worker.name)).toEqual(["explore"])
+      const stuck = composers ? DagCompose.resolve(composers, "stuck") : undefined
+      expect(stuck?.available).toBe(false)
+      if (stuck && !stuck.available) expect(stuck.reason).toContain('composer "stuck" is unavailable')
     }),
   )
 })

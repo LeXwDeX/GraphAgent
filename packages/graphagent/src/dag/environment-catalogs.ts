@@ -9,6 +9,7 @@ import { AgentContract } from "@/agent/contract"
 import type { Provider } from "@/provider/provider"
 import { DagSection } from "@/config/dag-section"
 import { Dag } from "./dag"
+import { DagCompose } from "./compose"
 import { DagConfig } from "./config"
 import { DagModel } from "./model"
 import { DagValidation } from "./validation"
@@ -63,6 +64,8 @@ export const makeCatalogLoader =
         writer_types: new Set(
           agentCatalog.filter((agent) => AgentContract.isWriterAgent(agent)).map((agent) => agent.name),
         ),
+        // #1158: which agents are composers, and whether the effective catalog lets each one run.
+        composers: DagCompose.catalogFrom(agentCatalog),
         resolveModel,
       }
     })

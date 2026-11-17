@@ -173,6 +173,14 @@ export interface NodeConfig {
   /** Direct dependency whose `packages` output fans this writer out at
    * admission; cleared by the expansion that replaces this node. */
   fan_out?: string
+  /** #1158: the expansion slot of a compose block or a composer node, naming its
+   * split node. A node that carries it is never to be spawned as authored: at
+   * admission the split node's plan replaces it with the expanded subtree and the
+   * join node under its id, as `fan_out` does for a writer. That admission step is
+   * the runtime half of #1158; until it exists the Workflow Authoring Check refuses
+   * to submit a graph with a slot (`DagCompose.gate`). Written by the compiler
+   * (`DagCompose`), never by an author; no model-writable node schema has the field. */
+  expand?: string
   /** #943: absolute path to a linked worktree where this node runs. */
   workspace?: string
   /** #946: run this writer-capable node in a fresh worktree of the workflow
@@ -208,7 +216,7 @@ export interface NodeConfig {
   aggregates_writers?: boolean
   /** Compiler-generated helper node: its worker was chosen by block
    * compilation, not by an authored worker override. */
-  generated_helper?: "aggregate" | "evidence"
+  generated_helper?: "aggregate" | "evidence" | "split"
   /** #1031 M6: arbitration-depth marker for a block-compiled review decision;
    * unset for hand-authored review nodes, whose outputs keep the pre-arbitration
    * shape (no dispositions). */
