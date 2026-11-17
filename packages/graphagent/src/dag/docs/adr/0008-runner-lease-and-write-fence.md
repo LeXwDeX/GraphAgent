@@ -809,6 +809,84 @@ database owns every workflow row it can read. It reads the lease table
   out within the TTL. The case the sweep exists for, nobody driving the row,
   still has no live lease.
 
+### Decision 3: the orphan's terminalization is one runner command (4b-C)
+
+The last write that 4b-A left unclassified, the bare `WorkflowStarted` of the orphan's
+terminalization, is fenced now. `Dag.failOrphan(dagID, reason)` does everything that row 8 has
+after the claim in one `transact`: the guard, `WorkflowStarted`, and `fail` (`WorkflowFailed`, then
+`NodeSkipped` for each node that is still `pending`).
+
+- It closes the first item of Amendment 1's "Decision 3: unfenced writes that bypass `Dag`
+  commands (left to PR4b)". The reconciler publishes nothing itself and is given no event bus any
+  more; `terminalizeOrphan` is the claim, `failOrphan` through the port of that claim, and the
+  give-back. It is a runner write like `fail` and is on the port: `RunnerPort.COMMANDS` has 13
+  commands now.
+- A refused token leaves neither event. Before, the `WorkflowStarted` went in ahead of the fence,
+  so a runner that lost its claim between the two writes left a `running` workflow with every node
+  `pending`. That is what a workflow that has just been started looks like, so whichever runner
+  adopts it drives its nodes. Nobody can observe that midpoint now, neither a reader nor the
+  first-wave handler (the notification of `WorkflowStarted` follows the commit that also failed the
+  workflow), and a crash between the two legs cannot leave it behind.
+- The guard admits `pending` and nothing else. `guardWorkflow` alone would let a `paused` workflow
+  through (paused -> running is legal), and no create sequence leaves one. Any other status is
+  refused with the transition rejection, and nothing is written.
+- The events do not change. There is no new type and no new version: `WorkflowStarted` is
+  projected from `pending` and `WorkflowFailed` from `running`, so a replay applies the same two
+  events in the same order. The reason is still "orphan pending workflow recovered at startup", on
+  the durable event, and the workflow is failed, not cancelled (an interrupted create).
+- The evaluation still runs in the workflow's flight (4b-A), so the first-wave call that the commit
+  raises waits for it and finds the workflow failed. It would find the same without waiting.
+- `dag.ts` grows by 29 lines, the command and its comments.
+
+### Decisions 2 and 5: `verify` leaves a workflow that ended to its terminal handler (4b-C)
+
+- `verify` answers as before: `false` when the lease row, read together with its workflow
+  (`DagLease.held`), does not name the entry's token. A workflow that is terminal or deleted has
+  no row for anybody, so that is its answer too.
+- What changed is what it does about `false`. It no longer evicts. It starts the reconciler's
+  judgement (the next section), and the truth table reads a workflow that ended as row 1, `noop`:
+  the entry stays for the `WorkflowTerminal` handler, which settles the worktree and wakes the
+  parent, as `refused` has left it since Amendment 1. When another holder shows, row 3 evicts it.
+  The spawn that asked ends either way: no child session, no node event.
+- This closes the departure that Amendment 1 recorded under "Decisions 2 and 5: no eviction on a
+  terminal workflow" ("PR2's `verify` still evicts on a terminal workflow; bringing the two into
+  line is left to PR4b"), and Amendment 2's repetition of it under "Decision 6, row 3: the order of
+  the reads, and the eviction's re-read". `verify`, the renewal, `refused` and the reconciler's
+  eviction now agree on a workflow that ended.
+
+### Decisions 2 and 6: a lost lease is news for the reconciler (4b-C)
+
+- `RunnerLease.make` takes an optional `reconcile`, and the loop wires it to
+  `reconciler.reconcileAfter`. A renewal that finds the row naming another token and a `verify`
+  that finds the lease not held each start `reconcile(dagID)`. Neither evicts directly any more.
+- The trailing entry, because a lost lease is news in the sense of 4b-A: an evaluation under way may
+  have read the lease row before the takeover, and joining it would hand back its older verdict.
+  Triggers for one workflow collapse in the reconciler's slots.
+- Each trigger is a fiber of the instance's scope that nobody waits for. The tick does not wait for
+  it (Amendment 2, "Decision 6: two fibers": a judgement that waits for the entry's lock or a user
+  hook must not hold a renewal back), and the spawn that asked returns `false` at once (the
+  eviction interrupts its fiber, which therefore cannot wait for it). A judgement that fails is
+  logged, and the next round, whose row 3 reads the same, looks again.
+- The verdict is `decide`'s. Another holder's row evicts through `RunnerLease.evict`, which reads
+  the row again under the entry's lock (`stillLost`), as the renewal's own eviction did; a workflow
+  that ended or was deleted is row 1, and its entry is left to its terminal or deletion handler. A
+  renewal that cannot read (a database failure) is still no lost lease.
+- Fallback. Without a `reconcile`, a lost lease is evicted on the spot, as in PR2 (from a fiber of
+  the scope too, so the tick does not wait for it). A graph that builds `RunnerLease` with no
+  reconciler, as the unit graphs of `dag-runner-lease.test.ts` do, has nobody to judge. The loop
+  always passes one.
+- `refused` is unchanged. It has its own judgement (`heldByAnother`) and its own de-duplication,
+  and it already leaves a workflow that ended alone.
+- Cost. When another process ended the workflow before this runner's renewal noticed the loss, the
+  entry stays here. The terminal event reaches the subscribers of the bus that published it, and
+  another process's bus is not this one, so no terminal handler runs in this process. The renewal
+  fails at every tick, each trigger ends in row 1, and the children that the entry started run to
+  their end (their writes are refused by the fence). Before 4b-C the first failed renewal evicted
+  it. When the workflow is still live at that renewal, which is the usual order (the other runner
+  took the lease and has not ended the workflow yet), the entry is evicted as before. A sweep that
+  settles such entries is not part of 4b-C.
+- `loop.ts` grows by 3 lines, the wiring.
+
 ### Decision 8: line counts of `loop.ts` (4b-A)
 
 - `loop.ts` loses 114 lines (2428 to 2314): the duplicate first-wave adoption, the
