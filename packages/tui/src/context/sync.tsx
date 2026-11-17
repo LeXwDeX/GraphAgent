@@ -642,11 +642,13 @@ export const {
      * A finished background run is reported in a message the server adds to the parent session, not on its Task part:
      * the result joins the link of the child it names. A child whose Task part was not seen yet gets a minimal link, so
      * the result is not lost; the part's own write fills the rest and keeps the result. A result that ended earlier
-     * than the one held does not replace it.
+     * than the one held, or before the linked run started (a resumed task), does not replace it.
      */
     function writeBackgroundResult(parentSessionID: string, childSessionID: string, result: BackgroundResult) {
       const held = store.taskIndex[childSessionID]
       if (held?.result && held.result.endedAt > result.endedAt) return
+      // A result that ended before the linked run started belongs to an earlier run of a resumed task.
+      if (held?.startedAt !== undefined && held.startedAt > result.endedAt) return
       if (held) {
         setStore("taskIndex", childSessionID, "result", reconcile(result))
         return

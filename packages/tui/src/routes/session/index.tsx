@@ -3118,7 +3118,15 @@ function TaskCancel(props: ToolProps) {
 }
 
 function Task(props: ToolProps) {
-  if (props.input.action === "cancel") return <TaskCancel {...props} />
+  // A streamed call mounts before its arguments arrive (`input: {}`): which row it is must follow them.
+  return (
+    <Show when={props.input.action === "cancel"} fallback={<TaskRun {...props} />}>
+      <TaskCancel {...props} />
+    </Show>
+  )
+}
+
+function TaskRun(props: ToolProps) {
   const { theme } = useTheme()
   const sync = useSync()
   const ctx = use()
