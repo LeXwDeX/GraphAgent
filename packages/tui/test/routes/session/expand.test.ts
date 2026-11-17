@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test"
 import { toggleExpand } from "../../../src/routes/session/expand"
-import { createSessionViewState, type Row, type ViewFlag } from "../../../src/routes/session/rows"
+import { createSessionViewState, delegationFoldID, type Row, type ViewFlag } from "../../../src/routes/session/rows"
 
 function row(partID: string | undefined, kind: Row["kind"] = "tool"): Row {
   return { key: partID ? `part:${partID}` : "notice:msg", messageID: "msg", partID, kind, revision: 0 }
@@ -113,6 +113,66 @@ test("reads what folds when the key is pressed, so a block that gains output bec
   table.bash = "expanded"
   expect(toggleExpand(rows, foldOf, view)).toBe("opened")
   expect(open(view, "bash")).toBe(true)
+})
+
+/** The task block of a sub-agent view: drawn from a user message, it folds under an id of its own. */
+function task(messageID = "msg_task"): Row {
+  const id = delegationFoldID(messageID)
+  return { key: id, messageID, partID: id, kind: "delegation", revision: 0 }
+}
+
+test("the task block of a sub-agent view opens and closes with the key, under its own fold id", () => {
+  const view = createSessionViewState()
+  const block = task()
+  const foldOf = (item: Row): ViewFlag | undefined => (item.kind === "delegation" ? "expanded" : undefined)
+  const rows = [block, row("answer", "text"), row("done", "meta")]
+
+  expect(block.partID).toBe(block.key)
+  expect(toggleExpand(rows, foldOf, view)).toBe("opened")
+  expect(view.get(block.partID, "expanded")).toBe(true)
+
+  // It is the only block that can fold, and it is open: the key closes it.
+  expect(toggleExpand(rows, foldOf, view)).toBe("closed")
+  expect(view.get(block.partID, "expanded")).toBe(false)
+  expect(view.state().size).toBe(1)
+})
+
+test("the task block is the first row, so the key reaches it after the blocks the agent drew", () => {
+  const view = createSessionViewState()
+  const block = task()
+  const foldOf = (item: Row): ViewFlag | undefined =>
+    item.kind === "delegation" || item.partID === "bash" ? "expanded" : undefined
+  const rows = [block, row("answer", "text"), row("bash")]
+
+  expect(toggleExpand(rows, foldOf, view)).toBe("opened")
+  expect([open(view, "bash"), open(view, block.partID!)]).toEqual([true, false])
+  expect(toggleExpand(rows, foldOf, view)).toBe("opened")
+  expect([open(view, "bash"), open(view, block.partID!)]).toEqual([true, true])
+  // Both are open: the most recent one closes, which is the block the agent drew.
+  expect(toggleExpand(rows, foldOf, view)).toBe("closed")
+  expect([open(view, "bash"), open(view, block.partID!)]).toEqual([false, true])
+})
+
+test("a click and the key share the flag of the task block, as they do for a tool output", () => {
+  const view = createSessionViewState()
+  const block = task()
+  const foldOf = () => "expanded" as const
+  const rows = [block]
+
+  // What the click handler of the block does.
+  view.set(block.partID, "expanded", !view.get(block.partID, "expanded"))
+  expect(open(view, block.partID!)).toBe(true)
+  expect(toggleExpand(rows, foldOf, view)).toBe("closed")
+  expect(open(view, block.partID!)).toBe(false)
+  expect(toggleExpand(rows, foldOf, view)).toBe("opened")
+  view.set(block.partID, "expanded", !view.get(block.partID, "expanded"))
+  expect(open(view, block.partID!)).toBe(false)
+})
+
+test("a task block with nothing to fold is passed over", () => {
+  const view = createSessionViewState()
+  expect(toggleExpand([task(), row("answer", "text")], () => undefined, view)).toBeUndefined()
+  expect(view.state().size).toBe(0)
 })
 
 test("stops at the first folded block, so a press reads a few parts and not the whole transcript", () => {

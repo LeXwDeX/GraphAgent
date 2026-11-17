@@ -7,6 +7,7 @@ import { renderUserTextPart } from "../../i18n/receipt"
 import { errorMessage } from "../../util/error"
 import {
   createTextFacts,
+  delegationFoldID,
   longestLine,
   rowRevision,
   settledPartText,
@@ -101,6 +102,12 @@ function sameMessageRows(previous: MessageRows | undefined, next: MessageRows) {
  */
 export function createRowTable(deps: RowTableDeps): Accessor<RowTable> {
   const units = mapArray(deps.messages, (message) => ({ message, rows: createMessageRows(message, deps) }))
+  // Whether the reader opened the task block. A memo of its own: the table follows the flag of this one row, and a
+  // flag of any other block leaves it alone.
+  const delegationOpen = createMemo(() => {
+    const delegation = deps.delegation?.()
+    return delegation ? deps.view.get(delegationFoldID(delegation.messageID), "expanded") : false
+  })
   let previous: ReadonlyMap<string, Row> = new Map()
 
   return createMemo(() => {
@@ -125,7 +132,8 @@ export function createRowTable(deps: RowTableDeps): Accessor<RowTable> {
       const built = rows()
       const delegated = delegation?.messageID === message.id
       for (const row of built.rows) {
-        const shown = delegated && row.kind === "user" ? delegationRow(row, delegation.description) : row
+        const shown =
+          delegated && row.kind === "user" ? delegationRow(row, delegation.description, delegationOpen()) : row
         list.push(shown)
         const count = built.chars.get(row.key)
         if (count !== undefined) chars.set(shown.key, count)
@@ -144,13 +152,18 @@ export function createRowTable(deps: RowTableDeps): Accessor<RowTable> {
   })
 }
 
-/** The row of the delegated user message, drawn as the task block: same message, its own key and revision. */
-function delegationRow(row: Row, description: string): Row {
+/**
+ * The row of the delegated user message, drawn as the task block: same message, its own key and revision. It folds
+ * under its key, which is its `partID` too, and being open changes its revision as it does for a tool row.
+ */
+function delegationRow(row: Row, description: string, expanded: boolean): Row {
+  const id = delegationFoldID(row.messageID)
   return {
-    key: `delegation:${row.messageID}`,
+    key: id,
     messageID: row.messageID,
+    partID: id,
     kind: "delegation",
-    revision: rowRevision(row.revision, description),
+    revision: rowRevision(row.revision, description, expanded),
   }
 }
 
