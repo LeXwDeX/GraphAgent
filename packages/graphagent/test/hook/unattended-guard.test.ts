@@ -41,6 +41,7 @@ import { isolatedGlobalConfig, writeHookLayers } from "../fixture/hook-layers"
 import { builtinEntry, mcpEntries, mcpResourceEntries } from "../fixture/tool-registry"
 import { ProviderTest } from "../fake/provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
+import { transactLayer } from "../dag/fixture/transact"
 
 /**
  * #1324 P4, end to end through the tool pipeline with the real hook engine. A
@@ -72,7 +73,7 @@ const events = EventV2.layer.pipe(Layer.provide(database))
 const bridge = EventV2Bridge.layer.pipe(Layer.provide(events))
 const projector = DagProjector.layer.pipe(Layer.provide(events), Layer.provide(database))
 const store = DagStore.layer.pipe(Layer.provide(database))
-const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store))
+const dag = Dag.layer.pipe(Layer.provide(bridge), Layer.provide(store), Layer.provide(transactLayer(database)))
 const configLayer = TestConfig.layer({
   dagGlobal: () => Effect.sync(() => (config.tier ? { permission: config.tier } : {})),
 })
