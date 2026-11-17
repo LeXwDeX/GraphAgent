@@ -241,11 +241,6 @@ routes/session/question.tsx	prop	Reject question	2
 routes/session/question.tsx	prop	Select answer
 routes/session/question.tsx	prop	Submit answers
 routes/session/question.tsx	prop	Toggle answer
-routes/session/subagent-footer.tsx	jsx-text	Next
-routes/session/subagent-footer.tsx	jsx-text	Parent
-routes/session/subagent-footer.tsx	jsx-text	Prev
-routes/session/subagent-footer.tsx	jsx-text	esc
-routes/session/subagent-footer.tsx	prop	Subagent
 shell/bottom-zone.tsx	prop	Close aside panel
 ui/toast.tsx	toast	An unknown error has occurred
 util/selection.ts	toast	Copied to clipboard

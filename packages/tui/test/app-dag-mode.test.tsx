@@ -73,7 +73,8 @@ test("the drawer has the DAG mode line while it is open, and none of it while it
 test("a sub-agent view has no drawer line, even with the mode on", async () => {
   const app = await runApp({ sessions, args: { sessionID: childID }, width: 120, height: 30 })
   try {
-    await waitForFrame(app.setup, (frame) => frame.includes("ctrl+p"), "the footer hints")
+    // The sub-agent footer is its own: the read-only notice and the keys of that view, not the command hints.
+    await waitForFrame(app.setup, (frame) => frame.includes("只读"), "the sub-agent footer")
     app.setup.mockInput.pressKey("b", { ctrl: true })
     expect(await settled(app.setup)).not.toContain("DAG 模式")
     expect(app.writes()).toEqual([])

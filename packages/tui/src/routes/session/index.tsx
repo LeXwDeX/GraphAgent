@@ -71,7 +71,6 @@ import { TimelinePanel } from "../../panel/timeline"
 import { useHookStatus } from "../../context/hook-status"
 import { useCommands } from "../../commands/context"
 import { useDrawer } from "../../shell/drawer"
-import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
@@ -1662,9 +1661,6 @@ export function Main() {
                   />
                 </Show>
               </scrollbox>
-              <Show when={session()?.parentID}>
-                <SubagentFooter />
-              </Show>
             </Show>
           </box>
         </box>

@@ -9,6 +9,8 @@ import { t } from "../i18n"
 import { useCommandShortcut } from "../keymap"
 import { cellWidth, truncateCells, type AmbiguousWidth } from "../ui/width"
 import { DagIndicator, dagIndicatorCompact, dagIndicatorText, type DagIndicatorState } from "./dag-indicator"
+import { LEFT_RESERVE } from "./footer-status"
+import { SUBAGENT_BACK_KEY, SUBAGENT_SWITCH_KEYS } from "./subagent-path"
 
 export type FooterHint = {
   key: string
@@ -18,6 +20,8 @@ export type FooterHint = {
 export type FooterKeyHints = {
   /** Shortcut that cycles the active agent, empty when unbound. */
   agent: string
+  /** Shortcut that toggles the drawer, empty when unbound. */
+  drawer: string
   /** Idle right-hand hints in display order. */
   hints: readonly FooterHint[]
 }
@@ -40,8 +44,26 @@ export function useFooterKeyHints(): () => FooterKeyHints {
     if (drawer()) hints.push({ key: drawer(), label: t("shell.footer.drawer") })
     if (expand()) hints.push({ key: expand(), label: t("shell.footer.expand") })
     if (help()) hints.push({ key: help(), label: t("shell.footer.help") })
-    return { agent: agent(), hints }
+    return { agent: agent(), drawer: drawer(), hints }
   })
+}
+
+/**
+ * Right-hand hints of a sub-agent view: switch sibling, back to the parent, and the drawer, whose key comes from the
+ * keymap and is left out while it has no binding.
+ */
+export function subagentFooterHints(drawer: string): readonly FooterHint[] {
+  const hints: FooterHint[] = [
+    { key: SUBAGENT_SWITCH_KEYS, label: t("subagent.hint.switch") },
+    { key: SUBAGENT_BACK_KEY, label: t("subagent.hint.back") },
+  ]
+  if (drawer) hints.push({ key: drawer, label: t("shell.footer.drawer") })
+  return hints
+}
+
+/** Which sub-agent a view shows, for the read-only notice at the left of its footer (#1033 3.3). */
+export type FooterSubagent = {
+  kind: string
 }
 
 /** Compact home route information merged into the footer's meta row. */
@@ -67,6 +89,8 @@ export type FooterProps = {
   meta?: FooterMeta
   /** DAG mode indicator shown after the agent name; omitted where the session has no mode switch. */
   dag?: DagIndicatorState
+  /** A sub-agent view: its read-only notice follows the agent cluster, which that view leaves empty. */
+  subagent?: FooterSubagent
   /** Shared right-hand slot for transient footer content. */
   right?: JSX.Element
 }
@@ -75,6 +99,25 @@ const PADDING = 2
 const GAP = 1
 const HINT_SEPARATOR = " · "
 const META_SEPARATOR = " · "
+
+const NOTICE_SEPARATOR = " · "
+
+/** The read-only notice: the kind, then the rest of the sentence that says why there is no input. */
+function subagentNotice(kind: string) {
+  return {
+    kind,
+    rest: [t("subagent.readonlyTag"), t("subagent.readonly")].map((part) => NOTICE_SEPARATOR + part).join(""),
+  }
+}
+
+/**
+ * Left-hand columns the notice of a sub-agent view takes beyond what `useFooterStatus` holds back for the agent
+ * cluster, which that view does not have; the toast shares the row with the notice.
+ */
+export function subagentNoticeReserve(kind: string, ambiguousWidth: AmbiguousWidth): number {
+  const notice = subagentNotice(kind)
+  return Math.max(0, cellWidth(notice.kind + notice.rest, ambiguousWidth) + GAP - LEFT_RESERVE)
+}
 
 export function Footer(props: FooterProps) {
   const { theme } = useTheme()
@@ -103,7 +146,17 @@ export function Footer(props: FooterProps) {
     const shownAction =
       action && actionBudget > 0 ? (actionWidth <= actionBudget ? action : truncateCells(action, actionBudget, aw)) : ""
 
-    const leftWidth = head + (shownAction ? (head > 0 ? GAP : 0) + cellWidth(shownAction, aw) : 0)
+    const agentCluster = head + (shownAction ? (head > 0 ? GAP : 0) + cellWidth(shownAction, aw) : 0)
+
+    // A sub-agent view has no agent cluster: its kind and the read-only sentence take the left, cut to what is there.
+    const notice = props.subagent ? subagentNotice(props.subagent.kind) : undefined
+    const noticeGap = agentCluster > 0 ? GAP : 0
+    const noticeBudget = inner - agentCluster - noticeGap
+    const noticeKind = notice && noticeBudget > 0 ? truncateCells(notice.kind, noticeBudget, aw) : ""
+    const noticeRest =
+      notice && noticeKind ? truncateCells(notice.rest, noticeBudget - cellWidth(noticeKind, aw), aw) : ""
+    const noticeWidth = cellWidth(noticeKind + noticeRest, aw)
+    const leftWidth = agentCluster + (noticeWidth > 0 ? noticeGap + noticeWidth : 0)
 
     // The shared right slot replaces idle hints and meta, but the trust warning
     // stays visible: it is the only footer reminder that project entries await a
@@ -120,12 +173,18 @@ export function Footer(props: FooterProps) {
       // slot past the edge, so pull the slot back by the cells the left side gains.
       const shift =
         aw === 2
-          ? [agent, dag, shownAction, trust].reduce((sum, text) => sum + cellWidth(text, 2) - cellWidth(text, 1), 0)
+          ? [agent, dag, shownAction, noticeKind + noticeRest, trust].reduce(
+              (sum, text) => sum + cellWidth(text, 2) - cellWidth(text, 1),
+              0,
+            )
           : 0
       return {
         agent,
         compact,
         action: shownAction,
+        noticeGap,
+        noticeKind,
+        noticeRest,
         trust,
         trustGap,
         hints: [] as FooterHint[],
@@ -150,8 +209,7 @@ export function Footer(props: FooterProps) {
     const hintsWidth = cellWidth(joined, aw)
     const metaParts: string[] = []
     if (props.meta?.directory) metaParts.push(props.meta.directory)
-    if (props.meta?.mcp)
-      metaParts.push(`${props.meta.mcp.error ? "⊙!" : "⊙"} ${props.meta.mcp.count} MCP`)
+    if (props.meta?.mcp) metaParts.push(`${props.meta.mcp.error ? "⊙!" : "⊙"} ${props.meta.mcp.count} MCP`)
     if (props.meta?.version) metaParts.push(props.meta.version)
     const metaText = metaParts.join(META_SEPARATOR)
     const metaGapBase = leftWidth > 0 || trust ? GAP : 0
@@ -175,6 +233,9 @@ export function Footer(props: FooterProps) {
       agent,
       compact,
       action: shownAction,
+      noticeGap,
+      noticeKind,
+      noticeRest,
       trust,
       trustGap,
       hints: selected,
@@ -200,6 +261,14 @@ export function Footer(props: FooterProps) {
               {layout().action}
             </text>
           </Show>
+        </box>
+      </Show>
+      <Show when={layout().noticeKind}>
+        <box paddingLeft={layout().noticeGap}>
+          <text fg={theme.text} wrapMode="none">
+            <b>{layout().noticeKind}</b>
+            <span style={{ fg: theme.textMuted }}>{layout().noticeRest}</span>
+          </text>
         </box>
       </Show>
       <Show when={layout().trust}>
