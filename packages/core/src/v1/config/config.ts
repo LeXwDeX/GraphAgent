@@ -92,6 +92,25 @@ export const Dag = Schema.Struct({
   ).annotate({
     description: "DAG token budget. Global config only: values from project-level configuration are ignored.",
   }),
+  compose: Schema.optional(
+    Schema.Struct({
+      max_children: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 12 }))).annotate({
+        description:
+          "Most items one composer plan may hold (2-12, default 6). Global config only: values from project-level configuration are ignored.",
+      }),
+      max_depth: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3 }))).annotate({
+        description:
+          "Deepest composer nesting; a top-level compose block is depth 1 (1-3, default 2). Global config only: values from project-level configuration are ignored.",
+      }),
+      max_subtree_nodes: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 10, maximum: 80 }))).annotate({
+        description:
+          "Most nodes one top-level compose block may expand into, nested expansions included (10-80, default 40). Global config only: values from project-level configuration are ignored.",
+      }),
+    }),
+  ).annotate({
+    description:
+      "Limits on composer expansion (#1158). Global config only: values from project-level configuration are ignored.",
+  }),
   safety: Schema.optional(
     Schema.Struct({
       extra: Schema.optional(

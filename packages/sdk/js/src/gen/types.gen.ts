@@ -1581,6 +1581,11 @@ export type Config = {
        */
       warn_ratio?: number | "Infinity" | "-Infinity" | "NaN"
     }
+    compose?: {
+      max_children?: number
+      max_depth?: number
+      max_subtree_nodes?: number
+    }
     safety?: {
       extra?: Array<{
         /**

@@ -91,6 +91,9 @@ const CompactPrompt = Schema.Struct({
 // every authoring schema field must be representable on the wire.
 export const CompactBlock = Schema.Struct({
   id: Schema.String,
+  // `compose` (#1158) is authorable in files only for now: the engine cannot expand a compose block while a
+  // workflow runs yet, and the Workflow Authoring Check refuses to submit one (DagCompose.gate). It joins this
+  // list, and the model-facing description, when the runtime expansion lands.
   kind: Schema.Literals(["explore", "plan", "prototype", "debug", "coding", "verify", "review", "synthesize"]),
   depends_on: Schema.optional(Schema.Array(Schema.String)),
   instruction: Schema.optional(Schema.String),
